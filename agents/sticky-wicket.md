@@ -1,7 +1,7 @@
 ---
 name: sticky-wicket
 description: Use when the SAME issue has cycled through 2+ rounds of Lane 2 completion claim → Lane 3 gate FAIL (or Lane 1 declining a completion claim) without qualitative resolution — the signal that repeated incremental fixes aren't converging and the underlying approach itself may be wrong, not just the latest bug. Reads the full issue thread fresh (no anchoring on the round-by-round back-and-forth a continuing session has already accumulated) and asks whether the current approach should be reforged rather than patched again. Do NOT use for a single failure, or when each round's finding is a genuinely new, unrelated bug — this is specifically for THRASHING: the same category of problem recurring, or effort escalating without state improving. Trigger is countable, not a vibe check — 2 consecutive FAIL/declined-completion verdicts on one issue (lowered from an original 3 after HRSE2 #233, see ADR-002).
-model: opus
+model: claude-opus-5
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 ---
 

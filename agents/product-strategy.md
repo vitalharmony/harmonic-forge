@@ -1,7 +1,7 @@
 ---
 name: product-strategy
 description: Use for high-judgment product/architecture strategy work on {project} — red-teaming an epic or ADR before it's locked in, resolving a build-vs-adopt or scope tradeoff (e.g. generic capability vs. purpose-built vertical, custom tool vs. OSS adoption), synthesizing a novel product-positioning thesis, or breaking a genuinely ambiguous judgment call where the right answer isn't obvious from process alone. Do NOT use for routine feature implementation, bug triage, or standard issue/backlog grooming — that work is well-served by the calling session's own model and the 3-lane protocol. Invoke proactively when a task crosses from "follow the process" into "the reasoning itself is the deliverable."
-model: opus
+model: claude-opus-5
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 ---
 
