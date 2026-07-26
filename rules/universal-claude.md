@@ -87,3 +87,85 @@ At the start of a session in any project repo, check for a "recent context"
 file analogous to HRSE2's `transaction-log.md` — a per-commit delta summary
 since the last version bump — before assuming the codebase matches what was
 last discussed.
+
+## Advisory subagent protocol
+
+Cascade may invoke only these read-only advisory subagents:
+
+- **product-strategy** — only for a high-judgment product, architecture,
+  build-vs-adopt, positioning, or genuinely ambiguous scope decision.
+- **sticky-wicket** — only after two consecutive same-class L2 completion →
+  L3 FAIL or Lane 1 declined-completion cycles on one issue.
+- **pitch-inspection** — before posting a Lane 1 handoff when alternatives
+  were considered, a load-bearing assumption remains asserted, the
+  implementation mutates Git/live data, or the operator explicitly asks.
+
+Agent definitions live in `harmonic-forge/agents/` and are symlinked into each
+project's `.claude/agents/` by `sync_rules.py`. Do not edit the definitions
+in project workspaces.
+
+### Invocation contract
+
+1. Parent Cascade derives a compact payload from the current thread:
+   - project/repository and lane;
+   - issue number and exact decision/question;
+   - relevant current-thread facts, decisions, and constraints;
+   - exact files, issue comments, ADRs, or URLs already identified;
+   - desired output format;
+   - explicit instruction: advisory/read-only/no GitHub or filesystem writes.
+
+2. Start one subagent using:
+   - `agent`: one of the three names above;
+   - `model`: `claude-opus-5`;
+   - `thinking`: `medium`;
+   - `tools`: read-only only.
+
+3. The subagent may independently inspect the live repository and GitHub
+   read-only. It must return a self-contained recommendation/verdict.
+
+4. Parent Cascade appends the subagent output verbatim or faithfully
+   attributed into the current thread under:
+   `Advisory subagent result — <agent name>`.
+
+5. The parent, not the subagent, decides and acts. A subagent result never
+   authorizes implementation, GitHub mutation, merge, close, or bypass of
+   HITL/lane gates.
+
+6. `pitch-inspection` gets one pass only. If its verdict is disputed after
+   one revision, escalate to the operator; do not invoke it again.
+
+### Example payload
+
+```json
+{
+  "agent": "product-strategy",
+  "model": "claude-opus-5",
+  "thinking": "medium",
+  "mode": "advisory_read_only",
+  "project": "HRSE2",
+  "lane": "Lane 1",
+  "issue": "H377",
+  "question": "Should provider credentials remain on root-user or move to a dedicated secret store now?",
+  "thread_context": [
+    "Current decision and why it matters",
+    "Constraints already established",
+    "Rejected alternatives and evidence"
+  ],
+  "artifacts": [
+    "GitHub issue URL/number",
+    "relevant ADR paths",
+    "relevant source paths"
+  ],
+  "required_output": "Recommendation, strongest counterargument, load-bearing assumption, and next Lane 1 action.",
+  "constraints": [
+    "Read-only",
+    "No issue comments",
+    "No file edits",
+    "No implementation"
+  ]
+}
+```
+
+If this Cascade session cannot dispatch to the subagent (no tool, no model
+access, no agent runner), say so explicitly and stop. Do not synthesize a
+substitute recommendation.
