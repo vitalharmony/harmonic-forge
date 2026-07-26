@@ -175,19 +175,20 @@ revision, escalate to the operator; do not invoke it again on the same handoff.
 
 ## Advisory-agent dispatch capability
 
-Before invoking `product-strategy`, `sticky-wicket`, or `pitch-inspection`,
-Lane 1 must determine its runtime.
+Lane 1 invokes `product-strategy`, `sticky-wicket`, and `pitch-inspection` via
+**instruction-driven self-delegation**, the same mechanism Lane 3 uses for
+`lane3-gate`:
 
-- In **Devin Local**, invoke the named advisory profile as one foreground
-  read-only subagent with the bounded payload, await the result, and return
-  it under `Advisory result — <agent>`.
-- In **legacy Cascade**, no native dispatch capability is assumed. Do not claim
-  an advisory agent was invoked. Prepare the payload, name the required
-  agent and trigger, then stop for manual operator launch.
-- **Never** invent or attempt an unverified CLI/API dispatch command.
-- A subagent self-report is not evidence of its resolved model or effort.
+- When a qualifying trigger fires, **self-delegate as the first action** to the
+  named foreground advisory profile with a bounded payload.
+- Await the result.
+- Return it under `Advisory result — <agent>` in this thread.
+- The parent remains the sole owner of GitHub, implementation, and lane
+  actions; a subagent result never authorizes merge, close, or code/config changes.
 
-A custom API/CLI wrapper is only worth building if legacy Cascade must remain
-the default Lane 1 surface. Such a wrapper must call an officially verified
-Devin managed-session API — not call Claude directly — so it preserves
-auditability, isolation, and the read-only profile controls.
+No visible shell/API “spawn” tool is required — Devin Local interprets the
+self-delegation instruction and launches the profile. If the requested profile
+is missing under `.devin/agents/<name>/AGENT.md`, report that missing profile
+precisely; do not claim that Devin Local lacks the delegation capability.
+
+A subagent self-report is not evidence of its resolved model or effort.

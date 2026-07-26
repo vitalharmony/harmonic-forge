@@ -98,52 +98,69 @@ def _link_dir(source_dir: Path, target_dir: Path, filenames: list[str], label: s
     return ok
 
 
-def _link_profile_dirs(source_dir: Path, target_dir: Path, dirnames: list[str], label: str) -> bool:
-    """Symlinks target_dir/<dirname> -> source_dir/<dirname> for agent profile directories."""
+def _link_profile_files(source_dir: Path, target_dir: Path, dirnames: list[str], label: str) -> bool:
+    """Creates real directories under target_dir/<dirname> and symlinks each file from source_dir/<dirname> into it.
+
+    Devin's profile discovery does not enumerate directory symlinks, so the
+    profile directory must be a real folder and only its contents are symlinked
+    from the platform source.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
 
     ok = True
     for dirname in dirnames:
-        source = source_dir / dirname
-        target = target_dir / dirname
+        source_profile_dir = source_dir / dirname
+        target_profile_dir = target_dir / dirname
 
-        if not source.exists():
-            print(f"[ERROR] Platform {label} directory missing: {source}", file=sys.stderr)
+        if not source_profile_dir.exists():
+            print(f"[ERROR] Platform {label} directory missing: {source_profile_dir}", file=sys.stderr)
             ok = False
             continue
 
-        if target.is_symlink():
-            if target.resolve() == source.resolve():
-                print(f"[OK] {target} already linked correctly.")
+        # Replace a stale directory symlink with a real directory.
+        if target_profile_dir.is_symlink():
+            if target_profile_dir.resolve() == source_profile_dir.resolve():
+                print(f"[FIX] {target_profile_dir} is a directory symlink; replacing with real directory.")
+            else:
+                print(f"[FIX] {target_profile_dir} points elsewhere; replacing.")
+            target_profile_dir.unlink()
+            target_profile_dir.mkdir()
+        elif not target_profile_dir.exists():
+            target_profile_dir.mkdir()
+
+        for source_file in source_profile_dir.iterdir():
+            if not source_file.is_file():
                 continue
-            print(f"[FIX] {target} points elsewhere — relinking.")
-            target.unlink()
-        elif target.exists():
-            print(
-                f"[SKIP] {target} exists as a real file/directory, not a symlink. "
-                f"Remove or back it up manually, then re-run.",
-                file=sys.stderr,
-            )
-            ok = False
-            continue
-
-        target.symlink_to(source, target_is_directory=True)
-        print(f"[LINK] {target} -> {source}")
+            target_file = target_profile_dir / source_file.name
+            if target_file.is_symlink():
+                if target_file.resolve() == source_file.resolve():
+                    continue
+                target_file.unlink()
+            elif target_file.exists():
+                print(
+                    f"[SKIP] {target_file} exists as a real file. "
+                    f"Remove or back it up manually, then re-run.",
+                    file=sys.stderr,
+                )
+                ok = False
+                continue
+            target_file.symlink_to(source_file)
+            print(f"[LINK] {target_file} -> {source_file}")
 
     return ok
 
 
 def _verify_profile_dirs(target_dir: Path, dirnames: list[str]) -> bool:
-    """Confirms every expected agent profile symlink in target_dir resolves to a real directory."""
+    """Confirms every expected agent profile is a real directory containing linked platform files."""
     all_good = True
     for dirname in dirnames:
-        target = target_dir / dirname
-        if not target.is_symlink():
-            print(f"[BROKEN] {target} is not a symlink.", file=sys.stderr)
+        target_profile_dir = target_dir / dirname
+        if not target_profile_dir.is_dir() or target_profile_dir.is_symlink():
+            print(f"[BROKEN] {target_profile_dir} is not a real directory.", file=sys.stderr)
             all_good = False
             continue
-        if not target.resolve().exists():
-            print(f"[BROKEN] {target} points to a missing directory.", file=sys.stderr)
+        if not any(target_profile_dir.iterdir()):
+            print(f"[BROKEN] {target_profile_dir} contains no files.", file=sys.stderr)
             all_good = False
     return all_good
 
@@ -168,7 +185,7 @@ def link_project(project_root: Path) -> bool:
     rules_ok = _link_dir(RULES_DIR, project_root / ".claude" / "rules", UNIVERSAL_RULE_FILES, "rule")
     agent_files = _universal_agent_files()
     agents_ok = _link_dir(AGENTS_DIR, project_root / ".claude" / "agents", agent_files, "agent")
-    profiles_ok = _link_profile_dirs(
+    profiles_ok = _link_profile_files(
         AGENTS_DIR,
         project_root / ".devin" / "agents",
         UNIVERSAL_AGENT_PROFILES,
