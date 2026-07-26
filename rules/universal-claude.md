@@ -172,3 +172,22 @@ Pass criteria:
 
 `pitch-inspection` gets one pass only. If its verdict is disputed after one
 revision, escalate to the operator; do not invoke it again on the same handoff.
+
+## Advisory-agent dispatch capability
+
+Before invoking `product-strategy`, `sticky-wicket`, or `pitch-inspection`,
+Lane 1 must determine its runtime.
+
+- In **Devin Local**, invoke the named advisory profile as one foreground
+  read-only subagent with the bounded payload, await the result, and return
+  it under `Advisory result — <agent>`.
+- In **legacy Cascade**, no native dispatch capability is assumed. Do not claim
+  an advisory agent was invoked. Prepare the payload, name the required
+  agent and trigger, then stop for manual operator launch.
+- **Never** invent or attempt an unverified CLI/API dispatch command.
+- A subagent self-report is not evidence of its resolved model or effort.
+
+A custom API/CLI wrapper is only worth building if legacy Cascade must remain
+the default Lane 1 surface. Such a wrapper must call an officially verified
+Devin managed-session API — not call Claude directly — so it preserves
+auditability, isolation, and the read-only profile controls.
