@@ -210,6 +210,17 @@ GitHub Actions / operator
   before testing or relying on that profile. Updates are not picked up by an
   already-running parent session.
 
+### Tool-use safeguards
+
+- For multi-line GitHub comments, always use `--body-file` or pipe via
+  `jq -Rs '{body: .}' <file>` to the GitHub API `--input -`; never use inline
+  `--body "..."` with backticks, `@` symbols, or multiple lines.
+- For git commands that may open an editor or pre-commit hook, set
+  `GIT_EDITOR=true EDITOR=: NO_COLOR=1` and add `--no-edit --no-verify`.
+- If a git or GitHub command fails or appears to hang, stop after one failure,
+  report the exact error, and wait for operator direction. Do not retry variants
+  blindly.
+
 ### Pilot checklist before Devin Local becomes mandatory
 
 - discovery and foreground self-delegation of each advisory profile;
