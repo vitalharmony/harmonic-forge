@@ -175,12 +175,15 @@ revision, escalate to the operator; do not invoke it again on the same handoff.
 
 ## Lane 1 runtime
 
-Devin Local is the preferred Lane 1 runtime when a Lane 1 task may invoke
-`product-strategy`, `sticky-wicket`, or `pitch-inspection`.
+Cascade is the Lane 1 orchestration surface. For advisory work, Cascade
+prepares a bounded payload and hands it to a Claude Code or Codex L1 session
+for execution, then brings the result back into Cascade for the actual
+Lane 1 decision and handoff. This avoids Devin Opus token burn while keeping
+Cascade as the single orchestration point.
 
-Legacy Cascade remains supported for routine Lane 1 work and as a fallback,
-but cannot be treated as capable of advisory self-delegation unless that
-capability is independently demonstrated in the active runtime.
+Devin Local remains supported for routine Lane 1 work and for native advisory
+self-delegation once its custom profiles are proven, but the default advisory
+path is the Cascade-prepared payload + Claude/Codex L1 executor bridge.
 
 ### Operating split
 
@@ -226,12 +229,24 @@ model or effort.
 
 ### Advisory payload file convention
 
-When a parent session prepares a bounded payload for an advisory subagent,
-it should be written to a file (e.g., `/tmp/<agent>-<issue>-payload.md`) that
-contains the question, context, required output format, and constraints. The
-subagent must append its result to the same file under a heading
-`## RESULTS AND RECOMMENDATIONS`. The parent reads that file after the
-subagent completes; the advisory result does not authorize implementation.
+When Cascade prepares a bounded payload for an advisory subagent, it is
+written to a file (e.g., `/tmp/<agent>-<issue>-payload.md` or
+`research/advisory-payloads/<issue>-<agent>.md`) that contains:
+
+- the requested role (`product-strategy`, `sticky-wicket`, or `pitch-inspection`);
+- the issue ID and the specific decision/question;
+- relevant facts, file paths, and constraints;
+- an explicit output format;
+- a snapshot of the repository state (commit SHA / branch, issue timestamp);
+- the instruction: no edits, commits, GitHub mutations, or implementation.
+
+The executor (Claude Code or Codex L1 session) runs the named advisory role
+with the payload and writes the result to a separate file, e.g.
+`research/advisory-results/<issue>-<agent>.md`, preserving an auditable chain.
+The result file must not overwrite the payload file.
+
+Cascade reads the result file and uses it for the actual Lane 1 decision and
+handoff; the advisory result does not authorize implementation.
 
 **Advisory recommendations require HITL and APQ alignment before any
 implementation.** Do not execute, commit, close, or mutate state based on an
