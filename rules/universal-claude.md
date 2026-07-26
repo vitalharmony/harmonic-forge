@@ -202,6 +202,10 @@ GitHub Actions / operator
   operator concerns, not a Devin Local feature. They require GitHub credentials
   and an approved GitHub Actions workflow.
 - There is no Devin Local limitation called “restart GitHub.”
+- **Profile discovery is parent-session scoped.** After adding or changing any
+  `.devin/agents/<name>/AGENT.md` profile, start a new Devin Local parent session
+  before testing or relying on that profile. Updates are not picked up by an
+  already-running parent session.
 
 ### Pilot checklist before Devin Local becomes mandatory
 
