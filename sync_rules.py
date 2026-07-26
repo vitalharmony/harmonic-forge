@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -132,20 +133,23 @@ def _link_profile_files(source_dir: Path, target_dir: Path, dirnames: list[str],
             if not source_file.is_file():
                 continue
             target_file = target_profile_dir / source_file.name
-            if target_file.is_symlink():
-                if target_file.resolve() == source_file.resolve():
-                    continue
-                target_file.unlink()
-            elif target_file.exists():
-                print(
-                    f"[SKIP] {target_file} exists as a real file. "
-                    f"Remove or back it up manually, then re-run.",
-                    file=sys.stderr,
-                )
-                ok = False
-                continue
-            target_file.symlink_to(source_file)
-            print(f"[LINK] {target_file} -> {source_file}")
+            if target_file.is_symlink() or target_file.exists():
+                existing = target_file.read_text()
+                new = source_file.read_text()
+                if existing == new:
+                    if target_file.is_symlink():
+                        print(f"[FIX] {target_file} is a symlink; replacing with real file.")
+                    else:
+                        continue
+                elif target_file.is_symlink():
+                    print(f"[UPDATE] {target_file} (was symlink)")
+                else:
+                    print(f"[UPDATE] {target_file}")
+                if target_file.is_symlink() or target_file.exists():
+                    target_file.unlink()
+            else:
+                print(f"[COPY] {target_file} -> {source_file}")
+            shutil.copy2(source_file, target_file)
 
     return ok
 
