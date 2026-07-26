@@ -173,22 +173,27 @@ Pass criteria:
 `pitch-inspection` gets one pass only. If its verdict is disputed after one
 revision, escalate to the operator; do not invoke it again on the same handoff.
 
-## Advisory-agent dispatch capability
+## Lane 1 runtime
 
-Lane 1 invokes `product-strategy`, `sticky-wicket`, and `pitch-inspection` via
-**instruction-driven self-delegation**, the same mechanism Lane 3 uses for
-`lane3-gate`:
+Devin Local is the preferred Lane 1 runtime when a Lane 1 task may invoke
+`product-strategy`, `sticky-wicket`, or `pitch-inspection`.
 
-- When a qualifying trigger fires, **self-delegate as the first action** to the
-  named foreground advisory profile with a bounded payload.
-- Await the result.
-- Return it under `Advisory result — <agent>` in this thread.
-- The parent remains the sole owner of GitHub, implementation, and lane
-  actions; a subagent result never authorizes merge, close, or code/config changes.
+Legacy Cascade remains supported for routine Lane 1 work and as a fallback,
+but cannot be treated as capable of advisory self-delegation unless that
+capability is independently demonstrated in the active runtime.
 
-No visible shell/API “spawn” tool is required — Devin Local interprets the
-self-delegation instruction and launches the profile. If the requested profile
-is missing under `.devin/agents/<name>/AGENT.md`, report that missing profile
-precisely; do not claim that Devin Local lacks the delegation capability.
+Before Devin Local becomes mandatory, complete a pilot that verifies:
+- discovery and foreground self-delegation of each advisory profile;
+- resolved model/effort visibility or documented limitation;
+- read-only permission denial;
+- parent receipt and durable relay of the advisory verdict;
+- normal Lane 1 GitHub handoff and issue-comment workflow.
 
-A subagent self-report is not evidence of its resolved model or effort.
+Advisory child results never authorize a parent action. The parent remains
+responsible for posting the resulting handoff/verdict to the GitHub issue.
+
+When a qualifying trigger fires in Devin Local, **self-delegate as the first
+action** to the named foreground advisory profile with a bounded payload,
+await the result, and return it under `Advisory result — <agent>` in the
+same parent workflow. A subagent self-report is not evidence of its resolved
+model or effort.
