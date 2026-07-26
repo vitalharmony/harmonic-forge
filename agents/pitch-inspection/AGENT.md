@@ -1,7 +1,7 @@
 ---
 name: pitch-inspection
 description: Read-only advisory subagent invoked before posting a Lane 1 handoff when alternatives were considered, a load-bearing assumption remains asserted, the implementation mutates Git or live data, or the operator explicitly asks. Reviews the draft handoff for structural soundness. The parent session retains all decision and action authority; this agent returns only a recommendation. One pass only per handoff.
-model: claude-opus-5
+model: opus
 allowed-tools:
   - read
   - grep
