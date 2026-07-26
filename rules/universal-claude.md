@@ -88,84 +88,87 @@ file analogous to HRSE2's `transaction-log.md` — a per-commit delta summary
 since the last version bump — before assuming the codebase matches what was
 last discussed.
 
-## Advisory subagent protocol
+## Advisory subagent protocol (Lane 1 Cascade)
 
-Cascade may invoke only these read-only advisory subagents:
+When a named advisory-agent trigger fires, Cascade must:
 
-- **product-strategy** — only for a high-judgment product, architecture,
-  build-vs-adopt, positioning, or genuinely ambiguous scope decision.
-- **sticky-wicket** — only after two consecutive same-class L2 completion →
-  L3 FAIL or Lane 1 declined-completion cycles on one issue.
-- **pitch-inspection** — before posting a Lane 1 handoff when alternatives
-  were considered, a load-bearing assumption remains asserted, the
-  implementation mutates Git/live data, or the operator explicitly asks.
+1. **Decide the named trigger fired.**
+   - `product-strategy` — high-judgment product, architecture, build-vs-adopt,
+     positioning, or genuinely ambiguous scope decision.
+   - `sticky-wicket` — after two consecutive same-class L2 completion → L3 FAIL
+     or Lane 1 declined-completion cycles on one issue.
+   - `pitch-inspection` — before posting a Lane 1 handoff when alternatives were
+     considered, a load-bearing assumption remains asserted, the implementation
+     mutates Git or live data, or the operator explicitly asks.
 
-Agent definitions live in `harmonic-forge/agents/` and are symlinked into each
-project's `.claude/agents/` by `sync_rules.py`. Do not edit the definitions
-in project workspaces.
+2. **Create a bounded context payload.** Never forward the raw parent thread.
+   Include only:
+   - issue / project / lane;
+   - precise question;
+   - concise current-thread decision context;
+   - relevant issue URLs, files, ADRs, and constraints;
+   - required verdict format;
+   - read-only / no-mutation constraint.
 
-### Invocation contract
+3. **Start one managed Devin child using the matching advisory profile.**
+   Profile directories are symlinked from `harmonic-forge/agents/<name>/`
+   into each project's `.devin/agents/<name>/` by `sync_rules.py`.
+   Each profile requests `claude-opus-5` with medium thinking and denies all
+   writes, Git/GitHub mutations, service restarts, installs, and secrets access.
 
-1. Parent Cascade derives a compact payload from the current thread:
-   - project/repository and lane;
-   - issue number and exact decision/question;
-   - relevant current-thread facts, decisions, and constraints;
-   - exact files, issue comments, ADRs, or URLs already identified;
-   - desired output format;
-   - explicit instruction: advisory/read-only/no GitHub or filesystem writes.
+4. **Wait for the child result.**
 
-2. Start one subagent using:
-   - `agent`: one of the three names above;
-   - `model`: `claude-opus-5`;
-   - `thinking`: `medium`;
-   - `tools`: read-only only.
+5. **Paste the result into the parent thread under:**
+   `Advisory result — <agent>`.
 
-3. The subagent may independently inspect the live repository and GitHub
-   read-only. It must return a self-contained recommendation/verdict.
+6. **Treat it as advice only.** The parent remains the sole owner of GitHub,
+   implementation, and lane actions. A subagent result never authorizes merge,
+   close, bypass of HITL/lane gates, or any code/config change.
 
-4. Parent Cascade appends the subagent output verbatim or faithfully
-   attributed into the current thread under:
-   `Advisory subagent result — <agent name>`.
+### Child model/effort verification
 
-5. The parent, not the subagent, decides and acts. A subagent result never
-   authorizes implementation, GitHub mutation, merge, close, or bypass of
-   HITL/lane gates.
+A child self-report is not evidence. Before claiming the `claude-opus-5` / medium
+pin is enforced, the parent must collect parent-visible evidence from Devin's
+own session/child metadata showing:
 
-6. `pitch-inspection` gets one pass only. If its verdict is disputed after
-   one revision, escalate to the operator; do not invoke it again.
+1. the child profile selected;
+2. the resolved model identifier;
+3. the thinking/effort setting;
+4. the read-only permission policy applied;
+5. foreground completion and returned result.
 
-### Example payload
+Evidence hierarchy:
 
-```json
-{
-  "agent": "product-strategy",
-  "model": "claude-opus-5",
-  "thinking": "medium",
-  "mode": "advisory_read_only",
-  "project": "HRSE2",
-  "lane": "Lane 1",
-  "issue": "H377",
-  "question": "Should provider credentials remain on root-user or move to a dedicated secret store now?",
-  "thread_context": [
-    "Current decision and why it matters",
-    "Constraints already established",
-    "Rejected alternatives and evidence"
-  ],
-  "artifacts": [
-    "GitHub issue URL/number",
-    "relevant ADR paths",
-    "relevant source paths"
-  ],
-  "required_output": "Recommendation, strongest counterargument, load-bearing assumption, and next Lane 1 action.",
-  "constraints": [
-    "Read-only",
-    "No issue comments",
-    "No file edits",
-    "No implementation"
-  ]
-}
-```
+- **Best:** Devin child-session detail or API metadata showing resolved model and effort.
+- **Acceptable:** a parent-visible UI indicator plus a captured screenshot/session permalink.
+- **Not acceptable:** YAML/front matter alone — it proves only the requested configuration.
+- **Not acceptable:** the child reporting its own model/effort.
 
-If this Cascade session cannot dispatch to the subagent (no tool, no model
-access, no agent runner), say so explicitly and stop. Do not synthesize a
-substitute recommendation.
+If Devin does not expose the resolved model or effort to the parent, report:
+"configured but not independently verifiable" and do not claim the pin is
+enforced. In that case `claude-opus-5` / `medium` is a requested policy, not a
+guaranteed control. If model pinning is non-negotiable, fall back to a
+Claude-CLI runner where the exact model is a command argument and can be
+logged — not a raw Claude API wrapper, which would bypass Devin's session
+controls and audit trail.
+
+### Capability smoke test
+
+Before relying on any advisory subagent in production, run one controlled test:
+
+> Cascade: create one managed child using `product-strategy`; give it a one-
+> paragraph read-only decision payload; return its verdict here unchanged. Do
+> not modify files or GitHub.
+
+Pass criteria:
+- a child appears in Cascade's Agents tab;
+- it receives the compact payload;
+- it cannot mutate state;
+- its result comes back into the parent thread;
+- its model/effort is independently verifiable or explicitly reported as
+  unverifiable.
+
+### One-pass rule
+
+`pitch-inspection` gets one pass only. If its verdict is disputed after one
+revision, escalate to the operator; do not invoke it again on the same handoff.

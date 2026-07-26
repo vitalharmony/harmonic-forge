@@ -26,6 +26,13 @@ UNIVERSAL_RULE_FILES = [
     "frontend-typescript.md",
 ]
 
+# Devin Local advisory agent profiles, each a directory containing AGENT.md.
+UNIVERSAL_AGENT_PROFILES = [
+    "product-strategy",
+    "sticky-wicket",
+    "pitch-inspection",
+]
+
 
 def _universal_agent_files() -> list[str]:
     """Auto-discover every agent in harmonic-forge/agents/.
@@ -91,6 +98,56 @@ def _link_dir(source_dir: Path, target_dir: Path, filenames: list[str], label: s
     return ok
 
 
+def _link_profile_dirs(source_dir: Path, target_dir: Path, dirnames: list[str], label: str) -> bool:
+    """Symlinks target_dir/<dirname> -> source_dir/<dirname> for agent profile directories."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    ok = True
+    for dirname in dirnames:
+        source = source_dir / dirname
+        target = target_dir / dirname
+
+        if not source.exists():
+            print(f"[ERROR] Platform {label} directory missing: {source}", file=sys.stderr)
+            ok = False
+            continue
+
+        if target.is_symlink():
+            if target.resolve() == source.resolve():
+                print(f"[OK] {target} already linked correctly.")
+                continue
+            print(f"[FIX] {target} points elsewhere — relinking.")
+            target.unlink()
+        elif target.exists():
+            print(
+                f"[SKIP] {target} exists as a real file/directory, not a symlink. "
+                f"Remove or back it up manually, then re-run.",
+                file=sys.stderr,
+            )
+            ok = False
+            continue
+
+        target.symlink_to(source, target_is_directory=True)
+        print(f"[LINK] {target} -> {source}")
+
+    return ok
+
+
+def _verify_profile_dirs(target_dir: Path, dirnames: list[str]) -> bool:
+    """Confirms every expected agent profile symlink in target_dir resolves to a real directory."""
+    all_good = True
+    for dirname in dirnames:
+        target = target_dir / dirname
+        if not target.is_symlink():
+            print(f"[BROKEN] {target} is not a symlink.", file=sys.stderr)
+            all_good = False
+            continue
+        if not target.resolve().exists():
+            print(f"[BROKEN] {target} points to a missing directory.", file=sys.stderr)
+            all_good = False
+    return all_good
+
+
 def _verify_dir(target_dir: Path, filenames: list[str]) -> bool:
     """Confirms every expected symlink in target_dir resolves to a real file."""
     all_good = True
@@ -107,18 +164,28 @@ def _verify_dir(target_dir: Path, filenames: list[str]) -> bool:
 
 
 def link_project(project_root: Path) -> bool:
-    """Symlinks project .claude/rules/ and .claude/agents/ to platform sources."""
+    """Symlinks project .claude/rules/, .claude/agents/, and .devin/agents/ to platform sources."""
     rules_ok = _link_dir(RULES_DIR, project_root / ".claude" / "rules", UNIVERSAL_RULE_FILES, "rule")
     agent_files = _universal_agent_files()
     agents_ok = _link_dir(AGENTS_DIR, project_root / ".claude" / "agents", agent_files, "agent")
-    return rules_ok and agents_ok
+    profiles_ok = _link_profile_dirs(
+        AGENTS_DIR,
+        project_root / ".devin" / "agents",
+        UNIVERSAL_AGENT_PROFILES,
+        "agent profile",
+    )
+    return rules_ok and agents_ok and profiles_ok
 
 
 def verify_links(project_root: Path) -> bool:
     """Confirms every expected rule and agent symlink resolves to the platform source."""
     rules_ok = _verify_dir(project_root / ".claude" / "rules", UNIVERSAL_RULE_FILES)
     agents_ok = _verify_dir(project_root / ".claude" / "agents", _universal_agent_files())
-    return rules_ok and agents_ok
+    profiles_ok = _verify_profile_dirs(
+        project_root / ".devin" / "agents",
+        UNIVERSAL_AGENT_PROFILES,
+    )
+    return rules_ok and agents_ok and profiles_ok
 
 
 def print_remaining_steps(project_root: Path) -> None:
