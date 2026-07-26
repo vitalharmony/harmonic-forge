@@ -223,3 +223,17 @@ action** to the named foreground advisory profile with a bounded payload,
 await the result, and return it under `Advisory result — <agent>` in the
 same parent workflow. A subagent self-report is not evidence of its resolved
 model or effort.
+
+### Advisory payload file convention
+
+When a parent session prepares a bounded payload for an advisory subagent,
+it should be written to a file (e.g., `/tmp/<agent>-<issue>-payload.md`) that
+contains the question, context, required output format, and constraints. The
+subagent must append its result to the same file under a heading
+`## RESULTS AND RECOMMENDATIONS`. The parent reads that file after the
+subagent completes; the advisory result does not authorize implementation.
+
+**Advisory recommendations require HITL and APQ alignment before any
+implementation.** Do not execute, commit, close, or mutate state based on an
+advisory verdict without explicit operator approval and, for non-trivial
+changes, a completed alignment discussion.
