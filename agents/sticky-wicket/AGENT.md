@@ -1,7 +1,7 @@
 ---
 name: sticky-wicket
 description: Read-only advisory subagent invoked after two consecutive same-class L2 completion → L3 FAIL or Lane 1 declined-completion cycles on one issue. Diagnoses whether the current approach is structurally sound or thrashing. The parent session retains all decision and action authority; this agent returns only a recommendation.
-model: opus
+# model: opus  # model pinning disabled: Devin subagents burn the same tokens as the parent session
 allowed-tools:
   - read
   - grep

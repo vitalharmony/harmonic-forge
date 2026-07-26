@@ -1,7 +1,7 @@
 ---
 name: product-strategy
 description: Read-only advisory subagent for high-judgment product, architecture, build-vs-adopt, positioning, or genuinely ambiguous scope decisions in Lane 1. The parent session retains all decision and action authority; this agent returns only a recommendation.
-model: opus
+# model: opus  # model pinning disabled: Devin subagents burn the same tokens as the parent session
 allowed-tools:
   - read
   - grep
