@@ -55,6 +55,18 @@ for the UI-only variant.
      standard in rule 4 below, and see `3-lane-protocol.md`
      § Pre-Handoff Precondition Trace for the same discipline applied
      before Lane 2's implementation, not just before Lane 3's gate.
+   - **Mechanically required format (hrse#389, added after this rule
+     failed to hold as prose twice — hrse#387, harmonic-forge#82):** the
+     comment's heading must be exactly `## Gate-readiness sweep —
+     <PREFIX><N>` (e.g. `## Gate-readiness sweep — H164`). **Lane 3 —
+     either tool — must verify this comment exists on the issue thread,
+     posted after the test-spec HITL-approval comment, before executing
+     any TC. If absent: STOP immediately, execute nothing, report
+     BLOCKED naming the gap.** This shifts the check from "trust Lane 1
+     remembered" to "Lane 3 verifies before starting" — see each project's
+     Lane 3 skill/directive file (e.g. HRSE2's
+     `.devin/skills/lane3-gate/SKILL.md` and `AGENTS.md`) for the
+     identical rule stated at the actual entry point.
    - **A dependency present only via an undocumented ad-hoc install (not
      declared in the project's actual manifest — `requirements.txt`,
      `package.json`, etc.) is itself a sweep finding**, not something to
