@@ -182,7 +182,29 @@ Legacy Cascade remains supported for routine Lane 1 work and as a fallback,
 but cannot be treated as capable of advisory self-delegation unless that
 capability is independently demonstrated in the active runtime.
 
-Before Devin Local becomes mandatory, complete a pilot that verifies:
+### Operating split
+
+```text
+Devin Local Lane 1
+  → plan, read-only advisory subagents, GitHub handoff/issue comments
+
+Lane 2
+  → implementation + approved local mise service restart only
+
+GitHub Actions / operator
+  → cloud deploys, restarts, workflow reruns
+```
+
+- Devin Local can perform local implementation work and run shell commands,
+  including `mise run restart`, but **service restart authority belongs to
+  Lane 2, not Lane 1 or advisory agents**.
+- Cloud deploys, production restarts, and GitHub Actions reruns are CI/CD/
+  operator concerns, not a Devin Local feature. They require GitHub credentials
+  and an approved GitHub Actions workflow.
+- There is no Devin Local limitation called “restart GitHub.”
+
+### Pilot checklist before Devin Local becomes mandatory
+
 - discovery and foreground self-delegation of each advisory profile;
 - resolved model/effort visibility or documented limitation;
 - read-only permission denial;
