@@ -132,3 +132,22 @@ for the UI-only variant.
    around, mock past, or retry; it is always an immediate stop-and-report.
    See `3-lane-protocol.md`'s Lane 3 section for the full rule and the
    incident that prompted it (HRSE2 #204).
+9. **Provision a live preview before asking for browser evidence on an
+   unmerged change — don't wait for the operator to notice nothing's
+   there.** A UI-visual acceptance criterion (color/theme, layout,
+   favicon/icon rendering, anything a jsdom/build check can't cover) needs
+   a real browser pointed at the actual change — but an implementation
+   sitting on Lane 2's local branch, pre-merge, isn't reachable by the
+   operator's normal browser tab at all. Real incident (HRSE2 #400,
+   2026-07-27): Lane 3 correctly reported TC4-6 BLOCKED pending browser
+   evidence; the operator checked the live app, saw nothing (because the
+   change wasn't merged), and had to ask for a preview to be set up as a
+   separate step. On a project with per-worktree port isolation (HRSE2
+   #341's `.mise.local.toml` mechanism, or equivalent), the handoff for
+   any issue with a real-browser TC should include, up front: the exact
+   preview URL (isolated port, not the operator's main dev port) and the
+   exact command to bring it up (e.g. `cd <lane-worktree> && mise run
+   restart --no-bump --no-git`), so the operator can open one tab and
+   look, not diagnose why the main app looks unchanged. This is a Lane 1
+   handoff-authoring responsibility, not something Lane 2/3 improvise
+   after the operator asks.
