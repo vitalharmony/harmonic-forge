@@ -130,8 +130,8 @@ issue that touches the favicon, app icon, color tokens (`index.css`
 improvise a color or regenerate the mark by hand.
 
 **Google Drive:** https://drive.google.com/drive/folders/1jXlR2Je3KFtHtRkrHMQyeMtF3twA-qH7
-(check with Marc if you don't have access — the folder isn't confirmed
-shared with your account yet)
+(already shared with you directly, plus a link — should already be in
+your Drive/inbox)
 
 **Local path on Marc's machine** (Drive-synced — this exact absolute path
 won't exist on yours):
