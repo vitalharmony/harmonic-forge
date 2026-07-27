@@ -122,6 +122,45 @@ exactly this kind of "convert when touched" rule. If a rule in
 `frontend-hrse2.md` or `backend-hrse2.md` references an ADR by name, read
 that ADR before pushing back on the rule or asking Marc about it.
 
+## Brand Assets — Use Whenever a UI Issue Touches Branding/Theming
+
+CymaGraph has a locked brand mark and app-wide theme token set. Any UI
+issue that touches the favicon, app icon, color tokens (`index.css`
+`:root`/`.dark`), or the mark itself should pull from here — don't
+improvise a color or regenerate the mark by hand.
+
+**Google Drive:** https://drive.google.com/drive/folders/1jXlR2Je3KFtHtRkrHMQyeMtF3twA-qH7
+(already shared with you directly, plus a link — should already be in
+your Drive/inbox)
+
+**Local path on Marc's machine** (Drive-synced — this exact absolute path
+won't exist on yours):
+```
+/home/mmangus/Google Drive/Vital Harmony/Harmonic Architect/CymaGraph (HRSE)/Brand Assets/
+```
+
+**Start with `brand-guide.md`** in that folder — a plain-text export of
+the full locked guide (construction geometry, color tokens with exact
+`oklch` values, typography, lockup rules, file inventory, App/Play Store
+submission rules). It exists specifically so you don't need live Google
+Docs access to read it — the original is a Google Doc
+(`CymaGraph — Brand and Identity Guide (v2, locked).gddoc` in the same
+folder is just a shortcut to it, not the content); the `.md` export is
+the one to actually read.
+
+Key things to know before touching anything brand-related:
+- **The mark is parametric, never hand-edited.** If a mark asset needs
+  regenerating, use `cymagraph-asset-generator.py` in that folder — never
+  edit an SVG's paths directly.
+- **Ignore `Archive — superseded (2026-07-26)/`** — abandoned earlier
+  design, kept for history only.
+- **§ 7 of the guide has the exact app theme tokens** (`--primary`,
+  `--accent`, etc., both light and dark) already in copy-pasteable CSS
+  form — this is what hrse#400 applies to `frontend/src/index.css`.
+- If a handoff references brand assets and doesn't already name the
+  exact file(s) you need, check the guide's § 8 file inventory before
+  asking Marc — it's usually already answered there.
+
 ## New Since 2026-07-09 — Protocol Mechanisms You'll See on Real Issues
 
 Landed 2026-07-12 through 2026-07-13, driven directly by real incidents
