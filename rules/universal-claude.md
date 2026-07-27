@@ -72,6 +72,24 @@ lines, actual before/after counts — not by re-reading the diff and reasoning
 it should work. Re-deriving from the same code that produced the bug is not
 verification. Push back and require live evidence before trusting a result.
 
+**A correct diff against a wrong assumption is not verification.** Real
+incident (HRSE2 #400, 2026-07-27): a handoff applied locked design tokens
+by swapping CSS custom properties (`--primary`, `--accent`, etc.). Lane 1's
+review confirmed all 32 token values matched the design spec exactly,
+byte-identical assets, passing build — genuinely thorough diff-level
+verification. Nobody at any point checked whether the application's
+components actually *reference* those CSS properties. They didn't (74 of
+88 component files used hardcoded Tailwind palette classes instead) — the
+change was real, correct, and nearly invisible. The operator caught it
+live in a browser; a ten-second `grep` for the properties being changed
+across the codebase would have caught it before the handoff was even
+written. When a change's entire purpose is a visible/behavioral outcome
+(not just "this file now contains X"), verify the outcome's actual
+precondition — that whatever consumes the changed value actually exists
+and is wired up — not just that the change itself was applied correctly.
+This applies whether Lane 1 is reviewing Lane 2's work or writing the
+original handoff's Load-Bearing Assumptions.
+
 ## Memory Protocol
 
 Claude Code maintains a persistent, file-based memory system outside any
