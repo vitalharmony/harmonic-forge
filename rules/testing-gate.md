@@ -132,3 +132,48 @@ for the UI-only variant.
    around, mock past, or retry; it is always an immediate stop-and-report.
    See `3-lane-protocol.md`'s Lane 3 section for the full rule and the
    incident that prompted it (HRSE2 #204).
+9. **Provision a live preview before asking for browser evidence on an
+   unmerged change.** Lane 3 has no browser — operator-environment TCs on
+   code that hasn't landed on `main` are structurally unreachable to it, not
+   just inconvenient. Lane 1 provisions the preview (per-worktree port
+   isolation, backend brought up, any local-only activation flags the
+   TC needs), states the exact bring-up command and URL in the
+   gate-readiness sweep (rule 3), and — when the Claude-in-Chrome browser
+   extension is enabled for the session — captures the actual evidence
+   itself rather than deferring every operator-environment TC to the
+   human. This is within Lane 1's smoke-test-level live-verification
+   scope, not a Lane-3-duplication concern, because it is evidence Lane 3
+   is structurally incapable of producing, not a re-check of something
+   Lane 3 already covered.
+   - **Session mechanics:** the extension being visible/pinned in the
+     browser toolbar does not mean its MCP tools are attached to the
+     current Claude Code session — that attachment happens once at
+     session start. Run `/chrome` to enable, then restart Claude Code;
+     mid-session enabling alone will not surface the
+     `mcp__claude-in-chrome__*` tools.
+   - **Tab-group isolation:** the extension only sees/drives tabs in its
+     own MCP-managed tab group, not the operator's regular open tabs,
+     even in the same Chrome profile. To reach an operator's
+     already-authenticated session, don't try to attach to their tab —
+     navigate your own MCP tab to the identical URL; cookies are shared
+     per-origin within the same browser profile regardless of which tab
+     opened them.
+   - **Worktree API-base-URL gotcha (found live, HRSE2 hrse#414):**
+     per-worktree port isolation (`HRSE_BACKEND_PORT` etc., hrse#341)
+     only controls what port each service *binds to* — it does not
+     automatically retarget a frontend's client-side API base URL. A
+     `.env`/`.env.example` (or an equivalent config file) that hardcodes
+     an absolute backend origin (e.g. `VITE_API_BASE_URL=http://host:main-port/api`)
+     silently defeats the isolation: every lane's frontend keeps calling
+     the *main* checkout's backend instead of its own, surfacing as
+     intermittent `Failed to fetch`/503s that look like "the backend
+     isn't up" when it actually is — just on the wrong port. Two distinct
+     variables can exist for two distinct purposes (a dev-proxy target
+     server-side vs. an absolute client-side override); setting the
+     absolute one to a cross-port value introduces a *second* failure
+     mode (CORS-blocked cross-origin `fetch`, also silent). The correct
+     fix in a Vite-proxy setup is to leave the absolute override unset so
+     the client falls back to same-origin relative requests, and let the
+     proxy's own backend-target variable do the actual port routing.
+     Check for this class of misconfiguration before concluding a
+     worktree backend is genuinely down.
