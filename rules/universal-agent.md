@@ -1,7 +1,7 @@
 # Universal Agent Directives (ALL PROJECTS)
 
-Canonical process rules for every AI agent (Claude Code, Cascade, Devin Local,
-Devin Autonomous Agent) on every Vital Harmony project. Project-level
+Canonical process rules for every AI agent (Claude Code, Codex, and any
+operator-assigned runtime) on every Vital Harmony project. Project-level
 `.windsurfrules` may add constraints but may not weaken these. Precedence:
 
 ```
@@ -242,9 +242,9 @@ the fix wasn't verified live — say so, or don't store the entry as settled
 fact. A guess marked as a guess is fine; a guess stored as a verified rule is
 the failure mode this standard exists to prevent.
 
-This applies explicitly to **Lane 3's `~/.config/devin/AGENTS.md`**
-self-writes — that file is agent-maintained with no prior entry-quality bar,
-which is exactly the "pile of failure notes" risk the ladder names.
+This applies explicitly to every Lane 3 runtime's agent-maintained standing
+instructions and memory surfaces — they need the same entry-quality bar to
+avoid becoming a pile of unverified failure notes.
 
 Does **not** apply to a project's `transaction-log.md` (or equivalent delta
 log) — that is rung-1-by-design, a record of what changed, not a memory. The
