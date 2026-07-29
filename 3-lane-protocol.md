@@ -660,6 +660,36 @@ console value, a third party's live state) stay external-blocked, routed
 to the human — this section forces tracing what's knowable, not
 verifying the unverifiable.
 
+## Long-Running Script Handoffs — Design for Bounded Verification Up Front
+
+Real incident, HRSE2 #456: a one-time backfill made 251 sequential network
+calls and wrote its evidence artifact only when the entire process ended.
+Lane 3's execution lifetime was shorter than the run, producing three
+consecutive FAIL rounds. Observability patches made the timeout more visible
+without changing the untestable all-or-nothing execution shape.
+
+**Trigger:** a handoff specifies a script that will make more than 50
+sequential network calls, or Lane 1 otherwise expects one full run may outlive
+a single Lane 3 execution turn. Before Lane 2 writes any code, the handoff's
+Implementation Spec must require all three:
+
+1. **Incremental checkpointing and resume:** persist progress after bounded
+   units of work, with enough identity/state to resume safely without
+   repeating completed mutations. Evidence cannot exist only as a terminal
+   side effect of a fully completed run.
+2. **A bounded-work control:** expose a deterministic limit such as
+   `--limit N` so Lane 2 and Lane 3 can execute a representative slice within
+   one turn and prove checkpoint/resume behavior.
+3. **A network-free report mode:** read checkpoints/results locally and emit
+   completion, remaining-work, and error evidence without making network
+   calls or resuming the job.
+
+Lane 1 includes a concrete test case for each capability. A qualifying
+handoff that omits any of them is incomplete and must not be posted for
+implementation. These requirements define a verifiable job shape; adding
+progress logs, longer timeouts, or a terminal-only report does not satisfy
+them.
+
 ## Plan-First Implementation — Reviewing Lane 2's Plan Before Credits Burn
 
 `pitch-inspection` (above) reviews Lane 1's *design* before handoff. But

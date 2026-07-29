@@ -79,6 +79,15 @@ even when explicitly, repeatedly stated. Otherwise (the common case, no
 Plan-First trigger): {explicit step-by-step instruction for Lane 2 — no
 ambiguity}
 
+**Long-running script requirement:** if the implementation will make more
+than 50 sequential network calls, or one full run may outlive a Lane 3
+execution turn, this spec must require (1) incremental checkpointing plus
+safe resume, (2) a bounded-work control such as `--limit N`, and (3) a
+network-free report mode that reads local checkpoints/results. Include one
+concrete test case for each. A terminal-only evidence artifact, progress logs,
+or a longer timeout is not a substitute. See `3-lane-protocol.md`
+§ Long-Running Script Handoffs.
+
 **No secrets in this handoff.** Name the env var a step depends on, never
 its value — this handoff is posted as a permanent comment on the GitHub
 issue, a wider audience than a local file. **Same applies to sensitive
