@@ -566,6 +566,17 @@ underlying *approach* is structurally wrong, not just the latest bug. This
 is the cross-lane analog of a software circuit breaker: after N failures,
 stop retrying the same thing and ask whether the thing itself is broken.
 
+**The unrelated-bug carve-out is category-level, not symptom-level.** Before
+Lane 1 declines to invoke `sticky-wicket` because the two verdicts appear to
+have different immediate causes, it must classify each finding at the shared
+structural level (for example: evidence is not durable across runner lifetime,
+credential resolution, or classification logic) and compare those categories.
+Different surface symptoms or newly visible failure points do not reset the
+counter when both findings belong to one structural category. If the category
+matches—or the second round shows escalating effort without that category
+shrinking—invoke at verdict two. Decline only when the categories are
+genuinely unrelated, and state that distinction explicitly.
+
 The threshold was lowered from 3 to 2 after HRSE2 #233: by round 3 the
 thrashing pattern was already fully visible in hindsight, and every
 additional round before the circuit breaker fired cost a full gate cycle.
