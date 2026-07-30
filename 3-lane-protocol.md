@@ -701,6 +701,19 @@ implementation. These requirements define a verifiable job shape; adding
 progress logs, longer timeouts, or a terminal-only report does not satisfy
 them.
 
+## Live-Verification Specs for Pre-Existing Services — Cite a Duration Budget, Scope the Check
+
+Real incident, HRSE2 #455: a pure structural refactor (no behavior change) required a Lane 3 test case that invoked a pre-existing production service (`run_background_sync`) live and compared before/after results. That service takes 78-98 seconds in real production runs (visible in the service's own logs the whole time) -- three times longer than a Lane 3 execution turn, every time. Three consecutive FAIL rounds chased a capture-mechanism problem (stdout buffering, then a file-write timeout) before recognizing the operation itself could never finish inside the verification window. A companion problem: the same test case demanded value-equality between two live runs against live external data (Gmail/Calendar), which is unfalsifiable on its own since real values legitimately differ run to run.
+
+This differs from "Long-Running Script Handoffs" above: that section governs new scripts Lane 2 is about to write, where Lane 1 can require checkpoint/resume/bounded-work up front. Here the long-running thing is pre-existing code that cannot be redesigned by the issue under test.
+
+**Before approving any Lane 3 test case requiring live invocation of a pre-existing service, Lane 1 must:**
+
+1. **Cite a measured duration budget.** Check the service's own logs or prior run history for its actual wall-clock duration -- do not guess or assume it will finish inside a Lane 3 turn.
+2. **If that duration exceeds a Lane 3 turn, scope the check to a bounded subset** -- a single entity, a single integration/branch of the service, or a direct call to an internal sub-function -- rather than a full, unbounded invocation.
+3. **Assert return shape, not value-equality, whenever the subject depends on live external data.** Two runs against a live third-party dataset will legitimately differ; require key-set/structure comparison instead.
+4. **Route any genuinely unbounded full-service run to the operator or a detached background job as a non-blocking deferred check.** It must never gate a PR inside a single Lane 3 turn.
+
 ## Plan-First Implementation — Reviewing Lane 2's Plan Before Credits Burn
 
 `pitch-inspection` (above) reviews Lane 1's *design* before handoff. But
