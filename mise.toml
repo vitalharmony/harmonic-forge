@@ -72,7 +72,7 @@ flag "--file <file>" help="Path to a file containing the comment body" required=
 run = "python3 tools/gh/post_comment.py --repo \"$GH_REPO\" --issue \"$usage_issue\" --file \"$usage_file\""
 
 [tasks.gate-checkout]
-description = "Lane 3: switch to a branch without discarding uncommitted work. Refuses pathspec forms and dirty trees. Fetches first; falls back to a detached checkout if the branch is already checked out in a sibling worktree (real incident, hrse#335: harmonic-forge#29/#30 both blocked because the reviewed branch was already checked out in the lane2 worktree)."
+description = "Lane 3: switch to a branch without discarding uncommitted work. Refuses pathspec forms and dirty trees. Refuses if a live process (dev server, running test) has its cwd inside this worktree — a second actor's checkout would otherwise silently yank state out from under it, no lock or error (harmonic-forge#137, real incident hrse#439: a concurrent checkout in HRSE2-lane3 disrupted an in-progress Lane 3 gate). Fetches first; falls back to a detached checkout if the branch is already checked out in a sibling worktree (real incident, hrse#335: harmonic-forge#29/#30 both blocked because the reviewed branch was already checked out in the lane2 worktree)."
 usage = '''
 arg "<branch>" help="Branch name to check out"
 '''
@@ -96,6 +96,8 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "gate-checkout: refusing to switch branches with a dirty working tree" >&2
   exit 1
 fi
+
+python3 tools/worktree/check_worktree_busy.py "$(pwd)" || exit 1
 
 git fetch origin "$branch" --quiet || {
   echo "gate-checkout: could not fetch '$branch' from origin" >&2
