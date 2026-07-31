@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch a Claude Code session as Lane 2 (implementer) (harmonic-forge#142).
+# Sets LANE=2 and inhibits system sleep/idle for the session's lifetime.
+# LANE_CLI lets this stay composable with claude-pro/claude-api rather
+# than hardcoding plain `claude` (both of those scripts exec `claude`
+# themselves, so e.g. LANE_CLI=claude-api lane2 still works).
+#
+# Scope note: this env-var signal, and the HRSE2 hook that reads it
+# (scripts/block_lane1_status_claims.py), only cover Claude-Code-based
+# Lane 2 sessions. A Codex Lane 2 session is unaffected -- Codex's own
+# hook mechanism (.codex/hooks.json) is a separate concern, out of
+# scope for this issue.
+set -euo pipefail
+export LANE=2
+exec systemd-inhibit \
+  --what=sleep:idle \
+  --who="lane2" \
+  --why="Lane 2 (implementer) Claude Code session" \
+  --mode=block \
+  "${LANE_CLI:-claude}" "$@"
