@@ -273,6 +273,61 @@ mutation (two lanes can still collide applying to the same live cluster
 at the same time) — Lane 3's read-only-except-human-attended-mutations
 boundary already covers that risk separately.
 
+**The normal way to start a lane session** (harmonic-forge#142) is one of
+the `lane1`/`lane2`/`lane3` launcher scripts (`tools/lane/`, symlinked
+onto `$PATH`) rather than a bare `claude`/other-CLI invocation. Each
+script, run from anywhere inside a project's worktree tree: derives the
+project's base name from the current worktree (`git rev-parse
+--show-toplevel`, stripping a trailing `-lane<N>` suffix if present) and
+`cd`s into the right sibling directory before launching — `lane1` into
+the bare `<project>` checkout, `lane2`/`lane3` into `<project>-lane2`/
+`-lane3`, refusing to launch (not falling back to the main checkout) if
+that worktree doesn't exist yet; sets the `LANE` environment variable
+(see below); wraps the session in `systemd-inhibit --what=sleep:idle` so
+a long batched or unattended run isn't suspended mid-work; and defaults
+to `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or
+pass `--permission-mode` explicitly). **Proper hygiene is restarting the
+session with the right script, never redirecting a running session into
+a different lane role mid-conversation** — `LANE` is fixed for a
+process's entire lifetime by design (see below), so there is nothing a
+running session could do to change it even if asked to.
+
+### Lane role signal — `LANE`
+
+`LANE` is a real OS-level environment variable, set once by the launcher
+script at process launch, inherited by that session's entire subprocess
+tree — including every `PreToolUse` hook subprocess Claude Code spawns
+for that session (verified live, harmonic-forge#142). Project hooks read
+it directly (e.g. HRSE2's `scripts/block_lane1_status_claims.py`,
+canonicalized at `harmonic-forge/tools/hooks/`, harmonic-forge#149) to
+mechanically enforce lane-specific constraints: denying Lane 2 writes
+into the main checkout (harmonic-forge#142), denying Lane 3 writes
+outside `~/Harmonic_Projects/testplan/` (harmonic-forge#150), and gating
+the `gate-*` mise tasks (harmonic-forge#151).
+
+**What `LANE` is not**: not adversarial, not a hard security boundary,
+not inferred from conversation text, and not something a session
+declares about itself mid-session. It exists specifically because two
+earlier designs for the same class of guard both failed real review:
+
+1. A self-declared marker file (a session runs a `*-begin` task to mark
+   itself) — filesystem-global with no session-identity check meant one
+   session's marker could block an unrelated session's legitimate work,
+   and being opt-in meant it never caught the session that skips a
+   convention it already knows.
+2. A marker armed by pattern-matching the operator's own trigger phrases
+   in chat — trigger-shaped text turned out to be unavoidable in normal
+   Lane 1 status-relay conversation (proven live: the message that
+   triggered a review of this exact design matched its own trigger
+   pattern), with no worktree to fall back to for the session it
+   falsely armed.
+
+`LANE` set at process launch has neither failure mode: it can't be
+mistyped mid-conversation, misread from prose, or left stale by another
+session, because it isn't shared state at all — it's a fact about how
+one specific process was started, visible only to that process's own
+children.
+
 ## Per-Lane Worktree Reuse Across Issues — Check Before You Checkout
 
 Per-lane isolation (above) is per-*lane*, not per-*issue*: `<repo>-lane3/`
