@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Launch a Claude Code session as Lane 2 (implementer) (harmonic-forge#142).
+# Automatically switches to the current project's dedicated Lane 2
+# worktree (the sibling directory <project>-lane2) before launching --
+# so `lane2` from the main checkout or another lane worktree lands in
+# the right place. Proper hygiene is restarting with the right script,
+# never changing lanes mid-session.
 # Sets LANE=2 and inhibits system sleep/idle for the session's lifetime.
 # LANE_CLI lets this stay composable with claude-pro/claude-api rather
 # than hardcoding plain `claude` (both of those scripts exec `claude`
@@ -11,6 +16,24 @@
 # hook mechanism (.codex/hooks.json) is a separate concern, out of
 # scope for this issue.
 set -euo pipefail
+
+if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "lane2: not inside a git repository -- cd into a project first" >&2
+  exit 1
+fi
+parent="$(dirname "$root")"
+base="$(basename "$root")"
+if [[ "$base" =~ ^(.+)-lane[0-9]+$ ]]; then
+  base="${BASH_REMATCH[1]}"
+fi
+target="$parent/$base-lane2"
+
+if [ ! -d "$target" ]; then
+  echo "lane2: expected worktree '$target' does not exist -- create it first (see 3-lane-protocol.md's Per-Lane Working Directories), not falling back to the main checkout" >&2
+  exit 1
+fi
+
+cd "$target"
 export LANE=2
 exec systemd-inhibit \
   --what=sleep:idle \

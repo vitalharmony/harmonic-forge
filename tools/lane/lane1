@@ -1,11 +1,30 @@
 #!/usr/bin/env bash
 # Launch a Claude Code session as Lane 1 (harmonic-forge#142).
-# Sets LANE=1 and inhibits system sleep/idle for the session's lifetime,
-# so a long unattended run isn't suspended mid-work. --who uses a static
-# app-identity string, not $USER, since --who is meant to name the
-# application (and $USER isn't guaranteed present in every invocation
-# context under `set -u`).
+# Automatically switches to the current project's main checkout (the
+# sibling of <project>-lane2/<project>-lane3 with no -laneN suffix)
+# before launching -- so `lane1` from anywhere in a project's tree
+# lands in the right place. Proper hygiene is restarting with the
+# right script, never changing lanes mid-session.
+# Sets LANE=1 and inhibits system sleep/idle for the session's lifetime.
 set -euo pipefail
+
+if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "lane1: not inside a git repository -- cd into a project first" >&2
+  exit 1
+fi
+parent="$(dirname "$root")"
+base="$(basename "$root")"
+if [[ "$base" =~ ^(.+)-lane[0-9]+$ ]]; then
+  base="${BASH_REMATCH[1]}"
+fi
+target="$parent/$base"
+
+if [ ! -d "$target" ]; then
+  echo "lane1: expected main checkout '$target' does not exist" >&2
+  exit 1
+fi
+
+cd "$target"
 export LANE=1
 exec systemd-inhibit \
   --what=sleep:idle \
