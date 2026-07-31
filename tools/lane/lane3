@@ -1,7 +1,30 @@
 #!/usr/bin/env bash
 # Launch a Claude Code session as Lane 3 (gate) (harmonic-forge#142).
+# Automatically switches to the current project's dedicated Lane 3
+# worktree (the sibling directory <project>-lane3) before launching --
+# so `lane3` from the main checkout or another lane worktree lands in
+# the right place. Proper hygiene is restarting with the right script,
+# never changing lanes mid-session.
 # Sets LANE=3 and inhibits system sleep/idle for the session's lifetime.
 set -euo pipefail
+
+if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "lane3: not inside a git repository -- cd into a project first" >&2
+  exit 1
+fi
+parent="$(dirname "$root")"
+base="$(basename "$root")"
+if [[ "$base" =~ ^(.+)-lane[0-9]+$ ]]; then
+  base="${BASH_REMATCH[1]}"
+fi
+target="$parent/$base-lane3"
+
+if [ ! -d "$target" ]; then
+  echo "lane3: expected worktree '$target' does not exist -- create it first (see 3-lane-protocol.md's Per-Lane Working Directories), not falling back to the main checkout" >&2
+  exit 1
+fi
+
+cd "$target"
 export LANE=3
 exec systemd-inhibit \
   --what=sleep:idle \
