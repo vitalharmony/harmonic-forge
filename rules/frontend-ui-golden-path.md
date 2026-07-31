@@ -24,6 +24,26 @@ not touch business logic, data contracts, or backend behavior.
    without rendering it does not count.
 4. Same HITL and live-verification standard as the standard path: no
    "Evidence type: Source" pass claims.
+5. **A `net::ERR_*` blocker report must include the entry URL, the full
+   redirect chain, and the response status of every hop — never just the
+   bare error string and originally-requested URL.** Playwright attributes
+   a `net::ERR_*` failure to the URL first navigated to, even when the
+   actual failing hop is several redirects downstream — quoting only that
+   URL is not diagnostic and can send Lane 1 to the wrong layer entirely.
+   Real incident (hrse#500, 2026-07-29): two consecutive Lane 3 FAILs were
+   both attributed to a structurally implausible "network reachability"
+   theory; a sticky-wicket review found the actual refused connection was
+   a different port entirely, reached via a redirect hop triggered by a
+   reused browser context carrying an existing SSO cookie — invisible in
+   the bare error string. Capture `page.url()` at failure and the
+   `redirectedFrom()` chain, not just the exception text.
+6. Gate specs for a page served by a live third-party dependency (e.g. an
+   IdP-hosted login page) must name the exact entry URL and require
+   browser-context hygiene (fresh non-persistent context, no
+   `storageState` reuse) rather than leaving Lane 3 to construct its own
+   entry point — context reuse can silently change page behavior (e.g. an
+   OIDC endpoint skipping its login form because of an existing session
+   cookie), the same root cause named in Rule 5's incident.
 
 **Open item:** the visual-regression tooling itself (Playwright config,
 baseline screenshots) is not yet set up on every project using this variant
