@@ -6,6 +6,11 @@
 # the right place. Proper hygiene is restarting with the right script,
 # never changing lanes mid-session.
 # Sets LANE=3 and inhibits system sleep/idle for the session's lifetime.
+# Defaults to --permission-mode auto (override with LANE_PERMISSION_MODE,
+# e.g. LANE_PERMISSION_MODE=manual lane3). If --permission-mode is
+# already present in "$@", the default is skipped entirely rather than
+# passed twice -- avoids depending on whether Claude Code's CLI parser
+# treats a repeated flag as last-wins or an error.
 set -euo pipefail
 
 if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
@@ -26,9 +31,23 @@ fi
 
 cd "$target"
 export LANE=3
+
+cli_args=("${LANE_CLI:-claude}")
+has_permission_mode=0
+for arg in "$@"; do
+  if [[ "$arg" == "--permission-mode" || "$arg" == --permission-mode=* ]]; then
+    has_permission_mode=1
+    break
+  fi
+done
+if [ "$has_permission_mode" -eq 0 ]; then
+  cli_args+=(--permission-mode "${LANE_PERMISSION_MODE:-auto}")
+fi
+cli_args+=("$@")
+
 exec systemd-inhibit \
   --what=sleep:idle \
   --who="lane3" \
   --why="Lane 3 (gate) Claude Code session" \
   --mode=block \
-  "${LANE_CLI:-claude}" "$@"
+  "${cli_args[@]}"
