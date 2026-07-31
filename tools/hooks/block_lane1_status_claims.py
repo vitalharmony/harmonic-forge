@@ -54,6 +54,17 @@ the calling session's own cwd, the same way the `lane1`/`lane2`/`lane3`
 launcher scripts do (`git rev-parse --show-toplevel`, strip a trailing
 `-lane<N>` suffix) — so this one canonical file works correctly for any
 project, not just HRSE2.
+
+Also denies `Edit`/`Write` calls anywhere outside
+`~/Harmonic_Projects/testplan/` when this process's own `LANE`
+environment variable is `"3"` (harmonic-forge#150) — the first
+mechanical enforcement of Lane 3's "never fixes anything, ever" rule
+for Claude Code sessions, mirroring the hard tool-level enforcement
+Devin has had all along (`.devin/agents/lane3-gate/AGENT.md`) and the
+Codex sandbox profile (`~/.codex/agents/lane3-gate.toml`). Same `LANE`
+mechanism as the Lane 2 guard above, deny-by-default instead of
+deny-one-place, since Lane 3 has no legitimate write target besides
+gate artifacts.
 """
 
 import json
@@ -79,6 +90,7 @@ LANE3_ONLY_TASKS = {"gate-checkout", "gate-restart", "gate-e2e"}
 LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 EDIT_WRITE_TOOLS = {"Edit", "Write"}
 LANE_WORKTREE_SUFFIX = re.compile(r"^(.+)-lane\d+$")
+TESTPLAN_ROOT = (Path.home() / "Harmonic_Projects" / "testplan").resolve()
 
 
 def resolve_main_checkout_root(cwd: Path) -> Path | None:
@@ -270,6 +282,47 @@ def lane2_write_in_main_checkout(file_path: str, cwd: Path) -> bool:
     return False
 
 
+def lane3_write_outside_testplan(file_path: str) -> bool:
+    """True if this hook invocation's own process has LANE=3 (set at
+    session launch by harmonic-forge's `tools/lane/lane3` script,
+    harmonic-forge#150) and file_path resolves OUTSIDE TESTPLAN_ROOT —
+    Lane 3's only legitimate write target, for gate artifacts too large
+    for an issue comment. Mirrors the existing Codex sandbox profile
+    (`~/.codex/agents/lane3-gate.toml`) for Claude Code sessions: this
+    is the first mechanical enforcement of the "never fixes anything,
+    ever" rule for Claude Code, closing a gap Devin has had a hard
+    profile for all along (`.devin/agents/lane3-gate/AGENT.md`).
+
+    Deny-by-default (inverted from `lane2_write_in_main_checkout`, which
+    denies one specific place): Lane 3 has no legitimate write target
+    besides testplan artifacts, so anywhere else is denied. Requires
+    BOTH the lexically-normalized and the symlink-resolved form of the
+    path to fall inside TESTPLAN_ROOT before allowing — a symlink
+    inside testplan pointing outside it must not be usable to escape
+    the boundary. Still fails open (allows) on any path this can't
+    resolve at all, for consistency with this file's non-adversarial
+    posture elsewhere — a path-resolution edge case should not itself
+    lock out a session; it is not a hard security boundary."""
+    if os.environ.get("LANE") != "3":
+        return False
+    if not file_path:
+        return False
+    try:
+        raw = Path(file_path).expanduser()
+        if not raw.is_absolute():
+            raw = Path.cwd() / raw
+        lexical = Path(os.path.normpath(raw))
+        resolved = raw.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    for candidate in (lexical, resolved):
+        try:
+            candidate.relative_to(TESTPLAN_ROOT)
+        except ValueError:
+            return True
+    return False
+
+
 def mask_heredoc_bodies(command: str) -> str:
     """Replace complete heredoc bodies so their prose is not parsed as shell."""
     masked: list[str] = []
@@ -397,6 +450,16 @@ def main() -> None:
                 "dedicated worktree — restart in the project's -lane2 "
                 "worktree or a fresh /tmp/<project>-<issue>-impl worktree, "
                 "not the main checkout."
+            )))
+            return
+        if lane3_write_outside_testplan(file_path):
+            print(json.dumps(denial(
+                "Blocked: this session was launched as Lane 3 (LANE=3) "
+                "and Lane 3 never fixes anything, ever, under any "
+                "circumstance (harmonic-forge#150). The only writable "
+                "path is ~/Harmonic_Projects/testplan/, for gate "
+                "artifacts too large for an issue comment. Record the "
+                "failure and report it for Lane 2 to fix instead."
             )))
             return
         print("{}")
