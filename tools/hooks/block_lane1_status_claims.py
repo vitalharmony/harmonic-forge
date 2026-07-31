@@ -22,11 +22,17 @@ for — caught only because the operator happened to notice before the PR
 merged, not because any guard existed at the time.
 
 Also denies `mise run gate-checkout`/`gate-restart`/`gate-e2e` — categorically
-Lane-3-only per `.devin/skills/lane3-gate/SKILL.md` — unless the current
-worktree has a fresh `LANE3_ACTIVE` marker (written by `mise run
-lane3-begin`, which a session runs once after being briefed as Lane 3 for
-that worktree). Non-adversarial by design, matching this project's existing
-tolerance for self-identification guards: the goal is catching an
+Lane-3-only per `.devin/skills/lane3-gate/SKILL.md`. Three-case `LANE`
+precedence (harmonic-forge#151, restructured from a marker-only check):
+`LANE == "3"` allows outright; `LANE` set to anything else denies
+unconditionally, even with a fresh `LANE3_ACTIVE` marker present (fixes a
+live hole in the original design — a Lane 2 session `cd`d into a `-lane3`
+worktree within the marker's 12h TTL got these tasks allowed, the exact
+harmonic-forge#138 collision class this guard exists to prevent); `LANE`
+unset falls back to the original fresh-marker check (written by `mise run
+lane3-begin`), preserving the escape hatch for sessions not launched via
+the `lane3` wrapper. Non-adversarial by design, matching this project's
+existing tolerance for self-identification guards: the goal is catching an
 accidental role mix-up (confirmed live, harmonic-forge#138 — a Lane 2
 session ran `gate-checkout` directly against a live shared worktree "to
 verify" something, briefly corrupting its state), not stopping a
@@ -216,14 +222,37 @@ def pr_body_autoclose_text(args: list[str], cwd: Path) -> str | None:
 
 
 def lane3_task_without_marker(args: list[str], cwd: Path) -> str | None:
-    """If args invokes a Lane-3-only mise task without a fresh LANE3_ACTIVE
-    marker in the target worktree's git-dir, return the task name. Returns
-    None for every other command, or if a fresh marker is present."""
+    """If args invokes a Lane-3-only mise task and this session isn't
+    cleared to run it, return the task name; otherwise None.
+
+    Three-case LANE precedence (harmonic-forge#151, restructured from the
+    original marker-only check):
+
+    1. LANE == "3" — allow outright, no marker, no `lane3-begin` ritual.
+       Positive evidence of the right role.
+    2. LANE set and != "3" — deny unconditionally, marker ignored even if
+       fresh. This is the actual fix: the old marker-only check had a
+       live hole here — a Lane 2 session that `cd`s into a `-lane3`
+       worktree within the marker's 12h TTL got `gate-checkout` allowed,
+       the exact harmonic-forge#138 collision class this guard exists to
+       prevent. Positive evidence of the *wrong* role must not be
+       overridable by a file the session itself can touch.
+    3. LANE unset — fall back to the original fresh-marker check,
+       unchanged. Preserves the escape hatch for sessions not launched
+       via the `lane3` wrapper (`claude --resume`, an operator-attended
+       run, any future non-wrapped entry point) — LANE unset is genuinely
+       ambiguous, not evidence of the wrong role, so it must not be
+       treated as a hard deny the way case 2 is."""
     if len(args) < 3 or args[0] != "mise" or args[1] != "run":
         return None
     task = args[2]
     if task not in LANE3_ONLY_TASKS:
         return None
+    lane = os.environ.get("LANE")
+    if lane == "3":
+        return None
+    if lane is not None:
+        return task
     git_dir = subprocess.run(
         ["git", "rev-parse", "--absolute-git-dir"],
         cwd=cwd, text=True, capture_output=True, check=False,
@@ -410,6 +439,16 @@ def decision(command: object) -> dict:
             )
         unmarked_task = lane3_task_without_marker(segment, effective_cwd)
         if unmarked_task is not None:
+            lane = os.environ.get("LANE")
+            if lane is not None:
+                return denial(
+                    f"Blocked: {unmarked_task!r} is Lane-3-only, and this "
+                    f"session was launched as Lane {lane} (harmonic-forge#151). "
+                    "Restart it via harmonic-forge's `lane3` script if you "
+                    "genuinely need to run this as Lane 3 — a LANE3_ACTIVE "
+                    "marker cannot override an explicit LANE set to "
+                    "anything else."
+                )
             return denial(
                 f"Blocked: {unmarked_task!r} is Lane-3-only (see its "
                 "`mise.toml` description) and no fresh LANE3_ACTIVE marker "
