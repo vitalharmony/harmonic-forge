@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Launch a Claude Code session as Lane 1 (harmonic-forge#142).
+# Sets LANE=1 and inhibits system sleep/idle for the session's lifetime,
+# so a long unattended run isn't suspended mid-work. --who uses a static
+# app-identity string, not $USER, since --who is meant to name the
+# application (and $USER isn't guaranteed present in every invocation
+# context under `set -u`).
+set -euo pipefail
+export LANE=1
+exec systemd-inhibit \
+  --what=sleep:idle \
+  --who="lane1" \
+  --why="Lane 1 Claude Code session" \
+  --mode=block \
+  "${LANE_CLI:-claude}" "$@"

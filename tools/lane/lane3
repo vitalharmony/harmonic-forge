@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Launch a Claude Code session as Lane 3 (gate) (harmonic-forge#142).
+# Sets LANE=3 and inhibits system sleep/idle for the session's lifetime.
+set -euo pipefail
+export LANE=3
+exec systemd-inhibit \
+  --what=sleep:idle \
+  --who="lane3" \
+  --why="Lane 3 (gate) Claude Code session" \
+  --mode=block \
+  "${LANE_CLI:-claude}" "$@"
