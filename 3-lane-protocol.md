@@ -273,6 +273,29 @@ mutation (two lanes can still collide applying to the same live cluster
 at the same time) — Lane 3's read-only-except-human-attended-mutations
 boundary already covers that risk separately.
 
+## Per-Lane Worktree Reuse Across Issues — Check Before You Checkout
+
+Per-lane isolation (above) is per-*lane*, not per-*issue*: `<repo>-lane3/`
+is a single fixed directory reused sequentially across every issue Lane 3
+gates. Nothing stops a second actor from checking out a *different*
+branch into that same directory while a live process (dev server, running
+test) from the first actor's session still has its cwd there — `git
+worktree` only blocks checking out the same branch twice, not a different
+one (harmonic-forge#137, real incident hrse#439, 2026-07-30: a second
+session checked out and rebased a different issue's branch in
+`HRSE2-lane3` while Lane 3 was actively gating hrse#439 there, disrupting
+the live gate).
+
+**Before switching branches in a shared per-lane worktree, check for live
+processes with cwd inside it.** `gate-checkout` does this automatically
+(`tools/worktree/check_worktree_busy.py`, walking `/proc/*/cwd`) and
+refuses the checkout if anything other than the caller's own process tree
+is running there — always use `mise run gate-checkout <branch>` for this,
+never a bare `git checkout`/`git rebase` in a shared lane worktree. If it
+refuses: wait, ask the operator, or do prep work (rebase, conflict
+resolution) in a disposable scratch worktree (e.g. `/tmp/<repo>-<issue>-prep`)
+instead, only touching the shared lane worktree once it's confirmed idle.
+
 ## Shared Working Directory — Commit Before You Yield
 
 Worktree isolation (above) prevents *cross-lane* directory collisions, but
