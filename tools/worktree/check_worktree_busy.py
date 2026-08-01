@@ -9,6 +9,18 @@ server or live test is still running yanks branch/process state out from
 under whatever's in progress, with no error to signal it happened. This
 script is the guard: exit 1 (and print who's running) if anything other
 than the caller's own process tree has its cwd inside the target worktree.
+
+harmonic-forge#162: ancestor-only exclusion false-positives on two classes
+of legitimate same-session process that are never an ancestor of the
+calling Bash command: (1) session-wide MCP tooling (e.g. workspace-mcp)
+spawned once at Claude Code startup, and (2) deliberately-detached dev
+services launched via `systemd-run --user` (hrse#459) specifically to
+survive a Bash call's cgroup being collected. Both are legitimately
+excludable because `LANE` (harmonic-forge#142) is inherited by (1)
+through normal process ancestry from the wrapping `lane1/2/3` script, and
+can be explicitly propagated into (2) via `--setenv`. A process whose own
+environment carries the same LANE value as the caller is treated as part
+of the same session and excluded, regardless of ancestry.
 """
 
 from __future__ import annotations
@@ -17,6 +29,18 @@ import argparse
 import os
 import sys
 from pathlib import Path
+
+
+def read_lane(pid: int) -> str | None:
+    """Return the LANE env var of `pid`, or None if unreadable/unset."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    for entry in raw.split(b"\0"):
+        if entry.startswith(b"LANE="):
+            return entry[len(b"LANE="):].decode(errors="replace")
+    return None
 
 
 def ancestor_pids(pid: int) -> set[int]:
@@ -40,7 +64,7 @@ def ancestor_pids(pid: int) -> set[int]:
     return ancestors
 
 
-def busy_pids(worktree: Path, exclude: set[int]) -> list[tuple[int, str]]:
+def busy_pids(worktree: Path, exclude: set[int], caller_lane: str | None) -> list[tuple[int, str]]:
     worktree = worktree.resolve()
     found: list[tuple[int, str]] = []
     for entry in Path("/proc").iterdir():
@@ -48,6 +72,8 @@ def busy_pids(worktree: Path, exclude: set[int]) -> list[tuple[int, str]]:
             continue
         pid = int(entry.name)
         if pid in exclude:
+            continue
+        if caller_lane and read_lane(pid) == caller_lane:
             continue
         try:
             cwd = Path(os.readlink(entry / "cwd"))
@@ -75,7 +101,8 @@ def main() -> int:
         return 2
 
     exclude = ancestor_pids(os.getpid())
-    found = busy_pids(worktree, exclude)
+    caller_lane = os.environ.get("LANE") or None
+    found = busy_pids(worktree, exclude, caller_lane)
 
     if found:
         print(
