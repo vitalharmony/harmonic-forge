@@ -36,6 +36,23 @@ the evidence and hand off to Lane 3; do not call a formal test pass, merge, or
 close the issue. No lane closes or merges an issue: only the operator's
 explicit `Close H<N>` / `Close F<N>` instruction authorizes closure.
 
+## Post-merge worktree cleanup (harmonic-forge#131)
+
+When the operator's explicit instruction authorizes a merge, worktree
+cleanup is a mandatory step right after merging and before closing the
+issue: run `git worktree list`, and if any worktree (a Lane 2 dedicated
+per-issue scratch checkout, or a shared lane2/lane3 worktree) is still
+checked out on the branch just merged, confirm it's clean (`git status
+--short` empty) and remove or detach it. Never touch a worktree with
+uncommitted changes, and never touch one on a branch that hasn't
+actually merged. This closes a real, recurring friction: a stray
+worktree left parked on an already-merged branch repeatedly blocks the
+sibling-branch-overlap check in `l1_post.py`'s
+`active_worktree_branches()` for the *next* issue's readiness check,
+each time costing a manual diagnosis-and-fix round-trip (hit 3+ times
+in one session, hrse#490/#500/#511; recurred again the same night as
+this fix, hrse#566/#575/#578).
+
 ## APQ protocol
 
 For non-trivial research or multi-step work, Align → Plan → Question before
