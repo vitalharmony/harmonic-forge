@@ -40,7 +40,7 @@ for arg in "$@"; do
     break
   fi
 done
-if [ "$has_permission_mode" -eq 0 ]; then
+if [ "$has_permission_mode" -eq 0 ] && [[ "${LANE_CLI:-claude}" == claude* ]]; then
   cli_args+=(--permission-mode "${LANE_PERMISSION_MODE:-auto}")
 fi
 cli_args+=("$@")
