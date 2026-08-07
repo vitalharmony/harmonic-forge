@@ -95,6 +95,27 @@ for the UI-only variant.
      trusting prose that live execution happened — the same
      verify-live-not-source discipline applied one level up, to the gate
      report itself.
+   - **A designated, disposable test-identity's own auth token is
+     sanctioned live-execution proof for a TC whose acceptance criterion
+     is backend behavior, not the login flow itself** — Lane 3 does not
+     need a spec amendment or fresh HITL approval to use one (HRSE2
+     hrse#603, after Lane 3 correctly declined to improvise a bypass of
+     the sanctioned auth flow on hrse#598 absent explicit spec cover).
+     Concretely: if a project provisions a fixture like a designated
+     `*_TEST_USER`/`*_TEST_PASSWORD` pair and a script that trades it for
+     a bearer token (see HRSE2's `scripts/get_test_token.py` and its
+     `.windsurfrules` pointer for a worked instance), a TC that asserts
+     "endpoint X behaves correctly given a valid authenticated caller" is
+     satisfied by that token directly — no separate proof that the token
+     came from the real login/PKCE/SSO UI flow is required, because the
+     application code under test cannot tell the difference and doesn't
+     claim to care. This does **not** extend to any TC whose acceptance
+     criterion *is* the login/auth flow itself (a browser SSO/PKCE/OAuth
+     UI test, or anything verifying the identity-provider round trip) —
+     those still require the real flow, unaffected by this carve-out. The
+     credential side stays narrow too: only a credential the project has
+     explicitly designated disposable/test-only qualifies — never a real
+     user's credential, never anything resembling a production identity.
 5. If tests fail, Lane 3 may attempt up to 3 auto-fixes **of its own test
    spec/fixtures** (a bad assertion, a stale fixture, a wrong selector) — 
    **never of the application code under test.** A 4th consecutive failure
