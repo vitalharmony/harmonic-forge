@@ -473,7 +473,7 @@ def decision(command: object) -> dict:
     return denial(
             "Blocked: raw GitHub issue posting bypasses the Lane 1 capability "
             "wrappers. Use `mise run l1-post` for a protocol artifact or "
-            "`mise run l1-comment` for ordinary discussion (hrse#457). This "
+            "`mise run lane-comment` for ordinary discussion (hrse#457). This "
             "restriction is Lane-1-specific (harmonic-forge#190) — Lane 2/3 "
             "sessions (`LANE=2`/`LANE=3`) may post their own results directly."
     )
