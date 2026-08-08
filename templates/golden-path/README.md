@@ -36,7 +36,7 @@ fallback.
 
 `mise run check` runs the verification gate (backend typecheck, frontend
 build, whatever your project's actual checks are) — **before** any commit
-that bumps/pushes, never after. `rules/universal-claude.md`'s Verification
+that bumps/pushes, never after. `rules/universal-lane1.md`'s Verification
 Standard governs what counts as a real PASS here.
 
 ## Why each piece looks the way it does — read before changing the shape

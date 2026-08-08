@@ -51,7 +51,7 @@ this platform's own authoring tool.
   first-pass-success correlation), not just a courtesy copy.
 - Never guesses at an ambiguous spec — stops and asks the Tech Lead.
 - Does not write production code directly (exception: explicit platform/
-  tooling assignments — see `rules/universal-claude.md`).
+  tooling assignments — see `rules/universal-lane1.md`).
 
 ## Lane 2 — Muscle (reference tool: Devin Local)
 
@@ -579,10 +579,9 @@ themselves. Full incident and decision record:
    tooling work regardless of where the file lives.
 
 This is the project-level analog of the platform-tooling exception in
-`rules/universal-claude.md` ("platform-level tooling and documentation
-work explicitly scoped as such by the operator... may be assigned directly
-to Claude Code"), and carries the same posture: explicit, per-issue, never
-assumed.
+`rules/universal-lane1.md` ("The operator may scope platform-level
+tooling/documentation work directly to Claude Code."), and carries the
+same posture: explicit, per-issue, never assumed.
 
 **Process under the exception:**
 - **Single implementer.** One agent (whichever lane the operator assigns,

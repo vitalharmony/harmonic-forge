@@ -46,9 +46,10 @@ separate cloud-dispatched agent in this architecture. This matters for the
 gate design: Lane 3 needs the same local repo/issue access as Lanes 1 and 2,
 nothing more exotic.
 
-See `rules/universal-agent.md` and `rules/universal-claude.md` for the full
-directive set each lane operates under, and `rules/testing-gate.md` /
-`rules/frontend-ui-golden-path.md` for Lane 3's pass/fail thresholds.
+See `rules/universal-agent.md`, `rules/universal-lane1.md`, and
+`rules/universal-claude.md` for the full directive set each lane operates
+under, and `rules/testing-gate.md` / `rules/frontend-ui-golden-path.md`
+for Lane 3's pass/fail thresholds.
 
 **Lane 3 also has its own local directives file**, outside this repo and not
 synced by `sync_rules.py`: `~/.config/devin/AGENTS.md` (machine-specific,
@@ -104,7 +105,8 @@ harmonic-forge/
 ├── .gitignore
 ├── prompts/                        # Gemini Gem / external-tool prompt templates
 ├── rules/
-│   ├── universal-claude.md         # universal CLAUDE.md directives (all projects)
+│   ├── universal-lane1.md          # role-general Lane 1 directives (all projects)
+│   ├── universal-claude.md         # Claude-Code-CLI mechanics for Lane 1 (all projects)
 │   ├── universal-agent.md          # universal .windsurfrules directives (all projects)
 │   ├── backend-python.md           # universal backend guardrails
 │   ├── frontend-typescript.md      # universal frontend guardrails
