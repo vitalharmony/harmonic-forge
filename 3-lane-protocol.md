@@ -396,8 +396,12 @@ of the same root cause in one session — this is a pattern, not bad luck.
 
 ## HITL Gate Language
 
-Lane 1 (Claude Code) and Lane 3 (Devin AA) can both post directly to the
-GitHub issue thread — confirmed working in practice. This lets the human
+Lane 2 and Lane 3 sessions (either CLI) post their own results directly to
+the GitHub issue thread; Lane 1 (or a session with no `LANE` set) routes
+through `mise run l1-post`/`l1-comment` instead (harmonic-forge#190/#191 —
+before that fix, Codex Lane 3 always posted directly while Claude Lane 3
+was unconditionally blocked, an accidental asymmetry, not a design). This
+lets the human
 operator (HITL) drive the loop with short, canonical trigger phrases
 instead of relaying pasted content between tools. Every trigger names the
 issue explicitly (`#N`) — multiple issues can be in flight at once, and an
