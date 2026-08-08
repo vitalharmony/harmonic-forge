@@ -25,7 +25,15 @@ regardless of which specific tool is filling Lane 2 or Lane 3 on a given
 session. Only Lane 1 (Claude Code) is fixed by name in this doc, since it's
 this platform's own authoring tool.
 
-## Lane 1 — Claude Code (Blueprint)
+## Lane 1 — Blueprint (reference tool: Claude Code)
+
+*Claude Code is the reference implementation this section is written
+against — an operator assigning a different tool to Lane 1 follows the
+same requirements below, via that tool's own equivalent mechanism where
+a Claude-Code-specific file/path is named. See `rules/universal-lane1.md`
+(role-general Lane 1 directives) and `rules/universal-claude.md`
+(Claude-Code-CLI mechanics) for the deeper directive set this section
+summarizes.*
 
 - Reads the GitHub issue (spec, acceptance criteria, labels).
 - Maps required changes against the project's `CLAUDE.md`/`.windsurfrules`.
