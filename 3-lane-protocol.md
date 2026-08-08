@@ -6,26 +6,36 @@ Condensed operational directives. For philosophy/rationale, see
 ```
 [GitHub Issue] → Dev pulls ticket → [Local 3-Lane Loop] → GitHub PR
                                        │
-                                 Lane 1: Claude Code (Blueprint)
+                                 Lane 1: Blueprint — operator-assigned tool
                                  Lane 2: Muscle — operator-assigned tool
                                  Lane 3: Control Gate — operator-assigned tool
 ```
 
-**Lanes are roles, not fixed tools.** Lane 2 and Lane 3 are each filled by
-whichever tool the operator running that session assigns — Devin Local /
+**Lanes are roles, not fixed tools.** All three lanes are filled by
+whichever tool the operator running that session assigns. Devin Local /
 Devin AA is the reference pairing this doc was originally written against
-and stays the default example throughout, but Codex (assignable to either
-Lane 2 or Lane 3 per issue — see the operator's own project rules file,
-e.g. `.windsurfrules`, for the exact trigger phrasing) is a second live
-example. Different collaborators (see Team Topology below) will likely
-bring their own tool preferences for these roles — the protocol's actual
-requirements (independent-eyes gating, no lane closes/merges on its own,
-HITL-gate language, etc.) are tool-agnostic and apply identically
-regardless of which specific tool is filling Lane 2 or Lane 3 on a given
-session. Only Lane 1 (Claude Code) is fixed by name in this doc, since it's
-this platform's own authoring tool.
+for Lane 2/Lane 3 and stays the default example throughout, but Codex
+(assignable to either Lane 2 or Lane 3 per issue — see the operator's own
+project rules file, e.g. `.windsurfrules`, for the exact trigger phrasing)
+is a second live example. Claude Code is Lane 1's reference/default
+implementation — this platform's own authoring tool — but is not fixed by
+name; an operator may assign a different tool to Lane 1 via that tool's
+own equivalent mechanism (see § Lane 1 below). Different collaborators
+(see Team Topology below) will likely bring their own tool preferences
+for these roles — the protocol's actual requirements (independent-eyes
+gating, no lane closes/merges on its own, HITL-gate language, etc.) are
+tool-agnostic and apply identically regardless of which specific tool is
+filling any lane on a given session.
 
-## Lane 1 — Claude Code (Blueprint)
+## Lane 1 — Blueprint (reference tool: Claude Code)
+
+*Claude Code is the reference implementation this section is written
+against — an operator assigning a different tool to Lane 1 follows the
+same requirements below, via that tool's own equivalent mechanism where
+a Claude-Code-specific file/path is named. See `rules/universal-lane1.md`
+(role-general Lane 1 directives) and `rules/universal-claude.md`
+(Claude-Code-CLI mechanics) for the deeper directive set this section
+summarizes.*
 
 - Reads the GitHub issue (spec, acceptance criteria, labels).
 - Maps required changes against the project's `CLAUDE.md`/`.windsurfrules`.
