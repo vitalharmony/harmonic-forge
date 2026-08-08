@@ -42,7 +42,7 @@ def main() -> None:
         print("{}")
         return
     command = (payload.get("tool_input") or {}).get("command", "")
-    if "mise run l1-comment" not in command and "post_lane1_discussion.py" not in command:
+    if "mise run lane-comment" not in command and "post_lane_discussion.py" not in command:
         print("{}")
         return
     file_arg = find_file_arg(command)
