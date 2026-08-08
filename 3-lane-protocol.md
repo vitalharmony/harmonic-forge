@@ -408,7 +408,7 @@ of the same root cause in one session — this is a pattern, not bad luck.
 
 Lane 2 and Lane 3 sessions (either CLI) post their own results directly to
 the GitHub issue thread; Lane 1 (or a session with no `LANE` set) routes
-through `mise run l1-post`/`l1-comment` instead (harmonic-forge#190/#191 —
+through `mise run l1-post`/`lane-comment` instead (harmonic-forge#190/#191/#193 —
 before that fix, Codex Lane 3 always posted directly while Claude Lane 3
 was unconditionally blocked, an accidental asymmetry, not a design). This
 lets the human
