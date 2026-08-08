@@ -436,6 +436,14 @@ space-separated (`L3F H26`), not concatenated (`L3FH26`) — concatenating
 collides visually whenever the result letter and repo letter are both
 `F` (Fail + harmonic-**F**orge).
 
+`AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
+TCs in an already-approved test spec, distinct from approving the spec's
+content (that's the `L3S` → HITL-approval step itself). Like every other
+trigger phrase in this section, `AE` must be posted as an actual issue
+comment, not only said to Lane 1 in chat — Lane 3 verifies it
+independently on the thread before executing any TC, exactly as it
+already verifies the gate-readiness sweep.
+
 **Before acting on any trigger, the receiving lane checks the issue's
 state.** If `#N` is already closed, stop and ask HITL to confirm the
 number before doing anything — don't proceed on the assumption a closed
