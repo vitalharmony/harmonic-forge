@@ -66,11 +66,16 @@ Also denies `Edit`/`Write` calls anywhere outside
 environment variable is `"3"` (harmonic-forge#150) — the first
 mechanical enforcement of Lane 3's "never fixes anything, ever" rule
 for Claude Code sessions, mirroring the hard tool-level enforcement
-Devin has had all along (`.devin/agents/lane3-gate/AGENT.md`) and the
-Codex sandbox profile (`~/.codex/agents/lane3-gate.toml`). Same `LANE`
-mechanism as the Lane 2 guard above, deny-by-default instead of
-deny-one-place, since Lane 3 has no legitimate write target besides
-gate artifacts.
+Devin has had all along (`.devin/agents/lane3-gate/AGENT.md`). This
+Claude-Code-side hook has no true Codex-side mechanical counterpart for
+general file-write scoping — `~/.codex/agents/lane3-gate.toml` is a
+subagent-spawn config, never applied to a real top-level Lane 3 session
+(confirmed live, harmonic-forge#184); Codex's actual working mechanism
+(harmonic-forge#152) covers command-shaped mutations via `PreToolUse`,
+a narrower scope than the general file-write deny this hook implements
+for Claude Code. Same `LANE` mechanism as the Lane 2 guard above,
+deny-by-default instead of deny-one-place, since Lane 3 has no
+legitimate write target besides gate artifacts.
 """
 
 import json
@@ -316,11 +321,14 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
     session launch by harmonic-forge's `tools/lane/lane3` script,
     harmonic-forge#150) and file_path resolves OUTSIDE TESTPLAN_ROOT —
     Lane 3's only legitimate write target, for gate artifacts too large
-    for an issue comment. Mirrors the existing Codex sandbox profile
-    (`~/.codex/agents/lane3-gate.toml`) for Claude Code sessions: this
-    is the first mechanical enforcement of the "never fixes anything,
-    ever" rule for Claude Code, closing a gap Devin has had a hard
-    profile for all along (`.devin/agents/lane3-gate/AGENT.md`).
+    for an issue comment. This is the first mechanical enforcement of the
+    "never fixes anything, ever" rule for Claude Code, closing a gap
+    Devin has had a hard profile for all along
+    (`.devin/agents/lane3-gate/AGENT.md`). Codex has no true equivalent
+    for general file-write scoping — `~/.codex/agents/lane3-gate.toml` is
+    a subagent-spawn config, never applied to a real top-level Lane 3
+    session (harmonic-forge#184); Codex's actual working mechanism
+    (harmonic-forge#152) only covers command-shaped mutations.
 
     Deny-by-default (inverted from `lane2_write_in_main_checkout`, which
     denies one specific place): Lane 3 has no legitimate write target
