@@ -34,9 +34,10 @@ universes**. This is intentional, not an oversight:
   screenshot comparison, 100% component smoke-test pass, no unit-test
   requirement for tickets that are genuinely UI-only.
 - The universal rules (`../rules/universal-agent.md`,
-  `../rules/universal-claude.md`, `../rules/frontend-typescript.md`) apply
-  the same way they do on HRSE2 — same 300-line cap, same "no raw fetch(),
-  one designated HTTP client module" rule, same "no `any`" rule.
+  `../rules/universal-lane1.md`, `../rules/universal-claude.md`,
+  `../rules/frontend-typescript.md`) apply the same way they do on
+  HRSE2 — same 300-line cap, same "no raw fetch(), one designated HTTP
+  client module" rule, same "no `any`" rule.
 
 ## What's Still Unknown — Fill In Before This Doc Is Complete
 

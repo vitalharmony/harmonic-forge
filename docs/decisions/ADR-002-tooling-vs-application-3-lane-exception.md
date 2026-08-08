@@ -87,7 +87,7 @@ Two changes, both directly from the `sticky-wicket` analysis in step 6:
    tooling's first consequential use (for #224, that's the compare-mode
    run at #235/#236/#237), not on every authoring round. The exception is
    explicit and per-issue, modeled on the existing platform-tooling
-   exception in `rules/universal-claude.md`, and does not default open.
+   exception in `rules/universal-lane1.md`, and does not default open.
 3. **The `sticky-wicket` auto-trigger is lowered from 3 to 2 consecutive
    FAIL/declined-completion rounds** on the same issue — by round 3 in
    #233 the pattern was already fully visible in hindsight; firing one
