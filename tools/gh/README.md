@@ -89,6 +89,11 @@ than retry-looping, and reuse one `item-list` fetch across multiple field
 writes rather than re-fetching per field (see `_fetch_project_context()` in
 `gh_issue.py` and the on-disk cache in `../hooks/model_tier_gate.py`).
 
+**Tradeoff:** `model_tier_gate.py`'s 120s cache means a mid-lane
+re-estimation crossing its threshold can be missed for up to that TTL —
+accepted as bounded and strictly better than the unbounded gap fail-open
+already tolerates (e.g. `gh` unavailable entirely).
+
 ## What this does not cover
 
 - Which repo/board a project uses — that's the one thing every project

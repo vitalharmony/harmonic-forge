@@ -36,6 +36,13 @@ THRESHOLD = 8
 # fetch. 120s is short enough that a mid-session re-estimation is picked up
 # within about two minutes, long enough to absorb dozens of Edit/Write
 # calls in a normal burst.
+#
+# Known tradeoff (harmonic-forge#202's own guarantee, narrowed slightly):
+# a mid-lane re-estimation that crosses the >= 8 threshold can be silently
+# missed by the gate for up to this TTL after the board write. Accepted as
+# the cost of the burst-collapse -- fail-open already tolerates larger,
+# unbounded gaps (missing gh entirely), so a bounded ~2min window is a
+# strict improvement, not a new class of risk.
 _CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
 _CACHE_TTL = 120
 
