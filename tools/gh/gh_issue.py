@@ -42,7 +42,56 @@ def create_issue(repo: str, title: str, body: str, labels: list[str]) -> str | N
     return issue_url
 
 
-def add_to_board(issue_url: str, project_owner: str, project_number: str) -> bool:
+def _set_estimate(item_id: str, project_owner: str, project_number: str, estimate: float) -> bool:
+    view_result = _run(
+        ["gh", "project", "view", project_number, "--owner", project_owner, "--format", "json"],
+        check=False,
+    )
+    if view_result.returncode != 0:
+        print(f"[GH] project view failed:\n{view_result.stderr}", file=sys.stderr)
+        return False
+    try:
+        project_id = json.loads(view_result.stdout)["id"]
+    except (json.JSONDecodeError, KeyError) as exc:
+        print(f"[GH] Could not parse project id: {exc}", file=sys.stderr)
+        return False
+
+    fields_result = _run(
+        ["gh", "project", "field-list", project_number, "--owner", project_owner, "--format", "json"],
+        check=False,
+    )
+    if fields_result.returncode != 0:
+        print(f"[GH] field-list failed:\n{fields_result.stderr}", file=sys.stderr)
+        return False
+    try:
+        fields = json.loads(fields_result.stdout)["fields"]
+    except (json.JSONDecodeError, KeyError) as exc:
+        print(f"[GH] Could not parse field list: {exc}", file=sys.stderr)
+        return False
+
+    estimate_field = next((f for f in fields if f.get("name") == "Estimate"), None)
+    if estimate_field is None:
+        print("[GH] No 'Estimate' field found on the project", file=sys.stderr)
+        return False
+
+    edit_result = _run(
+        [
+            "gh", "project", "item-edit",
+            "--project-id", project_id,
+            "--id", item_id,
+            "--field-id", estimate_field["id"],
+            "--number", str(estimate),
+        ],
+        check=False,
+    )
+    if edit_result.returncode != 0:
+        print(f"[GH] Setting Estimate failed:\n{edit_result.stderr}", file=sys.stderr)
+        return False
+    print(f"[GH] Set Estimate = {estimate}")
+    return True
+
+
+def add_to_board(issue_url: str, project_owner: str, project_number: str, estimate: float | None) -> bool:
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
     # last on a large board).
@@ -70,6 +119,12 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str) -> boo
         return False
 
     print(f"[GH] Set Status = {STATUS_OPTION_NAME}")
+
+    if estimate is not None:
+        if not _set_estimate(item_id, project_owner, project_number, estimate):
+            print("[GH] Warning: could not set Estimate — item was added but needs manual triage", file=sys.stderr)
+            return False
+
     return True
 
 
@@ -144,6 +199,11 @@ def main() -> int:
         "--project-number", default=os.environ.get("GH_PROJECT_NUMBER"),
         help="Project board number (default: $GH_PROJECT_NUMBER). Omit both to skip board-add entirely.",
     )
+    parser.add_argument(
+        "--estimate", type=float, default=None,
+        help="Story-point estimate to write to the board's Estimate field "
+             "(harmonic-forge#202) — no-op if no project board is configured.",
+    )
     args = parser.parse_args()
 
     print(f"[GH] Creating issue in {args.repo}")
@@ -158,7 +218,7 @@ def main() -> int:
               "$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER not set) — skipping board-add.")
         return 0
 
-    return 0 if add_to_board(issue_url, args.project_owner, args.project_number) else 1
+    return 0 if add_to_board(issue_url, args.project_owner, args.project_number, args.estimate) else 1
 
 
 if __name__ == "__main__":
