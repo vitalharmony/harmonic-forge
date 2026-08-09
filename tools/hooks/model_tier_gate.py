@@ -143,13 +143,12 @@ def required_tier_met(payload: dict, high_required: bool) -> bool:
     return is_high if high_required else True
 
 
-def main() -> None:
+def _main() -> None:
     if os.environ.get("LANE_MODEL"):
         _allow()  # explicit operator override
 
-    try:
-        payload = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
+    payload = json.loads(sys.stdin.read())
+    if not isinstance(payload, dict):
         _allow()
 
     tool_name = payload.get("tool_name")
@@ -174,6 +173,21 @@ def main() -> None:
         f"-- harmonic-forge#202 requires the high-tier model for this work. "
         f"Run `{switch_cmd}` and retry, or set LANE_MODEL to override."
     )
+
+
+def main() -> None:
+    # This must never wedge a lane over its own telemetry breaking -- any
+    # unexpected exception (missing `git` on PATH, a malformed payload
+    # shape, etc.) falls through to allow rather than crashing the hook
+    # process, which would otherwise deny-by-side-effect (a nonzero exit
+    # with no permissionDecision is not the same as an explicit allow, and
+    # differs by host). Found live, harmonic-forge#202 verification pass.
+    try:
+        _main()
+    except SystemExit:
+        raise
+    except Exception:
+        _allow()
 
 
 if __name__ == "__main__":
