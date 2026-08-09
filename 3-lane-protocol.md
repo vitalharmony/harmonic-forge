@@ -294,9 +294,14 @@ the bare `<project>` checkout, `lane2`/`lane3` into `<project>-lane2`/
 `-lane3`, refusing to launch (not falling back to the main checkout) if
 that worktree doesn't exist yet; sets the `LANE` environment variable
 (see below); wraps the session in `systemd-inhibit --what=sleep:idle` so
-a long batched or unattended run isn't suspended mid-work; and defaults
+a long batched or unattended run isn't suspended mid-work; and, **for
+Claude-family CLIs only** (`LANE_CLI` unset or starting with `claude` —
+confirmed live, `tools/lane/lane3` line 43, harmonic-forge#179), defaults
 to `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or
-pass `--permission-mode` explicitly). **Proper hygiene is restarting the
+pass `--permission-mode` explicitly). A non-Claude `LANE_CLI` (e.g.
+`codex`) never receives this flag injection — it broke Codex's own CLI
+argument parsing before harmonic-forge#179 qualified the condition.
+**Proper hygiene is restarting the
 session with the right script, never redirecting a running session into
 a different lane role mid-conversation** — `LANE` is fixed for a
 process's entire lifetime by design (see below), so there is nothing a
@@ -307,13 +312,19 @@ running session could do to change it even if asked to.
 `LANE` is a real OS-level environment variable, set once by the launcher
 script at process launch, inherited by that session's entire subprocess
 tree — including every `PreToolUse` hook subprocess Claude Code spawns
-for that session (verified live, harmonic-forge#142). Project hooks read
-it directly (e.g. HRSE2's `scripts/block_lane1_status_claims.py`,
+for that session (verified live, harmonic-forge#142), and, separately,
+every hook subprocess Codex spawns for its own sessions via its own
+`shell-LANE=3`-style propagation path (verified live, harmonic-forge#148
+— Claude Code and Codex each inherit `LANE` into their subprocess trees,
+by their own separate mechanisms, not one shared implementation). Project
+hooks read it directly (e.g. HRSE2's `scripts/block_lane1_status_claims.py`,
 canonicalized at `harmonic-forge/tools/hooks/`, harmonic-forge#149) to
 mechanically enforce lane-specific constraints: denying Lane 2 writes
 into the main checkout (harmonic-forge#142), denying Lane 3 writes
-outside `~/Harmonic_Projects/testplan/` (harmonic-forge#150), and gating
-the `gate-*` mise tasks (harmonic-forge#151).
+outside `~/Harmonic_Projects/testplan/` (harmonic-forge#150), gating the
+`gate-*` mise tasks (harmonic-forge#151), and gating Codex's own
+`scripts/gate_codex_tool.py`'s `mise run gate-*` dispatch on the same
+`LANE` signal (harmonic-forge#152, extended by harmonic-forge#190).
 
 **What `LANE` is not**: not adversarial, not a hard security boundary,
 not inferred from conversation text, and not something a session
