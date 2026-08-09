@@ -426,15 +426,23 @@ ambiguous the moment both repos happen to have an open issue with the same
 number — a real incident, HRSE2 2026-07-18: a status update named `#26`
 with no prefix, and the two repos' issue `#26`s were entirely unrelated
 work. Prefix the number with the repo: `H<N>` = `vitalharmony/hrse`#N,
-`F<N>` = `vitalharmony/harmonic-forge`#N. Applies to every trigger word in
-this section — "Implement H26", "Test F26", "Plan-first F58",
-"Reimplement H313" — the trigger vocabulary itself is unchanged, only the
-issue reference is disambiguated.
+`F<N>` = `vitalharmony/harmonic-forge`#N, `I<N>` =
+`vitalharmony/cymagraph-infra`#N (added 2026-08-08 — cymagraph-infra-
+specific issues, tenant provisioning, tofu/doctl wrappers, infra bugs,
+file on that repo's own tracker rather than harmonic-forge; harmonic-forge
+stays scoped to cross-project platform tooling). Applies to every trigger
+word in this section — "Implement H26", "Test F26", "Plan-first F58",
+"Reimplement H313", "Test I253" — the trigger vocabulary itself is
+unchanged, only the issue reference is disambiguated. Note: unlike `hrse`
+and `harmonic-forge`, `cymagraph-infra` has no dedicated Projects v2 board
+and is not tracked by `docs/PRIORITIES.md`'s board-sync (as of this
+writing) — `I<N>` issues are cross-referenced only from an `H`/`F` entry
+that depends on one, not sequenced directly.
 
 **Universal, not just for triggers (extended 2026-07-19).** Every issue
 reference — a status update, a summary, a plain mention in a comment or
-in chat, not only the trigger phrases above — carries the `H`/`F` prefix,
-always, with no "obviously which repo from context" exception. HITL
+in chat, not only the trigger phrases above — carries the `H`/`F`/`I`
+prefix, always, with no "obviously which repo from context" exception. HITL
 often relays an agent's own issue references directly into commands sent
 to other lanes; an unprefixed number forces HITL to disambiguate it
 first, which defeats the convention's purpose. "Closed #313" is wrong;
