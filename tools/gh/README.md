@@ -58,6 +58,37 @@ A project without a board simply omits `GH_PROJECT_OWNER`/
 `GH_PROJECT_NUMBER` — `gh_issue.py` prints a notice and skips that step
 rather than failing.
 
+## GraphQL vs REST quota (harmonic-forge#203)
+
+`gh`'s API access splits across **two separate 5000/hr quotas** —
+`gh api rate_limit --jq '.resources.core, .resources.graphql'` shows both.
+Draining one does not touch the other.
+
+- **REST (`.resources.core`)**: issue/comment reads and writes
+  (`gh api repos/{owner}/{repo}/issues ...`). Per-request cost, cheap and
+  predictable.
+- **GraphQL (`.resources.graphql`)**: `gh project *` — Status/Priority/
+  Sequence/Estimate field reads and writes. **Cost-based, not
+  per-request** — GitHub bills by query complexity/node count, confirmed
+  live: a single `gh project item-list --limit 1000` fetching hundreds of
+  items with nested fields can burn hundreds-to-thousands of points in one
+  call, enough to fully drain the quota from a handful of calls. Projects
+  v2 has **no REST equivalent** — every board touch is GraphQL, there is
+  no escape hatch for board operations themselves.
+- **`gh issue create` (the CLI subcommand) also uses GraphQL internally**,
+  even though issue creation is REST-capable — found live when it failed
+  with a GraphQL rate-limit error while the REST quota sat untouched.
+  `create_issue()` in `gh_issue.py` calls `gh api -X POST` directly
+  instead, for exactly this reason.
+
+If you hit `GraphQL: API rate limit already exceeded`: REST reads (issue
+bodies, comments) are almost certainly still available — check
+`.resources.core` before assuming you're fully blocked. If you must keep
+writing to a board, throttle (short sleep between `item-edit` calls) rather
+than retry-looping, and reuse one `item-list` fetch across multiple field
+writes rather than re-fetching per field (see `_fetch_project_context()` in
+`gh_issue.py` and the on-disk cache in `../hooks/model_tier_gate.py`).
+
 ## What this does not cover
 
 - Which repo/board a project uses — that's the one thing every project
