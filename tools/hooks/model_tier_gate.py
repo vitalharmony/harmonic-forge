@@ -15,13 +15,36 @@ Wired identically for Claude Code (Edit|Write matcher) and Codex
 stdin, confirmed live 2026-08-09 (harmonic-forge#202 comments).
 """
 
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
+from pathlib import Path
 
 THRESHOLD = 8
+
+# harmonic-forge#203: `gh project item-list --limit 1000` is the single most
+# expensive call this hook makes (GitHub's GraphQL limiting is cost-based on
+# query complexity/node count, confirmed live -- a handful of these calls
+# fully drained a 5000-point quota). This hook runs as a fresh process on
+# every single code-writing tool call, so an in-process cache is useless;
+# a short-TTL on-disk cache collapses a whole editing burst into one real
+# fetch. 120s is short enough that a mid-session re-estimation is picked up
+# within about two minutes, long enough to absorb dozens of Edit/Write
+# calls in a normal burst.
+#
+# Known tradeoff (harmonic-forge#202's own guarantee, narrowed slightly):
+# a mid-lane re-estimation that crosses the >= 8 threshold can be silently
+# missed by the gate for up to this TTL after the board write. Accepted as
+# the cost of the burst-collapse -- fail-open already tolerates larger,
+# unbounded gaps (missing gh entirely), so a bounded ~2min window is a
+# strict improvement, not a new class of risk.
+_CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
+_CACHE_TTL = 120
 
 # Claude Code model families are substring-matched against message.model
 # (e.g. "claude-opus-5", "claude-sonnet-5"); Codex models are matched
@@ -91,11 +114,25 @@ def resolve_project_board(cwd: str) -> tuple[str, str] | None:
     return (owner, number) if owner and number else None
 
 
-def resolve_estimate(cwd: str, issue_number: int) -> int | None:
-    board = resolve_project_board(cwd)
-    if board is None:
-        return None
-    owner, number = board
+def _cached_item_list(owner: str, number: str, cache_dir: Path = _CACHE_DIR, ttl: float = _CACHE_TTL) -> list | None:
+    """Fetch `gh project item-list`, cached on disk keyed by owner+number.
+
+    Deliberately file-based, not in-process: this hook runs as a brand-new
+    process on every single tool call, so nothing survives between
+    invocations except the filesystem. Cache miss/expiry/failure all just
+    fall through to a live fetch -- fail-open applies here too, a broken
+    cache must never be worse than no cache.
+    """
+    key = hashlib.sha256(f"{owner}/{number}".encode()).hexdigest()[:16]
+    cache_file = cache_dir / f"{key}.json"
+
+    try:
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < ttl:
+            with open(cache_file) as f:
+                return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass  # fall through to a live fetch
+
     result = _run([
         "gh", "project", "item-list", number, "--owner", owner,
         "--limit", "1000", "--format", "json",
@@ -105,6 +142,25 @@ def resolve_estimate(cwd: str, issue_number: int) -> int | None:
     try:
         items = json.loads(result.stdout)["items"]
     except (json.JSONDecodeError, KeyError):
+        return None
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w") as f:
+            json.dump(items, f)
+    except OSError:
+        pass  # caching is an optimization, not a requirement
+
+    return items
+
+
+def resolve_estimate(cwd: str, issue_number: int) -> int | None:
+    board = resolve_project_board(cwd)
+    if board is None:
+        return None
+    owner, number = board
+    items = _cached_item_list(owner, number, cache_dir=_CACHE_DIR)
+    if items is None:
         return None
     for item in items:
         content = item.get("content") or {}
