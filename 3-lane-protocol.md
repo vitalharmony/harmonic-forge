@@ -441,18 +441,26 @@ work. Prefix the number with the repo: `H<N>` = `vitalharmony/hrse`#N,
 `vitalharmony/cymagraph-infra`#N (added 2026-08-08 — cymagraph-infra-
 specific issues, tenant provisioning, tofu/doctl wrappers, infra bugs,
 file on that repo's own tracker rather than harmonic-forge; harmonic-forge
-stays scoped to cross-project platform tooling). Applies to every trigger
-word in this section — "Implement H26", "Test F26", "Plan-first F58",
-"Reimplement H313", "Test I253" — the trigger vocabulary itself is
-unchanged, only the issue reference is disambiguated. Note: unlike `hrse`
-and `harmonic-forge`, `cymagraph-infra` has no dedicated Projects v2 board
-and is not tracked by `docs/PRIORITIES.md`'s board-sync (as of this
-writing) — `I<N>` issues are cross-referenced only from an `H`/`F` entry
-that depends on one, not sequenced directly.
+stays scoped to cross-project platform tooling), `O<N>` =
+`vitalharmony/openclaw-projects`#N (added 2026-08-10 — job-scout and any
+other openclaw sub-project's issues; the CymaGraph-bridge convention that
+makes specific files there 3-lane-protocol territory is documented in
+that repo's own `job-scout/README.md`, see harmonic-forge#204). Applies
+to every trigger word in this section — "Implement H26", "Test F26",
+"Plan-first F58", "Reimplement H313", "Test I253", "AE O4" — the trigger
+vocabulary itself is unchanged, only the issue reference is
+disambiguated. Note: like `cymagraph-infra`, `openclaw-projects` has no
+dedicated Projects v2 board (confirmed live, 2026-08-10: only board #1
+"CymaGraph Backlog" and board #3 exist) and is not tracked by
+`docs/PRIORITIES.md`'s board-sync — `gh_issue.py`'s ambient default
+silently adds to board #1 if `--project-owner`/`--project-number` isn't
+passed, same gotcha as `cymagraph-infra`. `I<N>`/`O<N>` issues are
+cross-referenced only from an `H`/`F` entry that depends on one, not
+sequenced directly.
 
 **Universal, not just for triggers (extended 2026-07-19).** Every issue
 reference — a status update, a summary, a plain mention in a comment or
-in chat, not only the trigger phrases above — carries the `H`/`F`/`I`
+in chat, not only the trigger phrases above — carries the `H`/`F`/`I`/`O`
 prefix, always, with no "obviously which repo from context" exception. HITL
 often relays an agent's own issue references directly into commands sent
 to other lanes; an unprefixed number forces HITL to disambiguate it
