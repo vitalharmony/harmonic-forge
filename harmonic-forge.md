@@ -276,7 +276,11 @@ the core protocol depends on it.
    `git clone https://github.com/vitalharmony/harmonic-forge.git ~/harmonic-forge/`.
 2. Get collaborator access to your own project's repo (this is per-project,
    not per-platform — see §7 and the security model below).
-3. Clone the project repo and run: `python3 ~/harmonic-forge/sync_rules.py --project .`.
+3. Clone the project repo and run: `python3 ~/harmonic-forge/sync_rules.py --project .`
+   (one-time; a project with `.githooks/post-checkout`/`post-merge` wired,
+   e.g. HRSE2, harmonic-forge#209, keeps this current automatically after
+   the first run — every later checkout/merge re-syncs without a manual
+   step).
 4. Follow the project's `setup/first_time_setup.md` for environment setup.
 5. Read `3-lane-protocol.md` before pulling a first ticket.
 6. Pull a `tech-debt`-labeled issue as a first ticket (lowest stakes, real

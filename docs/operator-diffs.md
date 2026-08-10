@@ -50,14 +50,21 @@ React Router" rule) were preserved in two new local-only files:
 content, verified via full diff against the originals before editing, and
 confirmed via a live restart (lint/build/mypy gate + `db_connected: true`).
 
-**Known portability quirk, by design, not a bug:** the committed symlinks
-carry the absolute path from whichever machine created them (mine —
-`/home/mmangus/harmonic-forge/...`). Every other developer must run
-`sync_rules.py --project .` right after cloning/pulling to relink them to
-their own machine's `~/harmonic-forge` checkout — the script already detects
-and fixes a mismatched target automatically. This is called out explicitly
-in `docs/onboarding-kyle.md` and should be repeated in Greg's doc once it's
-made concrete.
+**RESOLVED (harmonic-forge#209) — the symlinks are no longer committed at
+all.** The absolute-path symlinks `sync_rules.py` creates are still
+absolute by design (a relative link would break every `/tmp/hrse2-N-impl`
+disposable worktree, confirmed live — a net regression, not a portability
+fix) — the actual bug was committing the resulting symlink to git in the
+first place, dangling for any developer whose home directory isn't
+`/home/mmangus`. `.claude/rules/.gitignore`, `.claude/agents/.gitignore`,
+and `.claude/skills/.gitignore` (pattern-based, not enumerated — robust to
+future agent/skill growth) now keep the sync-managed symlinks out of the
+index entirely, while preserving the real local-only content already
+living alongside them. `.githooks/post-checkout`/`post-merge` (HRSE2's
+own, not harmonic-forge's — `core.hooksPath` resolves per-worktree) auto-
+run `sync_rules.py --project .` on every checkout/merge, so a fresh clone
+or worktree isn't left with an empty `.claude/rules/`/`.claude/agents/`
+until someone remembers to run it manually.
 
 ## 4. Lane 3 is local — no cloud dispatch
 
