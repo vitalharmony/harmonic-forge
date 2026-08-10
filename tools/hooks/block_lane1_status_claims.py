@@ -370,14 +370,17 @@ def denial(message: str) -> dict:
     }
 
 
-def decision(command: object) -> dict:
+def decision(command: object, cwd: Path) -> dict:
     if not isinstance(command, str):
         return denial("Blocked: malformed Bash hook payload; refusing to bypass Lane 1 posting controls.")
     try:
         segments = command_segments(command)
     except (AttributeError, TypeError, ValueError):
         return denial("Blocked: malformed shell command; refusing to bypass Lane 1 posting controls.")
-    effective_cwd = Path.cwd()
+    # harmonic-forge#210: seed from the payload's own cwd, not the hook
+    # process's — hooks run as subprocesses, and nothing guarantees the
+    # two match (this is exactly why the payload carries a cwd field).
+    effective_cwd = cwd
     for segment in segments:
         if len(segment) == 2 and segment[0] == "cd":
             target = Path(segment[1]).expanduser()
@@ -438,7 +441,7 @@ def main() -> None:
     cwd = Path(payload.get("cwd") or Path.cwd())
     if tool_name == "Bash":
         command = (payload.get("tool_input") or {}).get("command", "")
-        print(json.dumps(decision(command)))
+        print(json.dumps(decision(command, cwd)))
         return
     if tool_name in EDIT_WRITE_TOOLS:
         file_path = (payload.get("tool_input") or {}).get("file_path", "")
