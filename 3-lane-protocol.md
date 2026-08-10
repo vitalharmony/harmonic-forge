@@ -349,6 +349,36 @@ session, because it isn't shared state at all — it's a fact about how
 one specific process was started, visible only to that process's own
 children.
 
+### Per-Issue Implementation Worktree — distinct from the fixed per-lane worktree above
+
+The fixed `<repo>-lane2/` worktree (above) is where the Lane 2 *session*
+runs — one process, launcher-enforced, reused across every issue that
+session touches. Lane 2's actual *implementation work for a given issue*
+happens in a separate, disposable worktree: `/tmp/<repo>-<issue>-impl`,
+created fresh per issue. The two are not alternatives — a Lane 2 session
+always starts in `<repo>-lane2/`, then creates `/tmp/<repo>-<issue>-impl`
+from there for the issue at hand, never implementing directly in the
+shared `<repo>-lane2/` checkout itself, and never branch-switching inside
+it either — that's what the disposable impl worktree exists to avoid.
+`mise run gate-checkout` is **Lane 3's** tool, for the fixed `<repo>-lane3/`
+worktree specifically (above); it is not something a Lane 2 session
+reaches for.
+
+This convention is enforced today at exactly one live point, not by the
+launcher scripts: `block_lane1_status_claims.py`'s Lane 2 denial (a write
+into the main checkout while `LANE=2`) names it directly — "Lane 2 work
+belongs in its own dedicated worktree — restart in the project's -lane2
+worktree or a fresh `/tmp/<project>-<issue>-impl` worktree, not the main
+checkout." `tools/lane/lane2`/`lane3` have **zero** scripted awareness of
+the per-issue impl worktree — creating and removing it is a purely manual,
+session-driven step, not launcher-automated.
+
+Should be removed (`git worktree remove`, and `git worktree prune` to
+clear the administrative record — the directory disappearing from `/tmp`
+on reboot does not by itself clear `.git/worktrees/`'s entry) once the
+issue's work is committed and reported. See the `impl-worktree` skill for
+the exact commands.
+
 ## Per-Lane Worktree Reuse Across Issues — Check Before You Checkout
 
 Per-lane isolation (above) is per-*lane*, not per-*issue*: `<repo>-lane3/`
