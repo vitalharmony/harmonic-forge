@@ -1,0 +1,4 @@
+interface:
+  display_name: "_stub"
+  short_description: "harmonic-forge#169 distribution-mechanism proof — not a real skill"
+  default_prompt: "Use $_stub to confirm the skills distribution mechanism symlinked correctly."

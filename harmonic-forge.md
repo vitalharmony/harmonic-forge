@@ -131,14 +131,27 @@ harmonic-forge/
 │   ├── pitch-inspection.md         # proactive pre-flight handoff second read (Fable)
 │   └── product-strategy.md         # high-judgment product/architecture strategy calls (Fable) —
 │                                    # {project}-parameterized, invoking session supplies context
+├── skills/                          # distributable Claude Code skills (harmonic-forge#169) —
+│   │                                # directories (<name>/SKILL.md, + optional sibling
+│   │                                # files/dirs), symlinked whole, opt-in only via
+│   │                                # UNIVERSAL_SKILL_DIRS or --skill — unlike agents/,
+│   │                                # nothing here distributes just by existing (a skill's
+│   │                                # description is surfaced and directly invocable the
+│   │                                # moment it's linked, with no activation gate the way
+│   │                                # a vertical package has)
+│   └── _stub/                      # proof-of-mechanism only, never opted in by default
+│       ├── SKILL.md
+│       └── agents/openai.yaml      # proves multi-file skill dirs survive the symlink
 ├── docs/
 │   ├── decisions/                  # platform ADRs (ADR-NNN-*.md, sequential)
 │   ├── operator-diffs.md           # HITL-facing "what's different from the norm" notes
 │   └── onboarding-*.md             # per-developer onboarding addenda
-└── sync_rules.py                   # bootstrapper — clone + symlink setup for BOTH
-                                     # rules/ (UNIVERSAL_RULE_FILES list) and agents/
-                                     # (auto-discovered, every *.md in agents/) into
-                                     # {project}/.claude/rules/ and .claude/agents/
+└── sync_rules.py                   # bootstrapper — clone + symlink setup for
+                                     # rules/ (UNIVERSAL_RULE_FILES list), agents/
+                                     # (auto-discovered, every *.md in agents/), and
+                                     # skills/ (UNIVERSAL_SKILL_DIRS list + --skill,
+                                     # opt-in only) into {project}/.claude/rules/,
+                                     # .claude/agents/, and .claude/skills/
 ```
 
 **`agents/` note:** only agents written project-agnostically (no hardcoded
@@ -166,7 +179,13 @@ where its positioning commitments (if any) are documented.
 ├── .claude/agents/                 # universal subagents, symlinked by sync_rules.py
 │   ├── sticky-wicket.md            # → harmonic-forge/agents/sticky-wicket.md
 │   └── pitch-inspection.md         # → harmonic-forge/agents/pitch-inspection.md
-└── (project may keep additional local-only rule/agent files, e.g. a
+├── .claude/skills/                 # opted-in platform skills, symlinked by sync_rules.py
+│   │                                # (empty unless a project explicitly opts a skill in —
+│   │                                # see harmonic-forge#169; UNIVERSAL_SKILL_DIRS is
+│   │                                # empty by default)
+│   └── impl-worktree/              # → harmonic-forge/skills/impl-worktree (harmonic-forge#207,
+│                                    # once it lands — the first real opted-in entry)
+└── (project may keep additional local-only rule/agent/skill files, e.g. a
     Cypher/Neo4j addendum or a project-specific strategy subagent, that are
     NOT part of the platform sync because they don't apply universally)
 ```
@@ -193,15 +212,25 @@ machine into the platform, and again whenever platform rules change.
    auto-discovered agent in `harmonic-forge/agents/` (no separate list to
    maintain — anything placed in `agents/` is definitionally universal,
    see the `agents/` note above).
-3. Verifies symlink integrity (both rules and agents) and reports any
-   broken links.
-4. Prints a checklist of manual steps remaining (e.g. project-level
+3. Symlinks whole skill directories (`harmonic-forge#169`) from
+   `harmonic-forge/skills/<name>/` into the project's `.claude/skills/<name>/`
+   — but only for names in `UNIVERSAL_SKILL_DIRS` (empty by default) or passed
+   explicitly via a repeatable `--skill <name>` flag. Unlike `agents/`, nothing
+   in `skills/` distributes just by existing — a skill's `description` is
+   surfaced in every session's skill listing and is directly invocable the
+   moment it's linked, with no activation gate the way a vertical package has.
+4. Verifies symlink integrity (rules, agents, and any opted-in skills) and
+   reports any broken links.
+5. Prints a checklist of manual steps remaining (e.g. project-level
    `CLAUDE.md` setup).
 
 **Usage:**
 ```bash
 # One-time setup (from any project root)
 python3 ~/harmonic-forge/sync_rules.py --project .
+
+# Opt into a specific platform skill too
+python3 ~/harmonic-forge/sync_rules.py --project . --skill impl-worktree
 
 # Pull latest platform rules (run at session start or after platform updates)
 python3 ~/harmonic-forge/sync_rules.py --pull
