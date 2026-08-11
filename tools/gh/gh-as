@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# gh-as — run a command with `gh` scoped to a specific GitHub account,
+# without touching global auth state.
+#
+# Each account gets its own gh config directory, so concurrent sessions
+# working on different repos never interfere with each other. There is no
+# switch to undo: the scoping lives and dies with the process.
+#
+#   gh-as <account> <command...>
+#
+#   gh-as harmonicarchitect gh issue list -R harmonicarchitect/kenekted-platform
+#   gh-as harmonicarchitect python3 some_script.py
+#   gh-as vitalharmony gh pr list -R vitalharmony/harmonic-forge
+#
+# One-time setup per account:
+#   gh-as --init <account>
+#
+# Accounts live in $GH_ACCT_HOME (default ~/.config/gh-accounts/<account>).
+
+set -euo pipefail
+
+ACCT_HOME="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
+
+usage() {
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-1}"
+}
+
+[ $# -ge 1 ] || usage 1
+
+case "$1" in
+  -h|--help) usage 0 ;;
+  --list)
+    if [ -d "$ACCT_HOME" ]; then
+      for d in "$ACCT_HOME"/*/; do
+        [ -d "$d" ] || continue
+        acct="$(basename "$d")"
+        who="$(GH_CONFIG_DIR="$d" gh api user --jq .login 2>/dev/null || echo '(not authenticated)')"
+        printf '%-24s %s\n' "$acct" "$who"
+      done
+    else
+      echo "no accounts configured under $ACCT_HOME" >&2
+    fi
+    exit 0
+    ;;
+  --init)
+    acct="${2:?usage: gh-as --init <account>}"
+    dir="$ACCT_HOME/$acct"
+    mkdir -p "$dir"
+    chmod 700 "$ACCT_HOME" "$dir"
+    echo "Authenticating '$acct' into $dir"
+    echo "Choose the '$acct' account when prompted."
+    GH_CONFIG_DIR="$dir" gh auth login --hostname github.com --git-protocol https --web
+    actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login)"
+    if [ "$actual" != "$acct" ]; then
+      echo "WARNING: authenticated as '$actual', but this slot is named '$acct'." >&2
+      echo "Re-run --init and pick the right account, or use '$actual' as the name." >&2
+      exit 1
+    fi
+    echo "OK: '$acct' ready. Use: gh-as $acct <command...>"
+    exit 0
+    ;;
+esac
+
+acct="$1"; shift
+[ $# -ge 1 ] || usage 1
+
+dir="$ACCT_HOME/$acct"
+if [ ! -d "$dir" ]; then
+  echo "gh-as: no config for account '$acct'." >&2
+  echo "Set it up once with:  gh-as --init $acct" >&2
+  exit 1
+fi
+
+# Verify the slot still holds the account it claims, so a command can never
+# run against the wrong identity because a token was replaced out of band.
+actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null || true)"
+if [ -z "$actual" ]; then
+  echo "gh-as: account '$acct' is not authenticated (token expired or revoked)." >&2
+  echo "Re-run:  gh-as --init $acct" >&2
+  exit 1
+fi
+if [ "$actual" != "$acct" ]; then
+  echo "gh-as: slot '$acct' is authenticated as '$actual' — refusing to run." >&2
+  exit 1
+fi
+
+export GH_CONFIG_DIR="$dir"
+exec "$@"

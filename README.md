@@ -109,6 +109,8 @@ that kept getting violated became executable hooks in `tools/hooks/`:
   version bump.
 - **`tools/lane/`** — the `lane1`/`lane2`/`lane3` launchers that put a session in
   the right worktree with the right role signal.
+- **`gh-as`** — per-process GitHub account scoping, so credential isolation
+  survives concurrent sessions without anyone reaching for `gh auth switch`.
 - **`templates/golden-path/`** — a reference `mise.toml` and `process-compose.yaml`
   for a project's service lifecycle, so every project starts and restarts the
   same way.
@@ -227,6 +229,17 @@ resolving credentials from that project's own gitignored env file.
 
 `harmonic-forge` being public is the exception that makes that work cleanly: it
 is the one thing every project reads without needing any credential at all.
+
+**Working across accounts:** use [`tools/gh/gh-as`](tools/gh/gh-as), never
+`gh auth switch`. `gh auth switch` mutates global state and will change the
+active identity for every other session on the machine; `gh-as` scopes `gh` to
+a named account for one process and has nothing to undo.
+
+```bash
+gh-as --init <account>                    # one-time, per account
+gh-as <account> gh issue list -R owner/repo
+gh-as <account> python3 some_script.py
+```
 
 ---
 
