@@ -153,23 +153,53 @@ them (step 8). Never a write to the operator's own non-`(R)` subfolder.
 Complete Markdown, ready to import — the deliverable itself, not a description of
 one. Structure below.
 
-### 8. Create the doc, then move the briefs by verdict
+### 8. Create the doc, then sort the briefs by a predicted "fed an action"
 
 `import_to_google_doc` into the queue root, named
 `YYYY-MM-DD — AI Review Queue Synthesis and Recommendations` (today's date).
 
-Only after the doc exists successfully, move each processed `(R)` file
-(`update_drive_file` with `add_parents`/`remove_parents`) into whichever of
-your two outcome subfolders its own verdict earns it:
+**The exact test, stated precisely because the obvious shortcuts are both
+wrong:**
 
-- **Named in §6** (a proposed new issue, or an amendment to an existing one) →
-  the filing-plan subfolder.
-- **Everything else** — rejected (§5), a verified duplicate whose prior verdict
-  stood, corroboration-only with no new action — → the reject subfolder.
+> A brief "fed an action" if and only if its specific content — a named
+> tool, a specific finding, a specific number, a specific quote — appears,
+> cited by name, inside the actual text of a §6 item.
+
+This is **not** the brief's own verdict label, and **not** its Section-column
+tag. Both are false friends, confirmed live on 2026-08-11:
+
+- A brief tagged **Reject** can still feed an action. Colibri, Kimi/Chimera,
+  Blue Minds, FreeLLMAPI, and Ornith+DSpark were all Rejects whose content
+  still ended up cited, by name, inside a §6a amendment's "considered and
+  declined, with reasons" list — the citation is the action, regardless of
+  the individual verdict.
+- A brief tagged **Filed** or **Prior** can feed *no* action. "Filed" means
+  "this duplicates an issue that already owns the surface" — sometimes that
+  issue gets a new citation (an action), sometimes the brief has nothing to
+  add to it at all (no action). Check which one actually happened; don't
+  infer it from the label.
+
+Only after the doc exists successfully, sort each processed `(R)` file
+(`update_drive_file` with `add_parents`/`remove_parents`) by that test:
+
+- **Cited by name in a §6 item's text** → the filing-plan subfolder.
+- **Everything else** — rejected with no downstream citation, a verified
+  duplicate whose prior verdict stood with nothing new added, corroboration-
+  only — → the reject subfolder.
 
 A brief covered by more than one recommendation (split verdicts, e.g. §4.5's
 "reject the retention model, trial the fork pattern" pattern from the 2026-08-06
-exemplar) moves to the filing-plan subfolder if *any* part of it landed in §6.
+exemplar) moves to the filing-plan subfolder if *any* citation of it landed in
+§6.
+
+**This sort is a prediction, not a fact, and you must say so in your report
+back.** You never mutate GitHub (§6 above) — filing is always the calling
+session's job, and it may happen across many turns, skip an item marked
+optional, or revise §6's content before posting. Your step-8 sort reflects
+what §6 *proposes*; it cannot reflect what actually gets posted, because
+posting hasn't happened yet when you run this step. State this limitation
+explicitly in your report so the calling session knows reconciliation is
+still owed (see the SKILL.md's post-filing checklist for that step).
 
 Every file you move is an `(R)` file from root. Never move, touch, or otherwise
 act on a non-`(R)` file — that is entirely the operator's own manual sort, on
@@ -181,8 +211,9 @@ either of your subfolders is silently lost.
 ### 9. Report back
 
 Briefs processed (with the dedup arithmetic), the doc link, the single top item,
-and the net new work proposed in points and issue count. Nothing else — the
-document carries the reasoning.
+the net new work proposed in points and issue count, and an explicit note that
+step 8's folder sort is a prediction pending reconciliation once filing
+completes (§6 above). Nothing else — the document carries the reasoning.
 
 ## Document structure
 
