@@ -6,7 +6,8 @@
 - GitHub: {url}
 - Labels: {labels}
 - Acceptance criteria: reference the issue body by default — Lane 2 fetches
-  it directly (`gh issue view`). Quote a specific line verbatim only when
+  it directly (`gh api repos/OWNER/REPO/issues/N --jq .body`, REST — see
+  harmonic-forge#220). Quote a specific line verbatim only when
   this handoff's spec depends on exact wording (e.g. disambiguating a
   criterion that reads differently than Lane 1's diagnosis) — otherwise a
   copy silently drifts if the issue is edited after handoff.
