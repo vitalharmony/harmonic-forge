@@ -3,6 +3,23 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat: deny Lane 3 from posting its own AE authorization comment (harmonic-forge#216)
+
+New PreToolUse hook, sibling to remind_gate_readiness_sweep.py: denies a
+LANE=3 session from posting a comment body matching the AE-authorization
+heading shape, across both the wrapper posting tasks (lane-comment,
+post-comment, post_lane_discussion.py) and raw gh issue comment --body/
+--body-file -- the latter matters because raw gh is explicitly permitted
+for Lane 2/3 and would otherwise be a silent, unmarked bypass.
+
+Fenced-code-block stripping added after the test suite caught a real gap:
+the heading-anchor regex alone denied a comment that only *quoted* the AE
+format inside a markdown fence (this very issue's own body does exactly
+that) -- fixed and re-verified before committing.
+- tools/hooks/deny_lane3_ae_self_post.py      | 199 ++++++++++++++++++++++++++++
+- tools/hooks/test_deny_lane3_ae_self_post.py | 192 +++++++++++++++++++++++++++
+- 2 files changed, 391 insertions(+)
+
 ## docs: bound live verification of pre-existing services (forge#132)
 - [docs] Markdown-only commit — no code changes. Files: 3-lane-protocol.md
 
