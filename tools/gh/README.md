@@ -60,13 +60,18 @@ rather than failing.
 
 ## GraphQL vs REST quota (harmonic-forge#203)
 
-`gh`'s API access splits across **two separate 5000/hr quotas** —
-`gh api rate_limit --jq '.resources.core, .resources.graphql'` shows both.
-Draining one does not touch the other.
+`gh`'s API access splits across **two separate 5000/hr quotas**. Draining
+one does not touch the other. **`gh api rate_limit`'s JSON body is
+confirmed live-unreliable for the `core` bucket** (harmonic-forge#222/#231
+— disagreed with header ground truth by a wide margin on a real request);
+read the bucket-appropriate source below instead of trusting that
+endpoint's body for either number.
 
 - **REST (`.resources.core`)**: issue/comment reads and writes
   (`gh api repos/{owner}/{repo}/issues ...`). Per-request cost, cheap and
-  predictable.
+  predictable. Check remaining headroom via the `X-Ratelimit-*` response
+  headers on any real REST call (`gh api --include ...`), not
+  `/rate_limit`'s `core` field.
 - **GraphQL (`.resources.graphql`)**: `gh project *` — Status/Priority/
   Sequence/Estimate field reads and writes. **Cost-based, not
   per-request** — GitHub bills by query complexity/node count, confirmed
@@ -74,7 +79,13 @@ Draining one does not touch the other.
   items with nested fields can burn hundreds-to-thousands of points in one
   call, enough to fully drain the quota from a handful of calls. Projects
   v2 has **no REST equivalent** — every board touch is GraphQL, there is
-  no escape hatch for board operations themselves.
+  no escape hatch for board operations themselves. Prefer GraphQL's own
+  purpose-built `rateLimit` field over `/rate_limit`'s `graphql` value
+  (`gh api graphql -f query='query { rateLimit { remaining resetAt } }'`,
+  harmonic-forge#222) — both agree with header ground truth for this
+  bucket specifically (unlike `core`, see above), but `rateLimit`
+  doesn't cost a separate REST call and is confirmed live not to consume
+  real quota itself.
 - **`gh issue create` (the CLI subcommand) also uses GraphQL internally**,
   even though issue creation is REST-capable — found live when it failed
   with a GraphQL rate-limit error while the REST quota sat untouched.
