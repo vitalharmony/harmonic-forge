@@ -31,9 +31,32 @@ default, and print a banner naming the resolved target before acting.
     python3 gh_issue.py --repo vitalharmony/harmonic-forge --title "..." --labels "tech-debt"
   ```
 
-Both are importable (`from post_comment import post_comment`, `from
-gh_issue import create_issue, add_to_board`) as well as CLI-invocable, same
-convention as `tools/transaction-log/`.
+- **`gh-as`** — run a command with `gh` scoped to a specific GitHub account,
+  **without touching global auth state**. Each account gets its own `gh`
+  config directory under `~/.config/gh-accounts/<account>`, applied
+  per-process via `GH_CONFIG_DIR`, so concurrent sessions working on
+  different repos cannot collide.
+  ```bash
+  gh-as --init harmonicarchitect                       # one-time, per account
+  gh-as harmonicarchitect gh issue list -R owner/repo
+  gh-as harmonicarchitect python3 some_script.py       # children inherit scoping
+  gh-as --list                                         # slots, and who each resolves to
+  ```
+  **Use this instead of `gh auth switch`.** `gh auth switch` is global mutable
+  state: it changes the active identity for every other session on the
+  machine, and there is no reliable way to restore it when two sessions are
+  running. `gh-as` has nothing to undo — the scoping lives and dies with the
+  process.
+
+  Guards on every invocation: refuses an unconfigured slot; refuses an expired
+  or revoked token; and **refuses if a slot's authenticated identity does not
+  match its name**, so a command can never run against the wrong account
+  because a token was replaced out of band.
+
+`post_comment.py` and `gh_issue.py` are importable (`from post_comment import
+post_comment`, `from gh_issue import create_issue, add_to_board`) as well as
+CLI-invocable, same convention as `tools/transaction-log/`. `gh-as` is a shell
+wrapper — put it on `PATH` (symlink into `~/.local/bin/`) or invoke it by path.
 
 ## Wiring into a project's `mise.toml`
 
