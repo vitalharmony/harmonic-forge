@@ -25,7 +25,10 @@ This agent is deliberately target-agnostic; the *method* below is fixed, the
 *targets* are not. The invoking prompt must name:
 
 - **Queue folder** — the Drive folder holding incoming briefs, plus the names of
-  its processed-archive subfolder and its no-action subfolder.
+  its two outcome subfolders: one for briefs whose recommendation became part of
+  this document's GitHub filing plan, one for briefs that did not (rejected,
+  verified duplicate, corroboration-only) and for pre-existing non-`(R)` no-action
+  files.
 - **Repos** — one or more local checkouts to verify claims against, each with its
   path and its GitHub `owner/repo`.
 - **Exemplar** — the Drive doc ID of the most recent prior synthesis, whose
@@ -39,9 +42,10 @@ name-similarity alone.
 
 ### 1. Scan the queue root only
 
-`list_drive_items` on the queue folder ID. **Root only** — the processed-archive
-and no-action subfolders are separate folder IDs you never scan for input. Filter
-to files whose name contains `(R)`.
+`list_drive_items` on the queue folder ID. **Root only** — the two outcome
+subfolders are separate folder IDs you never scan for *input*, though you do read
+both of them in step 2 for dedup. Filter root results to files whose name
+contains `(R)`.
 
 If zero `(R)` files are found, report that and stop. Do not create an empty
 synthesis doc.
@@ -54,8 +58,11 @@ holistic — cross-brief patterns, corroboration, and contradiction are invisibl
 to a per-brief read, and summarizing before synthesizing throws away exactly the
 signal you were spawned to find.
 
-Read the archive subfolder's contents too — filenames and, where a duplicate is
-suspected, full text. You cannot detect cross-batch re-ingestion without it.
+Read the contents of **both** outcome subfolders too — filenames and, where a
+duplicate is suspected, full text. A rejected brief is exactly as "already
+decided" as an adopted one; skipping the reject subfolder would let the same
+rejected video get re-argued next batch. You cannot detect cross-batch
+re-ingestion, of either kind, without reading both.
 
 ### 3. Deduplicate at the provenance level, not the title level
 
@@ -132,23 +139,37 @@ Likewise no `git add`/`commit`/`push`/`checkout`/`reset`, and no destructive
 filesystem commands. If a step seems to require one, that is the finding — hand it
 back rather than running it.
 
-Your only writes are to Drive: the synthesis doc, and moving processed briefs.
+Your only writes are to Drive: the synthesis doc, and moving processed briefs
+into the outcome subfolder their own verdict earns them (step 8).
 
 ### 7. Produce the document
 
 Complete Markdown, ready to import — the deliverable itself, not a description of
 one. Structure below.
 
-### 8. Create the doc, then move the briefs
+### 8. Create the doc, then move the briefs by verdict
 
 `import_to_google_doc` into the queue root, named
 `YYYY-MM-DD — AI Review Queue Synthesis and Recommendations` (today's date).
 
-Only after the doc exists successfully, move each processed `(R)` file into the
-archive subfolder (`update_drive_file` with `add_parents`/`remove_parents`).
-Leave non-`(R)` files in root untouched. If the doc creation failed, move nothing —
-an unprocessed brief in root is recoverable; a processed-but-unsynthesized brief
-in the archive is silently lost.
+Only after the doc exists successfully, move each processed `(R)` file
+(`update_drive_file` with `add_parents`/`remove_parents`) according to where its
+own verdict landed in the finished document:
+
+- **Named in §6** (a proposed new issue, or an amendment to an existing one) →
+  the "became a filing plan item" subfolder.
+- **Everything else** — rejected (§5), a verified duplicate whose prior verdict
+  stood, corroboration-only with no new action — → the "no action" subfolder,
+  alongside the pre-existing non-`(R)` files already there.
+
+A brief covered by more than one recommendation (split verdicts, e.g. §4.5's
+"reject the retention model, trial the fork pattern" pattern from the 2026-08-06
+exemplar) moves to the filing-plan subfolder if *any* part of it landed in §6.
+
+Leave non-`(R)` files in root untouched — there should be none; that state means
+the batch already ran. If the doc creation failed, move nothing — an unprocessed
+brief in root is recoverable; a processed-but-unsynthesized brief in either
+subfolder is silently lost.
 
 ### 9. Report back
 
