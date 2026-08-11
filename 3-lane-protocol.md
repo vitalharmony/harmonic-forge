@@ -74,7 +74,8 @@ tool's Lane 2 assignment is actually triggered and scoped.*
 
 - Given a short trigger (e.g. "implement #N") rather than pasted content,
   **fetches the issue and Lane 1's handoff comment from GitHub directly**
-  (`gh issue view N --comments`) before doing anything else — same
+  (`gh api repos/OWNER/REPO/issues/N/comments --paginate --jq '.[].body'`,
+  REST — see harmonic-forge#220) before doing anything else — same
   expectation already placed on Lane 3 for its own independent issue read.
   Do not wait for or require the handoff to be pasted in chat.
 - Executes exactly what the handoff specifies — no scope creep.
@@ -969,13 +970,14 @@ not a subagent.
 
 **Any lane posting a comment containing a code block:**
 1. Write the comment body to a file first, then post via
-   `gh issue comment --body-file <path>` (or the PR/comment equivalent) —
+   `gh api repos/OWNER/REPO/issues/N/comments -F body=@<path>` (REST — see
+   harmonic-forge#220; PR comments use the equivalent `pulls` path) —
    never an inline heredoc with nested backticks.
 2. **Self-check before considering the post done:** fetch the comment back
-   (`gh issue view N --json comments` or equivalent) and confirm it
-   rendered legibly — no swallowed code blocks, no stripped content. This
-   is the verify-live-not-source standard applied to a lane's own GitHub
-   output, not just to code behavior.
+   (`gh api repos/OWNER/REPO/issues/comments/<id> --jq .body`, REST, or
+   equivalent) and confirm it rendered legibly — no swallowed code blocks,
+   no stripped content. This is the verify-live-not-source standard
+   applied to a lane's own GitHub output, not just to code behavior.
 
 ## Team Topology
 
