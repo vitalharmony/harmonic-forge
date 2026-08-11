@@ -15,15 +15,19 @@ Wired identically for Claude Code (Edit|Write matcher) and Codex
 stdin, confirmed live 2026-08-09 (harmonic-forge#202 comments).
 """
 
-import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
+try:
+    import item_list_cache as _item_list_cache
+except ImportError:
+    _item_list_cache = None
 
 THRESHOLD = 8
 
@@ -43,6 +47,12 @@ THRESHOLD = 8
 # the cost of the burst-collapse -- fail-open already tolerates larger,
 # unbounded gaps (missing gh entirely), so a bounded ~2min window is a
 # strict improvement, not a new class of risk.
+#
+# harmonic-forge#219: the actual fetch/cache-file mechanics now live in
+# tools/gh/item_list_cache.py, shared with board_sync.py/board_drift_check.py/
+# l1_post.py (previously 4 independent duplicate implementations). This
+# module keeps its own cache directory/TTL constants and fail-open wrapper
+# unchanged -- only the fetch internals moved.
 _CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
 _CACHE_TTL = 120
 
@@ -122,36 +132,21 @@ def _cached_item_list(owner: str, number: str, cache_dir: Path = _CACHE_DIR, ttl
     invocations except the filesystem. Cache miss/expiry/failure all just
     fall through to a live fetch -- fail-open applies here too, a broken
     cache must never be worse than no cache.
+
+    harmonic-forge#219: delegates the actual fetch/cache mechanics to the
+    shared tools/gh/item_list_cache.py module; this wrapper's only job is
+    preserving the fail-open contract (None on any failure, never raise)
+    and this function's existing call signature (cache_dir/ttl overrides
+    used directly by test_model_tier_gate.py).
     """
-    key = hashlib.sha256(f"{owner}/{number}".encode()).hexdigest()[:16]
-    cache_file = cache_dir / f"{key}.json"
-
+    if _item_list_cache is None:
+        return None  # shared module unavailable -- fail-open, same as any other resolution failure
     try:
-        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < ttl:
-            with open(cache_file) as f:
-                return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        pass  # fall through to a live fetch
-
-    result = _run([
-        "gh", "project", "item-list", number, "--owner", owner,
-        "--limit", "1000", "--format", "json",
-    ])
-    if result.returncode != 0:
+        return _item_list_cache.fetch_item_list(
+            number, owner=owner, limit=1000, ttl=ttl, run=_run, cache_dir=cache_dir,
+        )
+    except _item_list_cache.GhItemListError:
         return None
-    try:
-        items = json.loads(result.stdout)["items"]
-    except (json.JSONDecodeError, KeyError):
-        return None
-
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, "w") as f:
-            json.dump(items, f)
-    except OSError:
-        pass  # caching is an optimization, not a requirement
-
-    return items
 
 
 def resolve_estimate(cwd: str, issue_number: int) -> int | None:
