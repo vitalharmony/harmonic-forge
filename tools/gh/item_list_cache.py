@@ -18,10 +18,16 @@ automatically, since it has no way to know when a caller is about to mutate.
 
 import json
 import re
+import tempfile
 import time
 from pathlib import Path
 
-_CACHE_DIR = Path(__file__).parent / ".cache" / "item_list"
+# Deliberately NOT inside this repo's tree (pitch-inspection, 2026-08-11:
+# a default under __file__'s parent silently writes untracked, ungitignored
+# JSON board snapshots into the harmonic-forge working tree on every read --
+# same tmp dir model_tier_gate.py already used pre-#219, now the one shared
+# location for every caller).
+_CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
 PROJECT_OWNER = "vitalharmony"
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
