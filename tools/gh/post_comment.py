@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Post a GitHub issue comment via --body-file, then self-check by refetching.
+"""Post a GitHub issue comment via REST, then self-check by refetching.
 
-Mechanizes ADR-004's GitHub Comment Formatting rule (write to a file, post via
-`gh issue comment --body-file`, refetch and confirm it rendered legibly) so it
-doesn't depend on a lane remembering it at the moment of a routine action. This
-exact failure class recurred three times on HRSE2 (#234, #235, #236) despite
-the rule being written down twice.
+Mechanizes ADR-004's GitHub Comment Formatting rule (write to a file, post,
+refetch and confirm it rendered legibly) so it doesn't depend on a lane
+remembering it at the moment of a routine action. This exact failure class
+recurred three times on HRSE2 (#234, #235, #236) despite the rule being
+written down twice.
 
 Generalized from HRSE2's original `scripts/post_comment.py` (harmonic-forge#53)
 after a hardcoded `REPO = "vitalharmony/hrse"` default caused a real mis-post:
@@ -13,6 +13,14 @@ this tool was invoked for an harmonic-forge issue out of HRSE2 habit and silentl
 posted to an unrelated HRSE2 issue instead. Fix: `--repo` is now required,
 with no default, and a banner prints the resolved target before acting so a
 misconfigured `--repo` is visible immediately, not discovered after the fact.
+
+Posts via `gh api --method POST .../issues/{n}/comments` (pure REST) rather
+than `gh issue comment`, which uses GraphQL internally (harmonic-forge#225) —
+GraphQL has a much lower effective budget in practice, and a single heavy
+verification pass elsewhere (e.g. an agent doing live sub-issue-linkage
+checks) can exhaust it and block ordinary comment-posting for up to an hour
+for a reason unrelated to posting itself. The self-check step below was
+already pure REST and is unchanged.
 """
 
 import argparse
@@ -26,12 +34,17 @@ def post_comment(repo: str, issue: int, body_file: Path, source_content: str) ->
     print(f"[POST-COMMENT] Posting to {repo}#{issue}")
 
     result = subprocess.run(
-        ["gh", "issue", "comment", str(issue), "--repo", repo, "--body-file", str(body_file)],
+        [
+            "gh", "api", "--method", "POST",
+            f"repos/{repo}/issues/{issue}/comments",
+            "-F", f"body=@{body_file}",
+            "--jq", ".html_url",
+        ],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        print(f"[POST-COMMENT] gh issue comment failed:\n{result.stderr}", file=sys.stderr)
+        print(f"[POST-COMMENT] gh api POST failed:\n{result.stderr}", file=sys.stderr)
         return 1
 
     comment_url = result.stdout.strip()
