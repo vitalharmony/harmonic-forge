@@ -105,6 +105,55 @@ contrast, are fine for an agent to write (it's not a credential), the
 constraint is purely about where the content is allowed to become durably
 visible.
 
+## GITHUB API — PREFER REST OVER GRAPHQL (harmonic-forge#242)
+
+Locked in as standing policy 2026-08-11, after the shared account's
+GraphQL quota (5000/hr) was fully exhausted three times in one day.
+GraphQL cost is complexity-based, not call-count-based — a single `gh
+project item-list --limit 1000` can burn a large fraction of the hourly
+budget on its own (confirmed live, harmonic-forge#203) — and that quota
+is shared across every concurrent lane/session on the account, so one
+session's board-heavy work can silently exhaust the bucket another
+session needs for a routine issue lookup. REST draws from a separate,
+much larger quota and does not contend with GraphQL-heavy work happening
+elsewhere.
+
+**Use the REST form whenever one exists**, for ad-hoc lookups in any
+lane's own session, not just inside shared tooling scripts:
+
+| Action | REST (use this) | GraphQL-backed (avoid) |
+|---|---|---|
+| View an issue / list comments | `gh api repos/OWNER/REPO/issues/N`, `.../issues/N/comments` | `gh issue view` |
+| Post a comment | `gh api repos/OWNER/REPO/issues/N/comments -f body="$(cat file.md)"` | `gh issue comment` |
+| Close / reopen an issue | `gh api repos/OWNER/REPO/issues/N -X PATCH -f state=closed` | `gh issue close` |
+| Create an issue | `gh api repos/OWNER/REPO/issues -f title=... -F body=@file -f "labels[]=X"` | `gh issue create` |
+| Create a PR | `gh api repos/OWNER/REPO/pulls -f title=... -f head=... -f base=... -F body=@file` | `gh pr create` |
+| Merge a PR | `gh api -X PUT repos/OWNER/REPO/pulls/N/merge -f merge_method=squash` | `gh pr merge` |
+| Check CI status | `gh api repos/OWNER/REPO/commits/SHA/check-runs` | `gh pr checks` |
+| Delete a branch | `gh api -X DELETE repos/OWNER/REPO/git/refs/heads/BRANCH` (URL-encode slashes) | GraphQL-based deletion |
+
+Note on issue creation: `gh_issue.py`'s board-add step still uses GraphQL
+(`gh project item-add`) even after the issue-creation half moves to REST
+— the substitution above only covers the create call itself.
+
+**The one confirmed exception: Projects v2 board operations
+(`item-list`/`item-add`/`item-edit`/`field-list`) have no REST
+equivalent** — these remain GraphQL by necessity, not preference. Keep
+board reconciliation batched and cached (`board_sync.py`'s delta-sync and
+field-ID caching, hrse#386/harmonic-forge#203) rather than trying to
+avoid GraphQL for these calls.
+
+Rate-limit self-check: `gh api rate_limit --jq '.resources.graphql'`
+before a batch of board-heavy operations. Prefer reading the
+`X-Ratelimit-*` response headers on a real request over trusting a bare
+`gh api /rate_limit` call in isolation — two live reads have been observed
+to disagree in this environment; the headers on an actual request are the
+more trustworthy source.
+
+Full investigation, live measurements, and the decomposed follow-up
+issues (harmonic-forge#218 epic, #219–223): the research briefing at
+`~/Harmonic_Projects/research/2026-08-10-gh-graphql-rate-limit-briefing.md`.
+
 ## CLOUD-NATIVE & 12-FACTOR READINESS
 
 Target: every project survives a clean forklift to its cloud target.
