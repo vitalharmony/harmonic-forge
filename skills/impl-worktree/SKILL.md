@@ -24,6 +24,34 @@ git -C <repo>-lane2 worktree add /tmp/<repo>-<issue>-impl -b feat/<issue>-<short
 - Base the new branch off `origin/main` (fetch first if stale), not off
   whatever the shared `<repo>-lane2/` worktree happens to have checked out.
 
+## Provision
+
+A fresh worktree shares git history with `<repo>-lane2/` but nothing
+installed via a package manager — `node_modules`, `.venv`, vendored deps,
+and anything else git-ignored never carries over from `git worktree add`.
+Install fresh in every subdirectory that carries its own dependency
+manifest, before making any edit. An agent hitting a missing binary
+(`eslint: command not found`, `ModuleNotFoundError`, etc.) mid-gate is the
+sign this step was skipped — report and stop per this project's own
+no-ad-hoc-fixes norm; don't self-provision mid-task as a workaround, and
+don't guess a repo's package manager or flags. Consult the target repo's
+own `CLAUDE.md`/README for its exact install commands.
+
+HRSE2 concretely (two ecosystems, both required):
+
+```bash
+(cd /tmp/<repo>-<issue>-impl/frontend && npm ci)
+(cd /tmp/<repo>-<issue>-impl/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt)
+```
+
+Each worktree gets its own independent install — never a symlink to the
+shared `<repo>-lane2/`'s `node_modules`/`.venv`. A symlinked dependency
+directory is shared, mutable state across every worktree that points at
+it: two worktrees on branches with different manifests silently see
+whichever install last ran, and a concurrent install in one worktree can
+corrupt what another is reading mid-run. `npm ci`/a fresh venv cost a few
+seconds of local, cached install time in exchange for that isolation.
+
 ## Work
 
 Make every edit inside `/tmp/<repo>-<issue>-impl` — never in `<repo>-lane2/`.
