@@ -137,6 +137,121 @@ def fetch_item_list(
     return items
 
 
+# hrse#802: GitHub bills GraphQL on query *complexity* -- the number of nodes a
+# query could return -- not on HTTP call count. `fetch_item_list` over a 542-item
+# board costs hundreds of points; this targeted read costs roughly one, because
+# it can only ever return a handful of nodes. Use it whenever the question is
+# "what is field X on issue N", and reserve `fetch_item_list` for questions that
+# genuinely need the whole board (drift checks, delta syncs).
+#
+# Live evidence for why this matters (2026-08-12): GraphQL went 444 -> 4,952 used
+# in about an hour, dominated by ~6 full-board fetches in ~10 minutes, and the
+# final `board_sync --apply` died mid-run on quota exhaustion. Note the compound:
+# hrse#800 correctly raised the fetch from 500 to 542 items, which *raised*
+# per-fetch cost -- making fetch frequency, not fetch correctness, the thing that
+# now needs managing.
+_ESTIMATE_QUERY = """
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      projectItems(first: 10) {
+        nodes {
+          project { number }
+          fieldValueByName(name: "Estimate") {
+            ... on ProjectV2ItemFieldNumberValue { number }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def fetch_issue_estimate(
+    repo: str,
+    issue_number: int,
+    project_number: str,
+    run=None,
+) -> int | None:
+    """Return the Estimate field for one issue on one board, without
+    fetching the board (hrse#802).
+
+    `repo` is "owner/name". `project_number` selects which board to read
+    when an issue sits on several -- an issue can legitimately be on more
+    than one project, and reading "the first one" would silently return
+    another board's Estimate.
+
+    Deliberately uncached. This replaces a `ttl=0` full-board read whose
+    live-ness requirement is real (harmonic-forge#219: the caller must see
+    a board write from moments earlier), and that requirement survives the
+    change -- a targeted live query is still live, it is just not a scan.
+
+    Returns None for all three "no usable estimate" cases -- issue not on
+    this board, item present but Estimate unset, or the field absent from
+    the board schema. Callers already treat these identically (an unset
+    estimate and an off-board issue are both "no estimate to gate on"),
+    and collapsing them here keeps that contract rather than inventing a
+    distinction no caller acts on.
+
+    Raises GhItemListError on transport/shape failure, matching
+    `fetch_item_list` so callers keep one except clause for board reads.
+    """
+    if run is None:
+        import subprocess
+
+        def run(args: list[str]):
+            return subprocess.run(args, capture_output=True, text=True)
+
+    try:
+        owner, name = repo.split("/", 1)
+    except ValueError:
+        raise GhItemListError(f'repo must be "owner/name", got {repo!r}') from None
+
+    result = run([
+        "gh", "api", "graphql",
+        "-f", f"query={_ESTIMATE_QUERY}",
+        "-F", f"owner={owner}",
+        "-F", f"repo={name}",
+        "-F", f"number={int(issue_number)}",
+    ])
+    if result.returncode != 0:
+        stderr = getattr(result, "stderr", None)
+        raise GhItemListError(stderr.strip() if stderr else "gh api graphql failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise GhItemListError(f"unexpected response shape: {exc}") from exc
+
+    # A GraphQL 200 can still carry errors alongside a null field; treat that as
+    # a failure rather than silently reading it as "no estimate", which would
+    # turn an auth/quota error into a false "estimate is unset" verdict.
+    if payload.get("errors"):
+        messages = "; ".join(
+            e.get("message", "?") for e in payload["errors"] if isinstance(e, dict)
+        )
+        raise GhItemListError(messages or "graphql returned errors")
+
+    try:
+        issue = (payload.get("data") or {}).get("repository", {}).get("issue")
+    except AttributeError as exc:
+        raise GhItemListError(f"unexpected response shape: {exc}") from exc
+    if not issue:
+        return None  # issue does not exist / not visible -- same as "no estimate"
+
+    nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        project = node.get("project") or {}
+        if str(project.get("number")) != str(project_number):
+            continue
+        value = node.get("fieldValueByName") or {}
+        est = value.get("number")
+        return int(est) if isinstance(est, (int, float)) else None
+    return None  # not on this board
+
+
 def invalidate(owner: str, number: str, cache_dir: Path = None) -> None:
     """Delete every cached entry for (owner, number), any limit. Callers
     that write to the board (board_sync.py) must call this both before
