@@ -133,8 +133,13 @@ harmonic-forge/
 │   │                                # see the note below before adding one
 │   ├── sticky-wicket.md            # reactive cross-lane thrashing circuit breaker (Fable)
 │   ├── pitch-inspection.md         # proactive pre-flight handoff second read (Fable)
-│   └── product-strategy.md         # high-judgment product/architecture strategy calls (Fable) —
-│                                    # {project}-parameterized, invoking session supplies context
+│   ├── product-strategy.md         # high-judgment product/architecture strategy calls (Fable) —
+│   │                                # {project}-parameterized, invoking session supplies context
+│   └── ai-review-queue-synthesis.md # batch synthesis of a Drive review-queue of video briefs
+│                                    # into one prioritized doc ending in a GitHub filing plan
+│                                    # (Opus) — target-parameterized (queue folder, repos,
+│                                    # exemplar supplied by the invoking session); read-only
+│                                    # on GitHub, writes only to Drive (harmonic-forge#224)
 ├── skills/                          # distributable Claude Code skills (harmonic-forge#169) —
 │   │                                # directories (<name>/SKILL.md, + optional sibling
 │   │                                # files/dirs), symlinked whole, opt-in only via
