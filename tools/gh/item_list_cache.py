@@ -52,10 +52,23 @@ def _owner_number_glob(owner: str, number: str) -> str:
     return f"{safe_owner}_{safe_number}_*.json"
 
 
+# hrse#800: this default was 500 when introduced by harmonic-forge#219's
+# call-site consolidation -- not a deliberate quota guard, just the helper's
+# default. It became a silent truncation the moment a board crossed 500 items
+# (hrse board hit 541), because `gh project item-list` returns exactly `limit`
+# rows with no indication that more exist. Callers then read the missing rows
+# as "not on the board" and skipped them, while `board_drift_check` reported
+# "no drift" over a board it could only see 92% of. Raised well above any
+# current board, AND truncation is now detected rather than trusted -- see the
+# `len(items) >= limit` check below, which is the part that actually prevents
+# a recurrence when some future board crosses this bound too.
+DEFAULT_ITEM_LIMIT = 5000
+
+
 def fetch_item_list(
     number: str,
     owner: str = PROJECT_OWNER,
-    limit: int = 500,
+    limit: int = DEFAULT_ITEM_LIMIT,
     ttl: float = 0,
     run=None,
     cache_dir: Path = None,
@@ -98,6 +111,20 @@ def fetch_item_list(
         items = json.loads(result.stdout)["items"]
     except (json.JSONDecodeError, KeyError) as exc:
         raise GhItemListError(f"unexpected response shape: {exc}") from exc
+
+    # hrse#800: `gh project item-list` gives no "there are more" signal -- a
+    # full page and an exactly-`limit`-sized board are indistinguishable in the
+    # response. Fail loudly on the ambiguous case rather than hand back a list
+    # the caller will read as complete. A partial fetch reported as success is
+    # what turned this from a bug into a misleading one: callers treated the
+    # unseen tail as "not on the board" and drift checks passed over it.
+    if len(items) >= limit:
+        raise GhItemListError(
+            f"gh project item-list returned {len(items)} items at --limit {limit} "
+            f"for {owner}/{number} -- the result may be truncated and cannot be "
+            f"trusted as the full board. Raise DEFAULT_ITEM_LIMIT (or pass a "
+            f"larger limit) and re-run; do not treat the returned rows as complete."
+        )
 
     if cache_file is not None:
         try:
