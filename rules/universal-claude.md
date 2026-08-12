@@ -35,6 +35,12 @@ derivable from code or Git.
 
 ## Tool-use safeguards
 
+- Prefer `gh api` REST endpoints over GraphQL-backed `gh` subcommands
+  (`gh issue view/comment/close/create`, `gh pr create/merge/checks`)
+  wherever a REST equivalent exists — see `universal-agent.md`'s "GitHub
+  API — Prefer REST over GraphQL" section for the full mapping and why.
+  Projects v2 board operations are the one confirmed GraphQL-only
+  exception.
 - For multiline GitHub comments, use `--body-file` or `jq -Rs '{body: .}'`
   with API `--input -`; never inline multiline `--body` text.
 - For Git commands that could open an editor/hook, set
