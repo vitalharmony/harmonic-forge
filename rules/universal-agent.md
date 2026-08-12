@@ -46,6 +46,31 @@ migration scripts in a project's designated scripts directory are exempt.
 - Any single-instance resource (DB driver, connection pool) is a module-level
   singleton owned by one file — no agent instantiates a second one elsewhere.
 
+### GitHub account scoping — never `gh auth switch`
+
+`gh auth switch` mutates **global** state. It changes the active GitHub
+identity for every other session and agent on the machine, not just yours.
+On a multi-lane machine that is a cross-session failure: another actor's
+command silently runs, or fails, under an identity it never chose. Real
+incident, 2026-08-11 — an account switch was reverted by a concurrent
+session mid-task and surfaced as a confusing error rather than an obvious
+one.
+
+**Use `tools/gh/gh-as` instead.** It scopes `gh` to a named account for one
+process via a per-account `GH_CONFIG_DIR`, so there is nothing to undo and
+nothing to collide with:
+
+```bash
+gh-as <account> gh issue list -R owner/repo
+gh-as <account> python3 some_script.py     # child processes inherit the scoping
+```
+
+If a script needs a specific account, do not switch inside it — have the
+caller invoke it under `gh-as`, and have the script **verify** its identity
+(`gh api user --jq .login`) and refuse if it is wrong. This is the
+credential-isolation principle in `harmonic-forge.md` §6 made mechanical:
+one project's identity must never be able to act on another's.
+
 ### Passing sensitive real-world data between lanes
 
 Real business/personal data (negotiation figures, contact details, PII,

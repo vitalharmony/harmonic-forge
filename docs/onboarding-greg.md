@@ -23,6 +23,31 @@ universes**. This is intentional, not an oversight:
 - Any tooling (Lane 2/3 agents, `gh` CLI, a service-lifecycle script) running
   inside `kenekted-platform` should resolve its GitHub token from a
   Ke'nekted-scoped credential — a fine-grained PAT under `marc@kenekted.ai`
+
+**How to hold two accounts at once without them bleeding.** You will have a
+Ke'nekted identity and, if you ever touch a `vitalharmony` repo, a second one.
+Do **not** use `gh auth switch` to move between them — it is global, so it
+changes the active identity for every other process on your machine, and
+there is no reliable way to put it back if anything else is running.
+
+Use `harmonic-forge/tools/gh/gh-as`. One-time setup per account:
+
+```bash
+gh-as --init <account>
+```
+
+Then scope every command explicitly:
+
+```bash
+gh-as <kenekted-account> gh issue list -R harmonicarchitect/kenekted-platform
+gh-as <kenekted-account> python3 some_script.py
+```
+
+`gh-as --list` shows each slot and the identity it resolves to. It refuses to
+run if a slot's authenticated identity doesn't match its name, so a command
+cannot quietly execute against the wrong account. This is what keeps the two
+credential universes above actually separate in practice rather than in
+principle.
   or Greg's own account, stored in `kenekted-platform`'s own gitignored env
   file — never from HRSE2's `.env` or a machine-global `gh auth login`
   session that happens to be logged in as `vitalharmony`.

@@ -979,6 +979,37 @@ not a subagent.
    no stripped content. This is the verify-live-not-source standard
    applied to a lane's own GitHub output, not just to code behavior.
 
+## GitHub Account Scoping — Every Lane, Every Command
+
+`gh auth switch` is global mutable state. It changes the active GitHub
+identity for **every** session and agent on the machine. On a machine
+running three lanes plus side sessions, that is a cross-actor failure mode:
+a command runs under an identity nobody in that session chose. Real
+incident, 2026-08-11 — one session's switch was reverted by another mid-task,
+and the resulting error pointed nowhere near the actual cause.
+
+**Standing rule for every lane:** never `gh auth switch`. Use
+`harmonic-forge/tools/gh/gh-as`, which scopes `gh` to a named account for a
+single process and leaves global state untouched.
+
+```bash
+gh-as <account> gh issue list -R owner/repo
+gh-as <account> python3 some_script.py     # children inherit the scoping
+```
+
+One-time per account: `gh-as --init <account>`. `gh-as --list` shows each
+slot and the identity it actually resolves to.
+
+`gh-as` refuses to run if a slot is unconfigured, if its token is expired,
+or if the slot's authenticated identity does not match its name — so a
+command cannot silently execute against the wrong account because a token
+was replaced out of band.
+
+Scripts that need a specific account do not switch internally: the caller
+invokes them under `gh-as`, and the script verifies its own identity and
+refuses if it is wrong. See `tools/gh/README.md`, and `harmonic-forge.md`
+§6 for the credential-isolation principle this enforces.
+
 ## Team Topology
 
 | Role | Person | Responsibility |

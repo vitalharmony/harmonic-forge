@@ -3,6 +3,35 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## docs: document gh-as in foundation documents and directives (harmonic-forge#240)
+
+gh-as was documented in tools/gh/README.md and the root README.md — enough
+for someone who goes looking, not enough for a tool that governs credential
+safety in multi-person and multi-agent work. The actors most likely to reach
+for gh auth switch are the ones who never read tools/gh/README.md: agents
+that load only universal-agent.md and 3-lane-protocol.md, and developers
+following §6 onboarding.
+
+- rules/universal-agent.md: the directive itself, in SECURITY, since this is
+  the file agents actually load
+- 3-lane-protocol.md: agent-readable standing rule for every lane, in the
+  same register as GitHub Comment Formatting
+- harmonic-forge.md §3: gh-as in the platform repo structure
+- harmonic-forge.md §6: names gh-as as the mechanism enforcing the
+  credential-isolation principle already stated there — gh auth switch
+  cannot be part of that answer, since global identity mutation is exactly
+  the cross-project bleed the principle exists to prevent
+- harmonic-forge.md §6 onboarding: one-time gh-as --init setup step
+- docs/onboarding-greg.md: the multi-account case, in the Security Model
+  section he is told to read first — highest-risk case on the platform
+- docs/onboarding-kyle.md: brief pointer; single-account today
+
+Corpus swept: every remaining mention of gh auth switch is a warning against
+it, none recommend it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+- [docs] Markdown-only commit — no code changes. Files: 3-lane-protocol.md, docs/onboarding-greg.md, docs/onboarding-kyle.md, harmonic-forge.md, rules/universal-agent.md
+
 ## tools/gh: add gh-as — per-process GitHub account scoping (harmonic-forge#235)
 
 gh auth switch is global mutable state: switching accounts for one project

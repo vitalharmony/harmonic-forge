@@ -38,6 +38,11 @@ surprised by them:
    mise run db-heal
    mise run post-comment --issue N --file <path>   # GitHub comments — never gh issue comment directly
    ```
+   You are single-account on `vitalharmony`, so this mostly won't bite you —
+   but if you ever work across two GitHub accounts, **never `gh auth switch`**
+   (it is global and will change the active identity for every other session
+   on your machine). Use `harmonic-forge/tools/gh/gh-as` instead; see
+   `harmonic-forge.md` §6.
    Full task list: `mise tasks` from the repo root, or read `mise.toml`
    directly. `mise run restart` returns control immediately (it daemonizes
    the stack under `process-compose`, same as the old tool's behavior) —

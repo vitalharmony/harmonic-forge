@@ -120,6 +120,10 @@ harmonic-forge/
 ├── tools/
 │   ├── transaction-log/            # published, project-agnostic transaction-log +
 │   │                                # diffstat glue (library + CLI)
+│   ├── gh-as                       # per-process GitHub account scoping — the sanctioned
+│   │                                # alternative to `gh auth switch`, which is global
+│   │                                # mutable state and breaks concurrent sessions
+│   │                                # (harmonic-forge#235)
 │   └── gh/                         # published, repo-agnostic GitHub helpers (harmonic-forge#53)
 │                                    # — post_comment.py (self-checking --body-file post) +
 │                                    # gh_issue.py (create + optional board-add); --repo is
@@ -282,8 +286,13 @@ the core protocol depends on it.
    the first run — every later checkout/merge re-syncs without a manual
    step).
 4. Follow the project's `setup/first_time_setup.md` for environment setup.
-5. Read `3-lane-protocol.md` before pulling a first ticket.
-6. Pull a `tech-debt`-labeled issue as a first ticket (lowest stakes, real
+5. If you will touch more than one GitHub account (e.g. a client repo plus
+   `vitalharmony`), set up an account slot for each — once, per account:
+   `gh-as --init <account>`. Then run every `gh` command and every script
+   that calls `gh` under `gh-as <account> …`. **Never `gh auth switch`** —
+   see the security model below.
+6. Read `3-lane-protocol.md` before pulling a first ticket.
+7. Pull a `tech-debt`-labeled issue as a first ticket (lowest stakes, real
    codebase exposure).
 
 **Security model — credential isolation across projects:** each project's
@@ -295,6 +304,16 @@ project's own gitignored env file, never from a different project's token or
 a machine-global `gh auth login` session. `harmonic-forge` being public is the
 exception that makes this work cleanly — it's the one thing every project
 reads without needing any credential at all.
+
+**The mechanism that enforces this: `tools/gh/gh-as`** (harmonic-forge#235).
+`gh auth switch` cannot be part of the answer, because it is global mutable
+state — it changes the active identity for every other session and agent on
+the machine, which is precisely the cross-project bleed this principle exists
+to prevent. `gh-as` scopes `gh` to a named account for a single process, so
+there is nothing to undo and nothing for a concurrent session to collide with,
+and it refuses to run when a slot's authenticated identity doesn't match its
+name. Every lane and every agent is bound to this by
+`rules/universal-agent.md` and `3-lane-protocol.md`.
 
 See `docs/onboarding-kyle.md` and `docs/onboarding-greg.md` for
 project-specific addenda.
