@@ -63,6 +63,30 @@ class TestIsLane1Comment(unittest.TestCase):
     def test_empty_body_is_excluded(self):
         self.assertFalse(f.is_lane1_comment(""))
 
+    def test_lane1_comment_quoting_another_lanes_posted_by_is_included(self):
+        """harmonic-forge#269 -- live incident on hrse#848: a genuine Lane 1
+        discussion comment quoted Lane 3's footer tag by name in its prose
+        ("the spec posted above (`posted-by=LANE3`, ...)") before its own
+        real closing footer. The old unscoped regex matched the inline
+        LANE3 mention instead of the marker's own posted-by field and
+        misclassified a real Lane 1 comment as excluded."""
+        body = (
+            "the spec posted above (`posted-by=LANE3`, HITL Test Spec "
+            "Review) is approved as written.\n\n"
+            "<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->\n"
+        )
+        self.assertTrue(f.is_lane1_comment(body))
+
+    def test_lane2_comment_quoting_lane1_posted_by_is_still_excluded(self):
+        """Same fix, opposite direction -- prose mentioning LANE1 must not
+        launder a genuine Lane 2 comment into inclusion."""
+        body = (
+            "per Lane 1's comment (`posted-by=LANE1`), implemented as "
+            "specified.\n\n"
+            "<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->\n"
+        )
+        self.assertFalse(f.is_lane1_comment(body))
+
 
 class TestFetchComments(unittest.TestCase):
     def test_paginated_arrays_are_concatenated(self):

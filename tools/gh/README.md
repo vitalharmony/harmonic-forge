@@ -31,6 +31,18 @@ default, and print a banner naming the resolved target before acting.
     python3 gh_issue.py --repo vitalharmony/harmonic-forge --title "..." --labels "tech-debt"
   ```
 
+- **`fetch_lane1_context.py`** — for Lane 3 test-spec derivation
+  (harmonic-forge#253/#254): fetches the issue body plus only Lane-1-authored
+  comments, never the full thread, so Lane 3 structurally cannot see Lane
+  2's completion comment while deriving its spec — a rule that held as
+  prose and still got violated twice on the same issue (vitalharmony/hrse#793)
+  before this script closed the gap mechanically. Named explicitly in
+  `3-lane-protocol.md`'s Lane 3 step; a manual `gh` read of the full thread
+  is not a substitute.
+  ```bash
+  python3 fetch_lane1_context.py --repo vitalharmony/hrse --issue 848
+  ```
+
 - **`gh-as`** — run a command with `gh` scoped to a specific GitHub account,
   **without touching global auth state**. Each account gets its own `gh`
   config directory under `~/.config/gh-accounts/<account>`, applied
