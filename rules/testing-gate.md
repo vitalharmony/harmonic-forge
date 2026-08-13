@@ -172,3 +172,32 @@ for the UI-only variant.
    look, not diagnose why the main app looks unchanged. This is a Lane 1
    handoff-authoring responsibility, not something Lane 2/3 improvise
    after the operator asks.
+   - **Capture the evidence yourself when you can.** If the
+     Claude-in-Chrome browser tools are available to the session, Lane 1
+     takes the screenshot rather than deferring every operator-environment
+     TC to the human. This sits inside Lane 1's smoke-test-level
+     live-verification scope, not in tension with it: the evidence is
+     something Lane 3 is structurally incapable of producing (it has no
+     browser), not a re-check of something Lane 3 already covered.
+   - **Tab-group isolation.** The extension drives only tabs in its own
+     MCP-managed tab group — not the operator's regular open tabs, even in
+     the same Chrome profile. To reach an already-authenticated session,
+     don't try to attach to the operator's tab; navigate your own MCP tab
+     to the same URL. Cookies are shared per-origin within a profile
+     regardless of which tab opened them.
+   - **Per-worktree ports don't retarget a frontend's API base URL.**
+     Port-isolation mechanisms control what each service *binds to*; they
+     do not rewrite a client-side absolute API origin. A `.env`/
+     `.env.example` pinning something like
+     `VITE_API_BASE_URL=http://localhost:8002/api` silently defeats the
+     isolation — every lane's frontend keeps calling the *main* checkout's
+     backend, surfacing as intermittent `Failed to fetch`/503s that read as
+     "the backend isn't up" when it is, just on another port. Setting that
+     absolute override to a cross-port value instead introduces a second
+     silent failure (CORS-blocked cross-origin `fetch`). In a Vite-proxy
+     setup the fix is to leave the absolute override unset so the client
+     falls back to same-origin relative requests, and let the proxy's own
+     backend-target variable do the routing. Rule out this class of
+     misconfiguration before concluding a worktree backend is down.
+     (Still live in HRSE2 as of 2026-08-12: `frontend/.env.example` pins
+     port 8002.)
