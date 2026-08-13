@@ -66,6 +66,33 @@ if [ "$has_permission_mode" -eq 0 ] && [[ "${LANE_CLI:-claude}" == claude* ]]; t
 fi
 cli_args+=("$@")
 
+# harmonic-forge#264: hrse#792's Lane 3 gate lost the entire live
+# HTTP/auth-endpoint test surface to a stale backend/.env -- main had
+# gained KEYCLOAK_AGENT_CLIENT_ID/_SECRET, this worktree's own plain-file
+# copy hadn't, and the drift check (env-sync-check-drift, wired into
+# gate-restart) correctly caught it but only after Lane 3 had already
+# done most of a gate's worth of work around it. A symlink makes this
+# structurally impossible instead of merely detected: backend/.env has
+# no legitimate per-worktree divergence (check_worktree_env_sync.py's own
+# comparison logic already treats every key as required to match main
+# exactly), so there is nothing a copy is preserving that a live
+# reference doesn't already provide correctly. Creates/repairs the link
+# only -- never reads or prints the file's contents, so this never
+# touches secret values, only where they live on disk. Silently
+# skipped for a project with no backend/.env at all (harmonic-forge
+# itself, or any non-HRSE2-shaped project) -- conditional on the
+# structure already existing in the main checkout, not a new
+# convention this script invents.
+main_root="$parent/$base"
+if [ -f "$main_root/backend/.env" ]; then
+  main_env_real="$(readlink -f "$main_root/backend/.env")"
+  target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
+  if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
+    ln -sf "$main_env_real" "$target/backend/.env"
+    echo "lane3: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2
+  fi
+fi
+
 exec systemd-inhibit \
   --what=sleep:idle \
   --who="lane3" \
