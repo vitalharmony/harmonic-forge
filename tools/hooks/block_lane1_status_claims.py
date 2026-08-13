@@ -188,6 +188,40 @@ def is_direct_transport(
     return is_post_comment_script and repo == HRSE_REPO
 
 
+_BULK_COMMENTS_URL_RE = re.compile(r"/issues/\d+/comments(?:$|[/?])")
+
+_FETCH_LANE1_CONTEXT_HINT = (
+    "reads Lane 2's comment bodies too -- there is no server-side filter by "
+    "author/role, and every observed contamination on this project (hrse#793, "
+    "five separate Lane 3 sessions) came from exactly this class of command. "
+    "Use `python3 ~/harmonic-forge/tools/gh/fetch_lane1_context.py --repo "
+    "OWNER/REPO --issue N` instead, or fetch one already-known comment ID "
+    "directly via `gh api repos/OWNER/REPO/issues/comments/<id>` "
+    "(harmonic-forge#253/hrse#824/harmonic-forge#258)."
+)
+
+
+def bulk_comment_read_denial(segment: list[str]) -> str | None:
+    """harmonic-forge#260: the fifth Lane 3 contamination incident on
+    hrse#793 came through a Claude Code Lane 3 session -- #258 added this
+    exact check to the Codex-side gate_codex_tool.py hook only, and this
+    canonical Claude-Code-side hook (the one `.claude/settings.json`
+    actually wires for a Claude Lane 3 session) had no equivalent at all,
+    so `gh issue view --comments` sailed through unblocked. Mirrors
+    gate_codex_tool.py's bulk_comment_read_denial() exactly -- keep the
+    two in sync if either changes. Only called when LANE == "3" (see
+    call site in decision())."""
+    if not segment or segment[0] != "gh":
+        return None
+    if "issue" in segment and "view" in segment and "--comments" in segment:
+        return f"`gh issue view --comments` {_FETCH_LANE1_CONTEXT_HINT}"
+    if segment[1:2] == ["api"]:
+        for arg in segment[2:]:
+            if _BULK_COMMENTS_URL_RE.search(arg):
+                return f"a bulk `gh api .../issues/<N>/comments` listing {_FETCH_LANE1_CONTEXT_HINT}"
+    return None
+
+
 def pr_body_autoclose_text(args: list[str], cwd: Path) -> str | None:
     """If args is a `gh pr create`/`gh pr edit` call carrying a --body or
     --body-file value that contains GitHub auto-close keyword syntax,
@@ -386,6 +420,10 @@ def decision(command: object, cwd: Path) -> dict:
             target = Path(segment[1]).expanduser()
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
+        if os.environ.get("LANE") == "3":
+            bulk_read_reason = bulk_comment_read_denial(segment)
+            if bulk_read_reason is not None:
+                return denial(f"Blocked: {bulk_read_reason}")
         autoclose_match = pr_body_autoclose_text(segment, effective_cwd)
         if autoclose_match is not None:
             return denial(
