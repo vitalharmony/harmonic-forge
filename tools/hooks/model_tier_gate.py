@@ -29,7 +29,16 @@ try:
 except ImportError:
     _item_list_cache = None
 
-THRESHOLD = 8
+# harmonic-forge#257: which Tier values require the high-tier model. Defined
+# locally rather than imported from item_list_cache, because this hook must keep
+# working when that module is not importable — the `except ImportError` above is
+# the fail-open path, and a NameError here would deny-by-crash on every
+# Edit/Write instead.
+#
+# `deep` covers what `THRESHOLD = 8` used to: the legacy fallback in
+# resolve_tier() maps >= 8 to deep, so the escalation boundary is unchanged by
+# the rename. That equivalence is the thing to preserve if this is ever retuned.
+ESCALATING_TIERS = frozenset({"deep"})
 
 # harmonic-forge#203: `gh project item-list --limit 1000` is the single most
 # expensive call this hook makes (GitHub's GraphQL limiting is cost-based on
@@ -149,7 +158,15 @@ def _cached_item_list(owner: str, number: str, cache_dir: Path = _CACHE_DIR, ttl
         return None
 
 
-def resolve_estimate(cwd: str, issue_number: int) -> int | None:
+def resolve_tier(cwd: str, issue_number: int) -> str | None:
+    """Return the issue's Tier (harmonic-forge#257).
+
+    Prefers the board's `Tier` field; falls back to deriving one from the legacy
+    numeric `Estimate` while both coexist. Returns None when the issue carries
+    neither — which resolve_estimate already treated as "nothing to gate on",
+    and which must keep meaning allow, not deny: this hook fires on every
+    Edit/Write and a missing field must never wedge a lane.
+    """
     board = resolve_project_board(cwd)
     if board is None:
         return None
@@ -160,8 +177,18 @@ def resolve_estimate(cwd: str, issue_number: int) -> int | None:
     for item in items:
         content = item.get("content") or {}
         if content.get("number") == issue_number:
+            tier = item.get("tier")
+            if isinstance(tier, str) and tier.strip():
+                return tier.strip().lower()
             est = item.get("estimate")
-            return int(est) if isinstance(est, (int, float)) else None
+            if not isinstance(est, (int, float)):
+                return None
+            # Same boundary as the old `estimate >= THRESHOLD` check. 8 maps to
+            # `deep`, NOT `standard` — putting it in standard would silently
+            # stop 8-point work requiring the high-tier model.
+            if est >= 8:
+                return "deep"
+            return "standard" if est >= 5 else "fast"
     return None
 
 
@@ -211,8 +238,8 @@ def _main() -> None:
     if issue_number is None:
         _allow()
 
-    estimate = resolve_estimate(cwd, issue_number)
-    if estimate is None or estimate < THRESHOLD:
+    tier = resolve_tier(cwd, issue_number)
+    if tier not in ESCALATING_TIERS:
         _allow()
 
     if required_tier_met(payload, high_required=True):
@@ -220,7 +247,7 @@ def _main() -> None:
 
     switch_cmd = "/model gpt-5.6-sol" if "model" in payload else "/model opus"
     _deny(
-        f"Issue #{issue_number} is estimated at {estimate} points (>= {THRESHOLD}) "
+        f"Issue #{issue_number} is Tier '{tier}' "
         f"-- harmonic-forge#202 requires the high-tier model for this work. "
         f"Run `{switch_cmd}` and retry, or set LANE_MODEL to override."
     )
