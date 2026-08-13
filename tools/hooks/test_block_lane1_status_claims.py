@@ -7,6 +7,7 @@ that's separately-scoped follow-up work. Run: python3
 tools/hooks/test_block_lane1_status_claims.py"""
 
 import sys
+import unittest.mock
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,6 +81,61 @@ class TestExistingRegressions(unittest.TestCase):
             self.assertTrue(_is_denied(result))
         finally:
             Path(body_path).unlink()
+
+
+class TestBulkCommentReadDenial(unittest.TestCase):
+    """harmonic-forge#260: a fifth Lane 3 contamination incident on
+    hrse#793 came through a Claude Code Lane 3 session -- #258 added the
+    equivalent check to the Codex-side gate_codex_tool.py hook only, and
+    this canonical file (what a Claude Lane 3 session's .claude/settings.json
+    actually wires) had no check at all, so `gh issue view --comments`
+    sailed through unblocked. These are the literal commands from the
+    real incidents."""
+
+    def test_gh_issue_view_comments_denied_for_lane3(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "3"}):
+            result = m.decision("gh issue view 793 --repo vitalharmony/hrse --comments", Path.cwd())
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_api_bulk_comments_paginate_denied_for_lane3(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "3"}):
+            result = m.decision("gh api repos/vitalharmony/hrse/issues/793/comments --paginate", Path.cwd())
+        self.assertTrue(_is_denied(result))
+
+    def test_fetch_lane1_context_script_allowed_for_lane3(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "3"}):
+            result = m.decision(
+                "python3 ~/harmonic-forge/tools/gh/fetch_lane1_context.py --repo vitalharmony/hrse --issue 793",
+                Path.cwd(),
+            )
+        self.assertEqual(result, {})
+
+    def test_single_comment_by_id_allowed_for_lane3(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "3"}):
+            result = m.decision("gh api repos/vitalharmony/hrse/issues/comments/5273884235", Path.cwd())
+        self.assertEqual(result, {})
+
+    def test_issue_body_only_fetch_allowed_for_lane3(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "3"}):
+            result = m.decision("gh api repos/vitalharmony/hrse/issues/793 --jq .body", Path.cwd())
+        self.assertEqual(result, {})
+
+    def test_gh_issue_view_comments_allowed_for_lane2(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "2"}):
+            result = m.decision("gh issue view 793 --repo vitalharmony/hrse --comments", Path.cwd())
+        self.assertEqual(result, {})
+
+    def test_gh_issue_view_comments_allowed_for_lane1(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"LANE": "1"}):
+            result = m.decision("gh issue view 793 --repo vitalharmony/hrse --comments", Path.cwd())
+        self.assertEqual(result, {})
 
 
 class TestMalformedPayload(unittest.TestCase):
