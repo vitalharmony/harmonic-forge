@@ -588,12 +588,17 @@ receives the trigger — Lane 1, Lane 2, or Lane 3 alike.
    - **If confirmed clean:** Lane 1 drafts a second comment addressed to
      Lane 3 (carrying any caveats the review turned up) and posts it to
      #N, then tells HITL it's ready.
-4. **HITL says "Test #N"** (→ Lane 3). Lane 3 independently fetches the
-   issue body, Lane 1's original handoff comment, and Lane 1's
-   Lane-3-addressed comment from step 3 — never Lane 2's comment — derives
-   a test spec, and submits it for HITL approval
-   (`templates/hitl-test-review.md`) before executing anything. After
-   approval, Lane 3 executes and posts its gate report as a comment on #N.
+4. **HITL says "Test #N"** (→ Lane 3). Lane 3 fetches the issue body,
+   Lane 1's original handoff comment, and Lane 1's Lane-3-addressed
+   comment from step 3 — never Lane 2's comment — via
+   `harmonic-forge/tools/gh/fetch_lane1_context.py` (harmonic-forge#254),
+   never a manual `gh` read of the full thread, which exposes Lane 2's
+   comment before a session can self-censor it (the repeat-violation
+   pattern on vitalharmony/hrse#793 this script exists to close
+   structurally). Lane 3 derives a test spec from that output and submits
+   it for HITL approval (`templates/hitl-test-review.md`) before executing
+   anything. After approval, Lane 3 executes and posts its gate report as
+   a comment on #N.
 5. **HITL says "Lane 3 done for #N"** (→ Lane 1). Lane 1 reads #N's Lane 3
    gate comment, confirms every claim is backed by live execution (not
    source-code reasoning) **by inspecting each check's attached evidence

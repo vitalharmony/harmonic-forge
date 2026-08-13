@@ -28,13 +28,19 @@ Anything without the footer marker at all -- including every Lane 2/Lane 3
 completion or gate report, which the protocol has them post directly via
 `gh`, never through `l1-post` -- is excluded.
 
-Known limitation: the marker match is not anchored to the end of the body,
-so a comment that block-quotes another comment's genuine footer verbatim
-could misclassify. Not observed in practice (this isn't an adversarial
-boundary, just an internal convention), and `l1_post.py`'s own
-`reject_reserved_marker` already refuses to let a caller forge the footer
-text into a body posted through the shared tooling -- so a forged marker
-would have to be typed by hand outside that path.
+Known limitation (harmonic-forge#269, partially closed): field extraction
+(`kind=`, `posted-by=`) is scoped to the first matched `<!-- l1-post v1;
+... -->` marker's own text, not the whole body, so prose elsewhere that
+merely mentions another lane's footer fields (e.g. quoting `posted-by=LANE3`
+by name while describing what a comment is -- ordinary Lane 1 writing, not
+an adversarial act, and the incident that motivated this fix on hrse#848)
+no longer misclassifies. What remains open: the *marker* match itself is
+still the first occurrence in the body, so a comment that block-quotes
+another comment's genuine, full `<!-- l1-post v1; ... -->` footer verbatim
+before its own could still misclassify. Not observed in practice, and
+`l1_post.py`'s own `reject_reserved_marker` already refuses to let a caller
+forge the footer text into a body posted through the shared tooling -- so a
+forged marker would have to be typed by hand outside that path.
 
 Usage: python3 fetch_lane1_context.py --repo OWNER/REPO --issue N
 """
@@ -45,7 +51,8 @@ import re
 import subprocess
 import sys
 
-_KIND_RE = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=([\w-]+)")
+_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v1;.*?-->", re.DOTALL)
+_KIND_RE = re.compile(r"kind=([\w-]+)")
 _POSTED_BY_RE = re.compile(r"posted-by=([\w-]+)")
 _LANE1_KINDS = {"handoff", "ready-for-l3", "sweep"}
 _LANE1_POSTED_BY = {"LANE1", "LANE-unset"}
@@ -56,14 +63,24 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
 
 
 def is_lane1_comment(body: str) -> bool:
-    kind_match = _KIND_RE.search(body)
+    # harmonic-forge#269: both field regexes must be scoped to the matched
+    # marker's own text, not the whole body -- otherwise prose elsewhere in
+    # a Lane 1 comment that quotes another lane's footer tag by name (e.g.
+    # "the spec posted above (`posted-by=LANE3`, ...)") gets matched by
+    # `.search()` instead of the genuine closing footer, misclassifying a
+    # real Lane 1 comment as non-Lane-1. Live incident, hrse#848.
+    marker_match = _MARKER_RE.search(body)
+    if marker_match is None:
+        return False
+    marker = marker_match.group(0)
+    kind_match = _KIND_RE.search(marker)
     if kind_match is None:
         return False
     kind = kind_match.group(1)
     if kind in _LANE1_KINDS:
         return True
     if kind == "discussion":
-        posted_by_match = _POSTED_BY_RE.search(body)
+        posted_by_match = _POSTED_BY_RE.search(marker)
         return posted_by_match is not None and posted_by_match.group(1) in _LANE1_POSTED_BY
     return False
 
