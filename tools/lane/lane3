@@ -32,6 +32,27 @@ fi
 cd "$target"
 export LANE=3
 
+# harmonic-forge#255: this worktree can sit detached at an old commit
+# indefinitely -- nothing previously checked, so a session silently read
+# stale skill/protocol files (.devin/, harmonic-forge rules) straight out
+# of this worktree with no signal anything was wrong. Real incident: this
+# worktree was detached 2+ days behind origin/main, still carrying the
+# pre-fix "read the full issue thread" instruction harmonic-forge#253 had
+# already replaced on main, causing an avoidable Lane 3 spec-derivation
+# contamination the fix was specifically meant to prevent.
+# Warning only, never a block -- a Lane 3 session legitimately gating a
+# specific older target branch is not behind by mistake, and this script
+# has no way to distinguish that from genuine staleness.
+if git fetch origin main -q 2>/dev/null; then
+  current_head="$(git rev-parse HEAD 2>/dev/null || true)"
+  main_head="$(git rev-parse origin/main 2>/dev/null || true)"
+  if [ -n "$current_head" ] && [ -n "$main_head" ] && [ "$current_head" != "$main_head" ] \
+     && ! git merge-base --is-ancestor "$main_head" "$current_head" 2>/dev/null; then
+    behind="$(git rev-list --count "$current_head".."$main_head" 2>/dev/null || echo '?')"
+    echo "lane3: WARNING -- this worktree is $behind commit(s) behind origin/main. Skill/protocol files (.devin/, harmonic-forge rules) read from this worktree may be stale. If you are not intentionally gating an older target branch, run: git fetch origin main && git checkout origin/main" >&2
+  fi
+fi
+
 cli_args=("${LANE_CLI:-claude}")
 has_permission_mode=0
 for arg in "$@"; do
