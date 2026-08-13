@@ -231,7 +231,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Create a GitHub issue and optionally add it to a project board")
     parser.add_argument("--repo", required=True, help="Target repo, e.g. vitalharmony/hrse (no default — must be explicit)")
     parser.add_argument("--title", required=True, help="Issue title")
-    parser.add_argument("--body", default="", help="Issue body")
+    parser.add_argument("--body", default="", help="Issue body (prefer --body-file)")
+    parser.add_argument(
+        "--body-file", default=None, metavar="PATH",
+        help="Read the issue body from a file. PREFERRED over --body "
+             "(harmonic-forge#266): prose passed as a shell argument gets "
+             "corrupted by backtick command substitution, printf %% specifiers, "
+             "and dropped apostrophes in single-quoted strings. Use '-' for stdin.",
+    )
     parser.add_argument("--labels", default="feature", help="Comma-separated labels")
     parser.add_argument(
         "--project-owner", default=os.environ.get("GH_PROJECT_OWNER"),
@@ -253,6 +260,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # harmonic-forge#266: --body-file is the safe path for prose. --body still
+    # works for short bodies, but anything with backticks, apostrophes or
+    # percent signs should come from a file rather than survive a trip through
+    # shell quoting.
+    body = args.body
+    if args.body_file is not None:
+        if args.body and args.body_file:
+            parser.error("pass --body or --body-file, not both")
+        try:
+            if args.body_file == "-":
+                body = sys.stdin.read()
+            else:
+                with open(args.body_file) as handle:
+                    body = handle.read()
+        except OSError as exc:
+            parser.error(f"cannot read --body-file {args.body_file}: {exc}")
+
     tier = args.tier
     if tier is None and args.estimate is not None:
         # Same boundary as the retired THRESHOLD=8: 8 maps to deep, so callers
@@ -264,7 +288,7 @@ def main() -> int:
     print(f"[GH] Creating issue in {args.repo}")
 
     labels = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()]
-    issue_url = create_issue(args.repo, args.title, args.body, labels)
+    issue_url = create_issue(args.repo, args.title, body, labels)
     if issue_url is None:
         return 1
 
