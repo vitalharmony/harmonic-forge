@@ -150,6 +150,12 @@ def fetch_item_list(
 # hrse#800 correctly raised the fetch from 500 to 542 items, which *raised*
 # per-fetch cost -- making fetch frequency, not fetch correctness, the thing that
 # now needs managing.
+# harmonic-forge#257: asks for BOTH Tier and Estimate in one round trip, and
+# prefers Tier when present. The rename spans two repos plus a PreToolUse hook
+# that runs on every tool call, so an atomic cutover would guarantee that some
+# checkout somewhere reads a field that does not exist yet. Requesting both
+# makes migration order-independent; the Estimate half comes out once both
+# repos and both boards are through.
 _ESTIMATE_QUERY = """
 query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -157,7 +163,10 @@ query($owner: String!, $repo: String!, $number: Int!) {
       projectItems(first: 10) {
         nodes {
           project { number }
-          fieldValueByName(name: "Estimate") {
+          tier: fieldValueByName(name: "Tier") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          estimate: fieldValueByName(name: "Estimate") {
             ... on ProjectV2ItemFieldNumberValue { number }
           }
         }
@@ -166,6 +175,26 @@ query($owner: String!, $repo: String!, $number: Int!) {
   }
 }
 """
+
+# The one mapping, defined once. `deep` starts at 8 rather than 13 because
+# model_tier_gate.py escalates on `estimate >= 8`; putting 8 in `standard` would
+# silently stop 8-point work requiring the high-tier model, which is the exact
+# regression harmonic-forge#257 exists to avoid.
+TIER_FAST = "fast"
+TIER_STANDARD = "standard"
+TIER_DEEP = "deep"
+ESCALATING_TIERS = frozenset({TIER_DEEP})
+
+
+def tier_for_points(points: float | None) -> str | None:
+    """Legacy numeric estimate -> tier. Used while both fields coexist."""
+    if points is None:
+        return None
+    if points >= 8:
+        return TIER_DEEP
+    if points >= 5:
+        return TIER_STANDARD
+    return TIER_FAST
 
 
 def fetch_issue_estimate(
@@ -246,9 +275,73 @@ def fetch_issue_estimate(
         project = node.get("project") or {}
         if str(project.get("number")) != str(project_number):
             continue
-        value = node.get("fieldValueByName") or {}
-        est = value.get("number")
+        est = (node.get("estimate") or {}).get("number")
         return int(est) if isinstance(est, (int, float)) else None
+    return None  # not on this board
+
+
+def fetch_issue_tier(
+    repo: str,
+    issue_number: int,
+    project_number: str,
+    run=None,
+) -> str | None:
+    """Return one issue's Tier (harmonic-forge#257).
+
+    Prefers the Tier field; falls back to deriving a tier from the legacy
+    numeric Estimate when Tier is unset, so this is correct both before and
+    after the board migration and in either order across repos.
+
+    Returns None only when the issue carries neither — the same "nothing to
+    gate on" verdict `fetch_issue_estimate` returns, which every caller already
+    handles.
+    """
+    if run is None:
+        import subprocess
+
+        def run(args: list[str]):
+            return subprocess.run(args, capture_output=True, text=True)
+
+    try:
+        owner, name = repo.split("/", 1)
+    except ValueError:
+        raise GhItemListError(f'repo must be "owner/name", got {repo!r}') from None
+
+    result = run([
+        "gh", "api", "graphql",
+        "-f", f"query={_ESTIMATE_QUERY}",
+        "-F", f"owner={owner}",
+        "-F", f"repo={name}",
+        "-F", f"number={int(issue_number)}",
+    ])
+    if result.returncode != 0:
+        stderr = getattr(result, "stderr", None)
+        raise GhItemListError(stderr.strip() if stderr else "gh api graphql failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise GhItemListError(f"unexpected response shape: {exc}") from exc
+    if payload.get("errors"):
+        messages = "; ".join(
+            e.get("message", "?") for e in payload["errors"] if isinstance(e, dict)
+        )
+        raise GhItemListError(messages or "graphql returned errors")
+
+    issue = (payload.get("data") or {}).get("repository", {}).get("issue")
+    if not issue:
+        return None
+
+    nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str((node.get("project") or {}).get("number")) != str(project_number):
+            continue
+        tier = (node.get("tier") or {}).get("name")
+        if isinstance(tier, str) and tier:
+            return tier.strip().lower()
+        est = (node.get("estimate") or {}).get("number")
+        return tier_for_points(est) if isinstance(est, (int, float)) else None
     return None  # not on this board
 
 

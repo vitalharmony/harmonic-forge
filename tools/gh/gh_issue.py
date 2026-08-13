@@ -118,42 +118,74 @@ def _set_status_todo(item_id: str, project_id: str, fields: list[dict]) -> bool:
     return True
 
 
-def _set_estimate(item_id: str, project_id: str, fields: list[dict], estimate: float) -> bool:
-    """Set the project item's Estimate field. Takes an already-fetched
-    project id/field list, same reasoning as `_set_status_todo`."""
-    estimate_field = next((f for f in fields if f.get("name") == "Estimate"), None)
-    if estimate_field is None:
-        print("[GH] No 'Estimate' field found on the project", file=sys.stderr)
-        return False
+def _set_tier(item_id: str, project_id: str, fields: list[dict], tier: str) -> bool:
+    """Set the project item's Tier field (harmonic-forge#257).
 
+    Falls back to the legacy numeric Estimate when a board has not been migrated
+    yet, so this works against either board in either order — the rename spans
+    two repos and two boards and cannot be atomic.
+    """
+    tier = tier.strip().lower()
+    tier_field = next((f for f in fields if f.get("name") == "Tier"), None)
+    if tier_field is not None:
+        option = next(
+            (o for o in (tier_field.get("options") or [])
+             if str(o.get("name", "")).strip().lower() == tier),
+            None,
+        )
+        if option is None:
+            print(f"[GH] Tier field has no option {tier!r}", file=sys.stderr)
+            return False
+        edit_result = _run(
+            [
+                "gh", "project", "item-edit",
+                "--project-id", project_id,
+                "--id", item_id,
+                "--field-id", tier_field["id"],
+                "--single-select-option-id", option["id"],
+            ],
+            check=False,
+        )
+        if edit_result.returncode != 0:
+            print(f"[GH] Setting Tier failed:\n{edit_result.stderr}", file=sys.stderr)
+            return False
+        print(f"[GH] Set Tier = {tier}")
+        return True
+
+    # Board not migrated: write the legacy numeric field instead.
+    legacy = {"fast": 3, "standard": 5, "deep": 8}.get(tier)
+    estimate_field = next((f for f in fields if f.get("name") == "Estimate"), None)
+    if legacy is None or estimate_field is None:
+        print("[GH] Neither 'Tier' nor 'Estimate' field found on the project", file=sys.stderr)
+        return False
     edit_result = _run(
         [
             "gh", "project", "item-edit",
             "--project-id", project_id,
             "--id", item_id,
             "--field-id", estimate_field["id"],
-            "--number", str(estimate),
+            "--number", str(legacy),
         ],
         check=False,
     )
     if edit_result.returncode != 0:
         print(f"[GH] Setting Estimate failed:\n{edit_result.stderr}", file=sys.stderr)
         return False
-    print(f"[GH] Set Estimate = {estimate}")
+    print(f"[GH] Set Estimate = {legacy} (board not yet migrated to Tier)")
     return True
 
 
-def set_estimate(item_id: str, project_owner: str, project_number: str, estimate: float) -> bool:
+def set_tier(item_id: str, project_owner: str, project_number: str, tier: str) -> bool:
     """Standalone convenience wrapper for ad-hoc/backfill use (fetches its
     own project context) — `add_to_board()` uses the shared-context path
     above instead, since it may also be setting Status in the same call."""
     ctx = _fetch_project_context(project_owner, project_number)
     if ctx is None:
         return False
-    return _set_estimate(item_id, ctx["project_id"], ctx["fields"], estimate)
+    return _set_tier(item_id, ctx["project_id"], ctx["fields"], tier)
 
 
-def add_to_board(issue_url: str, project_owner: str, project_number: str, estimate: float | None) -> bool:
+def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None) -> bool:
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
     # last on a large board).
@@ -187,9 +219,9 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, estima
 
     print(f"[GH] Set Status = {STATUS_OPTION_NAME}")
 
-    if estimate is not None:
-        if not _set_estimate(item_id, ctx["project_id"], ctx["fields"], estimate):
-            print("[GH] Warning: could not set Estimate — item was added but needs manual triage", file=sys.stderr)
+    if tier is not None:
+        if not _set_tier(item_id, ctx["project_id"], ctx["fields"], tier):
+            print("[GH] Warning: could not set Tier — item was added but needs manual triage", file=sys.stderr)
             return False
 
     return True
@@ -210,11 +242,24 @@ def main() -> int:
         help="Project board number (default: $GH_PROJECT_NUMBER). Omit both to skip board-add entirely.",
     )
     parser.add_argument(
+        "--tier", choices=("fast", "standard", "deep"), default=None,
+        help="Complexity tier for the board's Tier field (harmonic-forge#257) — "
+             "the model-routing signal, not a forecast. no-op without a board.",
+    )
+    parser.add_argument(
         "--estimate", type=float, default=None,
-        help="Story-point estimate to write to the board's Estimate field "
-             "(harmonic-forge#202) — no-op if no project board is configured.",
+        help="DEPRECATED (harmonic-forge#257): legacy story-point estimate. "
+             "Mapped to a tier: >=8 deep, >=5 standard, else fast. Use --tier.",
     )
     args = parser.parse_args()
+
+    tier = args.tier
+    if tier is None and args.estimate is not None:
+        # Same boundary as the retired THRESHOLD=8: 8 maps to deep, so callers
+        # still passing --estimate keep their existing escalation behaviour.
+        tier = "deep" if args.estimate >= 8 else "standard" if args.estimate >= 5 else "fast"
+        print(f"[GH] --estimate is deprecated; mapped {args.estimate} -> Tier '{tier}'",
+              file=sys.stderr)
 
     print(f"[GH] Creating issue in {args.repo}")
 
@@ -228,7 +273,7 @@ def main() -> int:
               "$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER not set) — skipping board-add.")
         return 0
 
-    return 0 if add_to_board(issue_url, args.project_owner, args.project_number, args.estimate) else 1
+    return 0 if add_to_board(issue_url, args.project_owner, args.project_number, tier) else 1
 
 
 if __name__ == "__main__":

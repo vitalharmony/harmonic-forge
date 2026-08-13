@@ -78,9 +78,14 @@ class FetchIssueEstimateTests(unittest.TestCase):
     def _payload(self, nodes):
         return {"data": {"repository": {"issue": {"projectItems": {"nodes": nodes}}}}}
 
-    def _node(self, project_number, estimate):
-        value = None if estimate is None else {"number": estimate}
-        return {"project": {"number": project_number}, "fieldValueByName": value}
+    def _node(self, project_number, estimate, tier=None):
+        # harmonic-forge#257: the query now aliases both fields, so the response
+        # carries `estimate` and `tier` keys rather than one `fieldValueByName`.
+        return {
+            "project": {"number": project_number},
+            "estimate": None if estimate is None else {"number": estimate},
+            "tier": None if tier is None else {"name": tier},
+        }
 
     def test_reads_estimate_from_matching_board(self):
         run = self._run_returning(self._payload([self._node(1, 5)]))
@@ -132,6 +137,64 @@ class FetchIssueEstimateTests(unittest.TestCase):
         run = self._run_returning(self._payload([]))
         with self.assertRaises(cache.GhItemListError):
             cache.fetch_issue_estimate("norepo", 42, "1", run=run)
+
+
+class FetchIssueTierTests(unittest.TestCase):
+    """harmonic-forge#257: Tier preferred, legacy Estimate as fallback."""
+
+    def _run_returning(self, nodes):
+        payload = {"data": {"repository": {"issue": {"projectItems": {"nodes": nodes}}}}}
+        return MagicMock(return_value=MagicMock(returncode=0, stdout=json.dumps(payload), stderr=""))
+
+    def _node(self, project_number, estimate=None, tier=None):
+        return {
+            "project": {"number": project_number},
+            "estimate": None if estimate is None else {"number": estimate},
+            "tier": None if tier is None else {"name": tier},
+        }
+
+    def test_tier_wins_over_estimate(self):
+        run = self._run_returning([self._node(1, estimate=13, tier="fast")])
+        self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run), "fast")
+
+    def test_estimate_8_falls_back_to_deep(self):
+        """The escalation boundary must not move during the migration."""
+        run = self._run_returning([self._node(1, estimate=8)])
+        self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run), "deep")
+
+    def test_estimate_5_falls_back_to_standard(self):
+        run = self._run_returning([self._node(1, estimate=5)])
+        self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run), "standard")
+
+    def test_estimate_2_falls_back_to_fast(self):
+        run = self._run_returning([self._node(1, estimate=2)])
+        self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run), "fast")
+
+    def test_neither_field_is_none(self):
+        run = self._run_returning([self._node(1)])
+        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run))
+
+    def test_wrong_board_ignored(self):
+        run = self._run_returning([self._node(3, tier="deep")])
+        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run))
+
+    def test_graphql_errors_raise(self):
+        run = MagicMock(return_value=MagicMock(
+            returncode=0, stdout=json.dumps({"data": None, "errors": [{"message": "nope"}]}), stderr=""))
+        with self.assertRaises(cache.GhItemListError):
+            cache.fetch_issue_tier("a/b", 1, "1", run=run)
+
+
+class TierMappingTests(unittest.TestCase):
+    def test_boundary_is_eight(self):
+        self.assertEqual(cache.tier_for_points(8), "deep")
+        self.assertEqual(cache.tier_for_points(7), "standard")
+        self.assertEqual(cache.tier_for_points(5), "standard")
+        self.assertEqual(cache.tier_for_points(3), "fast")
+        self.assertIsNone(cache.tier_for_points(None))
+
+    def test_only_deep_escalates(self):
+        self.assertEqual(cache.ESCALATING_TIERS, frozenset({"deep"}))
 
 
 if __name__ == "__main__":
