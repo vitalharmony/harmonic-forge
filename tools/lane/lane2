@@ -54,6 +54,22 @@ if [ "$has_permission_mode" -eq 0 ] && [[ "${LANE_CLI:-claude}" == claude* ]]; t
 fi
 cli_args+=("$@")
 
+# harmonic-forge#264: see the identical block in tools/lane/lane3 for the
+# full incident (hrse#792) -- backend/.env has no legitimate per-worktree
+# divergence, so a symlink to the main checkout's real file makes drift
+# structurally impossible instead of merely detected. Never reads or
+# prints the file's contents. Silently skipped for a project with no
+# backend/.env (harmonic-forge itself, or any non-HRSE2-shaped project).
+main_root="$parent/$base"
+if [ -f "$main_root/backend/.env" ]; then
+  main_env_real="$(readlink -f "$main_root/backend/.env")"
+  target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
+  if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
+    ln -sf "$main_env_real" "$target/backend/.env"
+    echo "lane2: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2
+  fi
+fi
+
 exec systemd-inhibit \
   --what=sleep:idle \
   --who="lane2" \
