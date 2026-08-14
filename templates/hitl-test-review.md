@@ -3,6 +3,12 @@
 
 ## HITL Test Spec Review: [Issue #N — Short Title]
 
+- [ ] **Each test case is labelled `TC<n>`** (`TC1`, `TC2`, …). Lane 1's
+      gate-readiness sweep is cross-checked against these identifiers, so
+      that it accounts for exactly the cases in the approved spec — no more,
+      no fewer. A plain numbered list under a `### Test cases` heading is
+      accepted as a fallback (hrse#875), but the explicit identifier is
+      preferred: it lets a later gate report cite a case unambiguously.
 - [ ] Test cases cover all acceptance criteria stated in the issue
 - [ ] No test is trivially easy (e.g. `assert True`, a test that can't fail)
 - [ ] Edge cases are represented (empty input, boundary values, error paths)
