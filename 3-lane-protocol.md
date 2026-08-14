@@ -60,6 +60,33 @@ summarizes.*
   cross-issue pattern analysis (recurring bug classes, handoff-quality vs.
   first-pass-success correlation), not just a courtesy copy.
 - Never guesses at an ambiguous spec — stops and asks the Tech Lead.
+- **A close that leaves work outstanding links a tracker in the same
+  action.** If merging an issue's code leaves anything still to happen —
+  a migration to run, a manual verification, an operator step, a
+  follow-up someone agreed to — the close either does not happen yet, or
+  it happens alongside a linked issue for the remainder. **A closing
+  comment describing outstanding work is a record, not a tracker.**
+  Nothing reads it, nothing surfaces it, and nothing degrades when it is
+  ignored.
+
+  Real cost (hrse#849, 2026-08-13): the code fix merged, the issue
+  closed, and the closing comment itself said the run was *"still
+  outstanding."* All 219 target rows were untouched. It blocked hrse#847
+  and hrse#856 for days and was found only because a human happened to
+  notice in conversation. The information was present, honest, and
+  written down — and no part of the system was looking at it.
+
+  This is stated as a rule and deliberately **not** enforced by tooling.
+  A detector would have to decide from prose whether a comment describes
+  outstanding work, and pattern-matching prose authored by the party
+  being checked is a failure class this platform has now paid for
+  repeatedly (hrse#859 took four review rounds to abandon it; hrse#871
+  shipped with a silent 18% miss for the same reason). Where a specific,
+  mechanically-detectable class of outstanding work exists, enforce
+  *that* class instead of the general case — hrse#859 gates closing a
+  `data-migration` issue on a label, and hrse#867/#871 sweep for the same
+  invariant after the fact. Extend by adding classes, not by guessing at
+  prose.
 - Does not write production code directly (exception: explicit platform/
   tooling assignments — see `rules/universal-lane1.md`).
 
