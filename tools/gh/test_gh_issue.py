@@ -140,5 +140,83 @@ class TestUnmigratedBoardFallback(unittest.TestCase):
         self.assertIn("8", edit_cmd, "deep must map back to the escalating value")
 
 
+
+ITEM_LIST_JSON = json.dumps({"items": [
+    {"id": "PVTI_other", "content": {"url": "https://github.com/o/r/issues/1"}},
+    {"id": "PVTI_target", "content": {"url": "https://github.com/o/r/issues/42"}},
+    {"id": "PVTI_no_content"},
+]})
+
+
+class TestAlreadyOnBoardRecovery(unittest.TestCase):
+    """hrse#883: a repo auto-add can win the race, GitHub answers the second
+    add with 'Content already exists', and bailing there left the item on
+    the board with Tier unset — the silent-unset outcome harmonic-forge#263
+    exists to prevent."""
+
+    URL = "https://github.com/o/r/issues/42"
+
+    def _responses(self):
+        # item-add fails, then item-list, project view, field-list, and the
+        # two field mutations succeed.
+        return [
+            _completed("", returncode=1),   # item-add
+            _completed(ITEM_LIST_JSON),     # item-list recovery
+            _completed(VIEW_JSON),          # project view
+            _completed(FIELDS_JSON),        # field-list
+            _completed("{}"),               # set Status
+            _completed("{}"),               # set Tier
+        ]
+
+    def test_tier_is_still_set_when_the_item_already_exists(self):
+        with patch("gh_issue._run", side_effect=self._responses()) as m:
+            ok = gh_issue.add_to_board(self.URL, "o", "1", "fast")
+        self.assertTrue(ok, "add_to_board must succeed via the recovery path")
+        edits = [" ".join(c[0][0]) for c in m.call_args_list
+                 if "item-edit" in c[0][0]]
+        self.assertTrue(
+            any("OPT_fast" in cmd for cmd in edits),
+            f"Tier was never written on the recovery path; edits={edits}",
+        )
+
+    def test_recovered_item_id_is_the_matching_one(self):
+        with patch("gh_issue._run", side_effect=self._responses()) as m:
+            gh_issue.add_to_board(self.URL, "o", "1", "fast")
+        joined = " ".join(" ".join(c[0][0]) for c in m.call_args_list)
+        self.assertIn("PVTI_target", joined)
+        self.assertNotIn("PVTI_other", joined)
+
+    def test_still_fails_when_the_item_genuinely_is_not_there(self):
+        """A real add failure must not be laundered into success."""
+        responses = [
+            _completed("", returncode=1),  # item-add
+            _completed(json.dumps({"items": []})),  # nothing to recover
+        ]
+        with patch("gh_issue._run", side_effect=responses):
+            self.assertFalse(gh_issue.add_to_board(self.URL, "o", "1", "fast"))
+
+    def test_item_list_uses_an_explicit_limit(self):
+        """The default is 30 and these boards are larger; a freshly created
+        item is not reliably in the first page."""
+        with patch("gh_issue._run", side_effect=self._responses()) as m:
+            gh_issue.add_to_board(self.URL, "o", "1", "fast")
+        list_cmd = m.call_args_list[1][0][0]
+        self.assertIn("item-list", list_cmd)
+        self.assertIn("--limit", list_cmd)
+
+    def test_recovery_is_not_attempted_on_the_happy_path(self):
+        """The extra listing cost must be paid only on the rare path."""
+        responses = [
+            _completed(json.dumps({"id": "PVTI_fresh"})),  # item-add ok
+            _completed(VIEW_JSON), _completed(FIELDS_JSON),
+            _completed("{}"), _completed("{}"),
+        ]
+        with patch("gh_issue._run", side_effect=responses) as m:
+            gh_issue.add_to_board(self.URL, "o", "1", "fast")
+        self.assertFalse(
+            any("item-list" in c[0][0] for c in m.call_args_list),
+            "item-list must not run when item-add succeeded",
+        )
+
 if __name__ == "__main__":
     unittest.main()

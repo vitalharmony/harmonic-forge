@@ -185,6 +185,32 @@ def set_tier(item_id: str, project_owner: str, project_number: str, tier: str) -
     return _set_tier(item_id, ctx["project_id"], ctx["fields"], tier)
 
 
+def _find_existing_item(issue_url: str, project_owner: str, project_number: str) -> str | None:
+    """Project item id for an issue already on the board, or None.
+
+    Only called after `item-add` failed, so the extra listing cost is paid
+    on the rare path rather than on every filing. `--limit` is explicit
+    because the default is 30 and these boards are larger than that; a
+    freshly created item is not reliably in the first page.
+    """
+    result = _run(
+        ["gh", "project", "item-list", project_number,
+         "--owner", project_owner, "--format", "json", "--limit", "1000"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        items = json.loads(result.stdout)["items"]
+    except (json.JSONDecodeError, KeyError):
+        return None
+    for item in items:
+        content = item.get("content") or {}
+        if content.get("url") == issue_url:
+            return item.get("id")
+    return None
+
+
 def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None) -> bool:
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
@@ -197,16 +223,27 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     ]
     add_result = _run(add_cmd, check=False)
     if add_result.returncode != 0:
-        print(f"[GH] Warning: created issue but failed to add to board:\n{add_result.stderr}", file=sys.stderr)
-        return False
+        # hrse#883: a repo-level auto-add can win the race and put the issue
+        # on the board before this call runs, and GitHub answers the second
+        # add with "Content already exists". Bailing here left the item on
+        # the board with no Tier, which is exactly the silent-unset outcome
+        # harmonic-forge#263 exists to prevent — the field a model-routing
+        # gate reads, absent, with the run reporting only a warning. The
+        # item existing is the state this call wanted; recover its id and
+        # carry on to the field writes.
+        item_id = _find_existing_item(issue_url, project_owner, project_number)
+        if item_id is None:
+            print(f"[GH] Warning: created issue but failed to add to board:\n{add_result.stderr}", file=sys.stderr)
+            return False
+        print(f"[GH] Already on board #{project_number} (added by another writer); setting fields on the existing item")
+    else:
+        try:
+            item_id = json.loads(add_result.stdout)["id"]
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"[GH] Warning: added to board but could not parse item id: {exc}", file=sys.stderr)
+            return False
 
-    try:
-        item_id = json.loads(add_result.stdout)["id"]
-    except (json.JSONDecodeError, KeyError) as exc:
-        print(f"[GH] Warning: added to board but could not parse item id: {exc}", file=sys.stderr)
-        return False
-
-    print(f"[GH] Added issue to board #{project_number} (owner: {project_owner})")
+        print(f"[GH] Added issue to board #{project_number} (owner: {project_owner})")
 
     ctx = _fetch_project_context(project_owner, project_number)
     if ctx is None:
