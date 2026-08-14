@@ -103,6 +103,62 @@ class ExitCodeTests(unittest.TestCase):
         r.stranded.append(rh.Finding("a/b", "y", "2 commits ahead"))
         self.assertTrue(r.actionable)
 
+    def test_unrun_migration_is_actionable(self):
+        """hrse#867: a migration that closed without running is exactly the
+        thing worth failing on — it blocked two issues for days on hrse#849."""
+        r = rh.Report()
+        r.unrun_migrations.append(rh.Finding("a/b", "#849", "closed 2026-08-13"))
+        self.assertTrue(r.actionable)
+
+
+class MigrationSweepTests(unittest.TestCase):
+    """hrse#867 — closed data-migration issues with no execution record."""
+
+    @staticmethod
+    def _issue(number, labels, **extra):
+        base = {"number": number, "title": "backfill something",
+                "closed_at": "2026-08-13T23:30:21Z",
+                "closed_by": {"login": "marc"},
+                "labels": [{"name": n} for n in labels]}
+        base.update(extra)
+        return base
+
+    def _sweep(self, issues):
+        report = rh.Report()
+        with patch.object(rh, "_rest", return_value=issues):
+            rh.audit_migrations("vitalharmony/hrse", report)
+        return report.unrun_migrations
+
+    def test_unlabelled_execution_is_flagged(self):
+        found = self._sweep([self._issue(849, ["data-migration", "tech-debt"])])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].name, "#849")
+        self.assertIn("2026-08-13", found[0].detail)
+        self.assertIn("marc", found[0].detail)
+
+    def test_executed_label_clears_it(self):
+        self.assertEqual(self._sweep([
+            self._issue(849, ["data-migration", "migration-executed"])]), [])
+
+    def test_abandoned_label_clears_it(self):
+        self.assertEqual(self._sweep([
+            self._issue(849, ["data-migration", "migration-abandoned"])]), [])
+
+    def test_pull_requests_are_skipped(self):
+        """The issues endpoint returns PRs too; a PR is not a migration."""
+        pr = self._issue(853, ["data-migration"], pull_request={"url": "x"})
+        self.assertEqual(self._sweep([pr]), [])
+
+    def test_missing_closed_by_does_not_crash(self):
+        found = self._sweep([self._issue(849, ["data-migration"], closed_by=None)])
+        self.assertIn("unknown", found[0].detail)
+
+    def test_no_label_parsing_of_comments(self):
+        """The decision reads labels only -- prose is never a credential."""
+        issue = self._issue(849, ["data-migration"],
+                            body="MIGRATION-EXECUTED: rows=217")
+        self.assertEqual(len(self._sweep([issue])), 1)
+
 
 class PaginationTests(unittest.TestCase):
     def test_rest_concatenated_pages_are_all_parsed(self):
