@@ -30,6 +30,8 @@ other way:
 """
 
 import argparse
+import re
+from datetime import datetime, timedelta, timezone
 import json
 import subprocess
 import sys
@@ -80,9 +82,16 @@ class Report:
     stranded: list[Finding] = field(default_factory=list)   # may hold real work
     worktrees: list[Finding] = field(default_factory=list)
     unrun_migrations: list[Finding] = field(default_factory=list)
+    unlabelled_migrations: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
+        # unlabelled_migrations is reported but does NOT fail, same as
+        # orphaned. Eight genuine findings surfaced on the first 30-day
+        # run (a ninth was a mentioned-not-owned ref), so failing on them would leave this permanently red until
+        # someone backfills labels -- which is exactly how hrse#808 says
+        # a check gets ignored. The *unrun* case still fails: that one is
+        # an incident, not a backlog.
         return bool(self.stranded or self.unrun_migrations)
 
 
@@ -204,6 +213,138 @@ def audit_migrations(repo: str, report: Report) -> None:
         ))
 
 
+# CLAUDE.md convention: single-use migration scripts carry a numeric
+# prefix. A commit touching one is a mechanical signal that a migration
+# shipped -- unlike issue prose, it cannot be reworded away.
+MIGRATION_PATH = re.compile(r"(?:^|/)scripts/[123]-")
+
+# Not every numbered script mutates data. Diagnostics, gates and
+# environment setup share the prefix; flagging them turns this into a
+# check that is red by default, which is how hrse#808 says a check gets
+# ignored. Same exemption vocabulary as the stale-script guard.
+# Exempted by name. Note this is a *heuristic on filenames*, not a claim
+# that these change no data -- 1-gate_450_direction.py does contain MERGE
+# and DETACH DELETE, and 1-setup_keycloak_realm.py writes Keycloak config.
+# They are exempt because they are not graph migrations owned by an
+# issue, which is what this control is about.
+NON_MUTATING_SCRIPT = re.compile(
+    r"(?:^|/)scripts/[123]-(?:verify|diagnos|check|audit|report|inspect"
+    r"|gate|setup|install|retrigger)")
+
+# Squash subjects reference issues two ways in this corpus: "(#849)" and
+# the "H849" shorthand. Missing the second hid 100% of the H-referenced
+# population -- an 18% live miss rate in a 30-day window, and silent.
+# Group 1 captures an optional repo prefix so a cross-repo "forge#266"
+# is not looked up as this repo's #266, which exists and would flag an
+# unrelated issue.
+ISSUE_REF = re.compile(r"(?:\b([\w.-]+))?#(\d+)\b|\bH(\d+)\b")
+
+
+def _refs_in(subject: str, repo: str) -> set[str]:
+    """Issue numbers in a squash subject, excluding other repos' refs."""
+    short = repo.split("/")[-1]
+    numbers: set[str] = set()
+    for prefix, hashed, h_form in ISSUE_REF.findall(subject):
+        if h_form:
+            numbers.add(h_form)
+        elif hashed and (not prefix or prefix in (short, repo)):
+            numbers.add(hashed)
+    return numbers
+
+MIGRATION_LOOKBACK_DAYS = 30
+
+
+def audit_unlabelled_migrations(repo: str, report: Report) -> None:
+    """Merged migration commits whose issue never got `data-migration`.
+
+    hrse#871. Both hrse#859's close-time hook and hrse#867's sweep key
+    on that label, and nothing enforced it at filing time -- so an
+    unlabelled migration was invisible to both. hrse#849 is the proof:
+    its timeline shows the label applied 64 minutes AFTER the close,
+    retroactively during incident response, meaning neither control
+    would have caught the incident that produced them.
+
+    Deliberately keyed on **file paths, not issue prose**. Pattern
+    matching migration vocabulary in an issue body is the shape that
+    cost hrse#859 four review rounds; a commit that touches
+    `scripts/[123]-*` is mechanical and cannot be reworded away.
+
+    Cost, measured live rather than estimated: a 30-day window on this
+    corpus returns ~75 commits, ~59 of which carry a ref and therefore
+    take a per-commit call for their paths, plus ~11 issue lookups --
+    **roughly 70 REST calls and ~50 seconds**. The `path=scripts` filter
+    is not name-filtered, so most of those detail calls are on commits
+    that turn out to touch nothing numbered. Linear in a busier month,
+    and far inside the REST budget; the interactive latency is the real
+    cost, not the quota.
+
+    Coverage limits, stated rather than implied:
+
+    * **Issue attribution is still prose.** The path signal is
+      mechanical, but refs are parsed from the commit *subject*, which
+      humans write. A subject that merely *mentions* an issue can flag
+      it (hrse#708 is a live example -- "pre-#708 bug" in a commit
+      owned by hrse#719), and a migration whose subject carries no ref
+      at all is invisible. 24 of 60 days of subjects carry no ref.
+    * **Only root `scripts/[123]-*` is in scope.** Unprefixed mutators
+      such as `migrate_communication_channels.py` (21 write statements)
+      are not covered. Widening to "any script containing write Cypher"
+      would reintroduce content heuristics, which is the shape this
+      control exists to avoid.
+    * **A migration pushed directly, without a squash-merged PR
+      subject, is invisible.**
+
+    Deliberately NOT restricted to files with `status == "added"`, which
+    would suppress refactor noise but also miss a fixed-and-re-run
+    migration -- hrse#849 itself *modified* an existing script. Since
+    this finding is report-only, a false positive costs a glance and a
+    false negative costs the whole point.
+    """
+    since = (datetime.now(timezone.utc)
+             - timedelta(days=MIGRATION_LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    commits = _rest(
+        f"repos/{repo}/commits?path=scripts&since={since}&per_page=100"
+    )
+
+    seen: set[str] = set()
+    for commit in commits:
+        sha = commit.get("sha", "")
+        subject = (commit.get("commit", {}).get("message") or "").split("\n")[0]
+        refs = _refs_in(subject, repo)
+        if not refs:
+            continue
+
+        detail = _rest(f"repos/{repo}/commits/{sha}")
+        files = detail[0].get("files", []) if detail else []
+        touched = sorted({
+            f["filename"] for f in files
+            if MIGRATION_PATH.search(f.get("filename", ""))
+            and not NON_MUTATING_SCRIPT.search(f.get("filename", ""))
+        })
+        if not touched:
+            continue
+        for number in sorted(refs, key=int):
+            if number in seen:
+                continue
+            seen.add(number)
+            issue = _rest(f"repos/{repo}/issues/{number}")
+            if not issue:
+                continue
+            issue = issue[0]
+            if "pull_request" in issue:  # the ref was the PR, not the issue
+                continue
+            labels = {label["name"] for label in issue.get("labels", [])}
+            if MIGRATION_LABEL in labels:
+                continue
+            report.unlabelled_migrations.append(Finding(
+                repo=repo,
+                name=f"#{number}",
+                detail=(f"{sha[:7]} touched {', '.join(touched)} but the issue "
+                        f"has no {MIGRATION_LABEL!r} label — invisible to both "
+                        f"the close gate and the unrun sweep"),
+            ))
+
+
 def audit_worktrees(checkout: str, report: Report) -> None:
     """Flag worktrees whose branch is gone or already merged. Purely local."""
     try:
@@ -251,6 +392,7 @@ def main() -> int:
             return 2
         try:
             audit_migrations(repo, report)
+            audit_unlabelled_migrations(repo, report)
         except GhError as exc:
             # A repo with Issues disabled returns 410 here. That is a
             # reason to skip one audit, not to abandon the remaining
@@ -260,6 +402,17 @@ def main() -> int:
     for checkout in args.checkout:
         audit_worktrees(checkout, report)
 
+    if report.unlabelled_migrations:
+        print(f"UNLABELLED MIGRATIONS — {len(report.unlabelled_migrations)} "
+              f"issue(s) shipped a migration script without the "
+              f"{MIGRATION_LABEL!r} label:")
+        for f in report.unlabelled_migrations:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  Applying data-migration to these makes them visible to "
+              "hrse#859's close gate and hrse#867's sweep. Check the ref "
+              "first — a subject may *mention* an issue rather than own it. "
+              "Reported, not failed — see hrse#871.")
+        print()
     if report.unrun_migrations:
         print(f"UNRUN MIGRATIONS — {len(report.unrun_migrations)} closed "
               f"issue(s) with no record the migration ran:")
@@ -283,7 +436,7 @@ def main() -> int:
         print()
 
     if not (report.stranded or report.orphaned or report.worktrees
-            or report.unrun_migrations):
+            or report.unrun_migrations or report.unlabelled_migrations):
         print("repo hygiene: clean.")
         return 0
 
