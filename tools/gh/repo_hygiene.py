@@ -79,10 +79,11 @@ class Report:
     orphaned: list[Finding] = field(default_factory=list)   # safe to delete
     stranded: list[Finding] = field(default_factory=list)   # may hold real work
     worktrees: list[Finding] = field(default_factory=list)
+    unrun_migrations: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
-        return bool(self.stranded)
+        return bool(self.stranded or self.unrun_migrations)
 
 
 def audit_repo(repo: str, report: Report) -> None:
@@ -143,6 +144,66 @@ def audit_repo(repo: str, report: Report) -> None:
                 Finding(repo, branch, f"{ahead} commit(s) ahead, no PR ever opened"))
 
 
+MIGRATION_LABEL = "data-migration"
+EXECUTED_LABEL = "migration-executed"
+ABANDONED_LABEL = "migration-abandoned"
+
+
+def audit_migrations(repo: str, report: Report) -> None:
+    """Closed data-migration issues with no record that the migration ran.
+
+    hrse#867, and the load-bearing control for the hrse#849 failure: that
+    issue's code fix merged, the issue closed, and all 219 target rows
+    were still null. It blocked two downstream issues for days and was
+    caught only because a human noticed in conversation.
+
+    hrse#859's PreToolUse hook guards the same invariant at close time,
+    but it is fail-open and sees only closes issued through the Bash
+    tool -- not `gh api graphql`, not heredoc bodies, not the web UI.
+    This sweep reads state afterwards, so it catches every close *path*
+    regardless of how the close happened.
+
+    **It does not catch an unlabelled migration, and would not have
+    caught hrse#849 as it actually happened.** Verified from that
+    issue's timeline: `data-migration` was applied at 00:34, 64 minutes
+    AFTER the close -- retroactively, during incident response. At close
+    time it carried only `tech-debt`, so a sweep running that night
+    would have reported nothing.
+
+    Both this sweep and hrse#859's hook key on the same label, so both
+    inherit one unenforced dependency: a human applying `data-migration`
+    at filing time. The founding incident is itself proof that
+    discipline fails there. Tracked as hrse#871 --
+    stated here rather than left implicit, because a control whose
+    docstring overstates its coverage is how the next one goes
+    unnoticed.
+
+    Reads the label set only. No parsing of comment prose: four review
+    rounds on hrse#859 established that a published marker format makes
+    every published example a valid credential.
+    """
+    issues = _rest(
+        f"repos/{repo}/issues?state=closed&labels={MIGRATION_LABEL}&per_page=100"
+    )
+    for issue in issues:
+        if "pull_request" in issue:  # the issues endpoint returns PRs too
+            continue
+        labels = {label["name"] for label in issue.get("labels", [])}
+        if labels & {EXECUTED_LABEL, ABANDONED_LABEL}:
+            continue
+        closed_at = (issue.get("closed_at") or "unknown")[:10]
+        closed_by = (issue.get("closed_by") or {}).get("login", "unknown")
+        title = issue["title"]
+        title = title if len(title) <= 80 else title[:79] + "…"
+        report.unrun_migrations.append(Finding(
+            repo=repo,
+            name=f"#{issue['number']}",
+            detail=(f"closed {closed_at} by {closed_by} — no "
+                    f"{EXECUTED_LABEL!r} or {ABANDONED_LABEL!r} label; "
+                    f"{issue['title'][:60]}"),
+        ))
+
+
 def audit_worktrees(checkout: str, report: Report) -> None:
     """Flag worktrees whose branch is gone or already merged. Purely local."""
     try:
@@ -188,9 +249,23 @@ def main() -> int:
         except GhError as exc:
             print(f"ERROR auditing {repo}: {exc}", file=sys.stderr)
             return 2
+        try:
+            audit_migrations(repo, report)
+        except GhError as exc:
+            # A repo with Issues disabled returns 410 here. That is a
+            # reason to skip one audit, not to abandon the remaining
+            # repos and every --checkout worktree scan.
+            print(f"WARN: migration sweep skipped for {repo}: {exc}",
+                  file=sys.stderr)
     for checkout in args.checkout:
         audit_worktrees(checkout, report)
 
+    if report.unrun_migrations:
+        print(f"UNRUN MIGRATIONS — {len(report.unrun_migrations)} closed "
+              f"issue(s) with no record the migration ran:")
+        for f in report.unrun_migrations:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
     if report.stranded:
         print(f"STRANDED — {len(report.stranded)} branch(es) may hold work that exists nowhere else:")
         for f in report.stranded:
@@ -207,7 +282,8 @@ def main() -> int:
             print(f"  {f.name} — {f.detail}")
         print()
 
-    if not (report.stranded or report.orphaned or report.worktrees):
+    if not (report.stranded or report.orphaned or report.worktrees
+            or report.unrun_migrations):
         print("repo hygiene: clean.")
         return 0
 
@@ -215,7 +291,14 @@ def main() -> int:
     # failing on them would leave this permanently red until someone tidies —
     # which is how a check gets ignored.
     if report.actionable:
-        print("Review the STRANDED list before deleting anything. Nothing was deleted.")
+        if report.unrun_migrations:
+            print("A closed data-migration issue with no execution record means "
+                  "either the migration never ran, or the label was missed. "
+                  "Check the issue, then apply migration-executed or "
+                  "migration-abandoned (hrse#859/#867).")
+        if report.stranded:
+            print("Review the STRANDED list before deleting anything.")
+        print("Nothing was deleted.")
         return 1
     print("Nothing stranded. Nothing was deleted.")
     return 0

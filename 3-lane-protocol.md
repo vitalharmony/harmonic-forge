@@ -246,8 +246,11 @@ trusted to follow.*
   hook: closed `data-migration` issues lacking `migration-executed`,
   folded into the standing hygiene pass — filed as hrse#867 and **not
   yet shipped**. That catches every close path a local hook structurally
-  cannot see (graphql, heredoc bodies, the web UI) and it alone would
-  have caught hrse#849. Until it lands, the hook is the only control,
+  cannot see (graphql, heredoc bodies, the web UI). Note what it does
+  *not* close: both it and the hook key on `data-migration`, and nothing
+  enforces that the label is applied at filing time — hrse#849 was
+  labelled 64 minutes *after* it closed, so neither control would have
+  caught it as it actually happened (hrse#871). Until it lands, the hook is the only control,
   and the hook is fail-open by design — it makes the mistake rare, not
   impossible, and the rule above remains the actual authority.
 - Blocked from committing until 100% of tests pass at the required coverage
