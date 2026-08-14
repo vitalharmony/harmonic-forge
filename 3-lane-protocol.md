@@ -501,12 +501,38 @@ first, which defeats the convention's purpose. "Closed #313" is wrong;
 **Lane-status shorthand.** A quick status update, not a trigger — `L<N>`
 + one letter: `L2P` (Lane 2 posted its plan, plan-first issues only),
 `L2D` (Lane 2 done/implementation posted), `L3P` (Lane 3 gate passed),
-`L3F` (Lane 3 gate failed). This is a pointer to go read the lane's actual
-report on the issue thread, never a substitute for it — the verification
-standard above still applies in full. Combine with a repo-prefixed number
-space-separated (`L3F H26`), not concatenated (`L3FH26`) — concatenating
-collides visually whenever the result letter and repo letter are both
-`F` (Fail + harmonic-**F**orge).
+`L3F` (Lane 3 gate failed), and `L<N>B` (that lane is **blocked** — it
+stopped and reported rather than proceeding). This is a pointer to go read
+the lane's actual report on the issue thread, never a substitute for it —
+the verification standard above still applies in full. Combine with a
+repo-prefixed number space-separated (`L3F H26`), not concatenated
+(`L3FH26`) — concatenating collides visually whenever the result letter
+and repo letter are both `F` (Fail + harmonic-**F**orge), and the same
+hazard applies to `B`.
+
+**`B` is not a failure verdict, and it is available on every lane** (`L1B`,
+`L2B`, `L3B`) — a lane reporting BLOCKED is the protocol working. The
+correct response is to fix the blocking condition and re-run, **not** to
+route the work back a lane. `L3F` and `L3B` are different outcomes and
+conflating them sends the wrong work to the wrong lane:
+
+- **`L3F`** — the gate ran and something failed. The *implementation* is in
+  question. Routes to "Reimplement #N".
+- **`L3B`** — the gate could not produce a trustworthy verdict at all. The
+  implementation is *not* what is in question; a precondition, the
+  environment, or the baseline is. Routes to remediation, then a re-run of
+  the same commit.
+
+Real incident (hrse#847, 2026-08-13): every non-live check passed and the
+implementation was sound, but a concurrently-running backend on a stale
+worktree had rewritten the live baseline the gate depended on, so Lane 3
+could not produce a verdict it could stand behind and reported `L3B`.
+Reporting that as `L3F` would have implied the fix was wrong and sent it
+back to Lane 2 — the wrong lane, and work that did not need doing. The
+environment defect was tracked separately (hrse#863). `L2B` has the same
+shape: on hrse#849 Lane 2 twice self-blocked — once on a Plan-First gate
+not yet passed, once on being asked to run a data-modifying script it is
+categorically not authorized to run — and both refusals were correct.
 
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
 TCs in an already-approved test spec, distinct from approving the spec's
