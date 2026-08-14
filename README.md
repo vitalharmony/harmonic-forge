@@ -98,6 +98,7 @@ that kept getting violated became executable hooks in `tools/hooks/`:
 | `mypy_cwd_trap.py` | A known mechanical footgun that produced phantom type errors |
 | `remind_gate_readiness_sweep.py` | Gate-readiness claims that skipped the sweep |
 | `check_worktree_busy.py` | A checkout yanking state out from under a live process in a sibling worktree |
+| `block_data_migration_close.py` | A `data-migration` issue closing without a `migration-executed` label |
 
 ### Shared tooling
 - **`tools/gh/`** — repo-agnostic GitHub helpers. `gh_issue.py` (create + board

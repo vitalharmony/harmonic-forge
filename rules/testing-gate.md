@@ -90,6 +90,17 @@ for the UI-only variant.
      `~/Harmonic_Projects/testplan/{issue}/`, with the gate comment linking
      the filenames — the same directory Lane 3 already uses for test
      plans/results, now also the artifact home.
+   - **When a TC's acceptance criterion is that a data-modifying write
+     path actually *ran*, the pasted artifact must include the concrete
+     before/after counts** — for hrse#849 that was "217/219 candidates
+     resolved and written (106 inbound, 111 outbound), 2 genuinely
+     indeterminate". This is a specialization of the artifact
+     requirement above, not a new obligation: for a migration, "the
+     actual query output for a before/after count" *is* the evidence.
+     Once posted, apply the `migration-executed` label — that label, not
+     the gate report, is what permits the issue to close (hrse#859).
+     The gate report attests that test cases executed, which is a
+     different claim from rows having changed.
    - This exists so Lane 1's HITL step-5 review ("confirm every claim is
      backed by live execution") means inspecting an attached artifact, not
      trusting prose that live execution happened — the same

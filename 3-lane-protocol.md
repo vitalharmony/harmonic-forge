@@ -204,6 +204,52 @@ trusted to follow.*
   implement-exactly-what's-specified role, and it closes the #154/#155
   gap structurally: nothing runs against real data without HITL having
   explicitly approved that specific action first.
+- **A data-migration issue does not close on the code merge — it closes
+  when the migration has run.** The rule above says who may execute and
+  how it is authorized; it did not say that the execution must be
+  *evidenced* before the issue is closed, and that gap is not
+  theoretical. hrse#849 (2026-08-13) merged its classifier fix, closed,
+  and left all 219 target rows untouched; its own closing comment said
+  the run was "still outstanding". It blocked hrse#847 and hrse#856 for
+  as long as it read `closed`, and was reopened only because a human
+  happened to notice in conversation. Merging the code satisfies every
+  check that exists, so the close looks legitimate. **Mark such an issue
+  with the `data-migration` label at filing time**; closing it then
+  requires the `migration-executed` label, or `migration-abandoned` when
+  the run is deliberately not happening, with the reasoning in a
+  comment. Enforced by `tools/hooks/block_data_migration_close.py`
+  (hrse#859).
+
+  **The credential is a label, not text in a comment, and that choice was
+  expensive to learn.** Four review rounds rejected comment-parsing
+  designs; three failed the same way. A marker's format has to be
+  published — here, in the hook's own deny message, and in hrse#866 —
+  so *every published example is itself a valid credential*. The final
+  round proved it: hrse#866's body carries a fenced example receipt
+  naming hrse#849, and pasting that body onto the thread opened the gate
+  for the exact issue the hook existed to protect. Successive rounds
+  narrowed where an example could legally appear — not blockquoted, then
+  not fenced, then not indented — which is a blocklist maintained
+  against your own documentation, and it does not converge. Naming a
+  label is not applying one, so the loop closes. Label application also
+  carries an actor and a timestamp in the timeline, which a pasted
+  comment does not.
+
+  Note what is *not* accepted and why, since both are tempting: a
+  gate-readiness sweep is a **pre**-execution artifact, and a Lane 3
+  gate report evidences that test cases ran rather than that rows
+  changed — hrse#848's gate passed 12 of 13 with the thirteenth
+  knowingly unexecuted, and the modal heading `## Lane 3 gate status —
+  H<N>` sits on BLOCKED comments (hrse#728) as readily as passing ones.
+
+  **The load-bearing control will be the after-the-fact sweep**, not the
+  hook: closed `data-migration` issues lacking `migration-executed`,
+  folded into the standing hygiene pass — filed as hrse#867 and **not
+  yet shipped**. That catches every close path a local hook structurally
+  cannot see (graphql, heredoc bodies, the web UI) and it alone would
+  have caught hrse#849. Until it lands, the hook is the only control,
+  and the hook is fail-open by design — it makes the mistake rare, not
+  impossible, and the rule above remains the actual authority.
 - Blocked from committing until 100% of tests pass at the required coverage
   threshold.
 - **Lane 3 never fixes application code, ever, under any circumstance —
