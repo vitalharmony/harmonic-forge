@@ -269,7 +269,62 @@ secret needs to flow through a config file, it must arrive via variable
 interpolation/env injection at runtime, never a literal value written by an
 agent — full stop, regardless of which file.
 
+## THE FILING BAR — THREE TESTS, IN ORDER (hrse, 2026-08-14)
+
+**Applies before any agent, in any lane, creates a new issue.** It qualifies
+every "file it" instruction in this file, including the section immediately
+below, and supersedes any standing guidance that filing is default-on.
+
+Run these in order and stop at the first that answers:
+
+1. **Does it block or corrupt the live pipeline the current release thesis
+   names?** — File it.
+2. **Has it actually bitten three or more times?** — File it. Cite the
+   occurrences. Once or twice is a comment on the issue where it surfaced,
+   not a new number.
+3. **Otherwise** — fold it into the existing issue it touches, fix it inline
+   if the fix is smaller than the issue would be, or let it go.
+
+Branch 3 is the one that gets skipped, and skipping it is what produced the
+condition this rule exists to stop.
+
+**Measured on `vitalharmony/hrse`, 2026-08-14** — the evidence, not a
+hunch. Over three days: **60 issues created, 44 closed, net +16**. Standing
+open: **205**, of which **75 (37%) were labelled `tech-debt` or
+`infrastructure`** — work *about* the work, while the release thesis was
+landing a role. Operator: *"every issue closed generates 3 more... I'll never
+get anywhere at this rate."*
+
+**A true observation is not sufficient grounds to file.** The failure mode is
+not filing false things; it is filing true things nobody will ever action,
+which is indistinguishable from noise once the list is long enough. An
+unactioned issue is worse than an unwritten one, because it reads as signal
+and costs re-triage every sweep.
+
+**Three consequences that are easy to get wrong:**
+
+- **A once-only defect with an in-place guard does not earn an issue.** If the
+  fix ships a comment at the site that stops the next person, the knowledge is
+  durable already. File it if it recurs.
+- **Something smaller than its own issue should just be fixed.** A missing
+  dependency in one checkout is an install, not a tracked work item. Tracking
+  costs more than the fix.
+- **"It'll be lost otherwise" is answered by the issue it surfaced on**, not by
+  a new one. The section below is right that a gate comment dies with its
+  parent — so put it on the *parent that stays open*, or on the ADR, or in the
+  rule file. Those are all durable and none of them add to the count.
+
+**When the bar says no but the finding is real, say so in one line and move
+on.** Do not file it anyway "to be safe," and do not ask the operator to
+adjudicate every observation — that just moves the triage cost rather than
+removing it.
+
 ## STANDING-RULE VIOLATIONS GET FILED, NOT FIXED, NOT JUST MENTIONED
+
+**Gated by the filing bar above — run those three tests first.** This section
+governs *how* a violation is recorded once it clears the bar, and is not
+itself a licence to file. Most standing-rule violations found in passing will
+land on branch 2 or 3.
 
 If Lane 2 (implementing) or Lane 3 (testing/style pass) encounters a
 violation of any standing rule — modularity, type safety, security/DB
