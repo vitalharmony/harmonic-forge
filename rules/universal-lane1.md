@@ -67,6 +67,43 @@ uncommitted changes, and never touch one on a branch that hasn't
 actually merged. See `universal-claude.md`'s Tool-use safeguards for the
 concrete commands and the specific `l1_post.py` friction this prevents.
 
+## Doc-only merges wait for the open implementation branches (hrse, 2026-08-14)
+
+**Lane 1's own doc merges invalidate other lanes' finished work.** Every
+merge to `main` moves the base, and `l1_post.py` refuses to publish a
+`ready-for-l3` whose attested SHA is not based on current `origin/main`. So
+a documentation commit landed while an implementation branch is open costs
+that branch a full rebase *and* a re-verification — and stalls the protocol
+at the readiness step until both are done.
+
+This is not hypothetical friction. hrse#858 was rebased **three times in one
+day**; the third was forced by a docs-only commit touching nothing but
+`CLAUDE.md` and a priorities file, against a branch that had already passed
+its full gate and been pushed.
+
+**The rule:**
+
+- **Before merging a doc-only change, check for open implementation
+  branches.** If any exist, hold the doc merge until they land, or batch
+  several doc changes into one merge so the tax is paid once instead of
+  per-reconcile.
+- **Reconciling a priorities/sequencing doc is not urgent enough to
+  interrupt a gate.** It is bookkeeping; the implementation branch is the
+  work. Commit it locally, or open the PR and leave it unmerged, and say so.
+- **When a doc merge is genuinely required first** — it records a decision
+  another lane needs *now* — merge it, then say plainly in the same breath
+  that the open branches need a rebase, rather than letting them discover it
+  at the readiness step.
+
+**Batching is the default, not the exception.** A single session can easily
+produce three or four reconciles; landing each one separately means three or
+four rebases charged to whoever happens to have a branch open.
+
+The structural half of this belongs in the project — a generated schema block
+sharing a file with hand-written process notes guarantees the collision
+(hrse#892). This rule holds regardless of whether that is fixed, because a
+doc merge still moves the base even when it touches no shared file.
+
 ## Lane 1 handoff artifact
 
 Use `templates/lane1-handoff.md`. Read it in full when writing a
