@@ -99,6 +99,7 @@ that kept getting violated became executable hooks in `tools/hooks/`:
 | `remind_gate_readiness_sweep.py` | Gate-readiness claims that skipped the sweep |
 | `check_worktree_busy.py` | A checkout yanking state out from under a live process in a sibling worktree |
 | `block_data_migration_close.py` | A `data-migration` issue closing without a `migration-executed` label |
+| `block_stale_script_execution.py` | A script running from a checkout that lacks the commit which last fixed it |
 
 ### Shared tooling
 - **`tools/gh/`** — repo-agnostic GitHub helpers. `gh_issue.py` (create + board
