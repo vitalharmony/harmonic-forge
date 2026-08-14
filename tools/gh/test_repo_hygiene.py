@@ -103,12 +103,89 @@ class ExitCodeTests(unittest.TestCase):
         r.stranded.append(rh.Finding("a/b", "y", "2 commits ahead"))
         self.assertTrue(r.actionable)
 
+    def test_unlabelled_migration_reports_but_does_not_fail(self):
+        """hrse#871: eight genuine findings on the first run. Failing on a
+        backlog is how hrse#808 says a check gets ignored."""
+        r = rh.Report()
+        r.unlabelled_migrations.append(rh.Finding("a/b", "#792", "shipped 1-*"))
+        self.assertFalse(r.actionable)
+        r.unrun_migrations.append(rh.Finding("a/b", "#849", "closed"))
+        self.assertTrue(r.actionable, "an unrun migration is an incident")
+
     def test_unrun_migration_is_actionable(self):
         """hrse#867: a migration that closed without running is exactly the
         thing worth failing on — it blocked two issues for days on hrse#849."""
         r = rh.Report()
         r.unrun_migrations.append(rh.Finding("a/b", "#849", "closed 2026-08-13"))
         self.assertTrue(r.actionable)
+
+
+class UnlabelledMigrationTests(unittest.TestCase):
+    """hrse#871 — migration commits whose issue never got the label."""
+
+    COMMIT = {"sha": "abc1234", "commit": {"message": "fix: backfill (#792)"}}
+
+    def _sweep(self, files, issues, commit=None):
+        """issues: one _rest response per distinct ref, in ascending order."""
+        report = rh.Report()
+        calls = iter([[commit or self.COMMIT], [{"files": files}]] + issues)
+        with patch.object(rh, "_rest", side_effect=lambda *_: next(calls)):
+            rh.audit_unlabelled_migrations("a/b", report)
+        return report.unlabelled_migrations
+
+    def test_migration_script_with_unlabelled_issue_is_flagged(self):
+        found = self._sweep([{"filename": "scripts/1-backfill-x.py"}],
+                            [[{"number": 792, "labels": []}]])
+        self.assertEqual(len(found), 1)
+        self.assertIn("scripts/1-backfill-x.py", found[0].detail)
+
+    def test_labelled_issue_is_not_flagged(self):
+        self.assertEqual(self._sweep(
+            [{"filename": "scripts/1-backfill-x.py"}],
+            [[{"number": 792, "labels": [{"name": "data-migration"}]}]]), [])
+
+    def test_non_mutating_numbered_scripts_are_exempt(self):
+        """Exempt by name because they are not issue-owned graph
+        migrations -- not a claim that they write nothing."""
+        for name in ("1-verify_x.py", "1-gate_x.py", "1-setup_x.py",
+                     "1-diagnose_x.py"):
+            with self.subTest(script=name):
+                self.assertEqual(self._sweep(
+                    [{"filename": f"scripts/{name}"}],
+                    [[{"number": 792, "labels": []}]]), [])
+
+    def test_h_shorthand_refs_are_matched(self):
+        """H350/H511 refs hid 100% of that population -- silently."""
+        commit = {"sha": "abc1234", "commit": {"message": "fix: dedupe (H350) (#655)"}}
+        found = self._sweep([{"filename": "scripts/1-dedupe_x.py"}],
+                            [[{"number": 350, "labels": []}],
+                             [{"number": 655, "labels": [],
+                               "pull_request": {"url": "x"}}]], commit=commit)
+        self.assertEqual([f.name for f in found], ["#350"])
+
+    def test_cross_repo_ref_is_not_looked_up_here(self):
+        """forge#266 must not resolve to this repo's #266, which exists."""
+        commit = {"sha": "abc1234",
+                  "commit": {"message": "fix: x (harmonic-forge#266) (#840)"}}
+        found = self._sweep([{"filename": "scripts/1-backfill-x.py"}],
+                            [[{"number": 840, "labels": [],
+                               "pull_request": {"url": "x"}}]], commit=commit)
+        self.assertEqual(found, [])
+
+    def test_non_script_commit_is_ignored(self):
+        self.assertEqual(self._sweep([{"filename": "backend/app/main.py"}], []), [])
+
+    def test_pull_request_ref_is_skipped(self):
+        """The squash subject carries both the issue and the PR number;
+        only the issue should be judged."""
+        both = {"sha": "abc1234",
+                "commit": {"message": "fix: backfill (#792) (#835)"}}
+        found = self._sweep(
+            [{"filename": "scripts/1-backfill-x.py"}],
+            [[{"number": 792, "labels": []}],
+             [{"number": 835, "labels": [], "pull_request": {"url": "x"}}]],
+            commit=both)
+        self.assertEqual([f.name for f in found], ["#792"])
 
 
 class MigrationSweepTests(unittest.TestCase):
