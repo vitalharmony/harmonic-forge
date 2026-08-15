@@ -11,12 +11,20 @@ safeguards) live in `universal-claude.md` instead.* Combine with
 
 ## Current lane assignment (harmonic-forge#113)
 
-As of this writing, Lane 1 is filled by Claude Code; Lane 2 and Lane 3
-are both filled by Codex. This is a live-state note, distinct from
-`3-lane-protocol.md`'s generic reference-tool framing (Devin Local/Devin
-AA as the default example, never updated to track actual current
-assignment) — check here, or ask the operator, for what's actually
-running today.
+As of this writing, Lane 1 is filled by Claude Code. **Lane 2 and Lane 3
+both accept either Claude Code or Codex** — confirmed live, hrse#327,
+2026-08-15: a Lane 3 gate ran under a Claude Code CLI session
+(`AI_AGENT=claude-code_*`), not Codex, updated from the prior single-tool
+note (which said "both filled by Codex," now stale). The `LANE_CLI`
+mechanism in `tools/lane/lane3`/`lane2` (harmonic-forge#179) already
+distinguishes Claude-family CLIs from Codex correctly for both, and
+`LANE` itself propagates through either tool's subprocess tree by its own
+mechanism (harmonic-forge#142/#148) — this is deliberate dual-CLI
+support, not an unaccounted-for gap. This is a live-state note, distinct
+from `3-lane-protocol.md`'s generic reference-tool framing (Devin
+Local/Devin AA as the default example, never updated to track actual
+current assignment) — check here, or ask the operator, for what's
+actually running today.
 
 Lanes are independent roles, not a license to collapse review into
 implementation. Follow the project rules when an operator explicitly
