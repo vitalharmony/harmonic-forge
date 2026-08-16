@@ -83,6 +83,7 @@ class Report:
     worktrees: list[Finding] = field(default_factory=list)
     unrun_migrations: list[Finding] = field(default_factory=list)
     unlabelled_migrations: list[Finding] = field(default_factory=list)
+    unboarded: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -92,6 +93,10 @@ class Report:
         # someone backfills labels -- which is exactly how hrse#808 says
         # a check gets ignored. The *unrun* case still fails: that one is
         # an incident, not a backlog.
+        # unboarded is reported and does NOT fail, same as orphaned. An
+        # issue off a board, or on one with a field unset, is a cleanup
+        # opportunity rather than lost work -- hrse#979 scope item 3 is
+        # explicit that this must not change the exit code.
         return bool(self.stranded or self.unrun_migrations)
 
 
@@ -345,6 +350,115 @@ def audit_unlabelled_migrations(repo: str, report: Report) -> None:
             ))
 
 
+# hrse#979: which board a repo's issues live on. cymagraph-infra and
+# openclaw-projects have no board of their own -- their items sit on board #1
+# alongside hrse's. Mirrors gh_issue.py's REPO_BOARDS (harmonic-forge#107);
+# kept local rather than imported so this script stays standalone.
+_REPO_BOARDS: dict[str, tuple[str, str]] = {
+    "vitalharmony/hrse": ("vitalharmony", "1"),
+    "vitalharmony/harmonic-forge": ("vitalharmony", "3"),
+    "vitalharmony/cymagraph-infra": ("vitalharmony", "1"),
+    "vitalharmony/openclaw-projects": ("vitalharmony", "1"),
+}
+
+# Board fields every open issue is expected to carry (hrse#966). Milestone is
+# deliberately NOT here: a repo carries release milestones only when its work
+# ships inside one venture's release, so harmonic-forge having none is a
+# recorded decision, not a gap (hrse#979 scope item 4).
+_REQUIRED_BOARD_FIELDS = ("Theme", "Venture")
+
+_BOARD_ITEMS_QUERY = """
+query($owner: String!, $number: Int!, $cursor: String) {
+  user(login: $owner) {
+    projectV2(number: $number) {
+      items(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          content { ... on Issue { number state repository { nameWithOwner } } }
+          theme: fieldValueByName(name: "Theme") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          venture: fieldValueByName(name: "Venture") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _board_state(owner: str, number: str) -> dict[tuple[str, int], dict]:
+    """(repo, issue) -> {field: value|None} for every OPEN item on a board."""
+    state: dict[tuple[str, int], dict] = {}
+    cursor: str | None = None
+    while True:
+        args = ["gh", "api", "graphql", "-f", f"query={_BOARD_ITEMS_QUERY}",
+                "-F", f"owner={owner}", "-F", f"number={int(number)}"]
+        if cursor:
+            args += ["-F", f"cursor={cursor}"]
+        payload = json.loads(_run(args))
+        if payload.get("errors"):
+            raise GhError("; ".join(e.get("message", "?") for e in payload["errors"]))
+        project = ((payload.get("data") or {}).get("user") or {}).get("projectV2")
+        if not project:
+            raise GhError(f"no project #{number} for {owner}")
+        items = project["items"]
+        for node in items["nodes"]:
+            content = node.get("content") or {}
+            if content.get("state") != "OPEN" or not content.get("number"):
+                continue
+            key = ((content.get("repository") or {}).get("nameWithOwner", ""),
+                   content["number"])
+            state[key] = {
+                "Theme": (node.get("theme") or {}).get("name"),
+                "Venture": (node.get("venture") or {}).get("name"),
+            }
+        if not items["pageInfo"]["hasNextPage"]:
+            return state
+        cursor = items["pageInfo"]["endCursor"]
+
+
+def audit_unboarded(repo: str, report: Report, _cache: dict = {}) -> None:
+    """Open issues on no board, and boarded ones missing Theme/Venture.
+
+    hrse#979. An unboarded issue has no Theme, no Venture and no Sequence,
+    because those are board fields -- so it appears in no board-driven query,
+    no capability slice and no burn-up. Two live instances were found only
+    because someone happened to run a cross-repo count by hand.
+
+    Reports; never fails the run (scope item 3).
+    """
+    board = _REPO_BOARDS.get(repo)
+    if board is None:
+        report.unboarded.append(Finding(
+            repo, "(repo)", "no board mapped for this repo — add it to _REPO_BOARDS"))
+        return
+    owner, number = board
+    if board not in _cache:  # one fetch per board, not per repo sharing it
+        _cache[board] = _board_state(owner, number)
+    state = _cache[board]
+
+    for issue in _rest(f"repos/{repo}/issues?state=open&per_page=100"):
+        # `is not None`, not truthiness: the REST payload's pull_request
+        # object is populated in practice, but an empty one would be falsy
+        # and a PR would be reported as an unboarded issue.
+        if issue.get("pull_request") is not None:
+            continue
+        num = issue["number"]
+        fields = state.get((repo, num))
+        if fields is None:
+            report.unboarded.append(Finding(
+                repo, f"#{num}", f"on no board — {issue['title'][:60]}"))
+            continue
+        missing = [f for f in _REQUIRED_BOARD_FIELDS if not fields.get(f)]
+        if missing:
+            report.unboarded.append(Finding(
+                repo, f"#{num}",
+                f"boarded but {' and '.join(missing)} unset — {issue['title'][:50]}"))
+
+
 def audit_worktrees(checkout: str, report: Report) -> None:
     """Flag worktrees whose branch is gone or already merged. Purely local."""
     try:
@@ -393,6 +507,7 @@ def main() -> int:
         try:
             audit_migrations(repo, report)
             audit_unlabelled_migrations(repo, report)
+            audit_unboarded(repo, report)
         except GhError as exc:
             # A repo with Issues disabled returns 410 here. That is a
             # reason to skip one audit, not to abandon the remaining
@@ -412,6 +527,15 @@ def main() -> int:
               "hrse#859's close gate and hrse#867's sweep. Check the ref "
               "first — a subject may *mention* an issue rather than own it. "
               "Reported, not failed — see hrse#871.")
+        print()
+    if report.unboarded:
+        print(f"UNBOARDED — {len(report.unboarded)} open issue(s) invisible to "
+              f"board-driven reporting:")
+        for f in report.unboarded:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  An issue off a board, or missing Theme/Venture, appears in no "
+              "capability slice and no burn-up (hrse#965/#967). Reported, not "
+              "failed — it is a cleanup opportunity, not lost work.")
         print()
     if report.unrun_migrations:
         print(f"UNRUN MIGRATIONS — {len(report.unrun_migrations)} closed "
@@ -436,7 +560,8 @@ def main() -> int:
         print()
 
     if not (report.stranded or report.orphaned or report.worktrees
-            or report.unrun_migrations or report.unlabelled_migrations):
+            or report.unrun_migrations or report.unlabelled_migrations
+            or report.unboarded):
         print("repo hygiene: clean.")
         return 0
 

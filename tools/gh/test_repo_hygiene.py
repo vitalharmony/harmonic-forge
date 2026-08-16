@@ -250,3 +250,70 @@ class PaginationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuditUnboardedTests(unittest.TestCase):
+    """hrse#979 — open issues invisible to board-driven reporting."""
+
+    def _state(self, entries):
+        return dict(entries)
+
+    def _issues(self, *specs):
+        return [{"number": n, "title": t, **({"pull_request": {}} if pr else {})}
+                for n, t, pr in specs]
+
+    def _run_audit(self, repo, issues, board_state):
+        report = rh.Report()
+        with patch.object(rh, "_rest", return_value=issues), \
+             patch.object(rh, "_board_state", return_value=board_state):
+            rh.audit_unboarded(repo, report, _cache={})
+        return report
+
+    def test_unboarded_issue_is_reported(self):
+        r = self._run_audit("vitalharmony/hrse",
+                            self._issues((42, "off board", False)), {})
+        self.assertEqual(len(r.unboarded), 1)
+        self.assertIn("on no board", r.unboarded[0].detail)
+
+    def test_boarded_with_both_fields_is_clean(self):
+        r = self._run_audit(
+            "vitalharmony/hrse", self._issues((42, "fine", False)),
+            {("vitalharmony/hrse", 42): {"Theme": "Tooling", "Venture": "CymaGraph"}})
+        self.assertEqual(r.unboarded, [])
+
+    def test_boarded_but_unthemed_is_reported(self):
+        """The reopen case: on the board, fields never set."""
+        r = self._run_audit(
+            "vitalharmony/hrse", self._issues((917, "reopened", False)),
+            {("vitalharmony/hrse", 917): {"Theme": None, "Venture": None}})
+        self.assertEqual(len(r.unboarded), 1)
+        self.assertIn("Theme and Venture unset", r.unboarded[0].detail)
+
+    def test_pull_requests_are_skipped(self):
+        r = self._run_audit("vitalharmony/hrse",
+                            self._issues((99, "a PR", True)), {})
+        self.assertEqual(r.unboarded, [])
+
+    def test_unmapped_repo_is_reported_not_crashed(self):
+        report = rh.Report()
+        rh.audit_unboarded("vitalharmony/unknown", report, _cache={})
+        self.assertEqual(len(report.unboarded), 1)
+        self.assertIn("no board mapped", report.unboarded[0].detail)
+
+    def test_milestones_are_not_checked(self):
+        """Scope item 4: harmonic-forge carries no release milestones by
+        decision, so milestone coverage must never be reported here."""
+        self.assertNotIn("Milestone", rh._REQUIRED_BOARD_FIELDS)
+        self.assertNotIn("milestone", rh._BOARD_ITEMS_QUERY.lower())
+
+    def test_unboarded_alone_does_not_fail_the_run(self):
+        """Scope item 3: exit code must not change for this category."""
+        report = rh.Report()
+        report.unboarded.append(rh.Finding("r", "#1", "on no board"))
+        self.assertFalse(report.actionable)
+
+    def test_stranded_still_fails(self):
+        report = rh.Report()
+        report.unboarded.append(rh.Finding("r", "#1", "on no board"))
+        report.stranded.append(rh.Finding("r", "b", "real work"))
+        self.assertTrue(report.actionable)
