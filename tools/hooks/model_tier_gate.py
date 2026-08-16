@@ -158,38 +158,63 @@ def _cached_item_list(owner: str, number: str, cache_dir: Path = _CACHE_DIR, ttl
         return None
 
 
+def resolve_repo(cwd: str) -> str | None:
+    """Read GH_REPO from the repo's own mise.toml (harmonic-forge#250).
+
+    The targeted per-issue query needs "owner/name", which
+    `resolve_project_board` does not supply -- it returns the *project* owner
+    and number. Both hrse and harmonic-forge already declare GH_REPO in
+    mise.toml, so this reuses the same file-reading path for the same reason
+    `resolve_project_board` documents: os.environ is only correct if the
+    calling shell ran mise's cd-hook for this exact cwd, which a hook
+    invocation cannot assume (harmonic-forge#202, confirmed live).
+    """
+    root_result = _run(["git", "-C", cwd, "rev-parse", "--show-toplevel"])
+    if root_result.returncode != 0:
+        return None
+    try:
+        with open(os.path.join(root_result.stdout.strip(), "mise.toml")) as f:
+            return _mise_env_value(f.read(), "GH_REPO")
+    except OSError:
+        return None
+
+
 def resolve_tier(cwd: str, issue_number: int) -> str | None:
     """Return the issue's Tier (harmonic-forge#257).
 
-    Prefers the board's `Tier` field; falls back to deriving one from the legacy
-    numeric `Estimate` while both coexist. Returns None when the issue carries
-    neither — which resolve_estimate already treated as "nothing to gate on",
-    and which must keep meaning allow, not deny: this hook fires on every
-    Edit/Write and a missing field must never wedge a lane.
+    harmonic-forge#250: reads *one issue* rather than fetching the whole
+    board. `gh project item-list --limit 1000` was the single most expensive
+    call this hook made, and it made it from a `PreToolUse` hook -- a fresh
+    process on every code-writing tool call. The targeted GraphQL read costs
+    roughly one complexity point instead of hundreds.
+
+    The disk cache is kept, and that is deliberate rather than incidental:
+    a targeted-but-uncached read would swap one cheap cached board fetch per
+    TTL window for a network round-trip on every single edit -- fewer quota
+    points, far more requests, and latency on every operation. Cheap *and*
+    cached is the point.
+
+    Returns None when the issue carries no tier, when the board or repo
+    cannot be resolved, or when the lookup fails -- all of which must keep
+    meaning allow, not deny: this hook fires on every Edit/Write and must
+    never wedge a lane over its own telemetry.
     """
+    if _item_list_cache is None:
+        return None  # shared module unavailable -- fail-open
     board = resolve_project_board(cwd)
     if board is None:
         return None
-    owner, number = board
-    items = _cached_item_list(owner, number, cache_dir=_CACHE_DIR)
-    if items is None:
+    repo = resolve_repo(cwd)
+    if repo is None:
         return None
-    for item in items:
-        content = item.get("content") or {}
-        if content.get("number") == issue_number:
-            tier = item.get("tier")
-            if isinstance(tier, str) and tier.strip():
-                return tier.strip().lower()
-            est = item.get("estimate")
-            if not isinstance(est, (int, float)):
-                return None
-            # Same boundary as the old `estimate >= THRESHOLD` check. 8 maps to
-            # `deep`, NOT `standard` — putting it in standard would silently
-            # stop 8-point work requiring the high-tier model.
-            if est >= 8:
-                return "deep"
-            return "standard" if est >= 5 else "fast"
-    return None
+    _owner, number = board
+    try:
+        return _item_list_cache.fetch_issue_tier(
+            repo, issue_number, number,
+            run=_run, ttl=_CACHE_TTL, cache_dir=_CACHE_DIR,
+        )
+    except _item_list_cache.GhItemListError:
+        return None
 
 
 def resolve_claude_model(transcript_path: str) -> str | None:

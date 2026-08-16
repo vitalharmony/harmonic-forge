@@ -52,6 +52,24 @@ def _owner_number_glob(owner: str, number: str) -> str:
     return f"{safe_owner}_{safe_number}_*.json"
 
 
+def _issue_cache_file(
+    repo: str, issue_number: int, project_number: str, cache_dir: Path
+) -> Path:
+    """Cache path for one issue's tier on one board (harmonic-forge#250).
+
+    Keyed per (repo, issue, board) rather than per board, because that is the
+    granularity the targeted read fetches. A board-wide key would invalidate
+    every issue's entry whenever any one of them was re-read.
+
+    The `tier__` prefix keeps these out of `_owner_number_glob`, so
+    `invalidate()` -- which exists for board-wide writers -- does not silently
+    match them with a different key shape.
+    """
+    safe_repo = _SAFE.sub("_", repo)
+    safe_project = _SAFE.sub("_", str(project_number))
+    return cache_dir / f"tier__{safe_repo}_{int(issue_number)}_{safe_project}.json"
+
+
 # hrse#800: this default was 500 when introduced by harmonic-forge#219's
 # call-site consolidation -- not a deliberate quota guard, just the helper's
 # default. It became a silent truncation the moment a board crossed 500 items
@@ -285,6 +303,8 @@ def fetch_issue_tier(
     issue_number: int,
     project_number: str,
     run=None,
+    ttl: float = 0,
+    cache_dir: Path = None,
 ) -> str | None:
     """Return one issue's Tier (harmonic-forge#257).
 
@@ -295,7 +315,59 @@ def fetch_issue_tier(
     Returns None only when the issue carries neither — the same "nothing to
     gate on" verdict `fetch_issue_estimate` returns, which every caller already
     handles.
+
+    `ttl` > 0 caches the result on disk (harmonic-forge#250), mirroring
+    `fetch_item_list`. This matters because the caller that needed the
+    targeted read is a `PreToolUse` hook running on *every* tool call: the
+    query is ~1 complexity point instead of a whole board, but uncached it
+    would trade one cheap cached board fetch per TTL window for a network
+    round-trip per keystroke-level operation -- fewer points, far more
+    requests, and a latency cost on every edit. ttl<=0 keeps the previous
+    always-live behaviour for callers that verify after a write.
+
+    A cached `None` is a real answer ("no tier to gate on") and is cached as
+    such. Only a *failure* is uncached -- GhItemListError propagates and
+    nothing is written, so a quota blip can never be frozen into a 120s
+    window of false "unset", which is the hrse#802 lesson.
     """
+    resolved_cache_dir = cache_dir if cache_dir is not None else _CACHE_DIR
+    cache_file = (
+        _issue_cache_file(repo, issue_number, project_number, resolved_cache_dir)
+        if ttl > 0 else None
+    )
+    if cache_file is not None:
+        try:
+            if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < ttl:
+                with open(cache_file) as f:
+                    return json.load(f).get("tier")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass  # unreadable cache is a miss, never an error
+
+    tier = _fetch_issue_tier_live(repo, issue_number, project_number, run)
+
+    # Written only on a successful read. A GhItemListError propagates out of
+    # the call above without touching the cache, so a transient failure is
+    # never frozen into a TTL window of false "unset".
+    if cache_file is not None:
+        try:
+            resolved_cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
+                json.dump({"tier": tier}, f)
+            tmp.replace(cache_file)  # atomic: a concurrent hook never reads a half-written file
+        except OSError:
+            pass  # an unwritable cache degrades to "uncached", never to an error
+    return tier
+
+
+def _fetch_issue_tier_live(
+    repo: str,
+    issue_number: int,
+    project_number: str,
+    run=None,
+) -> str | None:
+    """The uncached read. Split out so `fetch_issue_tier` has exactly one
+    place to write the cache, rather than one per return path."""
     if run is None:
         import subprocess
 
