@@ -24,13 +24,21 @@ GH_REPO = "vitalharmony/harmonic-forge"
 GH_PROJECT_OWNER = "vitalharmony"
 GH_PROJECT_NUMBER = "3"
 
+[tasks.test]
+description = "Run every test under tools/ (harmonic-forge#293). Dependency-free — stdlib unittest, no install step."
+run = "python3 tools/run_tests.py"
+
 [tasks.check]
-description = "Verification gate — Python syntax check over tools/ and sync_rules.py (no test suite exists yet)"
+description = "Verification gate — syntax check over tools/ and sync_rules.py, then the full test suite"
 run = """
 set -e
 find tools -name '*.py' -print0 | xargs -0 -n1 python3 -m py_compile
 python3 -m py_compile sync_rules.py
 echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
+# harmonic-forge#293: this task's description used to end "(no test suite
+# exists yet)" while 336 passing tests sat in the repo unrun. Running them
+# here means `mise run check` means what a reader assumes it means.
+python3 tools/run_tests.py
 """
 
 [tasks.commit]
