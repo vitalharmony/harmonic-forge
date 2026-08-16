@@ -1,0 +1,36 @@
+# harmonic-forge#293 — this repo's first CI workflow.
+#
+# 336 tests existed here and nothing ran them. tools/hooks/ is the
+# lane-governance layer (block_lane1_status_claims, model_tier_gate,
+# lane3_cloud_cli_policy, deny_lane3_ae_self_post): a regression there does
+# not fail loudly, it quietly stops enforcing something.
+#
+# No dependency install step, deliberately — the suite is stdlib unittest and
+# this repo declares no dependencies. See tools/run_tests.py.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Syntax check
+        run: |
+          find tools -name '*.py' -print0 | xargs -0 -n1 python3 -m py_compile
+          python3 -m py_compile sync_rules.py
+
+      # Invokes the same entrypoint as `mise run test`, so CI and the local
+      # task cannot drift apart.
+      - name: Tests
+        run: python3 tools/run_tests.py
