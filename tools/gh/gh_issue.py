@@ -13,7 +13,7 @@ neither is configured, since not every project has a project board.
 GraphQL-quota efficiency (harmonic-forge#203): issue creation goes through
 `gh api -X POST` (pure REST) rather than `gh issue create`, which was found
 live to route through GraphQL for a REST-capable operation. Board field
-writes (`Status`, `Estimate`) share one `project view` + `field-list` fetch
+writes (`Status`, `Tier`) share one `project view` + `field-list` fetch
 per `add_to_board()` call instead of each independently re-fetching —
 GitHub's GraphQL limiting is cost-based (query complexity/node count, not
 per-request), so halving the fetch count is a real, not cosmetic, saving.
@@ -156,63 +156,44 @@ def _set_status_todo(item_id: str, project_id: str, fields: list[dict]) -> bool:
 def _set_tier(item_id: str, project_id: str, fields: list[dict], tier: str) -> bool:
     """Set the project item's Tier field (harmonic-forge#257).
 
-    Falls back to the legacy numeric Estimate when a board has not been migrated
-    yet, so this works against either board in either order — the rename spans
-    two repos and two boards and cannot be atomic.
+    The legacy numeric `Estimate` fallback is gone. It existed so the rename
+    could be non-atomic across two repos and two boards; both boards are
+    migrated and the field itself was deleted in hrse#966, so the fallback
+    could only ever have written to a field that no longer exists.
     """
     tier = tier.strip().lower()
     tier_field = next((f for f in fields if f.get("name") == "Tier"), None)
-    if tier_field is not None:
-        option = next(
-            (o for o in (tier_field.get("options") or [])
-             if str(o.get("name", "")).strip().lower() == tier),
-            None,
-        )
-        if option is None:
-            print(f"[GH] Tier field has no option {tier!r}", file=sys.stderr)
-            return False
-        cmd = [
-            "gh", "project", "item-edit",
-            "--project-id", project_id,
-            "--id", item_id,
-            "--field-id", tier_field["id"],
-            "--single-select-option-id", option["id"],
-        ]
-        edit_result = _run(cmd, check=False)
-        if edit_result.returncode != 0:
-            # harmonic-forge#263 AC3: name the exact repair command. Every id
-            # is already resolved at this point, so the failing invocation is
-            # itself the fix -- the common cause is a transient GraphQL quota
-            # blip, where re-running it succeeds immediately.
-            print(
-                f"[GH] Setting Tier failed:\n{edit_result.stderr}\n"
-                f"[GH] Repair by re-running:\n  {shlex.join(cmd)}",
-                file=sys.stderr,
-            )
-            return False
-        print(f"[GH] Set Tier = {tier}")
-        return True
-
-    # Board not migrated: write the legacy numeric field instead.
-    legacy = {"fast": 3, "standard": 5, "deep": 8}.get(tier)
-    estimate_field = next((f for f in fields if f.get("name") == "Estimate"), None)
-    if legacy is None or estimate_field is None:
-        print("[GH] Neither 'Tier' nor 'Estimate' field found on the project", file=sys.stderr)
+    if tier_field is None:
+        print("[GH] No 'Tier' field on the project", file=sys.stderr)
         return False
-    edit_result = _run(
-        [
-            "gh", "project", "item-edit",
-            "--project-id", project_id,
-            "--id", item_id,
-            "--field-id", estimate_field["id"],
-            "--number", str(legacy),
-        ],
-        check=False,
+    option = next(
+        (o for o in (tier_field.get("options") or [])
+         if str(o.get("name", "")).strip().lower() == tier),
+        None,
     )
-    if edit_result.returncode != 0:
-        print(f"[GH] Setting Estimate failed:\n{edit_result.stderr}", file=sys.stderr)
+    if option is None:
+        print(f"[GH] Tier field has no option {tier!r}", file=sys.stderr)
         return False
-    print(f"[GH] Set Estimate = {legacy} (board not yet migrated to Tier)")
+    cmd = [
+        "gh", "project", "item-edit",
+        "--project-id", project_id,
+        "--id", item_id,
+        "--field-id", tier_field["id"],
+        "--single-select-option-id", option["id"],
+    ]
+    edit_result = _run(cmd, check=False)
+    if edit_result.returncode != 0:
+        # harmonic-forge#263 AC3: name the exact repair command. Every id
+        # is already resolved at this point, so the failing invocation is
+        # itself the fix -- the common cause is a transient GraphQL quota
+        # blip, where re-running it succeeds immediately.
+        print(
+            f"[GH] Setting Tier failed:\n{edit_result.stderr}\n"
+            f"[GH] Repair by re-running:\n  {shlex.join(cmd)}",
+            file=sys.stderr,
+        )
+        return False
+    print(f"[GH] Set Tier = {tier}")
     return True
 
 
@@ -341,11 +322,6 @@ def main() -> int:
              "the model-routing signal, not a forecast. no-op without a board.",
     )
     parser.add_argument(
-        "--estimate", type=float, default=None,
-        help="DEPRECATED (harmonic-forge#257): legacy story-point estimate. "
-             "Mapped to a tier: >=8 deep, >=5 standard, else fast. Use --tier.",
-    )
-    parser.add_argument(
         "--milestone", default=None, metavar="TITLE",
         help="Milestone title, e.g. '2.7' — release membership (harmonic-forge#283). "
              "REQUIRED for a repo that uses milestones; ignored where none exist. "
@@ -373,12 +349,6 @@ def main() -> int:
             parser.error(f"cannot read --body-file {args.body_file}: {exc}")
 
     tier = args.tier
-    if tier is None and args.estimate is not None:
-        # Same boundary as the retired THRESHOLD=8: 8 maps to deep, so callers
-        # still passing --estimate keep their existing escalation behaviour.
-        tier = "deep" if args.estimate >= 8 else "standard" if args.estimate >= 5 else "fast"
-        print(f"[GH] --estimate is deprecated; mapped {args.estimate} -> Tier '{tier}'",
-              file=sys.stderr)
 
     # harmonic-forge#283: requiredness is derived from live state — does this
     # repo use milestones at all? — rather than a hardcoded per-repo list.

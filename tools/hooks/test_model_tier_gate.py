@@ -30,10 +30,10 @@ ITEMS_JSON = json.dumps({"items": [
 ]})
 
 # Shape returned by the targeted per-issue GraphQL read (harmonic-forge#250).
-# estimate=8 with no Tier exercises the legacy fallback and the 8 -> deep
-# boundary in one payload.
+# `deep` is the escalating tier, so this payload exercises the branch that
+# actually gates work.
 TIER_QUERY_JSON = json.dumps({"data": {"repository": {"issue": {"projectItems": {
-    "nodes": [{"project": {"number": 3}, "tier": None, "estimate": {"number": 8}}],
+    "nodes": [{"project": {"number": 3}, "tier": {"name": "deep"}}],
 }}}}})
 
 
@@ -201,20 +201,20 @@ class TierResolutionTests(unittest.TestCase):
              patch.object(m, "resolve_project_board", return_value=board):
             return m.resolve_tier("/cwd", 999)
 
-    def _payload(self, tier=None, estimate=None, project=3):
+    def _payload(self, tier=None, project=3):
         node = {"project": {"number": project},
-                "tier": {"name": tier} if tier else None,
-                "estimate": {"number": estimate} if estimate is not None else None}
+                "tier": {"name": tier} if tier else None}
         return json.dumps({"data": {"repository": {"issue": {
             "projectItems": {"nodes": [node]}}}}})
 
-    def test_estimate_8_still_maps_to_deep_end_to_end(self):
-        """The boundary that must not move, asserted through the real read
-        path rather than a mocked return value."""
-        self.assertEqual(self._resolve(self._payload(estimate=8)), "deep")
+    def test_deep_resolves_end_to_end(self):
+        """Asserted through the real read path rather than a mocked return
+        value. `deep` is the only escalating tier, so this is the branch that
+        decides whether a session is gated."""
+        self.assertEqual(self._resolve(self._payload(tier="deep")), "deep")
 
     def test_tier_field_wins_over_estimate(self):
-        self.assertEqual(self._resolve(self._payload(tier="fast", estimate=13)), "fast")
+        self.assertEqual(self._resolve(self._payload(tier="fast")), "fast")
 
     def test_tier_is_normalised(self):
         self.assertEqual(self._resolve(self._payload(tier="  DEEP ")), "deep")

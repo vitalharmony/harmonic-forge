@@ -30,7 +30,7 @@ flags.
 
 **Omission must be declared, not inferred.** Some flags are deliberately not
 exposed -- the wrapper supplies `--repo` from `$GH_REPO`, board coordinates
-come from environment defaults, and `--estimate` is deprecated. A check that
+come from environment defaults. A check that
 guessed at intent would either miss real gaps or nag about settled ones, so
 intentional omissions are listed explicitly per wrapper and an *undeclared*
 missing flag is the failure.
@@ -102,7 +102,7 @@ def normalize(flag: str) -> str:
     """`repo` and `--repo` mean the same thing.
 
     argparse refuses a value that begins with `--`, so the natural
-    `--allow-missing --repo,--estimate` fails with a confusing parse error
+    `--allow-missing --repo,--tier` fails with a confusing parse error
     rather than doing what it obviously means. Accepting both spellings is
     cheaper than making every caller remember the `=` form.
     """
@@ -128,7 +128,7 @@ def main() -> int:
                     help="Path to the wrapped script")
     ap.add_argument("--allow-missing", default="",
                     help="Comma-separated flags deliberately not exposed, with or "
-                         "without leading dashes, e.g. 'repo,estimate'. Each one is a "
+                         "without leading dashes, e.g. 'repo,project-owner'. Each one is a "
                          "recorded decision; an undeclared missing flag is the failure "
                          "this check exists for.")
     args = ap.parse_args()

@@ -168,13 +168,12 @@ def fetch_item_list(
 # hrse#800 correctly raised the fetch from 500 to 542 items, which *raised*
 # per-fetch cost -- making fetch frequency, not fetch correctness, the thing that
 # now needs managing.
-# harmonic-forge#257: asks for BOTH Tier and Estimate in one round trip, and
-# prefers Tier when present. The rename spans two repos plus a PreToolUse hook
-# that runs on every tool call, so an atomic cutover would guarantee that some
-# checkout somewhere reads a field that does not exist yet. Requesting both
-# makes migration order-independent; the Estimate half comes out once both
-# repos and both boards are through.
-_ESTIMATE_QUERY = """
+# harmonic-forge#257: reads one issue's Tier without fetching the board.
+# This asked for Estimate alongside Tier while the rename was in flight, so the
+# migration could be order-independent across two repos and a PreToolUse hook.
+# Both boards are migrated and the Estimate field was deleted in hrse#966, so
+# the second half is gone.
+_TIER_QUERY = """
 query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
@@ -184,9 +183,6 @@ query($owner: String!, $repo: String!, $number: Int!) {
           tier: fieldValueByName(name: "Tier") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
-          estimate: fieldValueByName(name: "Estimate") {
-            ... on ProjectV2ItemFieldNumberValue { number }
-          }
         }
       }
     }
@@ -194,108 +190,14 @@ query($owner: String!, $repo: String!, $number: Int!) {
 }
 """
 
-# The one mapping, defined once. `deep` starts at 8 rather than 13 because
-# model_tier_gate.py escalates on `estimate >= 8`; putting 8 in `standard` would
-# silently stop 8-point work requiring the high-tier model, which is the exact
-# regression harmonic-forge#257 exists to avoid.
+# `deep` is the escalating tier. It started at 8 points rather than 13 when it
+# replaced the numeric threshold, so 8-point work kept requiring the high-tier
+# model -- the regression harmonic-forge#257 existed to avoid. The points
+# mapping itself is retired with the Estimate field (hrse#966).
 TIER_FAST = "fast"
 TIER_STANDARD = "standard"
 TIER_DEEP = "deep"
 ESCALATING_TIERS = frozenset({TIER_DEEP})
-
-
-def tier_for_points(points: float | None) -> str | None:
-    """Legacy numeric estimate -> tier. Used while both fields coexist."""
-    if points is None:
-        return None
-    if points >= 8:
-        return TIER_DEEP
-    if points >= 5:
-        return TIER_STANDARD
-    return TIER_FAST
-
-
-def fetch_issue_estimate(
-    repo: str,
-    issue_number: int,
-    project_number: str,
-    run=None,
-) -> int | None:
-    """Return the Estimate field for one issue on one board, without
-    fetching the board (hrse#802).
-
-    `repo` is "owner/name". `project_number` selects which board to read
-    when an issue sits on several -- an issue can legitimately be on more
-    than one project, and reading "the first one" would silently return
-    another board's Estimate.
-
-    Deliberately uncached. This replaces a `ttl=0` full-board read whose
-    live-ness requirement is real (harmonic-forge#219: the caller must see
-    a board write from moments earlier), and that requirement survives the
-    change -- a targeted live query is still live, it is just not a scan.
-
-    Returns None for all three "no usable estimate" cases -- issue not on
-    this board, item present but Estimate unset, or the field absent from
-    the board schema. Callers already treat these identically (an unset
-    estimate and an off-board issue are both "no estimate to gate on"),
-    and collapsing them here keeps that contract rather than inventing a
-    distinction no caller acts on.
-
-    Raises GhItemListError on transport/shape failure, matching
-    `fetch_item_list` so callers keep one except clause for board reads.
-    """
-    if run is None:
-        import subprocess
-
-        def run(args: list[str]):
-            return subprocess.run(args, capture_output=True, text=True)
-
-    try:
-        owner, name = repo.split("/", 1)
-    except ValueError:
-        raise GhItemListError(f'repo must be "owner/name", got {repo!r}') from None
-
-    result = run([
-        "gh", "api", "graphql",
-        "-f", f"query={_ESTIMATE_QUERY}",
-        "-F", f"owner={owner}",
-        "-F", f"repo={name}",
-        "-F", f"number={int(issue_number)}",
-    ])
-    if result.returncode != 0:
-        stderr = getattr(result, "stderr", None)
-        raise GhItemListError(stderr.strip() if stderr else "gh api graphql failed")
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise GhItemListError(f"unexpected response shape: {exc}") from exc
-
-    # A GraphQL 200 can still carry errors alongside a null field; treat that as
-    # a failure rather than silently reading it as "no estimate", which would
-    # turn an auth/quota error into a false "estimate is unset" verdict.
-    if payload.get("errors"):
-        messages = "; ".join(
-            e.get("message", "?") for e in payload["errors"] if isinstance(e, dict)
-        )
-        raise GhItemListError(messages or "graphql returned errors")
-
-    try:
-        issue = (payload.get("data") or {}).get("repository", {}).get("issue")
-    except AttributeError as exc:
-        raise GhItemListError(f"unexpected response shape: {exc}") from exc
-    if not issue:
-        return None  # issue does not exist / not visible -- same as "no estimate"
-
-    nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        project = node.get("project") or {}
-        if str(project.get("number")) != str(project_number):
-            continue
-        est = (node.get("estimate") or {}).get("number")
-        return int(est) if isinstance(est, (int, float)) else None
-    return None  # not on this board
 
 
 def fetch_issue_tier(
@@ -308,13 +210,11 @@ def fetch_issue_tier(
 ) -> str | None:
     """Return one issue's Tier (harmonic-forge#257).
 
-    Prefers the Tier field; falls back to deriving a tier from the legacy
-    numeric Estimate when Tier is unset, so this is correct both before and
-    after the board migration and in either order across repos.
-
-    Returns None only when the issue carries neither — the same "nothing to
-    gate on" verdict `fetch_issue_estimate` returns, which every caller already
-    handles.
+    Returns None when the issue carries no Tier, or is not on this board --
+    both are the same "nothing to gate on" verdict, which every caller already
+    handles. The legacy numeric-Estimate fallback is retired: the field was
+    deleted from both boards in hrse#966, so it could only ever have read a
+    field that no longer exists.
 
     `ttl` > 0 caches the result on disk (harmonic-forge#250), mirroring
     `fetch_item_list`. This matters because the caller that needed the
@@ -381,7 +281,7 @@ def _fetch_issue_tier_live(
 
     result = run([
         "gh", "api", "graphql",
-        "-f", f"query={_ESTIMATE_QUERY}",
+        "-f", f"query={_TIER_QUERY}",
         "-F", f"owner={owner}",
         "-F", f"repo={name}",
         "-F", f"number={int(issue_number)}",
@@ -412,8 +312,7 @@ def _fetch_issue_tier_live(
         tier = (node.get("tier") or {}).get("name")
         if isinstance(tier, str) and tier:
             return tier.strip().lower()
-        est = (node.get("estimate") or {}).get("number")
-        return tier_for_points(est) if isinstance(est, (int, float)) else None
+        return None  # on this board, Tier unset
     return None  # not on this board
 
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: require the high-tier model on estimate >= 8 issues.
+"""PreToolUse hook: require the high-tier model on `deep`-tier issues.
 
 harmonic-forge#202. Reads the PreToolUse JSON payload from stdin, resolves
 the issue currently being worked on from the branch name in cwd, looks up
-its board `Estimate` field, and denies a code-writing tool call if the
+its board `Tier` field, and denies a code-writing tool call if the
 session's active model doesn't match the required tier.
 
 Fail-open on every resolution failure (no branch match, no board access, no
