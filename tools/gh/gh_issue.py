@@ -32,7 +32,36 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
-def create_issue(repo: str, title: str, body: str, labels: list[str]) -> str | None:
+def fetch_milestones(repo: str) -> dict[str, int]:
+    """{title: number} for every open milestone on `repo`, or {} if it uses none.
+
+    harmonic-forge#283 NC1: a failed query fails LOUD (SystemExit), never
+    silently as an empty dict. An auth/network error must not be
+    indistinguishable from "this repo genuinely has no milestones" — that
+    would quietly make --milestone optional exactly when the check matters.
+    """
+    result = _run(
+        ["gh", "api", f"repos/{repo}/milestones", "-X", "GET", "-f", "state=open",
+         "--jq", ".[] | [.title, .number] | @tsv"],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"[GH] cannot read milestones for {repo}: {result.stderr.strip()}\n"
+            "[GH] refusing to file — a milestone query failure must not be "
+            "mistaken for a repo that has none (harmonic-forge#283)."
+        )
+    milestones: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        title, number = line.rsplit("\t", 1)
+        milestones[title.strip()] = int(number)
+    return milestones
+
+
+def create_issue(repo: str, title: str, body: str, labels: list[str],
+                 milestone_number: int | None = None) -> str | None:
     create_cmd = [
         "gh", "api", f"repos/{repo}/issues", "-X", "POST",
         "-f", f"title={title}",
@@ -40,6 +69,11 @@ def create_issue(repo: str, title: str, body: str, labels: list[str]) -> str | N
     ]
     for label in labels:
         create_cmd += ["-f", f"labels[]={label}"]
+    # harmonic-forge#283 NC3: REST's issue-create takes the milestone NUMBER,
+    # not its title ("null or string or integer — the number of the
+    # milestone"), so the caller resolves title -> number before this point.
+    if milestone_number is not None:
+        create_cmd += ["-f", f"milestone={milestone_number}"]
     create_cmd += ["--jq", ".html_url"]
 
     result = _run(create_cmd, check=False)
@@ -295,6 +329,14 @@ def main() -> int:
         help="DEPRECATED (harmonic-forge#257): legacy story-point estimate. "
              "Mapped to a tier: >=8 deep, >=5 standard, else fast. Use --tier.",
     )
+    parser.add_argument(
+        "--milestone", default=None, metavar="TITLE",
+        help="Milestone title, e.g. '2.7' — release membership (harmonic-forge#283). "
+             "REQUIRED for a repo that uses milestones; ignored where none exist. "
+             "Use 'Later' for real work not yet placed in a numbered release. "
+             "Stricter than --tier, which is optional: an unset milestone reads "
+             "identically to a deliberate 'in no release'.",
+    )
     args = parser.parse_args()
 
     # harmonic-forge#266: --body-file is the safe path for prose. --body still
@@ -322,10 +364,34 @@ def main() -> int:
         print(f"[GH] --estimate is deprecated; mapped {args.estimate} -> Tier '{tier}'",
               file=sys.stderr)
 
+    # harmonic-forge#283: requiredness is derived from live state — does this
+    # repo use milestones at all? — rather than a hardcoded per-repo list.
+    # A repo with none (harmonic-forge, openclaw-projects) is never gated;
+    # nothing invents a per-issue milestone concept for a repo that decided
+    # against having one.
+    milestones = fetch_milestones(args.repo)
+    milestone_number: int | None = None
+    if milestones:
+        if args.milestone is None:
+            parser.error(
+                f"--milestone is required for {args.repo} (harmonic-forge#283). "
+                f"Open milestones: {', '.join(sorted(milestones))}. "
+                "Use 'Later' for real work not yet placed in a numbered release."
+            )
+        if args.milestone not in milestones:
+            parser.error(
+                f"--milestone {args.milestone!r} is not an open milestone on "
+                f"{args.repo}. Valid: {', '.join(sorted(milestones))}."
+            )
+        milestone_number = milestones[args.milestone]
+    elif args.milestone is not None:
+        print(f"[GH] {args.repo} has no milestones — ignoring --milestone "
+              f"{args.milestone!r}.", file=sys.stderr)
+
     print(f"[GH] Creating issue in {args.repo}")
 
     labels = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()]
-    issue_url = create_issue(args.repo, args.title, body, labels)
+    issue_url = create_issue(args.repo, args.title, body, labels, milestone_number)
     if issue_url is None:
         return 1
 
