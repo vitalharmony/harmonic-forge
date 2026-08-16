@@ -6,7 +6,7 @@ which hardcoded `GH_REPO`/`PROJECT_OWNER`/`PROJECT_NUMBER` for
 vitalharmony/hrse. `--repo` is now required with no default (same fix as
 `post_comment.py`, same incident class as #50). Board owner/number are
 optional — supplied via `--project-owner`/`--project-number` or the
-`GH_PROJECT_OWNER`/`GH_PROJECT_NUMBER` env vars a project's own `mise.toml`
+the repo->board map (harmonic-forge#107); the env vars a project's own `mise.toml`
 sets — and board-add is skipped entirely (not treated as an error) when
 neither is configured, since not every project has a project board.
 
@@ -85,6 +85,45 @@ def create_issue(repo: str, title: str, body: str, labels: list[str],
     issue_url = result.stdout.strip()
     print(f"[GH] Created issue: {issue_url}")
     return issue_url
+
+
+# harmonic-forge#107: the board a repo's issues belong on is a property of the
+# REPO, not of whichever shell happened to invoke this. Resolving it from
+# $GH_PROJECT_OWNER/$GH_PROJECT_NUMBER meant a session working out of HRSE2
+# filed harmonic-forge issues straight onto board #1 -- silently, because the
+# add succeeded, just onto the wrong board.
+#
+# Exhaustive by design, and unmapped is a hard failure rather than a fallback.
+# A default would reintroduce exactly the silent-misroute this fixes: a new
+# repo would quietly inherit some other project's board. Adding a repo here is
+# a one-line change and a deliberate act.
+#
+# cymagraph-infra has no board of its own -- its items live on board #1
+# alongside hrse's (hrse#979). openclaw-projects likewise.
+REPO_BOARDS: dict[str, tuple[str, str]] = {
+    "vitalharmony/hrse": ("vitalharmony", "1"),
+    "vitalharmony/harmonic-forge": ("vitalharmony", "3"),
+    "vitalharmony/cymagraph-infra": ("vitalharmony", "1"),
+    "vitalharmony/openclaw-projects": ("vitalharmony", "1"),
+}
+
+
+def resolve_board_for_repo(repo: str) -> tuple[str, str]:
+    """Board (owner, number) for a repo. Fails loudly if unmapped.
+
+    Deliberately raises rather than returning None: every caller that reaches
+    here has already decided a board is wanted, so a soft failure would just
+    reproduce the silent no-board case this issue exists to remove.
+    """
+    try:
+        return REPO_BOARDS[repo]
+    except KeyError:
+        raise SystemExit(
+            f"[GH] No project board mapped for {repo!r}.\n"
+            f"[GH] Known repos: {', '.join(sorted(REPO_BOARDS))}.\n"
+            f"[GH] Add it to REPO_BOARDS in tools/gh/gh_issue.py, or pass "
+            f"--project-owner/--project-number explicitly to override."
+        ) from None
 
 
 def _fetch_project_context(project_owner: str, project_number: str) -> dict | None:
@@ -309,12 +348,14 @@ def main() -> int:
     )
     parser.add_argument("--labels", default="feature", help="Comma-separated labels")
     parser.add_argument(
-        "--project-owner", default=os.environ.get("GH_PROJECT_OWNER"),
-        help="Project board owner (default: $GH_PROJECT_OWNER). Omit both to skip board-add entirely.",
+        "--project-owner", default=None,
+        help="Override the board owner derived from --repo (harmonic-forge#107). "
+             "Rarely needed; the repo->board map is authoritative.",
     )
     parser.add_argument(
-        "--project-number", default=os.environ.get("GH_PROJECT_NUMBER"),
-        help="Project board number (default: $GH_PROJECT_NUMBER). Omit both to skip board-add entirely.",
+        "--project-number", default=None,
+        help="Override the board number derived from --repo (harmonic-forge#107). "
+             "Rarely needed; the repo->board map is authoritative.",
     )
     parser.add_argument(
         "--tier", choices=("fast", "standard", "deep"), default=None,
@@ -381,9 +422,23 @@ def main() -> int:
     if issue_url is None:
         return 1
 
-    if not args.project_owner or not args.project_number:
-        print("[GH] No project board configured (--project-owner/--project-number or "
-              "$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER not set) — skipping board-add.")
+    # harmonic-forge#107: derive from --repo. An explicit override still wins,
+    # but only when BOTH halves are given -- a half-override is a mistake, not
+    # a partial instruction, and silently completing it from the map is how a
+    # misroute would survive this fix.
+    if args.project_owner and args.project_number:
+        project_owner, project_number = args.project_owner, args.project_number
+        print(f"[GH] Board overridden explicitly: {project_owner}/#{project_number}")
+    elif args.project_owner or args.project_number:
+        parser.error(
+            "--project-owner and --project-number must be given together; "
+            "pass both to override the repo->board map, or neither to use it."
+        )
+    else:
+        project_owner, project_number = resolve_board_for_repo(args.repo)
+
+    if not project_owner or not project_number:
+        print("[GH] No project board configured — skipping board-add.")
         if tier is not None:
             # harmonic-forge#263, same defect in the branch nobody looked at:
             # a tier was explicitly requested and cannot be written, because
@@ -403,7 +458,7 @@ def main() -> int:
             return 1
         return 0
 
-    return 0 if add_to_board(issue_url, args.project_owner, args.project_number, tier) else 1
+    return 0 if add_to_board(issue_url, project_owner, project_number, tier) else 1
 
 
 if __name__ == "__main__":
