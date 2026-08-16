@@ -114,39 +114,26 @@ class TestStandaloneSetTier(unittest.TestCase):
         self.assertNotIn("--number", edit_cmd, "must write the Tier select, not the numeric field")
 
 
-class TestUnmigratedBoardFallback(unittest.TestCase):
-    """harmonic-forge#257: a board without a Tier field still accepts writes,
-    via the legacy numeric Estimate — the rename spans two boards and cannot
-    be atomic."""
-
-    def test_falls_back_to_estimate_when_no_tier_field(self):
-        calls = []
-        fields_no_tier = [f for f in json.loads(FIELDS_JSON)["fields"] if f["name"] != "Tier"]
-
-        def fake_run(cmd, check=False):
-            calls.append(cmd)
-            if cmd[:3] == ["gh", "project", "view"]:
-                return _completed(VIEW_JSON)
-            if cmd[:3] == ["gh", "project", "field-list"]:
-                return _completed(json.dumps({"fields": fields_no_tier}))
-            if cmd[:3] == ["gh", "project", "item-edit"]:
-                return _completed("")
-            raise AssertionError(cmd)
-
-        with patch("gh_issue._run", side_effect=fake_run):
-            ok = gh_issue.set_tier("ITEM1", "owner", "3", "deep")
-        self.assertTrue(ok)
-        edit_cmd = next(c for c in calls if c[:3] == ["gh", "project", "item-edit"])
-        self.assertIn("F_estimate", edit_cmd)
-        self.assertIn("8", edit_cmd, "deep must map back to the escalating value")
-
-
-
 ITEM_LIST_JSON = json.dumps({"items": [
     {"id": "PVTI_other", "content": {"url": "https://github.com/o/r/issues/1"}},
     {"id": "PVTI_target", "content": {"url": "https://github.com/o/r/issues/42"}},
     {"id": "PVTI_no_content"},
 ]})
+
+
+class TestMissingTierFieldFailsLoudly(unittest.TestCase):
+    """harmonic-forge#257: the legacy Estimate write path is gone. A board
+    without a Tier field must fail, not silently write somewhere else."""
+
+    def test_no_tier_field_returns_false(self):
+        fields = [{"name": "Status", "id": "F_status",
+                   "options": [{"name": "Todo", "id": "O_todo"}]}]
+        with patch("gh_issue._run") as run:
+            self.assertFalse(gh_issue._set_tier("IT_1", "PVT_1", fields, "fast"))
+        run.assert_not_called()
+
+    def test_no_estimate_write_path_remains(self):
+        self.assertNotIn("--number", gh_issue._set_tier.__doc__ or "")
 
 
 class TestAlreadyOnBoardRecovery(unittest.TestCase):
