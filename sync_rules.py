@@ -26,6 +26,12 @@ SKILLS_DIR = PLATFORM_ROOT / "skills"
 UNIVERSAL_RULE_FILES = [
     "backend-python.md",
     "frontend-typescript.md",
+    # harmonic-forge#289: unlike the two above, this one is deliberately NOT
+    # path-scoped -- it carries no `paths:` frontmatter, so it loads in every
+    # session rather than when a matching file is opened. Shorthand arrives in
+    # the operator's first message, before any file is open, and a table a
+    # session has to choose to go read is a table it will guess instead.
+    "lane-shorthand.md",
 ]
 
 # hrse#678's precedent (a real vertical package, on disk, inert until

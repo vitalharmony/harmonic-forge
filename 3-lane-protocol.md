@@ -538,32 +538,17 @@ directly to Lane 2 or Lane 3 in their own respective interfaces, and Lane 1
 never sees them or acts on them.
 
 **Repo-prefixed issue numbers, when more than one repo is in flight.**
-Once a collaborator works across multiple repos in the same session (e.g.
-`vitalharmony/hrse` and `vitalharmony/harmonic-forge`), a bare `#N` is
-ambiguous the moment both repos happen to have an open issue with the same
-number — a real incident, HRSE2 2026-07-18: a status update named `#26`
-with no prefix, and the two repos' issue `#26`s were entirely unrelated
-work. Prefix the number with the repo: `H<N>` = `vitalharmony/hrse`#N,
-`F<N>` = `vitalharmony/harmonic-forge`#N, `I<N>` =
-`vitalharmony/cymagraph-infra`#N (added 2026-08-08 — cymagraph-infra-
-specific issues, tenant provisioning, tofu/doctl wrappers, infra bugs,
-file on that repo's own tracker rather than harmonic-forge; harmonic-forge
-stays scoped to cross-project platform tooling), `O<N>` =
-`vitalharmony/openclaw-projects`#N (added 2026-08-10 — job-scout and any
-other openclaw sub-project's issues; the CymaGraph-bridge convention that
-makes specific files there 3-lane-protocol territory is documented in
-that repo's own `job-scout/README.md`, see harmonic-forge#204). Applies
-to every trigger word in this section — "Implement H26", "Test F26",
-"Plan-first F58", "Reimplement H313", "Test I253", "AE O4" — the trigger
-vocabulary itself is unchanged, only the issue reference is
-disambiguated. Note: like `cymagraph-infra`, `openclaw-projects` has no
-dedicated Projects v2 board (confirmed live, 2026-08-10: only board #1
-"CymaGraph Backlog" and board #3 exist) and is not tracked by
-`docs/PRIORITIES.md`'s board-sync — `gh_issue.py`'s ambient default
-silently adds to board #1 if `--project-owner`/`--project-number` isn't
-passed, same gotcha as `cymagraph-infra`. `I<N>`/`O<N>` issues are
-cross-referenced only from an `H`/`F` entry that depends on one, not
-sequenced directly.
+Once a collaborator works across multiple repos in the same session, a bare
+`#N` is ambiguous the moment both repos happen to have an open issue with
+the same number — a real incident, HRSE2 2026-07-18: a status update named
+`#26`, and the two repos' issue `#26`s were entirely unrelated work.
+
+**The prefix table is in `rules/lane-shorthand.md`**, which loads in every
+session. It is not duplicated here: two copies is how the vocabulary
+drifted (harmonic-forge#289). It also carries the parts a list cannot —
+that `L` is permanently reserved, that the set is derived from
+`isArchived` rather than hand-maintained, and that a cross-account prefix
+returning empty means wrong credentials, never absence.
 
 **Universal, not just for triggers (extended 2026-07-19).** Every issue
 reference — a status update, a summary, a plain mention in a comment or
@@ -574,17 +559,16 @@ to other lanes; an unprefixed number forces HITL to disambiguate it
 first, which defeats the convention's purpose. "Closed #313" is wrong;
 "Closed H313" is right, in a summary just as much as in a trigger.
 
-**Lane-status shorthand.** A quick status update, not a trigger — `L<N>`
-+ one letter: `L2P` (Lane 2 posted its plan, plan-first issues only),
-`L2D` (Lane 2 done/implementation posted), `L3P` (Lane 3 gate passed),
-`L3F` (Lane 3 gate failed), and `L<N>B` (that lane is **blocked** — it
-stopped and reported rather than proceeding). This is a pointer to go read
-the lane's actual report on the issue thread, never a substitute for it —
-the verification standard above still applies in full. Combine with a
-repo-prefixed number space-separated (`L3F H26`), not concatenated
-(`L3FH26`) — concatenating collides visually whenever the result letter
-and repo letter are both `F` (Fail + harmonic-**F**orge), and the same
-hazard applies to `B`.
+**Lane-status shorthand.** A quick status update, not a trigger. **The
+token table is in `rules/lane-shorthand.md`**, which loads in every session;
+it is not duplicated here (harmonic-forge#289). Note `L2P` is **retired** in
+favour of `L2S`, and `L2S`/`L3S` are review requests directed at Lane 1
+rather than terminal outcomes — a session that reads them as outcomes waits
+instead of acting.
+
+A status token is a pointer to go read that lane's actual report on the
+issue thread, never a substitute for it — the verification standard above
+applies in full.
 
 **`B` is not a failure verdict, and it is available on every lane** (`L1B`,
 `L2B`, `L3B`) — a lane reporting BLOCKED is the protocol working. The
