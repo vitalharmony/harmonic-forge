@@ -3,6 +3,7 @@
 mocked, no live gh/API calls. Run: python3 tools/gh/test_gh_issue.py"""
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -313,6 +314,91 @@ class TestMilestoneCliGate(unittest.TestCase):
             {"2.7": 1, "Later": 5},
         )
         self.assertEqual(created.call_args[0][4], 5)
+
+
+class TestTierWriteFailureIsLoud(unittest.TestCase):
+    """harmonic-forge#263. A tier that was asked for and not written must not
+    exit 0 -- the model-tier gate reads an unset Tier as 'does not escalate',
+    so the silent outcome is the unsafe one."""
+
+    def _ctx(self):
+        return {"project_id": "PVT_project", "fields": json.loads(FIELDS_JSON)["fields"]}
+
+    def test_failed_tier_write_makes_add_to_board_fail(self):
+        """AC1, at the level main() branches on."""
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_tier", return_value=False):
+            self.assertFalse(gh_issue.add_to_board("https://x/1", "o", "1", "fast"))
+
+    def test_successful_tier_write_still_succeeds(self):
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_tier", return_value=True):
+            self.assertTrue(gh_issue.add_to_board("https://x/1", "o", "1", "fast"))
+
+    def test_no_tier_requested_is_unaffected(self):
+        """AC4: omitting --tier must still exit 0."""
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_tier", return_value=False) as tier:
+            self.assertTrue(gh_issue.add_to_board("https://x/1", "o", "1", None))
+        tier.assert_not_called()
+
+    def test_failure_message_names_the_repair_command(self):
+        """AC3. Every id is resolved by the time the write fails, so the
+        failing invocation is itself the fix."""
+        fields = json.loads(FIELDS_JSON)["fields"]
+        with patch("gh_issue._run", return_value=_completed("", returncode=1)), \
+             patch("sys.stderr") as err:
+            ok = gh_issue._set_tier("IT_1", "PVT_project", fields, "fast")
+        self.assertFalse(ok)
+        printed = "".join(str(c) for c in err.write.call_args_list)
+        self.assertIn("gh project item-edit", printed)
+        self.assertIn("OPT_fast", printed)
+        self.assertIn("IT_1", printed)
+
+
+class TestTierRequestedWithNoBoard(unittest.TestCase):
+    """The same defect in the branch the issue did not name: Tier is a board
+    field, so `--tier` with no board configured cannot be written at all --
+    and that path returned 0."""
+
+    def _main(self, argv):
+        # --project-owner/--project-number default to $GH_PROJECT_OWNER /
+        # $GH_PROJECT_NUMBER, which are set in a real operator shell. Without
+        # clearing them "no board configured" is untestable and the test makes
+        # live gh calls instead.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1"):
+            return gh_issue.main()
+
+    def test_tier_with_no_board_exits_non_zero(self):
+        rc = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t", "--tier", "fast"])
+        self.assertEqual(rc, 1)
+
+    def test_no_tier_with_no_board_still_exits_zero(self):
+        rc = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
+        self.assertEqual(rc, 0)
+
+    def test_issue_is_never_rolled_back(self):
+        """AC2: a filed issue with a missing field beats a lost issue."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(sys, "argv",
+                          ["gh_issue.py", "--repo", "o/r", "--title", "t", "--tier", "fast"]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created:
+            gh_issue.main()
+        created.assert_called_once()
 
 
 if __name__ == "__main__":

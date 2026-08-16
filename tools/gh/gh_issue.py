@@ -22,6 +22,7 @@ per-request), so halving the fetch count is a real, not cosmetic, saving.
 import json
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 
@@ -170,18 +171,24 @@ def _set_tier(item_id: str, project_id: str, fields: list[dict], tier: str) -> b
         if option is None:
             print(f"[GH] Tier field has no option {tier!r}", file=sys.stderr)
             return False
-        edit_result = _run(
-            [
-                "gh", "project", "item-edit",
-                "--project-id", project_id,
-                "--id", item_id,
-                "--field-id", tier_field["id"],
-                "--single-select-option-id", option["id"],
-            ],
-            check=False,
-        )
+        cmd = [
+            "gh", "project", "item-edit",
+            "--project-id", project_id,
+            "--id", item_id,
+            "--field-id", tier_field["id"],
+            "--single-select-option-id", option["id"],
+        ]
+        edit_result = _run(cmd, check=False)
         if edit_result.returncode != 0:
-            print(f"[GH] Setting Tier failed:\n{edit_result.stderr}", file=sys.stderr)
+            # harmonic-forge#263 AC3: name the exact repair command. Every id
+            # is already resolved at this point, so the failing invocation is
+            # itself the fix -- the common cause is a transient GraphQL quota
+            # blip, where re-running it succeeds immediately.
+            print(
+                f"[GH] Setting Tier failed:\n{edit_result.stderr}\n"
+                f"[GH] Repair by re-running:\n  {shlex.join(cmd)}",
+                file=sys.stderr,
+            )
             return False
         print(f"[GH] Set Tier = {tier}")
         return True
@@ -292,7 +299,16 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
 
     if tier is not None:
         if not _set_tier(item_id, ctx["project_id"], ctx["fields"], tier):
-            print("[GH] Warning: could not set Tier — item was added but needs manual triage", file=sys.stderr)
+            # Not a warning: this exits non-zero. Calling it one invited the
+            # reader to scroll past, which is how harmonic-forge#263 was
+            # observed live -- two issues filed --tier fast, boarded with Tier
+            # unset after a quota blip, the message lost in the scrollback.
+            print(
+                f"[GH] ERROR: Tier={tier} was requested but not written. The "
+                f"model-tier gate reads an unset Tier as 'does not escalate', "
+                f"so this must not pass silently. Repair command above.",
+                file=sys.stderr,
+            )
             return False
 
     return True
@@ -398,6 +414,23 @@ def main() -> int:
     if not args.project_owner or not args.project_number:
         print("[GH] No project board configured (--project-owner/--project-number or "
               "$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER not set) — skipping board-add.")
+        if tier is not None:
+            # harmonic-forge#263, same defect in the branch nobody looked at:
+            # a tier was explicitly requested and cannot be written, because
+            # Tier lives on the board and there is no board. Returning 0 here
+            # reports success for a routing signal that was silently dropped.
+            # The issue itself is kept -- AC2, a filed issue with a missing
+            # field beats a lost issue.
+            print(
+                f"[GH] ERROR: --tier {tier} was requested but Tier is a board "
+                f"field and no board is configured, so it was not written. "
+                f"Issue created: {issue_url}\n"
+                f"[GH] Repair by re-running with "
+                f"--project-owner/--project-number, or set "
+                f"$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
+                file=sys.stderr,
+            )
+            return 1
         return 0
 
     return 0 if add_to_board(issue_url, args.project_owner, args.project_number, tier) else 1
