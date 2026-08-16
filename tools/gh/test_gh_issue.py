@@ -218,5 +218,102 @@ class TestAlreadyOnBoardRecovery(unittest.TestCase):
             "item-list must not run when item-add succeeded",
         )
 
+
+class TestMilestoneRequirement(unittest.TestCase):
+    """harmonic-forge#283 — the milestone field is release membership, and an
+    unset one reads identically to a deliberate "in no release"."""
+
+    def test_fetch_milestones_parses_title_to_number(self):
+        with patch("gh_issue._run", return_value=_completed("2.7\t1\nLater\t5\n")):
+            self.assertEqual(gh_issue.fetch_milestones("o/r"), {"2.7": 1, "Later": 5})
+
+    def test_fetch_milestones_empty_for_a_repo_that_uses_none(self):
+        with patch("gh_issue._run", return_value=_completed("")):
+            self.assertEqual(gh_issue.fetch_milestones("o/r"), {})
+
+    def test_fetch_milestones_fails_loud_on_query_error(self):
+        """NC1: an auth/network failure must not be indistinguishable from
+        "this repo genuinely has none" — that would silently make --milestone
+        optional exactly when the check matters (harmonic-forge#263's class)."""
+        with patch("gh_issue._run", return_value=_completed("", returncode=1)):
+            with self.assertRaises(SystemExit) as caught:
+                gh_issue.fetch_milestones("o/r")
+        self.assertIn("cannot read milestones", str(caught.exception))
+
+    def test_create_issue_passes_milestone_number_not_title(self):
+        """NC3: REST's issue-create takes the milestone NUMBER."""
+        with patch("gh_issue._run", return_value=_completed("url")) as m:
+            gh_issue.create_issue("o/r", "t", "b", ["bug"], 7)
+        cmd = m.call_args[0][0]
+        self.assertIn("milestone=7", cmd)
+        self.assertNotIn("milestone=2.7", cmd)
+
+    def test_create_issue_omits_milestone_when_none(self):
+        with patch("gh_issue._run", return_value=_completed("url")) as m:
+            gh_issue.create_issue("o/r", "t", "b", ["bug"], None)
+        self.assertFalse([a for a in m.call_args[0][0] if a.startswith("milestone=")])
+
+    def test_existing_positional_calls_still_work(self):
+        """The new parameter is last and defaulted, so callers that predate
+        it are unaffected — verified rather than assumed."""
+        with patch("gh_issue._run", return_value=_completed("url")):
+            self.assertEqual(gh_issue.create_issue("o/r", "t", "b", ["bug"]), "url")
+
+
+class TestMilestoneCliGate(unittest.TestCase):
+    def _main(self, argv, milestones):
+        with patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value=milestones), \
+             patch("gh_issue.create_issue", return_value=None) as created:
+            try:
+                gh_issue.main()
+            except SystemExit as exc:
+                return exc, created
+        return None, created
+
+    def test_milestone_required_on_a_repo_that_has_them(self):
+        exc, _ = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t"],
+            {"2.7": 1, "Later": 5},
+        )
+        self.assertIsNotNone(exc)
+        self.assertNotEqual(exc.code, 0)
+
+    def test_milestone_not_required_on_a_repo_with_none(self):
+        # AC5 / LBA3: harmonic-forge has zero milestones and is decided never
+        # to carry release ones — it must never be gated.
+        exc, created = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/harmonic-forge", "--title", "t"], {},
+        )
+        created.assert_called_once()
+        self.assertIsNone(created.call_args[0][4])
+
+    def test_unknown_milestone_title_is_rejected(self):
+        exc, _ = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+             "--milestone", "9.9"],
+            {"2.7": 1},
+        )
+        self.assertIsNotNone(exc)
+        self.assertNotEqual(exc.code, 0)
+
+    def test_valid_milestone_resolves_to_its_number(self):
+        _, created = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+             "--milestone", "2.7"],
+            {"2.7": 1, "Later": 5},
+        )
+        created.assert_called_once()
+        self.assertEqual(created.call_args[0][4], 1)
+
+    def test_later_sentinel_is_accepted(self):
+        _, created = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+             "--milestone", "Later"],
+            {"2.7": 1, "Later": 5},
+        )
+        self.assertEqual(created.call_args[0][4], 5)
+
+
 if __name__ == "__main__":
     unittest.main()
