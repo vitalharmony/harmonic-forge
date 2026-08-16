@@ -36,6 +36,14 @@ class TestIsLane1Comment(unittest.TestCase):
         body = "sweep\n\n<!-- l1-post v1; kind=sweep; sha=abc; body-sha256=x; checks=y -->\n"
         self.assertTrue(f.is_lane1_comment(body))
 
+    def test_ae_kind_is_lane1(self):
+        # hrse#327: a live Lane 3 Codex session's own filtered context
+        # returned the sweep but not the AE comment, because "ae" was
+        # missing from _LANE1_KINDS despite being a real l1-post kind
+        # since hrse#929.
+        body = "## AE\n\n<!-- l1-post v1; kind=ae; sha=abc; body-sha256=x; checks=y -->\n"
+        self.assertTrue(f.is_lane1_comment(body))
+
     def test_discussion_posted_by_lane1_is_included(self):
         body = "note\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->\n"
         self.assertTrue(f.is_lane1_comment(body))

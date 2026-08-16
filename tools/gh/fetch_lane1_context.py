@@ -18,8 +18,10 @@ Qualifying comments are recognized by the `l1-post`/`lane-comment`
 attestation footer every Lane 1 post already carries -- each consuming
 project's own `scripts/l1_post.py` / `scripts/post_lane_discussion.py`
 (e.g. HRSE2's, not a file in this directory) is what appends it:
-  - `kind=handoff` / `kind=ready-for-l3` / `kind=sweep` -- inherently
-    Lane-1-only kinds, no further check needed.
+  - `kind=handoff` / `kind=ready-for-l3` / `kind=sweep` / `kind=ae` --
+    inherently Lane-1-only kinds, no further check needed. (`ae` added
+    hrse#929/harmonic-forge -- was missing here until a live Lane 3 Codex
+    session on hrse#327 found its own AE comment invisible to this filter.)
   - `kind=discussion` -- only when `posted-by=LANE1` or
     `posted-by=LANE-unset` (a session with no LANE set, e.g. a plain
     Claude Code session acting as Lane 1); a Lane 2/3 discussion comment
@@ -54,7 +56,7 @@ import sys
 _MARKER_RE = re.compile(r"<!--\s*l1-post\s+v1;.*?-->", re.DOTALL)
 _KIND_RE = re.compile(r"kind=([\w-]+)")
 _POSTED_BY_RE = re.compile(r"posted-by=([\w-]+)")
-_LANE1_KINDS = {"handoff", "ready-for-l3", "sweep"}
+_LANE1_KINDS = {"handoff", "ready-for-l3", "sweep", "ae"}
 _LANE1_POSTED_BY = {"LANE1", "LANE-unset"}
 
 
