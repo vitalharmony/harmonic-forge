@@ -349,44 +349,109 @@ class TestTierWriteFailureIsLoud(unittest.TestCase):
         self.assertIn("IT_1", printed)
 
 
-class TestTierRequestedWithNoBoard(unittest.TestCase):
-    """The same defect in the branch the issue did not name: Tier is a board
-    field, so `--tier` with no board configured cannot be written at all --
-    and that path returned 0."""
+class TestUnmappedRepoFailsLoudly(unittest.TestCase):
+    """harmonic-forge#107 supersedes harmonic-forge#263's no-board branch.
+
+    #263 made `--tier` with no board configured exit non-zero, because a
+    routing signal was being requested and silently dropped. With an
+    exhaustive repo->board map that state is no longer reachable by
+    configuration -- an unmapped repo fails before board-add is attempted.
+    The invariant #263 established still holds and is asserted here: the
+    issue is created first and is never rolled back.
+    """
 
     def _main(self, argv):
-        # --project-owner/--project-number default to $GH_PROJECT_OWNER /
-        # $GH_PROJECT_NUMBER, which are set in a real operator shell. Without
-        # clearing them "no board configured" is untestable and the test makes
-        # live gh calls instead.
         env = {k: v for k, v in os.environ.items()
                if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
         with patch.dict(os.environ, env, clear=True), \
              patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1"):
-            return gh_issue.main()
-
-    def test_tier_with_no_board_exits_non_zero(self):
-        rc = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t", "--tier", "fast"])
-        self.assertEqual(rc, 1)
-
-    def test_no_tier_with_no_board_still_exits_zero(self):
-        rc = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
-        self.assertEqual(rc, 0)
-
-    def test_issue_is_never_rolled_back(self):
-        """AC2: a filed issue with a missing field beats a lost issue."""
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
-        with patch.dict(os.environ, env, clear=True), \
-             patch.object(sys, "argv",
-                          ["gh_issue.py", "--repo", "o/r", "--title", "t", "--tier", "fast"]), \
-             patch("gh_issue.fetch_milestones", return_value={}), \
              patch("gh_issue.create_issue", return_value="https://x/1") as created:
-            gh_issue.main()
+            try:
+                return gh_issue.main(), created
+            except SystemExit as exc:
+                return exc, created
+
+    def test_unmapped_repo_exits_rather_than_guessing(self):
+        result, _ = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
+        self.assertIsInstance(result, SystemExit)
+        self.assertIn("No project board mapped", str(result))
+
+    def test_issue_is_still_created_before_the_failure(self):
+        """harmonic-forge#263 AC2 -- a filed issue with a missing field beats
+        a lost issue, and that holds for a missing board too."""
+        _, created = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t",
+                                 "--tier", "fast"])
         created.assert_called_once()
 
+    def test_mapped_repo_does_not_fail(self):
+        with patch("gh_issue.add_to_board", return_value=True):
+            result, _ = self._main(["gh_issue.py", "--repo", "vitalharmony/hrse",
+                                    "--title", "t"])
+        self.assertEqual(result, 0)
 
-if __name__ == "__main__":
-    unittest.main()
+
+class TestRepoBoardMap(unittest.TestCase):
+    """harmonic-forge#107: the board follows the repo, not the ambient shell."""
+
+    def test_every_known_repo_maps(self):
+        self.assertEqual(gh_issue.resolve_board_for_repo("vitalharmony/hrse"),
+                         ("vitalharmony", "1"))
+        self.assertEqual(gh_issue.resolve_board_for_repo("vitalharmony/harmonic-forge"),
+                         ("vitalharmony", "3"))
+        self.assertEqual(gh_issue.resolve_board_for_repo("vitalharmony/cymagraph-infra"),
+                         ("vitalharmony", "1"))
+        self.assertEqual(gh_issue.resolve_board_for_repo("vitalharmony/openclaw-projects"),
+                         ("vitalharmony", "1"))
+
+    def test_unmapped_repo_fails_loudly(self):
+        """A default would reintroduce the silent misroute this issue fixes."""
+        with self.assertRaises(SystemExit) as caught:
+            gh_issue.resolve_board_for_repo("vitalharmony/brand-new")
+        msg = str(caught.exception)
+        self.assertIn("No project board mapped", msg)
+        self.assertIn("vitalharmony/brand-new", msg)
+        self.assertIn("REPO_BOARDS", msg)
+
+    def test_forge_and_hrse_do_not_share_a_board(self):
+        """The actual 2026-07-25 incident: forge issues landed on board #1."""
+        self.assertNotEqual(
+            gh_issue.resolve_board_for_repo("vitalharmony/hrse")[1],
+            gh_issue.resolve_board_for_repo("vitalharmony/harmonic-forge")[1],
+        )
+
+
+class TestBoardResolutionIgnoresAmbientEnv(unittest.TestCase):
+    """The bug: $GH_PROJECT_* from the invoking shell decided the board."""
+
+    def _main(self, argv, env):
+        with patch.dict(os.environ, env, clear=False), \
+             patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1"), \
+             patch("gh_issue.add_to_board", return_value=True) as add:
+            gh_issue.main()
+        return add
+
+    def test_hrse_env_does_not_misroute_a_forge_issue(self):
+        add = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/harmonic-forge", "--title", "t"],
+            {"GH_PROJECT_OWNER": "vitalharmony", "GH_PROJECT_NUMBER": "1"},
+        )
+        self.assertEqual(add.call_args[0][2], "3", "must use forge's board, not the shell's")
+
+    def test_explicit_override_still_wins(self):
+        add = self._main(
+            ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+             "--project-owner", "someone", "--project-number", "9"],
+            {},
+        )
+        self.assertEqual(add.call_args[0][1:3], ("someone", "9"))
+
+    def test_half_an_override_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            self._main(
+                ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+                 "--project-number", "9"],
+                {},
+            )
