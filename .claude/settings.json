@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf / *)",
+      "Bash(rm -rf ~*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(rm -rf /home*)",
+      "Bash(rm -rf /etc*)",
+      "Bash(rm -rf /usr*)",
+      "Bash(rm -rf /var*)",
+      "Bash(rm -rf /boot*)"
+    ]
+  }
+}
