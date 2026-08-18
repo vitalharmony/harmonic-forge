@@ -30,6 +30,8 @@ if [ ! -d "$target" ]; then
 fi
 
 cd "$target"
+# shellcheck source=_gh_config_dir.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_gh_config_dir.sh"
 export LANE=3
 
 # harmonic-forge#255: this worktree can sit detached at an old commit
