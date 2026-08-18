@@ -28,6 +28,14 @@ migration/unboarded sweep on every repo, every run, until caught live.
 - tools/gh/test_repo_hygiene.py | 344 ++++++++++++++++++++++++++++++++++++++++++
 - 2 files changed, 607 insertions(+), 12 deletions(-)
 
+## tooling: scope gh CLI active-account state per-project via GH_CONFIG_DIR (F305)
+
+lane1/2/3 now export GH_CONFIG_DIR based on the target project's git remote, so a global gh auth switch in one project can no longer lock out a concurrent lane session in another. Verified live against both existing account dirs (gh-vitalharmony, gh-harmonicarchitect) and the no-match fallthrough case.
+- tools/lane/lane1             |  2 ++
+- tools/lane/lane2             |  2 ++
+- tools/lane/lane3             |  2 ++
+- 4 files changed, 32 insertions(+)
+
 ## docs: document gh-as in foundation documents and directives (harmonic-forge#240)
 
 gh-as was documented in tools/gh/README.md and the root README.md — enough
