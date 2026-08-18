@@ -3,6 +3,14 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix: resolve BASH_SOURCE through its symlink in lane1/2/3 (F305 regression)
+
+~/.local/bin/lane{1,2,3} are symlinks into this directory; BASH_SOURCE[0] reflects the invoked path, not the symlink target, so dirname resolved to ~/.local/bin instead of here and the new source line 404'd -- broke all three launchers live. readlink -f before dirname fixes it; verified through the actual ~/.local/bin symlinks, not just the real files.
+- tools/lane/lane1 | 2 +-
+- tools/lane/lane2 | 2 +-
+- tools/lane/lane3 | 2 +-
+- 3 files changed, 3 insertions(+), 3 deletions(-)
+
 ## feat(gh): repo hygiene backstop — four remaining gaps (hrse#808)
 
 Adds three local-checkout audits (checkout not on main, stale stashes,
