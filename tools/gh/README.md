@@ -23,8 +23,16 @@ default, and print a banner naming the resolved target before acting.
   item-add` + set `Status=Todo` if a project board is configured. Board
   owner/number come from `--project-owner`/`--project-number` or the
   `GH_PROJECT_OWNER`/`GH_PROJECT_NUMBER` env vars (a project's own
-  `mise.toml` supplies these via `[env]`). **Board-add is skipped, not
-  treated as an error, when neither is set** — not every project has a
+  `mise.toml` supplies these via `[env]`). `--tier`, `--theme`, and
+  `--venture` (harmonic-forge#308) set the matching single-select board
+  fields at filing time — each one hard-fails the whole call (non-zero
+  exit) if requested but not actually written, rather than filing an issue
+  with a silently-unset required field. Option lists for `--theme`/
+  `--venture` are read live from the board, not hardcoded — they differ
+  per board (harmonic-forge#300) and a fixed enum here would drift; an
+  unmatched value errors with the real option list. **Board-add is
+  skipped, not treated as an error, when neither is set** — not every
+  project has a
   project board yet, and this tool shouldn't force one into existing.
   ```bash
   GH_PROJECT_OWNER=vitalharmony GH_PROJECT_NUMBER=3 \
