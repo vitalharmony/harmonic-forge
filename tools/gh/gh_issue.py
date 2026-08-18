@@ -192,32 +192,42 @@ def _set_status_todo(item_id: str, project_id: str, fields: list[dict]) -> bool:
     return True
 
 
-def _set_tier(item_id: str, project_id: str, fields: list[dict], tier: str) -> bool:
-    """Set the project item's Tier field (harmonic-forge#257).
+def _set_single_select(item_id: str, project_id: str, fields: list[dict],
+                        field_name: str, value: str) -> bool:
+    """Set a project item's single-select field by name, matching the
+    option case-insensitively (harmonic-forge#308). Shared by Tier/Theme/
+    Venture -- `_set_tier` calls this rather than repeating the shape a
+    third and fourth time.
 
-    The legacy numeric `Estimate` fallback is gone. It existed so the rename
-    could be non-atomic across two repos and two boards; both boards are
-    migrated and the field itself was deleted in hrse#966, so the fallback
-    could only ever have written to a field that no longer exists.
+    Option lists are read live from `fields` (see `_fetch_project_context`),
+    never hardcoded: harmonic-forge#300 established that editing a
+    single-select's options wipes every existing assignment, so a
+    hardcoded enum here would drift from the real board and a "fix" to
+    realign it would be destructive.
     """
-    tier = tier.strip().lower()
-    tier_field = next((f for f in fields if f.get("name") == "Tier"), None)
-    if tier_field is None:
-        print("[GH] No 'Tier' field on the project", file=sys.stderr)
+    value_norm = value.strip().lower()
+    field = next((f for f in fields if f.get("name") == field_name), None)
+    if field is None:
+        print(f"[GH] No {field_name!r} field on the project", file=sys.stderr)
         return False
     option = next(
-        (o for o in (tier_field.get("options") or [])
-         if str(o.get("name", "")).strip().lower() == tier),
+        (o for o in (field.get("options") or [])
+         if str(o.get("name", "")).strip().lower() == value_norm),
         None,
     )
     if option is None:
-        print(f"[GH] Tier field has no option {tier!r}", file=sys.stderr)
+        available = ", ".join(sorted(o.get("name", "") for o in (field.get("options") or [])))
+        print(
+            f"[GH] {field_name} field has no option {value!r}. "
+            f"Available: {available or '(none)'}",
+            file=sys.stderr,
+        )
         return False
     cmd = [
         "gh", "project", "item-edit",
         "--project-id", project_id,
         "--id", item_id,
-        "--field-id", tier_field["id"],
+        "--field-id", field["id"],
         "--single-select-option-id", option["id"],
     ]
     edit_result = _run(cmd, check=False)
@@ -227,13 +237,24 @@ def _set_tier(item_id: str, project_id: str, fields: list[dict], tier: str) -> b
         # itself the fix -- the common cause is a transient GraphQL quota
         # blip, where re-running it succeeds immediately.
         print(
-            f"[GH] Setting Tier failed:\n{edit_result.stderr}\n"
+            f"[GH] Setting {field_name} failed:\n{edit_result.stderr}\n"
             f"[GH] Repair by re-running:\n  {shlex.join(cmd)}",
             file=sys.stderr,
         )
         return False
-    print(f"[GH] Set Tier = {tier}")
+    print(f"[GH] Set {field_name} = {value.strip()}")
     return True
+
+
+def _set_tier(item_id: str, project_id: str, fields: list[dict], tier: str) -> bool:
+    """Set the project item's Tier field (harmonic-forge#257).
+
+    The legacy numeric `Estimate` fallback is gone. It existed so the rename
+    could be non-atomic across two repos and two boards; both boards are
+    migrated and the field itself was deleted in hrse#966, so the fallback
+    could only ever have written to a field that no longer exists.
+    """
+    return _set_single_select(item_id, project_id, fields, "Tier", tier)
 
 
 def set_tier(item_id: str, project_owner: str, project_number: str, tier: str) -> bool:
@@ -272,7 +293,8 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
     return None
 
 
-def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None) -> bool:
+def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None,
+                  theme: str | None = None, venture: str | None = None) -> bool:
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
     # last on a large board).
@@ -331,6 +353,30 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
             )
             return False
 
+    # harmonic-forge#308: same hard-fail shape as Tier above -- Theme/Venture
+    # are the required reporting-slice fields hrse#966 established, and an
+    # unset value is silent drift (exactly how the retired `Priority` field
+    # rotted), not a soft failure to warn about and move on from.
+    if theme is not None:
+        if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Theme", theme):
+            print(
+                f"[GH] ERROR: Theme={theme} was requested but not written. "
+                f"Theme is a required reporting-slice field (hrse#966), so "
+                f"this must not pass silently. Repair command above.",
+                file=sys.stderr,
+            )
+            return False
+
+    if venture is not None:
+        if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Venture", venture):
+            print(
+                f"[GH] ERROR: Venture={venture} was requested but not written. "
+                f"Venture is a required reporting-slice field (hrse#966), so "
+                f"this must not pass silently. Repair command above.",
+                file=sys.stderr,
+            )
+            return False
+
     return True
 
 
@@ -361,6 +407,18 @@ def main() -> int:
         "--tier", choices=("fast", "standard", "deep"), default=None,
         help="Complexity tier for the board's Tier field (harmonic-forge#257) — "
              "the model-routing signal, not a forecast. no-op without a board.",
+    )
+    parser.add_argument(
+        "--theme", default=None,
+        help="Board Theme field (hrse#966) — what capability this issue is "
+             "about. No fixed choice list here: options differ per board "
+             "(harmonic-forge#300) and are read live; an unmatched value "
+             "errors with the real option list from the board.",
+    )
+    parser.add_argument(
+        "--venture", default=None,
+        help="Board Venture field (hrse#966) — whose work this is. Same "
+             "live-validated shape as --theme, not hardcoded here.",
     )
     parser.add_argument(
         "--milestone", default=None, metavar="TITLE",
@@ -439,17 +497,19 @@ def main() -> int:
 
     if not project_owner or not project_number:
         print("[GH] No project board configured — skipping board-add.")
-        if tier is not None:
-            # harmonic-forge#263, same defect in the branch nobody looked at:
-            # a tier was explicitly requested and cannot be written, because
-            # Tier lives on the board and there is no board. Returning 0 here
-            # reports success for a routing signal that was silently dropped.
-            # The issue itself is kept -- AC2, a filed issue with a missing
-            # field beats a lost issue.
+        # harmonic-forge#263, same defect in the branch nobody looked at: a
+        # board field was explicitly requested and cannot be written because
+        # there is no board. Returning 0 here reports success for a routing/
+        # reporting signal that was silently dropped. The issue itself is
+        # kept -- AC2, a filed issue with a missing field beats a lost issue.
+        requested = [f"--{name} {value}" for name, value in
+                     (("tier", tier), ("theme", args.theme), ("venture", args.venture))
+                     if value is not None]
+        if requested:
             print(
-                f"[GH] ERROR: --tier {tier} was requested but Tier is a board "
-                f"field and no board is configured, so it was not written. "
-                f"Issue created: {issue_url}\n"
+                f"[GH] ERROR: {', '.join(requested)} was requested but "
+                f"these are board fields and no board is configured, so "
+                f"nothing was written. Issue created: {issue_url}\n"
                 f"[GH] Repair by re-running with "
                 f"--project-owner/--project-number, or set "
                 f"$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
@@ -458,7 +518,8 @@ def main() -> int:
             return 1
         return 0
 
-    return 0 if add_to_board(issue_url, project_owner, project_number, tier) else 1
+    return 0 if add_to_board(issue_url, project_owner, project_number, tier,
+                              args.theme, args.venture) else 1
 
 
 if __name__ == "__main__":

@@ -31,6 +31,15 @@ FIELDS_JSON = json.dumps({"fields": [
         {"name": "standard", "id": "OPT_standard"},
         {"name": "deep", "id": "OPT_deep"},
     ]},
+    {"name": "Theme", "id": "F_theme", "options": [
+        {"name": "Career", "id": "OPT_career"},
+        {"name": "Cy", "id": "OPT_cy"},
+        {"name": "Tooling", "id": "OPT_tooling"},
+    ]},
+    {"name": "Venture", "id": "F_venture", "options": [
+        {"name": "CymaGraph", "id": "OPT_cymagraph"},
+        {"name": "Platform", "id": "OPT_platform"},
+    ]},
 ]})
 VIEW_JSON = json.dumps({"id": "PVT_project"})
 
@@ -455,3 +464,144 @@ class TestBoardResolutionIgnoresAmbientEnv(unittest.TestCase):
                  "--project-number", "9"],
                 {},
             )
+
+
+class TestSetSingleSelectSharedHelper(unittest.TestCase):
+    """harmonic-forge#308: _set_tier must delegate to the shared helper, not
+    keep its own copy of the match/edit/error shape."""
+
+    def test_set_tier_delegates_to_set_single_select(self):
+        fields = json.loads(FIELDS_JSON)["fields"]
+        with patch("gh_issue._set_single_select", return_value=True) as shared:
+            ok = gh_issue._set_tier("IT_1", "PVT_1", fields, "fast")
+        self.assertTrue(ok)
+        shared.assert_called_once_with("IT_1", "PVT_1", fields, "Tier", "fast")
+
+    def test_case_insensitive_match_still_works_through_the_shared_path(self):
+        fields = json.loads(FIELDS_JSON)["fields"]
+        with patch("gh_issue._run", return_value=_completed("")) as m:
+            ok = gh_issue._set_tier("IT_1", "PVT_1", fields, "FAST")
+        self.assertTrue(ok)
+        self.assertIn("OPT_fast", m.call_args[0][0])
+
+    def test_unmatched_value_lists_available_options(self):
+        """New AC (harmonic-forge#308): unlike the old _set_tier, an
+        unmatched value must print the real options read from the board,
+        not just fail silently."""
+        fields = json.loads(FIELDS_JSON)["fields"]
+        with patch("gh_issue._run") as run, patch("sys.stderr") as err:
+            ok = gh_issue._set_single_select("IT_1", "PVT_1", fields, "Theme", "Nonexistent")
+        self.assertFalse(ok)
+        run.assert_not_called()
+        printed = "".join(str(c) for c in err.write.call_args_list)
+        self.assertIn("Career", printed)
+        self.assertIn("Cy", printed)
+        self.assertIn("Tooling", printed)
+
+    def test_missing_field_returns_false_without_calling_run(self):
+        fields = [{"name": "Status", "id": "F_status", "options": []}]
+        with patch("gh_issue._run") as run:
+            ok = gh_issue._set_single_select("IT_1", "PVT_1", fields, "Theme", "Career")
+        self.assertFalse(ok)
+        run.assert_not_called()
+
+    def test_theme_and_venture_both_write_correctly(self):
+        fields = json.loads(FIELDS_JSON)["fields"]
+        with patch("gh_issue._run", return_value=_completed("")) as m:
+            self.assertTrue(gh_issue._set_single_select("IT_1", "PVT_1", fields, "Theme", "Cy"))
+        self.assertIn("OPT_cy", m.call_args[0][0])
+        with patch("gh_issue._run", return_value=_completed("")) as m:
+            self.assertTrue(gh_issue._set_single_select("IT_1", "PVT_1", fields, "Venture", "Platform"))
+        self.assertIn("OPT_platform", m.call_args[0][0])
+
+
+class TestThemeVentureWriteFailureIsLoud(unittest.TestCase):
+    """Same hard-fail shape as TestTierWriteFailureIsLoud, for Theme/Venture
+    (harmonic-forge#308) -- an unset required reporting-slice field must not
+    exit 0, matching hrse#966's requirement."""
+
+    def _ctx(self):
+        return {"project_id": "PVT_project", "fields": json.loads(FIELDS_JSON)["fields"]}
+
+    def test_failed_theme_write_makes_add_to_board_fail(self):
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select", return_value=False):
+            self.assertFalse(gh_issue.add_to_board("https://x/1", "o", "1", None, theme="Career"))
+
+    def test_failed_venture_write_makes_add_to_board_fail(self):
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select", return_value=False):
+            self.assertFalse(gh_issue.add_to_board("https://x/1", "o", "1", None, venture="CymaGraph"))
+
+    def test_successful_theme_and_venture_write_succeeds(self):
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select", return_value=True):
+            self.assertTrue(gh_issue.add_to_board(
+                "https://x/1", "o", "1", None, theme="Career", venture="CymaGraph"))
+
+    def test_no_theme_or_venture_requested_is_unaffected(self):
+        with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
+             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select") as shared:
+            self.assertTrue(gh_issue.add_to_board("https://x/1", "o", "1", None))
+        shared.assert_not_called()
+
+
+class TestNoBoardConfiguredHardFailsForThemeVenture(unittest.TestCase):
+    """Same shape as the --tier case in main()'s 'no project board configured'
+    branch, generalized: harmonic-forge#308 must not let --theme/--venture
+    silently no-op just because --tier is the only one currently checked.
+
+    This branch is reachable only when `resolve_board_for_repo` itself
+    returns an empty board (never true for a mapped repo, by design) --
+    mocked directly rather than routed through an unmapped repo string,
+    which hits `resolve_board_for_repo`'s own SystemExit first and never
+    reaches this branch at all (found while writing this test: the branch
+    was already untested before this change, for the pre-existing --tier
+    case too)."""
+
+    def _main(self, argv):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1"), \
+             patch("gh_issue.resolve_board_for_repo", return_value=("", "")):
+            try:
+                return gh_issue.main()
+            except SystemExit as exc:
+                return exc
+
+    def test_theme_requested_with_no_board_exits_nonzero(self):
+        result = self._main(["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t", "--theme", "Career"])
+        self.assertNotEqual(result, 0)
+
+    def test_venture_requested_with_no_board_exits_nonzero(self):
+        result = self._main(["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t", "--venture", "CymaGraph"])
+        self.assertNotEqual(result, 0)
+
+    def test_neither_requested_with_no_board_exits_zero(self):
+        result = self._main(["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t"])
+        self.assertEqual(result, 0)
+
+
+class TestThemeVentureCliWiring(unittest.TestCase):
+    """--theme/--venture must actually reach add_to_board, not just parse."""
+
+    def test_both_flags_flow_through_to_add_to_board(self):
+        with patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse",
+                                        "--title", "t", "--theme", "Career", "--venture", "CymaGraph"]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1"), \
+             patch("gh_issue.add_to_board", return_value=True) as add:
+            gh_issue.main()
+        self.assertEqual(add.call_args[0][4], "Career")
+        self.assertEqual(add.call_args[0][5], "CymaGraph")
