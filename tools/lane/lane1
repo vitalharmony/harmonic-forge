@@ -31,7 +31,7 @@ fi
 
 cd "$target"
 # shellcheck source=_gh_config_dir.sh
-source "$(dirname "${BASH_SOURCE[0]}")/_gh_config_dir.sh"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=1
 
 cli_args=("${LANE_CLI:-claude}")
