@@ -2,6 +2,7 @@
 """Tests for repo_hygiene.py (hrse#808)."""
 
 import json
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -246,6 +247,349 @@ class PaginationTests(unittest.TestCase):
         with patch.object(rh, "_run", return_value=page1 + "\n" + page2):
             got = rh._rest("repos/x/y/branches")
         self.assertEqual([g["name"] for g in got], ["a", "b", "c"])
+
+
+class AuditCheckoutBranchTests(unittest.TestCase):
+    """hrse#808 — a shared main checkout drifting off `main` (hrse#277)."""
+
+    def test_on_main_is_not_flagged(self):
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value="main\n"):
+            rh.audit_checkout_branch("/some/checkout", report)
+        self.assertEqual(report.checkout_off_main, [])
+
+    def test_off_main_is_flagged(self):
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value="fix/error-handling\n"):
+            rh.audit_checkout_branch("/some/checkout", report)
+        self.assertEqual(len(report.checkout_off_main), 1)
+        self.assertIn("fix/error-handling", report.checkout_off_main[0].name)
+
+    def test_detached_head_is_flagged_not_crashed(self):
+        """`git branch --show-current` prints nothing in detached HEAD."""
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value="\n"):
+            rh.audit_checkout_branch("/some/checkout", report)
+        self.assertEqual(len(report.checkout_off_main), 1)
+        self.assertIn("detached HEAD", report.checkout_off_main[0].detail)
+
+    def test_git_failure_is_flagged_not_silently_clean(self):
+        report = rh.Report()
+        with patch.object(rh, "_run", side_effect=rh.GhError("not a repo")):
+            rh.audit_checkout_branch("/some/checkout", report)
+        self.assertEqual(len(report.checkout_off_main), 1)
+
+
+class AuditStashesTests(unittest.TestCase):
+    """hrse#808 — a stash is stranded work with less visibility than a branch."""
+
+    def test_no_stashes_is_clean(self):
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=""):
+            rh.audit_stashes("/some/checkout", report)
+        self.assertEqual(report.stale_stashes, [])
+
+    def test_every_stash_entry_is_reported(self):
+        raw = (
+            "stash@{0}: On fix/error-handling: priorities+settings updates in progress\n"
+            "stash@{1}: On main: stray AGENTS.md change, investigating separately\n"
+        )
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=raw):
+            rh.audit_stashes("/some/checkout", report)
+        self.assertEqual(len(report.stale_stashes), 2)
+        self.assertEqual(report.stale_stashes[0].name, "stash@{0}")
+        self.assertIn("priorities+settings", report.stale_stashes[0].detail)
+
+    def test_never_calls_stash_drop_or_pop(self):
+        """Report-only: assert the module never invokes a mutating stash verb."""
+        calls: list[list[str]] = []
+
+        def fake_run(args, cwd=None):
+            calls.append(args)
+            return "stash@{0}: On main: wip\n"
+
+        report = rh.Report()
+        with patch.object(rh, "_run", side_effect=fake_run):
+            rh.audit_stashes("/some/checkout", report)
+        for call in calls:
+            self.assertNotIn("drop", call)
+            self.assertNotIn("pop", call)
+            self.assertNotIn("clear", call)
+
+
+class AuditTransactionLogTests(unittest.TestCase):
+    """hrse#808 — merged commits neither touching transaction-log.md nor
+    backfilled into it.
+
+    Two-signal design, corrected after a live run against hrse found the
+    original single-signal (headline-match only) version producing 524/588
+    false positives: a squash-merged PR's own final subject is the PR
+    title, which was never any LOCAL commit's message, so it never matches
+    any entry headline even when `mise run commit` genuinely ran somewhere
+    in that PR's history. `recent` fixtures below use `git log --name-only
+    --pretty=format:===%H===%s` shape: a `===sha===subject` marker line,
+    then zero or more changed-file lines until the next marker.
+    """
+
+    def _run_audit(self, has_file, recent_commits, history_patch, fetch_ok=True):
+        """recent_commits: list of (subject, touched_log: bool)."""
+        report = rh.Report()
+        calls = {"fetch": 0}
+
+        recent_lines = []
+        for i, (subject, touched) in enumerate(recent_commits):
+            recent_lines.append(f"==={'a' * 7 + str(i)}==={subject}")
+            if touched:
+                recent_lines.append("transaction-log.md")
+                recent_lines.append("some/other/file.py")
+        recent_text = "\n".join(recent_lines) + ("\n" if recent_lines else "")
+
+        def fake_run(args, cwd=None):
+            if args[:2] == ["git", "fetch"]:
+                calls["fetch"] += 1
+                if not fetch_ok:
+                    raise rh.GhError("no network")
+                return ""
+            if args[:3] == ["git", "log", "origin/main"]:
+                return recent_text
+            if args[:3] == ["git", "log", "-p"]:
+                return history_patch
+            raise AssertionError(f"unexpected call: {args}")
+
+        with patch.object(rh, "_run", side_effect=fake_run), \
+             patch.object(rh.Path, "is_file", return_value=has_file):
+            rh.audit_transaction_log("/some/checkout", report)
+        return report, calls
+
+    def test_repo_without_the_file_is_silently_skipped(self):
+        report, calls = self._run_audit(
+            has_file=False, recent_commits=[("fix: x", False)], history_patch="")
+        self.assertEqual(report.missing_transaction_log, [])
+        self.assertEqual(calls["fetch"], 0, "must not even fetch for a repo with no log")
+
+    def test_commit_that_never_touched_the_file_and_has_no_backfill_is_flagged(self):
+        report, _ = self._run_audit(
+            has_file=True,
+            recent_commits=[("fix: real bug (#900)", False)],
+            history_patch="+## build: Auto-bump to v2.7.0 and restart services\n")
+        self.assertEqual(len(report.missing_transaction_log), 1)
+        self.assertIn("fix: real bug (#900)", report.missing_transaction_log[0].name)
+
+    def test_commit_that_touched_the_file_itself_is_not_flagged_even_without_a_headline_match(self):
+        """The core fix: a multi-commit squash-merged PR's final subject
+        never matches any single local commit's headline, but if its own
+        diff touched transaction-log.md at all, `mise run commit` ran
+        somewhere inside it -- that alone is enough, no headline match
+        required."""
+        report, _ = self._run_audit(
+            has_file=True,
+            recent_commits=[("Career 2.7-A: rank Discovery queue (#835)", True)],
+            history_patch="+## build: Auto-bump to v2.6.83 and restart services\n")
+        self.assertEqual(report.missing_transaction_log, [])
+
+    def test_commit_with_a_matching_backfilled_headline_is_not_flagged(self):
+        """hrse#817's real precedent: a LATER, separate commit backfilled
+        entries headlined with each original merge's own subject. Neither
+        commit necessarily touched the file in the same diff as the other,
+        so the headline-match path stays load-bearing for this case."""
+        report, _ = self._run_audit(
+            has_file=True,
+            recent_commits=[("fix: real bug (#900)", False)],
+            history_patch="+## fix: real bug (#900)\n+- some/file.py | 1 +\n")
+        self.assertEqual(report.missing_transaction_log, [])
+
+    def test_historical_entry_predating_a_clear_still_counts(self):
+        """The file is cleared periodically (version bump for hrse, push to
+        main for harmonic-forge) -- an entry added long ago and since
+        cleared from the LIVE file must still be found via the full
+        `git log -p` walk, not a grep of current content."""
+        history = (
+            "+## fix: old work (#700)\n"          # added by an earlier commit
+            "+- some/file.py | 1 +\n"
+            "-## fix: old work (#700)\n"           # later cleared
+            "-- some/file.py | 1 +\n"
+            "+## build: Auto-bump to v2.8.0 and restart services\n"
+        )
+        report, _ = self._run_audit(
+            has_file=True, recent_commits=[("fix: old work (#700)", False)],
+            history_patch=history)
+        self.assertEqual(report.missing_transaction_log, [])
+
+    def test_duplicate_undocumented_subjects_flagged_once(self):
+        report, _ = self._run_audit(
+            has_file=True,
+            recent_commits=[("fix: real bug (#900)", False), ("fix: real bug (#900)", False)],
+            history_patch="")
+        self.assertEqual(len(report.missing_transaction_log), 1)
+
+    def test_fetch_failure_does_not_abort_the_check(self):
+        """Best-effort freshness -- a failed `git fetch` still lets the check
+        run against whatever local origin/main state already exists."""
+        report, calls = self._run_audit(
+            has_file=True, recent_commits=[("fix: real bug (#900)", False)],
+            history_patch="", fetch_ok=False)
+        self.assertEqual(calls["fetch"], 1)
+        self.assertEqual(len(report.missing_transaction_log), 1)
+
+    def test_last_commit_in_the_window_is_still_flushed(self):
+        """The trailing commit has no following marker line to trigger its
+        own flush -- the final _flush() call after the loop must catch it."""
+        report, _ = self._run_audit(
+            has_file=True,
+            recent_commits=[("fix: a (#1)", True), ("fix: b (#2)", False)],
+            history_patch="")
+        self.assertEqual(len(report.missing_transaction_log), 1)
+        self.assertIn("fix: b (#2)", report.missing_transaction_log[0].name)
+
+
+class BoardOwnerTypeTests(unittest.TestCase):
+    """hrse#808/#991 — `projectV2` owner is not polymorphic; must try both."""
+
+    def test_organization_owner_resolves_on_first_try(self):
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": []}}}}})
+        with patch.object(rh, "_run", return_value=payload) as mock_run:
+            state = rh._board_state("some-org", "3")
+        self.assertEqual(state, {})
+        # First (and only) call must be the organization-typed query.
+        first_call_args = mock_run.call_args_list[0][0][0]
+        self.assertIn(f"query={rh._BOARD_ITEMS_QUERY_ORG}", first_call_args)
+
+    def test_user_owner_falls_back_after_organization_returns_a_graceful_null(self):
+        org_miss = json.dumps({"data": {"organization": None}})
+        user_hit = json.dumps({"data": {"user": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": []}}}}})
+        with patch.object(rh, "_run", side_effect=[org_miss, user_hit]) as mock_run:
+            state = rh._board_state("vitalharmony", "1")
+        self.assertEqual(state, {})
+        self.assertEqual(mock_run.call_count, 2)
+
+    def test_user_owner_falls_back_after_organization_raises_gherror(self):
+        """Confirmed live (hrse#808): `gh api graphql` exits NONZERO for
+        `organization(login: $owner)` against a real user-owned login --
+        "Could not resolve to an Organization with the login of
+        'vitalharmony'" -- rather than a graceful `data.organization: null`.
+        This is the actual failure mode in production; the graceful-null
+        test above covers a schema-level possibility, this one covers what
+        `gh` itself really does."""
+        user_hit = json.dumps({"data": {"user": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": []}}}}})
+
+        def fake_run(args, cwd=None):
+            if f"query={rh._BOARD_ITEMS_QUERY_ORG}" in args:
+                raise rh.GhError("Could not resolve to an Organization with the login of 'vitalharmony'.")
+            return user_hit
+
+        with patch.object(rh, "_run", side_effect=fake_run) as mock_run:
+            state = rh._board_state("vitalharmony", "1")
+        self.assertEqual(state, {})
+        self.assertEqual(mock_run.call_count, 2)
+
+    def test_neither_owner_type_resolves_raises(self):
+        both_miss = json.dumps({"data": {"organization": None, "user": None}})
+        with patch.object(rh, "_run", return_value=both_miss):
+            with self.assertRaises(rh.GhError):
+                rh._board_state("ghost", "1")
+
+    def test_organization_gherror_then_user_also_missing_still_raises(self):
+        user_miss = json.dumps({"data": {"user": None}})
+
+        def fake_run(args, cwd=None):
+            if f"query={rh._BOARD_ITEMS_QUERY_ORG}" in args:
+                raise rh.GhError("Could not resolve to an Organization with the login of 'ghost'.")
+            return user_miss
+
+        with patch.object(rh, "_run", side_effect=fake_run):
+            with self.assertRaises(rh.GhError):
+                rh._board_state("ghost", "1")
+
+    def test_graphql_errors_propagate_as_gherror(self):
+        errored = json.dumps({"errors": [{"message": "rate limited"}]})
+        with patch.object(rh, "_run", return_value=errored):
+            with self.assertRaises(rh.GhError):
+                rh._board_state("vitalharmony", "1")
+
+
+class NewChecksAreReportOnlyTests(unittest.TestCase):
+    """hrse#808's own Load-Bearing Assumptions: report-only, no new failing
+    condition, unless explicitly disclosed as a deviation (none here)."""
+
+    def test_checkout_off_main_alone_does_not_fail(self):
+        r = rh.Report()
+        r.checkout_off_main.append(rh.Finding("c", "feat/x", "expected 'main'"))
+        self.assertFalse(r.actionable)
+
+    def test_stale_stashes_alone_does_not_fail(self):
+        r = rh.Report()
+        r.stale_stashes.append(rh.Finding("c", "stash@{0}", "wip"))
+        self.assertFalse(r.actionable)
+
+    def test_missing_transaction_log_alone_does_not_fail(self):
+        r = rh.Report()
+        r.missing_transaction_log.append(rh.Finding("c", "fix: x", "no entry"))
+        self.assertFalse(r.actionable)
+
+    def test_stranded_still_fails_alongside_all_three_new_categories(self):
+        r = rh.Report()
+        r.checkout_off_main.append(rh.Finding("c", "feat/x", "expected 'main'"))
+        r.stale_stashes.append(rh.Finding("c", "stash@{0}", "wip"))
+        r.missing_transaction_log.append(rh.Finding("c", "fix: x", "no entry"))
+        r.stranded.append(rh.Finding("c", "b", "real work"))
+        self.assertTrue(r.actionable)
+
+
+class MainCleanGuardTests(unittest.TestCase):
+    """A run with only new-category findings must not also print 'clean' —
+    the hrse#808 handoff's explicit landmine: `main()`'s clean-guard
+    enumerates every Report category by hand and is easy to leave stale."""
+
+    def _run_main_with_one_checkout_finding(self, category):
+        import io
+        from contextlib import redirect_stdout
+
+        def fake_audit_transaction_log(checkout, report):
+            getattr(report, category).append(rh.Finding(checkout, "x", "y"))
+
+        def noop(*_args, **_kwargs):
+            return None
+
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["repo_hygiene.py", "--checkout", "/c"]), \
+             patch.object(rh, "audit_worktrees", noop), \
+             patch.object(rh, "audit_checkout_branch", noop), \
+             patch.object(rh, "audit_stashes", noop), \
+             patch.object(rh, "audit_transaction_log", fake_audit_transaction_log), \
+             redirect_stdout(buf):
+            rc = rh.main()
+        return rc, buf.getvalue()
+
+    def test_missing_transaction_log_alone_does_not_print_clean(self):
+        rc, out = self._run_main_with_one_checkout_finding("missing_transaction_log")
+        self.assertNotIn("repo hygiene: clean.", out)
+        self.assertIn("MISSING TRANSACTION-LOG ENTRIES", out)
+        self.assertEqual(rc, 0, "report-only category must not fail the run")
+
+    def test_truly_clean_run_still_prints_clean(self):
+        import io
+        from contextlib import redirect_stdout
+
+        def noop(*_args, **_kwargs):
+            return None
+
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["repo_hygiene.py", "--checkout", "/c"]), \
+             patch.object(rh, "audit_worktrees", noop), \
+             patch.object(rh, "audit_checkout_branch", noop), \
+             patch.object(rh, "audit_stashes", noop), \
+             patch.object(rh, "audit_transaction_log", noop), \
+             redirect_stdout(buf):
+            rc = rh.main()
+        self.assertIn("repo hygiene: clean.", buf.getvalue())
+        self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 class GhError(Exception):
@@ -84,6 +85,9 @@ class Report:
     unrun_migrations: list[Finding] = field(default_factory=list)
     unlabelled_migrations: list[Finding] = field(default_factory=list)
     unboarded: list[Finding] = field(default_factory=list)
+    checkout_off_main: list[Finding] = field(default_factory=list)
+    stale_stashes: list[Finding] = field(default_factory=list)
+    missing_transaction_log: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -97,6 +101,10 @@ class Report:
         # issue off a board, or on one with a field unset, is a cleanup
         # opportunity rather than lost work -- hrse#979 scope item 3 is
         # explicit that this must not change the exit code.
+        # checkout_off_main, stale_stashes and missing_transaction_log
+        # (hrse#808) are report-only too -- nothing in the issue asked for a
+        # new failing condition, and each is a "go look at this", not a
+        # "you may be losing work" the way STRANDED is.
         return bool(self.stranded or self.unrun_migrations)
 
 
@@ -367,6 +375,24 @@ _REPO_BOARDS: dict[str, tuple[str, str]] = {
 # recorded decision, not a gap (hrse#979 scope item 4).
 _REQUIRED_BOARD_FIELDS = ("Theme", "Venture")
 
+# GraphQL's `projectV2` owner is not polymorphic -- `user` and `organization`
+# are separate query roots, so a caller must know which one an owner is.
+# hrse#991 comment (2026-08-17): the owner *name* was parameterized here but
+# the owner *type* was not, silently breaking this issue's own reuse goal
+# for any client-repo instance (kenekted, leasepal, akcelita) that turns out
+# to be org-owned rather than user-owned. Per hrse#808's handoff: try
+# organization first, fall back to user -- `vitalharmony` itself is
+# confirmed a User account (`gh api users/vitalharmony` -> "User"; `gh api
+# orgs/vitalharmony` -> 404), so every call against it today costs one
+# wasted organization lookup before falling back to the user query that
+# actually resolves; disclosed as a known cost of this ordering, not fixed
+# here, since the handoff states the try/fallback order as settled rather
+# than delegated. Fixed in-place inside this same paginated query rather
+# than switching to `gh project --owner`: that CLI path silently truncates
+# on large boards (hrse#800) and costs hundreds of GraphQL complexity points
+# per full fetch (item_list_cache.py:158-169) -- exactly the quota-burn
+# failure mode this cursor-paginated query exists to avoid, independent of
+# whether the CLI supports both owner types.
 _BOARD_ITEMS_QUERY = """
 query($owner: String!, $number: Int!, $cursor: String) {
   user(login: $owner) {
@@ -388,22 +414,61 @@ query($owner: String!, $number: Int!, $cursor: String) {
 }
 """
 
+_BOARD_ITEMS_QUERY_ORG = _BOARD_ITEMS_QUERY.replace(
+    "user(login: $owner)", "organization(login: $owner)")
+
+
+def _run_board_query(query: str, owner: str, number: str, cursor: str | None) -> dict:
+    args = ["gh", "api", "graphql", "-f", f"query={query}",
+            "-F", f"owner={owner}", "-F", f"number={int(number)}"]
+    if cursor:
+        args += ["-F", f"cursor={cursor}"]
+    payload = json.loads(_run(args))
+    if payload.get("errors"):
+        raise GhError("; ".join(e.get("message", "?") for e in payload["errors"]))
+    return payload
+
 
 def _board_state(owner: str, number: str) -> dict[tuple[str, int], dict]:
-    """(repo, issue) -> {field: value|None} for every OPEN item on a board."""
+    """(repo, issue) -> {field: value|None} for every OPEN item on a board.
+
+    Owner type is resolved once, on the first page, then reused for every
+    later cursor -- a project board's owner cannot change mid-pagination.
+    """
     state: dict[tuple[str, int], dict] = {}
     cursor: str | None = None
+    owner_field: str | None = None
     while True:
-        args = ["gh", "api", "graphql", "-f", f"query={_BOARD_ITEMS_QUERY}",
-                "-F", f"owner={owner}", "-F", f"number={int(number)}"]
-        if cursor:
-            args += ["-F", f"cursor={cursor}"]
-        payload = json.loads(_run(args))
-        if payload.get("errors"):
-            raise GhError("; ".join(e.get("message", "?") for e in payload["errors"]))
-        project = ((payload.get("data") or {}).get("user") or {}).get("projectV2")
-        if not project:
-            raise GhError(f"no project #{number} for {owner}")
+        if owner_field is None:
+            # Confirmed live (hrse#808): `gh api graphql` exits NONZERO for
+            # `organization(login: $owner)` against a user-owned login --
+            # "Could not resolve to an Organization with the login of
+            # '...'" -- it does not degrade to a graceful `null` the way a
+            # merely-empty/nonexistent project does. The organization
+            # attempt's own GhError must be caught here and treated as
+            # "try the other type", not left to propagate: letting it
+            # propagate was an earlier version of this fix, and it silently
+            # skipped `audit_unboarded` (bundled with the migration sweep in
+            # `main()`'s shared try/except) for every repo, every run.
+            try:
+                payload = _run_board_query(_BOARD_ITEMS_QUERY_ORG, owner, number, cursor)
+                project = ((payload.get("data") or {}).get("organization") or {}).get("projectV2")
+            except GhError:
+                project = None
+            if project:
+                owner_field = "organization"
+            else:
+                payload = _run_board_query(_BOARD_ITEMS_QUERY, owner, number, cursor)
+                project = ((payload.get("data") or {}).get("user") or {}).get("projectV2")
+                if not project:
+                    raise GhError(f"no project #{number} for {owner} (tried organization and user)")
+                owner_field = "user"
+        else:
+            query = _BOARD_ITEMS_QUERY_ORG if owner_field == "organization" else _BOARD_ITEMS_QUERY
+            payload = _run_board_query(query, owner, number, cursor)
+            project = ((payload.get("data") or {}).get(owner_field) or {}).get("projectV2")
+            if not project:
+                raise GhError(f"no project #{number} for {owner}")
         items = project["items"]
         for node in items["nodes"]:
             content = node.get("content") or {}
@@ -486,6 +551,166 @@ def audit_worktrees(checkout: str, report: Report) -> None:
             path = None
 
 
+def audit_checkout_branch(checkout: str, report: Report) -> None:
+    """Flag a local checkout that is not sitting on `main`. Purely local.
+
+    hrse#808 comment (2026-08-15): the standing rule is that all work happens
+    in dedicated worktrees, which means the *shared* main checkout should
+    always be on `main`. A session that assumes otherwise and edits
+    docs/PRIORITIES.md on the wrong branch caused an unrecoverable incident
+    (hrse#277) -- another session's uncommitted work was interleaved in the
+    same working tree, so `git checkout --` would have destroyed it.
+
+    Hardcoded to "main", not the repo's actual default branch (unlike
+    `audit_repo`, which reads it via the API) -- this checks a specific local
+    invariant about how this checkout is meant to be used, not a
+    branch-naming question, and both checkouts this runs against are
+    confirmed named "main".
+    """
+    try:
+        branch = _run(["git", "branch", "--show-current"], cwd=checkout).strip()
+    except GhError as exc:
+        report.checkout_off_main.append(Finding(checkout, "-", f"could not read branch: {exc}"))
+        return
+    if branch != "main":
+        report.checkout_off_main.append(Finding(
+            checkout, branch or "(detached HEAD)",
+            f"expected 'main', found {branch or '(detached HEAD)'}"))
+
+
+def audit_stashes(checkout: str, report: Report) -> None:
+    """Flag every stash in a local checkout. Purely local, purely reported.
+
+    hrse#808 comment (2026-08-15): a stash is stranded work with LESS
+    visibility than a branch -- it sits on no branch at all and never
+    appears in `git log`, so none of this file's other checks see it.
+    Never auto-dropped: a stash may be another session's live
+    work-in-progress, same posture as every other finding in this file.
+    """
+    try:
+        raw = _run(["git", "stash", "list"], cwd=checkout)
+    except GhError as exc:
+        report.stale_stashes.append(Finding(checkout, "-", f"could not list stashes: {exc}"))
+        return
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        ref, _, description = line.partition(": ")
+        report.stale_stashes.append(Finding(checkout, ref, description))
+
+
+TRANSACTION_LOG_LOOKBACK_DAYS = 30
+
+
+def audit_transaction_log(checkout: str, report: Report) -> None:
+    """Merged commits on `main` that never touched transaction-log.md and
+    whose own headline was never backfilled into it either.
+
+    hrse#808 comment (2026-08-12): the log is only written by
+    `mise run commit`/`restart`, so work that lands through a squash-merged
+    PR -- now most work -- silently skips it. Ten merges on one day left no
+    trace until backfilled by hand.
+
+    **Two-signal design, corrected from an initial single-signal version
+    after it produced 524/588 false positives on a live run against hrse.**
+    The first version only compared a merged commit's own subject against
+    documented headlines, on the assumption "headline = verbatim commit
+    message" (the file's own header) meant a 1:1 match. It doesn't, in
+    practice: `mise run commit` writes one entry per LOCAL commit, keyed to
+    THAT commit's own message. A multi-commit PR's local commits each
+    self-document under their own headline, but GitHub's squash-merge
+    collapses them into one remote commit whose final subject is the PR
+    title -- text that was never any local commit's message and so never
+    matches any entry, even though the work genuinely WAS logged. Confirmed
+    live: commit `c175e5e` (subject "Career 2.7-A: rank Discovery queue...")
+    diffs transaction-log.md adding an entry headlined "## build: Auto-bump
+    to v2.6.83..." -- a different string, from a bundled local cycle.
+
+    A commit now counts as documented if EITHER (a) its own diff touched
+    transaction-log.md at all -- the direct signal that `mise run commit`/
+    `restart` ran somewhere in this PR's lifecycle, regardless of which
+    local headline it wrote -- or (b) some commit's diff (its own or a
+    later one) added a `## <headline>` line matching this commit's own
+    subject exactly -- the manual-backfill case, hrse#817's actual
+    precedent: a later, separate commit added entries headlined with each
+    original merge's own subject, and neither of those original merges nor
+    the backfill commit touched the file in a way (a) would catch for them
+    individually in every case, so (b) stays as a second, independent path.
+
+    Local and checkout-scoped, not REST-based, by design: this repo's own
+    transaction-log.md has 249 commits in its history as of 2026-08-18;
+    reconstructing that via the REST API would cost one detail call per
+    commit (the same shape as `audit_unlabelled_migrations`'s per-commit
+    lookups), where a single local `git log -p`/`--name-only` pair is two
+    subprocess calls total, regardless of history size.
+
+    Gated on the file actually existing in this checkout: cymagraph-infra
+    and openclaw-projects carry no transaction-log.md at all (confirmed
+    live, 404 on both), so this silently does nothing there rather than
+    flagging every merge permanently -- exactly the "check nobody can turn
+    green" anti-pattern `Report.actionable`'s design note warns against.
+
+    Walks the file's **full history** (`git log -p`), not its current
+    content, because the header states the file is cleared (on a version
+    bump for hrse; on push to main for harmonic-forge -- confirmed each
+    repo states its own clearing trigger in its own file header, both
+    handled identically here since both mean "current content undercounts
+    history"). Grepping current content would false-positive on every merge
+    older than the last clear -- its entry is gone from the live file by
+    design, not because it was skipped.
+    """
+    if not (Path(checkout) / "transaction-log.md").is_file():
+        return
+
+    try:
+        _run(["git", "fetch", "origin", "main"], cwd=checkout)
+    except GhError:
+        pass  # best-effort freshness; proceed against whatever origin/main we have
+
+    since = (datetime.now(timezone.utc)
+             - timedelta(days=TRANSACTION_LOG_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    try:
+        recent = _run(
+            ["git", "log", "origin/main", f"--since={since}",
+             "--name-only", "--pretty=format:===%H===%s"], cwd=checkout)
+        history = _run(["git", "log", "-p", "--", "transaction-log.md"], cwd=checkout)
+    except GhError as exc:
+        report.missing_transaction_log.append(
+            Finding(checkout, "-", f"could not walk history: {exc}"))
+        return
+
+    documented_headlines: set[str] = set()
+    for line in history.splitlines():
+        if line.startswith("+## "):
+            documented_headlines.add(line[len("+## "):].strip())
+
+    flagged: set[str] = set()
+    subject: str | None = None
+    touched_log = False
+
+    def _flush() -> None:
+        if subject is None:
+            return
+        if (subject not in documented_headlines and not touched_log
+                and subject not in flagged):
+            flagged.add(subject)
+            report.missing_transaction_log.append(Finding(
+                checkout, subject[:70],
+                "merged commit neither touched transaction-log.md nor has a "
+                "matching backfilled entry"))
+
+    for raw_line in recent.splitlines():
+        if raw_line.startswith("==="):
+            _flush()
+            _, _, rest = raw_line.partition("===")
+            _, _, subj = rest.partition("===")
+            subject = subj.strip()
+            touched_log = False
+        elif raw_line.strip() == "transaction-log.md":
+            touched_log = True
+    _flush()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME",
@@ -516,6 +741,9 @@ def main() -> int:
                   file=sys.stderr)
     for checkout in args.checkout:
         audit_worktrees(checkout, report)
+        audit_checkout_branch(checkout, report)
+        audit_stashes(checkout, report)
+        audit_transaction_log(checkout, report)
 
     if report.unlabelled_migrations:
         print(f"UNLABELLED MIGRATIONS — {len(report.unlabelled_migrations)} "
@@ -558,10 +786,33 @@ def main() -> int:
         for f in report.worktrees:
             print(f"  {f.name} — {f.detail}")
         print()
+    if report.checkout_off_main:
+        print(f"CHECKOUT OFF MAIN — {len(report.checkout_off_main)}:")
+        for f in report.checkout_off_main:
+            print(f"  {f.repo} — {f.detail}")
+        print("  A shared main checkout not on 'main' is exactly the setup for "
+              "an interleaved-work incident (hrse#277).")
+        print()
+    if report.stale_stashes:
+        print(f"STALE STASHES — {len(report.stale_stashes)}:")
+        for f in report.stale_stashes:
+            print(f"  {f.repo} {f.name} — {f.detail}")
+        print("  A stash is stranded work with less visibility than a branch — "
+              "never on any branch, never in `git log`. Nothing is dropped "
+              "automatically.")
+        print()
+    if report.missing_transaction_log:
+        print(f"MISSING TRANSACTION-LOG ENTRIES — {len(report.missing_transaction_log)}:")
+        for f in report.missing_transaction_log:
+            print(f"  {f.repo} — {f.name} — {f.detail}")
+        print("  Work that landed via PR left no trace in transaction-log.md. "
+              "See its own header for the sanctioned backfill helper.")
+        print()
 
     if not (report.stranded or report.orphaned or report.worktrees
             or report.unrun_migrations or report.unlabelled_migrations
-            or report.unboarded):
+            or report.unboarded or report.checkout_off_main
+            or report.stale_stashes or report.missing_transaction_log):
         print("repo hygiene: clean.")
         return 0
 

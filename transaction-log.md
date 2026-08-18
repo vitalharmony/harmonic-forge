@@ -3,6 +3,31 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(gh): repo hygiene backstop — four remaining gaps (hrse#808)
+
+Adds three local-checkout audits (checkout not on main, stale stashes,
+merged commits missing a transaction-log.md entry) and fixes
+_BOARD_ITEMS_QUERY's hardcoded `user(login:)` GraphQL owner type — it now
+tries organization first, falls back to user, so a future org-owned
+client-repo instance resolves correctly instead of silently 404ing.
+
+The transaction-log check went through a live-verified redesign mid-
+implementation: an initial pure headline-match version produced 524/588
+false positives on hrse, because a squash-merged PR's own final subject
+is the PR title, never any local commit's message, so it rarely matches
+a documented headline even when `mise run commit` genuinely ran somewhere
+in the PR. Fixed to also accept "this commit's own diff touched
+transaction-log.md at all" as an independent, sufficient signal.
+
+The owner-type fallback also needed a second live fix: `gh api graphql`
+exits nonzero for `organization(login:)` against a real user-owned login
+rather than returning a graceful null, so the fallback's first version
+never actually reached the user() attempt — silently skipping the
+migration/unboarded sweep on every repo, every run, until caught live.
+- tools/gh/repo_hygiene.py      | 275 +++++++++++++++++++++++++++++++--
+- tools/gh/test_repo_hygiene.py | 344 ++++++++++++++++++++++++++++++++++++++++++
+- 2 files changed, 607 insertions(+), 12 deletions(-)
+
 ## docs: document gh-as in foundation documents and directives (harmonic-forge#240)
 
 gh-as was documented in tools/gh/README.md and the root README.md — enough
