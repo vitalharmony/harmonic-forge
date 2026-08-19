@@ -48,3 +48,9 @@ derivable from code or Git.
   where applicable.
 - On one Git/GitHub failure or apparent hang, stop, report the exact
   error, and wait for direction. Do not blindly retry variants.
+- Default to the `Monitor` tool for any wait on an external,
+  indeterminate-duration event (a GitHub comment landing, CI finishing, a
+  file appearing) rather than a raw `Bash --run_in_background` polling
+  loop — `Monitor` surfaces a stalled or errored wait instead of sitting
+  silent until timeout. `Bash --run_in_background` stays correct for a
+  single bounded wait with a clear exit condition (harmonic-forge#312).
