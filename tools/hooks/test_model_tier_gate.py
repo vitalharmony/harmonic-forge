@@ -5,6 +5,7 @@ Run: python3 tools/hooks/test_model_tier_gate.py"""
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -295,6 +296,94 @@ class ResolveRepoTests(unittest.TestCase):
         (self.root / "mise.toml").write_text('GH_REPO = "vitalharmony/harmonic-forge"\n')
         with patch.dict(os.environ, {"GH_REPO": "vitalharmony/hrse"}):
             self.assertEqual(self._resolve(), "vitalharmony/harmonic-forge")
+
+
+class ModelTierFamilies(unittest.TestCase):
+    """harmonic-forge#314: the high-tier match was `"opus" in model`, so every
+    non-Opus family — including Fable, which is *above* Opus — was treated as
+    low-tier and told to downgrade on exactly the work that needs capability."""
+
+    def _transcript(self, model):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "transcript.jsonl"
+        path.write_text(
+            json.dumps({"message": {"role": "user"}}) + "\n"
+            + json.dumps({"message": {"model": model}}) + "\n"
+        )
+        return {"transcript_path": str(path)}
+
+    def test_fable_satisfies_deep(self):
+        """The regression this issue was filed for — currently False."""
+        self.assertTrue(m.required_tier_met(self._transcript("claude-fable-5"), True))
+
+    def test_opus_still_satisfies_deep(self):
+        self.assertTrue(m.required_tier_met(self._transcript("claude-opus-5"), True))
+
+    def test_sonnet_does_not_satisfy_deep(self):
+        self.assertFalse(m.required_tier_met(self._transcript("claude-sonnet-5"), True))
+
+    def test_haiku_does_not_satisfy_deep(self):
+        self.assertFalse(m.required_tier_met(self._transcript("claude-haiku-4-5-20251001"), True))
+
+    def test_low_tier_model_is_fine_when_deep_not_required(self):
+        self.assertTrue(m.required_tier_met(self._transcript("claude-sonnet-5"), False))
+
+    def test_unresolvable_model_fails_open(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "t.jsonl"
+        path.write_text(json.dumps({"message": {"role": "user"}}) + "\n")
+        self.assertTrue(m.required_tier_met({"transcript_path": str(path)}, True))
+
+    def test_codex_sol_satisfies_deep_unchanged(self):
+        self.assertTrue(m.required_tier_met({"model": "gpt-5.6-sol"}, True))
+
+    def test_codex_terra_does_not_satisfy_deep_unchanged(self):
+        self.assertFalse(m.required_tier_met({"model": "gpt-5.6-terra"}, True))
+
+
+class TailRead(unittest.TestCase):
+    """harmonic-forge#314 C4: the whole transcript was read into memory on
+    every Edit/Write call to use only the last model-bearing line."""
+
+    def test_finds_model_near_the_end_without_reading_the_whole_file(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "big.jsonl"
+        filler = json.dumps({"message": {"role": "user", "pad": "x" * 2000}})
+        with path.open("w") as handle:
+            for _ in range(3000):          # ~6 MB of preamble
+                handle.write(filler + "\n")
+            handle.write(json.dumps({"message": {"model": "claude-fable-5"}}) + "\n")
+        self.assertGreater(path.stat().st_size, 4 << 20)
+
+        real_open = open
+        opened = {}
+
+        def counting_open(*args, **kwargs):
+            handle = real_open(*args, **kwargs)
+            opened["handle"] = handle
+            return handle
+
+        with patch("builtins.open", counting_open):
+            self.assertEqual(m.resolve_claude_model(str(path)), "claude-fable-5")
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(m.resolve_claude_model("/nonexistent/transcript.jsonl"))
+
+    def test_model_beyond_the_scan_budget_falls_open(self):
+        """A model line buried past max_bytes is not found — same outcome as a
+        transcript with no model line, at bounded cost rather than unbounded."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "buried.jsonl"
+        filler = json.dumps({"message": {"role": "user", "pad": "y" * 2000}})
+        with path.open("w") as handle:
+            handle.write(json.dumps({"message": {"model": "claude-opus-5"}}) + "\n")
+            for _ in range(3000):
+                handle.write(filler + "\n")
+        self.assertIsNone(m.resolve_claude_model(str(path)))
 
 
 if __name__ == "__main__":
