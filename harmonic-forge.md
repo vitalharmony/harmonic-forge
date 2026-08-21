@@ -35,12 +35,17 @@ PR. Full agent-readable version: `3-lane-protocol.md`.
 ```
 [GitHub Issue] ──> Dev Pulls Ticket ──> [Local 3-Lane Loop] ──> GitHub PR
                                           │
-                                    Lane 1: Claude Code (Blueprint)
-                                    Lane 2: Devin Local (Muscle)
-                                    Lane 3: Devin AA (Control Gate) — local
+                                    Lane 1: Blueprint / Review
+                                    Lane 2: Implementer
+                                    Lane 3: Control Gate — local
 ```
 
-**Lane 3 is local by design.** The Devin Autonomous Agent runs on the
+Lanes are defined by role, not by vendor. The reference implementations
+have been Claude Code, Codex, and (historically) Devin — see
+harmonic-forge#317 for the current effort to make Claude, Codex, and
+Gemini interchangeable across all three lanes.
+
+**Lane 3 is local by design.** Whichever agent fills Lane 3 runs on the
 developer's own machine, with local `gh` CLI access to GitHub — there is no
 separate cloud-dispatched agent in this architecture. This matters for the
 gate design: Lane 3 needs the same local repo/issue access as Lanes 1 and 2,
@@ -51,19 +56,12 @@ See `rules/universal-agent.md`, `rules/universal-lane1.md`, and
 under, and `rules/testing-gate.md` / `rules/frontend-ui-golden-path.md`
 for Lane 3's pass/fail thresholds.
 
-**Lane 3 also has its own local directives file**, outside this repo and not
-synced by `sync_rules.py`: `~/.config/devin/AGENTS.md` (machine-specific,
-not per-project). Direct corrections to Lane 3's own behavior go there;
-Devin AA also writes to it itself. See `3-lane-protocol.md`'s Lane 3 section
-for the full note.
-
-**Lane 3 also has a per-project skill file** (distinct from `AGENTS.md`
-above — repo-local, not machine-wide): `{project}/.devin/skills/lane3-gate/
-SKILL.md`. Hard-wired enforcement for the never-fixes-anything constraint,
-authored by Devin AA after prose rules alone proved insufficient (real
-incidents: HRSE2 `#176`, `#52`). Explicitly defers to `3-lane-protocol.md`/
-`testing-gate.md` as authoritative. Currently HRSE2-only, not yet part of
-`sync_rules.py`'s distribution — see `3-lane-protocol.md`'s Lane 3 section.
+**Lane 3 also has a per-project skill file**: `{project}/.claude/skills/
+lane3-gate/SKILL.md`. Hard-wired enforcement for the never-fixes-anything
+constraint (real incidents motivating it: HRSE2 `#176`, `#52`). Explicitly
+defers to `3-lane-protocol.md`/`testing-gate.md` as authoritative.
+Currently HRSE2-only, not yet part of `sync_rules.py`'s distribution — see
+`3-lane-protocol.md`'s Lane 3 section.
 
 **Handoffs are permanent, by deliberate choice.** The prevailing public
 pattern for inter-agent handoffs (e.g. Matt Pocock's widely-adopted

@@ -60,22 +60,23 @@ surprised by them:
    frontend talks to the backend. These match the platform's universal
    rules exactly, so nothing extra to learn there.
 4. **Bug fixes/features go through the 3-lane loop as normal** — you are
-   Lane 2 (Devin Local/Muscle) taking Lane 1 (Claude Code) handoffs, gated
-   by Lane 3 before merge.
+   Lane 2 (Implementer) taking Lane 1 (Claude Code, or another tool per
+   harmonic-forge#317's multi-agent parity effort) handoffs, gated by Lane 3
+   before merge.
 5. **Don't just pull whatever `tech-debt`-labeled issue looks interesting —
    check `docs/PRIORITIES.md` first** (HRSE2 repo root). It's the canonical
    cross-repo (hrse + harmonic-forge) sequencing doc — what's actually next,
-   with the reasoning, and what's deliberately parked and why. **As of
-   2026-07-13, both boards do mirror it** — vitalharmony project #1
-   ("CymaGraph Backlog," hrse) and project #3 ("harmonic-forge Backlog") each
-   carry a `Priority` (NOW/NEXT/LATER) and `Sequence` field kept in sync by
-   `/sprint-plan`'s `board_sync.py`. Still treat **the doc as canonical, the
-   board as a derived view** — the doc carries the *reasoning* for every
-   entry, the board's fields don't; if the two ever disagree
-   (`board_drift_check.py` catches this), the doc wins and the board gets
-   corrected, never the reverse. If something you're about to pick up isn't
-   mentioned in the doc, flag it to Marc rather than assuming it's fine to
-   start — it may be real drift, or a deliberate cut you're about to undo.
+   with the reasoning, and what's deliberately parked and why. **The doc
+   does not drive the boards, and never did in the way this section used
+   to describe** (hrse#839): `board_sync.py` and the `Priority`/`Sequence`
+   board fields it kept in sync are all **deleted**, not merely out of sync
+   — `Status` (Todo → In Progress → Done) is the one board field a human
+   actually maintains, and it carries the Kanban. The doc holds the
+   reasoning a board's fields structurally can't; it is not a mirror of
+   board state and was never meant to be re-derived from it. If something
+   you're about to pick up isn't mentioned in the doc, flag it to Marc
+   rather than assuming it's fine to start — it may be real drift, or a
+   deliberate cut you're about to undo.
 
 ## Setup Steps
 
