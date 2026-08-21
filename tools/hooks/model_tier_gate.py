@@ -68,10 +68,25 @@ _CACHE_TTL = 120
 # Claude Code model families are substring-matched against message.model
 # (e.g. "claude-opus-5", "claude-sonnet-5"); Codex models are matched
 # exactly against payload["model"] (e.g. "gpt-5.6-sol", "gpt-5.6-terra").
-CLAUDE_HIGH = "opus"
-CLAUDE_LOW = "sonnet"
+# Families that satisfy a `deep`-tier requirement -- Opus and above.
+# harmonic-forge#314: this was a single `CLAUDE_HIGH = "opus"` substring,
+# correct only while Opus was the family's ceiling. Fable 5 is above Opus,
+# not a sibling, and `"opus" in "claude-fable-5"` is False -- so a
+# deep-tier issue denied the most capable model available and told it to
+# `/model opus`, i.e. to downgrade, on the work that most needs capability.
+#
+# Deliberately an explicit allowlist, not a wider pattern: model names are
+# fluid as new models ship, and a new top tier should require a reviewed
+# one-line addition here rather than being granted implicitly by a match
+# that happens to be broad enough. Do not seed it with speculative names.
+CLAUDE_HIGH_FAMILIES = frozenset({"opus", "fable"})
 CODEX_HIGH = "gpt-5.6-sol"
-CODEX_LOW = "gpt-5.6-terra"
+
+# The former `CLAUDE_LOW`/`CODEX_LOW` constants are gone, not relocated.
+# Both were defined and never read: the gate only ever asks "is this high
+# enough", so "not high" is the complete answer, and a positive low-tier
+# assertion would be a second independently-driftable list of names to
+# maintain -- the same staleness this issue was filed for.
 
 BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
 
@@ -217,20 +232,52 @@ def resolve_tier(cwd: str, issue_number: int) -> str | None:
         return None
 
 
+def _tail_lines(path: str, chunk_size: int = 65536, max_bytes: int = 4 << 20):
+    """Yield lines from the end of a file backwards, in bounded chunks.
+
+    harmonic-forge#314 (C4): this used `readlines()`, pulling the whole
+    transcript into memory on every Edit/Write/MultiEdit call to use only
+    the last model-bearing line. Local transcripts reach 107 MB, so that
+    cost was paid on every code-writing tool call in a long session.
+
+    Gives up after `max_bytes`. A transcript whose last 4 MB carries no
+    `message.model` line then falls through to the caller's fail-open
+    path -- the same outcome the old code gave for a file with no model
+    line at all, at bounded cost instead of unbounded.
+    """
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        remainder = b""
+        scanned = 0
+        while position > 0 and scanned < max_bytes:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            scanned += read_size
+            handle.seek(position)
+            block = handle.read(read_size) + remainder
+            parts = block.split(b"\n")
+            # parts[0] may be a partial line whose head is in a chunk we
+            # have not read yet -- hold it back until we have that chunk.
+            remainder = parts[0] if position > 0 else b""
+            tail = parts[1:] if position > 0 else parts
+            for line in reversed(tail):
+                if line.strip():
+                    yield line.decode("utf-8", "replace")
+
+
 def resolve_claude_model(transcript_path: str) -> str | None:
     try:
-        with open(transcript_path) as f:
-            lines = f.readlines()
+        for line in _tail_lines(transcript_path):
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            model = (entry.get("message") or {}).get("model")
+            if model:
+                return model
     except OSError:
         return None
-    for line in reversed(lines):
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        model = (entry.get("message") or {}).get("model")
-        if model:
-            return model
     return None
 
 
@@ -242,7 +289,7 @@ def required_tier_met(payload: dict, high_required: bool) -> bool:
         model = resolve_claude_model(payload.get("transcript_path", ""))
         if model is None:
             return True  # fail open -- can't resolve, don't block
-        is_high = CLAUDE_HIGH in model
+        is_high = any(family in model for family in CLAUDE_HIGH_FAMILIES)
     return is_high if high_required else True
 
 
