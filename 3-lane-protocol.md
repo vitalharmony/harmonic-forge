@@ -13,19 +13,22 @@ Condensed operational directives. For philosophy/rationale, see
 
 **Lanes are roles, not fixed tools.** All three lanes are filled by
 whichever tool the operator running that session assigns. Devin Local /
-Devin AA is the reference pairing this doc was originally written against
-for Lane 2/Lane 3 and stays the default example throughout, but Codex
-(assignable to either Lane 2 or Lane 3 per issue — see the operator's own
-project rules file, e.g. `.windsurfrules`, for the exact trigger phrasing)
-is a second live example. Claude Code is Lane 1's reference/default
-implementation — this platform's own authoring tool — but is not fixed by
-name; an operator may assign a different tool to Lane 1 via that tool's
-own equivalent mechanism (see § Lane 1 below). Different collaborators
-(see Team Topology below) will likely bring their own tool preferences
-for these roles — the protocol's actual requirements (independent-eyes
-gating, no lane closes/merges on its own, HITL-gate language, etc.) are
-tool-agnostic and apply identically regardless of which specific tool is
-filling any lane on a given session.
+Devin AA was this doc's original reference pairing for Lane 2/Lane 3 and
+is retained below as a historical example where it clarifies intent —
+Devin is retired from active use as of 2026-08 (see harmonic-forge#317's
+multi-agent parity epic). Codex is a current live example for either
+Lane 2 or Lane 3 per issue (see the operator's own project rules file,
+e.g. `.windsurfrules`, for the exact trigger phrasing); Claude and Gemini
+are the two tools #317 is qualifying for the same role, with Gemini's
+qualification tracked capability-by-capability. Claude Code is Lane 1's
+reference/default implementation — this platform's own authoring tool —
+but is not fixed by name; an operator may assign a different tool to
+Lane 1 via that tool's own equivalent mechanism (see § Lane 1 below).
+Different collaborators (see Team Topology below) will likely bring their
+own tool preferences for these roles — the protocol's actual requirements
+(independent-eyes gating, no lane closes/merges on its own, HITL-gate
+language, etc.) are tool-agnostic and apply identically regardless of
+which specific tool is filling any lane on a given session.
 
 ## Lane 1 — Blueprint (reference tool: Claude Code)
 
@@ -90,14 +93,15 @@ summarizes.*
 - Does not write production code directly (exception: explicit platform/
   tooling assignments — see `rules/universal-lane1.md`).
 
-## Lane 2 — Muscle (reference tool: Devin Local)
+## Lane 2 — Muscle (current tools: Claude Code, Codex)
 
-*Devin Local is the reference implementation this section is written
-against — an operator assigning Codex or another tool to Lane 2 follows
-the same requirements below, with that tool's own equivalent mechanism
-where a Devin-specific file/path is named. See the project's own rules
-file (e.g. HRSE2's `.windsurfrules` "Codex role" section) for how a given
-tool's Lane 2 assignment is actually triggered and scoped.*
+*Devin Local was this section's original reference implementation — retired
+as of 2026-08 (harmonic-forge#317). An operator assigning Claude, Codex, or
+another tool to Lane 2 follows the same requirements below, with that
+tool's own equivalent mechanism where a Devin-specific file/path is named.
+See the project's own rules file (e.g. HRSE2's `.windsurfrules` "Codex
+role" section) for how a given tool's Lane 2 assignment is actually
+triggered and scoped.*
 
 - Given a short trigger (e.g. "implement #N") rather than pasted content,
   **fetches the issue and Lane 1's handoff comment from GitHub directly**
@@ -148,44 +152,38 @@ tool's Lane 2 assignment is actually triggered and scoped.*
   queries).
 - Signals completion with a structured diff summary back to Lane 1.
 
-## Lane 3 — Control Gate (reference tool: Devin AA)
+## Lane 3 — Control Gate (current tools: Claude Code, Codex)
 
-*Devin AA is the reference implementation this section is written
-against — an operator assigning Codex or another tool to Lane 3 must
-still meet every requirement below (independent read before gating, no
-edits/fixes/commits, FAIL-and-report rather than work around a blocker,
-no close/merge without explicit operator instruction), via that tool's
-own equivalent mechanism where a Devin-specific file/path is named below.
-**Mechanical enforcement, not prose alone, is what actually holds** — this
-project's own history (see `.devin/skills/lane3-gate/SKILL.md`'s origin)
-is a hard-tool-restriction gate built specifically because prose-only
-Lane 3 rules were violated under pressure more than once. Any tool newly
-assigned to Lane 3 should get an equivalent hard restriction (a
-permission/sandbox profile denying write/edit/commit/push tools for that
-session) wherever the tool supports one, not just an instruction file it's
-trusted to follow.*
+*Devin AA was this section's original reference implementation — retired
+as of 2026-08 (harmonic-forge#317). An operator assigning Claude, Codex,
+or another tool to Lane 3 must still meet every requirement below
+(independent read before gating, no edits/fixes/commits, FAIL-and-report
+rather than work around a blocker, no close/merge without explicit
+operator instruction), via that tool's own equivalent mechanism where a
+tool-specific file/path is named below. **Mechanical enforcement, not
+prose alone, is what actually holds** — this project's own history (see
+`.claude/skills/lane3-gate/SKILL.md`'s origin) is a hard-tool-restriction
+gate built specifically because prose-only Lane 3 rules were violated
+under pressure more than once. Any tool assigned to Lane 3 should get an
+equivalent hard restriction (a permission/sandbox profile denying
+write/edit/commit/push tools for that session) wherever the tool supports
+one, not just an instruction file it's trusted to follow — see
+harmonic-forge#317's capability-tier work for Gemini's version of this.*
 
-- **Own directives file: `~/.config/devin/AGENTS.md`** (local, machine-specific
-  — not part of this repo, not synced by `sync_rules.py`). This is where
-  direct, durable corrections to Lane 3's own behavior go, separate from the
-  shared protocol/rule files above that steer all three lanes. Devin AA also
-  writes to this file itself (not purely human-maintained) — check it, don't
-  assume the `harmonic-forge` rules are the only lever when Lane 3's behavior
-  needs adjusting.
-- **Own skill file, per-project: `{project}/.devin/skills/lane3-gate/SKILL.md`**
-  (repo-local, not `~/.config` like `AGENTS.md` above, and — as of 2026-07-10
-  — not yet synced across projects by `sync_rules.py`; currently HRSE2-only).
-  This is a hard-wired enforcement mechanism for the never-fixes-anything
-  constraint two sections below, drafted by Devin AA itself after diagnosing
-  that prose rules alone weren't preventing it from rationalizing past them
-  ("I found the fix and it was easy" / "the fix is obviously correct"). The
-  skill explicitly names `harmonic-forge/3-lane-protocol.md` and
-  `rules/testing-gate.md` as authoritative — it is the enforcement layer, not
-  a second source of truth, and should be updated to match if the two ever
-  drift. Cites the real incidents (`#176`, `#52`) that produced it. If this
-  pattern proves out, worth revisiting whether it should be added to
-  `sync_rules.py`'s distribution so other projects get the same hard-wired
-  protection, not just prose.
+- **Own skill file, per-project: `{project}/.claude/skills/lane3-gate/SKILL.md`**
+  (repo-local — as of 2026-07-10, not yet synced across projects by
+  `sync_rules.py`; currently HRSE2-only). This is a hard-wired enforcement
+  mechanism for the never-fixes-anything constraint two sections below,
+  originally drafted after diagnosing that prose rules alone weren't
+  preventing rationalization past them ("I found the fix and it was easy"
+  / "the fix is obviously correct"). The skill explicitly names
+  `harmonic-forge/3-lane-protocol.md` and `rules/testing-gate.md` as
+  authoritative — it is the enforcement layer, not a second source of
+  truth, and should be updated to match if the two ever drift. Cites the
+  real incidents (`#176`, `#52`) that produced it. If this pattern proves
+  out, worth revisiting whether it should be added to `sync_rules.py`'s
+  distribution so other projects get the same hard-wired protection, not
+  just prose.
 - Runs locally. Reads the GitHub issue independently — **never reads Lane
   2's code before writing its test spec.** This now explicitly includes
   **Lane 2's own implementation-report comment on the issue thread** — Lane
@@ -497,12 +495,12 @@ applies equally to:
   reviewing the actual file list first, and never start editing without
   confirming the working tree is clean and it's your own change producing
   the diff.
-- **Lane 2** (Devin Local) — a "no push requested yet" completion report
+- **Lane 2** — a "no push requested yet" completion report
   must still mean the branch itself is fully committed; an in-progress
   follow-up fix (even a small one, even one Lane 1 or the operator asked
   for) gets its own commit before the session ends, not left staged or
   unstaged for someone else to find later.
-- **Lane 3** (Devin AA) — beyond the existing never-fixes-anything rule
+- **Lane 3** — beyond the existing never-fixes-anything rule
   (which already bars Lane 3 from *creating* uncommitted changes), Lane 3
   must not assume an uncommitted diff it finds mid-gate belongs to its own
   run. If Lane 3 discovers uncommitted changes when starting a gate, that
@@ -1020,13 +1018,13 @@ self-restraint failure — the spec simply isn't there yet.
   failure/cleanup paths of any git- or data-mutating mechanics — and
   **stops.** The plan is a natural prefix of work Lane 2 was doing anyway
   (it has already fetched the issue and read the cited files); the
-  marginal Devin cost is one comment.
+  marginal cost is one comment.
 - HITL relays "Plan up for #N" (→ Lane 1). Lane 1 invokes `pitch-inspection`
   in **plan-review mode** (see `agents/pitch-inspection.md`), passing the
   original handoff plus Lane 2's plan; the review covers only the delta
   Lane 2 introduced, not a re-review of the whole handoff. Lane 1 posts the
   verdict as a single comment on #N. This is a Claude-side subagent call —
-  no Devin credits, no gate cycle.
+  no gate cycle needed.
 - **PROCEED / PROCEED WITH NAMED CHANGES:** Lane 1 posts the withheld
   Implementation Spec as a follow-up comment (incorporating any named
   changes), then HITL sends **"Implement #N"** — now unambiguous, since it
@@ -1111,9 +1109,10 @@ refuses if it is wrong. See `tools/gh/README.md`, and `harmonic-forge.md`
 
 **Tool choice per lane is a per-collaborator decision, not a platform mandate.**
 Kyle, Greg, Ajit, and future collaborators each pick whichever tool they
-run for Lane 2/Lane 3 on their own machine — Devin Local/Devin AA and
-Codex are the two known examples as of this writing, not an exhaustive
-list. What's non-negotiable regardless of tool choice is the protocol
+run for Lane 2/Lane 3 on their own machine — Claude Code and Codex are the
+current known examples, with Gemini's qualification tracked by
+harmonic-forge#317; not an exhaustive list. What's non-negotiable
+regardless of tool choice is the protocol
 itself (see the note under the lane diagram above): independent-eyes
 gating, no lane closes/merges on its own, and — per the Lane 3 note above
 — mechanical enforcement of the never-fixes-anything rule wherever the
