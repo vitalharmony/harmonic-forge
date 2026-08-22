@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """BATCH-authorization: the sole gate for `gh issue close`/`gh pr merge`
-(harmonic-forge#336, reforged after Lane 3's live gate FAIL).
+(harmonic-forge#336, reforged after Lane 3's live gate FAIL; multi-target
+state shape added in harmonic-forge#356 gap 2).
 
 ## Why this reforge exists
 
@@ -51,6 +52,22 @@ delete-branch stacked-child-PR warning). Two hooks independently deciding
 the same command class was undefined behavior under "strongest decision
 wins" composition; one hook now owns each class end to end.
 
+## One key, both actions (harmonic-forge#356 gap 2)
+
+A batched issue's real lifecycle is implement -> merge -> close -- both
+command classes need authorizing, not just one. Each key's entry now holds a
+`targets` list, one dict per authorized action, sharing one `expires_at` and
+one `authorized_at` from the single `authorize()` call that created them.
+`authorize()` defaults to authorizing BOTH actions per key for exactly this
+reason; a narrower `--action` (e.g. a superseded issue that closes without
+ever having a PR, per the H767 case this gap was found from) is still
+supported by passing fewer action strings explicitly.
+
+Each target is independently consumed -- merging a PR does not consume the
+issue's close authorization, and vice versa. `link_pr()` attaches
+repo/pr_number to the specific `"gh pr merge"` target within a key's
+`targets` list, not to the entry as a whole.
+
 ## Write path -- trust boundary lives in the caller, not here
 
 `authorize()` is called only from a genuine operator chat message carrying
@@ -73,6 +90,21 @@ place this mapping is ever known is the agent that opens the PR --
 authorized issue, `gh pr merge` against that issue's PR does not match, and
 `decide()` returns `("ask", ...)`. Deliberate fail-closed default: a missed
 `link_pr()` call means one more Ask prompt, never a wrongly-granted merge.
+
+## `authorize()` and the command it authorizes must be in SEPARATE tool calls
+
+`PreToolUse` hooks evaluate a submitted Bash command's *entire* text once,
+before any of it executes. A multi-line tool call that bundles `authorize`
+and the now-authorized `gh issue close`/`gh pr merge` together (e.g. two
+shell lines in one Bash tool invocation) gets evaluated as a whole *before
+the authorize line has run* -- `decide()` sees no live entry yet, correctly
+asks, and the authorize line then executes anyway as the script continues,
+leaving an unconsumed entry behind it. Confirmed live, harmonic-forge#356:
+identical `authorize` + `close` sequences differed only in whether they were
+one tool call or two, and only the two-call form went through silently.
+Not a bug in `decide()` -- a structural fact about hook evaluation timing.
+Always issue `authorize` (and `link_pr()`) as their own tool call, with the
+authorized command as a separate, later one.
 """
 
 from __future__ import annotations
@@ -89,6 +121,7 @@ from shell_parse import command_segments  # noqa: E402
 
 STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 DEFAULT_TTL_HOURS = 2.0
+DEFAULT_ACTIONS = ("gh pr merge", "gh issue close")
 
 # vitalharmony/hrse -> "H", etc. -- rules/lane-shorthand.md is the canonical
 # table; K/P point at other accounts entirely and are deliberately excluded
@@ -147,15 +180,33 @@ def issue_key(repo: str, number: str | int) -> str | None:
     return f"{prefix}{number}" if prefix else None
 
 
+def _new_target(action: str) -> dict:
+    return {"action": action, "consumed": False, "consumed_by": None, "repo": None, "pr_number": None}
+
+
 def authorize(
     keys: list[str],
-    action: str,
+    actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     state_path: Path | None = None,
 ) -> None:
-    """Write one fresh entry per issue key. See module docstring -- the
-    caller is responsible for having verified this came from a genuine
-    operator chat message, not fetched content."""
+    """Write one fresh entry per issue key, one target per action (default:
+    both merge and close -- harmonic-forge#356 gap 2). See module docstring
+    -- the caller is responsible for having verified this came from a
+    genuine operator chat message, not fetched content.
+
+    A repeat call for an already-authorized key REPLACES its entry outright
+    (fresh targets, any prior consumption reset) -- a new BATCH grant is a
+    new grant, not a merge with whatever was there before.
+    """
+    if isinstance(actions, str):
+        # A bare string is technically iterable -- silently producing one
+        # single-character garbage target per letter is far worse than a
+        # loud, immediate TypeError. Caught live while fixing this exact
+        # module's own test suite for harmonic-forge#356.
+        raise TypeError(f"actions must be a list of strings, not a bare string: {actions!r}")
+    if not actions:
+        raise ValueError("authorize() requires at least one action")
     state = _load(state_path)
     now = _now()
     expires = now + timedelta(hours=ttl_hours)
@@ -164,28 +215,27 @@ def authorize(
         if not ISSUE_KEY.match(key):
             raise ValueError(f"not a valid issue key: {raw_key!r}")
         state[key] = {
-            "action": action,
             "authorized_at": now.isoformat(),
             "expires_at": expires.isoformat(),
-            "consumed": False,
-            "consumed_by": None,
-            "repo": None,
-            "pr_number": None,
+            "targets": [_new_target(action) for action in actions],
         }
     _save(state, state_path)
 
 
 def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None) -> None:
-    """Record which PR fulfils a BATCH-authorized issue, once opened. See
-    the module docstring's PR-number-gap section for why this call is the
-    only place this mapping can ever be recorded."""
+    """Record which PR fulfils a BATCH-authorized issue's merge target, once
+    opened. See the module docstring's PR-number-gap section for why this
+    call is the only place this mapping can ever be recorded."""
     state = _load(state_path)
     key = key.upper()
     entry = state.get(key)
     if entry is None:
         raise ValueError(f"no authorization entry for {key!r} -- authorize it first")
-    entry["repo"] = repo
-    entry["pr_number"] = pr_number
+    target = next((t for t in entry.get("targets", []) if "merge" in t.get("action", "").lower()), None)
+    if target is None:
+        raise ValueError(f"{key!r} was not authorized for a merge action -- authorize it with --action 'gh pr merge' first")
+    target["repo"] = repo
+    target["pr_number"] = pr_number
     _save(state, state_path)
 
 
@@ -288,32 +338,36 @@ def _ask_pr_merge_reason(tokens: list[str]) -> str:
     return reason
 
 
-def _match_issue_close(tokens: list[str], state: dict) -> tuple[str, dict] | None:
-    target = classify_issue_close(tokens)
-    if target is None:
+def _match_issue_close(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
+    target_info = classify_issue_close(tokens)
+    if target_info is None:
         return None
-    repo, number = target
+    repo, number = target_info
     if repo is None or number is None:
         return None
     key = issue_key(repo, number)
     entry = state.get(key) if key else None
-    if entry is None or "close" not in entry.get("action", "").lower():
+    if entry is None:
         return None
-    return key, entry
-
-
-def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict] | None:
-    target = classify_pr_merge(tokens)
+    target = next((t for t in entry.get("targets", []) if "close" in t.get("action", "").lower()), None)
     if target is None:
         return None
-    repo, number = target
+    return key, entry, target
+
+
+def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
+    target_info = classify_pr_merge(tokens)
+    if target_info is None:
+        return None
+    repo, number = target_info
     if repo is None or number is None:
         return None
     for key, entry in state.items():
-        if "merge" not in entry.get("action", "").lower():
-            continue
-        if entry.get("repo") == repo and entry.get("pr_number") == number:
-            return key, entry
+        for target in entry.get("targets", []):
+            if "merge" not in target.get("action", "").lower():
+                continue
+            if target.get("repo") == repo and target.get("pr_number") == number:
+                return key, entry, target
     return None
 
 
@@ -352,14 +406,14 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
             if match is None:
                 return "ask", reason
-            key, entry = match
+            key, entry, target = match
             if not _entry_live(entry, now):
                 return "ask", reason
-            if entry.get("consumed") and entry.get("consumed_by") != command_hash:
+            if target.get("consumed") and target.get("consumed_by") != command_hash:
                 return "ask", reason  # already spent on a different command
-            if not entry.get("consumed"):
-                entry["consumed"] = True
-                entry["consumed_by"] = command_hash
+            if not target.get("consumed"):
+                target["consumed"] = True
+                target["consumed_by"] = command_hash
                 _save(state, state_path)
             allow_reason = f"BATCH-authorized ({key})"
 
@@ -381,18 +435,23 @@ def _cli() -> None:
 
     p_auth = sub.add_parser("authorize", help="Write one entry per issue key")
     p_auth.add_argument("keys", nargs="+", help="Issue keys, e.g. H395 F334")
-    p_auth.add_argument("--action", required=True, help='e.g. "gh pr merge" or "gh issue close"')
+    p_auth.add_argument(
+        "--action", dest="actions", action="append",
+        help='e.g. "gh pr merge" or "gh issue close" -- repeatable. '
+             f"Default (if omitted): both {DEFAULT_ACTIONS!r}.",
+    )
     p_auth.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
 
-    p_link = sub.add_parser("link-pr", help="Record the PR that fulfils an authorized issue")
+    p_link = sub.add_parser("link-pr", help="Record the PR that fulfils an authorized issue's merge target")
     p_link.add_argument("key")
     p_link.add_argument("--repo", required=True)
     p_link.add_argument("--pr", type=int, required=True, dest="pr_number")
 
     args = parser.parse_args()
     if args.cmd == "authorize":
-        authorize(args.keys, args.action, args.ttl_hours)
-        print(f"authorized {', '.join(k.upper() for k in args.keys)} for {args.action!r}")
+        actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
+        authorize(args.keys, actions, args.ttl_hours)
+        print(f"authorized {', '.join(k.upper() for k in args.keys)} for {actions!r}")
     elif args.cmd == "link-pr":
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")

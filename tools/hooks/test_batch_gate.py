@@ -49,7 +49,7 @@ class BatchGateEndToEndTests(unittest.TestCase):
         return proc.returncode, proc.stdout
 
     def test_a_covered_authorized_command_emits_allow(self):
-        ba.authorize(["H395"], "gh issue close", state_path=self.state_path)
+        ba.authorize(["H395"], ["gh issue close"], state_path=self.state_path)
         _rc, out = self._run(
             GATE, "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed"
         )
@@ -94,7 +94,7 @@ class HookOrderIndependenceTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.state_path = Path(self.tmpdir.name) / "batch-authorized.json"
-        ba.authorize(["H395"], "gh issue close", state_path=self.state_path)
+        ba.authorize(["H395"], ["gh issue close"], state_path=self.state_path)
         self.command = "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed"
 
     def tearDown(self):
