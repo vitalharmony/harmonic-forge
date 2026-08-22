@@ -16,6 +16,11 @@ here as their own classes:
 
 Both classes are now guarded by construction rather than by rule count: rules
 inspect parsed tokens per invocation, so a string in an argument is data.
+
+`gh issue close`/`gh pr merge` moved out entirely to `batch_gate.py`/
+`batch_auth.decide()` (harmonic-forge#336's reforge, 2026-08-22) -- this hook
+now covers only `git clean -fd`/`-xfd`. Their tests moved to
+`test_batch_auth.py`/`test_batch_gate.py`.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ def concerns(command: str) -> list[str]:
 
 
 class AsksTests(unittest.TestCase):
-    """The three genuinely unrecoverable operations."""
+    """The one genuinely unrecoverable operation this hook still covers."""
 
     def test_git_clean_fd(self):
         self.assertTrue(concerns("git clean -fd"))
@@ -47,34 +52,6 @@ class AsksTests(unittest.TestCase):
                     "git clean --force --directory"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(concerns(cmd), cmd)
-
-    def test_pr_merge_with_delete_branch_cli(self):
-        self.assertTrue(concerns("gh pr merge 993 --squash --delete-branch"))
-
-    def test_pr_merge_with_delete_branch_rest(self):
-        self.assertTrue(concerns(
-            "gh api -X PUT repos/vitalharmony/hrse/pulls/993/merge "
-            "-f delete_branch=true"))
-
-    def test_issue_close_rest_is_caught(self):
-        """The form the rules MANDATE. Every earlier tier missed it."""
-        self.assertTrue(concerns(
-            "gh api repos/vitalharmony/hrse/issues/245 -X PATCH -f state=closed"))
-
-    def test_issue_close_rest_flag_variants(self):
-        for cmd in (
-            "gh api -XPATCH repos/o/r/issues/1 -f state=closed",
-            "gh api --method PATCH repos/o/r/issues/1 -f state=closed",
-            "gh api --method=PATCH repos/o/r/issues/1 -f state=closed",
-            "gh api -X=PATCH repos/o/r/issues/1 -f state=closed",
-            "gh api -f state=closed -X PATCH repos/o/r/issues/1",
-            "gh api repos/o/r/issues/1 -X PATCH -f state='closed'",
-        ):
-            with self.subTest(cmd=cmd):
-                self.assertTrue(concerns(cmd), cmd)
-
-    def test_issue_close_cli_is_still_caught_as_secondary(self):
-        self.assertTrue(concerns("gh issue close 245 --repo vitalharmony/hrse"))
 
 
 class MultiClauseTests(unittest.TestCase):
@@ -94,11 +71,11 @@ class MultiClauseTests(unittest.TestCase):
         self.assertTrue(concerns("cd /tmp/repo && git clean -fd"))
 
     def test_a_safe_clause_does_not_suppress_a_later_flagged_one(self):
-        self.assertTrue(concerns("git status && gh issue close 12"))
+        self.assertTrue(concerns("git status && git clean -fd"))
 
-    def test_two_distinct_concerns_are_reported_once_each(self):
-        found = concerns("git clean -fd && gh issue close 12 && git clean -xfd")
-        self.assertEqual(len(found), 2)
+    def test_two_distinct_clauses_report_once_each(self):
+        found = concerns("git clean -fd && git status && git clean -xfd")
+        self.assertEqual(len(found), 1)  # same reason string, deduped
 
     def test_pipelines_and_semicolons_segment_correctly(self):
         self.assertEqual(concerns("git log | head -5; ls /home/mmangus"), [])
@@ -117,8 +94,7 @@ class NotDataTests(unittest.TestCase):
             "grep -rn 'rm -rf' /home/mmangus/harmonic-forge/tools",
             "grep -rn 'git clean -fd' tools/hooks",
             "echo 'git push --force' >> notes.md",
-            "echo 'gh issue close 245' > plan.txt",
-            'git commit -m "document gh issue close in the runbook"',
+            'git commit -m "document git clean -fd in the runbook"',
         ):
             with self.subTest(cmd=cmd):
                 self.assertEqual(concerns(cmd), [], cmd)
@@ -126,7 +102,6 @@ class NotDataTests(unittest.TestCase):
     def test_a_heredoc_body_is_masked_not_parsed(self):
         cmd = ("cat > /tmp/notes.md <<'EOF'\n"
                "Run git clean -fd to wipe untracked files.\n"
-               "Then gh issue close 245.\n"
                "EOF")
         self.assertEqual(concerns(cmd), [])
 
@@ -162,25 +137,26 @@ class NotFlaggedTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(concerns(cmd), [], cmd)
 
-    def test_a_merge_without_branch_deletion_is_not_challenged(self):
-        self.assertEqual(concerns("gh pr merge 993 --squash"), [])
-        self.assertEqual(concerns(
-            "gh api -X PUT repos/o/r/pulls/1/merge"), [])
-
-    def test_a_patch_that_does_not_close_is_not_challenged(self):
-        self.assertEqual(concerns(
-            "gh api repos/o/r/issues/1 -X PATCH -f title=renamed"), [])
-
-    def test_reopening_is_not_challenged(self):
-        self.assertEqual(concerns(
-            "gh api repos/o/r/issues/1 -X PATCH -f state=open"), [])
+    def test_issue_close_and_pr_merge_are_no_longer_this_hooks_concern(self):
+        """Moved entirely to batch_gate.py/batch_auth.decide()
+        (harmonic-forge#336's reforge) -- this hook must not have an
+        opinion on either any more, covered or not."""
+        for cmd in (
+            "gh issue close 245 --repo vitalharmony/hrse",
+            "gh api repos/vitalharmony/hrse/issues/245 -X PATCH -f state=closed",
+            "gh pr merge 993 --squash --delete-branch",
+            "gh api -X PUT repos/vitalharmony/hrse/pulls/993/merge -f delete_branch=true",
+            "gh pr merge 993 --squash",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(concerns(cmd), [], cmd)
 
 
 class RobustnessTests(unittest.TestCase):
     def test_env_prefixes_and_absolute_paths_still_resolve_the_program(self):
-        for cmd in ("env GH_TOKEN=x gh issue close 12",
-                    "GH_TOKEN=x gh issue close 12",
-                    "/usr/bin/gh issue close 12"):
+        for cmd in ("env GH_TOKEN=x git clean -fd",
+                    "GH_TOKEN=x git clean -fd",
+                    "/usr/bin/git clean -fd"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(concerns(cmd), cmd)
 
