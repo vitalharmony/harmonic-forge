@@ -56,19 +56,39 @@ python3 scripts/git_commit.py "$@"
 """
 
 [tasks.gh-new-issue]
-description = "Create a GitHub issue and add it to the harmonic-forge Backlog board (tools/gh/gh_issue.py)"
+description = "Create a GitHub issue and add it to the harmonic-forge Backlog board (tools/gh/gh_issue.py). Prefer --body-file over --body; set --tier at filing time."
 usage = '''
 flag "--title <title>" help="Issue title" required=#true
-flag "--body <body>" help="Issue body" default="*Created via mise gh-new-issue*"
+flag "--body <body>" help="Issue body as a string. Prefer --body-file: prose passed as a shell argument is corrupted by backticks, printf specifiers, and dropped apostrophes (harmonic-forge#266)."
+flag "--body-file <path>" help="Read the issue body from a file. PREFERRED over --body."
 flag "--labels <labels>" help="Comma-separated labels" default="feature"
+flag "--tier <tier>" help="Board Tier field: fast | standard | deep. The model-routing signal (harmonic-forge#257) - set it at filing time."
+flag "--theme <theme>" help="Board Theme field (hrse#966) - what capability this issue is about. Required on every open issue; options are read live from the board."
+flag "--venture <venture>" help="Board Venture field (hrse#966) - whose work this is. Required on every open issue; options are read live from the board."
 '''
 run = """
 set -e
+# harmonic-forge#316: --body-file, --tier, --theme, --venture were all
+# absent here -- the same drift class harmonic-forge#290 filed for hrse's
+# wrapper (hrse#883), just unfixed on the repo that owns the parity check.
+# --milestone deliberately stays off: harmonic-forge has none by decision
+# (harmonic-forge#283) and wrapper-parity's --allow-missing covers it.
+if [ -n "$usage_body" ] && [ -n "$usage_body_file" ]; then
+  echo "gh-new-issue: pass --body or --body-file, not both." >&2
+  exit 2
+fi
+if [ -z "$usage_body" ] && [ -z "$usage_body_file" ]; then
+  usage_body="*Created via mise gh-new-issue*"
+fi
 python3 tools/gh/gh_issue.py \
   --repo "$GH_REPO" \
   --title "$usage_title" \
-  --body "$usage_body" \
-  --labels "$usage_labels"
+  --labels "$usage_labels" \
+  ${usage_body_file:+--body-file "$usage_body_file"} \
+  ${usage_body:+--body "$usage_body"} \
+  ${usage_tier:+--tier "$usage_tier"} \
+  ${usage_theme:+--theme "$usage_theme"} \
+  ${usage_venture:+--venture "$usage_venture"}
 """
 
 [tasks.post-comment]
@@ -78,6 +98,26 @@ flag "--issue <issue>" help="Issue number" required=#true
 flag "--file <file>" help="Path to a file containing the comment body" required=#true
 '''
 run = "python3 tools/gh/post_comment.py --repo \"$GH_REPO\" --issue \"$usage_issue\" --file \"$usage_file\""
+
+[tasks.wrapper-parity]
+description = "Assert every mise wrapper over tools/gh/ exposes its script's full flag surface (harmonic-forge#290/#316). The meta-finding #316 exists to fix: this checker lived only in the repo it never ran against."
+run = """
+set -e
+PARITY=tools/gh/wrapper_parity.py
+# Intentional omissions are declared per wrapper, so an *undeclared* gap is
+# the failure. --repo is supplied from $GH_REPO by every wrapper here;
+# --milestone is off by decision (harmonic-forge#283, no milestones here).
+python3 $PARITY --task gh-new-issue \
+  --mise-toml mise.toml \
+  --script tools/gh/gh_issue.py \
+  --allow-missing "repo,project-owner,project-number,milestone,estimate"
+# post-comment deliberately exposes only --file: passing a comment body as a
+# shell argument is the corruption harmonic-forge#266 exists to prevent.
+python3 $PARITY --task post-comment \
+  --mise-toml mise.toml \
+  --script tools/gh/post_comment.py \
+  --allow-missing "repo,body"
+"""
 
 [tasks.lane3-begin]
 description = "Lane 3: mark this worktree as actively filling Lane 3, unlocking gate-checkout for the next 12 hours (harmonic-forge#138). Run once per Lane 3 session, from the worktree you're gating in, before using it."
