@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: allow a Bash command covered by a live BATCH
-authorization (harmonic-forge#336).
+"""PreToolUse hook: the sole, full-time gate for `gh issue close`/`gh pr
+merge` (harmonic-forge#336, reforged after Lane 3's live gate FAIL).
 
-Sibling to `block_irreversible_ops.py`'s own `batch_auth.check_and_consume()`
-call -- that hook silences its own `ask` for a covered command; this hook is
-the one that actually emits `permissionDecision: allow` against
-`permissions.ask` (`gh issue close *` / `gh pr merge *` in
-`~/.claude/settings.json`). Consumption is idempotent per command hash (see
-`batch_auth.py`), so it does not matter which of the two hooks runs first.
+`~/.claude/settings.json`'s `permissions.ask` no longer lists either
+command class -- this hook decides both on every invocation, not just ones
+covered by a live BATCH authorization. See `batch_auth.decide()`'s
+docstring for the full rationale and the fail-toward-ask contract this
+hook depends on absolutely: a silent exit here now means "not my command
+class," never "I looked and it's fine."
 
-Stays silent (no output) for anything it does not recognize as a live,
-matching authorization -- a non-match is never this hook's decision, and the
-normal permission flow (allow / ask / deny) applies unchanged.
+Emits `allow` on a live, matching BATCH authorization; `ask` (explicitly,
+never silently) on a covered command with no matching authorization, an
+expired one, or anything this hook can't confidently classify; stays
+silent only when the command isn't `gh issue close`/`gh pr merge` at all.
 """
 
 from __future__ import annotations
@@ -24,11 +25,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import batch_auth  # noqa: E402
 
 
+def _emit(decision: str, reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        },
+    }))
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        return  # unparseable input: stay silent, let other layers decide
+        return  # can't even read the payload -- nothing to classify, stay silent
 
     if payload.get("tool_name") != "Bash":
         return
@@ -36,17 +47,11 @@ def main() -> None:
     if not command:
         return
 
-    matched, reason = batch_auth.check_and_consume(command)
-    if not matched:
-        return
-
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": reason,
-        },
-    }))
+    result = batch_auth.decide(command)
+    if result is None:
+        return  # not gh issue close / gh pr merge -- not this hook's decision
+    decision, reason = result
+    _emit(decision, reason)
 
 
 if __name__ == "__main__":

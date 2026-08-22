@@ -29,23 +29,26 @@ WHAT IT DELIBERATELY DOES NOT DO
 * **Nothing reflog-recoverable.** `git reset --hard`, `git branch -D`,
   `git stash drop` and force-push all leave the objects reachable from the
   reflog. A five-entry ask list gets used; a twelve-entry one gets switched off.
+* **`gh issue close` and `gh pr merge` (any form) -- moved out entirely**
+  (harmonic-forge#336's reforge, 2026-08-22). They used to live here as two
+  of three rules; now `batch_gate.py`/`batch_auth.decide()` is the sole
+  decision for both, on every invocation, because a static
+  `permissions.ask` rule was found to always beat a hook's `allow`
+  regardless of hook order or content -- so a `gh pr merge`/`gh issue
+  close` command sitting under *both* this hook's unconditional `ask` and
+  `batch_gate.py`'s conditional `allow` would always ask, permanently
+  defeating any authorization mechanism. Two hooks independently deciding
+  the same command class is undefined behavior under "strongest decision
+  wins" composition; one hook now owns each class end to end. See
+  `batch_auth.py`'s module docstring for the full rationale, including why
+  that hook's fail-direction is the *opposite* of this one's (asks on
+  anything unparseable, rather than allowing).
 
-THE ASK SET -- three things, each unrecoverable for a different reason
----------------------------------------------------------------------
-1. `git clean -fd` / `-xfd`  -- deletes UNTRACKED files. Never committed, so no
-   reflog, no object, nothing to recover from. The only truly destructive git
-   subcommand.
-2. PR merge **with branch deletion** -- `--delete-branch`, or REST
-   `delete_branch=true`. Silently CLOSES a stacked child PR whose base is the
-   deleted branch; the child's review history does not come back.
-3. Issue close -- social rather than data. Reopening restores the issue but not
-   the notification, and the protocol requires a human close.
-
-REST FORMS ARE PRIMARY. `rules/universal-agent.md` mandates
-`gh api repos/O/R/issues/N -X PATCH -f state=closed` and lists `gh issue close`
-in the AVOID column. Every earlier tier -- `permissions.ask`,
-`autoMode.soft_deny`, and the old hook -- matched only the deprecated CLI form,
-so the path agents are actually instructed to use was entirely unguarded.
+THE ASK SET -- now one thing
+-----------------------------
+`git clean -fd` / `-xfd` -- deletes UNTRACKED files. Never committed, so no
+reflog, no object, nothing to recover from. The only truly destructive git
+subcommand this hook still covers.
 
 Parsing is per-invocation over `shell_parse.command_segments`, which masks
 heredoc bodies. Eight sibling hooks already import it; this one was the only
@@ -63,11 +66,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments  # noqa: E402
-import batch_auth  # noqa: E402  (harmonic-forge#336)
 
-# `repos/OWNER/REPO/issues/123` inside any argument, including a full URL.
-API_ISSUE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/issues/(\d+)")
-API_MERGE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge")
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
@@ -98,38 +97,6 @@ def _program(tokens: list[str]) -> str:
     return os.path.basename(tokens[0]) if tokens else ""
 
 
-def _method_is(tokens: list[str], want: str) -> bool:
-    """Does this `gh api` invocation carry -X/--method <want>?
-
-    Handles `-XPATCH`, `-X PATCH`, `-X=PATCH`, `--method PATCH`,
-    `--method=PATCH` and flag reordering -- the same surface
-    `block_data_migration_close.py` already covers, reused rather than
-    re-derived.
-    """
-    want = want.upper()
-    for i, token in enumerate(tokens):
-        upper = token.upper()
-        if upper in (f"-X{want}", f"--METHOD={want}", f"-X={want}"):
-            return True
-        if token in ("-X", "--method") and i + 1 < len(tokens):
-            if tokens[i + 1].upper() == want:
-                return True
-    return False
-
-
-def _has_field(tokens: list[str], assignment: str) -> bool:
-    """Is `key=value` present as a field argument?
-
-    shlex has already stripped quotes, so `state='closed'` and `state=closed`
-    arrive here identically.
-    """
-    return any(t.replace(" ", "") == assignment for t in tokens)
-
-
-# ---------------------------------------------------------------------------
-# The three rules. Each returns a reason string, or None.
-# ---------------------------------------------------------------------------
-
 def _check_git_clean(tokens: list[str]) -> str | None:
     """`git clean` with both -f and -d. Deletes untracked files: no reflog."""
     if _program(tokens) != "git" or "clean" not in tokens[1:2]:
@@ -154,56 +121,7 @@ def _check_git_clean(tokens: list[str]) -> str | None:
     return None
 
 
-def _check_pr_merge_delete(tokens: list[str]) -> str | None:
-    """PR merge that also deletes the branch. Silently closes stacked children."""
-    if _program(tokens) != "gh":
-        return None
-    rest = tokens[1:]
-
-    # REST form first -- the one the rules mandate.
-    if rest[:1] == ["api"]:
-        if not any(API_MERGE_PATH.search(t) for t in rest):
-            return None
-        if not _method_is(rest, "PUT"):
-            return None
-        if _has_field(rest, "delete_branch=true"):
-            return ("Merging a PR and deleting its branch silently CLOSES any "
-                    "stacked child PR whose base is that branch. The child's "
-                    "review history does not come back on reopen.")
-        return None
-
-    # CLI form, kept as secondary.
-    if rest[:2] == ["pr", "merge"]:
-        if any(t in ("--delete-branch", "-d") for t in rest[2:]):
-            return ("`gh pr merge --delete-branch` silently CLOSES any stacked "
-                    "child PR whose base is the deleted branch. Retarget the "
-                    "child first.")
-    return None
-
-
-def _check_issue_close(tokens: list[str]) -> str | None:
-    """Closing an issue. Social rather than data, and a human's call."""
-    if _program(tokens) != "gh":
-        return None
-    rest = tokens[1:]
-
-    if rest[:1] == ["api"]:
-        if not any(API_ISSUE_PATH.search(t) for t in rest):
-            return None
-        if _method_is(rest, "PATCH") and _has_field(rest, "state=closed"):
-            return ("Closing an issue. The protocol requires an explicit human "
-                    "close -- Lane 3's gate or the operator's instruction, "
-                    "never an agent's own judgement.")
-        return None
-
-    if rest[:2] == ["issue", "close"]:
-        return ("Closing an issue. The protocol requires an explicit human "
-                "close -- Lane 3's gate or the operator's instruction, never "
-                "an agent's own judgement.")
-    return None
-
-
-_RULES = (_check_git_clean, _check_pr_merge_delete, _check_issue_close)
+_RULES = (_check_git_clean,)
 
 
 def find_concerns(command: str) -> list[str] | None:
@@ -245,9 +163,6 @@ def main() -> None:
     concerns = find_concerns(command)
     if not concerns:
         _allow()
-    matched, _reason = batch_auth.check_and_consume(command)
-    if matched:
-        _allow()  # covered by a live BATCH authorization (harmonic-forge#336)
     _ask(" ".join(concerns))
 
 
