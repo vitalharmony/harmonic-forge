@@ -53,6 +53,22 @@ Note `L2S` carries **no** "plan-first only" scoping — `L3S` never had any, and
 the two are now the same form. It applies wherever Lane 2 produces a spec for
 review.
 
+## `EOQ` — end of queue
+
+Grammar: **`EOQ` + trailing instruction**, e.g. `EOQ file and merge the doc
+fix for #334`. Not a status token — no lane digit, and it carries an
+instruction rather than reporting a state, so it does not belong in the `L`
+table above.
+
+Direction: operator → any lane or session.
+
+Meaning: **finish everything currently in flight first, then do this.** It
+is a queueing directive, not an interrupt — the new instruction is appended
+behind current work, never substituted for it or run alongside it. A
+session receiving `EOQ` mid-task keeps working its existing task to
+completion (implement → verify → commit → merge/close, whatever that task's
+normal finish line is) before starting the `EOQ` instruction.
+
 ## Repo prefixes
 
 Grammar: **prefix + issue number, space-separated from any lane token** —
