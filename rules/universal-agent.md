@@ -393,6 +393,10 @@ feature — that is a separate task and a separate commit.
 - If decomposition is genuinely required to touch a file safely (it already
   exceeds the 300-line cap), say so explicitly before doing it, then do only
   that, then make the targeted change.
+- A comment that asserts a runtime fact (a measured cost, a live-confirmed
+  count, "the board has N items") cites the test, issue, or measurement date
+  that backs it (harmonic-forge#329) — an unattributed number reads as
+  authoritative and silently goes stale the moment reality moves past it.
 
 ## ISSUE TRACKING
 

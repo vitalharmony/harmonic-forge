@@ -25,6 +25,10 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from item_list_cache import BOARD_ITEM_SCAN_LIMIT  # noqa: E402
 
 STATUS_OPTION_NAME = "Todo"
 
@@ -159,45 +163,13 @@ def _fetch_project_context(project_owner: str, project_number: str) -> dict | No
     return {"project_id": project_id, "fields": fields}
 
 
-def _set_status_todo(item_id: str, project_id: str, fields: list[dict]) -> bool:
-    """Set the project item's Status field to Todo. Returns True on success.
-
-    Takes an already-fetched project id/field list (see
-    `_fetch_project_context`) rather than fetching its own — this used to
-    independently re-fetch both, doubling the GraphQL cost of every
-    `add_to_board()` call (harmonic-forge#203).
-    """
-    status_field = next((f for f in fields if f.get("name") == "Status"), None)
-    if status_field is None:
-        print("[GH] No 'Status' field found on the project", file=sys.stderr)
-        return False
-    todo_option = next((o for o in status_field.get("options", []) if o.get("name") == STATUS_OPTION_NAME), None)
-    if todo_option is None:
-        print(f"[GH] No '{STATUS_OPTION_NAME}' option found on the Status field", file=sys.stderr)
-        return False
-
-    edit_result = _run(
-        [
-            "gh", "project", "item-edit",
-            "--project-id", project_id,
-            "--id", item_id,
-            "--field-id", status_field["id"],
-            "--single-select-option-id", todo_option["id"],
-        ],
-        check=False,
-    )
-    if edit_result.returncode != 0:
-        print(f"[GH] item-edit failed:\n{edit_result.stderr}", file=sys.stderr)
-        return False
-    return True
-
-
 def _set_single_select(item_id: str, project_id: str, fields: list[dict],
                         field_name: str, value: str) -> bool:
     """Set a project item's single-select field by name, matching the
-    option case-insensitively (harmonic-forge#308). Shared by Tier/Theme/
-    Venture -- `_set_tier` calls this rather than repeating the shape a
-    third and fourth time.
+    option case-insensitively (harmonic-forge#308). Shared by Status/Tier/
+    Theme/Venture (harmonic-forge#329 folded the once-separate
+    `_set_status_todo` in here -- same shape as `_set_tier`'s, just with a
+    literal field name and value instead of both).
 
     Option lists are read live from `fields` (see `_fetch_project_context`),
     never hardcoded: harmonic-forge#300 established that editing a
@@ -277,7 +249,7 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
     """
     result = _run(
         ["gh", "project", "item-list", project_number,
-         "--owner", project_owner, "--format", "json", "--limit", "1000"],
+         "--owner", project_owner, "--format", "json", "--limit", str(BOARD_ITEM_SCAN_LIMIT)],
         check=False,
     )
     if result.returncode != 0:
@@ -333,11 +305,9 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
         print("[GH] Warning: added to board but could not fetch project context — needs manual triage", file=sys.stderr)
         return False
 
-    if not _set_status_todo(item_id, ctx["project_id"], ctx["fields"]):
+    if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Status", STATUS_OPTION_NAME):
         print("[GH] Warning: could not set Status=Todo — item was added but needs manual triage", file=sys.stderr)
         return False
-
-    print(f"[GH] Set Status = {STATUS_OPTION_NAME}")
 
     if tier is not None:
         if not _set_tier(item_id, ctx["project_id"], ctx["fields"], tier):
@@ -473,6 +443,20 @@ def main() -> int:
         print(f"[GH] {args.repo} has no milestones — ignoring --milestone "
               f"{args.milestone!r}.", file=sys.stderr)
 
+    # harmonic-forge#329: a half-override is a mistake, not a partial
+    # instruction -- and unlike an unmapped repo (below, deliberately still
+    # post-create_issue() per #263 AC2: a filed issue with a missing field
+    # beats a lost issue), a half-override is knowable from argv alone,
+    # before any GitHub call. parser.error() calls sys.exit(), so checking
+    # it only AFTER create_issue() left a live, un-boarded issue behind a
+    # confusing error instead of a clean refusal -- fixed by moving just
+    # this check early, not the whole resolution block.
+    if bool(args.project_owner) != bool(args.project_number):
+        parser.error(
+            "--project-owner and --project-number must be given together; "
+            "pass both to override the repo->board map, or neither to use it."
+        )
+
     print(f"[GH] Creating issue in {args.repo}")
 
     labels = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()]
@@ -480,18 +464,10 @@ def main() -> int:
     if issue_url is None:
         return 1
 
-    # harmonic-forge#107: derive from --repo. An explicit override still wins,
-    # but only when BOTH halves are given -- a half-override is a mistake, not
-    # a partial instruction, and silently completing it from the map is how a
-    # misroute would survive this fix.
+    # harmonic-forge#107: derive from --repo. An explicit override still wins.
     if args.project_owner and args.project_number:
         project_owner, project_number = args.project_owner, args.project_number
         print(f"[GH] Board overridden explicitly: {project_owner}/#{project_number}")
-    elif args.project_owner or args.project_number:
-        parser.error(
-            "--project-owner and --project-number must be given together; "
-            "pass both to override the repo->board map, or neither to use it."
-        )
     else:
         project_owner, project_number = resolve_board_for_repo(args.repo)
 
