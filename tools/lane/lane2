@@ -15,11 +15,10 @@
 # Lane 2 sessions. A Codex Lane 2 session is unaffected -- Codex's own
 # hook mechanism (.codex/hooks.json) is a separate concern, out of
 # scope for this issue.
-# Defaults to --permission-mode auto (override with LANE_PERMISSION_MODE,
-# e.g. LANE_PERMISSION_MODE=manual lane2). If --permission-mode is
-# already present in "$@", the default is skipped entirely rather than
-# passed twice -- avoids depending on whether Claude Code's CLI parser
-# treats a repeated flag as last-wins or an error.
+# The launch command itself is built per-CLI by the shared
+# tools/lane/_cli_launch.sh from $LANE_CLI (default: claude) -- Claude's
+# --permission-mode default, Gemini's OAuth env, Codex's bare passthrough.
+# See that file and 3-lane-protocol.md's "Per-CLI launch wiring".
 set -euo pipefail
 
 if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
@@ -43,18 +42,8 @@ cd "$target"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=2
 
-cli_args=("${LANE_CLI:-claude}")
-has_permission_mode=0
-for arg in "$@"; do
-  if [[ "$arg" == "--permission-mode" || "$arg" == --permission-mode=* ]]; then
-    has_permission_mode=1
-    break
-  fi
-done
-if [ "$has_permission_mode" -eq 0 ] && [[ "${LANE_CLI:-claude}" == claude* ]]; then
-  cli_args+=(--permission-mode "${LANE_PERMISSION_MODE:-auto}")
-fi
-cli_args+=("$@")
+# shellcheck source=_cli_launch.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh" "$@"
 
 # harmonic-forge#264: see the identical block in tools/lane/lane3 for the
 # full incident (hrse#792) -- backend/.env has no legitimate per-worktree

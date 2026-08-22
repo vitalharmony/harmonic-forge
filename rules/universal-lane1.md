@@ -16,8 +16,9 @@ both accept either Claude Code or Codex** — confirmed live, hrse#327,
 2026-08-15: a Lane 3 gate ran under a Claude Code CLI session
 (`AI_AGENT=claude-code_*`), not Codex, updated from the prior single-tool
 note (which said "both filled by Codex," now stale). The `LANE_CLI`
-mechanism in `tools/lane/lane3`/`lane2` (harmonic-forge#179) already
-distinguishes Claude-family CLIs from Codex correctly for both, and
+mechanism (harmonic-forge#179, moved to the shared
+`tools/lane/_cli_launch.sh` in harmonic-forge#318, which added Gemini)
+already distinguishes the agent CLIs correctly for both, and
 `LANE` itself propagates through either tool's subprocess tree by its own
 mechanism (harmonic-forge#142/#148) — this is deliberate dual-CLI
 support, not an unaccounted-for gap. This is a live-state note, distinct

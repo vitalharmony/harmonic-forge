@@ -369,18 +369,59 @@ the bare `<project>` checkout, `lane2`/`lane3` into `<project>-lane2`/
 `-lane3`, refusing to launch (not falling back to the main checkout) if
 that worktree doesn't exist yet; sets the `LANE` environment variable
 (see below); wraps the session in `systemd-inhibit --what=sleep:idle` so
-a long batched or unattended run isn't suspended mid-work; and, **for
-Claude-family CLIs only** (`LANE_CLI` unset or starting with `claude` —
-confirmed live, `tools/lane/lane3` line 43, harmonic-forge#179), defaults
-to `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or
-pass `--permission-mode` explicitly). A non-Claude `LANE_CLI` (e.g.
-`codex`) never receives this flag injection — it broke Codex's own CLI
-argument parsing before harmonic-forge#179 qualified the condition.
+a long batched or unattended run isn't suspended mid-work; and builds the
+launch command per-CLI from `LANE_CLI` (see below). All three launchers
+share one implementation, `tools/lane/_cli_launch.sh`, sourced the same
+way `_gh_config_dir.sh` is — before harmonic-forge#318 the same block was
+duplicated inline in each of the three.
 **Proper hygiene is restarting the
 session with the right script, never redirecting a running session into
 a different lane role mid-conversation** — `LANE` is fixed for a
 process's entire lifetime by design (see below), so there is nothing a
 running session could do to change it even if asked to.
+
+#### Per-CLI launch wiring — `LANE_CLI`
+
+`LANE_CLI` selects which agent CLI the launcher execs (default `claude`).
+`tools/lane/_cli_launch.sh` is the single place that knows what each one
+needs. It is deliberately minimal — the closed `--agent claude|codex|gemini`
+registry is harmonic-forge#322's design, and is expected to replace this.
+
+| `LANE_CLI` | what the launcher injects | why |
+|---|---|---|
+| `claude*` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly) | harmonic-forge#179 |
+| `gemini*` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421` | harmonic-forge#318 |
+| anything else (`codex`) | nothing — bare passthrough | flag injection broke Codex's own argument parsing (harmonic-forge#179) |
+
+**The two Gemini unsets are load-bearing, not hygiene.** Standing operator
+directive: the Gemini CLI always uses the OAuth path; `GOOGLE_API_KEY` and
+`GEMINI_API_KEY` exist for programmatic use elsewhere. That is not the
+default and it fails *silently* — with both keys present (the operator's
+normal shell state) Gemini CLI prints `Both GOOGLE_API_KEY and
+GEMINI_API_KEY are set. Using GOOGLE_API_KEY` and runs on the API-key
+identity and quota, with no error and correct-looking output. The unsets
+are process-scoped and never touch the operator's interactive shell — but
+they are inherited by the session's entire subprocess tree, so a service
+started from inside a Gemini lane session also sees `GEMINI_API_KEY` absent
+(it is a live HRSE2 backend variable). A self-reported "unconfigured" from
+inside such a session is expected, not a defect.
+
+`GOOGLE_CLOUD_PROJECT` is required because the active account is
+Workspace-managed; Workspace identities must name a GCP project for
+Google's Code Assist path, and personal `@gmail.com` accounts need not.
+Without it, every invocation dies with `ProjectIdRequiredError` before any
+tool call. `hrse-497421` is a project id, not a credential — it is
+committed deliberately. Export `GOOGLE_CLOUD_PROJECT` yourself to override.
+
+Two traps that cost a full diagnosis cycle in harmonic-forge#318:
+
+1. While `~/.gemini/settings.json` pins
+   `security.auth.selectedType = "oauth-personal"`, a `GEMINI_API_KEY` in
+   the environment is ignored entirely. Its presence is not evidence auth
+   works; its absence is not evidence anything is broken.
+2. **A passing `gemini -p` is not evidence the OAuth path works** unless
+   the keys were explicitly unset for that run — the API-key path produces
+   identical-looking output.
 
 ### Lane role signal — `LANE`
 
