@@ -93,7 +93,7 @@ summarizes.*
 - Does not write production code directly (exception: explicit platform/
   tooling assignments — see `rules/universal-lane1.md`).
 
-## Lane 2 — Muscle (current tools: Claude Code, Codex)
+## Lane 2 — Muscle (qualified agents: see ADR-007 § 8)
 
 *Devin Local was this section's original reference implementation — retired
 as of 2026-08 (harmonic-forge#317). An operator assigning Claude, Codex, or
@@ -152,7 +152,7 @@ triggered and scoped.*
   queries).
 - Signals completion with a structured diff summary back to Lane 1.
 
-## Lane 3 — Control Gate (current tools: Claude Code, Codex)
+## Lane 3 — Control Gate (qualified agents: see ADR-007 § 8 — Codex's Lane 3 cells are *unqualified*, meaning no suite has been run, not that it is unsafe)
 
 *Devin AA was this section's original reference implementation — retired
 as of 2026-08 (harmonic-forge#317). An operator assigning Claude, Codex,
@@ -422,6 +422,31 @@ Two traps that cost a full diagnosis cycle in harmonic-forge#318:
 2. **A passing `gemini -p` is not evidence the OAuth path works** unless
    the keys were explicitly unset for that run — the API-key path produces
    identical-looking output.
+
+#### The adapter contract — what "supported" means
+
+Which agent may fill which lane is governed by
+[`docs/decisions/ADR-007-multi-agent-adapter-contract-and-capability-tiers.md`](docs/decisions/ADR-007-multi-agent-adapter-contract-and-capability-tiers.md),
+not by whether the launcher will start it. Three properties from that ADR
+are operative here:
+
+1. **The enforcement point is the launcher, not the repo.** An agent
+   started outside `laneN` carries no lane enforcement at all — Codex's
+   `--sandbox read-only` and Gemini's `--admin-policy` both arrive as
+   launch flags. A repo-tracked policy file is reviewable, not active.
+2. **Directive prose is never enforcement.** A rule in a directive file
+   tells an agent what not to do; a hook or a policy prevents it. The same
+   corpus is a hard boundary under Claude Code and nothing at all under an
+   agent that never loads the hooks.
+3. **Capability tiers are per-capability, not per-agent.** Qualified for
+   Lane 3 tier 1 confers nothing about tier 2, and a qualification is
+   against a specific CLI version.
+
+**Current state: Gemini is approved for Lane 1 only** (harmonic-forge#318).
+Lane 2 is blocked on #362 — every guard on a Lane 2 session is a Claude
+Code hook Gemini never loads, and `batch_auth.py` in particular fails
+*open* there. See ADR-007 § 7 for the full guard-equivalence matrix, which
+must be updated in the same change that adds any new hook.
 
 ### Lane role signal — `LANE`
 
