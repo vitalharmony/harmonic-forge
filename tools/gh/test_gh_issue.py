@@ -2,6 +2,8 @@
 """Unit tests for gh_issue.py (harmonic-forge#203) -- all subprocess calls
 mocked, no live gh/API calls. Run: python3 tools/gh/test_gh_issue.py"""
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -324,14 +326,14 @@ class TestTierWriteFailureIsLoud(unittest.TestCase):
         """AC1, at the level main() branches on."""
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select", return_value=True), \
              patch("gh_issue._set_tier", return_value=False):
             self.assertFalse(gh_issue.add_to_board("https://x/1", "o", "1", "fast"))
 
     def test_successful_tier_write_still_succeeds(self):
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select", return_value=True), \
              patch("gh_issue._set_tier", return_value=True):
             self.assertTrue(gh_issue.add_to_board("https://x/1", "o", "1", "fast"))
 
@@ -339,7 +341,7 @@ class TestTierWriteFailureIsLoud(unittest.TestCase):
         """AC4: omitting --tier must still exit 0."""
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
+             patch("gh_issue._set_single_select", return_value=True), \
              patch("gh_issue._set_tier", return_value=False) as tier:
             self.assertTrue(gh_issue.add_to_board("https://x/1", "o", "1", None))
         tier.assert_not_called()
@@ -398,6 +400,54 @@ class TestUnmappedRepoFailsLoudly(unittest.TestCase):
             result, _ = self._main(["gh_issue.py", "--repo", "vitalharmony/hrse",
                                     "--title", "t"])
         self.assertEqual(result, 0)
+
+
+class TestHalfOverrideValidatedBeforeCreate(unittest.TestCase):
+    """harmonic-forge#329: a half-override (--project-owner without
+    --project-number, or vice versa) is knowable from argv alone -- it must
+    never let create_issue() run first, unlike an unmapped repo (above),
+    which #263 AC2 requires still create the issue."""
+
+    def _main(self, argv):
+        """argparse's parser.error() writes to stderr and exits with a bare
+        code, unlike resolve_board_for_repo's SystemExit(message) above --
+        capture stderr rather than asserting on str(SystemExit)."""
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             contextlib.redirect_stderr(stderr):
+            try:
+                return gh_issue.main(), created, stderr.getvalue()
+            except SystemExit as exc:
+                return exc, created, stderr.getvalue()
+
+    def test_owner_without_number_refuses_before_create_issue(self):
+        result, created, stderr = self._main([
+            "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+            "--project-owner", "someone",
+        ])
+        self.assertIsInstance(result, SystemExit)
+        self.assertIn("must be given together", stderr)
+        created.assert_not_called()
+
+    def test_number_without_owner_refuses_before_create_issue(self):
+        result, created, stderr = self._main([
+            "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+            "--project-number", "9",
+        ])
+        self.assertIsInstance(result, SystemExit)
+        self.assertIn("must be given together", stderr)
+        created.assert_not_called()
+
+    def test_both_together_is_not_a_half_override(self):
+        with patch("gh_issue.add_to_board", return_value=True):
+            result, created, _ = self._main([
+                "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+                "--project-owner", "someone", "--project-number", "9",
+            ])
+        self.assertEqual(result, 0)
+        created.assert_called_once()
 
 
 class TestRepoBoardMap(unittest.TestCase):
@@ -523,24 +573,31 @@ class TestThemeVentureWriteFailureIsLoud(unittest.TestCase):
     def _ctx(self):
         return {"project_id": "PVT_project", "fields": json.loads(FIELDS_JSON)["fields"]}
 
+    @staticmethod
+    def _status_ok(fail_fields=()):
+        """harmonic-forge#329: Status now shares `_set_single_select` with
+        Tier/Theme/Venture, so a blanket True/False return would also flip
+        the Status call these tests don't intend to exercise. Status always
+        succeeds here; only the named field(s) fail."""
+        def effect(item_id, project_id, fields, field_name, value):
+            return field_name not in fail_fields
+        return effect
+
     def test_failed_theme_write_makes_add_to_board_fail(self):
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
-             patch("gh_issue._set_single_select", return_value=False):
+             patch("gh_issue._set_single_select", side_effect=self._status_ok(fail_fields=("Theme",))):
             self.assertFalse(gh_issue.add_to_board("https://x/1", "o", "1", None, theme="Career"))
 
     def test_failed_venture_write_makes_add_to_board_fail(self):
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
-             patch("gh_issue._set_single_select", return_value=False):
+             patch("gh_issue._set_single_select", side_effect=self._status_ok(fail_fields=("Venture",))):
             self.assertFalse(gh_issue.add_to_board("https://x/1", "o", "1", None, venture="CymaGraph"))
 
     def test_successful_theme_and_venture_write_succeeds(self):
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
              patch("gh_issue._set_single_select", return_value=True):
             self.assertTrue(gh_issue.add_to_board(
                 "https://x/1", "o", "1", None, theme="Career", venture="CymaGraph"))
@@ -548,10 +605,10 @@ class TestThemeVentureWriteFailureIsLoud(unittest.TestCase):
     def test_no_theme_or_venture_requested_is_unaffected(self):
         with patch("gh_issue._run", return_value=_completed('{"id":"IT_1"}')), \
              patch("gh_issue._fetch_project_context", return_value=self._ctx()), \
-             patch("gh_issue._set_status_todo", return_value=True), \
-             patch("gh_issue._set_single_select") as shared:
+             patch("gh_issue._set_single_select", side_effect=self._status_ok()) as shared:
             self.assertTrue(gh_issue.add_to_board("https://x/1", "o", "1", None))
-        shared.assert_not_called()
+        called_fields = [c.args[3] for c in shared.call_args_list]
+        self.assertEqual(called_fields, ["Status"])
 
 
 class TestNoBoardConfiguredHardFailsForThemeVenture(unittest.TestCase):

@@ -31,6 +31,15 @@ _CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
 PROJECT_OWNER = "vitalharmony"
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
+# harmonic-forge#329: both `gh_issue.py` and `model_tier_gate.py` independently
+# hardcoded `--limit 1000` for a full board scan. hrse's board measured 721
+# items live 2026-08-22 and is growing (docs/PRIORITIES.md); 1000 silently
+# truncates the moment it's crossed, with no error -- a missed item just
+# never resolves. One shared, generous constant beats two copies drifting
+# out of sync the way `--limit 1000` itself already had. Still a fixed cap,
+# not real pagination -- raise it again well before the board approaches it.
+BOARD_ITEM_SCAN_LIMIT = 5000
+
 
 class GhItemListError(Exception):
     """Raised when `gh project item-list` fails. Never fail-open here --

@@ -167,7 +167,8 @@ def _cached_item_list(owner: str, number: str, cache_dir: Path = _CACHE_DIR, ttl
         return None  # shared module unavailable -- fail-open, same as any other resolution failure
     try:
         return _item_list_cache.fetch_item_list(
-            number, owner=owner, limit=1000, ttl=ttl, run=_run, cache_dir=cache_dir,
+            number, owner=owner, limit=_item_list_cache.BOARD_ITEM_SCAN_LIMIT,
+            ttl=ttl, run=_run, cache_dir=cache_dir,
         )
     except _item_list_cache.GhItemListError:
         return None
