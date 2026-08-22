@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .mise.local.toml
+
+# Pre-close check receipts (vitalharmony/hrse#1208). Derived state; the tool
+# is cross-repo, so the artifact lands here too. Without this rule the receipt
+# shows as untracked, a `git add -A` commits it, and the tool's own dirty-tree
+# guard then refuses on an artifact it created itself.
+.claude/cache/

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Install the 3 advisory subagents (pitch-inspection, product-strategy,
-# sticky-wicket) as USER-LEVEL symlinks — harmonic-forge#237.
+# Install the 4 advisory subagents (pitch-inspection, preclose-inspection,
+# product-strategy, sticky-wicket) as USER-LEVEL symlinks — harmonic-forge#237,
+# preclose-inspection added by vitalharmony/hrse#1208.
 #
 # Project-level subagent frontmatter hooks require workspace-trust
 # acceptance for the folder containing the agent file; the untrusted case
@@ -30,17 +31,33 @@ TARGET_DIR="$HOME/.claude/agents"
 
 mkdir -p "$TARGET_DIR"
 
-for agent in pitch-inspection product-strategy sticky-wicket; do
+# Per-agent failures are collected and reported at the end rather than
+# aborting the loop (vitalharmony/hrse#1208 pre-close review). A mid-loop
+# `exit 1` meant one missing or unlinkable agent left every agent ordered
+# after it unlinked — and an agent with no user-level symlink falls back to
+# its project-level file, whose frontmatter hooks are silently skipped in an
+# untrusted workspace. So one bad entry could silently disarm the gh-write
+# denial for two unrelated agents. Still exits non-zero, so nothing treats a
+# partial install as success.
+failed=0
+for agent in pitch-inspection preclose-inspection product-strategy sticky-wicket; do
     src="$FORGE_ROOT/agents/$agent.md"
     dest="$TARGET_DIR/$agent.md"
     if [ ! -f "$src" ]; then
-        echo "ERROR: $src does not exist — refusing to link a missing source." >&2
-        exit 1
+        echo "ERROR: $src does not exist — skipping, not linking a missing source." >&2
+        failed=1
+        continue
     fi
     if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-        echo "ERROR: $dest exists and is not a symlink — refusing to overwrite. Remove it manually if intended." >&2
-        exit 1
+        echo "ERROR: $dest exists and is not a symlink — skipping. Remove it manually if intended." >&2
+        failed=1
+        continue
     fi
     ln -sf "$src" "$dest"
     echo "linked: $dest -> $src"
 done
+
+if [ "$failed" -ne 0 ]; then
+    echo "ERROR: one or more agents were not linked (see above). Other agents were linked normally." >&2
+    exit 1
+fi
