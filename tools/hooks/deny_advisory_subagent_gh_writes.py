@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Deny a mutating `gh`/wrapper-script command from the 3 advisory
-subagents (`pitch-inspection`, `product-strategy`, `sticky-wicket`) —
-harmonic-forge#237.
+"""Deny a mutating `gh`/wrapper-script command from the 4 advisory
+subagents (`pitch-inspection`, `preclose-inspection`, `product-strategy`,
+`sticky-wicket`) — harmonic-forge#237, `preclose-inspection` added by
+vitalharmony/hrse#1208.
 
-Each of those 3 agent files already states "never mutate" in prose, but
+`preclose-inspection` matters most here: it reviews a finished diff on an
+issue that is about to be closed, so it is the one advisory agent sitting
+closest to a `gh issue close`. Its prose says it takes no closing action;
+this is what makes that true.
+
+Each of those agent files already states "never mutate" in prose, but
 prose is read (in principle) by the model itself, with nothing blocking a
 violation if the model doesn't follow it. This is the real technical
 enforcement, wired via each agent's `hooks:` frontmatter (subagent
@@ -240,7 +246,8 @@ def denial(command_text: str) -> dict:
     message = (
         "Blocked: this advisory subagent may not run a command that could "
         f"mutate GitHub state (harmonic-forge#237): `{command_text}`. "
-        "Advisory subagents (pitch-inspection/product-strategy/sticky-wicket) "
+        "Advisory subagents (pitch-inspection/preclose-inspection/"
+        "product-strategy/sticky-wicket) "
         "are read-only by design — hand any needed write back to the calling "
         "session rather than running it here."
     )
