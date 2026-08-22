@@ -63,6 +63,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments  # noqa: E402
+import batch_auth  # noqa: E402  (harmonic-forge#336)
 
 # `repos/OWNER/REPO/issues/123` inside any argument, including a full URL.
 API_ISSUE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/issues/(\d+)")
@@ -244,6 +245,9 @@ def main() -> None:
     concerns = find_concerns(command)
     if not concerns:
         _allow()
+    matched, _reason = batch_auth.check_and_consume(command)
+    if matched:
+        _allow()  # covered by a live BATCH authorization (harmonic-forge#336)
     _ask(" ".join(concerns))
 
 
