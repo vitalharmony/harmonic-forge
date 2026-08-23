@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","additionalProperties":false,"required":["engagement","doc_paths","board_owner","board_fields","repos"]},{"type":"object","additionalProperties":false,"required":["engagement","home_repo"]},{"type":"object","additionalProperties":false,"required":["home_checkout"]}]}

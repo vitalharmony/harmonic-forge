@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat: add sprint-plan config loader (harmonic-forge#104)
+- skills/sprint-plan/config_loader.py                | 107 +++++++++++++++++++++
+- .../schema/sprint-plan.config.schema.json          |   1 +
+- skills/sprint-plan/test_config_loader.py           |  48 +++++++++
+- 3 files changed, 156 insertions(+)
+
 ## feat: add --theme and --venture flags to gh_issue.py (F308)
 
 Generalizes _set_tier() into a shared _set_single_select() (Tier/Theme/Venture no longer three copies of the same match/edit/error shape), threads --theme/--venture through add_to_board() with the same hard-fail-if-requested-but-unwritten semantics Tier already has, reads option lists live from the board rather than hardcoding them (harmonic-forge#300), and prints the real available options on an unmatched value. HRSE2's gh-new-issue wrapper updated in the same change; mise run wrapper-parity passes. 13 new tests (48 total, up from 35), all passing. Live-verified against both boards (hrse #1, forge #3) including the invalid-value error path; three throwaway issues created and closed.
