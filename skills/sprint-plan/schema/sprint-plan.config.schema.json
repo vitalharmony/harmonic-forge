@@ -1,1 +1,54 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","additionalProperties":false,"required":["engagement","doc_paths","board_owner","board_fields","repos"]},{"type":"object","additionalProperties":false,"required":["engagement","home_repo"]},{"type":"object","additionalProperties":false,"required":["home_checkout"]}]}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "title": "home config",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engagement", "doc_paths", "board_owner", "board_fields", "repos"],
+      "properties": {
+        "engagement": {"type": "string", "minLength": 1},
+        "doc_paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "pattern": "^(?!/).+"}},
+        "board_owner": {"type": "string", "minLength": 1},
+        "board_fields": {
+          "type": "object", "additionalProperties": false,
+          "required": ["priority", "sequence", "tier"],
+          "properties": {
+            "priority": {"type": "string", "minLength": 1},
+            "sequence": {"type": "string", "minLength": 1},
+            "tier": {"type": "string", "minLength": 1}
+          }
+        },
+        "repos": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["prefix", "repo", "short", "board", "default"],
+            "properties": {
+              "prefix": {"type": "string", "minLength": 1},
+              "repo": {"type": "string", "minLength": 1},
+              "short": {"type": "string", "minLength": 1},
+              "board": {"type": ["integer", "null"], "minimum": 1},
+              "default": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "title": "member config",
+      "type": "object", "additionalProperties": false,
+      "required": ["engagement", "home_repo"],
+      "properties": {
+        "engagement": {"type": "string", "minLength": 1},
+        "home_repo": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "title": "local config",
+      "type": "object", "additionalProperties": false,
+      "required": ["home_checkout"],
+      "properties": {"home_checkout": {"type": "string", "minLength": 1, "pattern": "^/"}}
+    }
+  ]
+}

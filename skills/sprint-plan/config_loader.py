@@ -8,6 +8,7 @@ from pathlib import Path
 
 CONFIG = Path(".claude/sprint-plan.config.json")
 LOCAL = Path(".claude/sprint-plan.local.json")
+SCHEMA = Path(__file__).parent / "schema" / "sprint-plan.config.schema.json"
 LANE_ROOT = re.compile(r"-lane[23]$")
 
 
@@ -29,43 +30,65 @@ def _read(path: Path) -> dict:
     return value
 
 
-def _keys(value: dict, required: set[str], path: Path) -> None:
-    missing = required - value.keys()
-    extra = value.keys() - required
-    if missing:
-        raise _error(path, "missing " + ", ".join(f"$.{key}" for key in sorted(missing)))
-    if extra:
-        raise _error(path, "unknown " + ", ".join(f"$.{key}" for key in sorted(extra)))
+def _type_matches(value: object, expected: str) -> bool:
+    return {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
+        "null": value is None,
+    }.get(expected, False)
+
+
+def _schema_error(value: object, spec: dict, pointer: str = "$") -> str | None:
+    expected = spec.get("type")
+    if expected:
+        choices = expected if isinstance(expected, list) else [expected]
+        if not any(_type_matches(value, choice) for choice in choices):
+            return f"{pointer} must be {' or '.join(choices)}"
+    if isinstance(value, str):
+        if len(value) < spec.get("minLength", 0):
+            return f"{pointer} must be non-empty"
+        if "pattern" in spec and not re.search(spec["pattern"], value):
+            return f"{pointer} has invalid format"
+    if isinstance(value, int) and not isinstance(value, bool) and "minimum" in spec:
+        if value < spec["minimum"]:
+            return f"{pointer} must be at least {spec['minimum']}"
+    if isinstance(value, list):
+        if len(value) < spec.get("minItems", 0):
+            return f"{pointer} must contain at least {spec['minItems']} item(s)"
+        for index, item in enumerate(value):
+            if "items" in spec and (error := _schema_error(item, spec["items"], f"{pointer}[{index}]")):
+                return error
+    if isinstance(value, dict):
+        required = set(spec.get("required", []))
+        missing = sorted(required - value.keys())
+        if missing:
+            return "missing " + ", ".join(f"{pointer}.{key}" for key in missing)
+        properties = spec.get("properties", {})
+        if spec.get("additionalProperties") is False:
+            extra = sorted(value.keys() - properties.keys())
+            if extra:
+                return "unknown " + ", ".join(f"{pointer}.{key}" for key in extra)
+        for key, item in value.items():
+            if key in properties and (error := _schema_error(item, properties[key], f"{pointer}.{key}")):
+                return error
+    return None
 
 
 def validate(value: dict, path: Path) -> str:
-    if {"engagement", "home_repo"} <= value.keys():
-        _keys(value, {"engagement", "home_repo"}, path)
-        if not all(isinstance(value[key], str) and value[key] for key in value):
-            raise _error(path, "member fields must be non-empty strings")
-        return "member"
-    if "home_checkout" in value:
-        _keys(value, {"home_checkout"}, path)
-        if not isinstance(value["home_checkout"], str) or not Path(value["home_checkout"]).is_absolute():
-            raise _error(path, "$.home_checkout must be an absolute path")
-        return "local"
-    _keys(value, {"engagement", "doc_paths", "board_owner", "board_fields", "repos"}, path)
-    if not isinstance(value["doc_paths"], list) or not value["doc_paths"]:
-        raise _error(path, "$.doc_paths must be a non-empty list")
-    fields = value["board_fields"]
-    if not isinstance(fields, dict) or set(fields) != {"priority", "sequence", "tier"}:
-        raise _error(path, "$.board_fields must contain priority, sequence, tier")
-    repos = value["repos"]
-    if not isinstance(repos, list) or not repos:
-        raise _error(path, "$.repos must be a non-empty list")
-    for index, repo in enumerate(repos):
-        if not isinstance(repo, dict) or set(repo) != {"prefix", "repo", "short", "board", "default"}:
-            raise _error(path, f"$.repos[{index}] has invalid fields")
-        if not isinstance(repo["board"], (int, type(None))) or isinstance(repo["board"], bool):
-            raise _error(path, f"$.repos[{index}].board must be integer or null")
-    if sum(repo["default"] is True for repo in repos) != 1:
+    schema = _read(SCHEMA)
+    title = "local config" if "home_checkout" in value else (
+        "member config" if "home_repo" in value else "home config"
+    )
+    shape = next(item for item in schema["oneOf"] if item["title"] == title)
+    if error := _schema_error(value, shape):
+        raise _error(path, error)
+    kind = title.partition(" ")[0]
+    if kind == "home" and sum(repo["default"] is True for repo in value["repos"]) != 1:
         raise _error(path, "$.repos must contain exactly one default: true")
-    return "home"
+    return kind
 
 
 def _guard(root: Path) -> None:

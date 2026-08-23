@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix: validate sprint-plan schema contract (harmonic-forge#104)
+- skills/sprint-plan/config_loader.py                |  89 ++++++-----
+- .../schema/sprint-plan.config.schema.json          |  55 ++++++-
+- skills/sprint-plan/test_config_loader.py           | 163 ++++++++++++++++-----
+- 3 files changed, 234 insertions(+), 73 deletions(-)
+
 ## feat: add sprint-plan config loader (harmonic-forge#104)
 - skills/sprint-plan/config_loader.py                | 107 +++++++++++++++++++++
 - .../schema/sprint-plan.config.schema.json          |   1 +
