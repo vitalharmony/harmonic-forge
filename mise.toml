@@ -99,6 +99,39 @@ flag "--file <file>" help="Path to a file containing the comment body" required=
 '''
 run = "python3 tools/gh/post_comment.py --repo \"$GH_REPO\" --issue \"$usage_issue\" --file \"$usage_file\""
 
+[tasks.l2-run]
+description = "Run a command under a Lane 2 issue's receipt scope (tools/gh/receipt_runner.py, harmonic-forge#371). Records argv/exit-code/output-digest; locks the issue on a non-zero exit."
+usage = '''
+flag "--issue <issue>" help="Issue number" required=#true
+arg "command" var=#true help="the command to run, after a literal '--'"
+'''
+run = "python3 tools/gh/receipt_runner.py --issue \"$usage_issue\" -- $usage_command"
+
+[tasks.l2-post]
+description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py."
+usage = '''
+flag "--kind <kind>" help="plan | completion | blocked" required=#true
+flag "--issue <issue>" help="Issue number" required=#true
+flag "--narrative-file <file>" help="Path to a file containing the narrative section" required=#true
+flag "--receipts <receipts>" help="Space-separated receipt JSON paths" var=#true
+'''
+run = "python3 tools/gh/l2_post.py post --kind \"$usage_kind\" --repo \"$GH_REPO\" --issue \"$usage_issue\" --narrative-file \"$usage_narrative_file\" --receipts $usage_receipts"
+
+[tasks.l2-snapshot]
+description = "Fetch and record a fresh comment snapshot for an issue (tools/gh/l2_post.py snapshot, harmonic-forge#371) -- the only source a Lane 2 'no new comment exists' claim may be sourced from (AC3)."
+usage = '''
+flag "--issue <issue>" help="Issue number" required=#true
+'''
+run = "python3 tools/gh/l2_post.py snapshot --repo \"$GH_REPO\" --issue \"$usage_issue\""
+
+[tasks.l2-resolve-lock]
+description = "Clear a Lane 2 issue-scoped failure lock (tools/gh/l2_post.py resolve-lock, harmonic-forge#371). Refuses unless --resolution-comment names a real, fetchable comment."
+usage = '''
+flag "--issue <issue>" help="Issue number" required=#true
+flag "--resolution-comment <id>" help="Comment id that resolves the lock" required=#true
+'''
+run = "python3 tools/gh/l2_post.py resolve-lock --repo \"$GH_REPO\" --issue \"$usage_issue\" --resolution-comment \"$usage_resolution_comment\""
+
 [tasks.wrapper-parity]
 description = "Assert every mise wrapper over tools/gh/ exposes its script's full flag surface (harmonic-forge#290/#316). The meta-finding #316 exists to fix: this checker lived only in the repo it never ran against."
 run = """

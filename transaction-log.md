@@ -3,6 +3,45 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(tooling): Lane 2 status-post integrity -- receipts, wrapper-only posting (harmonic-forge#371)
+
+Reimplements harmonic-forge#371 after a prior Lane 2 (Codex) attempt got
+to 'L2 blocked' with only receipt_runner.py/l2_post.py/the deny hook as
+dense, likely-incomplete stubs, and that branch also carried the same
+unrelated sprint-plan config_loader deletion seen on #366's Codex
+attempt -- discarded, not merged from, same reasoning as that issue.
+
+Adds tools/gh/receipt_runner.py (issue-scoped, content-digest command
+receipts under .git/lane2-receipts/<issue>/, lock-on-nonzero-exit),
+tools/gh/l2_post.py (post/snapshot/resolve-lock subcommands; posting
+requires a mandatory post/fetch/diff self-check before reporting
+success, and refuses ordinary status composition while an issue is
+locked, except a legitimate --kind blocked), and
+tools/hooks/block_lane2_status_claims.py (repo-agnostic raw-post deny
+for LANE=2, reusing block_lane1_status_claims.py's is_direct_transport
+rather than reimplementing it). Wired for Claude Code
+(.claude/settings.json) and Codex (new .codex/hooks.json, pointed
+directly at the canonical module -- harmonic-forge has no per-repo
+gate_codex_tool.py the way HRSE2 does). Four new mise tasks
+(l2-run/l2-post/l2-snapshot/l2-resolve-lock). ADR-007 Sec7 gains the new
+guard-equivalence row.
+
+27 new unit tests (490 total, up from 463), all passing. Live-verified
+end to end against a disposable throwaway issue (harmonic-forge#373,
+closed): real receipt-backed command -> real GitHub post with a
+passing self-check -> a genuine failing command creating a real lock
+-> a normal completion post correctly refused while locked -> a
+legitimate blocked status correctly bypassing the lock -> resolve-lock
+correctly refused against a fake comment id and correctly clearing
+against the real one. The deny hook's decision() is exhaustively unit
+tested (13 cases: LANE 2/1/3/unset, two different target repos, cd
+prefixing, malformed payload) and its CLI entrypoint verified against
+hand-built Claude- and Codex-shaped stdin payloads.
+- tools/gh/test_receipt_runner.py                    |  69 +++++++++
+- tools/hooks/block_lane2_status_claims.py           | 101 +++++++++++++
+- tools/hooks/test_block_lane2_status_claims.py      | 110 +++++++++++++++
+- 10 files changed, 752 insertions(+)
+
 ## fix(tooling): bake the {summary,findings} reply contract into cross_family_call.sh itself (harmonic-forge#366)
 
 Fixes the defect Lane 1 found live while building #366's Lane 3 gate
