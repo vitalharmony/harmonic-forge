@@ -68,8 +68,12 @@ case "$_lane_cli" in
     unset _has_permission_mode _arg
     ;;
   gemini*)
+    # Pager/editor vars fix a PTY-only hang (harmonic-forge#366): Gemini's
+    # shell tool runs in a PTY, so `git log`/`git show`/`gh api` open a
+    # pager or editor that never receives input and never exits headless.
     cli_args+=(env -u GOOGLE_API_KEY -u GEMINI_API_KEY
                "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}"
+               GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true
                "$_lane_cli")
     ;;
   *)

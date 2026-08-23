@@ -3,6 +3,34 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(tooling): cross-family headless call helper -- ADR-007 amendment, admin-policy Gemini boundary (harmonic-forge#366)
+
+Reimplements harmonic-forge#366 after Lane 1 sent the prior Lane 2 (Codex)
+attempt back: the read-only posture's Gemini boundary used
+--approval-mode plan, which live reproduction showed does not reliably
+block a write (the model can still call write_file and narrate a false
+success). Replaced with an admin-tier deny policy
+(tools/lane/gemini-read-only-deny.toml, --admin-policy), the mechanism
+harmonic-forge#326 already proved survives --yolo and removes denied
+tools from the model's tool list entirely.
+
+Adds tools/lane/cross_family_call.sh (closed caller/families/posture/
+brief/cwd surface, locked caller-keyed family order, normalized
+JSON-lines envelope per family), the pager/editor env fix to
+_cli_launch.sh's gemini branch, and a bounded ADR-007 section
+transcribing the family-order table, posture mapping, and consumer
+table.
+
+Also carries a new accepted-residual-gap note: live testing found
+'codex exec --sandbox read-only' does not reliably block a file write
+either (the file-edit tool completes even when shell redirection is
+denied at the OS level) -- out of this issue's Gemini-scoped acceptance
+criteria, flagged rather than silently fixed or ignored.
+- tools/lane/_cli_launch.sh                          |   4 +
+- tools/lane/cross_family_call.sh                    | 191 +++++++++++++++++++++
+- tools/lane/gemini-read-only-deny.toml              |  36 ++++
+- 4 files changed, 334 insertions(+)
+
 ## fix: validate sprint-plan schema contract (harmonic-forge#104)
 - skills/sprint-plan/config_loader.py                |  89 ++++++-----
 - .../schema/sprint-plan.config.schema.json          |  55 ++++++-
