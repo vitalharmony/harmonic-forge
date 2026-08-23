@@ -1,0 +1,15 @@
+# transaction-log.md is an append-only log: `mise run commit` inserts every
+# entry at one fixed anchor (<!-- TRANSACTION_LOG_START -->), and the file is
+# cleared only on push to main. Any two branches cut before either merges
+# therefore both write the same line, and conflict structurally rather than
+# by bad luck — harmonic-forge#376, live incident: feat/366-cross-family-helper
+# and feat/371-receipt-integrity, where F371's PR sat mergeStateStatus DIRTY
+# with CI never triggering.
+#
+# merge=union keeps BOTH sides' added lines instead of raising a conflict.
+# Correct here specifically because entry order carries no meaning and each
+# entry embeds its own commit message and diff content, so two sides never
+# add an identical line. Do not extend this to files where line order or
+# uniqueness matters — union resolves silently, so a bad fit produces a
+# wrong merge with no conflict to notice.
+transaction-log.md merge=union
