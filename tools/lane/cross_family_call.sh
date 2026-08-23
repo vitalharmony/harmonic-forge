@@ -91,13 +91,33 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly_policy="$script_dir/gemini-read-only-deny.toml"
 
+# Appended to every brief, for every family, regardless of what the caller
+# wrote (harmonic-forge#366 correction: a Codex probe brief with no explicit
+# reply-shape instruction produced a fully correct plain-prose answer that
+# emit_envelope's codex branch then classified invalid-report, because
+# nothing told Codex to answer in the shared {summary,findings} contract.
+# Baking this into the helper -- not into each brief -- means every caller
+# gets a working contract even if it never thinks to ask for one).
+read -r -d '' REPORT_CONTRACT <<'EOF' || true
+
+---
+Reply with ONLY a single JSON object as your final message, no prose before
+or after, no markdown code fence, matching exactly this shape:
+{"summary": "<one sentence>", "findings": [{"claim": "<what is wrong>", "evidence": "<the exact quoted text that proves it>"}]}
+If you find nothing, reply {"summary": "no defect found", "findings": []}.
+EOF
+
+prompt_text() {
+  printf '%s%s' "$(cat "$1")" "$REPORT_CONTRACT"
+}
+
 # --- per-family invocation, native stdout on fd 1, native stderr discarded ---
 
 invoke_claude() {
   local brief="$1" cwd="$2"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
-    claude -p "$(cat "$brief")" --output-format json </dev/null 2>/dev/null
+    claude -p "$(prompt_text "$brief")" --output-format json </dev/null 2>/dev/null
   )
 }
 
@@ -109,7 +129,7 @@ invoke_codex() {
     sandbox="workspace-write"
     [ -n "$cwd" ] && cd_args=(-C "$cwd")
   fi
-  codex exec "${cd_args[@]}" --sandbox "$sandbox" --json "$(cat "$brief")" </dev/null 2>/dev/null
+  codex exec "${cd_args[@]}" --sandbox "$sandbox" --json "$(prompt_text "$brief")" </dev/null 2>/dev/null
 }
 
 invoke_gemini() {
@@ -126,7 +146,7 @@ invoke_gemini() {
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m gemini-2.5-pro \
-        -p "$(cat "$brief")" -o json </dev/null 2>/dev/null
+        -p "$(prompt_text "$brief")" -o json </dev/null 2>/dev/null
   )
 }
 
