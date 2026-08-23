@@ -224,6 +224,15 @@ it is no longer accepted.
   classes.
 - **Codex, Lanes 1–3: the remaining `gap` rows in § 7.** Same reasoning, lower
   individual severity.
+- **Codex: `codex exec --sandbox read-only` does not reliably block a file
+  write** (found live, harmonic-forge#366). The model's file-edit tool can
+  complete a write even when a shell-redirection attempt to the same
+  location is correctly denied at the OS level. Accepted because
+  `cross_family_call.sh`'s `read-only` posture is new surface, not an
+  existing dependency, and Gemini's equivalent boundary (this ADR's § 10)
+  closed on live evidence in the same issue — Codex's should follow the
+  same admin-policy-shaped pattern rather than being designed under this
+  amendment's narrower scope. Flagged for a follow-up, not silently carried.
 
 **Reading rules, all three of which are the point of having a matrix:**
 
@@ -251,6 +260,100 @@ Two consequences follow, and both are load-bearing:
    regression is silent and total. This is why harmonic-forge#322 is 3-lane
    rather than Tooling Exception, and the reasoning belongs here rather than
    only in that issue.
+
+## 10. Cross-family headless calls (harmonic-forge#366)
+
+Any of Claude, Codex, or Gemini may invoke one or two sibling CLIs headlessly
+from inside a skill or subagent, receive a structured payload, and continue.
+`tools/lane/cross_family_call.sh` is the helper; each family's own headless
+form (`claude -p`, `codex exec`, `gemini -p`) is one Bash call away, but the
+per-CLI flags, the read-only boundary, and the cold-brief contract are
+centralized here rather than repeated at every call site.
+
+**Motivation.** Every adversarial role in the protocol —
+`preclose-inspection`, `pitch-inspection`, `sticky-wicket` — is a subagent of
+the session that invokes it: same model family, same priors, same blind
+spots. The 2026-08-22 tooling audit measured this directly, run as one
+prompt in three clean windows: Codex refuted four findings Claude had
+discarded, Claude refuted three Codex discards, and none of that seven was
+visible from inside one family. It fell out of a 2-of-3 vote.
+
+**Family order is fixed by the caller — Gemini is never second.**
+
+| caller | 2nd | 3rd |
+|---|---|---|
+| Claude | Codex | Gemini |
+| Codex | Claude | Gemini |
+| Gemini | Claude | Codex |
+
+A two-family call (`--families 2`) uses the caller plus its 2nd column;
+`--families 3` adds the 3rd. This is the operator's decision (2026-08-22),
+fixed in the helper so no skill ever picks a target by availability or mood.
+
+**Cold context is mandatory, not incidental.** Every cross-family call ships
+a self-contained brief to a file — acceptance criteria, diff, execution
+boundary — and passes only that. No memories, no loaded rules, no
+conversation. This is what makes a headless call *better* than a
+same-session subagent for adversarial work: the refuter cannot anchor on the
+reasoning that produced the defect.
+
+**Postures, and where the boundary actually lives.**
+
+- `probe` is the only posture that ever passes Gemini `--yolo`. It requires
+  an isolated scratch directory (`--cwd`), created and removed by the
+  caller, never a shared lane worktree. This is the posture
+  `preclose-check`'s known-answer probe uses to prove a family can find a
+  seeded defect at all before it gets a seat on a vote.
+- `read-only` is the posture the real consumers (`preclose-check`,
+  `sticky-wicket`) use for the adversarial call itself. **Its Gemini
+  boundary is an admin-tier deny policy
+  (`tools/lane/gemini-read-only-deny.toml`, loaded via `--admin-policy`),
+  not `--approval-mode plan`.** The original design used plan mode; live
+  reproduction on this issue showed the model can still call `write_file`
+  under `--approval-mode plan` and narrate a false success while doing so.
+  `--admin-policy` is the mechanism harmonic-forge#326 proved live: an
+  admin-tier `deny` survives `--yolo`, and the denied tools are removed from
+  the model's own tool list entirely, rather than merely refused at call
+  time. That removal — not the model's self-reported summary — is what the
+  helper's live verification checks (file-existence on disk, not the
+  `report.summary` text).
+- Codex's `read-only` posture uses `codex exec --sandbox read-only`, and
+  `probe` uses `--sandbox workspace-write` plus `-C <cwd>`. **Live testing
+  during this issue found `--sandbox read-only` does not reliably block a
+  file write** — the model can complete the write via its file-edit tool
+  even though a shell-redirection attempt is correctly blocked at the OS
+  level. This is a real, reproduced gap, not a suspicion; it is carried
+  forward as an accepted residual gap in § 8 below, the same pattern already
+  applied to Codex elsewhere in this ADR, pending a repo-side deny mechanism
+  for Codex equivalent to Gemini's admin policy.
+
+**Normalized stdout envelope.** One JSON-lines record per invoked family:
+
+```
+{"family":"codex","posture":"read-only","status":"ok|process-error|invalid-report","exit_code":0,"report":{"summary":"…","findings":[{"claim":"…","evidence":"…"}]},"native":{…}}
+```
+
+`status: invalid-report` when the native output cannot be parsed into the
+`report` shape — the helper never invents findings. `native` preserves each
+CLI's own JSON for diagnosis.
+
+**Which roles use two families, which use three.**
+
+| Consumer | Families | Why |
+|---|---|---|
+| `preclose-check` / `preclose-inspection` (hrse#1208) | 3 | Maps the existing panel-size rule onto families: the 2-of-3 vote is what makes a refutation actionable. First consumer. |
+| `sticky-wicket` | 3 | Rare, high-stakes; three families disagreeing is itself the answer. |
+| `pitch-inspection` | 2 | One pass, one verdict, escalation already goes to the operator. |
+| sprint-plan summary (hrse#1210) | 2, opt-in | `inferred` dependency edges confirmed by two families are more trustworthy; behind a flag, rate-limit constrained. |
+| tooling-audit | 3, by construction | Not yet a skill; the 2026-08-22 prompt is the spec for one. |
+| `product-strategy` | 1 (optional 2nd) | Synthesis; a second-family red-team on a build-vs-adopt call is a flag, not a default. |
+| `lane1-gate`, `lane3-gate`, `verification-gate` | 0 | Mechanical, or they *are* a role. |
+| `ai-review-queue-synthesis`, `meeting-debrief`, claim report | 0 | Synthesis. |
+
+**Authority does not move.** A refuter spawned from another family is still
+a finding the calling session interprets. It raises the floor; it is not a
+Lane 3 gate, it never emits `PASS`, and closure authority stays with the
+operator's explicit `Close H<N>`/`Close F<N>`.
 
 ## Consequences
 

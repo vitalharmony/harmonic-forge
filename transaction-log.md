@@ -3,6 +3,62 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(tooling): bake the {summary,findings} reply contract into cross_family_call.sh itself (harmonic-forge#366)
+
+Fixes the defect Lane 1 found live while building #366's Lane 3 gate
+sweep evidence: a probe brief with no explicit reply-shape instruction
+produced a fully correct plain-prose answer from Codex that
+emit_envelope's codex branch then classified invalid-report, because
+nothing in invoke_codex() or the caller's brief told Codex to answer in
+the shared JSON contract. Every correct Codex answer was failing,
+silently, for every caller except Codex itself -- TC1's 2-of-3 vote,
+and this issue's whole premise, depended on this working.
+
+Fix applies to all three families uniformly, not just Codex: a fixed
+REPORT_CONTRACT suffix is now appended to every brief inside
+prompt_text(), so a caller gets a working contract even if it never
+thinks to ask for one, rather than depending on brief-authoring
+discipline the helper cannot enforce.
+
+Reproduced live before and after: same bare brief (no JSON-shape
+instruction), same seeded-defect scratch repo. Before: Codex target ->
+status invalid-report despite a fully correct diagnosis in its native
+output. After: Codex and Gemini targets both -> status ok with the
+seeded defect correctly quoted as evidence. Re-verified TC2 (Gemini
+read-only write denial) unaffected by the change, isolated from the
+same-cwd cross-contamination a naive re-test would have introduced.
+mise run check -- 463 tests pass.
+- tools/lane/cross_family_call.sh | 26 +++++++++++++++++++++++---
+- 1 file changed, 23 insertions(+), 3 deletions(-)
+
+## feat(tooling): cross-family headless call helper -- ADR-007 amendment, admin-policy Gemini boundary (harmonic-forge#366)
+
+Reimplements harmonic-forge#366 after Lane 1 sent the prior Lane 2 (Codex)
+attempt back: the read-only posture's Gemini boundary used
+--approval-mode plan, which live reproduction showed does not reliably
+block a write (the model can still call write_file and narrate a false
+success). Replaced with an admin-tier deny policy
+(tools/lane/gemini-read-only-deny.toml, --admin-policy), the mechanism
+harmonic-forge#326 already proved survives --yolo and removes denied
+tools from the model's tool list entirely.
+
+Adds tools/lane/cross_family_call.sh (closed caller/families/posture/
+brief/cwd surface, locked caller-keyed family order, normalized
+JSON-lines envelope per family), the pager/editor env fix to
+_cli_launch.sh's gemini branch, and a bounded ADR-007 section
+transcribing the family-order table, posture mapping, and consumer
+table.
+
+Also carries a new accepted-residual-gap note: live testing found
+'codex exec --sandbox read-only' does not reliably block a file write
+either (the file-edit tool completes even when shell redirection is
+denied at the OS level) -- out of this issue's Gemini-scoped acceptance
+criteria, flagged rather than silently fixed or ignored.
+- tools/lane/_cli_launch.sh                          |   4 +
+- tools/lane/cross_family_call.sh                    | 191 +++++++++++++++++++++
+- tools/lane/gemini-read-only-deny.toml              |  36 ++++
+- 4 files changed, 334 insertions(+)
+
 ## fix: validate sprint-plan schema contract (harmonic-forge#104)
 - skills/sprint-plan/config_loader.py                |  89 ++++++-----
 - .../schema/sprint-plan.config.schema.json          |  55 ++++++-

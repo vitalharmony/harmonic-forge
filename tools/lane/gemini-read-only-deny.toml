@@ -1,0 +1,36 @@
+# Admin-tier deny policy for cross_family_call.sh's `read-only` posture
+# (harmonic-forge#366, correcting the original `--approval-mode plan`
+# design after live reproduction showed plan mode does not reliably block
+# writes -- see harmonic-forge#366's "Required correction" comment).
+#
+# Loaded via `--admin-policy`, which the Gemini CLI docs place at the top
+# tier (base 5, above Workspace/User/Default) -- it is the only mechanism
+# proven live (harmonic-forge#326) to survive `--yolo` and to remove the
+# denied tools from the model's own tool list, rather than merely refusing
+# them at call time. This file must be the actual boundary; the `plan`
+# approval mode, if still passed alongside it, is defense-in-depth only.
+#
+# Deny is intentionally broad ("write/execute-shaped tools", per #366's
+# correction) rather than enumerated by call site: any tool that can
+# mutate the filesystem, run a command, or reach an MCP server is denied.
+# Read tools (read_file, glob, search_file_content, etc.) are left to the
+# CLI's own default-tier policy, which already allows them.
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "deny"
+priority = 900
+denyMessage = "cross_family_call.sh read-only posture (harmonic-forge#366): file writes are denied at the admin policy tier."
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 900
+denyMessage = "cross_family_call.sh read-only posture (harmonic-forge#366): shell execution is denied at the admin policy tier."
+
+[[rule]]
+toolName = "*"
+mcpName = "*"
+decision = "deny"
+priority = 900
+denyMessage = "cross_family_call.sh read-only posture (harmonic-forge#366): MCP tool calls are denied at the admin policy tier."
