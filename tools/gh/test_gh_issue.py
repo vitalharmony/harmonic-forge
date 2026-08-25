@@ -662,3 +662,107 @@ class TestThemeVentureCliWiring(unittest.TestCase):
             gh_issue.main()
         self.assertEqual(add.call_args[0][4], "Career")
         self.assertEqual(add.call_args[0][5], "CymaGraph")
+
+
+class TestFindRetiredCitations(unittest.TestCase):
+    """harmonic-forge#379. Unit-level: the matcher itself, no gh_issue.main()."""
+
+    def test_backtick_quoted_retired_artifact_is_found(self):
+        hits = gh_issue.find_retired_citations(
+            "Still references `board_sync.py` for reconciliation."
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0][0], "board_sync.py")
+        self.assertIn("hrse#839", hits[0][1])
+
+    def test_bare_word_does_not_match(self):
+        # Same name, no backticks -- must not fire.
+        hits = gh_issue.find_retired_citations(
+            "Still references board_sync.py somewhere in prose."
+        )
+        self.assertEqual(hits, [])
+
+    def test_estimate_free_text_line_does_not_warn(self):
+        # planning.md requires every issue to state a free-text estimate.
+        # That line is never backtick-quoted, so it must be silent by
+        # construction, not by a special case in the matcher.
+        hits = gh_issue.find_retired_citations(
+            "## Estimate\n\n2 points -- small check, most of the work is "
+            "deciding where the retired list lives."
+        )
+        self.assertEqual(hits, [])
+
+    def test_backtick_quoted_estimate_field_name_does_warn(self):
+        # Contrast case: the retired *board field* named Estimate, quoted
+        # as a field reference, is exactly what this check exists to catch.
+        hits = gh_issue.find_retired_citations(
+            "The board still writes to the retired `Estimate` field."
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0][0], "Estimate")
+
+    def test_non_retired_backtick_span_does_not_match(self):
+        hits = gh_issue.find_retired_citations(
+            "See `scripts/gh_issue.py` for the live implementation."
+        )
+        self.assertEqual(hits, [])
+
+    def test_duplicate_citations_are_deduplicated(self):
+        hits = gh_issue.find_retired_citations(
+            "`hrse_manager.py` is gone. Also see `hrse_manager.py` again."
+        )
+        self.assertEqual(len(hits), 1)
+
+    def test_multiple_distinct_citations_are_all_found(self):
+        hits = gh_issue.find_retired_citations(
+            "Both `board_sync.py` and `hrse_manager.py` are cited here."
+        )
+        names = {name for name, _ in hits}
+        self.assertEqual(names, {"board_sync.py", "hrse_manager.py"})
+
+
+class TestRetiredCitationWarningNeverBlocksFiling(unittest.TestCase):
+    """harmonic-forge#379 AC: warning, never a block. A legitimate cleanup
+    issue that names its own target (harmonic-forge#319's shape: "Devin
+    scrub, remaining corpus") must still file."""
+
+    def _main_capturing_stderr(self, body):
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", [
+                "gh_issue.py", "--repo", "vitalharmony/harmonic-forge",
+                "--title", "t", "--body", body]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.resolve_board_for_repo", return_value=("", "")), \
+             contextlib.redirect_stderr(stderr):
+            result = gh_issue.main()
+        return result, created, stderr.getvalue()
+
+    def test_retired_citation_warns_but_still_files(self):
+        result, created, stderr = self._main_capturing_stderr(
+            "Cleaning up remaining references to `board_sync.py`."
+        )
+        self.assertEqual(result, 0)
+        created.assert_called_once()
+        self.assertIn("board_sync.py", stderr)
+        self.assertIn("WARNING", stderr)
+
+    def test_no_retired_citation_produces_no_warning(self):
+        result, created, stderr = self._main_capturing_stderr(
+            "A perfectly ordinary issue body with no retired references."
+        )
+        self.assertEqual(result, 0)
+        created.assert_called_once()
+        self.assertNotIn("WARNING", stderr)
+
+    def test_cleanup_issue_naming_its_own_target_still_files(self):
+        # Mirrors harmonic-forge#319's shape: the issue's whole point is
+        # citing the thing being cleaned up.
+        result, created, stderr = self._main_capturing_stderr(
+            "Devin scrub, remaining corpus: sweep leftover references to "
+            "`hrse_manager.py` and `.devin/hooks.v1.json` across both repos."
+        )
+        self.assertEqual(result, 0)
+        created.assert_called_once()
+        self.assertIn("hrse_manager.py", stderr)
+        self.assertIn(".devin/hooks.v1.json", stderr)
