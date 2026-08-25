@@ -22,12 +22,38 @@ per-request), so halving the fetch count is a real, not cosmetic, saving.
 import json
 import argparse
 import os
+import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
+
+_BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
+
+
+def find_retired_citations(body: str) -> list[tuple[str, str]]:
+    """(name, replacement-note) for each backtick-quoted retired artifact.
+
+    harmonic-forge#379. Whole-string match only, scoped to backtick-quoted
+    spans -- never a bare word. That scope is deliberate, not an
+    afterthought: the backlog-premise audit this check is drawn from found
+    bare-word matching responsible for its worst false positives (flagging
+    "Estimate" in every issue that correctly states one per
+    `.claude/rules/planning.md`, flagging "Devin" in the issue whose whole
+    point was scrubbing Devin references). A normal issue's free-text
+    "Estimate: N points" line is never backtick-quoted, so it is excluded
+    by construction, not by a special case.
+    """
+    seen: list[tuple[str, str]] = []
+    for match in _BACKTICK_SPAN.findall(body):
+        note = RETIRED_ARTIFACTS.get(match)
+        if note is not None and (match, note) not in seen:
+            seen.append((match, note))
+    return seen
 from item_list_cache import BOARD_ITEM_SCAN_LIMIT  # noqa: E402
 
 STATUS_OPTION_NAME = "Todo"
@@ -455,6 +481,17 @@ def main() -> int:
         parser.error(
             "--project-owner and --project-number must be given together; "
             "pass both to override the repo->board map, or neither to use it."
+        )
+
+    # harmonic-forge#379: warn, never block -- a cleanup issue legitimately
+    # names the thing it's cleaning up (e.g. harmonic-forge#319, "Devin
+    # scrub, remaining corpus"), so this must never stop the filing.
+    for name, note in find_retired_citations(body):
+        print(
+            f"[GH] WARNING: body backtick-cites `{name}`, which is retired "
+            f"-- {note}. Filing anyway; fix the citation if this wasn't "
+            f"deliberate.",
+            file=sys.stderr,
         )
 
     print(f"[GH] Creating issue in {args.repo}")
