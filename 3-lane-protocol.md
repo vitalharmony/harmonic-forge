@@ -185,20 +185,15 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   distribution so other projects get the same hard-wired protection, not
   just prose.
 - Runs locally. Reads the GitHub issue independently — **never reads Lane
-  2's code before writing its test spec.** This now explicitly includes
-  **Lane 2's own implementation-report comment on the issue thread** — Lane
-  1's handoff and Lane 2's diff summary both post to the same issue (see
-  Lane 1/Lane 2 sections above), so when deriving its test spec Lane 3
-  reads only: the issue body, Lane 1's original handoff comment, and (if
-  present) a second Lane 1 comment specifically addressed to Lane 3 —
-  written after Lane 2 finishes, carrying any caveats the HITL gate turned
-  up (e.g. "the named test-pair's data has since changed, construct a
-  fixture instead" — a real example from #153). Lane 3 must not open or be
-  influenced by any Lane 2 comment already on the thread until after its
-  spec is written and approved. Co-locating every lane's output on one
-  issue is a deliberate convenience (it's what lets Lane 1 review by
-  reading the thread instead of relaying pasted text) — it must not become
-  a backdoor that lets Lane 3 anchor on Lane 2's self-report.
+  2's code, or Lane 2's own implementation-report comment on the issue
+  thread, before writing its test spec.** Lane 3 reads only: the issue
+  body, Lane 1's original handoff comment, and (if present) a second Lane
+  1 comment addressed specifically to Lane 3, written after Lane 2
+  finishes, carrying any caveats the HITL gate turned up (real example,
+  #153: "the named test-pair's data has since changed, construct a
+  fixture instead"). Co-locating every lane's output on one issue is a
+  deliberate convenience for Lane 1's own review — it must not become a
+  backdoor letting Lane 3 anchor on Lane 2's self-report.
 - Writes a test spec from the issue's acceptance criteria.
 - Submits the test spec for Tech Lead HITL approval
   (`templates/hitl-test-review.md`) before executing anything.
@@ -206,108 +201,84 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   `rules/testing-gate.md` (standard) or `rules/frontend-ui-golden-path.md`
   (UI-only variant) for thresholds.
 - **Interactive tool modes are never used for automated execution.** Any
-  browser-automation invocation (Playwright, etc.) runs headless with a
-  non-interactive reporter (e.g. `--reporter=line`) — never `--debug`,
-  `--ui`, `codegen`, or any other mode that opens an inspector/GUI and
-  blocks waiting for human interaction. A collapsed or non-interactive
-  terminal has no way to surface that prompt, so the command just hangs
-  until a human notices and manually cancels it — the same failure shape
-  as the `sudo`/`npx install` hangs already seen this session, just in a
-  different tool. If a command needs interactive confirmation, that's a
-  signal to stop and ask, not to keep invoking variants of the same
-  command hoping one works headlessly.
+  browser-automation invocation runs headless with a non-interactive
+  reporter (e.g. `--reporter=line`) — never `--debug`, `--ui`, `codegen`,
+  or any other mode that opens an inspector/GUI and blocks on human
+  interaction. A non-interactive terminal can't surface that prompt, so
+  the command hangs until a human notices and cancels it (real failure
+  mode, #152). A command needing interactive confirmation is a signal to
+  stop and ask, not to keep retrying variants hoping one works headlessly.
 - **Lane 3 is the only lane authorized to execute a data-modifying
   script's write/apply path.** When an issue's scope is itself a data
   migration or correction (not just testing already-written application
   code — e.g. #155's shape), the test spec submitted for HITL approval
-  must explicitly say so: the plan includes actually running the
-  migration for real, not just verifying it works against fixtures. HITL
-  approval of that spec is the approval to execute it. This is a
-  deliberate reuse of the pre-execution approval gate Lane 3 already has
-  for every test spec — it's a more suited fit for this kind of
-  goal-seeking, spec-then-execute action than Lane 2's mechanical
-  implement-exactly-what's-specified role, and it closes the #154/#155
-  gap structurally: nothing runs against real data without HITL having
-  explicitly approved that specific action first.
+  must say so explicitly: the plan includes actually running the
+  migration for real, not just verifying it against fixtures. HITL
+  approval of that spec is the approval to execute it — reusing the
+  pre-execution approval gate Lane 3 already has for every spec, closing
+  the #154/#155 gap structurally: nothing runs against real data without
+  HITL having approved that specific action first.
 - **A data-migration issue does not close on the code merge — it closes
-  when the migration has run.** The rule above says who may execute and
-  how it is authorized; it did not say that the execution must be
-  *evidenced* before the issue is closed, and that gap is not
-  theoretical. hrse#849 (2026-08-13) merged its classifier fix, closed,
-  and left all 219 target rows untouched; its own closing comment said
-  the run was "still outstanding". It blocked hrse#847 and hrse#856 for
-  as long as it read `closed`, and was reopened only because a human
-  happened to notice in conversation. Merging the code satisfies every
-  check that exists, so the close looks legitimate. **Mark such an issue
-  with the `data-migration` label at filing time**; closing it then
-  requires the `migration-executed` label, or `migration-abandoned` when
-  the run is deliberately not happening, with the reasoning in a
-  comment. Enforced by `tools/hooks/block_data_migration_close.py`
-  (hrse#859).
+  when the migration has run, evidenced.** Real incident, hrse#849
+  (2026-08-13): the code merged, the issue closed, and the closing
+  comment itself said the run was "still outstanding" — all 219 target
+  rows untouched, blocking two other issues for days until a human
+  noticed in conversation. Merging the code satisfies every check that
+  exists, so an unevidenced close looks legitimate. **Mark such an issue
+  `data-migration` at filing time**; closing it then requires the
+  `migration-executed` label, or `migration-abandoned` with reasoning in
+  a comment when the run is deliberately not happening. Enforced by
+  `tools/hooks/block_data_migration_close.py` (hrse#859).
 
-  **The credential is a label, not text in a comment, and that choice was
-  expensive to learn.** Four review rounds rejected comment-parsing
-  designs; three failed the same way. A marker's format has to be
-  published — here, in the hook's own deny message, and in hrse#866 —
-  so *every published example is itself a valid credential*. The final
-  round proved it: hrse#866's body carries a fenced example receipt
-  naming hrse#849, and pasting that body onto the thread opened the gate
-  for the exact issue the hook existed to protect. Successive rounds
-  narrowed where an example could legally appear — not blockquoted, then
-  not fenced, then not indented — which is a blocklist maintained
-  against your own documentation, and it does not converge. Naming a
-  label is not applying one, so the loop closes. Label application also
-  carries an actor and a timestamp in the timeline, which a pasted
-  comment does not.
+  **The credential is a label, not text in a comment — an expensive
+  lesson.** Four review rounds rejected comment-parsing designs; the
+  decisive one (hrse#866) showed that once an example marker's exact
+  format is published anywhere, *every published example is itself a
+  valid credential* — hrse#866's own body carried a fenced example
+  receipt naming hrse#849, and pasting that body onto the thread would
+  have opened the gate for the exact issue the hook exists to protect.
+  Narrowing where an example may legally appear (not blockquoted, not
+  fenced, not indented) is a blocklist maintained against your own
+  documentation, and it does not converge. A label is not this: applying
+  one is a distinct action from naming one, and it carries an actor and
+  timestamp in the timeline that pasted text does not. (Two related
+  non-solutions, for the same reason: a gate-readiness sweep is a
+  **pre**-execution artifact, and a Lane 3 gate report evidences that
+  tests ran, not that rows changed — hrse#848 passed 12 of 13 checks with
+  the thirteenth knowingly unexecuted.)
 
-  Note what is *not* accepted and why, since both are tempting: a
-  gate-readiness sweep is a **pre**-execution artifact, and a Lane 3
-  gate report evidences that test cases ran rather than that rows
-  changed — hrse#848's gate passed 12 of 13 with the thirteenth
-  knowingly unexecuted, and the modal heading `## Lane 3 gate status —
-  H<N>` sits on BLOCKED comments (hrse#728) as readily as passing ones.
-
-  **The load-bearing control will be the after-the-fact sweep**, not the
-  hook: closed `data-migration` issues lacking `migration-executed`,
-  folded into the standing hygiene pass — filed as hrse#867 and **not
-  yet shipped**. That catches every close path a local hook structurally
-  cannot see (graphql, heredoc bodies, the web UI). Note what it does
-  *not* close: both it and the hook key on `data-migration`, and nothing
-  enforces that the label is applied at filing time — hrse#849 was
-  labelled 64 minutes *after* it closed, so neither control would have
-  caught it as it actually happened (hrse#871). Until it lands, the hook is the only control,
-  and the hook is fail-open by design — it makes the mistake rare, not
-  impossible, and the rule above remains the actual authority.
+  **The load-bearing control is the after-the-fact sweep, hrse#867
+  (shipped 2026-08-14)**: closed `data-migration` issues lacking
+  `migration-executed`, folded into the standing hygiene pass — catches
+  every close path the `PreToolUse` hook structurally can't see (GraphQL,
+  heredoc bodies, the web UI). What it still doesn't close: nothing
+  enforces the label is applied *at filing time* — hrse#849 was labelled
+  64 minutes after it closed, so neither control would have caught it as
+  it actually happened (hrse#871). The hook remains fail-open by design;
+  it makes the mistake rare, not impossible.
 - Blocked from committing until 100% of tests pass at the required coverage
   threshold.
 - **Lane 3 never fixes application code, ever, under any circumstance —
-  full stop.** This applies regardless of whether the bug is self-introduced,
-  pre-existing, trivial, or blocking test execution entirely. Lane 3's only
-  permitted write actions are: writing/refactoring its own test specs and
-  test scripts, and executing an already-HITL-approved data-migration
-  script's write/apply path (the one explicit exception above — a
-  pre-approved action, not an in-the-moment fix). Every other case: stop
-  and report back to Lane 1, or ask the human operator directly for
-  authorization to proceed (as HITL did live during #176's port-conflict
-  fix — that's the correct pattern: human directs it live, not Lane 3
-  deciding on its own). "3 auto-fix attempts max" below refers strictly to
-  retrying/adjusting Lane 3's own test spec against a genuine test-authoring
-  problem (a bad fixture, a wrong assertion) — never to modifying the code
-  under test. Real incident: on HRSE2 #176, Lane 3 self-fixed three things
-  during one gate run — one was live-authorized by the human operator (fine),
-  two were not (a real pre-existing bug fixed inline instead of reported,
-  and a hardcoded plaintext credential written into a compose file to work
-  around a variable-interpolation problem instead of fixing the invocation
-  or reporting it). Marc: "L3 is falling into 'git 'er done' bias mode more
-  than L1 or L2 and it shouldn't be fixing ANYTHING EVER, only running
-  tests, scripts, or refactoring." **Why this matters structurally, not just
-  as a boundary rule**: Marc: "we WANT the tests to fail if L1/L2 built
-  something wrong, we don't want it intervening and fixing it, defeats the
-  purpose of the protocol." Lane 3's entire value is as an *independent*
-  check — a test that gets silently patched by the tester the moment it
-  fails can never fail meaningfully again, which makes the whole gate
-  structure pointless. A failing test is the protocol working correctly,
-  not a problem for Lane 3 to make go away.
+  full stop** — self-introduced, pre-existing, trivial, or blocking test
+  execution entirely, it makes no difference. Lane 3's only permitted
+  write actions: writing/refactoring its own test specs and scripts, and
+  executing an already-HITL-approved data-migration script's write/apply
+  path (the one exception above — pre-approved, not an in-the-moment
+  fix). Every other case: stop and report to Lane 1, or ask the human
+  operator directly for live authorization (the correct pattern — human
+  directs it live, Lane 3 never decides on its own). "3 auto-fix attempts
+  max" below governs retrying Lane 3's own test-spec problems only (a bad
+  fixture, a wrong assertion) — never modifying code under test. **Why
+  this is structural, not just a boundary**: Marc: *"we WANT the tests to
+  fail if L1/L2 built something wrong... defeats the purpose of the
+  protocol"* if Lane 3 silently patches a failure instead. A test that
+  gets patched by its own tester the moment it fails can never fail
+  meaningfully again — a failing test is the protocol working, not a
+  problem for Lane 3 to make go away. (Real incident underlying this
+  rule, HRSE2 #176: one of three inline self-fixes during a single gate
+  run was live human-authorized and fine; two were not — a real bug
+  fixed instead of reported, and a plaintext credential hardcoded into a
+  compose file instead of fixing the actual invocation problem.)
 - 3 auto-fix attempts max on a single root cause (test-spec issues only, per
   above); 4th failure escalates to Tech Lead instead of retrying.
 - After tests pass, performs a style/refactor pass per the project's
@@ -322,23 +293,18 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
 - **Fast-fail on external blockers.** If a live check is blocked by a
   genuine external dependency — a bug in another open issue this ticket's
   verification requires, a missing precondition, an environment gap that
-  isn't this ticket's to fix — Lane 3 confirms the blocker is real with the
-  minimum evidence needed (one clean repro, not exploratory workarounds),
-  then stops and reports it as a gate finding **immediately**. It does not
-  attempt workarounds, mocks, or alternate verification paths to route
-  around it first. Real incident: on HRSE2 #204, Lane 3's live delete-flow
-  test depended on a mutation endpoint broken by a concurrent bug in #187;
-  rather than reporting this immediately, Lane 3 tried several workarounds
-  (including a mocked-browser test) before finally surfacing the blocker —
-  burning real cost chasing a blocker that had *already been fixed* by the
-  time the report was filed. Marc: "L3 burned 3% of my credits trying all
-  kinds of crazy work-arounds instead of admitting it was blocked. This is
-  not acceptable. It needs to follow the fast-fail principle which is
-  doctrine in software development." This is distinct from the auto-fix
-  rule above (which governs Lane 3's own test-spec issues, not external
-  blockers) — an external blocker in another lane's work is never something
-  to route around, mock past, or retry; it is always an immediate
-  stop-and-report.
+  isn't this ticket's to fix — Lane 3 confirms the blocker is real with
+  minimum evidence (one clean repro, not exploratory workarounds), then
+  stops and reports it as a gate finding **immediately** — never routing
+  around it, mocking past it, or retrying first. Real incident, HRSE2
+  #204: Lane 3 tried several workarounds (including a mocked-browser
+  test) before finally surfacing a blocker that had *already been fixed*
+  by the time the report was filed — Marc: *"L3 burned 3% of my credits
+  trying all kinds of crazy work-arounds instead of admitting it was
+  blocked... fast-fail... is doctrine in software development."* Distinct
+  from the auto-fix rule above (Lane 3's own test-spec issues) — an
+  external blocker in another lane's work is always an immediate
+  stop-and-report, never something to route around.
 
 ## Per-Lane Working Directories — git worktree
 
@@ -492,33 +458,19 @@ children.
 
 ### Per-Issue Implementation Worktree — distinct from the fixed per-lane worktree above
 
-The fixed `<repo>-lane2/` worktree (above) is where the Lane 2 *session*
-runs — one process, launcher-enforced, reused across every issue that
-session touches. Lane 2's actual *implementation work for a given issue*
-happens in a separate, disposable worktree: `/tmp/<repo>-<issue>-impl`,
-created fresh per issue. The two are not alternatives — a Lane 2 session
-always starts in `<repo>-lane2/`, then creates `/tmp/<repo>-<issue>-impl`
-from there for the issue at hand, never implementing directly in the
-shared `<repo>-lane2/` checkout itself, and never branch-switching inside
-it either — that's what the disposable impl worktree exists to avoid.
-`mise run gate-checkout` is **Lane 3's** tool, for the fixed `<repo>-lane3/`
-worktree specifically (above); it is not something a Lane 2 session
-reaches for.
+Lane 2's actual *implementation work for a given issue* happens in a
+separate, disposable `/tmp/<repo>-<issue>-impl` worktree, created fresh
+per issue from the fixed `<repo>-lane2/` session worktree above — never
+implemented directly in `<repo>-lane2/` itself. Full create/provision/
+work/cleanup procedure: see the `impl-worktree` skill.
 
-This convention is enforced today at exactly one live point, not by the
-launcher scripts: `block_lane1_status_claims.py`'s Lane 2 denial (a write
-into the main checkout while `LANE=2`) names it directly — "Lane 2 work
-belongs in its own dedicated worktree — restart in the project's -lane2
-worktree or a fresh `/tmp/<project>-<issue>-impl` worktree, not the main
-checkout." `tools/lane/lane2`/`lane3` have **zero** scripted awareness of
-the per-issue impl worktree — creating and removing it is a purely manual,
-session-driven step, not launcher-automated.
-
-Should be removed (`git worktree remove`, and `git worktree prune` to
-clear the administrative record — the directory disappearing from `/tmp`
-on reboot does not by itself clear `.git/worktrees/`'s entry) once the
-issue's work is committed and reported. See the `impl-worktree` skill for
-the exact commands.
+Two facts the skill doesn't carry, kept here because they're enforcement
+and launcher-scope facts, not procedure: **`block_lane1_status_claims.py`'s
+Lane 2 denial (a write into the main checkout while `LANE=2`) is the
+single live enforcement point for this convention today** — not the
+launcher scripts. And **`tools/lane/lane2`/`lane3` have zero scripted
+awareness of the per-issue impl worktree** — creating and removing it is
+a purely manual, session-driven step.
 
 ## Per-Lane Worktree Reuse Across Issues — Check Before You Checkout
 
@@ -545,46 +497,9 @@ instead, only touching the shared lane worktree once it's confirmed idle.
 
 ## Shared Working Directory — Commit Before You Yield
 
-Worktree isolation (above) prevents *cross-lane* directory collisions, but
-each lane's own worktree can still end up dirty at a bad moment (e.g. Lane
-1 editing docs in the main checkout while making an unrelated commit). The
-following discipline still applies **within each lane's own directory**,
-by **every** lane, not just Lane 3:
-
-**Never yield control — post a completion comment, hand off, stop, or
-otherwise signal "done" — while leaving uncommitted changes in the shared
-directory.** Every stopping point ends in a clean `git status`. This
-applies equally to:
-
-- **Lane 1** (Claude Code) — including doc-only commits (sprint-plan
-  reconciliation, rules edits); never run a broad `git add` without
-  reviewing the actual file list first, and never start editing without
-  confirming the working tree is clean and it's your own change producing
-  the diff.
-- **Lane 2** — a "no push requested yet" completion report
-  must still mean the branch itself is fully committed; an in-progress
-  follow-up fix (even a small one, even one Lane 1 or the operator asked
-  for) gets its own commit before the session ends, not left staged or
-  unstaged for someone else to find later.
-- **Lane 3** — beyond the existing never-fixes-anything rule
-  (which already bars Lane 3 from *creating* uncommitted changes), Lane 3
-  must not assume an uncommitted diff it finds mid-gate belongs to its own
-  run. If Lane 3 discovers uncommitted changes when starting a gate, that
-  is itself a stop-and-report condition (same fast-fail principle as an
-  external blocker) — not something to puzzle out solo, work around, or
-  silently gate against.
-
-**Real incidents this rule exists to prevent** (HRSE2, 2026-07-14/15,
-same overnight session): a doc-only Lane 1 sprint-plan commit swept up
-Lane 2's in-progress implementation files via a broad `git add` (#227);
-Lane 3 found and had to stash an unrelated uncommitted file mid-gate on
-#265's run rather than touching it (correct behavior, but only possible
-because Lane 3 checked first); Lane 3's gate on #274 stalled on confusion
-from Lane 2's own uncommitted follow-up fix sitting in the tree; and Lane
-1's own attempt to fix a related tooling issue (#276) *while* Lane 3 was
-actively mid-gate compounded the confusion further by stashing/branch-
-switching in the same directory Lane 3 was reading from. Four variations
-of the same root cause in one session — this is a pattern, not bad luck.
+Moved to `universal-agent.md`'s "Shared Working Directory — Commit Before
+You Yield" section (harmonic-forge#170) — this is a cross-lane discipline
+rule, not protocol-specific, and applies identically to every lane/tool.
 
 ## HITL Gate Language
 
@@ -1032,14 +947,13 @@ This differs from "Long-Running Script Handoffs" above: that section governs new
 some handoffs deliberately delegate a design decision to Lane 2 — and Lane
 2's resolution of that decision is new, unreviewed design content that
 otherwise gets its first review only after implementation credits are
-spent. Real incident: on HRSE2 #233, Lane 2 posted an implementation plan
-unprompted and waited for Lane 1 sign-off; the solo Lane 1 read caught two
-real gaps but approved the disposable-branch design that went on to
-generate the issue's recurring bug class across ~10 rounds. The pause was
-right; the review was too shallow. This section makes the pause required
-for a narrow, self-declared class and routes the review through fresh
-context instead of a Lane 1 solo read. Full evaluation, including the
-honest cost/benefit case against building this at all:
+spent. Real incident, HRSE2 #233: a solo Lane 1 read of Lane 2's
+unprompted plan caught two real gaps but still approved a design that
+went on to generate the issue's recurring bug class across ~10 rounds —
+the pause was right, the review was too shallow. This section makes the
+pause required for a narrow, self-declared class and routes the review
+through fresh context instead of a Lane 1 solo read. Full evaluation,
+including the honest cost/benefit case against building this at all:
 `docs/decisions/ADR-004-plan-first-implementation-and-comment-formatting.md`.
 
 **Second real incident, ADR-005:** on HRSE2 #236, a handoff carried an
@@ -1136,34 +1050,16 @@ not a subagent.
 
 ## GitHub Account Scoping — Every Lane, Every Command
 
-`gh auth switch` is global mutable state. It changes the active GitHub
-identity for **every** session and agent on the machine. On a machine
-running three lanes plus side sessions, that is a cross-actor failure mode:
-a command runs under an identity nobody in that session chose. Real
-incident, 2026-08-11 — one session's switch was reverted by another mid-task,
-and the resulting error pointed nowhere near the actual cause.
+Core rule, incident record, and `gh-as` usage: see `universal-agent.md`'s
+"GitHub account scoping — never `gh auth switch`" section (harmonic-forge#170
+dedupe — this was a near-verbatim duplicate).
 
-**Standing rule for every lane:** never `gh auth switch`. Use
-`harmonic-forge/tools/gh/gh-as`, which scopes `gh` to a named account for a
-single process and leaves global state untouched.
-
-```bash
-gh-as <account> gh issue list -R owner/repo
-gh-as <account> python3 some_script.py     # children inherit the scoping
-```
-
-One-time per account: `gh-as --init <account>`. `gh-as --list` shows each
-slot and the identity it actually resolves to.
-
-`gh-as` refuses to run if a slot is unconfigured, if its token is expired,
-or if the slot's authenticated identity does not match its name — so a
-command cannot silently execute against the wrong account because a token
-was replaced out of band.
-
-Scripts that need a specific account do not switch internally: the caller
-invokes them under `gh-as`, and the script verifies its own identity and
-refuses if it is wrong. See `tools/gh/README.md`, and `harmonic-forge.md`
-§6 for the credential-isolation principle this enforces.
+Residue not covered there: one-time setup is `gh-as --init <account>`;
+`gh-as --list` shows each configured slot and the identity it actually
+resolves to. **`gh-as` refuses to run** if a slot is unconfigured, its
+token is expired, or the slot's authenticated identity doesn't match its
+name — a command cannot silently execute against the wrong account
+because a token was replaced out of band.
 
 ## Team Topology
 

@@ -41,8 +41,10 @@ derivable from code or Git.
   API — Prefer REST over GraphQL" section for the full mapping and why.
   Projects v2 board operations are the one confirmed GraphQL-only
   exception.
-- For multiline GitHub comments, use `--body-file` or `jq -Rs '{body: .}'`
-  with API `--input -`; never inline multiline `--body` text.
+- For multiline/code-block GitHub comments: see `3-lane-protocol.md`'s
+  "GitHub Comment Formatting" section (harmonic-forge#170 dedupe) — the
+  full rule, including the mandatory fetch-back self-check after posting,
+  lives there and applies to every lane/tool, not just Claude Code.
 - For Git commands that could open an editor/hook, set
   `GIT_EDITOR=true EDITOR=: NO_COLOR=1` and use `--no-edit --no-verify`
   where applicable.
