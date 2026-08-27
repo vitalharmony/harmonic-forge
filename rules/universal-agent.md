@@ -419,6 +419,49 @@ feature — that is a separate task and a separate commit.
   that backs it (harmonic-forge#329) — an unattributed number reads as
   authoritative and silently goes stale the moment reality moves past it.
 
+## SHARED WORKING DIRECTORY — COMMIT BEFORE YOU YIELD
+
+Worktree isolation (`3-lane-protocol.md`'s "Per-Lane Working Directories")
+prevents *cross-lane* directory collisions, but each lane's own worktree
+can still end up dirty at a bad moment (e.g. Lane 1 editing docs in the
+main checkout while making an unrelated commit). The following discipline
+applies **within each lane's own directory**, by **every** lane:
+
+**Never yield control — post a completion comment, hand off, stop, or
+otherwise signal "done" — while leaving uncommitted changes in the shared
+directory.** Every stopping point ends in a clean `git status`. This
+applies equally to:
+
+- **Lane 1** (Claude Code) — including doc-only commits (sprint-plan
+  reconciliation, rules edits); never run a broad `git add` without
+  reviewing the actual file list first, and never start editing without
+  confirming the working tree is clean and it's your own change producing
+  the diff.
+- **Lane 2** — a "no push requested yet" completion report
+  must still mean the branch itself is fully committed; an in-progress
+  follow-up fix (even a small one, even one Lane 1 or the operator asked
+  for) gets its own commit before the session ends, not left staged or
+  unstaged for someone else to find later.
+- **Lane 3** — beyond the existing never-fixes-anything rule
+  (which already bars Lane 3 from *creating* uncommitted changes), Lane 3
+  must not assume an uncommitted diff it finds mid-gate belongs to its own
+  run. If Lane 3 discovers uncommitted changes when starting a gate, that
+  is itself a stop-and-report condition (same fast-fail principle as an
+  external blocker) — not something to puzzle out solo, work around, or
+  silently gate against.
+
+**Real incidents this rule exists to prevent** (HRSE2, 2026-07-14/15,
+same overnight session): a doc-only Lane 1 sprint-plan commit swept up
+Lane 2's in-progress implementation files via a broad `git add` (#227);
+Lane 3 found and had to stash an unrelated uncommitted file mid-gate on
+#265's run rather than touching it (correct behavior, but only possible
+because Lane 3 checked first); Lane 3's gate on #274 stalled on confusion
+from Lane 2's own uncommitted follow-up fix sitting in the tree; and Lane
+1's own attempt to fix a related tooling issue (#276) *while* Lane 3 was
+actively mid-gate compounded the confusion further by stashing/branch-
+switching in the same directory Lane 3 was reading from. Four variations
+of the same root cause in one session — this is a pattern, not bad luck.
+
 ## ISSUE TRACKING
 
 New bugs and features are tracked as GitHub Issues on the project's repo, not
