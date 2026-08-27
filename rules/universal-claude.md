@@ -54,3 +54,11 @@ derivable from code or Git.
   loop — `Monitor` surfaces a stalled or errored wait instead of sitting
   silent until timeout. `Bash --run_in_background` stays correct for a
   single bounded wait with a clear exit condition (harmonic-forge#312).
+- Merging a parent PR with `--delete-branch` silently **closes** any
+  stacked child PR still pointing at that branch. Retarget the child to
+  `main` (or its real new base) before merging the parent, not after.
+- `git checkout`/`checkout -b` does **not** branch-scope uncommitted
+  tracked changes — they follow the working tree across the switch. A
+  branch created to isolate one edit can silently carry unrelated
+  in-progress changes onto it; check `git status` before assuming a fresh
+  branch starts clean.
