@@ -57,6 +57,28 @@ def _is_issue_filing_command(segment: list[str]) -> bool:
     return False
 
 
+def _is_push_or_pr_create(segment: list[str]) -> bool:
+    """harmonic-forge#398: push/PR is categorically Lane 1's
+    (`feedback_lane2_never_pushes_or_prs`) -- Lane 2 stops at a committed
+    branch in its worktree and reports; Lane 1 pushes and opens the PR.
+    Recognizes both the raw forms and `git`'s own `-C <dir>` global flag,
+    matching `block_irreversible_ops.py`'s established pattern for the
+    same class of gap (a global flag before the subcommand slipping past
+    a positional check)."""
+    if not segment or segment[0] != "git":
+        args = segment
+    else:
+        args = segment[1:]
+        while len(args) >= 2 and args[0] in ("-C", "--git-dir", "--work-tree"):
+            args = args[2:]
+        args = ["git", *args]
+    if len(args) >= 2 and args[0] == "git" and args[1] == "push":
+        return True
+    if len(args) >= 3 and args[0] == "gh" and args[1] == "pr" and args[2] == "create":
+        return True
+    return False
+
+
 def raw_post_denial(command: str, cwd: Path) -> str | None:
     if os.environ.get("LANE") != "2":
         return None
@@ -81,6 +103,13 @@ def raw_post_denial(command: str, cwd: Path) -> str | None:
                 "filing path -- issue creation is categorically Lane 1's job "
                 "(harmonic-forge#388). Surface the finding in your completion "
                 "report and stop; Lane 1 files it."
+            )
+        if _is_push_or_pr_create(segment):
+            return (
+                "push and PR creation are categorically Lane 1's "
+                "(harmonic-forge#398, feedback_lane2_never_pushes_or_prs). "
+                "Stop at the committed branch in your worktree and report "
+                "in your completion comment; Lane 1 pushes and opens the PR."
             )
     return None
 

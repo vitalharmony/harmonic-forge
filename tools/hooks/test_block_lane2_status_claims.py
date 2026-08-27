@@ -126,5 +126,63 @@ class TestLane2RawPostDenial(unittest.TestCase):
         self.assertTrue(_is_denied(result))
 
 
+class TestLane2PushAndPrCreateDenial(unittest.TestCase):
+    """harmonic-forge#398 -- feedback_lane2_never_pushes_or_prs."""
+
+    def setUp(self):
+        self._prior_lane = os.environ.get("LANE")
+        os.environ["LANE"] = "2"
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cwd = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._prior_lane is None:
+            os.environ.pop("LANE", None)
+        else:
+            os.environ["LANE"] = self._prior_lane
+
+    def test_git_push_denied_under_lane2(self):
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_git_push_with_dash_c_still_recognized(self):
+        result = m.decision("git -C /tmp/impl push origin feat/398-fix", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_pr_create_denied_under_lane2(self):
+        result = m.decision('gh pr create --title t --body b', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_git_push_not_denied_when_lane_unset(self):
+        os.environ.pop("LANE", None)
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_git_push_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_git_push_not_denied_for_lane3(self):
+        os.environ["LANE"] = "3"
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_pr_create_not_denied_when_lane_unset(self):
+        os.environ.pop("LANE", None)
+        result = m.decision('gh pr create --title t --body b', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_unrelated_git_command_not_denied(self):
+        result = m.decision("git status", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_pr_view_not_denied(self):
+        """Only pr create is denied -- read-only pr commands are unaffected."""
+        result = m.decision("gh pr view 12", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+
 if __name__ == "__main__":
     unittest.main()
