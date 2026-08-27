@@ -5,15 +5,33 @@ prompt reaches the model (harmonic-forge#383).
 The token set is parsed from rules/lane-shorthand.md at hook runtime --
 never re-declared here -- so a new row in the doc expands with no hook
 edit (AC2). A malformed or unreadable doc fails open: the prompt passes
-through byte-for-byte rather than blocking the operator's message.
+through byte-for-byte rather than blocking the operator's message. A
+single malformed row (e.g. an empty Account cell) must not poison
+expansion of every OTHER, well-formed token in the same prompt --
+repo_issue_gloss() below is deliberately defensive rather than relying
+on the outer fail-open try/except, which would otherwise blank the
+whole prompt over one bad row (preclose review, correctness lens).
 
 Expansion is additive annotation only (AC3): each recognized token gets
 a bracketed gloss appended immediately after it; the operator's literal
 text is never rewritten or dropped. Matches inside fenced code blocks are
-left alone (AC4) -- and since the token set comes only from the doc's own
-tables, an ordinary English word (e.g. a token that happens to also be a
-common word) never accidentally matches unless it is actually listed
-there.
+left alone (AC4).
+
+Discrimination (AC4), and its known limit: the lane-status and
+EOQ/BATCH branches match only whole tokens read verbatim from the doc's
+own tables/headings, so an ordinary English word never accidentally
+matches unless it is actually listed there. The repo-prefix branch is
+different -- it is a *generated* pattern (single letter + digits), not a
+closed vocabulary, so it cannot rely on doc membership alone; single
+capital-letter tokens (H, F, P, O, I, K) collide with common prose (HTML
+heading levels, priority language, function keys). Every currently-active
+issue number in this system is 2+ digits (see rules/lane-shorthand.md's
+own examples: H26, H767, F316, F383, K42, H1304) with single-digit
+numbers belonging to issues long since closed, so the repo-prefix pattern
+requires 2+ digits -- this removes the H1/H2/F5/P0/P1/O2/I5 class of
+false positive while still matching real usage. It is a mitigation, not
+a proof: a 2+-digit collision (e.g. "H26 bus route") remains possible in
+principle. Flagged as a residual, accepted risk rather than solved.
 
 Run: reads the UserPromptSubmit JSON payload on stdin, writes
 {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
@@ -29,6 +47,8 @@ DOC_PATH = Path(__file__).resolve().parent.parent.parent / "rules" / "lane-short
 
 TABLE_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*(.+?)\s*\|")
 FENCE = re.compile(r"^\s*```")
+LANE_TEMPLATE = re.compile(r"^L<N>([A-Z])$")
+STRIP_MARKDOWN = re.compile(r"\*\*|`")
 
 
 def _section(lines: list[str], heading: str) -> list[str]:
@@ -45,12 +65,30 @@ def _section(lines: list[str], heading: str) -> list[str]:
 
 def parse_lane_tokens(text: str) -> dict[str, str]:
     """## Lane status tokens table -> {TOKEN: meaning}. Skips the header/
-    separator rows (their first cell isn't backtick-quoted)."""
+    separator rows (their first cell isn't backtick-quoted).
+
+    The doc's grammar is "L + lane digit + one letter" -- most rows are
+    concrete tokens (L2D, L3F, ...), but the BLOCKED row is written as
+    the metavariable template `L<N>B` (harmonic-forge#383 preclose
+    review, all five lenses independently: a literal-string parse of
+    that key can never match a real prompt, silently dropping the one
+    token the doc calls load-bearing). A template row expands into its
+    three concrete instances (L1B, L2B, L3B), all sharing the row's
+    meaning text.
+    """
     tokens: dict[str, str] = {}
     for line in _section(text.splitlines(), "Lane status tokens"):
         m = TABLE_ROW.match(line)
-        if m:
-            tokens[m.group(1)] = m.group(2)
+        if not m:
+            continue
+        key, meaning = m.group(1), m.group(2)
+        template = LANE_TEMPLATE.match(key)
+        if template:
+            letter = template.group(1)
+            for n in (1, 2, 3):
+                tokens[f"L{n}{letter}"] = meaning
+        else:
+            tokens[key] = meaning
     return tokens
 
 
@@ -75,32 +113,51 @@ def parse_repo_prefixes(text: str) -> dict[str, tuple[str, str]]:
 
 
 def parse_named_directives(text: str) -> dict[str, str]:
-    """`## `EOQ`` / `## `BATCH`` style headings -> {TOKEN: first sentence
-    after 'Meaning:'}. Both are prose grammar, not table rows, so they're
-    parsed separately from parse_lane_tokens()."""
+    """`## `EOQ`` / `## `BATCH`` style headings -> {TOKEN: full Meaning
+    paragraph}. Both are prose grammar, not table rows, so they're parsed
+    separately from parse_lane_tokens().
+
+    Captures the WHOLE paragraph after "Meaning:" (up to the next blank
+    line or heading), not just the first physical line -- the doc hard-
+    wraps at ~72 columns, and a single-line, non-DOTALL capture truncates
+    mid-sentence (harmonic-forge#383 preclose review, 3 of 5 lenses,
+    live-reproduced: EOQ ended on a dangling "It", BATCH was cut before
+    naming what it authorizes). Wrapped lines are collapsed to one
+    paragraph; markdown emphasis markers are stripped.
+    """
     out: dict[str, str] = {}
     for m in re.finditer(r"^## `([A-Z]+)`.*$", text, re.MULTILINE):
         token = m.group(1)
         start = m.end()
         next_heading = re.search(r"^## ", text[start:], re.MULTILINE)
         section = text[start : start + next_heading.start()] if next_heading else text[start:]
-        meaning_m = re.search(r"Meaning:\s*(.+)", section)
+        meaning_m = re.search(r"Meaning:\s*(.+?)(?:\n\s*\n|\Z)", section, re.DOTALL)
         if meaning_m:
-            sentence = re.split(r"(?<=[.:])\s{2,}|\n\n", meaning_m.group(1), maxsplit=1)[0]
-            out[token] = re.sub(r"\*\*|`", "", sentence).strip()
+            collapsed = re.sub(r"\s+", " ", meaning_m.group(1)).strip()
+            out[token] = STRIP_MARKDOWN.sub("", collapsed)
     return out
 
 
 def repo_issue_gloss(repo: str, account: str, number: str) -> str:
-    if "/" in repo:
-        return f"{repo}#{number}"
-    account_word = account.split()[0].strip("`,")
-    return f"{repo} issue #{number} (account: {account_word})"
+    """Never raises: a malformed row (e.g. an empty Account cell) must
+    degrade to a plain fallback for THAT token, not crash the regex
+    substitution mid-prompt and silently blank every other token's
+    expansion too (harmonic-forge#383 preclose review, correctness lens,
+    live-reproduced IndexError). Renders the full account text rather
+    than truncating to its first word -- the doc's own K/P caveats
+    ("separate account, separate credentials"; "repo does not yet exist")
+    are the load-bearing part of those two rows and must not be dropped.
+    """
+    clean_repo = STRIP_MARKDOWN.sub("", repo).strip()
+    if "/" in clean_repo:
+        return f"{clean_repo}#{number}"
+    clean_account = STRIP_MARKDOWN.sub("", account).strip() or "unknown account"
+    return f"{clean_repo} issue #{number} (account: {clean_account})"
 
 
 def build_annotator(text: str):
     lane_tokens = parse_lane_tokens(text)
-    prefixes = parse_repo_prefixes(text)
+    prefixes = {p: rc for p, rc in parse_repo_prefixes(text).items() if p != "L"}
     directives = parse_named_directives(text)
 
     lane_alt = "|".join(re.escape(t) for t in sorted(lane_tokens, key=len, reverse=True))
@@ -113,7 +170,9 @@ def build_annotator(text: str):
     if directive_alt:
         parts.append(rf"(?P<directive>\b(?:{directive_alt})\b)")
     if prefix_alt:
-        parts.append(rf"(?P<repo>\b(?:{prefix_alt})\d+\b)")
+        # 2+ digits: see module docstring "Discrimination (AC4)" -- removes
+        # the H1/H2/F5/P0/P1/O2/I5 single-digit prose-collision class.
+        parts.append(rf"(?P<repo>\b(?:{prefix_alt})\d{{2,}}\b)")
     if not parts:
         return None
     pattern = re.compile("|".join(parts))
