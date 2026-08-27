@@ -186,6 +186,26 @@ class UnforwardedFlagChecks(_TmpDirCase):
         self.assertEqual(rc, 1)
         self.assertIn("never forwards", stderr.getvalue())
 
+    def test_flag_mentioned_only_in_a_comment_is_not_counted_as_forwarded(self):
+        """preclose-inspection finding: a flag named in an explanatory
+        comment (this repo's own real style, e.g. '# harmonic-forge#290:
+        --milestone was missing...') must not read as forwarded -- that
+        is precisely backwards for the flags the checker's own incident
+        history is about."""
+        mise = self._mise(
+            "t", ["--alpha", "--beta"],
+            run='# harmonic-forge#999: --beta was the missing one here\n'
+                'true --alpha "$v"',
+        )
+        self.assertEqual(wp.unforwarded_flags(mise, "t", set()), ["--beta"])
+
+    def test_indented_comment_line_is_also_stripped(self):
+        mise = self._mise(
+            "t", ["--alpha", "--beta"],
+            run='set -e\n  # note: prefer --beta over --alpha here\ntrue --alpha "$v"',
+        )
+        self.assertEqual(wp.unforwarded_flags(mise, "t", set()), ["--beta"])
+
 
 class DiscoverWrapperTasks(_TmpDirCase):
     """harmonic-forge#368 AC1: the set of checked tasks must be discovered
@@ -247,6 +267,99 @@ class DiscoverWrapperTasks(_TmpDirCase):
             rc = wp.main()
         self.assertEqual(rc, 0)
         self.assertIn("one\t", stdout.getvalue())
+
+    def test_precondition_then_real_script_registers_the_last_one(self):
+        """preclose-inspection finding, live-reproduced against this repo's
+        own containers-up task: a run body that checks a precondition
+        script before the real one must register the LAST invocation, not
+        the first."""
+        script_dir = self.tmp_path / "scripts"
+        script_dir.mkdir()
+        (script_dir / "precondition.py").write_text("", encoding="utf-8")
+        (script_dir / "real.py").write_text("", encoding="utf-8")
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "python3 scripts/precondition.py\\npython3 scripts/real.py"\n'
+        )
+        pairs = dict(wp.discover_wrapper_tasks(mise))
+        self.assertEqual(pairs["t"], (self.tmp_path / "scripts" / "real.py").resolve())
+
+    def test_venv_interpreter_path_form_is_discovered(self):
+        """preclose-inspection finding, live-reproduced against this
+        repo's own graph-hygiene task: 'backend/.venv/bin/python
+        scripts/x.py' (no literal 'python3' token) must still register."""
+        script_dir = self.tmp_path / "scripts"
+        script_dir.mkdir()
+        (script_dir / "x.py").write_text("", encoding="utf-8")
+        venv_dir = self.tmp_path / "backend" / ".venv" / "bin"
+        venv_dir.mkdir(parents=True)
+        (venv_dir / "python").write_text("", encoding="utf-8")
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "backend/.venv/bin/python scripts/x.py"\n'
+        )
+        pairs = dict(wp.discover_wrapper_tasks(mise))
+        self.assertEqual(pairs["t"], (self.tmp_path / "scripts" / "x.py").resolve())
+
+    def test_script_path_mentioned_only_in_a_comment_is_not_discovered(self):
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "# see python3 scripts/ghost.py for context\\ntrue"\n'
+        )
+        self.assertEqual(wp.discover_wrapper_tasks(mise), [])
+
+
+class DiscoverExpectFlag(_TmpDirCase):
+    """harmonic-forge#368 preclose finding: a broken/empty --discover must
+    fail loudly (exit 2), not silently exit 0 having found nothing --
+    reproduced live across three consumer repos via the unprotected
+    `--discover | while read` pipe shape under `sh -c -o errexit` (no
+    pipefail). --expect is the mechanism a consumer uses to assert its
+    curated task list actually resolved."""
+
+    def _write_mise(self, body: str) -> Path:
+        path = self.tmp_path / "mise.toml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def _run_discover(self, mise, expect=""):
+        import io
+        import unittest.mock
+        argv = ["wrapper_parity.py", "--mise-toml", str(mise), "--discover"]
+        if expect:
+            argv += ["--expect", expect]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with unittest.mock.patch.object(sys, "argv", argv), \
+             unittest.mock.patch.object(sys, "stdout", stdout), \
+             unittest.mock.patch.object(sys, "stderr", stderr):
+            rc = wp.main()
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_expect_satisfied_exits_zero(self):
+        script_dir = self.tmp_path / "scripts"
+        script_dir.mkdir()
+        (script_dir / "a.py").write_text("", encoding="utf-8")
+        mise = self._write_mise('[tasks.one]\nrun = "python3 scripts/a.py"\n')
+        rc, out, _ = self._run_discover(mise, expect="one")
+        self.assertEqual(rc, 0)
+        self.assertIn("one\t", out)
+
+    def test_expect_missing_task_exits_two_not_zero(self):
+        """The known-answer case for the swallowed-pipe-failure finding:
+        an expected task absent from discovery must be a loud, distinct
+        failure, not indistinguishable from a clean empty run."""
+        mise = self._write_mise('[tasks.unrelated]\nrun = "true"\n')
+        rc, out, err = self._run_discover(mise, expect="gh-new-issue")
+        self.assertEqual(rc, 2)
+        self.assertIn("gh-new-issue", err)
+        self.assertEqual(out, "")
+
+    def test_expect_with_no_flag_at_all_still_exits_zero_on_empty(self):
+        """Backward compatible: a consumer that never passes --expect gets
+        the old, permissive behavior (exit 0 on nothing found) -- --expect
+        is opt-in per the finding's own recommendation that consumers
+        adopt it, not a behavior change forced on every caller."""
+        mise = self._write_mise('[tasks.unrelated]\nrun = "true"\n')
+        rc, out, _ = self._run_discover(mise, expect="")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
 
 
 class LiveScriptParsing(unittest.TestCase):

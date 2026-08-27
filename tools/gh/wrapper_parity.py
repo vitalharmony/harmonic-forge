@@ -50,12 +50,41 @@ now its own failure category, distinct from "never declared."
 
 **Discovery, not an allow-list of task names.** `discover_wrapper_tasks()`
 finds every task whose `run` body invokes a Python script by a literal path
-(`python3 <path>.py`) -- the set of tasks a `wrapper-parity` mise task
-*should* be checking, read from the doc itself rather than hand-maintained.
-A `python3 $SOME_VAR ...` invocation (e.g. this repo's own `wrapper-parity`
-task calling itself via `$PARITY`) is deliberately not a literal path and is
-not matched -- this is what keeps discovery from finding and looping back
-into its own invocation.
+(`python3 <path>.py`, or an interpreter reached by a path such as
+`backend/.venv/bin/python <path>.py`) -- the set of tasks a `wrapper-parity`
+mise task *should* be checking, read from the doc itself rather than
+hand-maintained. A `python3 $SOME_VAR ...` invocation (e.g. this repo's own
+`wrapper-parity` task calling itself via `$PARITY`) is deliberately not a
+literal path and is not matched -- this is what keeps discovery from finding
+and looping back into its own invocation. When a `run` body invokes more
+than one script (a precondition script, then the real one), the *last*
+literal invocation is registered, not the first -- the precondition-then-
+real-script order is what this repo's own tasks actually use.
+
+**`--discover --expect` (preclose-inspection, live-reproduced x4 across
+three repos).** A first version of `--discover` always exited 0, including
+when `discover_wrapper_tasks()` itself raised `ParityError` -- and every
+consumer wired it as the LEFT side of a pipe (`--discover | while read ...`)
+under `sh -c -o errexit`, which has no `pipefail`. A pipeline's exit status
+is its *last* command's, so a broken `--discover` (malformed mise.toml,
+moved repo, a script whose invocation no longer matches the pattern) was
+silently swallowed and the whole check reported nothing checked, exit 0 --
+exactly the "reports clean while structurally unable to see the drift"
+failure this issue exists to fix, reintroduced one layer up. `--expect
+<comma-list>` names the task set a consumer's `wrapper-parity` task actually
+relies on discovery for; if any named task isn't found with a resolvable
+script, `--discover` now exits 2 and reports which ones, loudly, instead of
+silently printing fewer lines. Consumers must also capture `--discover`'s
+own output via command substitution (`X=$(... --discover --expect ...)`),
+never a raw pipe -- `set -e` catches a failing assignment in POSIX sh even
+without `pipefail`, which is what actually closes the swallowed-failure gap.
+
+**Comments in `run` do not count as forwarding (preclose-inspection,
+live-reproduced).** `run_forwarded_flags()` strips shell comment lines
+before matching -- otherwise a flag merely *mentioned* in an explanatory
+`# harmonic-forge#290: --milestone was missing...` comment reads as
+forwarded, which is precisely backwards for a check whose whole point is
+guarding those two flags.
 """
 
 from __future__ import annotations
@@ -75,11 +104,23 @@ _LONG_FLAG = re.compile(r"--[A-Za-z][\w-]*")
 # `flag "--name <value>"` inside a mise task's `usage = '''...'''` block.
 _MISE_FLAG = re.compile(r"""^\s*flag\s+"(--[\w-]+)""", re.M)
 
-# A literal `python3 <path>.py` invocation inside a task's `run` body --
-# NOT a shell-variable invocation (`python3 $PARITY`), which has no `.py`
-# suffix in the literal token and is deliberately excluded (see module
-# docstring, harmonic-forge#368).
-_SCRIPT_INVOCATION = re.compile(r"\bpython3\s+(~?/?[\w./-]+\.py)\b")
+# A literal `python3 <path>.py` (or `<interpreter-path>/python3 <path>.py`,
+# e.g. `backend/.venv/bin/python scripts/x.py`) invocation inside a task's
+# `run` body -- NOT a shell-variable invocation (`python3 $PARITY`), which
+# has no `.py` suffix in the literal token and is deliberately excluded
+# (see module docstring, harmonic-forge#368).
+_SCRIPT_INVOCATION = re.compile(
+    r"(?:^|[\s;&|])(?:[\w./~-]*?/)?python3?\s+(~?[\w./-]+\.py)\b"
+)
+
+# A whole-line shell comment (optional leading whitespace, then `#`, to end
+# of line) -- stripped before flag-matching a `run` body (harmonic-forge#368
+# preclose finding: a flag merely mentioned in an explanatory comment must
+# not count as forwarded). Doesn't attempt to distinguish an inline `#`
+# after real code from a `#` inside a quoted string -- an accepted heuristic
+# limit matching the rest of this file's regex-based flag matching; every
+# comment in this repo's own `run` bodies is a whole line.
+_COMMENT_LINE = re.compile(r"(?m)^[ \t]*#.*$")
 
 
 class ParityError(RuntimeError):
@@ -135,9 +176,12 @@ def wrapper_flags(mise_toml: Path, task: str) -> set[str]:
 
 
 def run_forwarded_flags(mise_toml: Path, task: str) -> set[str]:
-    """Long flags literally present anywhere in the task's `run` body."""
+    """Long flags literally present anywhere in the task's `run` body,
+    outside comment lines (harmonic-forge#368 preclose finding)."""
     run = _task_entry(mise_toml, task).get("run", "")
-    return set(_LONG_FLAG.findall(run)) if isinstance(run, str) else set()
+    if not isinstance(run, str):
+        return set()
+    return set(_LONG_FLAG.findall(_COMMENT_LINE.sub("", run)))
 
 
 def unforwarded_flags(mise_toml: Path, task: str, allow_missing: set[str]) -> list[str]:
@@ -155,12 +199,18 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
     """(task_name, resolved_script_path) for every task whose `run` body
     invokes a Python script by a literal path (harmonic-forge#368 AC1) --
     the set of tasks this check should cover, read from the doc itself
-    rather than a hand-maintained list of task names. Only the first
-    literal `.py` invocation per task is registered; every wrapper task
-    in this system invokes exactly one script. A resolved path that
-    doesn't exist on disk is skipped rather than raising -- discovery
+    rather than a hand-maintained list of task names. The LAST literal
+    `.py` invocation per task is registered, not the first: a `run` body
+    that invokes a precondition script before the real one (this repo's
+    own `containers-up`) would otherwise register the precondition
+    (preclose-inspection, live-reproduced). Comment lines are stripped
+    first, matching `run_forwarded_flags()` -- a `.py` path mentioned only
+    in a comment must not be discovered as the invocation. A resolved path
+    that doesn't exist on disk is skipped rather than raising -- discovery
     must not fail the whole run over one unrelated task's shell snippet
-    that happens to match the pattern without naming a real script."""
+    that happens to match the pattern without naming a real script (a
+    consumer that needs a specific task to resolve should pass it to
+    `--discover --expect`, which fails loudly if it doesn't)."""
     tasks = _load_tasks(mise_toml)
     repo_root = mise_toml.resolve().parent
     found: list[tuple[str, Path]] = []
@@ -168,10 +218,10 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
         run = entry.get("run", "") if isinstance(entry, dict) else ""
         if not isinstance(run, str):
             continue
-        match = _SCRIPT_INVOCATION.search(run)
-        if not match:
+        matches = list(_SCRIPT_INVOCATION.finditer(_COMMENT_LINE.sub("", run)))
+        if not matches:
             continue
-        raw = match.group(1)
+        raw = matches[-1].group(1)
         path = Path(raw).expanduser()
         if not path.is_absolute():
             path = (repo_root / path).resolve()
@@ -216,8 +266,15 @@ def main() -> int:
     ap.add_argument("--discover", action="store_true",
                     help="List every (task, script) pair --mise-toml's run bodies invoke by a "
                          "literal path, one per line as 'task<TAB>script', instead of checking "
-                         "a single --task (harmonic-forge#368 AC1). Exits 0 always -- discovery "
-                         "cannot itself find drift, only candidates to check.")
+                         "a single --task (harmonic-forge#368 AC1).")
+    ap.add_argument("--expect", default="",
+                    help="With --discover: comma-separated task names that MUST be found with "
+                         "a resolvable script, or this exits 2 and reports which are missing "
+                         "(harmonic-forge#368 preclose finding). Without this, a broken or "
+                         "empty discovery silently exits 0 having found nothing -- exactly the "
+                         "'reports clean while structurally unable to see the drift' failure "
+                         "this file exists to catch, one layer up. A consumer's wrapper-parity "
+                         "task should always pass its own curated task list here.")
     args = ap.parse_args()
 
     if args.discover:
@@ -225,6 +282,19 @@ def main() -> int:
             pairs = discover_wrapper_tasks(args.mise_toml)
         except ParityError as exc:
             print(f"[wrapper-parity] ERROR: {exc}", file=sys.stderr)
+            return 2
+        expect = {t.strip() for t in args.expect.split(",") if t.strip()}
+        found_names = {name for name, _ in pairs}
+        missing_expected = sorted(expect - found_names)
+        if missing_expected:
+            print(
+                f"[wrapper-parity] ERROR: --expect named tasks not discovered with a "
+                f"resolvable script: {', '.join(missing_expected)}. A consumer relying on "
+                f"--discover for these will silently stop checking them if this isn't fixed "
+                f"(moved/renamed script, mise.toml unreadable, invocation no longer a literal "
+                f".py path).",
+                file=sys.stderr,
+            )
             return 2
         for name, path in pairs:
             print(f"{name}\t{path}")
