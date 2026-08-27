@@ -37,10 +37,13 @@ after the fact.
 ### Load-Bearing Assumptions
 {none | list each assumption about existing behavior this spec depends on,
 each marked **verified-live** (checked against the actual running
-code/system, cite how) or **asserted** (believed true, not yet checked)} —
-any assumption left **asserted** is a `pitch-inspection` trigger. An
-assumption that turns out wrong invalidates everything built on it; naming
-it here is what makes it checkable instead of silently inherited.
+code/system by *this session*, cite how — a number or state check carried
+forward from an earlier report doesn't count, see `universal-lane1.md`
+§ Verification standard) or **asserted** (believed true, not yet
+checked)} — any assumption left **asserted** is a `pitch-inspection`
+trigger. An assumption that turns out wrong invalidates everything built
+on it; naming it here is what makes it checkable instead of silently
+inherited.
 
 ### Delegated Judgment Calls
 {none | list each design decision this spec deliberately leaves to Lane 2
