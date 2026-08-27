@@ -45,6 +45,27 @@ migration scripts in a project's designated scripts directory are exempt.
   parameterized — never build queries via string interpolation/concatenation.
 - Any single-instance resource (DB driver, connection pool) is a module-level
   singleton owned by one file — no agent instantiates a second one elsewhere.
+- **Never decrypt a secrets file and view its content wholesale** — not with
+  `cat`/`head`, not briefly, not "just to check the structure." Pipe the
+  decrypted stream directly into an extractor that emits only non-sensitive
+  fields (key/field names, never values) in the same command, so plaintext
+  never reaches a shell buffer or transcript.
+- **"Give me the command to do X" is a request for the command, not
+  authorization to run X** — holds with extra force when X touches a
+  credential, and for the read half too (fetching/printing a value "to be
+  helpful" is the same overstep at smaller scale). Hand over the command
+  text and stop.
+- **Never set a global git credential helper.** `credential.helper=store`
+  silently caches *any* successful HTTPS auth across every repo on the
+  machine — a client-scoped PAT leaked into an unrelated account's push
+  this way. Use `gh auth setup-git`, which scopes credentials per host
+  through `gh`'s own helper — this governs git's own credential cache,
+  distinct from the `gh` active-identity scoping below.
+- **Never state a process rule as fact without checking the doc it comes
+  from.** A confidently-recalled rule that is subtly wrong (a lane count,
+  an ordering, a flag name) is worse than admitted uncertainty — verify
+  against the actual protocol text before asserting it, the same standard
+  `rules/testing-gate.md` already sets for live-system verification.
 
 ### GitHub account scoping — never `gh auth switch`
 
