@@ -32,6 +32,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
