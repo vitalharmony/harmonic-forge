@@ -15,6 +15,7 @@ Run: python3 tools/gh/test_wrapper_parity.py
 """
 
 import importlib.util
+import json
 import sys
 import tempfile
 import textwrap
@@ -58,19 +59,27 @@ class _TmpDirCase(unittest.TestCase):
         path.write_text(template.replace("__ADDS__", adds), encoding="utf-8")
         return path
 
-    def _mise(self, task, flags):
+    def _mise(self, task, flags, run=None, forward=None):
+        """`forward` (defaults to `flags`) controls which declared flags
+        the fake `run` body actually passes through -- lets a test seed a
+        declared-but-unforwarded flag by passing a `forward` subset."""
         template = textwrap.dedent("""\
             [tasks.__TASK__]
             description = "fake"
             usage = '''
             __DECL__
             '''
-            run = "true"
+            run = __RUN__
             """)
         decl = "\n".join(f'flag "{f} <v>" help="x"' for f in flags)
+        if run is None:
+            fwd = flags if forward is None else forward
+            run = "true " + " ".join(f'{f} "$v"' for f in fwd)
         path = self.tmp_path / "mise.toml"
         path.write_text(
-            template.replace("__TASK__", task).replace("__DECL__", decl),
+            template.replace("__TASK__", task)
+                    .replace("__DECL__", decl)
+                    .replace("__RUN__", json.dumps(run)),
             encoding="utf-8",
         )
         return path
@@ -142,6 +151,102 @@ class ParityChecks(_TmpDirCase):
         mise = self._mise("t", [])
         with self.assertRaises(wp.ParityError):
             wp.check(mise, "t", self.tmp_path / "does-not-exist.py", set())
+
+
+class UnforwardedFlagChecks(_TmpDirCase):
+    """harmonic-forge#368 item 3: usage-vs-script alone never reads `run`,
+    so a declared-but-unforwarded flag reported OK. Known-answer test per
+    the issue's own AC2."""
+
+    def test_declared_and_forwarded_flag_is_not_reported(self):
+        mise = self._mise("t", ["--alpha", "--beta"])
+        self.assertEqual(wp.unforwarded_flags(mise, "t", set()), [])
+
+    def test_declared_but_unforwarded_flag_is_reported(self):
+        """The known-answer case: --beta is declared in usage but the run
+        body only ever forwards --alpha."""
+        mise = self._mise("t", ["--alpha", "--beta"], forward=["--alpha"])
+        self.assertEqual(wp.unforwarded_flags(mise, "t", set()), ["--beta"])
+
+    def test_allow_missing_silences_an_unforwarded_flag(self):
+        mise = self._mise("t", ["--alpha", "--beta"], forward=["--alpha"])
+        self.assertEqual(wp.unforwarded_flags(mise, "t", {"beta"}), [])
+
+    def test_main_cli_reports_unforwarded_flags_and_exits_nonzero(self):
+        script = self._script(["--alpha", "--beta"])
+        mise = self._mise("t", ["--alpha", "--beta"], forward=["--alpha"])
+        import io
+        import unittest.mock
+        argv = ["wrapper_parity.py", "--mise-toml", str(mise), "--task", "t",
+                "--script", str(script)]
+        stderr = io.StringIO()
+        with unittest.mock.patch.object(sys, "argv", argv), \
+             unittest.mock.patch.object(sys, "stderr", stderr):
+            rc = wp.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("never forwards", stderr.getvalue())
+
+
+class DiscoverWrapperTasks(_TmpDirCase):
+    """harmonic-forge#368 AC1: the set of checked tasks must be discovered
+    from mise.toml, not a hand-maintained allow-list of task names."""
+
+    def _write_mise(self, body: str) -> Path:
+        path = self.tmp_path / "mise.toml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_discovers_task_invoking_relative_script_path(self):
+        script = self.tmp_path / "scripts"
+        script.mkdir()
+        (script / "real.py").write_text("print('hi')\n", encoding="utf-8")
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "python3 scripts/real.py \\"$@\\""\n'
+        )
+        pairs = wp.discover_wrapper_tasks(mise)
+        self.assertEqual(pairs, [("t", (self.tmp_path / "scripts" / "real.py").resolve())])
+
+    def test_shell_variable_invocation_is_not_discovered(self):
+        """The self-reference guard: `python3 $PARITY ...` has no literal
+        `.py` path token and must not register -- this is what stops the
+        wrapper-parity task from discovering and looping into itself."""
+        mise = self._write_mise(
+            '[tasks.wrapper-parity]\nrun = "python3 $PARITY --task x"\n'
+        )
+        self.assertEqual(wp.discover_wrapper_tasks(mise), [])
+
+    def test_nonexistent_script_path_is_skipped_not_raised(self):
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "python3 scripts/does_not_exist.py"\n'
+        )
+        self.assertEqual(wp.discover_wrapper_tasks(mise), [])
+
+    def test_multiple_tasks_each_discovered(self):
+        script_dir = self.tmp_path / "scripts"
+        script_dir.mkdir()
+        (script_dir / "a.py").write_text("", encoding="utf-8")
+        (script_dir / "b.py").write_text("", encoding="utf-8")
+        mise = self._write_mise(
+            '[tasks.one]\nrun = "python3 scripts/a.py"\n'
+            '[tasks.two]\nrun = "python3 scripts/b.py"\n'
+        )
+        pairs = dict(wp.discover_wrapper_tasks(mise))
+        self.assertEqual(set(pairs), {"one", "two"})
+
+    def test_cli_discover_mode_prints_pairs_and_exits_zero(self):
+        script_dir = self.tmp_path / "scripts"
+        script_dir.mkdir()
+        (script_dir / "a.py").write_text("", encoding="utf-8")
+        mise = self._write_mise('[tasks.one]\nrun = "python3 scripts/a.py"\n')
+        import io
+        import unittest.mock
+        argv = ["wrapper_parity.py", "--mise-toml", str(mise), "--discover"]
+        stdout = io.StringIO()
+        with unittest.mock.patch.object(sys, "argv", argv), \
+             unittest.mock.patch.object(sys, "stdout", stdout):
+            rc = wp.main()
+        self.assertEqual(rc, 0)
+        self.assertIn("one\t", stdout.getvalue())
 
 
 class LiveScriptParsing(unittest.TestCase):

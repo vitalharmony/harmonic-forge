@@ -37,6 +37,25 @@ missing flag is the failure.
 
 That also means removing a flag from the allow-list is how you re-open the
 question later, rather than the check silently forgetting it was ever asked.
+
+harmonic-forge#368 additions
+-----------------------------
+**`usage`-vs-script was never the whole check.** A flag can be declared in a
+task's `usage` block and still never reach the script if the `run` body
+doesn't forward it -- the original check only ever diffed `usage` against
+the script's own flags and never read `run` at all (Codex F290/c, live). A
+separate `unforwarded_flags()` diffs `usage` against the literal `--flag`
+tokens actually present in `run`, so a declared-but-silently-dropped flag is
+now its own failure category, distinct from "never declared."
+
+**Discovery, not an allow-list of task names.** `discover_wrapper_tasks()`
+finds every task whose `run` body invokes a Python script by a literal path
+(`python3 <path>.py`) -- the set of tasks a `wrapper-parity` mise task
+*should* be checking, read from the doc itself rather than hand-maintained.
+A `python3 $SOME_VAR ...` invocation (e.g. this repo's own `wrapper-parity`
+task calling itself via `$PARITY`) is deliberately not a literal path and is
+not matched -- this is what keeps discovery from finding and looping back
+into its own invocation.
 """
 
 from __future__ import annotations
@@ -55,6 +74,12 @@ _LONG_FLAG = re.compile(r"--[A-Za-z][\w-]*")
 
 # `flag "--name <value>"` inside a mise task's `usage = '''...'''` block.
 _MISE_FLAG = re.compile(r"""^\s*flag\s+"(--[\w-]+)""", re.M)
+
+# A literal `python3 <path>.py` invocation inside a task's `run` body --
+# NOT a shell-variable invocation (`python3 $PARITY`), which has no `.py`
+# suffix in the literal token and is deliberately excluded (see module
+# docstring, harmonic-forge#368).
+_SCRIPT_INVOCATION = re.compile(r"\bpython3\s+(~?/?[\w./-]+\.py)\b")
 
 
 class ParityError(RuntimeError):
@@ -84,18 +109,75 @@ def script_flags(script: Path) -> set[str]:
     return flags
 
 
-def wrapper_flags(mise_toml: Path, task: str) -> set[str]:
-    """Long flags a mise task's `usage` block declares."""
+def _load_tasks(mise_toml: Path) -> dict:
     try:
         data = tomllib.loads(mise_toml.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ParityError(f"could not read {mise_toml}: {exc}") from exc
     tasks = data.get("tasks")
-    if not isinstance(tasks, dict) or task not in tasks:
+    if not isinstance(tasks, dict):
+        raise ParityError(f"no [tasks] table in {mise_toml}")
+    return tasks
+
+
+def _task_entry(mise_toml: Path, task: str) -> dict:
+    tasks = _load_tasks(mise_toml)
+    if task not in tasks:
         raise ParityError(f"no [tasks.{task}] in {mise_toml}")
     entry = tasks[task]
-    usage = entry.get("usage", "") if isinstance(entry, dict) else ""
-    return set(_MISE_FLAG.findall(usage))
+    return entry if isinstance(entry, dict) else {}
+
+
+def wrapper_flags(mise_toml: Path, task: str) -> set[str]:
+    """Long flags a mise task's `usage` block declares."""
+    usage = _task_entry(mise_toml, task).get("usage", "")
+    return set(_MISE_FLAG.findall(usage)) if isinstance(usage, str) else set()
+
+
+def run_forwarded_flags(mise_toml: Path, task: str) -> set[str]:
+    """Long flags literally present anywhere in the task's `run` body."""
+    run = _task_entry(mise_toml, task).get("run", "")
+    return set(_LONG_FLAG.findall(run)) if isinstance(run, str) else set()
+
+
+def unforwarded_flags(mise_toml: Path, task: str, allow_missing: set[str]) -> list[str]:
+    """Flags `usage` declares that `run` never actually forwards to the
+    script (harmonic-forge#368 item 3) -- declared-but-dropped is a
+    distinct failure from never-declared, since `usage`-vs-script alone
+    reports OK for it."""
+    allow = {normalize(f) for f in allow_missing}
+    declared = wrapper_flags(mise_toml, task)
+    forwarded = run_forwarded_flags(mise_toml, task)
+    return sorted(declared - forwarded - allow)
+
+
+def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
+    """(task_name, resolved_script_path) for every task whose `run` body
+    invokes a Python script by a literal path (harmonic-forge#368 AC1) --
+    the set of tasks this check should cover, read from the doc itself
+    rather than a hand-maintained list of task names. Only the first
+    literal `.py` invocation per task is registered; every wrapper task
+    in this system invokes exactly one script. A resolved path that
+    doesn't exist on disk is skipped rather than raising -- discovery
+    must not fail the whole run over one unrelated task's shell snippet
+    that happens to match the pattern without naming a real script."""
+    tasks = _load_tasks(mise_toml)
+    repo_root = mise_toml.resolve().parent
+    found: list[tuple[str, Path]] = []
+    for name, entry in tasks.items():
+        run = entry.get("run", "") if isinstance(entry, dict) else ""
+        if not isinstance(run, str):
+            continue
+        match = _SCRIPT_INVOCATION.search(run)
+        if not match:
+            continue
+        raw = match.group(1)
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (repo_root / path).resolve()
+        if path.exists():
+            found.append((name, path))
+    return found
 
 
 def normalize(flag: str) -> str:
@@ -122,20 +204,41 @@ def main() -> int:
     )
     ap.add_argument("--mise-toml", required=True, type=Path,
                     help="Path to the consuming repo's mise.toml")
-    ap.add_argument("--task", required=True,
-                    help="mise task name, e.g. gh-new-issue")
-    ap.add_argument("--script", required=True, type=Path,
-                    help="Path to the wrapped script")
+    ap.add_argument("--task",
+                    help="mise task name, e.g. gh-new-issue. Required unless --discover.")
+    ap.add_argument("--script", type=Path,
+                    help="Path to the wrapped script. Required unless --discover.")
     ap.add_argument("--allow-missing", default="",
-                    help="Comma-separated flags deliberately not exposed, with or "
-                         "without leading dashes, e.g. 'repo,project-owner'. Each one is a "
-                         "recorded decision; an undeclared missing flag is the failure "
-                         "this check exists for.")
+                    help="Comma-separated flags deliberately not exposed OR not forwarded, "
+                         "with or without leading dashes, e.g. 'repo,project-owner'. Each one "
+                         "is a recorded decision; an undeclared gap is the failure this check "
+                         "exists for.")
+    ap.add_argument("--discover", action="store_true",
+                    help="List every (task, script) pair --mise-toml's run bodies invoke by a "
+                         "literal path, one per line as 'task<TAB>script', instead of checking "
+                         "a single --task (harmonic-forge#368 AC1). Exits 0 always -- discovery "
+                         "cannot itself find drift, only candidates to check.")
     args = ap.parse_args()
+
+    if args.discover:
+        try:
+            pairs = discover_wrapper_tasks(args.mise_toml)
+        except ParityError as exc:
+            print(f"[wrapper-parity] ERROR: {exc}", file=sys.stderr)
+            return 2
+        for name, path in pairs:
+            print(f"{name}\t{path}")
+        return 0
+
+    if not args.task or not args.script:
+        print("[wrapper-parity] ERROR: --task and --script are required unless --discover",
+              file=sys.stderr)
+        return 2
 
     allow = {f.strip() for f in args.allow_missing.split(",") if f.strip()}
     try:
         missing = check(args.mise_toml, args.task, args.script, allow)
+        unforwarded = unforwarded_flags(args.mise_toml, args.task, allow)
     except ParityError as exc:
         # The check itself broke. Exit 2 so a caller can tell "could not
         # check" from "checked, found drift" -- conflating them is how a
@@ -143,12 +246,19 @@ def main() -> int:
         print(f"[wrapper-parity] ERROR: {exc}", file=sys.stderr)
         return 2
 
+    problems = []
     if missing:
+        problems.append(f"does not expose: {', '.join(missing)}")
+    if unforwarded:
+        problems.append(f"declares but never forwards to the script: {', '.join(unforwarded)}")
+
+    if problems:
         print(
-            f"[wrapper-parity] {args.task} does not expose: {', '.join(missing)}\n"
+            f"[wrapper-parity] {args.task} " + "; ".join(problems) + "\n"
             f"  script: {args.script}\n"
-            f"  Add each to the task's usage block and pass it through, or "
-            f"declare it in --allow-missing with a reason.",
+            f"  Add each missing flag to the task's usage block and pass it through; "
+            f"forward each unforwarded flag in the run body; "
+            f"or declare it in --allow-missing with a reason.",
             file=sys.stderr,
         )
         return 1
