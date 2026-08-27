@@ -37,9 +37,27 @@ Run: reads the UserPromptSubmit JSON payload on stdin, writes
 {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
 "additionalContext": "..."}} or, on any parse/doc failure, exits 0 with
 no output (pass-through).
+
+Live issue re-read (harmonic-forge#397): whenever the prompt contains a
+real (`/`-bearing) repo-prefixed issue reference -- the same tokens the
+inline gloss above already recognizes -- this hook also live-fetches
+that issue's current body and full comment list via `gh issue view` and
+appends them to additionalContext. This is the mechanism half of
+`feedback_always_reread_issue_on_every_trigger`: the fetch fires on
+every match, unconditionally, regardless of whether the surrounding
+prompt looks like a fresh "Implement #N" or a bare continuation
+("continue", "unblocked") -- the regex match is on the token, not on
+the verb around it, so both shapes are covered identically by
+construction (AC3). No caching: a stale re-read defeats the point.
+K/P-style account-only prefixes (no real `owner/repo` shorthand) are
+never fetched -- there is nothing to `gh issue view`. A fetch failure
+(network, auth, rate-limit, deleted issue) fails open with an explicit
+"could not fetch" marker in the injected context, never a silent drop
+and never a blocked prompt.
 """
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -214,6 +232,83 @@ def annotate(prompt: str, doc_text: str) -> str:
     return "".join(out_segments)
 
 
+def collect_live_issue_refs(prompt: str, doc_text: str) -> list[tuple[str, str]]:
+    """Distinct (repo, number) pairs for every real (`/`-bearing)
+    repo-prefixed issue reference in the prompt, outside fenced code
+    blocks -- the set this hook must live-fetch for (harmonic-forge#397).
+    Reuses build_annotator()'s own pattern so the fetch set is always
+    exactly the set of tokens the inline gloss already recognizes; no
+    second, divergent parse of the doc. K/P-style account-only prefixes
+    (no `/` in their repo column) are excluded -- nothing to fetch."""
+    built = build_annotator(doc_text)
+    if built is None:
+        return []
+    pattern, _gloss = built
+    prefixes = {p: rc for p, rc in parse_repo_prefixes(doc_text).items() if p != "L"}
+    seen: list[tuple[str, str]] = []
+    in_fence = False
+    for line in prompt.splitlines(keepends=True):
+        if FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for match in pattern.finditer(line):
+            if not match.groupdict().get("repo"):
+                continue
+            token = match.group(0)
+            prefix_char, number = token[0], token[1:]
+            repo, _account = prefixes.get(prefix_char, ("", ""))
+            clean_repo = STRIP_MARKDOWN.sub("", repo).strip()
+            if "/" not in clean_repo:
+                continue
+            pair = (clean_repo, number)
+            if pair not in seen:
+                seen.append(pair)
+    return seen
+
+
+def fetch_issue_context(repo: str, number: str, timeout: int = 8) -> str | None:
+    """Live `gh issue view` fetch of one issue's current title/state/body/
+    full comment list (harmonic-forge#397 AC2 -- "not cached"). Returns a
+    formatted block, or None on any failure (network, auth, rate-limit,
+    timeout, malformed JSON) -- the caller fails open on None rather than
+    ever blocking the prompt on a fetch problem."""
+    try:
+        result = subprocess.run(
+            [
+                "gh", "issue", "view", number, "--repo", repo,
+                "--json", "title,state,updatedAt,body,comments",
+            ],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    comments = data.get("comments") or []
+    lines = [
+        f"### {repo}#{number} -- {data.get('title') or '(no title)'} "
+        f"[{data.get('state') or '?'}]",
+        f"Updated: {data.get('updatedAt') or '?'} | Comments: {len(comments)}",
+        "",
+        "Body:",
+        data.get("body") or "(empty)",
+    ]
+    if comments:
+        lines.append("")
+        lines.append("Comments:")
+        for c in comments:
+            author = (c.get("author") or {}).get("login") or "unknown"
+            lines.append(f"--- {author} @ {c.get('createdAt') or '?'} ---")
+            lines.append(c.get("body") or "(empty)")
+    return "\n".join(lines)
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -222,16 +317,37 @@ def main() -> None:
             return
         doc_text = DOC_PATH.read_text(encoding="utf-8")
         expanded = annotate(prompt, doc_text)
+        refs = collect_live_issue_refs(prompt, doc_text)
     except Exception:
         # Fail open (AC2): never block the operator's message on a doc
         # or parse problem.
         return
-    if expanded == prompt:
+    if expanded == prompt and not refs:
         return
+    context_parts = []
+    if expanded != prompt:
+        context_parts.append("Lane-shorthand expansion (harmonic-forge#383):\n" + expanded)
+    if refs:
+        live_blocks = []
+        for repo, number in refs:
+            try:
+                block = fetch_issue_context(repo, number)
+            except Exception:
+                block = None
+            live_blocks.append(
+                block
+                or f"### {repo}#{number}\n(live fetch failed -- network/auth/"
+                   f"rate-limit/deleted; re-read manually before acting)"
+            )
+        context_parts.append(
+            "Live issue re-read, mechanically enforced on every trigger "
+            "(harmonic-forge#397, feedback_always_reread_issue_on_every_"
+            "trigger):\n\n" + "\n\n".join(live_blocks)
+        )
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": "Lane-shorthand expansion (harmonic-forge#383):\n" + expanded,
+            "additionalContext": "\n\n".join(context_parts),
         }
     }))
 

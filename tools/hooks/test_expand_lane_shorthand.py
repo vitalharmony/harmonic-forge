@@ -202,5 +202,124 @@ class ParserFixtureTests(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+def _fake_gh_result(returncode=0, stdout="", stderr=""):
+    result = unittest.mock.Mock()
+    result.returncode = returncode
+    result.stdout = stdout
+    result.stderr = stderr
+    return result
+
+
+class LiveIssueReReadTests(unittest.TestCase):
+    """harmonic-forge#397: a real repo-prefixed issue reference must
+    trigger a live (uncached) `gh issue view` fetch, injected alongside
+    the existing inline-gloss expansion."""
+
+    def _issue_json(self, **overrides):
+        data = {
+            "title": "Some issue title",
+            "state": "OPEN",
+            "updatedAt": "2026-08-27T00:00:00Z",
+            "body": "The full current body.",
+            "comments": [
+                {"author": {"login": "marcmangus"}, "createdAt": "2026-08-27T01:00:00Z", "body": "A comment."},
+            ],
+        }
+        data.update(overrides)
+        return json.dumps(data)
+
+    def test_real_repo_ref_triggers_live_fetch_with_full_body_and_comments(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("The full current body.", expanded)
+        self.assertIn("A comment.", expanded)
+        self.assertIn("marcmangus", expanded)
+        run.assert_called_once()
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["gh", "issue", "view"])
+        self.assertIn("1304", args)
+        self.assertIn("vitalharmony/hrse", args)
+
+    def test_fires_on_continuation_shaped_trigger_not_just_fresh_implement(self):
+        """AC3: 'continue'/'unblocked'-shaped prompts must fetch live too --
+        the match is on the token, not the surrounding verb."""
+        for prompt in ("continue H1304", "H1304 unblocked", "unblocked, H1304"):
+            with self.subTest(prompt=prompt):
+                with unittest.mock.patch.object(
+                    m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+                ) as run:
+                    result = _run(prompt)
+                self.assertIsNotNone(result)
+                run.assert_called_once()
+
+    def test_no_live_fetch_when_no_repo_ref_present(self):
+        with unittest.mock.patch.object(m.subprocess, "run") as run:
+            result = _run("L2D status update, no issue mentioned")
+        self.assertIsNotNone(result)
+        run.assert_not_called()
+
+    def test_account_only_prefix_is_not_live_fetched(self):
+        """K/P have no owner/repo shorthand -- nothing to `gh issue view`."""
+        with unittest.mock.patch.object(m.subprocess, "run") as run:
+            result = _run("checking K42 status")
+        self.assertIsNotNone(result)  # inline gloss still fires
+        run.assert_not_called()
+
+    def test_fetch_failure_fails_open_with_explicit_marker_not_a_crash(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(returncode=1, stderr="not found")
+        ):
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("live fetch failed", expanded)
+
+    def test_timeout_fails_open_with_explicit_marker(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", side_effect=m.subprocess.TimeoutExpired(cmd="gh", timeout=8)
+        ):
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        self.assertIn("live fetch failed", result["hookSpecificOutput"]["additionalContext"])
+
+    def test_malformed_json_fails_open_with_explicit_marker(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout="not json")
+        ):
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        self.assertIn("live fetch failed", result["hookSpecificOutput"]["additionalContext"])
+
+    def test_two_distinct_issue_refs_each_fetched_once(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run("H1304 and F383 both relevant")
+        self.assertIsNotNone(result)
+        self.assertEqual(run.call_count, 2)
+
+    def test_repeated_ref_in_same_prompt_fetched_only_once(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run("H1304, see also H1304 again")
+        self.assertIsNotNone(result)
+        run.assert_called_once()
+
+    def test_not_cached_across_separate_invocations(self):
+        """AC2 'not cached' -- a second, separate hook invocation for the
+        same issue must fetch live again, not reuse a prior result."""
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            _run("Implement H1304")
+            _run("Implement H1304")
+        self.assertEqual(run.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
