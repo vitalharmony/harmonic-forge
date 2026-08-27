@@ -200,13 +200,25 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
     invokes a Python script by a literal path (harmonic-forge#368 AC1) --
     the set of tasks this check should cover, read from the doc itself
     rather than a hand-maintained list of task names. The LAST literal
-    `.py` invocation per task is registered, not the first: a `run` body
+    `.py` invocation per task is preferred, not the first: a `run` body
     that invokes a precondition script before the real one (this repo's
     own `containers-up`) would otherwise register the precondition
     (preclose-inspection, live-reproduced). Comment lines are stripped
     first, matching `run_forwarded_flags()` -- a `.py` path mentioned only
-    in a comment must not be discovered as the invocation. A resolved path
-    that doesn't exist on disk is skipped rather than raising -- discovery
+    in a comment must not be discovered as the invocation.
+
+    Resolution is `cd`-blind -- it resolves every candidate relative to
+    the repo root, not to whatever directory a preceding `cd` in the same
+    `run` body would leave it in. Blindly taking the last match and
+    dropping the whole task if THAT ONE doesn't resolve silently lost a
+    real task (hrse's `lane3-begin`, whose actual wrapped script is an
+    earlier, correctly-resolving invocation, followed by a `cd backend`
+    and a relative-path invocation that resolves wrong): preclose-
+    inspection, live-reproduced, second round. So candidates are tried
+    last-to-first, and the first one that resolves on disk wins -- "prefer
+    the last invocation" stays the heuristic, but a later invocation that
+    doesn't resolve no longer discards an earlier one that does. A task
+    where NO candidate resolves is skipped rather than raising -- discovery
     must not fail the whole run over one unrelated task's shell snippet
     that happens to match the pattern without naming a real script (a
     consumer that needs a specific task to resolve should pass it to
@@ -219,14 +231,14 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
         if not isinstance(run, str):
             continue
         matches = list(_SCRIPT_INVOCATION.finditer(_COMMENT_LINE.sub("", run)))
-        if not matches:
-            continue
-        raw = matches[-1].group(1)
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            path = (repo_root / path).resolve()
-        if path.exists():
-            found.append((name, path))
+        for match in reversed(matches):
+            raw = match.group(1)
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = (repo_root / path).resolve()
+            if path.exists():
+                found.append((name, path))
+                break
     return found
 
 

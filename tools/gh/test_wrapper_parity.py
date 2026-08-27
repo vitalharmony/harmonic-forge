@@ -283,6 +283,31 @@ class DiscoverWrapperTasks(_TmpDirCase):
         pairs = dict(wp.discover_wrapper_tasks(mise))
         self.assertEqual(pairs["t"], (self.tmp_path / "scripts" / "real.py").resolve())
 
+    def test_last_invocation_that_fails_to_resolve_falls_back_to_an_earlier_one(self):
+        """preclose-inspection finding, live-reproduced against hrse's real
+        lane3-begin task: the run body's LAST invocation follows a `cd`
+        (resolution is cd-blind) and doesn't resolve, but an EARLIER
+        invocation in the same body does. The task must not be dropped
+        entirely -- it must fall back to the earlier, resolvable one."""
+        script_dir = self.tmp_path / "scripts"
+        script_dir.mkdir()
+        (script_dir / "real.py").write_text("", encoding="utf-8")
+        # No `backend/` dir exists, so `../scripts/unreachable.py` never
+        # resolves relative to repo_root regardless of the `cd` in the
+        # shell body -- discovery is cd-blind by design/limitation.
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "python3 scripts/real.py\\ncd backend\\n'
+            '.venv/bin/python3 ../scripts/unreachable.py"\n'
+        )
+        pairs = dict(wp.discover_wrapper_tasks(mise))
+        self.assertEqual(pairs["t"], (self.tmp_path / "scripts" / "real.py").resolve())
+
+    def test_no_candidate_resolves_task_is_skipped_not_raised(self):
+        mise = self._write_mise(
+            '[tasks.t]\nrun = "python3 scripts/ghost1.py\\npython3 scripts/ghost2.py"\n'
+        )
+        self.assertEqual(wp.discover_wrapper_tasks(mise), [])
+
     def test_venv_interpreter_path_form_is_discovered(self):
         """preclose-inspection finding, live-reproduced against this
         repo's own graph-hygiene task: 'backend/.venv/bin/python
