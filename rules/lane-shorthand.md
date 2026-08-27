@@ -53,6 +53,21 @@ Note `L2S` carries **no** "plan-first only" scoping — `L3S` never had any, and
 the two are now the same form. It applies wherever Lane 2 produces a spec for
 review.
 
+## `close` — one compound instruction, not three approvals
+
+Grammar: **`close` + repo-prefixed issue number**, e.g. `close H164`.
+
+Direction: operator → Lane 1.
+
+Meaning: authorizes the full **PR → merge → close** sequence as one action,
+not just the final close. If the verified branch is pushed but unmerged, or
+not yet a PR, that is not a separate decision needing its own confirmation —
+open the PR, merge it, then close, unless something is genuinely blocking
+(a failing gate, a merge conflict, an actual open dependency named in the
+issue). This does not relax the "no lane closes/merges without this literal
+instruction" rule elsewhere in this doc — it resolves the opposite failure,
+treating "needs a PR/merge" as if it were itself a reason to stop and ask.
+
 ## `EOQ` — end of queue
 
 Grammar: **`EOQ` + trailing instruction**, e.g. `EOQ file and merge the doc

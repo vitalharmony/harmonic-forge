@@ -39,6 +39,24 @@ sys.path.insert(0, str(Path(__file__).parent))
 from block_lane1_status_claims import command_segments, is_direct_transport  # noqa: E402
 
 
+def _is_issue_filing_command(segment: list[str]) -> bool:
+    """harmonic-forge#388: Lane 2 never files (`feedback_lane2_never_creates_issues`).
+    `is_direct_transport()` already catches raw `gh issue create`, but not
+    the *sanctioned* Lane 1 filing path -- `gh_issue.py` / `mise run
+    gh-new-issue` -- which is exactly the hole a Lane 2 session could file
+    through undetected. Kept local to this hook rather than added to the
+    shared `is_direct_transport()`: that function also gates Lane 1's own
+    raw-post denial, where `gh_issue.py`/`gh-new-issue` is Lane 1's
+    legitimate, sanctioned tool and must not be denied there."""
+    if len(segment) >= 3 and segment[:3] == ["mise", "run", "gh-new-issue"]:
+        return True
+    if segment and Path(segment[0]).name == "gh_issue.py":
+        return True
+    if len(segment) >= 2 and segment[0].startswith("python") and Path(segment[1]).name == "gh_issue.py":
+        return True
+    return False
+
+
 def raw_post_denial(command: str, cwd: Path) -> str | None:
     if os.environ.get("LANE") != "2":
         return None
@@ -56,6 +74,13 @@ def raw_post_denial(command: str, cwd: Path) -> str | None:
                 "(or the sanctioned `mise run l2-post` task) so the status is "
                 "composed from verified receipts and self-checked by "
                 "post/fetch/diff, not asserted."
+            )
+        if _is_issue_filing_command(segment):
+            return (
+                "Lane 2 never creates a GitHub issue, even via the sanctioned "
+                "filing path -- issue creation is categorically Lane 1's job "
+                "(harmonic-forge#388). Surface the finding in your completion "
+                "report and stop; Lane 1 files it."
             )
     return None
 

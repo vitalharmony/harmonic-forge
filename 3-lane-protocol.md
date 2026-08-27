@@ -110,7 +110,10 @@ triggered and scoped.*
   expectation already placed on Lane 3 for its own independent issue read.
   Do not wait for or require the handoff to be pasted in chat.
 - Executes exactly what the handoff specifies — no scope creep.
-- Stays within the file targets the handoff defines.
+- Stays within the file targets the handoff defines, and this applies to
+  tooling too — never invokes a task explicitly scoped to another lane
+  (e.g. `gate-checkout`) even to verify its own change; check the
+  underlying script instead.
 - **3 fix attempts max on a single root cause; 4th failure stops and
   reports back instead of continuing to iterate.** This cap already
   existed for Lane 3 (see Escalation, below) but was never written for
@@ -145,12 +148,16 @@ triggered and scoped.*
   reliably hold against the pull of "let me verify this actually works."
   The fix is structural, not another sentence: Lane 2 is never granted
   this capability at all, so there's nothing to correctly or incorrectly
-  apply in the moment.
+  apply in the moment. Same posture on any other lane's own scope decision
+  (e.g. Lane 3's `--execute` pass) — surface a fact, never frame or ask
+  about it, and never assert readiness for the next lane.
 - Reads the cited file(s) and quotes the root-cause line before editing.
 - Obeys `rules/universal-agent.md` + language-specific rule files (300-line
   cap, no raw LLM/API calls outside the designated gateway, parameterized
   queries).
-- Signals completion with a structured diff summary back to Lane 1.
+- **Posts to the issue on every stop, unprompted** (completion, BLOCKED,
+  plan, correction, rebase — chat is not the record), via `l2_post.py`,
+  which also closes the raw-transport hole above (harmonic-forge#371).
 
 ## Lane 3 — Control Gate (qualified agents: see ADR-007 § 8 — Codex's Lane 3 cells are *unqualified*, meaning no suite has been run, not that it is unsafe)
 
@@ -516,6 +523,15 @@ unnumbered trigger is ambiguous. Some triggers go to Lane 1; others go
 directly to Lane 2 or Lane 3 in their own respective interfaces, and Lane 1
 never sees them or acts on them.
 
+**The only channel between lanes is a GitHub issue comment HITL relays.**
+No lane contacts another lane's live session directly — cross-session
+messaging or any HITL-bypassing mechanism, regardless of content or
+urgency; seeing another session is fine, addressing it is not. Deny it at
+the tool-call level where the repo can — but a hook only protects a
+session whose settings wire it (hooks distribute by hand, unlike this
+file), so treat this as the standing rule until it does everywhere, not
+as a solved problem.
+
 **Repo-prefixed issue numbers, when more than one repo is in flight.**
 Once a collaborator works across multiple repos in the same session, a bare
 `#N` is ambiguous the moment both repos happen to have an open issue with
@@ -579,7 +595,10 @@ content (that's the `L3S` → HITL-approval step itself). Like every other
 trigger phrase in this section, `AE` must be posted as an actual issue
 comment, not only said to Lane 1 in chat — Lane 3 verifies it
 independently on the thread before executing any TC, exactly as it
-already verifies the gate-readiness sweep.
+already verifies the gate-readiness sweep. **`AE` and its sweep are one
+atomic action, same turn, sweep strictly after** — use the repo's own
+atomic wrapper where one exists; otherwise confirm the comment order
+before telling HITL either is ready.
 
 **Before acting on any trigger, the receiving lane checks the issue's
 state.** If `#N` is already closed, stop and ask HITL to confirm the
@@ -590,6 +609,12 @@ to make in a fast-moving session with many issues open at once, and
 proceeding against the wrong issue wastes a full lane cycle and produces
 a confusing record on the wrong thread. This applies to whichever lane
 receives the trigger — Lane 1, Lane 2, or Lane 3 alike.
+
+**Every trigger naming an issue — including a bare "continue"/"proceed" —
+means a full, unfiltered re-read first**, body and every comment; a
+repeated trigger is often the signal something changed, not evidence it
+didn't. Enforce at the trigger phrase itself where the repo can, not by
+recall.
 
 1. **Lane 1** diagnoses and posts a handoff comment on issue #N (and
    displays it in chat). No trigger needed — this happens unprompted once
@@ -693,6 +718,12 @@ receives the trigger — Lane 1, Lane 2, or Lane 3 alike.
    time, from every lane, with no exception for confidence or a clean local
    test pass.
 
+   **A merge-time break routes back to step 2 unless Lane 1 can show —
+   not assert — all three:** every gated file hash-verified unchanged, the
+   full suite re-run against the known baseline, and any changed assertion
+   broken deliberately two ways and restored. Short of that, it isn't
+   mechanical.
+
 ## Tooling Exception — Dev/Test Tooling Skips the Full Loop
 
 The full Lane 1 → Lane 2 → Lane 3 cycle exists to protect code that ships.
@@ -756,6 +787,11 @@ same posture: explicit, per-issue, never assumed.
   one human-reviewed pass; a defect discovered at that later gate is a
   finding against the tooling, handled under this same exception (fix it,
   one more human-reviewed pass, no return to the full loop).
+- **An issue modifying Lane 3's own gate enforcement is
+  Tooling-Exception-eligible by default, stated at filing time** — a
+  normal gate run is itself a gate-profile session, so testing new gate
+  rules needs the old rules to already permit them: a bootstrap problem,
+  not an allow-list patch.
 
 ## Escalation
 
