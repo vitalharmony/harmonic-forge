@@ -390,20 +390,34 @@ def write_on_main_branch(file_path: str, cwd: Path) -> bool:
         raw = Path(file_path).expanduser()
         if not raw.is_absolute():
             raw = cwd / raw
-        target_dir = raw.parent
-    except (OSError, ValueError):
+        lexical = Path(os.path.normpath(raw))
+        resolved = raw.resolve()
+    except (OSError, ValueError, RuntimeError):
         return False
-    branch = subprocess.run(
-        ["git", "-C", str(target_dir), "branch", "--show-current"],
-        text=True, capture_output=True, check=False,
-    )
-    if branch.returncode or branch.stdout.strip() != "main":
-        return False
-    tracked = subprocess.run(
-        ["git", "-C", str(target_dir), "ls-files", "--error-unmatch", str(raw)],
-        text=True, capture_output=True, check=False,
-    )
-    return tracked.returncode == 0
+    # Check BOTH the lexical path and the symlink-resolved path, same as
+    # `lane2_write_in_main_checkout` above and for the identical reason
+    # (harmonic-forge#384 preclose review, live-reproduced): a project's
+    # checkout can contain real symlinks out to another repo entirely --
+    # HRSE2's `.claude/rules/backend-python.md` and siblings point at
+    # ~/harmonic-forge. Checking only the lexical form lets an Edit/Write
+    # through a symlink whose OWN directory sits in a feature-branch (or
+    # untracked-there) checkout silently modify a tracked file in a
+    # DIFFERENT worktree that has `main` checked out.
+    for candidate in (lexical, resolved):
+        target_dir = candidate.parent
+        branch = subprocess.run(
+            ["git", "-C", str(target_dir), "branch", "--show-current"],
+            text=True, capture_output=True, check=False,
+        )
+        if branch.returncode or branch.stdout.strip() != "main":
+            continue
+        tracked = subprocess.run(
+            ["git", "-C", str(target_dir), "ls-files", "--error-unmatch", str(candidate)],
+            text=True, capture_output=True, check=False,
+        )
+        if tracked.returncode == 0:
+            return True
+    return False
 
 
 def lane3_write_outside_testplan(file_path: str) -> bool:

@@ -83,6 +83,37 @@ class MainBranchTrackedFileTests(_RepoTestCase):
     def test_relative_file_path_resolved_against_cwd(self) -> None:
         self.assertTrue(m.write_on_main_branch("tracked.txt", self.repo))
 
+    def test_symlink_into_a_different_main_branch_repo_is_blocked(self) -> None:
+        """harmonic-forge#384 preclose review (silent-bypass + fail-direction
+        lenses, live-reproduced independently): a checked-in symlink whose
+        own directory is a feature-branch (or untracked-there) checkout,
+        but whose TARGET is a tracked file in a second repo that has
+        `main` checked out, must still be blocked. This is the exact shape
+        of HRSE2's `.claude/rules/backend-python.md` -> ~/harmonic-forge
+        symlinks. `lane2_write_in_main_checkout` above already defends
+        against this by checking both the lexical and resolved path; this
+        guard must too."""
+        with tempfile.TemporaryDirectory() as other_tmp:
+            other_repo = Path(other_tmp)
+            _git(other_repo, "init", "-q", "-b", "main")
+            (other_repo / "rule.md").write_text("v1\n")
+            _git(other_repo, "add", "rule.md")
+            _git(other_repo, "commit", "-q", "-m", "seed")
+
+            _git(self.repo, "checkout", "-q", "-b", "feature/x")
+            symlink_dir = self.repo / "linked"
+            symlink_dir.mkdir()
+            symlink_path = symlink_dir / "rule.md"
+            symlink_path.symlink_to(other_repo / "rule.md")
+
+            self.assertTrue(
+                m.write_on_main_branch(str(symlink_path), self.repo),
+                "a write through the symlink reaches a tracked file in a "
+                "DIFFERENT repo that has main checked out -- must be blocked "
+                "even though the symlink's own directory is on a feature "
+                "branch",
+            )
+
     def test_empty_file_path_is_allowed(self) -> None:
         self.assertFalse(m.write_on_main_branch("", self.repo))
 
@@ -115,9 +146,9 @@ class MainHookIntegrationTests(_RepoTestCase):
         self.assertIn("git checkout -b", result["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_lane2_denial_still_fires_independently_on_a_feature_branch(self) -> None:
-        """AC4: the pre-existing LANE=2 main-checkout denial is unchanged
-        -- still fires on its own condition (a feature-branch worktree
-        whose directory name matches the LANE=2 main-checkout-root
+        """AC4, unit-level: the pre-existing LANE=2 main-checkout denial is
+        unchanged -- still fires on its own condition (a feature-branch
+        worktree whose directory name matches the LANE=2 main-checkout-root
         resolution), independent of this new branch-name check."""
         _git(self.repo, "checkout", "-q", "-b", "feature/x")
         os.environ["LANE"] = "2"
@@ -132,6 +163,33 @@ class MainHookIntegrationTests(_RepoTestCase):
         # root (no -lane2 suffix stripped), so it should still deny here
         # regardless of which branch happens to be checked out.
         self.assertTrue(result_on_feature_branch)
+
+    def test_lane2_denial_wins_through_main_when_both_conditions_are_true(self) -> None:
+        """AC4, through main()'s actual combined dispatch, not the guard
+        functions called in isolation -- harmonic-forge#384 preclose review
+        (fail-direction lens) found the prior version of this test could
+        not detect main() checking the guards in the wrong order: LANE=2
+        AND main checked out AND a tracked file is the one state where
+        BOTH new-guard and old-guard conditions are simultaneously true,
+        and it's the state a LANE=2 session in the main checkout is
+        actually in. The LANE=2-specific remedy (restart in the -lane2
+        worktree) must be what the session sees, not the generic
+        branch-first message -- reordering the two checks would silently
+        swap which message fires while every existing per-function test
+        stayed green."""
+        os.environ["LANE"] = "2"
+        try:
+            payload = self._payload("Edit", str(self.repo / "tracked.txt"))
+            out = io.StringIO()
+            with unittest.mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
+                 contextlib.redirect_stdout(out):
+                m.main()
+        finally:
+            os.environ.pop("LANE", None)
+        result = json.loads(out.getvalue())
+        reason = result.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        self.assertEqual(result.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+        self.assertIn("harmonic-forge#142", reason, "the LANE=2-specific remedy must win, not the generic one")
 
 
 if __name__ == "__main__":
