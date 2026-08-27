@@ -126,5 +126,148 @@ class TestLane2RawPostDenial(unittest.TestCase):
         self.assertTrue(_is_denied(result))
 
 
+class TestLane2PushAndPrCreateDenial(unittest.TestCase):
+    """harmonic-forge#398 -- feedback_lane2_never_pushes_or_prs."""
+
+    def setUp(self):
+        self._prior_lane = os.environ.get("LANE")
+        os.environ["LANE"] = "2"
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cwd = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._prior_lane is None:
+            os.environ.pop("LANE", None)
+        else:
+            os.environ["LANE"] = self._prior_lane
+
+    def test_git_push_denied_under_lane2(self):
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_git_push_with_dash_c_still_recognized(self):
+        result = m.decision("git -C /tmp/impl push origin feat/398-fix", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_pr_create_denied_under_lane2(self):
+        result = m.decision('gh pr create --title t --body b', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_git_push_not_denied_when_lane_unset(self):
+        os.environ.pop("LANE", None)
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_git_push_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_git_push_not_denied_for_lane3(self):
+        os.environ["LANE"] = "3"
+        result = m.decision("git push origin feat/398-fix", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_pr_create_not_denied_when_lane_unset(self):
+        os.environ.pop("LANE", None)
+        result = m.decision('gh pr create --title t --body b', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_unrelated_git_command_not_denied(self):
+        result = m.decision("git status", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_pr_view_not_denied(self):
+        """Only pr create is denied -- read-only pr commands are unaffected."""
+        result = m.decision("gh pr view 12", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_as_wrapped_pr_create_denied(self):
+        """preclose-inspection finding: `gh-as <account> gh pr create ...`
+        (rules/universal-agent.md's documented scoping wrapper) must be
+        caught the same as the bare form."""
+        result = m.decision('gh-as vitalharmony gh pr create --title t --body b', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_as_wrapped_push_denied(self):
+        result = m.decision('gh-as vitalharmony git push origin feat/398-fix', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_as_wrapped_pr_create_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision('gh-as vitalharmony gh pr create --title t --body b', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_as_unrelated_command_not_denied(self):
+        result = m.decision('gh-as vitalharmony gh issue list', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_commit_push_denied(self):
+        """preclose-inspection finding: HRSE2's own documented push path
+        (CLAUDE.md) forwards to scripts/git_commit.py's internal `git
+        push` -- the literal command never contains a `git push` token,
+        only this flag."""
+        result = m.decision("mise run commit --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_run_restart_push_denied(self):
+        result = m.decision("mise run restart b --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_run_commit_without_push_not_denied(self):
+        result = m.decision('mise run commit --message "wip"', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_restart_without_push_not_denied(self):
+        result = m.decision("mise run restart --no-git", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_commit_push_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision("mise run commit --push", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_other_task_not_denied(self):
+        result = m.decision("mise run l1-post --push", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_bare_task_spelling_push_denied(self):
+        """preclose-inspection finding, round 2: `mise <task>` (no `run`)
+        is an equally valid mise invocation and bypassed the original
+        check, which only matched the `mise run <task>` spelling."""
+        result = m.decision("mise restart --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_r_alias_spelling_push_denied(self):
+        """`r` is mise's own documented alias for `run`."""
+        result = m.decision("mise r restart --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_bare_task_spelling_without_push_not_denied(self):
+        result = m.decision("mise restart --no-git", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_direct_git_commit_py_invocation_with_push_denied(self):
+        """preclose-inspection finding, round 2: the actual tool named in
+        this function's own docstring, invoked directly rather than
+        through any mise spelling, was never checked at all."""
+        result = m.decision('python3 scripts/git_commit.py --message "wip" --push', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_bare_git_commit_py_invocation_with_push_denied(self):
+        result = m.decision("./scripts/git_commit.py --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_direct_git_commit_py_invocation_without_push_not_denied(self):
+        result = m.decision('python3 scripts/git_commit.py --message "wip"', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_direct_git_commit_py_push_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision("python3 scripts/git_commit.py --push", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+
 if __name__ == "__main__":
     unittest.main()

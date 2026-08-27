@@ -37,9 +37,27 @@ Run: reads the UserPromptSubmit JSON payload on stdin, writes
 {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
 "additionalContext": "..."}} or, on any parse/doc failure, exits 0 with
 no output (pass-through).
+
+Live issue re-read (harmonic-forge#397): whenever the prompt contains a
+real (`/`-bearing) repo-prefixed issue reference -- the same tokens the
+inline gloss above already recognizes -- this hook also live-fetches
+that issue's current body and full comment list via `gh issue view` and
+appends them to additionalContext. This is the mechanism half of
+`feedback_always_reread_issue_on_every_trigger`: the fetch fires on
+every match, unconditionally, regardless of whether the surrounding
+prompt looks like a fresh "Implement #N" or a bare continuation
+("continue", "unblocked") -- the regex match is on the token, not on
+the verb around it, so both shapes are covered identically by
+construction (AC3). No caching: a stale re-read defeats the point.
+K/P-style account-only prefixes (no real `owner/repo` shorthand) are
+never fetched -- there is nothing to `gh issue view`. A fetch failure
+(network, auth, rate-limit, deleted issue) fails open with an explicit
+"could not fetch" marker in the injected context, never a silent drop
+and never a blocked prompt.
 """
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -214,6 +232,127 @@ def annotate(prompt: str, doc_text: str) -> str:
     return "".join(out_segments)
 
 
+def collect_live_issue_refs(prompt: str, doc_text: str) -> list[tuple[str, str]]:
+    """Distinct (repo, number) pairs for every real (`/`-bearing)
+    repo-prefixed issue reference in the prompt, outside fenced code
+    blocks -- the set this hook must live-fetch for (harmonic-forge#397).
+    Reuses build_annotator()'s own pattern so the fetch set is always
+    exactly the set of tokens the inline gloss already recognizes; no
+    second, divergent parse of the doc. K/P-style account-only prefixes
+    (no `/` in their repo column) are excluded -- nothing to fetch."""
+    built = build_annotator(doc_text)
+    if built is None:
+        return []
+    pattern, _gloss = built
+    prefixes = {p: rc for p, rc in parse_repo_prefixes(doc_text).items() if p != "L"}
+    seen: list[tuple[str, str]] = []
+    in_fence = False
+    for line in prompt.splitlines(keepends=True):
+        if FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for match in pattern.finditer(line):
+            if not match.groupdict().get("repo"):
+                continue
+            token = match.group(0)
+            prefix_char, number = token[0], token[1:]
+            repo, _account = prefixes.get(prefix_char, ("", ""))
+            clean_repo = STRIP_MARKDOWN.sub("", repo).strip()
+            if "/" not in clean_repo:
+                continue
+            pair = (clean_repo, number)
+            if pair not in seen:
+                seen.append(pair)
+    return seen
+
+
+# harmonic-forge#397/#399 preclose-inspection finding, live-reproduced:
+# an unbounded fetch measured ~93k characters (~23k tokens) for one real
+# issue, re-injected in full on every continuation-shaped trigger --
+# exactly the shape ("continue H1252", "H1252 unblocked") this feature
+# exists to serve. These caps bound the injected block per issue while
+# keeping it useful for "did I already see this" -- most-recent comments
+# matter more than oldest for a mechanical re-read, so truncation drops
+# from the front (oldest), not the back.
+_BODY_CHAR_CAP = 4000
+_MAX_COMMENTS_SHOWN = 8
+_COMMENT_CHAR_CAP = 1500
+
+# harmonic-forge#397/#399 preclose-inspection finding, round 2, live-
+# reproduced: the per-issue cap above bounds ONE issue's block, but a
+# prompt naming many issues (the routine Lane 1 status-sweep shape) has
+# no aggregate bound -- measured live at 243k characters for 25 refs, and
+# at a fetch time (14.9s for 25 refs, worst case ~8s x N) that can exceed
+# this hook's own settings.json timeout, silently killing the hook and
+# dropping BOTH the live re-read AND the base #383 shorthand expansion
+# with no marker -- exactly the silent-drop this feature's own contract
+# forbids. `_MAX_LIVE_FETCHES` bounds worst-case wall time to
+# `_MAX_LIVE_FETCHES * _FETCH_TIMEOUT_SECONDS` (20s), safely under the
+# 25s hook timeout with headroom; refs beyond the cap get an explicit
+# "not fetched" marker, never a silent drop.
+_MAX_LIVE_FETCHES = 4
+_FETCH_TIMEOUT_SECONDS = 5
+
+
+def _truncate(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap] + f"\n...[truncated, {len(text) - cap} more characters]"
+
+
+def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SECONDS) -> str | None:
+    """Live `gh issue view` fetch of one issue's current title/state/body/
+    comment list (harmonic-forge#397 AC2 -- "not cached"; bounded per
+    harmonic-forge#399's preclose finding, see module-level caps above).
+    Returns a formatted block, or None on any failure (network, auth,
+    rate-limit, timeout, malformed JSON) -- the caller fails open on None
+    rather than ever blocking the prompt on a fetch problem."""
+    try:
+        result = subprocess.run(
+            [
+                "gh", "issue", "view", number, "--repo", repo,
+                "--json", "title,state,updatedAt,body,comments",
+            ],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    comments = data.get("comments") or []
+    lines = [
+        f"### {repo}#{number} -- {data.get('title') or '(no title)'} "
+        f"[{data.get('state') or '?'}]",
+        f"Updated: {data.get('updatedAt') or '?'} | Comments: {len(comments)}",
+        "",
+        "Body:",
+        _truncate(data.get("body") or "(empty)", _BODY_CHAR_CAP),
+    ]
+    if comments:
+        lines.append("")
+        shown = comments[-_MAX_COMMENTS_SHOWN:]
+        omitted = len(comments) - len(shown)
+        if omitted > 0:
+            lines.append(
+                f"Comments (most recent {len(shown)} of {len(comments)}, "
+                f"{omitted} earlier omitted -- `gh issue view {number} "
+                f"--repo {repo} --comments` for the full history):"
+            )
+        else:
+            lines.append("Comments:")
+        for c in shown:
+            author = (c.get("author") or {}).get("login") or "unknown"
+            lines.append(f"--- {author} @ {c.get('createdAt') or '?'} ---")
+            lines.append(_truncate(c.get("body") or "(empty)", _COMMENT_CHAR_CAP))
+    return "\n".join(lines)
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -222,16 +361,44 @@ def main() -> None:
             return
         doc_text = DOC_PATH.read_text(encoding="utf-8")
         expanded = annotate(prompt, doc_text)
+        refs = collect_live_issue_refs(prompt, doc_text)
     except Exception:
         # Fail open (AC2): never block the operator's message on a doc
         # or parse problem.
         return
-    if expanded == prompt:
+    if expanded == prompt and not refs:
         return
+    context_parts = []
+    if expanded != prompt:
+        context_parts.append("Lane-shorthand expansion (harmonic-forge#383):\n" + expanded)
+    if refs:
+        live_blocks = []
+        fetch_refs, skipped_refs = refs[:_MAX_LIVE_FETCHES], refs[_MAX_LIVE_FETCHES:]
+        for repo, number in fetch_refs:
+            try:
+                block = fetch_issue_context(repo, number)
+            except Exception:
+                block = None
+            live_blocks.append(
+                block
+                or f"### {repo}#{number}\n(live fetch failed -- network/auth/"
+                   f"rate-limit/deleted; re-read manually before acting)"
+            )
+        for repo, number in skipped_refs:
+            live_blocks.append(
+                f"### {repo}#{number}\n(not fetched -- more than "
+                f"{_MAX_LIVE_FETCHES} issue references in one prompt; "
+                f"re-read this one manually before acting)"
+            )
+        context_parts.append(
+            "Live issue re-read, mechanically enforced on every trigger "
+            "(harmonic-forge#397, feedback_always_reread_issue_on_every_"
+            "trigger):\n\n" + "\n\n".join(live_blocks)
+        )
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": "Lane-shorthand expansion (harmonic-forge#383):\n" + expanded,
+            "additionalContext": "\n\n".join(context_parts),
         }
     }))
 

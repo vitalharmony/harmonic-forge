@@ -202,5 +202,286 @@ class ParserFixtureTests(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+def _fake_gh_result(returncode=0, stdout="", stderr=""):
+    result = unittest.mock.Mock()
+    result.returncode = returncode
+    result.stdout = stdout
+    result.stderr = stderr
+    return result
+
+
+class LiveIssueReReadTests(unittest.TestCase):
+    """harmonic-forge#397: a real repo-prefixed issue reference must
+    trigger a live (uncached) `gh issue view` fetch, injected alongside
+    the existing inline-gloss expansion."""
+
+    def _issue_json(self, **overrides):
+        data = {
+            "title": "Some issue title",
+            "state": "OPEN",
+            "updatedAt": "2026-08-27T00:00:00Z",
+            "body": "The full current body.",
+            "comments": [
+                {"author": {"login": "marcmangus"}, "createdAt": "2026-08-27T01:00:00Z", "body": "A comment."},
+            ],
+        }
+        data.update(overrides)
+        return json.dumps(data)
+
+    def test_real_repo_ref_triggers_live_fetch_with_full_body_and_comments(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("The full current body.", expanded)
+        self.assertIn("A comment.", expanded)
+        self.assertIn("marcmangus", expanded)
+        run.assert_called_once()
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["gh", "issue", "view"])
+        self.assertIn("1304", args)
+        self.assertIn("vitalharmony/hrse", args)
+
+    def test_fires_on_continuation_shaped_trigger_not_just_fresh_implement(self):
+        """AC3: 'continue'/'unblocked'-shaped prompts must fetch live too --
+        the match is on the token, not the surrounding verb."""
+        for prompt in ("continue H1304", "H1304 unblocked", "unblocked, H1304"):
+            with self.subTest(prompt=prompt):
+                with unittest.mock.patch.object(
+                    m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+                ) as run:
+                    result = _run(prompt)
+                self.assertIsNotNone(result)
+                run.assert_called_once()
+
+    def test_no_live_fetch_when_no_repo_ref_present(self):
+        with unittest.mock.patch.object(m.subprocess, "run") as run:
+            result = _run("L2D status update, no issue mentioned")
+        self.assertIsNotNone(result)
+        run.assert_not_called()
+
+    def test_account_only_prefix_is_not_live_fetched(self):
+        """K/P have no owner/repo shorthand -- nothing to `gh issue view`."""
+        with unittest.mock.patch.object(m.subprocess, "run") as run:
+            result = _run("checking K42 status")
+        self.assertIsNotNone(result)  # inline gloss still fires
+        run.assert_not_called()
+
+    def test_fetch_failure_fails_open_with_explicit_marker_not_a_crash(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(returncode=1, stderr="not found")
+        ):
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("live fetch failed", expanded)
+
+    def test_timeout_fails_open_with_explicit_marker(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", side_effect=m.subprocess.TimeoutExpired(cmd="gh", timeout=8)
+        ):
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        self.assertIn("live fetch failed", result["hookSpecificOutput"]["additionalContext"])
+
+    def test_malformed_json_fails_open_with_explicit_marker(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout="not json")
+        ):
+            result = _run("Implement H1304")
+        self.assertIsNotNone(result)
+        self.assertIn("live fetch failed", result["hookSpecificOutput"]["additionalContext"])
+
+    def test_two_distinct_issue_refs_each_fetched_once(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run("H1304 and F383 both relevant")
+        self.assertIsNotNone(result)
+        self.assertEqual(run.call_count, 2)
+
+    def test_repeated_ref_in_same_prompt_fetched_only_once(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run("H1304, see also H1304 again")
+        self.assertIsNotNone(result)
+        run.assert_called_once()
+
+    def test_not_cached_across_separate_invocations(self):
+        """AC2 'not cached' -- a second, separate hook invocation for the
+        same issue must fetch live again, not reuse a prior result."""
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            _run("Implement H1304")
+            _run("Implement H1304")
+        self.assertEqual(run.call_count, 2)
+
+
+class LiveIssueContextSizeCaps(unittest.TestCase):
+    """harmonic-forge#397/#399 preclose-inspection finding, live-reproduced
+    at ~93k characters for one real issue: an unbounded fetch, re-injected
+    in full on every continuation trigger, is unbounded context growth."""
+
+    def test_long_body_is_truncated_with_explicit_marker(self):
+        long_body = "x" * (m._BODY_CHAR_CAP + 500)
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": long_body, "comments": [],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertLess(len(block), len(long_body))
+        self.assertIn("truncated", block)
+
+    def test_short_body_is_not_truncated(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "short", "comments": [],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertIn("short", block)
+        self.assertNotIn("truncated", block)
+
+    def test_many_comments_shows_only_most_recent_with_omission_count(self):
+        comments = [
+            {"author": {"login": "u"}, "createdAt": f"2026-01-{i:02d}T00:00:00Z", "body": f"comment {i}"}
+            for i in range(1, 21)
+        ]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "b", "comments": comments,
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        # Most recent comments (highest-numbered) must be present...
+        self.assertIn("comment 20", block)
+        self.assertIn("comment 13", block)  # last 8 of 20 = comments 13-20
+        # ...oldest ones must be dropped, not the newest.
+        self.assertNotIn("comment 1\n", block)
+        self.assertNotIn("comment 12", block)
+        self.assertIn("12 earlier omitted", block)
+
+    def test_few_comments_shows_all_with_no_omission_note(self):
+        comments = [
+            {"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": "only one"},
+        ]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "b", "comments": comments,
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertIn("only one", block)
+        self.assertNotIn("omitted", block)
+
+    def test_long_individual_comment_is_truncated(self):
+        long_comment = "y" * (m._COMMENT_CHAR_CAP + 500)
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "b",
+                "comments": [{"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": long_comment}],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertLess(len(block), len(long_comment))
+        self.assertIn("truncated", block)
+
+    def test_end_to_end_injected_block_stays_well_under_the_measured_regression_size(self):
+        """The concrete regression this exists to prevent: ~93k chars for
+        one real issue. Worst case (max body + max comments, all at cap)
+        must stay a small fraction of that."""
+        comments = [
+            {"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": "z" * m._COMMENT_CHAR_CAP}
+            for _ in range(30)
+        ]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "x" * m._BODY_CHAR_CAP, "comments": comments,
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertLess(len(block), 20000)
+
+
+class LiveIssueAggregateFetchCap(unittest.TestCase):
+    """harmonic-forge#397/#399 preclose-inspection finding, round 2, live-
+    reproduced at 243k characters for 25 refs in one prompt: the per-issue
+    cap alone doesn't bound a multi-issue prompt. `_MAX_LIVE_FETCHES`
+    bounds both aggregate size and worst-case wall time."""
+
+    def _issue_json(self):
+        return json.dumps({
+            "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+            "body": "b", "comments": [],
+        })
+
+    def test_refs_beyond_the_cap_are_not_fetched(self):
+        prompt = " ".join(f"H130{i}" for i in range(9))  # 9 distinct real-shaped refs
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run(prompt)
+        self.assertIsNotNone(result)
+        self.assertEqual(run.call_count, m._MAX_LIVE_FETCHES)
+
+    def test_skipped_refs_get_an_explicit_not_fetched_marker(self):
+        prompt = " ".join(f"H130{i}" for i in range(9))
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ):
+            result = _run(prompt)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("not fetched", expanded)
+        self.assertIn(f"more than {m._MAX_LIVE_FETCHES}", expanded)
+
+    def test_refs_at_or_under_the_cap_are_all_fetched(self):
+        prompt = " ".join(f"H130{i}" for i in range(m._MAX_LIVE_FETCHES))
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run(prompt)
+        self.assertIsNotNone(result)
+        self.assertEqual(run.call_count, m._MAX_LIVE_FETCHES)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("not fetched", expanded)
+
+    def test_aggregate_size_stays_bounded_regardless_of_ref_count_named(self):
+        """The concrete regression: 25 refs measured at 243k chars live.
+        Worst case here (cap-many refs, each at its own per-issue cap)
+        must stay a small, predictable multiple of one issue's cap."""
+        prompt = " ".join(f"H13{i:02d}" for i in range(25))
+        big_issue = json.dumps({
+            "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+            "body": "x" * m._BODY_CHAR_CAP,
+            "comments": [
+                {"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": "z" * m._COMMENT_CHAR_CAP}
+                for _ in range(30)
+            ],
+        })
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=big_issue)
+        ):
+            result = _run(prompt)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertLess(len(expanded), 80000)
+
+
 if __name__ == "__main__":
     unittest.main()
