@@ -54,3 +54,17 @@ derivable from code or Git.
   loop — `Monitor` surfaces a stalled or errored wait instead of sitting
   silent until timeout. `Bash --run_in_background` stays correct for a
   single bounded wait with a clear exit condition (harmonic-forge#312).
+- **Every merge silently closes a stacked child PR pointing at the merged
+  branch** — not only `gh pr merge --delete-branch`. Every project repo
+  here has `delete_branch_on_merge: true` (confirmed live across
+  harmonic-forge/hrse/cymagraph-infra), so the REST merge form
+  (`gh api -X PUT .../pulls/N/merge`) and the GitHub web merge button
+  delete the branch too, and GitHub does **not** auto-retarget the child
+  — it closes (real incident, hrse#812). Before merging any PR, check
+  `gh pr list --json number,baseRefName` for a child based on it, and
+  retarget first if one exists.
+- `git checkout`/`checkout -b` does **not** branch-scope uncommitted
+  tracked changes — they follow the working tree across the switch. A
+  branch created to isolate one edit can silently carry unrelated
+  in-progress changes onto it; check `git status` before assuming a fresh
+  branch starts clean.
