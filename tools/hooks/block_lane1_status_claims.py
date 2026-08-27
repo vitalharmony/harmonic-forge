@@ -349,6 +349,77 @@ def lane2_write_in_main_checkout(file_path: str, cwd: Path) -> bool:
     return False
 
 
+def write_on_main_branch(file_path: str, cwd: Path) -> bool:
+    """True if file_path is a TRACKED file inside a git worktree that
+    currently has `main` checked out by name (harmonic-forge#384).
+
+    Identity-independent, unlike `lane2_write_in_main_checkout` above: this
+    fires regardless of `LANE` -- set to anything, or unset entirely. Lane 1
+    sets no `LANE` at session launch, so it had no equivalent guard; a
+    docs-only edit landed directly in the main checkout on `main` and was
+    only caught later, at `git commit`, by a *different* guard
+    (`block_stale_script_execution.py`'s "direct commits to 'main' are
+    blocked"), after the edit had already landed in the working tree
+    (harmonic-forge#384, live 2026-08-27). This is a pure git-state check:
+    it cannot be defeated by an unset environment variable, and it fails in
+    the direction the project's own documented rule already requires --
+    branch before the first Edit/Write.
+
+    Resolved from file_path's own directory, not cwd -- a session can `cd`
+    away from the worktree it is editing into (the hook payload's own `cwd`
+    field is best-effort, same caveat `resolve_main_checkout_root` above
+    already documents). Untracked files are never blocked (`git ls-files
+    --error-unmatch`): a brand-new file about to be created, or a scratch/
+    gitignored path, is not what this guard exists to stop -- only editing
+    a tracked file while `main` is checked out is the violation the
+    "creating files and branching afterward is the same violation" rule
+    names. A detached HEAD returns `""` from `git branch --show-current`,
+    never the literal string `"main"`, so the Lane 3 `gate-checkout`
+    fallback (which detaches rather than checking out `main` by name) is
+    correctly not treated as `main` here.
+
+    Fails open (returns False) on any path or git-state resolution it
+    cannot complete -- same non-adversarial posture as every other guard in
+    this file. This is an ADDITIONAL condition alongside
+    `lane2_write_in_main_checkout`, not a replacement: that check still
+    fires independently for a LANE=2 session, regardless of which branch is
+    checked out."""
+    if not file_path:
+        return False
+    try:
+        raw = Path(file_path).expanduser()
+        if not raw.is_absolute():
+            raw = cwd / raw
+        lexical = Path(os.path.normpath(raw))
+        resolved = raw.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    # Check BOTH the lexical path and the symlink-resolved path, same as
+    # `lane2_write_in_main_checkout` above and for the identical reason
+    # (harmonic-forge#384 preclose review, live-reproduced): a project's
+    # checkout can contain real symlinks out to another repo entirely --
+    # HRSE2's `.claude/rules/backend-python.md` and siblings point at
+    # ~/harmonic-forge. Checking only the lexical form lets an Edit/Write
+    # through a symlink whose OWN directory sits in a feature-branch (or
+    # untracked-there) checkout silently modify a tracked file in a
+    # DIFFERENT worktree that has `main` checked out.
+    for candidate in (lexical, resolved):
+        target_dir = candidate.parent
+        branch = subprocess.run(
+            ["git", "-C", str(target_dir), "branch", "--show-current"],
+            text=True, capture_output=True, check=False,
+        )
+        if branch.returncode or branch.stdout.strip() != "main":
+            continue
+        tracked = subprocess.run(
+            ["git", "-C", str(target_dir), "ls-files", "--error-unmatch", str(candidate)],
+            text=True, capture_output=True, check=False,
+        )
+        if tracked.returncode == 0:
+            return True
+    return False
+
+
 def lane3_write_outside_testplan(file_path: str) -> bool:
     """True if this hook invocation's own process has LANE=3 (set at
     session launch by harmonic-forge's `tools/lane/lane3` script,
@@ -501,6 +572,16 @@ def main() -> None:
                 "path is ~/Harmonic_Projects/testplan/, for gate "
                 "artifacts too large for an issue comment. Record the "
                 "failure and report it for Lane 2 to fix instead."
+            )))
+            return
+        if write_on_main_branch(file_path, cwd):
+            print(json.dumps(denial(
+                "Blocked: this checkout has `main` checked out and "
+                f"{file_path!r} is a tracked file (harmonic-forge#384). "
+                "Branch first: `git checkout -b <name>` — creating files "
+                "and branching afterward is the same violation. This "
+                "check applies regardless of LANE, including a Lane 1 "
+                "session with no LANE set at all."
             )))
             return
         print("{}")
