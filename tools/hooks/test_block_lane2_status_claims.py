@@ -183,6 +183,55 @@ class TestLane2PushAndPrCreateDenial(unittest.TestCase):
         result = m.decision("gh pr view 12", self.cwd)
         self.assertFalse(_is_denied(result))
 
+    def test_gh_as_wrapped_pr_create_denied(self):
+        """preclose-inspection finding: `gh-as <account> gh pr create ...`
+        (rules/universal-agent.md's documented scoping wrapper) must be
+        caught the same as the bare form."""
+        result = m.decision('gh-as vitalharmony gh pr create --title t --body b', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_as_wrapped_push_denied(self):
+        result = m.decision('gh-as vitalharmony git push origin feat/398-fix', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_as_wrapped_pr_create_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision('gh-as vitalharmony gh pr create --title t --body b', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_gh_as_unrelated_command_not_denied(self):
+        result = m.decision('gh-as vitalharmony gh issue list', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_commit_push_denied(self):
+        """preclose-inspection finding: HRSE2's own documented push path
+        (CLAUDE.md) forwards to scripts/git_commit.py's internal `git
+        push` -- the literal command never contains a `git push` token,
+        only this flag."""
+        result = m.decision("mise run commit --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_run_restart_push_denied(self):
+        result = m.decision("mise run restart b --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_run_commit_without_push_not_denied(self):
+        result = m.decision('mise run commit --message "wip"', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_restart_without_push_not_denied(self):
+        result = m.decision("mise run restart --no-git", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_commit_push_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision("mise run commit --push", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_mise_run_other_task_not_denied(self):
+        result = m.decision("mise run l1-post --push", self.cwd)
+        self.assertFalse(_is_denied(result))
+
 
 if __name__ == "__main__":
     unittest.main()

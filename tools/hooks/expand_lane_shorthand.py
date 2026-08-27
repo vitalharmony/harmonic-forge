@@ -268,12 +268,32 @@ def collect_live_issue_refs(prompt: str, doc_text: str) -> list[tuple[str, str]]
     return seen
 
 
+# harmonic-forge#397/#399 preclose-inspection finding, live-reproduced:
+# an unbounded fetch measured ~93k characters (~23k tokens) for one real
+# issue, re-injected in full on every continuation-shaped trigger --
+# exactly the shape ("continue H1252", "H1252 unblocked") this feature
+# exists to serve. These caps bound the injected block per issue while
+# keeping it useful for "did I already see this" -- most-recent comments
+# matter more than oldest for a mechanical re-read, so truncation drops
+# from the front (oldest), not the back.
+_BODY_CHAR_CAP = 4000
+_MAX_COMMENTS_SHOWN = 8
+_COMMENT_CHAR_CAP = 1500
+
+
+def _truncate(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap] + f"\n...[truncated, {len(text) - cap} more characters]"
+
+
 def fetch_issue_context(repo: str, number: str, timeout: int = 8) -> str | None:
     """Live `gh issue view` fetch of one issue's current title/state/body/
-    full comment list (harmonic-forge#397 AC2 -- "not cached"). Returns a
-    formatted block, or None on any failure (network, auth, rate-limit,
-    timeout, malformed JSON) -- the caller fails open on None rather than
-    ever blocking the prompt on a fetch problem."""
+    comment list (harmonic-forge#397 AC2 -- "not cached"; bounded per
+    harmonic-forge#399's preclose finding, see module-level caps above).
+    Returns a formatted block, or None on any failure (network, auth,
+    rate-limit, timeout, malformed JSON) -- the caller fails open on None
+    rather than ever blocking the prompt on a fetch problem."""
     try:
         result = subprocess.run(
             [
@@ -297,15 +317,24 @@ def fetch_issue_context(repo: str, number: str, timeout: int = 8) -> str | None:
         f"Updated: {data.get('updatedAt') or '?'} | Comments: {len(comments)}",
         "",
         "Body:",
-        data.get("body") or "(empty)",
+        _truncate(data.get("body") or "(empty)", _BODY_CHAR_CAP),
     ]
     if comments:
         lines.append("")
-        lines.append("Comments:")
-        for c in comments:
+        shown = comments[-_MAX_COMMENTS_SHOWN:]
+        omitted = len(comments) - len(shown)
+        if omitted > 0:
+            lines.append(
+                f"Comments (most recent {len(shown)} of {len(comments)}, "
+                f"{omitted} earlier omitted -- `gh issue view {number} "
+                f"--repo {repo} --comments` for the full history):"
+            )
+        else:
+            lines.append("Comments:")
+        for c in shown:
             author = (c.get("author") or {}).get("login") or "unknown"
             lines.append(f"--- {author} @ {c.get('createdAt') or '?'} ---")
-            lines.append(c.get("body") or "(empty)")
+            lines.append(_truncate(c.get("body") or "(empty)", _COMMENT_CHAR_CAP))
     return "\n".join(lines)
 
 

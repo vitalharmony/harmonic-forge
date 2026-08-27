@@ -61,10 +61,25 @@ def _is_push_or_pr_create(segment: list[str]) -> bool:
     """harmonic-forge#398: push/PR is categorically Lane 1's
     (`feedback_lane2_never_pushes_or_prs`) -- Lane 2 stops at a committed
     branch in its worktree and reports; Lane 1 pushes and opens the PR.
-    Recognizes both the raw forms and `git`'s own `-C <dir>` global flag,
-    matching `block_irreversible_ops.py`'s established pattern for the
-    same class of gap (a global flag before the subcommand slipping past
-    a positional check)."""
+    Recognizes the raw forms, `git`'s own `-C <dir>` global flag (matching
+    `block_irreversible_ops.py`'s established pattern for the same class
+    of gap -- a global flag before the subcommand slipping past a
+    positional check), and two sanctioned-wrapper equivalents a Lane 2
+    session could otherwise reach for (preclose-inspection finding,
+    live-reproduced -- the sibling `_is_issue_filing_command()` above
+    already recognizes its own wrapper equivalent, this one did not):
+
+    - `gh-as <account> <command...>` (`rules/universal-agent.md`) scopes
+      `gh` to a named account for one command -- strip the wrapper and
+      recurse on what it wraps, so `gh-as vitalharmony gh pr create ...`
+      is caught the same as the bare form.
+    - `mise run commit --push` / `mise run restart --push` (HRSE2's own
+      documented push path, `CLAUDE.md`: "Push to GitHub ... only when
+      explicitly requested") forward to `scripts/git_commit.py`, which
+      runs `git push` internally -- the push never appears as a literal
+      `git push` token in the executed command, only as this flag."""
+    if segment and Path(segment[0]).name == "gh-as" and len(segment) >= 3:
+        return _is_push_or_pr_create(segment[2:])
     if not segment or segment[0] != "git":
         args = segment
     else:
@@ -75,6 +90,14 @@ def _is_push_or_pr_create(segment: list[str]) -> bool:
     if len(args) >= 2 and args[0] == "git" and args[1] == "push":
         return True
     if len(args) >= 3 and args[0] == "gh" and args[1] == "pr" and args[2] == "create":
+        return True
+    if (
+        len(segment) >= 3
+        and segment[0] == "mise"
+        and segment[1] == "run"
+        and segment[2] in ("commit", "restart")
+        and any(a == "--push" or a.startswith("--push=") for a in segment[3:])
+    ):
         return True
     return False
 

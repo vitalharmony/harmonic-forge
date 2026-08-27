@@ -321,5 +321,104 @@ class LiveIssueReReadTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
 
 
+class LiveIssueContextSizeCaps(unittest.TestCase):
+    """harmonic-forge#397/#399 preclose-inspection finding, live-reproduced
+    at ~93k characters for one real issue: an unbounded fetch, re-injected
+    in full on every continuation trigger, is unbounded context growth."""
+
+    def test_long_body_is_truncated_with_explicit_marker(self):
+        long_body = "x" * (m._BODY_CHAR_CAP + 500)
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": long_body, "comments": [],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertLess(len(block), len(long_body))
+        self.assertIn("truncated", block)
+
+    def test_short_body_is_not_truncated(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "short", "comments": [],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertIn("short", block)
+        self.assertNotIn("truncated", block)
+
+    def test_many_comments_shows_only_most_recent_with_omission_count(self):
+        comments = [
+            {"author": {"login": "u"}, "createdAt": f"2026-01-{i:02d}T00:00:00Z", "body": f"comment {i}"}
+            for i in range(1, 21)
+        ]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "b", "comments": comments,
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        # Most recent comments (highest-numbered) must be present...
+        self.assertIn("comment 20", block)
+        self.assertIn("comment 13", block)  # last 8 of 20 = comments 13-20
+        # ...oldest ones must be dropped, not the newest.
+        self.assertNotIn("comment 1\n", block)
+        self.assertNotIn("comment 12", block)
+        self.assertIn("12 earlier omitted", block)
+
+    def test_few_comments_shows_all_with_no_omission_note(self):
+        comments = [
+            {"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": "only one"},
+        ]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "b", "comments": comments,
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertIn("only one", block)
+        self.assertNotIn("omitted", block)
+
+    def test_long_individual_comment_is_truncated(self):
+        long_comment = "y" * (m._COMMENT_CHAR_CAP + 500)
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "b",
+                "comments": [{"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": long_comment}],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertLess(len(block), len(long_comment))
+        self.assertIn("truncated", block)
+
+    def test_end_to_end_injected_block_stays_well_under_the_measured_regression_size(self):
+        """The concrete regression this exists to prevent: ~93k chars for
+        one real issue. Worst case (max body + max comments, all at cap)
+        must stay a small fraction of that."""
+        comments = [
+            {"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": "z" * m._COMMENT_CHAR_CAP}
+            for _ in range(30)
+        ]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "x" * m._BODY_CHAR_CAP, "comments": comments,
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "1")
+        self.assertLess(len(block), 20000)
+
+
 if __name__ == "__main__":
     unittest.main()
