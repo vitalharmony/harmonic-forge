@@ -269,6 +269,40 @@ secret needs to flow through a config file, it must arrive via variable
 interpolation/env injection at runtime, never a literal value written by an
 agent — full stop, regardless of which file.
 
+**Never decrypt a secrets file and view its content wholesale** — not with
+`cat`/`head`, not briefly, not "just to check the structure". Pipe the
+decrypted stream directly into an extractor that emits only non-sensitive
+fields (`metadata.name`, `metadata.namespace`, key names — never values) in
+the same command, so plaintext never reaches a shell buffer or transcript. If
+a targeted grep comes back empty, the next step is a *narrower* structural
+query, never a broader raw dump. Shred any decrypted temp file in the same
+command chain (`trap … EXIT`), not afterwards.
+
+**Never generate a credential value.** An agent invoking a CSPRNG is not an
+acceptable entropy source for a real credential, and printing the result puts
+it in the transcript — defeating the rotation it was meant to serve. Hand
+over the exact `openssl rand -base64 32` command for the operator to run and
+consume.
+
+**"Give me the command to do X" is a request for the command, not
+authorization to run X.** This holds with extra force when X touches a
+credential, and it holds for the read half too — fetching and printing a
+username field "to be helpful" is the same overstep at smaller scale. Hand
+over the command text and stop.
+
+**Never set a global git credential helper.** `credential.helper=store`
+silently caches *any* successful HTTPS auth across every repo on the machine,
+which is how a client-scoped PAT leaked into an unrelated account's push. Use
+`gh auth setup-git`, which scopes credentials per host through `gh`'s own
+helper — the same account-isolation principle as `gh-as` above, applied to
+git's own credential cache rather than `gh`'s active identity.
+
+**Never state a process rule as fact without checking the doc it comes
+from.** A confidently-recalled rule that is subtly wrong (a lane count, an
+ordering, a flag name) is worse than admitting uncertainty — verify against
+the actual protocol text before asserting it, the same standard this file
+already sets for live system state (see VERIFICATION GATE above).
+
 ## THE FILING BAR — THREE TESTS, IN ORDER (hrse, 2026-08-14)
 
 **Applies before any agent, in any lane, creates a new issue.** It qualifies
