@@ -123,12 +123,31 @@ For a Plan-First issue, withhold implementation steps from the first
 handoff; post them only after Lane 2's plan clears review, as defined by
 `3-lane-protocol.md`.
 
+A round-N handoff returning from a prior gate's FAIL must not scope out a
+gap that gate's own report already named — either fold the fix in, or
+state explicitly why it's deferred. A scope constraint meant to prevent
+unrelated creep ("only this file changes") must never silently exclude
+something the last cycle already flagged as missing.
+
 ## Verification standard
 
 Do not accept a PASS/done claim on narrative alone. Require evidence
 suited to the outcome: live requests/responses, logs, before/after
 counts, or equivalent observable proof. Re-reading the diff is not
 verification.
+
+**"Verified-live" means re-run this session, not inherited.** A number,
+test result, or state check carried forward from an earlier report — this
+session's own prior turn, a different lane's completion report, a stale
+gate result — is "asserted," not "verified-live," until re-executed now.
+The handoff template's `Load-Bearing Assumptions` field depends on this
+distinction being real: label an assumption "asserted" whenever its
+truth rests on something you did not personally re-check this session.
+
+**Check `git log origin/<branch>`, not the local ref, before declaring
+readiness.** A local branch can be ahead of, behind, or diverged from
+what actually landed on the remote; a `ready-for-l3` or completion claim
+based on the local ref alone can describe a state that was never pushed.
 
 **A correct diff against a wrong assumption is not verification.** In
 HRSE2 #400, a change correctly updated design-token definitions but most
