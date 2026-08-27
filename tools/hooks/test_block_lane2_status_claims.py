@@ -59,6 +59,26 @@ class TestLane2RawPostDenial(unittest.TestCase):
         result = m.decision("gh issue edit 371 --body updated", self.cwd)
         self.assertTrue(_is_denied(result))
 
+    def test_mise_gh_new_issue_denied_under_lane2(self):
+        """harmonic-forge#388: the sanctioned Lane 1 filing path was the
+        actual hole -- `gh issue create` alone let this through undetected."""
+        result = m.decision(
+            "mise run gh-new-issue --title t --labels bug --milestone Later",
+            self.cwd,
+        )
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_issue_py_direct_invocation_denied_under_lane2(self):
+        result = m.decision("python3 tools/gh/gh_issue.py --title t", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_gh_new_issue_not_denied_for_lane1(self):
+        """The check is Lane-2-specific -- Lane 1's own sanctioned filing
+        path must never be denied by this hook."""
+        os.environ["LANE"] = "1"
+        result = m.decision("mise run gh-new-issue --title t", self.cwd)
+        self.assertFalse(_is_denied(result))
+
     def test_l2_post_py_itself_is_not_a_recognized_transport_shape(self):
         """The wrapper's own invocation must never match the deny pattern --
         it is a different script name/shape than every recognized transport,

@@ -294,7 +294,9 @@ agent — full stop, regardless of which file.
 
 **Applies before any agent, in any lane, creates a new issue.** It qualifies
 every "file it" instruction in this file, including the section immediately
-below, and supersedes any standing guidance that filing is default-on.
+below, and supersedes any standing guidance that filing is default-on. This
+bar governs **what** is filed; the lane sections above govern **who**
+files — Lane 2 and Lane 3 surface a finding and stop, Lane 1 files.
 
 Run these in order and stop at the first that answers:
 
@@ -461,6 +463,15 @@ from Lane 2's own uncommitted follow-up fix sitting in the tree; and Lane
 actively mid-gate compounded the confusion further by stashing/branch-
 switching in the same directory Lane 3 was reading from. Four variations
 of the same root cause in one session — this is a pattern, not bad luck.
+
+**Every change to a tracked repo file happens in a dedicated per-issue
+worktree and lands via a PR; work ends in the lane worktree, never
+`/tmp`.** Never write while a checkout sits on `main` — branch or use a
+worktree first, not after. Both halves are mechanism-backed where the
+repo has it: a write outside the impl worktree while a lane is set is
+denied at the tool-call level, and a stranded `/tmp` commit is detected
+after the fact — where the repo doesn't have either yet, the discipline
+above is what stands in.
 
 ## ISSUE TRACKING
 
