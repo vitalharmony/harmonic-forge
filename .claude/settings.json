@@ -31,6 +31,15 @@
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\""
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\""
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
