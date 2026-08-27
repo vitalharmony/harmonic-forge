@@ -420,5 +420,68 @@ class LiveIssueContextSizeCaps(unittest.TestCase):
         self.assertLess(len(block), 20000)
 
 
+class LiveIssueAggregateFetchCap(unittest.TestCase):
+    """harmonic-forge#397/#399 preclose-inspection finding, round 2, live-
+    reproduced at 243k characters for 25 refs in one prompt: the per-issue
+    cap alone doesn't bound a multi-issue prompt. `_MAX_LIVE_FETCHES`
+    bounds both aggregate size and worst-case wall time."""
+
+    def _issue_json(self):
+        return json.dumps({
+            "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+            "body": "b", "comments": [],
+        })
+
+    def test_refs_beyond_the_cap_are_not_fetched(self):
+        prompt = " ".join(f"H130{i}" for i in range(9))  # 9 distinct real-shaped refs
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run(prompt)
+        self.assertIsNotNone(result)
+        self.assertEqual(run.call_count, m._MAX_LIVE_FETCHES)
+
+    def test_skipped_refs_get_an_explicit_not_fetched_marker(self):
+        prompt = " ".join(f"H130{i}" for i in range(9))
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ):
+            result = _run(prompt)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("not fetched", expanded)
+        self.assertIn(f"more than {m._MAX_LIVE_FETCHES}", expanded)
+
+    def test_refs_at_or_under_the_cap_are_all_fetched(self):
+        prompt = " ".join(f"H130{i}" for i in range(m._MAX_LIVE_FETCHES))
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=self._issue_json())
+        ) as run:
+            result = _run(prompt)
+        self.assertIsNotNone(result)
+        self.assertEqual(run.call_count, m._MAX_LIVE_FETCHES)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("not fetched", expanded)
+
+    def test_aggregate_size_stays_bounded_regardless_of_ref_count_named(self):
+        """The concrete regression: 25 refs measured at 243k chars live.
+        Worst case here (cap-many refs, each at its own per-issue cap)
+        must stay a small, predictable multiple of one issue's cap."""
+        prompt = " ".join(f"H13{i:02d}" for i in range(25))
+        big_issue = json.dumps({
+            "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+            "body": "x" * m._BODY_CHAR_CAP,
+            "comments": [
+                {"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": "z" * m._COMMENT_CHAR_CAP}
+                for _ in range(30)
+            ],
+        })
+        with unittest.mock.patch.object(
+            m.subprocess, "run", return_value=_fake_gh_result(stdout=big_issue)
+        ):
+            result = _run(prompt)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertLess(len(expanded), 80000)
+
+
 if __name__ == "__main__":
     unittest.main()

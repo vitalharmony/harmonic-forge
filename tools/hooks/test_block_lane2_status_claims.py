@@ -232,6 +232,42 @@ class TestLane2PushAndPrCreateDenial(unittest.TestCase):
         result = m.decision("mise run l1-post --push", self.cwd)
         self.assertFalse(_is_denied(result))
 
+    def test_mise_bare_task_spelling_push_denied(self):
+        """preclose-inspection finding, round 2: `mise <task>` (no `run`)
+        is an equally valid mise invocation and bypassed the original
+        check, which only matched the `mise run <task>` spelling."""
+        result = m.decision("mise restart --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_r_alias_spelling_push_denied(self):
+        """`r` is mise's own documented alias for `run`."""
+        result = m.decision("mise r restart --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_mise_bare_task_spelling_without_push_not_denied(self):
+        result = m.decision("mise restart --no-git", self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_direct_git_commit_py_invocation_with_push_denied(self):
+        """preclose-inspection finding, round 2: the actual tool named in
+        this function's own docstring, invoked directly rather than
+        through any mise spelling, was never checked at all."""
+        result = m.decision('python3 scripts/git_commit.py --message "wip" --push', self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_bare_git_commit_py_invocation_with_push_denied(self):
+        result = m.decision("./scripts/git_commit.py --push", self.cwd)
+        self.assertTrue(_is_denied(result))
+
+    def test_direct_git_commit_py_invocation_without_push_not_denied(self):
+        result = m.decision('python3 scripts/git_commit.py --message "wip"', self.cwd)
+        self.assertFalse(_is_denied(result))
+
+    def test_direct_git_commit_py_push_not_denied_for_lane1(self):
+        os.environ["LANE"] = "1"
+        result = m.decision("python3 scripts/git_commit.py --push", self.cwd)
+        self.assertFalse(_is_denied(result))
+
 
 if __name__ == "__main__":
     unittest.main()

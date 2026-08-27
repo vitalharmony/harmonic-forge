@@ -280,6 +280,21 @@ _BODY_CHAR_CAP = 4000
 _MAX_COMMENTS_SHOWN = 8
 _COMMENT_CHAR_CAP = 1500
 
+# harmonic-forge#397/#399 preclose-inspection finding, round 2, live-
+# reproduced: the per-issue cap above bounds ONE issue's block, but a
+# prompt naming many issues (the routine Lane 1 status-sweep shape) has
+# no aggregate bound -- measured live at 243k characters for 25 refs, and
+# at a fetch time (14.9s for 25 refs, worst case ~8s x N) that can exceed
+# this hook's own settings.json timeout, silently killing the hook and
+# dropping BOTH the live re-read AND the base #383 shorthand expansion
+# with no marker -- exactly the silent-drop this feature's own contract
+# forbids. `_MAX_LIVE_FETCHES` bounds worst-case wall time to
+# `_MAX_LIVE_FETCHES * _FETCH_TIMEOUT_SECONDS` (20s), safely under the
+# 25s hook timeout with headroom; refs beyond the cap get an explicit
+# "not fetched" marker, never a silent drop.
+_MAX_LIVE_FETCHES = 4
+_FETCH_TIMEOUT_SECONDS = 5
+
 
 def _truncate(text: str, cap: int) -> str:
     if len(text) <= cap:
@@ -287,7 +302,7 @@ def _truncate(text: str, cap: int) -> str:
     return text[:cap] + f"\n...[truncated, {len(text) - cap} more characters]"
 
 
-def fetch_issue_context(repo: str, number: str, timeout: int = 8) -> str | None:
+def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SECONDS) -> str | None:
     """Live `gh issue view` fetch of one issue's current title/state/body/
     comment list (harmonic-forge#397 AC2 -- "not cached"; bounded per
     harmonic-forge#399's preclose finding, see module-level caps above).
@@ -358,7 +373,8 @@ def main() -> None:
         context_parts.append("Lane-shorthand expansion (harmonic-forge#383):\n" + expanded)
     if refs:
         live_blocks = []
-        for repo, number in refs:
+        fetch_refs, skipped_refs = refs[:_MAX_LIVE_FETCHES], refs[_MAX_LIVE_FETCHES:]
+        for repo, number in fetch_refs:
             try:
                 block = fetch_issue_context(repo, number)
             except Exception:
@@ -367,6 +383,12 @@ def main() -> None:
                 block
                 or f"### {repo}#{number}\n(live fetch failed -- network/auth/"
                    f"rate-limit/deleted; re-read manually before acting)"
+            )
+        for repo, number in skipped_refs:
+            live_blocks.append(
+                f"### {repo}#{number}\n(not fetched -- more than "
+                f"{_MAX_LIVE_FETCHES} issue references in one prompt; "
+                f"re-read this one manually before acting)"
             )
         context_parts.append(
             "Live issue re-read, mechanically enforced on every trigger "
