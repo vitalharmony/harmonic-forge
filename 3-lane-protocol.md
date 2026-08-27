@@ -313,6 +313,42 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   external blocker in another lane's work is always an immediate
   stop-and-report, never something to route around.
 
+### Observe-and-report — a gate fixture only a writing lane can create (harmonic-forge#401)
+
+**When a gate requires an artifact only a writing lane can create, Lane 1
+creates the artifact and Lane 3 observes it.** The verification role stays
+with Lane 3 — it still reaches its own verdict, on evidence it did not
+manufacture; only the fixture's creation moves. Distinct from a Tooling
+Exception (which collapses the lanes into a single implementer): this
+splits one action across two lanes while the gate's independence stays
+intact.
+
+Real incident, hrse#1343: TC4 required proving GitHub's own required-check
+behavior — a step reporting `skipped`, not `success` — unverifiable
+without a real PR. Lane 3 is absolutely barred from creating one
+(`block_lane1_status_claims.py`'s Lane 3 write-scoping denial fired
+correctly, before any file was touched). Lane 1 opened
+`__gate__/h1343-tc4` and PR #1346; Lane 3 observed the delete test
+reporting `skipped` and `verify` reporting green.
+
+**Four conditions, all required** — without them this is Lane 1 doing as
+it pleases and calling the result a fixture:
+1. `__gate__`-prefixed branches — recognizable as gate residue, matching
+   the existing ledgered-fixture convention.
+2. Trivial, reversible, never-merged changes — no behavior change in any
+   file.
+3. Closed and branches deleted afterward, including on failure.
+4. Lane 3 records the underlying signal, not merely the downstream
+   status — a step skipped for the wrong reason is indistinguishable
+   otherwise.
+
+**The boundary on the boundary: applies only when the artifact is
+genuinely unproducible by Lane 3.** A gate that merely finds it easier to
+have Lane 1 write something does not qualify — this must not become a
+convenient route around the prohibition. A PR qualifies because it is the
+only thing GitHub will evaluate a required check against; most gate needs
+do not reach this bar.
+
 ## Per-Lane Working Directories — git worktree
 
 Each repo a lane touches has a dedicated `git worktree` per lane
@@ -599,6 +635,13 @@ already verifies the gate-readiness sweep. **`AE` and its sweep are one
 atomic action, same turn, sweep strictly after** — use the repo's own
 atomic wrapper where one exists; otherwise confirm the comment order
 before telling HITL either is ready.
+
+**An AE may widen what a gate's write tier covers; it may never waive a
+lane's absolute role prohibition** (harmonic-forge#401) — those are
+different boundaries, and only the first is HITL's to grant through this
+trigger. When a gate needs an artifact only a writing lane can produce,
+see § Lane 3's observe-and-report pattern above rather than authorizing
+the barred lane to produce it directly.
 
 **Before acting on any trigger, the receiving lane checks the issue's
 state.** If `#N` is already closed, stop and ask HITL to confirm the
