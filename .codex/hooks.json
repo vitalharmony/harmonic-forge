@@ -1,5 +1,5 @@
 {
-  "description": "Codex command guard for Lane 2 raw-post enforcement (harmonic-forge#371). harmonic-forge itself has no per-repo gate_codex_tool.py wrapper (unlike HRSE2) -- the canonical hook module is wired directly, the same way HRSE2's hooks.json already does for model_tier_gate.py.",
+  "description": "Codex command guards for Lane 2 raw-post enforcement (harmonic-forge#371) and Lane 3 AE/gate-readiness-sweep self-authorization (harmonic-forge#216/#407). harmonic-forge itself has no per-repo gate_codex_tool.py wrapper (unlike HRSE2) -- the canonical hook modules are wired directly, the same way HRSE2's hooks.json already does for model_tier_gate.py.",
   "hooks": {
     "PreToolUse": [
       {
@@ -10,6 +10,12 @@
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane2_status_claims.py\"",
             "timeout": 5,
             "statusMessage": "Checking Lane 2 posting integrity"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking Lane 3 AE/sweep self-authorization"
           }
         ]
       },
