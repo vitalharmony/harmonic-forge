@@ -44,13 +44,52 @@ HRSE2 concretely (two ecosystems, both required):
 (cd /tmp/<repo>-<issue>-impl/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt)
 ```
 
-Each worktree gets its own independent install — never a symlink to the
-shared `<repo>-lane2/`'s `node_modules`/`.venv`. A symlinked dependency
-directory is shared, mutable state across every worktree that points at
-it: two worktrees on branches with different manifests silently see
-whichever install last ran, and a concurrent install in one worktree can
-corrupt what another is reading mid-run. `npm ci`/a fresh venv cost a few
-seconds of local, cached install time in exchange for that isolation.
+**This ruling was superseded for HRSE2 by hrse#1356/#1375 — read below
+before following the commands above literally.** They remain correct for
+any repo without a provisioning tool; HRSE2 now has one, and it symlinks.
+
+HRSE2's `mise run worktree-provision` (`scripts/provision_worktree.py`,
+hrse#1356) deliberately **symlinks** `frontend/node_modules` and
+`backend/.venv` into the main checkout rather than installing per worktree.
+The install cost that buys back is real and recurring, and the operator
+ruled (2026-08-28, hrse#1375) to keep the symlinks. What changed to make
+that safe is narrower than "the concern was wrong" — each of this ruling's
+two original reasons has a different status now, and only one of them is
+actually closed:
+
+- **Divergent manifests** — *detected, not prevented.*
+  `scripts/check_worktree_provisioned.py` diffs a branch's own
+  `package.json`/`package-lock.json`/`requirements*.txt` against its
+  baseline and refuses to proceed when a symlinked tree has been outgrown.
+  A branch that leaves its manifests alone shares safely; one that doesn't
+  is stopped rather than silently served the wrong install.
+
+- **Build-cache state sharing** — *closed by hrse#1375.* The sharper
+  version of this problem was not the packages but the build *outputs*
+  written inside the shared tree: TypeScript's `tsBuildInfoFile` and
+  Vite's `cacheDir` both defaulted under `node_modules`, so every
+  provisioned worktree wrote to one physical file (verified live: two
+  worktrees' `node_modules/.tmp/tsconfig.app.tsbuildinfo` resolved to the
+  same inode). Both now write to a worktree-local `frontend/.buildcache/`
+  instead. Worth knowing precisely: on HRSE2 today this was **preventive,
+  not corrective** — the project sets `noEmit` with neither `composite`
+  nor `incremental`, so `tsc -b` stores no file fingerprints and re-checks
+  everything every run, and no false PASS was reproducible. Adding
+  `"incremental": true` would have made it live and silent.
+
+- **Concurrent install corruption** — **still open, accepted, unmitigated.**
+  An `npm ci` or venv rebuild running in one worktree while another is
+  reading that same symlinked tree can still corrupt what the reader sees
+  mid-run. Nothing above addresses it: the staleness check runs before
+  work starts, not during, and relocating build caches does not touch the
+  package tree. It is accepted because the failure needs genuinely
+  concurrent installs — rarer than the manifest-drift case that check
+  covers — and because the alternative is giving up the install savings
+  the tool exists for. **If two sessions may install concurrently, do not
+  assume the symlink is safe.**
+
+For a repo with no provisioning tool of its own, the original ruling
+stands: install per worktree and accept the seconds.
 
 ## Work
 
