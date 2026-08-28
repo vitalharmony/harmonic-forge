@@ -117,7 +117,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shell_parse import command_segments  # noqa: E402
+from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 DEFAULT_TTL_HOURS = 2.0
@@ -277,10 +277,25 @@ def _has_field(tokens: list[str], assignment: str) -> bool:
     return any(token.replace(" ", "") == assignment for token in tokens)
 
 
+PROTECTED_GRAPHQL_MUTATIONS = re.compile(
+    r"\b(?:closeIssue|mergePullRequest|updateIssue|updatePullRequest|"
+    r"enablePullRequestAutoMerge|enqueuePullRequest|closePullRequest)\b"
+)
+
+
+def _protected_graphql(tokens: list[str]) -> bool:
+    tokens = strip_invocation_prefix(tokens)
+    if not tokens or Path(tokens[0]).name != "gh" or "api" not in tokens or "graphql" not in tokens:
+        return False
+    query = next((token.partition("=")[2] for token in tokens if token.startswith("query=")), None)
+    return query is None or query.startswith("@") or "$" in query or bool(PROTECTED_GRAPHQL_MUTATIONS.search(query))
+
+
 def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | None:
     """Is this segment ANY form of `gh issue close`? Returns (repo, number)
     -- either may be None if unresolvable from this command alone -- or
     None if this segment is not an issue-close invocation at all."""
+    tokens = strip_invocation_prefix(tokens)
     if not tokens or Path(tokens[0]).name != "gh":
         return None
     rest = tokens[1:]
@@ -303,6 +318,7 @@ def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None
     """Is this segment ANY form of `gh pr merge`? Returns (repo, number) --
     either may be None if unresolvable -- or None if not a pr-merge
     invocation at all."""
+    tokens = strip_invocation_prefix(tokens)
     if not tokens or Path(tokens[0]).name != "gh":
         return None
     rest = tokens[1:]
@@ -396,6 +412,8 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
         allow_reason: str | None = None
 
         for tokens in segments:
+            if _protected_graphql(tokens):
+                return "ask", "GraphQL mutation is protected; use the reviewed CLI or REST authorization path."
             is_close = classify_issue_close(tokens) is not None
             is_merge = (not is_close) and classify_pr_merge(tokens) is not None
             if not is_close and not is_merge:

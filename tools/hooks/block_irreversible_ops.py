@@ -65,7 +65,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shell_parse import command_segments  # noqa: E402
+from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -99,10 +99,18 @@ def _program(tokens: list[str]) -> str:
 
 def _check_git_clean(tokens: list[str]) -> str | None:
     """`git clean` with both -f and -d. Deletes untracked files: no reflog."""
-    if _program(tokens) != "git" or "clean" not in tokens[1:2]:
+    if _program(tokens) != "git":
+        return None
+    index = 1
+    value_flags = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env"}
+    while index < len(tokens) and tokens[index].startswith("-"):
+        if tokens[index] in value_flags:
+            index += 1
+        index += 1
+    if index >= len(tokens) or tokens[index] != "clean":
         return None
     force = directory = False
-    for token in tokens[2:]:
+    for token in tokens[index + 1:]:
         if token.startswith("--"):
             if token == "--force":
                 force = True
@@ -138,7 +146,7 @@ def find_concerns(command: str) -> list[str] | None:
 
     concerns: list[str] = []
     for raw_tokens in segments:
-        tokens = _strip_invocation_prefix(raw_tokens)
+        tokens = strip_invocation_prefix(raw_tokens)
         if not tokens:
             continue
         for rule in _RULES:

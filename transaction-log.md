@@ -8,6 +8,11 @@ Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transacti
 - tools/hooks/model_tier_gate.py                     | 89 +++++++++++-----------
 - tools/hooks/test_model_tier_gate.py                | 85 +++++++--------------
 - 6 files changed, 90 insertions(+), 108 deletions(-)
+## fix(tooling): harden permission hook command classification (harmonic-forge#369)
+- tools/hooks/batch_auth.py             | 20 +++++++++++++++++++-
+- tools/hooks/block_irreversible_ops.py | 16 ++++++++++++----
+- tools/hooks/shell_parse.py            | 21 +++++++++++++++++++++
+- 4 files changed, 60 insertions(+), 5 deletions(-)
 
 ## fix(tooling): transaction-log.md merge=union to end structural branch conflicts (harmonic-forge#376)
 - .gitattributes | 15 +++++++++++++++

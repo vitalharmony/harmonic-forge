@@ -68,3 +68,24 @@ def command_segments(command: str) -> list[list[str]]:
         else:
             segments[-1].append(token)
     return [segment for segment in segments if segment]
+
+
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def strip_invocation_prefix(tokens: list[str]) -> list[str]:
+    """Remove shell wrappers before the invoked program."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _ASSIGNMENT.match(token) or token in ("command", "nohup", "time"):
+            index += 1
+        elif token == "env":
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                if tokens[index] in ("-u", "--unset"):
+                    index += 1
+                index += 1
+        else:
+            break
+    return tokens[index:]
