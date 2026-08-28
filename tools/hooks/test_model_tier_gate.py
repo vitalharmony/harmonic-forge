@@ -5,6 +5,7 @@ Run: python3 tools/hooks/test_model_tier_gate.py"""
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -26,10 +27,6 @@ def _completed(stdout="", returncode=0):
     return r
 
 
-ITEMS_JSON = json.dumps({"items": [
-    {"content": {"number": 999}, "estimate": 8},
-]})
-
 # Shape returned by the targeted per-issue GraphQL read (harmonic-forge#250).
 # `deep` is the escalating tier, so this payload exercises the branch that
 # actually gates work.
@@ -45,58 +42,6 @@ class TestCachedItemList(unittest.TestCase):
 
     def tearDown(self):
         self.tmpdir.cleanup()
-
-    def test_second_call_within_ttl_does_not_hit_gh_again(self):
-        """The bug this issue exists to fix: every single Edit/Write/
-        apply_patch call re-ran `gh project item-list --limit 1000` from
-        scratch -- the single most expensive GraphQL call observed live,
-        confirmed to fully drain a 5000-point quota in a handful of calls."""
-        call_count = 0
-
-        def fake_run(cmd):
-            nonlocal call_count
-            call_count += 1
-            return _completed(ITEMS_JSON)
-
-        with patch("model_tier_gate._run", side_effect=fake_run):
-            items1 = m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-            items2 = m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-
-        self.assertEqual(call_count, 1, "second call within TTL must not re-invoke gh")
-        self.assertEqual(items1, items2)
-        self.assertEqual(items1[0]["content"]["number"], 999)
-
-    def test_call_after_ttl_expiry_refetches(self):
-        call_count = 0
-
-        def fake_run(cmd):
-            nonlocal call_count
-            call_count += 1
-            return _completed(ITEMS_JSON)
-
-        with patch("model_tier_gate._run", side_effect=fake_run):
-            m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=0.05)
-            time.sleep(0.1)
-            m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=0.05)
-
-        self.assertEqual(call_count, 2, "cache must expire and refetch after TTL")
-
-    def test_different_owner_number_keys_are_independent(self):
-        def fake_run(cmd):
-            return _completed(ITEMS_JSON)
-
-        with patch("model_tier_gate._run", side_effect=fake_run):
-            m._cached_item_list("owner", "1", cache_dir=self.cache_dir, ttl=120)
-            m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-
-        cached_files = list(self.cache_dir.glob("*.json"))
-        self.assertEqual(len(cached_files), 2, "different boards must not share a cache entry")
-
-    def test_gh_failure_does_not_cache_and_returns_none(self):
-        with patch("model_tier_gate._run", return_value=_completed("", returncode=1)):
-            result = m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-        self.assertIsNone(result)
-        self.assertEqual(list(self.cache_dir.glob("*.json")), [])
 
     def test_resolve_tier_uses_cache_across_two_calls(self):
         """End-to-end: two resolve_tier() calls (simulating two
@@ -123,8 +68,6 @@ class TestCachedItemList(unittest.TestCase):
             e1 = m.resolve_tier("/some/cwd", 999)
             e2 = m.resolve_tier("/some/cwd", 999)
 
-        # estimate=8, no Tier -> legacy fallback -> "deep", preserving the old
-        # `>= THRESHOLD` escalation boundary exactly.
         self.assertEqual(e1, "deep")
         self.assertEqual(e2, "deep")
         self.assertEqual(call_count, 1)
@@ -298,6 +241,39 @@ class ResolveRepoTests(unittest.TestCase):
             self.assertEqual(self._resolve(), "vitalharmony/harmonic-forge")
 
 
+class IssueTargetTests(unittest.TestCase):
+    def _target(self, branch, cwd="/repo"):
+        with patch.object(m, "_run", return_value=_completed(branch + "\n")):
+            return m.resolve_issue_target(cwd)
+
+    def test_documented_and_cross_repo_conventions(self):
+        cases = {
+            "lane2/hrse-1099-cutover": (1099, "hrse"),
+            "tooling/hrse875-sweep-tc-fallback": (875, "hrse"),
+            "feat/367-model-tier": (367, None),
+            "feat/h1209-l1-issue-amend-mode": (1209, "h"),
+            "feat/f318-f321-gemini-lane-wiring": (318, "f"),
+        }
+        for branch, expected in cases.items():
+            with self.subTest(branch=branch):
+                self.assertEqual(self._target(branch), expected)
+
+    def test_detached_hrse_worktree_is_a_known_target(self):
+        with patch.object(m, "_run", return_value=_completed("")):
+            self.assertEqual(m.resolve_issue_target("/tmp/hrse2-1099-impl"), (1099, "hrse"))
+
+    def test_false_positive_shapes_stay_unmatched(self):
+        for branch in (
+            "fix/lane3-worktree-staleness-warning",
+            "fix/lane3-spec-derivation-filter",
+            "docs/lane1-current-assignment-update",
+            "docs/adr-026-federation",
+            "docs/reconcile-priorities-2026-08-22",
+        ):
+            with self.subTest(branch=branch):
+                self.assertIsNone(self._target(branch))
+
+
 class ModelTierFamilies(unittest.TestCase):
     """harmonic-forge#314: the high-tier match was `"opus" in model`, so every
     non-Opus family — including Fable, which is *above* Opus — was treated as
@@ -341,6 +317,122 @@ class ModelTierFamilies(unittest.TestCase):
 
     def test_codex_terra_does_not_satisfy_deep_unchanged(self):
         self.assertFalse(m.required_tier_met({"model": "gpt-5.6-terra"}, True))
+
+
+class BranchReplayTests(unittest.TestCase):
+    """harmonic-forge#367 Lane 1 spec, "Test oracle" section: a bidirectional
+    replay over the last 100 merged head refs in each repo, fixture-frozen
+    (`testdata/f367_{hrse,forge}_refs.txt`) so the assertion doesn't depend
+    on live `gh` access at test time. Regenerate a fixture with:
+    `gh pr list -R vitalharmony/<repo> --state merged --limit 100 --json
+    headRefName -q '.[].headRefName' > tools/hooks/testdata/f367_<repo>_refs.txt`
+
+    Two directions, both required -- "old matches still match" alone is
+    exactly the invariant the second pitch-inspection round's false-positive
+    class (`fix/lane3-*` -> #3, `docs/adr-026-*` -> #26) would have slipped
+    past, because it only checks one direction.
+    """
+
+    OLD_BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
+    FIXTURE_DIR = Path(__file__).parent / "testdata"
+
+    def _refs(self, fixture_name):
+        path = self.FIXTURE_DIR / f"f367_{fixture_name}_refs.txt"
+        return [line for line in path.read_text().splitlines() if line.strip()]
+
+    def _new_target(self, branch):
+        with patch.object(m, "_run", return_value=_completed(branch + "\n")):
+            return m.resolve_issue_target("/repo")
+
+    def _assert_replay(self, fixture_name):
+        refs = self._refs(fixture_name)
+        for ref in refs:
+            old_match = self.OLD_BRANCH_ISSUE_RE.match(ref)
+            old_number = int(old_match.group(1)) if old_match else None
+            new_target = self._new_target(ref)
+            new_number = new_target[0] if new_target else None
+            with self.subTest(ref=ref):
+                if old_number is not None:
+                    # Direction 1: every ref the old matcher resolved must
+                    # still resolve, with the SAME captured number -- not
+                    # just "still matches" (guards the 318 -> 321 class).
+                    self.assertEqual(
+                        new_number, old_number,
+                        f"regression: {ref!r} captured {old_number} under the "
+                        f"old matcher, {new_number} under the new one",
+                    )
+                elif new_number is not None:
+                    # Direction 2: a ref the old matcher did NOT resolve may
+                    # only newly resolve via an explicitly documented new
+                    # convention -- the hint-allowlist capture group. Any
+                    # other path producing a new match here is exactly the
+                    # widened-character-class false-positive class the
+                    # second pitch-inspection round rejected.
+                    self.assertIsNotNone(
+                        new_target[1],
+                        f"unexplained new match: {ref!r} -> {new_number} "
+                        "with no repo hint",
+                    )
+        return refs
+
+    def test_hrse_replay_no_regressions_no_unexplained_matches(self):
+        refs = self._assert_replay("hrse")
+        self.assertEqual(len(refs), 100)
+
+    def test_forge_replay_no_regressions_no_unexplained_matches(self):
+        refs = self._assert_replay("forge")
+        self.assertEqual(len(refs), 100)
+
+
+class MiseTomlConsistencyTests(unittest.TestCase):
+    """harmonic-forge#367 spec: assert each hardcoded HINTED_TARGETS tuple
+    matches that repo's own live mise.toml -- the guard against
+    `resolve_project_board()`'s own documented incident (harmonic-forge#202,
+    a board renumber silently misresolving) recurring in hardcoded form.
+
+    This test file's own repo (harmonic-forge) is always checked. The hrse
+    side needs a sibling checkout this repo's CI does not have (single-repo
+    checkout, see .github/workflows/ci.yml) -- it is skipped, not faked,
+    when no known local hrse checkout is found, so a board renumber Marc can
+    actually observe locally still fails loudly instead of the test lying
+    green in an environment that can't check it.
+    """
+
+    _HRSE_CANDIDATE_PATHS = (
+        Path("~/Harmonic_Projects/HRSE2").expanduser(),
+        Path("~/HRSE2").expanduser(),
+    )
+
+    def _mise_toml_targets(self, repo_root: Path) -> tuple[str, str]:
+        text = (repo_root / "mise.toml").read_text()
+        owner = m._mise_env_value(text, "GH_PROJECT_OWNER")
+        number = m._mise_env_value(text, "GH_PROJECT_NUMBER")
+        repo = m._mise_env_value(text, "GH_REPO")
+        self.assertIsNotNone(owner)
+        self.assertIsNotNone(number)
+        self.assertIsNotNone(repo)
+        return repo, number
+
+    def test_forge_hint_targets_match_live_mise_toml(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        repo, number = self._mise_toml_targets(repo_root)
+        self.assertEqual(repo, "vitalharmony/harmonic-forge")
+        for hint in ("harmonic-forge", "forge", "f"):
+            with self.subTest(hint=hint):
+                self.assertEqual(m.HINTED_TARGETS[hint], (repo, number))
+
+    def test_hrse_hint_targets_match_live_mise_toml(self):
+        repo_root = next(
+            (p for p in self._HRSE_CANDIDATE_PATHS if (p / "mise.toml").exists()),
+            None,
+        )
+        if repo_root is None:
+            self.skipTest("no local hrse checkout found to verify HINTED_TARGETS against")
+        repo, number = self._mise_toml_targets(repo_root)
+        self.assertEqual(repo, "vitalharmony/hrse")
+        for hint in ("hrse", "h"):
+            with self.subTest(hint=hint):
+                self.assertEqual(m.HINTED_TARGETS[hint], (repo, number))
 
 
 class TailRead(unittest.TestCase):

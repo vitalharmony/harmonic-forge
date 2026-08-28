@@ -12,6 +12,17 @@
             "statusMessage": "Checking Lane 2 posting integrity"
           }
         ]
+      },
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking model tier for this issue"
+          }
+        ]
       }
     ]
   }

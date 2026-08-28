@@ -35,9 +35,8 @@ except ImportError:
 # the fail-open path, and a NameError here would deny-by-crash on every
 # Edit/Write instead.
 #
-# `deep` covers what `THRESHOLD = 8` used to: the legacy fallback in
-# resolve_tier() maps >= 8 to deep, so the escalation boundary is unchanged by
-# the rename. That equivalence is the thing to preserve if this is ever retuned.
+# `deep` preserves the former >= 8 escalation boundary. Tier is now the only
+# routing input; do not add a second, numeric fallback here.
 ESCALATING_TIERS = frozenset({"deep"})
 
 # harmonic-forge#203: `gh project item-list --limit 1000` is the single most
@@ -89,6 +88,15 @@ CODEX_HIGH = "gpt-5.6-sol"
 # maintain -- the same staleness this issue was filed for.
 
 BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
+HINTED_BRANCH_ISSUE_RE = re.compile(
+    r"^[\w.-]+/(?P<hint>hrse|harmonic-forge|forge|h|f)-?(?P<number>\d+)-"
+)
+WORKTREE_ISSUE_RE = re.compile(r"^/tmp/hrse2-(?P<number>\d+)-impl$")
+HINTED_TARGETS = {
+    "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),
+    "harmonic-forge": ("vitalharmony/harmonic-forge", "3"),
+    "forge": ("vitalharmony/harmonic-forge", "3"), "f": ("vitalharmony/harmonic-forge", "3"),
+}
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -110,13 +118,23 @@ def _deny(reason: str) -> None:
     sys.exit(0)
 
 
-def resolve_issue_number(cwd: str) -> int | None:
+def resolve_issue_target(cwd: str) -> tuple[int, str | None] | None:
     result = _run(["git", "-C", cwd, "branch", "--show-current"])
-    if result.returncode != 0:
-        return None
-    branch = result.stdout.strip()
-    m = BRANCH_ISSUE_RE.match(branch)
-    return int(m.group(1)) if m else None
+    if result.returncode == 0:
+        branch = result.stdout.strip()
+        hinted = HINTED_BRANCH_ISSUE_RE.match(branch)
+        if hinted:
+            return int(hinted.group("number")), hinted.group("hint")
+        m = BRANCH_ISSUE_RE.match(branch)
+        if m:
+            return int(m.group(1)), None
+    worktree = WORKTREE_ISSUE_RE.match(os.path.realpath(cwd))
+    return (int(worktree.group("number")), "hrse") if worktree else None
+
+
+def resolve_issue_number(cwd: str) -> int | None:
+    target = resolve_issue_target(cwd)
+    return target[0] if target else None
 
 
 def _mise_env_value(mise_toml: str, key: str) -> str | None:
@@ -148,32 +166,6 @@ def resolve_project_board(cwd: str) -> tuple[str, str] | None:
     return (owner, number) if owner and number else None
 
 
-def _cached_item_list(owner: str, number: str, cache_dir: Path = _CACHE_DIR, ttl: float = _CACHE_TTL) -> list | None:
-    """Fetch `gh project item-list`, cached on disk keyed by owner+number.
-
-    Deliberately file-based, not in-process: this hook runs as a brand-new
-    process on every single tool call, so nothing survives between
-    invocations except the filesystem. Cache miss/expiry/failure all just
-    fall through to a live fetch -- fail-open applies here too, a broken
-    cache must never be worse than no cache.
-
-    harmonic-forge#219: delegates the actual fetch/cache mechanics to the
-    shared tools/gh/item_list_cache.py module; this wrapper's only job is
-    preserving the fail-open contract (None on any failure, never raise)
-    and this function's existing call signature (cache_dir/ttl overrides
-    used directly by test_model_tier_gate.py).
-    """
-    if _item_list_cache is None:
-        return None  # shared module unavailable -- fail-open, same as any other resolution failure
-    try:
-        return _item_list_cache.fetch_item_list(
-            number, owner=owner, limit=_item_list_cache.BOARD_ITEM_SCAN_LIMIT,
-            ttl=ttl, run=_run, cache_dir=cache_dir,
-        )
-    except _item_list_cache.GhItemListError:
-        return None
-
-
 def resolve_repo(cwd: str) -> str | None:
     """Read GH_REPO from the repo's own mise.toml (harmonic-forge#250).
 
@@ -195,7 +187,7 @@ def resolve_repo(cwd: str) -> str | None:
         return None
 
 
-def resolve_tier(cwd: str, issue_number: int) -> str | None:
+def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None) -> str | None:
     """Return the issue's Tier (harmonic-forge#257).
 
     harmonic-forge#250: reads *one issue* rather than fetching the whole
@@ -217,13 +209,17 @@ def resolve_tier(cwd: str, issue_number: int) -> str | None:
     """
     if _item_list_cache is None:
         return None  # shared module unavailable -- fail-open
-    board = resolve_project_board(cwd)
-    if board is None:
-        return None
-    repo = resolve_repo(cwd)
-    if repo is None:
-        return None
-    _owner, number = board
+    hinted_target = HINTED_TARGETS.get(repo_hint or "")
+    if hinted_target:
+        repo, number = hinted_target
+    else:
+        board = resolve_project_board(cwd)
+        if board is None:
+            return None
+        repo = resolve_repo(cwd)
+        if repo is None:
+            return None
+        _owner, number = board
     try:
         return _item_list_cache.fetch_issue_tier(
             repo, issue_number, number,
@@ -307,11 +303,12 @@ def _main() -> None:
         _allow()
 
     cwd = payload.get("cwd") or os.getcwd()
-    issue_number = resolve_issue_number(cwd)
-    if issue_number is None:
+    target = resolve_issue_target(cwd)
+    if target is None:
         _allow()
+    issue_number, repo_hint = target
 
-    tier = resolve_tier(cwd, issue_number)
+    tier = resolve_tier(cwd, issue_number, repo_hint)
     if tier not in ESCALATING_TIERS:
         _allow()
 
