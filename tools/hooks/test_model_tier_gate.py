@@ -5,6 +5,7 @@ Run: python3 tools/hooks/test_model_tier_gate.py"""
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -262,7 +263,13 @@ class IssueTargetTests(unittest.TestCase):
             self.assertEqual(m.resolve_issue_target("/tmp/hrse2-1099-impl"), (1099, "hrse"))
 
     def test_false_positive_shapes_stay_unmatched(self):
-        for branch in ("fix/lane3-worktree-staleness-warning", "docs/adr-026-federation"):
+        for branch in (
+            "fix/lane3-worktree-staleness-warning",
+            "fix/lane3-spec-derivation-filter",
+            "docs/lane1-current-assignment-update",
+            "docs/adr-026-federation",
+            "docs/reconcile-priorities-2026-08-22",
+        ):
             with self.subTest(branch=branch):
                 self.assertIsNone(self._target(branch))
 
@@ -310,6 +317,122 @@ class ModelTierFamilies(unittest.TestCase):
 
     def test_codex_terra_does_not_satisfy_deep_unchanged(self):
         self.assertFalse(m.required_tier_met({"model": "gpt-5.6-terra"}, True))
+
+
+class BranchReplayTests(unittest.TestCase):
+    """harmonic-forge#367 Lane 1 spec, "Test oracle" section: a bidirectional
+    replay over the last 100 merged head refs in each repo, fixture-frozen
+    (`testdata/f367_{hrse,forge}_refs.txt`) so the assertion doesn't depend
+    on live `gh` access at test time. Regenerate a fixture with:
+    `gh pr list -R vitalharmony/<repo> --state merged --limit 100 --json
+    headRefName -q '.[].headRefName' > tools/hooks/testdata/f367_<repo>_refs.txt`
+
+    Two directions, both required -- "old matches still match" alone is
+    exactly the invariant the second pitch-inspection round's false-positive
+    class (`fix/lane3-*` -> #3, `docs/adr-026-*` -> #26) would have slipped
+    past, because it only checks one direction.
+    """
+
+    OLD_BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
+    FIXTURE_DIR = Path(__file__).parent / "testdata"
+
+    def _refs(self, fixture_name):
+        path = self.FIXTURE_DIR / f"f367_{fixture_name}_refs.txt"
+        return [line for line in path.read_text().splitlines() if line.strip()]
+
+    def _new_target(self, branch):
+        with patch.object(m, "_run", return_value=_completed(branch + "\n")):
+            return m.resolve_issue_target("/repo")
+
+    def _assert_replay(self, fixture_name):
+        refs = self._refs(fixture_name)
+        for ref in refs:
+            old_match = self.OLD_BRANCH_ISSUE_RE.match(ref)
+            old_number = int(old_match.group(1)) if old_match else None
+            new_target = self._new_target(ref)
+            new_number = new_target[0] if new_target else None
+            with self.subTest(ref=ref):
+                if old_number is not None:
+                    # Direction 1: every ref the old matcher resolved must
+                    # still resolve, with the SAME captured number -- not
+                    # just "still matches" (guards the 318 -> 321 class).
+                    self.assertEqual(
+                        new_number, old_number,
+                        f"regression: {ref!r} captured {old_number} under the "
+                        f"old matcher, {new_number} under the new one",
+                    )
+                elif new_number is not None:
+                    # Direction 2: a ref the old matcher did NOT resolve may
+                    # only newly resolve via an explicitly documented new
+                    # convention -- the hint-allowlist capture group. Any
+                    # other path producing a new match here is exactly the
+                    # widened-character-class false-positive class the
+                    # second pitch-inspection round rejected.
+                    self.assertIsNotNone(
+                        new_target[1],
+                        f"unexplained new match: {ref!r} -> {new_number} "
+                        "with no repo hint",
+                    )
+        return refs
+
+    def test_hrse_replay_no_regressions_no_unexplained_matches(self):
+        refs = self._assert_replay("hrse")
+        self.assertEqual(len(refs), 100)
+
+    def test_forge_replay_no_regressions_no_unexplained_matches(self):
+        refs = self._assert_replay("forge")
+        self.assertEqual(len(refs), 100)
+
+
+class MiseTomlConsistencyTests(unittest.TestCase):
+    """harmonic-forge#367 spec: assert each hardcoded HINTED_TARGETS tuple
+    matches that repo's own live mise.toml -- the guard against
+    `resolve_project_board()`'s own documented incident (harmonic-forge#202,
+    a board renumber silently misresolving) recurring in hardcoded form.
+
+    This test file's own repo (harmonic-forge) is always checked. The hrse
+    side needs a sibling checkout this repo's CI does not have (single-repo
+    checkout, see .github/workflows/ci.yml) -- it is skipped, not faked,
+    when no known local hrse checkout is found, so a board renumber Marc can
+    actually observe locally still fails loudly instead of the test lying
+    green in an environment that can't check it.
+    """
+
+    _HRSE_CANDIDATE_PATHS = (
+        Path("~/Harmonic_Projects/HRSE2").expanduser(),
+        Path("~/HRSE2").expanduser(),
+    )
+
+    def _mise_toml_targets(self, repo_root: Path) -> tuple[str, str]:
+        text = (repo_root / "mise.toml").read_text()
+        owner = m._mise_env_value(text, "GH_PROJECT_OWNER")
+        number = m._mise_env_value(text, "GH_PROJECT_NUMBER")
+        repo = m._mise_env_value(text, "GH_REPO")
+        self.assertIsNotNone(owner)
+        self.assertIsNotNone(number)
+        self.assertIsNotNone(repo)
+        return repo, number
+
+    def test_forge_hint_targets_match_live_mise_toml(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        repo, number = self._mise_toml_targets(repo_root)
+        self.assertEqual(repo, "vitalharmony/harmonic-forge")
+        for hint in ("harmonic-forge", "forge", "f"):
+            with self.subTest(hint=hint):
+                self.assertEqual(m.HINTED_TARGETS[hint], (repo, number))
+
+    def test_hrse_hint_targets_match_live_mise_toml(self):
+        repo_root = next(
+            (p for p in self._HRSE_CANDIDATE_PATHS if (p / "mise.toml").exists()),
+            None,
+        )
+        if repo_root is None:
+            self.skipTest("no local hrse checkout found to verify HINTED_TARGETS against")
+        repo, number = self._mise_toml_targets(repo_root)
+        self.assertEqual(repo, "vitalharmony/hrse")
+        for hint in ("hrse", "h"):
+            with self.subTest(hint=hint):
+                self.assertEqual(m.HINTED_TARGETS[hint], (repo, number))
 
 
 class TailRead(unittest.TestCase):
