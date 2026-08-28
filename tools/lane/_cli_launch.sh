@@ -75,6 +75,42 @@ case "$_lane_cli" in
                "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}"
                GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true
                "$_lane_cli")
+    # harmonic-forge#362: the admin-tier policy is the only mechanism
+    # proven live (harmonic-forge#326) to survive --yolo and remove denied
+    # tools from the model's tool list entirely, so it must be supplied
+    # unconditionally here -- never left to the caller's own shell/args.
+    # Lane 3 gets no policy from this launcher: harmonic-forge#326 owns its
+    # own file and is not yet built, so a Gemini Lane 3 session is not
+    # policy-protected today (untouched by this issue's scope).
+    _policies_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/policies"
+    _policy_path=""
+    case "${LANE:-}" in
+      1) _policy_path="$_policies_dir/gemini-lane1.toml" ;;
+      2) _policy_path="$_policies_dir/gemini-lane2.toml" ;;
+    esac
+    if [ -n "$_policy_path" ]; then
+      # hrse#362 AC5, corrected against live behavior: the CLI itself does
+      # NOT fail closed on a missing or invalid --admin-policy file --
+      # verified live, 2026-08-28: both a nonexistent path and a
+      # syntactically broken TOML file print only a stderr warning
+      # (`[ADMIN] Policy file error in ...`) and the session starts anyway,
+      # completely unprotected under --yolo (confirmed: write_file
+      # succeeded with a missing policy file in the same run that printed
+      # the warning). A caller not watching stderr -- exactly this
+      # launcher's own non-interactive invocation shape -- would never
+      # notice. Fail-closed has to be enforced HERE, at the one place that
+      # can still refuse to launch at all, since the CLI itself won't.
+      if [ ! -f "$_policy_path" ]; then
+        echo "lane launcher: admin policy file missing: $_policy_path -- refusing to launch an unprotected Gemini session (harmonic-forge#362)" >&2
+        exit 1
+      fi
+      if ! python3 -c "import sys,tomllib; tomllib.load(open(sys.argv[1],'rb'))" "$_policy_path" 2>/dev/null; then
+        echo "lane launcher: admin policy file is not valid TOML: $_policy_path -- refusing to launch an unprotected Gemini session (harmonic-forge#362)" >&2
+        exit 1
+      fi
+      cli_args+=(--admin-policy "$_policy_path")
+    fi
+    unset _policies_dir _policy_path
     ;;
   *)
     # codex and anything else: bare passthrough, no injected defaults.

@@ -1,0 +1,83 @@
+# Admin-tier policy for a Gemini Lane 2 (Muscle/implementer) session
+# (harmonic-forge#362).
+#
+# Same mechanism and priority-ordering rules as gemini-lane1.toml -- read
+# that file's header comment for the live-verified schema details
+# (priority range, tier transformation, first-match-wins semantics). Not
+# repeated here to avoid the two files drifting on the shared explanation.
+#
+# Scope (harmonic-forge#362 REFORGE decision 1, after Lane 1's pitch-inspection
+# found the original design -- an `argsPattern`/`commandPrefix` deny-list on an
+# otherwise-open `run_shell_command` -- does not structurally work as a
+# boundary): Lane 2's real shell surface (`git commit`, `mise run *`, `npm`,
+# `pytest`, arbitrary test invocations) is not allowlistable without breaking
+# ordinary implementation work, and a deny-list on an open shell is bypassable
+# by one level of shell-wrapper indirection (`bash -c "gh issue close 362"`),
+# the identical class of gap `block_irreversible_ops.py`'s own docstring
+# already concedes and rules out chasing for Claude. Ship the achievable
+# state, not a policy that reads as enforced but isn't:
+#
+# - Only the whole-tool global denies below are enforced (proven live,
+#   harmonic-forge#326: the tool becomes absent from the model's own tool
+#   list, a structural property no `argsPattern`/`commandPrefix` rule can
+#   claim, since a matched call still leaves the tool visible and only
+#   refuses that one matched call).
+# - `run_shell_command` is FULLY OPEN under this policy -- not
+#   policy-mediated at all, because Lane 2's legitimate shell surface
+#   (`git commit`, `mise run *`, `npm`, `pytest`, ad hoc test invocations)
+#   cannot be allowlisted without breaking ordinary implementation work, and
+#   `write_file`/`replace` are Lane 2's actual job -- allowed, not denied,
+#   unlike Lane 1's policy (Lane 1 never edits files at all; Lane 2 does
+#   nothing but).
+#
+# **AC4 ("`gh issue close` and `gh pr merge` demonstrably unavailable") IS
+# NOT MET for Lane 2 under this issue.** "Gemini approved for Lane 1 only"
+# (3-lane-protocol.md's adapter-contract section) stands for any
+# Lane-2-shell-mediated write until a real enforcement design exists for an
+# open shell -- not invented here; a separate, not-yet-filed follow-up if the
+# operator wants it pursued.
+
+# Default-deny base (same rationale as gemini-lane1.toml's decision 2): a
+# new MCP tool or extension is denied by default. Everything Lane 2 actually
+# needs -- including the wide-open run_shell_command -- is allowed explicitly
+# below, at the same priority, so the catch-all never swallows real work.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 0
+denyMessage = "harmonic-forge#362: default-deny admin-tier base -- this tool is not on Lane 2's explicit allow list."
+
+# Whole-tool global denies -- structurally enforceable (tool absent from the
+# tool list). Neither has any legitimate Lane 2 use within the standard
+# 3-lane loop.
+[[rule]]
+toolName = ["activate_skill", "invoke_agent"]
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#362: Lane 2 does not spawn nested skills/agents outside the standard 3-lane loop."
+
+# Everything else Lane 2 actually needs: file writes (its entire job),
+# read/context tools, and an intentionally UNCONSTRAINED run_shell_command
+# (see the file header -- not a boundary under this issue, recorded
+# explicitly rather than faked).
+[[rule]]
+toolName = [
+  "write_file",
+  "replace",
+  "read_file",
+  "read_many_files",
+  "list_directory",
+  "glob",
+  "grep_search",
+  "google_web_search",
+  "web_fetch",
+  "enter_plan_mode",
+  "update_topic",
+]
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "allow"
+priority = 999
