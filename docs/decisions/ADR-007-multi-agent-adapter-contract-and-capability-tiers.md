@@ -169,9 +169,9 @@ enforcement is an admin-tier policy passed at launch.
 | `tools/gh/block_closing_keywords.py` | closing keywords in PR bodies, `gh issue comment`/`edit`, and `gh api -X PATCH` on comments | all | **gap** | admin-policy deny (#362) |
 | `block_irreversible_ops.py` | unrecoverable git/filesystem ops (asks; does not deny) | all | partial — `gate_codex_tool.py` denies Lane 3 git mutations, `sudo`, `sh -c`/`python -c` indirection, package installs | admin-policy deny (#362 for L1/2, #326 for L3) |
 | `model_tier_gate.py` | `deep` issue on a low-tier model | all | **supported** — `CODEX_HIGH = "gpt-5.6-sol"`, wired via the `^apply_patch$` matcher; HRSE2 confirmed live 2026-08-09 | **gap — #323** |
-| `deny_lane3_ae_self_post.py` | Lane 3 self-authorizing | 3 | **gap** | admin-policy deny (#326) |
+| `deny_lane3_ae_self_post.py` | Lane 3 self-authorizing | 3 | **gap** | **covered** (#326) — self-posting needs `run_shell_command`, denied whole-tool at Lane 3 |
 | `deny_advisory_subagent_gh_writes.py` | advisory subagents writing to GitHub | 1 | **gap** | admin-policy deny (#362) |
-| `lane3_cloud_cli_policy.py` | `kubectl`/`doctl` write ops inside a gate | 3 | **gap** | admin-policy deny (#326) |
+| `lane3_cloud_cli_policy.py` | `kubectl`/`doctl` write ops inside a gate | 3 | **gap** | **covered** (#326) — both are shell invocations, denied whole-tool at Lane 3 |
 | `block_data_migration_close.py` | closing a data-migration issue before it is executed | all (no `LANE` check) | **gap** | admin-policy deny (#362) |
 | `block_stale_script_execution.py` | running a script from a checkout missing its fix | all | **gap** | not yet designed |
 | `block_inline_prose.py` | multi-line prose through a bash string literal | all | **gap** | not yet designed |
@@ -219,7 +219,7 @@ this ADR:
 |---|---|---|---|---|---|---|
 | **Claude Code** 2.1.239 | supported | supported | supported | supported | supported | operator-launched |
 | **Codex** 0.149.0 | supported¹ | supported¹ | unqualified | unqualified | unqualified | operator-launched |
-| **Gemini** 0.56.0 | **supported** (#318, now admin-policy-protected, #362) | **partially supported²** (#362) | **blocked** — #326 | **blocked** — #327 | **blocked** — #327 | **blocked** — #327 |
+| **Gemini** 0.56.0 | **supported** (#318, now admin-policy-protected, #362) | **partially supported²** (#362) | **supported³** (#326) | **blocked** — #327 | **blocked** — #327 | **blocked** — #327 |
 
 ¹ with accepted residual gaps, below.
 ² whole-tool global denies (`activate_skill`/`invoke_agent`) are real,
@@ -232,6 +232,20 @@ a policy, rather than appending `"$@"` after it and letting last-flag-wins
 decide. That closes the launcher-side dependency this footnote used to carry;
 it does not make the policy a boundary the model cannot reason past, which § 9
 is explicit is a different claim.
+
+³ **Lane 3 tier 1 only — static review, no test execution, no live services,
+no migrations** (harmonic-forge#326). `tools/lane/policies/gemini-lane3.toml`,
+armed by `AGENT_LANE_POLICY[gemini:3]` and un-removable via passthrough. It
+denies **whole-tool** the seven tools verified live to be both registered in a
+headless session and capable of mutation, egress, or nesting:
+`run_shell_command`, `write_file`, `replace`, `web_fetch`, `google_web_search`,
+`activate_skill`, `invoke_agent`. There is deliberately **no argument-scoped
+rule** — harmonic-forge#412 established that a `commandPrefix` allowlist on
+`run_shell_command` is not a boundary, so the gate's context is pre-staged to
+files by `tools/lane/lane3-stage-context` instead of being fetched in-session.
+**This cell is qualified only on a passing run of
+`tools/lane/policies/canary/run_canary.py` by Lane 3**, per the reading rule
+below that a cell is earned by its own suite at a recorded CLI version.
 
 ### Vocabulary — every cell is exactly one of these
 

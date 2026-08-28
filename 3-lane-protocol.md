@@ -523,8 +523,8 @@ are operative here:
    Lane 3 tier 1 confers nothing about tier 2, and a qualification is
    against a specific CLI version.
 
-**Current state: Gemini is approved for Lane 1, and partially for Lane 2**
-(harmonic-forge#318/#362). #362 landed an admin-tier policy
+**Current state: Gemini is approved for Lane 1, partially for Lane 2, and for
+Lane 3 tier 1 (static review) only** (harmonic-forge#318/#362/#326). #362 landed an admin-tier policy
 (`tools/lane/policies/gemini-lane1.toml`/`gemini-lane2.toml`, wired through
 `_cli_launch.sh`'s `gemini*` branch) that structurally denies `write_file`/
 `replace` for Lane 1 (role boundary — Lane 1 never edits files) and
@@ -547,6 +547,41 @@ and letting last-flag-wins decide. That closes the launcher-side half of the
 dependency F326 carries — it does not make the policy a boundary the model
 cannot reason past, which is a separate claim this platform deliberately does
 not make (ADR-007 § 9).
+
+#### Gemini Lane 3 — tier 1 (static review) only
+
+`tools/lane/policies/gemini-lane3.toml` (harmonic-forge#326), armed by
+`AGENT_LANE_POLICY[gemini:3]`. **Tier 1 is static review: no test execution,
+no live services, no migrations** — tiers 2–4 are harmonic-forge#327's and
+remain blocked.
+
+It denies **whole-tool** the seven tools verified live to be both registered in
+a headless session and capable of mutation, egress, or nesting:
+`run_shell_command`, `write_file`, `replace`, `web_fetch`, `google_web_search`,
+`activate_skill`, `invoke_agent`. It carries **no argument-scoped rule at all**,
+which is the substantive difference from the Lane 1 policy above and the
+lesson of harmonic-forge#412: a `commandPrefix` allowlist on
+`run_shell_command` is not a boundary, because redirection is only downgraded
+to `ASK_USER` (and that downgrade is off under `--yolo`), and a native write
+flag such as `git diff --output=<path>` contains no shell metacharacter for any
+pattern to catch.
+
+**So a Gemini Lane 3 session cannot fetch its own context.** Run
+`lane3-stage-context --issue <N>` first: it writes the Lane-1-only issue
+context (preserving harmonic-forge#253's filter — Lane 3 still never sees Lane
+2's completion comment), the diff, and a manifest into
+`<worktree>/.lane3-context/`, which the session reads with `read_file`.
+
+```bash
+lane3-stage-context --issue 326    # stage the gate's inputs
+lane3 --agent gemini               # then gate
+```
+
+**The tier is qualified only by a passing run of
+`tools/lane/policies/canary/run_canary.py`, executed by Lane 3** — not by the
+author of the policy. Re-run it on every Gemini CLI upgrade; ADR-007's reading
+rule is that a cell is qualified against a version, and an upgrade invalidates
+it until the suite is re-run.
 
 ### Lane role signal — `LANE`
 
