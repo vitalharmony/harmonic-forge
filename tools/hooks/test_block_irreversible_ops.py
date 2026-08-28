@@ -53,6 +53,31 @@ class AsksTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertTrue(concerns(cmd), cmd)
 
+    def test_git_clean_behind_global_flags(self):
+        """harmonic-forge#369: `tokens[1:2]` used to pin the subcommand to
+        index 1, so any global flag before `clean` bypassed this entirely.
+        `git -C` is the standing idiom for agents working in worktrees --
+        exactly the population this guards."""
+        for cmd in (
+            "git -C /tmp/x clean -fd",
+            "git -C /tmp/scratch clean -xfd",
+            "git --git-dir=/tmp/x/.git clean -fd",
+            "git --git-dir /tmp/x/.git clean -fd",
+            "git --work-tree=/tmp/x clean -xfd",
+            "git --work-tree /tmp/x clean -xfd",
+            "git -c core.pager=cat clean -fd",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(concerns(cmd), cmd)
+
+    def test_git_clean_dry_run_stays_unprompted(self):
+        """`-n`/`--dry-run` deletes nothing -- no regression from the
+        global-flag generalization above."""
+        for cmd in ("git clean -n", "git clean --dry-run",
+                    "git -C /tmp/x clean -n"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(concerns(cmd), cmd)
+
 
 class MultiClauseTests(unittest.TestCase):
     """The class all 40 original tests omitted, and that broke round 4."""

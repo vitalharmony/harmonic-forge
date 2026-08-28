@@ -25,6 +25,14 @@
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_irreversible_ops.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\""
           }
         ]
       },
