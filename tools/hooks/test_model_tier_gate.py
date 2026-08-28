@@ -26,10 +26,6 @@ def _completed(stdout="", returncode=0):
     return r
 
 
-ITEMS_JSON = json.dumps({"items": [
-    {"content": {"number": 999}, "estimate": 8},
-]})
-
 # Shape returned by the targeted per-issue GraphQL read (harmonic-forge#250).
 # `deep` is the escalating tier, so this payload exercises the branch that
 # actually gates work.
@@ -45,58 +41,6 @@ class TestCachedItemList(unittest.TestCase):
 
     def tearDown(self):
         self.tmpdir.cleanup()
-
-    def test_second_call_within_ttl_does_not_hit_gh_again(self):
-        """The bug this issue exists to fix: every single Edit/Write/
-        apply_patch call re-ran `gh project item-list --limit 1000` from
-        scratch -- the single most expensive GraphQL call observed live,
-        confirmed to fully drain a 5000-point quota in a handful of calls."""
-        call_count = 0
-
-        def fake_run(cmd):
-            nonlocal call_count
-            call_count += 1
-            return _completed(ITEMS_JSON)
-
-        with patch("model_tier_gate._run", side_effect=fake_run):
-            items1 = m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-            items2 = m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-
-        self.assertEqual(call_count, 1, "second call within TTL must not re-invoke gh")
-        self.assertEqual(items1, items2)
-        self.assertEqual(items1[0]["content"]["number"], 999)
-
-    def test_call_after_ttl_expiry_refetches(self):
-        call_count = 0
-
-        def fake_run(cmd):
-            nonlocal call_count
-            call_count += 1
-            return _completed(ITEMS_JSON)
-
-        with patch("model_tier_gate._run", side_effect=fake_run):
-            m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=0.05)
-            time.sleep(0.1)
-            m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=0.05)
-
-        self.assertEqual(call_count, 2, "cache must expire and refetch after TTL")
-
-    def test_different_owner_number_keys_are_independent(self):
-        def fake_run(cmd):
-            return _completed(ITEMS_JSON)
-
-        with patch("model_tier_gate._run", side_effect=fake_run):
-            m._cached_item_list("owner", "1", cache_dir=self.cache_dir, ttl=120)
-            m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-
-        cached_files = list(self.cache_dir.glob("*.json"))
-        self.assertEqual(len(cached_files), 2, "different boards must not share a cache entry")
-
-    def test_gh_failure_does_not_cache_and_returns_none(self):
-        with patch("model_tier_gate._run", return_value=_completed("", returncode=1)):
-            result = m._cached_item_list("owner", "3", cache_dir=self.cache_dir, ttl=120)
-        self.assertIsNone(result)
-        self.assertEqual(list(self.cache_dir.glob("*.json")), [])
 
     def test_resolve_tier_uses_cache_across_two_calls(self):
         """End-to-end: two resolve_tier() calls (simulating two
@@ -123,8 +67,6 @@ class TestCachedItemList(unittest.TestCase):
             e1 = m.resolve_tier("/some/cwd", 999)
             e2 = m.resolve_tier("/some/cwd", 999)
 
-        # estimate=8, no Tier -> legacy fallback -> "deep", preserving the old
-        # `>= THRESHOLD` escalation boundary exactly.
         self.assertEqual(e1, "deep")
         self.assertEqual(e2, "deep")
         self.assertEqual(call_count, 1)
@@ -296,6 +238,33 @@ class ResolveRepoTests(unittest.TestCase):
         (self.root / "mise.toml").write_text('GH_REPO = "vitalharmony/harmonic-forge"\n')
         with patch.dict(os.environ, {"GH_REPO": "vitalharmony/hrse"}):
             self.assertEqual(self._resolve(), "vitalharmony/harmonic-forge")
+
+
+class IssueTargetTests(unittest.TestCase):
+    def _target(self, branch, cwd="/repo"):
+        with patch.object(m, "_run", return_value=_completed(branch + "\n")):
+            return m.resolve_issue_target(cwd)
+
+    def test_documented_and_cross_repo_conventions(self):
+        cases = {
+            "lane2/hrse-1099-cutover": (1099, "hrse"),
+            "tooling/hrse875-sweep-tc-fallback": (875, "hrse"),
+            "feat/367-model-tier": (367, None),
+            "feat/h1209-l1-issue-amend-mode": (1209, "h"),
+            "feat/f318-f321-gemini-lane-wiring": (318, "f"),
+        }
+        for branch, expected in cases.items():
+            with self.subTest(branch=branch):
+                self.assertEqual(self._target(branch), expected)
+
+    def test_detached_hrse_worktree_is_a_known_target(self):
+        with patch.object(m, "_run", return_value=_completed("")):
+            self.assertEqual(m.resolve_issue_target("/tmp/hrse2-1099-impl"), (1099, "hrse"))
+
+    def test_false_positive_shapes_stay_unmatched(self):
+        for branch in ("fix/lane3-worktree-staleness-warning", "docs/adr-026-federation"):
+            with self.subTest(branch=branch):
+                self.assertIsNone(self._target(branch))
 
 
 class ModelTierFamilies(unittest.TestCase):

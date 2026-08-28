@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(tooling): resolve model tier gate issue targets (harmonic-forge#367)
+- ...-agent-adapter-contract-and-capability-tiers.md |  2 +-
+- tools/hooks/model_tier_gate.py                     | 89 +++++++++++-----------
+- tools/hooks/test_model_tier_gate.py                | 85 +++++++--------------
+- 6 files changed, 90 insertions(+), 108 deletions(-)
+
 ## fix(tooling): transaction-log.md merge=union to end structural branch conflicts (harmonic-forge#376)
 - .gitattributes | 15 +++++++++++++++
 - 1 file changed, 15 insertions(+)

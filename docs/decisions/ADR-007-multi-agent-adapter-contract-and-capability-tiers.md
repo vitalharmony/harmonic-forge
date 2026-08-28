@@ -165,7 +165,7 @@ enforcement is an admin-tier policy passed at launch.
 | `block_lane2_status_claims.py` | raw GitHub issue-post transports for `LANE=2` (harmonic-forge#371 — Lane 2's own unverified status claims, previously carved out of `block_lane1_status_claims.py` entirely) | 2 | **supported** — `harmonic-forge/.codex/hooks.json`, wired directly to the canonical module (no per-repo wrapper needed, unlike HRSE2's `gate_codex_tool.py`) | **gap** — no admin-policy equivalent authored yet; not in this issue's scope |
 | `tools/gh/block_closing_keywords.py` | closing keywords in PR bodies, `gh issue comment`/`edit`, and `gh api -X PATCH` on comments | all | **gap** | admin-policy deny (#362) |
 | `block_irreversible_ops.py` | unrecoverable git/filesystem ops (asks; does not deny) | all | partial — `gate_codex_tool.py` denies Lane 3 git mutations, `sudo`, `sh -c`/`python -c` indirection, package installs | admin-policy deny (#362 for L1/2, #326 for L3) |
-| `model_tier_gate.py` | `deep` issue on a low-tier model | all | **supported** — `CODEX_HIGH = "gpt-5.6-sol"`, wired via the `^apply_patch$` matcher, confirmed live 2026-08-09 | **gap — #323** |
+| `model_tier_gate.py` | `deep` issue on a low-tier model | all | **supported** — `CODEX_HIGH = "gpt-5.6-sol"`, wired via the `^apply_patch$` matcher; HRSE2 confirmed live 2026-08-09 | **gap — #323** |
 | `deny_lane3_ae_self_post.py` | Lane 3 self-authorizing | 3 | **gap** | admin-policy deny (#326) |
 | `deny_advisory_subagent_gh_writes.py` | advisory subagents writing to GitHub | 1 | **gap** | admin-policy deny (#362) |
 | `lane3_cloud_cli_policy.py` | `kubectl`/`doctl` write ops inside a gate | 3 | **gap** | admin-policy deny (#326) |

@@ -94,7 +94,7 @@ that kept getting violated became executable hooks in `tools/hooks/`:
 |---|---|
 | `block_lane1_status_claims.py` | Lane 1 posting unverified status, or a Lane 2 session writing into the main checkout |
 | `deny_lane3_ae_self_post.py` | Lane 3 authorizing its own approval |
-| `model_tier_gate.py` | High-estimate issues entering a lane on an under-powered model |
+| `model_tier_gate.py` | `deep`-Tier issues entering a lane on an under-powered model |
 | `mypy_cwd_trap.py` | A known mechanical footgun that produced phantom type errors |
 | `remind_gate_readiness_sweep.py` | Gate-readiness claims that skipped the sweep |
 | `check_worktree_busy.py` | A checkout yanking state out from under a live process in a sibling worktree |
@@ -167,8 +167,8 @@ worktree rule is now enforced by tooling.
 
 ## How a change actually moves
 
-1. **An issue exists.** Nothing enters a lane without one. It carries a point
-   estimate, and 13+ points triggers a decomposition check before any lane starts.
+1. **An issue exists.** Nothing enters a lane without one. It carries a Tier
+   model-routing field, and deep work triggers the high-tier model gate.
 2. **Lane 1 diagnoses and specs.** It reads the code, finds the root cause, and
    posts a structured handoff to the issue — root cause, explicit spec, test
    cases, load-bearing assumptions marked verified or asserted. If the design had
