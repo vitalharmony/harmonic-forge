@@ -100,8 +100,11 @@ message and removes a class of confusion entirely.
 **Alternative rejected — keep `LANE_CLI` as the only interface.** It is an
 arbitrary string execed directly, which is not a registry and cannot carry
 per-agent defaults, version floors, or safety profiles. The interim
-`tools/lane/_cli_launch.sh` (harmonic-forge#318) is a `case` over that
-string and is explicitly a stopgap this ADR expects #322 to replace.
+`tools/lane/_cli_launch.sh` (harmonic-forge#318) was a `case` over that
+string; harmonic-forge#322 replaced it with `tools/lane/_agent_registry.sh`,
+and `LANE_CLI` is now resolved by prefix against that same closed list —
+a value matching no registered agent is refused rather than execed, closing
+the bypass an unmatched string used to represent.
 
 ### 4. Lane 3 protection covers repository files, Git, GitHub, services, network, and live data
 
@@ -132,7 +135,7 @@ An agent filling lane *N* must provide all of the following.
 
 | # | Requirement | Why it is load-bearing |
 |---|---|---|
-| 1 | **Immutable `LANE` and `LANE_AGENT`** in the process and its whole subprocess tree | Every hook and every self-check keys on `LANE`; a mutable value means a session can talk itself into another lane's authority |
+| 1 | **`LANE` and `LANE_AGENT` fixed for the session's lifetime**, in the process and its whole subprocess tree | Every hook and every self-check keys on `LANE`; a mutable value means a session can talk itself into another lane's authority. "Fixed", not "immutable-by-enforcement": the guarantee is process-environment inheritance — a child cannot alter its parent's — because `readonly` does not survive the launcher's `exec` (harmonic-forge#322) |
 | 2 | **Correct worktree**, entered by the launcher, never by the agent | Lane isolation is directory isolation |
 | 3 | **Scoped GitHub credentials** (`GH_CONFIG_DIR` per account) | Cross-account writes are silent and attributable to the wrong identity |
 | 4 | **Canonical context** — loads the repo's `docs/agent-foundation.md` through its own native entrypoint | An agent operating from another tool's mechanics is worse than one operating from none |
@@ -222,9 +225,13 @@ this ADR:
 ² whole-tool global denies (`activate_skill`/`invoke_agent`) are real,
 canary-proven boundaries; `run_shell_command` is intentionally
 unmediated (§ 7's #362 note above) -- AC4 (`gh issue close`/`gh pr merge`
-demonstrably unavailable) is explicitly NOT met. Neither lane's policy is
-yet proven un-removable via a passthrough `--admin-policy` -- blocked on
-harmonic-forge#322, same dependency F326 already carries for Lane 3.
+demonstrably unavailable) is explicitly NOT met. Both lanes' policies **are**
+now un-removable via a passthrough `--admin-policy` (harmonic-forge#322 AC4):
+the launcher rejects the flag outright at any lane whose registry slot declares
+a policy, rather than appending `"$@"` after it and letting last-flag-wins
+decide. That closes the launcher-side dependency this footnote used to carry;
+it does not make the policy a boundary the model cannot reason past, which § 9
+is explicit is a different claim.
 
 ### Vocabulary — every cell is exactly one of these
 
@@ -260,6 +267,32 @@ it is no longer accepted.
   closed on live evidence in the same issue — Codex's should follow the
   same admin-policy-shaped pattern rather than being designed under this
   amendment's narrower scope. Flagged for a follow-up, not silently carried.
+- **Codex, Lane 3: contract item 5 is unmet, and `--sandbox read-only` is
+  deliberately NOT passed** (harmonic-forge#322). #322's AC4 required Lane 3
+  safety flags to be un-removable via passthrough, and the obvious move was to
+  start injecting `--sandbox read-only` for Codex at Lane 3 and deny its
+  removal. That was **dropped** after live testing against `codex-cli 0.150.1`
+  found at least five further passthrough paths that defeat or escalate past
+  it — `-s danger-full-access` (the short form of the very flag a denylist
+  blocks), `-c sandbox_mode=...`, `-p/--profile <name>` loading an arbitrary
+  on-disk config, `--add-dir`, and `--approve-for-me` — none of which a
+  denylist enumerated, on a CLI flag surface that moved twice in one week. A
+  denylist against a surface like that cannot hold the property AC4 asserts,
+  and § 8's own residual-gap entry above already records that the flag *does
+  not reliably enforce* even when passed. Shipping it would have produced an
+  "un-removable" claim that is factually false — the same "reads as enforced
+  but isn't" mistake that reforged #362. Accepted as a gap instead, with the
+  remediation path this list already names for Codex: `.codex/hooks.json` plus
+  a `gate_codex_tool.py`-style dispatcher.
+- **Claude, Lane 3: `--permission-mode` remains an honored operator override.**
+  `_cli_launch.sh` deliberately suppresses its injected default when the caller
+  passes the flag explicitly (harmonic-forge#179), at every lane. #322 kept
+  that unchanged rather than letting AC4's rejection scan swallow it: it is an
+  affordance operators use today, and tightening Lane 3's Claude posture is
+  real work with its own blast radius. Recorded here so the resulting
+  three-way asymmetry is explicit rather than implicit — **Claude has an
+  honored override, Codex has no launcher-side mechanism at all and awaits
+  hook-based enforcement, Gemini gets an un-removable admin policy.**
 
 **Reading rules, all three of which are the point of having a matrix:**
 
@@ -404,16 +437,41 @@ no matrix row. Filing that as an explicit AC on #325 is the follow-up; until
 then § 7 is a checklist maintained by hand, and it started three rows short
 in review — which is the argument for mechanizing it.
 
-**`tools/lane/_cli_launch.sh` is explicitly interim.** harmonic-forge#318
-shipped a `case` over `LANE_CLI` because it was the smallest thing that made
-Gemini launchable. Precisely: the launchers satisfy item 2, and item 3 via
-`tools/lane/_gh_config_dir.sh`; item 4 holds per-repo (true for
-harmonic-forge and cymagraph-infra after #321, **false for HRSE2** while its
-`GEMINI.md` is a symlink); **item 1 is only half met — `LANE` is exported,
-`LANE_AGENT` does not exist anywhere in the repo yet** and is #322's own AC2.
-Items 5–8 are unmet.
-harmonic-forge#322 replaces it with the registry this ADR specifies; that is
-the plan, not scope creep.
+**`tools/lane/_cli_launch.sh`'s interim `case` has been replaced**
+(harmonic-forge#322, 2026-08-28). harmonic-forge#318 had shipped a `case` over
+`LANE_CLI` because it was the smallest thing that made Gemini launchable; it is
+now `tools/lane/_agent_registry.sh`, the closed registry this ADR specifies.
+Against § 6's contract items, as of that change:
+
+- **Item 1 — met.** `LANE_AGENT` is exported alongside `LANE`. The launcher
+  does **not** claim to enforce immutability: `readonly` does not survive
+  `exec`, and the launcher execs. What holds is the structural property of
+  process-environment inheritance — a child cannot alter its parent's
+  environment, so the values every hook subprocess reads are fixed by how the
+  session was started. That is the same mechanism this ADR and
+  `3-lane-protocol.md` already describe for `LANE`, and it is what the tests
+  assert.
+- **Item 2 — met** (unchanged); **item 3 — met** via
+  `tools/lane/_gh_config_dir.sh` (unchanged).
+- **Item 4** holds per-repo (true for harmonic-forge and cymagraph-infra after
+  #321, **false for HRSE2** while its `GEMINI.md` is a symlink) — unchanged by
+  #322.
+- **Item 5 — met for Gemini at Lanes 1 and 2, vacuous elsewhere.** The
+  launcher rejects a passthrough `--admin-policy` outright at any lane whose
+  registry slot declares a policy, so the flag can no longer be removed or
+  contradicted by last-flag-wins. There is nothing to make un-removable for
+  Claude or Codex, or for any agent at Lane 3 — see the residual-gap entry
+  below.
+- **Items 7–8** remain unmet (#323, #325).
+
+**A deliberate tightening #322 introduced, recorded because it is a behavior
+change:** `LANE_CLI` is now closed too, resolved by prefix against the same
+registry. Previously a value matching no branch (`/usr/local/bin/gemini`, an
+operator alias) fell through to bare passthrough and silently received no
+policy injection and no version floor. An agent-selection path that bypasses
+the registry is precisely the "reads as enforced but isn't" shape § 9 names, so
+it is refused. Every form in actual use — `claude`, `claude-api`, `claude-pro`,
+`codex`, `gemini` — resolves unchanged.
 
 ## Deferred, deliberately
 

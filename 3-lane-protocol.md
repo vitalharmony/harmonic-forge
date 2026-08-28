@@ -379,28 +379,100 @@ the bare `<project>` checkout, `lane2`/`lane3` into `<project>-lane2`/
 that worktree doesn't exist yet; sets the `LANE` environment variable
 (see below); wraps the session in `systemd-inhibit --what=sleep:idle` so
 a long batched or unattended run isn't suspended mid-work; and builds the
-launch command per-CLI from `LANE_CLI` (see below). All three launchers
-share one implementation, `tools/lane/_cli_launch.sh`, sourced the same
-way `_gh_config_dir.sh` is — before harmonic-forge#318 the same block was
-duplicated inline in each of the three.
+launch command per-CLI from the closed agent registry (see below). All three
+launchers share one implementation, `tools/lane/_cli_launch.sh` plus
+`tools/lane/_agent_registry.sh` and `tools/lane/_lane_args.sh`, sourced the
+same way `_gh_config_dir.sh` is — before harmonic-forge#318 the same block
+was duplicated inline in each of the three. **`lane3` additionally refuses
+to start on unrepaired drift rather than repairing it** (harmonic-forge#322
+AC5, below).
 **Proper hygiene is restarting the
 session with the right script, never redirecting a running session into
 a different lane role mid-conversation** — `LANE` is fixed for a
 process's entire lifetime by design (see below), so there is nothing a
 running session could do to change it even if asked to.
 
-#### Per-CLI launch wiring — `LANE_CLI`
+#### Per-CLI launch wiring — `laneN --agent`
 
-`LANE_CLI` selects which agent CLI the launcher execs (default `claude`).
-`tools/lane/_cli_launch.sh` is the single place that knows what each one
-needs. It is deliberately minimal — the closed `--agent claude|codex|gemini`
-registry is harmonic-forge#322's design, and is expected to replace this.
+**`--agent claude|codex|gemini` is the canonical interface** (ADR-007 § 3,
+implemented in harmonic-forge#322). Native CLI arguments follow, optionally
+after a bare `--`:
 
-| `LANE_CLI` | what the launcher injects | why |
+```bash
+lane2 --agent codex                    # start Lane 2 under Codex
+lane1 --agent gemini -- -p "a prompt"  # native args after --
+lane3 --ack-stale "gating PR #123"     # Lane 3 only; see below
+```
+
+`tools/lane/_agent_registry.sh` is the **closed registry** and the single
+place that knows what each agent needs — a version floor, a per-lane policy
+slot, an operator-facing display name, a default flag. An unrecognized
+`--agent` value is a hard error that execs nothing.
+
+| agent | what the launcher injects | why |
 |---|---|---|
-| `claude*` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly) | harmonic-forge#179 |
-| `gemini*` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421` | harmonic-forge#318 |
-| anything else (`codex`) | nothing — bare passthrough | flag injection broke Codex's own argument parsing (harmonic-forge#179) |
+| `claude` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly) | harmonic-forge#179 |
+| `gemini` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421 …`, plus `--admin-policy` at Lanes 1 and 2 | harmonic-forge#318, #362 |
+| `codex` | nothing — bare passthrough | flag injection broke Codex's own argument parsing (harmonic-forge#179) |
+
+`LANE_AGENT` is exported alongside `LANE`, and both are fixed for the
+session's lifetime by the same mechanism (see § Lane role signal below —
+process-environment inheritance, not `readonly`, which does not survive
+`exec`).
+
+**`LANE_CLI` is retained for aliases only** — `claude-api`, `claude-pro` —
+and resolves to its agent by prefix against the same closed list. **Passing
+both `--agent` and `LANE_CLI` is an error, not a precedence question**
+(ADR-007 § 3: an operator who set `LANE_CLI` in a shell profile and then
+typed `--agent gemini` would otherwise get a session that ignores half of
+what they said and reports nothing). A `LANE_CLI` matching no registered
+agent is likewise refused rather than execed: before harmonic-forge#322 it
+fell through to bare passthrough and silently received no policy injection
+and no version floor.
+
+**Minimum versions** (AC9) are floored at the *minor*, not the patch:
+`claude >= 2.1`, `codex >= 0.150`, `gemini >= 0.56`, recorded against the
+exact patch versions each was qualified at (`2.1.250` / `0.150.1` /
+`0.56.0`). A patch-pinned floor would false-alarm on every routine `npm -g`
+update while duplicating the parity suite's own version bookkeeping
+(harmonic-forge#325); ADR-007 already handles version-specific qualification
+there.
+
+#### `lane3` performs zero mutations — and `lane3-provision`
+
+The gate launcher used to `git fetch origin main` and `ln -sf` the
+worktree's `backend/.env` before starting the session. It no longer does
+either (harmonic-forge#322 AC5), for one reason: **a gate that repairs its
+own preconditions cannot report on them.** A worktree silently brought up to
+date at launch is indistinguishable, in the gate's own report, from one that
+was never stale.
+
+Both protections survive as **checks** — neither was dropped (AC6):
+
+| drift | detected how | on drift |
+|---|---|---|
+| worktree behind `origin/main` (harmonic-forge#255) | `git ls-remote origin refs/heads/main`, which writes no refs; then `git cat-file -e` on the returned SHA, then an ancestry comparison against that SHA — never against the stale local `origin/main` ref | **refuse**, with `--ack-stale "<reason>"` as the escape hatch |
+| `backend/.env` not linked to the main checkout's (harmonic-forge#264) | symlink target comparison; never reads the file's contents | **refuse, no escape hatch** |
+
+The asymmetry is deliberate. A Lane 3 session gating a deliberately-older
+target branch is not behind by mistake, so staleness has a legitimate form
+and the operator states it once, in writing (an empty reason is rejected,
+following `l1_post.py`'s `--ack-overlap` precedent). `backend/.env` has no
+legitimate per-worktree divergence at all, so there is nothing to
+acknowledge — and a gate run against a stale env silently loses its live
+HTTP/auth test surface (hrse#792).
+
+Both mutations now live in **`lane3-provision`**, run deliberately and
+separately:
+
+```bash
+lane3-provision   # fetch + check out origin/main, relink backend/.env
+lane3             # then start the gate
+```
+
+Not a `--provision` flag on `lane3`, because a flag means the same script
+both mutates and does not, decided by an argument — which reintroduces the
+hazard the moment it reaches an alias, a shell history, or muscle memory.
 
 **The two Gemini unsets are load-bearing, not hygiene.** Standing operator
 directive: the Gemini CLI always uses the OAuth path; `GOOGLE_API_KEY` and
@@ -468,10 +540,13 @@ still demonstrably reachable from a Gemini Lane 2 session** — `batch_auth.py`
 fails *open* there exactly as before, and this is recorded, not silently
 assumed fixed. See ADR-007 § 7/§ 8 for the full guard-equivalence matrix and
 acceptance-tier detail, which must be updated in the same change that adds
-any new hook. Neither policy is yet proven un-removable via a passthrough
-`--admin-policy` value (both load at the same Admin tier, confirmed live in
-the installed CLI's own source) — blocked on harmonic-forge#322, the same
-dependency F326 already carries for Lane 3.
+any new hook. Both policies are now **un-removable via a passthrough `--admin-policy`**
+(harmonic-forge#322 AC4): the launcher rejects the flag outright at any lane
+whose registry slot declares a policy, rather than appending `"$@"` after it
+and letting last-flag-wins decide. That closes the launcher-side half of the
+dependency F326 carries — it does not make the policy a boundary the model
+cannot reason past, which is a separate claim this platform deliberately does
+not make (ADR-007 § 9).
 
 ### Lane role signal — `LANE`
 

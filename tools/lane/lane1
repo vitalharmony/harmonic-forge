@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Launch a Claude Code session as Lane 1 (harmonic-forge#142).
+# Launch a Lane 1 session (harmonic-forge#142).
 # Automatically switches to the current project's main checkout (the
 # sibling of <project>-lane2/<project>-lane3 with no -laneN suffix)
 # before launching -- so `lane1` from anywhere in a project's tree
 # lands in the right place. Proper hygiene is restarting with the
 # right script, never changing lanes mid-session.
-# Sets LANE=1 and inhibits system sleep/idle for the session's lifetime.
-# The launch command itself is built per-CLI by the shared
-# tools/lane/_cli_launch.sh from $LANE_CLI (default: claude) -- Claude's
-# --permission-mode default, Gemini's OAuth env, Codex's bare passthrough.
-# See that file and 3-lane-protocol.md's "Per-CLI launch wiring".
+# Sets LANE=1 and LANE_AGENT, and inhibits system sleep/idle for the
+# session's lifetime.
+#
+# Which agent runs is chosen with `--agent claude|codex|gemini` against the
+# closed registry in tools/lane/_agent_registry.sh; native CLI arguments follow,
+# optionally after a bare `--`. LANE_CLI is retained for aliases such as
+# claude-api, and the two are mutually exclusive (ADR-007 § 3). The launch
+# command itself is built by the shared tools/lane/_cli_launch.sh.
+# See those files and 3-lane-protocol.md's "Per-CLI launch wiring".
 set -euo pipefail
+
+_lane_name="lane1"
 
 if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   echo "lane1: not inside a git repository -- cd into a project first" >&2
@@ -29,16 +35,18 @@ if [ ! -d "$target" ]; then
 fi
 
 cd "$target"
+# shellcheck source=_lane_args.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_args.sh" "$@"
 # shellcheck source=_gh_config_dir.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=1
 
 # shellcheck source=_cli_launch.sh
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh" "$@"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 
 exec systemd-inhibit \
   --what=sleep:idle \
   --who="lane1" \
-  --why="Lane 1 Claude Code session" \
+  --why="Lane 1 $lane_agent_display session" \
   --mode=block \
   "${cli_args[@]}"

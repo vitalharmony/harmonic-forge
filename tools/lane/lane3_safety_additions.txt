@@ -1,0 +1,40 @@
+# Lane 3 safety additions — the closed list (harmonic-forge#322, required change 9)
+#
+# AC8 says "existing Claude and Codex invocations behave identically."  AC4 says
+# Lane 3 safety flags must be un-removable.  Taken literally the two contradict:
+# making a Lane 3 safety flag un-removable is only meaningful once such a flag
+# exists, and adding one is by definition not "identical."
+#
+# Lane 1's Plan-First verdict (2026-08-28) resolved that as "identical except
+# for deliberately-specified, enumerated Lane 3 safety additions" — and required
+# the enumeration to be a committed closed list rather than a soft reading, so a
+# future addition FAILS the AC8 check until someone deliberately amends this file
+# in its own issue.
+#
+# Format: one launch-argument token per line, blank lines and #-comments ignored.
+# A token listed here is permitted to appear in a Lane 3 launch tuple that is
+# otherwise identical to `baseline_launch_tuples.json`.  Anything else is an AC8
+# regression, whatever its intent.
+#
+# THE LIST IS DELIBERATELY EMPTY.  Two decisions put it that way:
+#
+#   * Codex `--sandbox read-only` — DROPPED from #322 (Lane 1 decision 1).
+#     Verified live against codex-cli 0.150.1: at least five further passthrough
+#     paths defeat or escalate past it (`-s danger-full-access`, `-c
+#     sandbox_mode=...`, `-p/--profile <name>` loading arbitrary on-disk config,
+#     `--add-dir`, `--approve-for-me`), and the CLI's flag surface moved twice in
+#     one week.  A denylist against that surface cannot hold the property AC4
+#     asserts, so AC4 is recorded as VACUOUS-FOR-CODEX rather than shipping a
+#     false "un-removable" claim.  Real enforcement is deferred to
+#     `.codex/hooks.json` + a `gate_codex_tool.py`-style dispatcher, which is
+#     what ADR-007 § 8 already names as the remediation path for this gap.
+#
+#   * Claude Lane 3 — no new flag (Lane 1 decision 3).  The existing
+#     `--permission-mode` passthrough override stays honored at every lane,
+#     unchanged.  Tightening Lane 3's Claude posture is real work with its own
+#     blast radius and gets its own issue.
+#
+# Gemini Lane 3 is the expected first amendment: harmonic-forge#326 owns that
+# policy file and it is not built.  The registry carries the slot, declared and
+# empty (`AGENT_LANE_POLICY[gemini:3]`), so #326 fills a declared field and adds
+# `--admin-policy` plus its path here — rather than reopening the launcher.
