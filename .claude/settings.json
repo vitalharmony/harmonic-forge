@@ -33,6 +33,10 @@
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\""
           }
         ]
       },
