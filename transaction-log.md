@@ -3,6 +3,24 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(lane): Gemini Lane 3 admin policy + pre-staged context (harmonic-forge#326)
+- tools/lane/_agent_registry.sh         |  12 ++-
+- tools/lane/lane3-stage-context        | 154 +++++++++++++++++++++++++++++++
+- tools/lane/lane3_safety_additions.txt |  15 ++-
+- tools/lane/policies/gemini-lane3.toml | 169 ++++++++++++++++++++++++++++++++++
+- tools/lane/test_lane_launchers.py     |  85 +++++++++++++----
+- 5 files changed, 410 insertions(+), 25 deletions(-)
+
+## feat(canary): rebuild the deny-canary for Lane 3, fix #413's assertion defects (harmonic-forge#326)
+- 3-lane-protocol.md                                 |  39 +-
+- ...-agent-adapter-contract-and-capability-tiers.md |  20 +-
+- tools/lane/policies/canary/run_canary.py           | 551 ++++++++++++++-------
+- 3 files changed, 438 insertions(+), 172 deletions(-)
+
+## fix(canary): kill the process group on timeout, per-check ceilings (harmonic-forge#326)
+- tools/lane/policies/canary/run_canary.py | 277 +++++++++++++++++++++++--------
+- 1 file changed, 207 insertions(+), 70 deletions(-)
+
 ## test(lane): capture pre-refactor launch tuples as the AC8 baseline (harmonic-forge#322)
 - tools/lane/baseline_capture.py         | 314 ++++++++++++
 - tools/lane/baseline_launch_tuples.json | 888 +++++++++++++++++++++++++++++++++
