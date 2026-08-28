@@ -1,0 +1,888 @@
+{
+  "cells": {
+    "lane1/claude/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/claude/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/claude/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/claude/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/codex/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "codex",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/codex/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "codex",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/codex/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "codex"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/codex/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "codex",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/gemini/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane1.toml",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/gemini/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane1.toml",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/gemini/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane1.toml"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane1/gemini/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane1",
+        "--why=Lane 1 Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane1.toml",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "1",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/claude/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/claude/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/claude/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/claude/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/codex/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "codex",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/codex/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "codex",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/codex/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "codex"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/codex/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "codex",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/gemini/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane2.toml",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/gemini/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane2.toml",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/gemini/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane2.toml"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane2/gemini/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane2",
+        "--why=Lane 2 (implementer) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--admin-policy",
+        "<LANEDIR>/policies/gemini-lane2.toml",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj-lane2",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "2",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/claude/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/claude/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/claude/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/claude/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "claude",
+        "--permission-mode",
+        "auto",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/codex/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "codex",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/codex/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "codex",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/codex/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "codex"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/codex/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "codex",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/gemini/explicit-permission-mode": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "--permission-mode",
+        "plan"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/gemini/glob": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "*.md"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/gemini/none": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    },
+    "lane3/gemini/quoted-with-spaces": {
+      "argv": [
+        "systemd-inhibit",
+        "--what=sleep:idle",
+        "--who=lane3",
+        "--why=Lane 3 (gate) Claude Code session",
+        "--mode=block",
+        "env",
+        "-u",
+        "GOOGLE_API_KEY",
+        "-u",
+        "GEMINI_API_KEY",
+        "GOOGLE_CLOUD_PROJECT=hrse-497421",
+        "GIT_PAGER=cat",
+        "GH_PAGER=cat",
+        "PAGER=cat",
+        "GIT_EDITOR=true",
+        "gemini",
+        "-p",
+        "two words here"
+      ],
+      "cwd": "<ROOT>/proj-lane3",
+      "env": {
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "LANE": "3",
+        "LANE_AGENT": null
+      },
+      "launched": true,
+      "returncode": 0,
+      "stderr": ""
+    }
+  },
+  "schema": 1
+}
