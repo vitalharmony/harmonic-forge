@@ -10,11 +10,16 @@ unclassifiable, plus the two independently-consumable targets per key.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
@@ -314,6 +319,152 @@ class ConsumptionTests(StateFixture):
         self.assertTrue(close_target["consumed"])
         self.assertIsNotNone(close_target["consumed_by"])
         self.assertFalse(merge_target["consumed"])
+
+
+class GraphQLProtectionTests(StateFixture):
+    """harmonic-forge#369, AC1/item 1: a GraphQL close/merge mutation is
+    ALWAYS `ask`, never `allow` -- Lane 1's settled decision 1, dropping the
+    node-ID linking design entirely. Opacity (an uninspectable document) is
+    itself the signal, independent of any specific mutation name."""
+
+    def test_protected_mutations_always_ask(self):
+        for mutation in (
+            "closeIssue", "mergePullRequest", "updateIssue",
+            "enablePullRequestAutoMerge", "enqueuePullRequest", "closePullRequest",
+        ):
+            with self.subTest(mutation=mutation):
+                cmd = f"gh api graphql -f query='mutation {{ {mutation}(input: {{}}) {{ clientMutationId }} }}'"
+                result = ba.decide(cmd, state_path=self.state_path)
+                self.assertEqual(result[0], "ask", cmd)
+
+    def test_opaque_at_file_query_asks(self):
+        result = ba.decide("gh api graphql -F query=@close.graphql", state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+
+    def test_opaque_unresolved_variable_asks_even_with_no_protected_name(self):
+        """Opacity itself is the signal (Lane 1 spec) -- not conditioned on
+        also matching a known mutation name."""
+        cmd = "gh api graphql -f query='mutation { someOtherMutation(input: $input) { clientMutationId } }'"
+        result = ba.decide(cmd, state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+
+    def test_missing_query_document_asks(self):
+        result = ba.decide("gh api graphql", state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+
+    def test_routine_board_write_query_is_not_classified(self):
+        """A normal, inspectable, unprotected GraphQL board write must stay
+        silent (`None`) -- the fix must not turn routine work into a prompt."""
+        cmd = "gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: {}) { clientMutationId } }'"
+        self.assertIsNone(ba.decide(cmd, state_path=self.state_path))
+
+    def test_case_sensitive_match_does_not_false_positive_on_close_references(self):
+        """addCloseIssueReferences/removeCloseIssueReferences are real,
+        benign mutations distinct from closeIssue -- word-boundary + case
+        sensitivity must not treat them as protected."""
+        cmd = "gh api graphql -f query='mutation { addCloseIssueReferences(input: {}) { clientMutationId } }'"
+        self.assertIsNone(ba.decide(cmd, state_path=self.state_path))
+
+
+class InvocationPrefixTests(StateFixture):
+    """harmonic-forge#369, item 2: `env`/leading-assignment/`command`/
+    `nohup` prefixed `gh` forms must not bypass classification."""
+
+    def test_prefixed_close_and_merge_ask_without_a_grant(self):
+        for cmd in (
+            "env GH_HOST=x gh issue close 700 --repo vitalharmony/hrse",
+            "env -i gh issue close 700 --repo vitalharmony/hrse",
+            "env -u FOO gh issue close 700 --repo vitalharmony/hrse",
+            "command gh issue close 700 --repo vitalharmony/hrse",
+            "nohup gh issue close 700 --repo vitalharmony/hrse",
+            "VAR=x gh pr merge 993 --repo vitalharmony/hrse",
+        ):
+            with self.subTest(cmd=cmd):
+                result = ba.decide(cmd, state_path=self.state_path)
+                self.assertEqual(result[0], "ask", cmd)
+
+    def test_prefixed_close_allows_with_a_grant(self):
+        for cmd in (
+            "env GH_HOST=x gh issue close 700 --repo vitalharmony/hrse",
+            "command gh issue close 700 --repo vitalharmony/hrse",
+            "nohup gh issue close 700 --repo vitalharmony/hrse",
+        ):
+            with self.subTest(cmd=cmd):
+                ba.authorize(["H700"], ["gh issue close"], state_path=self.state_path)
+                result = ba.decide(cmd, state_path=self.state_path)
+                self.assertEqual(result[0], "allow", cmd)
+
+
+class LockingTests(StateFixture):
+    """harmonic-forge#369: the read -> live-entry-check -> consume/write
+    sequence is now guarded by a non-blocking, sub-second file lock. Both
+    the fail-closed-on-contention behavior and the race it closes are
+    asserted directly, not just the mechanism's presence."""
+
+    def test_stale_lock_makes_decide_ask_promptly_not_hang(self):
+        ba.authorize(["H600"], ["gh issue close"], state_path=self.state_path)
+        lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(holder_fd, fcntl.LOCK_EX)
+        try:
+            start = time.monotonic()
+            result = ba.decide(
+                "gh api repos/vitalharmony/hrse/issues/600 -X PATCH -f state=closed",
+                state_path=self.state_path,
+            )
+            elapsed = time.monotonic() - start
+        finally:
+            fcntl.flock(holder_fd, fcntl.LOCK_UN)
+            os.close(holder_fd)
+
+        self.assertEqual(result[0], "ask")
+        self.assertIn("lock", result[1].lower())
+        self.assertLess(elapsed, 1.0, "decide() must fail closed promptly, never hang")
+
+    def test_two_commands_racing_for_one_target_do_not_both_allow(self):
+        """The exact hazard this issue was filed for: an unlocked
+        read-modify-write could let two racing commands both observe
+        'not yet consumed' and both write, granting more than the one
+        intended one-shot use. Forces the race deterministically by
+        gating the in-lock write on a second thread actually starting."""
+        ba.authorize(["H500"], ["gh issue close"], state_path=self.state_path)
+        base_cmd = "gh api repos/vitalharmony/hrse/issues/500 -X PATCH -f state=closed"
+        cmd_a, cmd_b = base_cmd, base_cmd + " "  # distinct hashes, same target
+
+        entered_save = threading.Event()
+        release_save = threading.Event()
+        real_save = ba._save
+
+        def gated_save(state, state_path=None):
+            entered_save.set()
+            release_save.wait(timeout=2)
+            real_save(state, state_path)
+
+        results: dict[str, tuple] = {}
+
+        def run_a():
+            with mock.patch.object(ba, "_save", gated_save):
+                results["a"] = ba.decide(cmd_a, state_path=self.state_path)
+
+        def run_b():
+            results["b"] = ba.decide(cmd_b, state_path=self.state_path)
+
+        thread_a = threading.Thread(target=run_a)
+        thread_a.start()
+        self.assertTrue(entered_save.wait(timeout=2), "thread A never reached its write")
+
+        thread_b = threading.Thread(target=run_b)
+        thread_b.start()
+        time.sleep(0.1)  # a real window for B to race in if the lock did nothing
+        release_save.set()
+        thread_a.join(timeout=2)
+        thread_b.join(timeout=2)
+
+        self.assertEqual(
+            sorted(r[0] for r in results.values()), ["allow", "ask"],
+            f"exactly one racing command may consume the one-shot target: {results}",
+        )
 
 
 if __name__ == "__main__":

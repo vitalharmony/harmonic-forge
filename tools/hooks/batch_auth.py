@@ -109,10 +109,16 @@ authorized command as a separate, later one.
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import fcntl
 import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -122,6 +128,56 @@ from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 DEFAULT_TTL_HOURS = 2.0
 DEFAULT_ACTIONS = ("gh pr merge", "gh issue close")
+
+# harmonic-forge#369: the read -> live-entry-check -> consume/write sequence
+# in decide()/authorize()/link_pr() was an unlocked read-modify-write --
+# concurrent consumption could lose a flag and make a one-shot grant
+# reusable. Sub-second and non-blocking by design: this hook must never
+# wedge a lane over its own lock contention (the same fail-*closed* posture
+# as the rest of this module -- a lock that can't be acquired promptly means
+# `ask`, not a hang and not a silent skip of the guard).
+_LOCK_TIMEOUT_SECONDS = 0.4
+_LOCK_POLL_SECONDS = 0.02
+
+
+class StateLockTimeout(Exception):
+    """Raised when the state-file lock can't be acquired within the budget.
+    Callers must treat this the same as any other decide()-time failure:
+    fail toward `ask`, never toward a silent allow or a hang."""
+
+
+@contextlib.contextmanager
+def _locked_state(state_path: Path):
+    """Exclusive advisory lock on `state_path`'s own `.lock` sibling, held
+    only across the read -> check -> write sequence -- never across a
+    subprocess call or any I/O beyond the state file itself (module
+    docstring). Non-blocking with a short poll/timeout rather than a
+    blocking `flock()`: a stuck holder must produce a fast `ask`, not a
+    hung hook."""
+    lock_path = state_path.with_name(state_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise StateLockTimeout(
+                        f"could not acquire lock on {lock_path} within "
+                        f"{_LOCK_TIMEOUT_SECONDS}s"
+                    ) from None
+                time.sleep(_LOCK_POLL_SECONDS)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 # vitalharmony/hrse -> "H", etc. -- rules/lane-shorthand.md is the canonical
 # table; K/P point at other accounts entirely and are deliberately excluded
@@ -164,10 +220,24 @@ def _load(state_path: Path | None = None) -> dict:
 
 
 def _save(state: dict, state_path: Path | None = None) -> None:
+    """Temp-file + atomic replace (harmonic-forge#369) -- a reader (this
+    module's own `_load`, or an operator `cat`) can never observe a partial
+    write, and a crash mid-write leaves the prior state intact rather than a
+    truncated/corrupt file."""
     if state_path is None:
         state_path = STATE_PATH
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(state_path.parent), prefix=state_path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2, sort_keys=True)
+        os.replace(tmp_name, state_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def _command_hash(command: str) -> str:
@@ -207,36 +277,40 @@ def authorize(
         raise TypeError(f"actions must be a list of strings, not a bare string: {actions!r}")
     if not actions:
         raise ValueError("authorize() requires at least one action")
-    state = _load(state_path)
-    now = _now()
-    expires = now + timedelta(hours=ttl_hours)
-    for raw_key in keys:
-        key = raw_key.upper()
-        if not ISSUE_KEY.match(key):
-            raise ValueError(f"not a valid issue key: {raw_key!r}")
-        state[key] = {
-            "authorized_at": now.isoformat(),
-            "expires_at": expires.isoformat(),
-            "targets": [_new_target(action) for action in actions],
-        }
-    _save(state, state_path)
+    actual_path = STATE_PATH if state_path is None else state_path
+    with _locked_state(actual_path):
+        state = _load(state_path)
+        now = _now()
+        expires = now + timedelta(hours=ttl_hours)
+        for raw_key in keys:
+            key = raw_key.upper()
+            if not ISSUE_KEY.match(key):
+                raise ValueError(f"not a valid issue key: {raw_key!r}")
+            state[key] = {
+                "authorized_at": now.isoformat(),
+                "expires_at": expires.isoformat(),
+                "targets": [_new_target(action) for action in actions],
+            }
+        _save(state, state_path)
 
 
 def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None) -> None:
     """Record which PR fulfils a BATCH-authorized issue's merge target, once
     opened. See the module docstring's PR-number-gap section for why this
     call is the only place this mapping can ever be recorded."""
-    state = _load(state_path)
-    key = key.upper()
-    entry = state.get(key)
-    if entry is None:
-        raise ValueError(f"no authorization entry for {key!r} -- authorize it first")
-    target = next((t for t in entry.get("targets", []) if "merge" in t.get("action", "").lower()), None)
-    if target is None:
-        raise ValueError(f"{key!r} was not authorized for a merge action -- authorize it with --action 'gh pr merge' first")
-    target["repo"] = repo
-    target["pr_number"] = pr_number
-    _save(state, state_path)
+    actual_path = STATE_PATH if state_path is None else state_path
+    with _locked_state(actual_path):
+        state = _load(state_path)
+        key = key.upper()
+        entry = state.get(key)
+        if entry is None:
+            raise ValueError(f"no authorization entry for {key!r} -- authorize it first")
+        target = next((t for t in entry.get("targets", []) if "merge" in t.get("action", "").lower()), None)
+        if target is None:
+            raise ValueError(f"{key!r} was not authorized for a merge action -- authorize it with --action 'gh pr merge' first")
+        target["repo"] = repo
+        target["pr_number"] = pr_number
+        _save(state, state_path)
 
 
 def _entry_live(entry: dict, now: datetime) -> bool:
@@ -404,40 +478,47 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             "than silently allowing a possible issue-close or PR-merge."
         )
 
+    actual_path = STATE_PATH if state_path is None else state_path
     try:
-        state = _load(state_path)
-        now = _now()
-        command_hash = _command_hash(command)
-        covered = False
-        allow_reason: str | None = None
+        with _locked_state(actual_path):
+            state = _load(state_path)
+            now = _now()
+            command_hash = _command_hash(command)
+            covered = False
+            allow_reason: str | None = None
 
-        for tokens in segments:
-            if _protected_graphql(tokens):
-                return "ask", "GraphQL mutation is protected; use the reviewed CLI or REST authorization path."
-            is_close = classify_issue_close(tokens) is not None
-            is_merge = (not is_close) and classify_pr_merge(tokens) is not None
-            if not is_close and not is_merge:
-                continue
-            covered = True
+            for tokens in segments:
+                if _protected_graphql(tokens):
+                    return "ask", "GraphQL mutation is protected; use the reviewed CLI or REST authorization path."
+                is_close = classify_issue_close(tokens) is not None
+                is_merge = (not is_close) and classify_pr_merge(tokens) is not None
+                if not is_close and not is_merge:
+                    continue
+                covered = True
 
-            match = _match_issue_close(tokens, state) if is_close else _match_pr_merge(tokens, state)
-            reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
-            if match is None:
-                return "ask", reason
-            key, entry, target = match
-            if not _entry_live(entry, now):
-                return "ask", reason
-            if target.get("consumed") and target.get("consumed_by") != command_hash:
-                return "ask", reason  # already spent on a different command
-            if not target.get("consumed"):
-                target["consumed"] = True
-                target["consumed_by"] = command_hash
-                _save(state, state_path)
-            allow_reason = f"BATCH-authorized ({key})"
+                match = _match_issue_close(tokens, state) if is_close else _match_pr_merge(tokens, state)
+                reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
+                if match is None:
+                    return "ask", reason
+                key, entry, target = match
+                if not _entry_live(entry, now):
+                    return "ask", reason
+                if target.get("consumed") and target.get("consumed_by") != command_hash:
+                    return "ask", reason  # already spent on a different command
+                if not target.get("consumed"):
+                    target["consumed"] = True
+                    target["consumed_by"] = command_hash
+                    _save(state, state_path)
+                allow_reason = f"BATCH-authorized ({key})"
 
-        if not covered:
-            return None
-        return "allow", allow_reason
+            if not covered:
+                return None
+            return "allow", allow_reason
+    except StateLockTimeout:
+        return "ask", (
+            "Could not acquire the authorization state lock promptly -- "
+            "failing closed rather than risking a lost concurrent-consumption race."
+        )
     except Exception:
         return "ask", (
             "Internal error classifying this command -- failing closed "
