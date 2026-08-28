@@ -1,0 +1,132 @@
+# Admin-tier policy for a Gemini Lane 1 (Blueprint) session (harmonic-forge#362).
+#
+# Loaded via `--admin-policy`, the only mechanism proven live (harmonic-forge#326)
+# to survive `--yolo` and remove denied tools from the model's own tool list
+# entirely, rather than merely refusing them at call time.
+#
+# Shape, verified live against the installed Gemini CLI 0.56.0 bundle before
+# writing this file (not asserted from documentation):
+# - Rules are matched highest-`priority`-wins, first-match
+#   (`packages/core/dist/src/policy/engine.js`'s `PolicyEngine.check()`:
+#   `this.rules.sort((a,b) => (b.priority ?? 0) - (a.priority ?? 0))`, then a
+#   plain `for` loop over the sorted list acting on the first match). There is
+#   no "deny always wins" special case -- allow and deny compete on priority
+#   alone. Every rule in this file is loaded at the Admin tier regardless of
+#   whether it came from this launcher-injected file or a passthrough
+#   `--admin-policy` value (both land in the same `adminPolicyPaths` set,
+#   `packages/core/dist/src/policy/config.js`'s `getPolicyTier()`) -- see the
+#   harmonic-forge#322 dependency note below.
+# - `priority` must be an integer in [0, 999] (schema-enforced; values >= 1000
+#   would jump to the next tier). The catch-all deny below MUST be the floor
+#   (lowest priority in this file) precisely because it is a `toolName = "*"`
+#   match that would otherwise win every tie against a more specific rule.
+# - `run_shell_command` rules use `commandPrefix` (a literal string prefix,
+#   or array of prefixes) rather than a raw `argsPattern` regex where a
+#   simple prefix is sufficient and unambiguous -- confirmed as a first-class,
+#   purpose-built field for exactly this ("`commandPrefix`/`commandRegex` can
+#   only be used with `toolName = "run_shell_command"`", the loader's own
+#   validation message).
+#
+# Threat model (harmonic-forge#362 DJC #2): Lane 1 is advisory and never
+# implements (role boundary, universal-lane1.md) -- it authors handoffs,
+# reviews Lane 2's diffs, and posts protocol comments through the sanctioned
+# wrappers. It has no legitimate need for file writes (already denied below),
+# destructive git operations, package installs, or arbitrary code execution
+# (`python -c`, `sh -c`, heredoc indirection). A blanket deny of
+# `run_shell_command` would make Lane 1 unable to do its actual job; a blanket
+# allow is a full shell escape -- self-author-and-close, self-push, or
+# arbitrary code execution, the exact class of incident the 3-lane structure
+# exists to prevent, now with no Claude-Code hook underneath it. The allow
+# list below is deliberately narrow and enumerated, not "everything except a
+# deny list" -- the same default-deny-plus-narrow-allow shape as the catch-all
+# rule, for the same fail-safe reason.
+#
+# NOT YET LIVE-VERIFIED end-to-end (flagged, not silently assumed): the exact
+# `commandPrefix`/`commandRegex` matching semantics against a real multi-word
+# shell command, and whether Lane 1's allow rules actually win their priority
+# race against the catch-all in practice, not just by schema reading. This is
+# exactly what the canary suite (`tools/lane/policies/canary/`) exists to
+# prove -- see its own file for what's been confirmed live versus what still
+# needs Lane 3's independent run.
+
+# Default-deny base (harmonic-forge#362 REFORGE decision 2): a new CLI
+# release, MCP tool, or extension is denied by default, not silently
+# permitted by omission from an enumerated allow list.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 0
+denyMessage = "harmonic-forge#362: default-deny admin-tier base -- this tool is not on Lane 1's explicit allow list."
+
+# Whole-tool global denies -- the only property the 0.56.0 engine actually
+# proved live (harmonic-forge#326): the tool is absent from the model's own
+# tool list, not merely refused at call time.
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#362: Lane 1 never edits files -- role boundary, universal-lane1.md."
+
+[[rule]]
+toolName = ["activate_skill", "invoke_agent"]
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#362: Lane 1 does not spawn nested skills/agents outside the standard 3-lane loop."
+
+# Narrow, argument-constrained shell allowlist (DJC #2). Read-only git,
+# the sanctioned posting wrappers, and read-only GitHub REST GETs only.
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = [
+  "git log",
+  "git diff",
+  "git status",
+  "git fetch",
+  "mise run lane-comment",
+  "mise run l1-post",
+  "mise run gh-new-issue",
+]
+decision = "allow"
+priority = 999
+
+# `gh api` is allowed only in its plain read (GET) shape -- a bare
+# `repos/{owner}/{repo}/(issues|pulls)/{n}` fetch, nothing appended. Verified
+# live (harmonic-forge#362) that `commandRegex` is spliced in as
+# `"command":"<this pattern>` (`buildArgsPatterns()`,
+# packages/core/dist/src/policy/utils.js) -- so a leading `^` here is
+# meaningless (it would anchor mid-string, right after the auto-prepended
+# `"command":"`, never matching) and was silently inert in an earlier
+# version of this rule. No trailing wildcard either: this pattern ends on a
+# literal `"` immediately after the issue/PR number, so any extra flag
+# appended in the actual command (a `-X`/`--method` mutation, `--paginate`,
+# anything) leaves a non-`"` character right where this pattern expects the
+# JSON string to close, and the rule correctly fails to match, falling
+# through to the catch-all deny. Also avoids the CLI's own ReDoS-safety
+# linter (`isSafeRegExp()`, same file): a bare `(/[0-9]+)?`-shaped optional
+# group trips its nested-quantifier heuristic and gets silently rejected at
+# load time with no hard failure -- confirmed live, an earlier version of
+# this rule was silently dropped this way. Deliberately narrower than the
+# original design (no bulk-list, no --paginate, no --jq) to stay inside a
+# pattern shape proven not to trip that heuristic; can widen later once
+# verified, not asserted, to still pass it.
+[[rule]]
+toolName = "run_shell_command"
+commandRegex = 'gh api repos/[^"/]+/[^"/]+/(issues|pulls)/[0-9]+"'
+decision = "allow"
+priority = 999
+
+# Read/context tools -- no mutation risk, core review capability.
+[[rule]]
+toolName = [
+  "read_file",
+  "read_many_files",
+  "list_directory",
+  "glob",
+  "grep_search",
+  "google_web_search",
+  "web_fetch",
+  "enter_plan_mode",
+  "update_topic",
+]
+decision = "allow"
+priority = 999

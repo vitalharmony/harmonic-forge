@@ -451,11 +451,27 @@ are operative here:
    Lane 3 tier 1 confers nothing about tier 2, and a qualification is
    against a specific CLI version.
 
-**Current state: Gemini is approved for Lane 1 only** (harmonic-forge#318).
-Lane 2 is blocked on #362 — every guard on a Lane 2 session is a Claude
-Code hook Gemini never loads, and `batch_auth.py` in particular fails
-*open* there. See ADR-007 § 7 for the full guard-equivalence matrix, which
-must be updated in the same change that adds any new hook.
+**Current state: Gemini is approved for Lane 1, and partially for Lane 2**
+(harmonic-forge#318/#362). #362 landed an admin-tier policy
+(`tools/lane/policies/gemini-lane1.toml`/`gemini-lane2.toml`, wired through
+`_cli_launch.sh`'s `gemini*` branch) that structurally denies `write_file`/
+`replace` for Lane 1 (role boundary — Lane 1 never edits files) and
+`activate_skill`/`invoke_agent` for both lanes — proven live, not merely
+schema-valid, by `tools/lane/policies/canary/run_canary.py`. **Lane 2's
+`run_shell_command` is deliberately left fully open** — an `argsPattern`/
+`commandPrefix` deny-list on an otherwise-unconstrained shell was found live
+(harmonic-forge#362's pitch-inspection) to leave the tool visible and be
+bypassable via one level of shell-wrapper indirection, the identical class
+of gap `block_irreversible_ops.py`'s own docstring already concedes and
+rules out chasing for Claude. **`gh issue close`/`gh pr merge` are therefore
+still demonstrably reachable from a Gemini Lane 2 session** — `batch_auth.py`
+fails *open* there exactly as before, and this is recorded, not silently
+assumed fixed. See ADR-007 § 7/§ 8 for the full guard-equivalence matrix and
+acceptance-tier detail, which must be updated in the same change that adds
+any new hook. Neither policy is yet proven un-removable via a passthrough
+`--admin-policy` value (both load at the same Admin tier, confirmed live in
+the installed CLI's own source) — blocked on harmonic-forge#322, the same
+dependency F326 already carries for Lane 3.
 
 ### Lane role signal — `LANE`
 
