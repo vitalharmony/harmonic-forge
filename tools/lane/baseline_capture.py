@@ -118,11 +118,19 @@ def _run(args: list[str], cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
 
 
-def build_fixture_tree(root: Path, project: str = "proj") -> tuple[Path, Path]:
+def build_fixture_tree(
+    root: Path,
+    project: str = "proj",
+    *,
+    versions: dict[str, str] | None = None,
+) -> tuple[Path, Path]:
     """Create a disposable <project>/<project>-lane2/<project>-lane3 tree.
 
     Returns (main_checkout, stub_bin). The tree's `origin` resolves offline.
+    `versions` overrides what the stub agent CLIs report for `--version`, which
+    is how AC9's floor is exercised from below without downgrading a real CLI.
     """
+    versions = {**STUB_VERSIONS, **(versions or {})}
     # The bare repo's own path is shaped to match _gh_config_dir.sh's
     # `*github.com*vitalharmony*` glob, so GH_CONFIG_DIR resolution is
     # exercised by a remote URL that is nonetheless a local path and never
@@ -157,7 +165,7 @@ def build_fixture_tree(root: Path, project: str = "proj") -> tuple[Path, Path]:
     inhibit = stub_bin / "systemd-inhibit"
     inhibit.write_text(_STUB_INHIBIT % {"keys": list(CAPTURED_ENV_KEYS)})
     inhibit.chmod(0o755)
-    for name, version in STUB_VERSIONS.items():
+    for name, version in versions.items():
         for binary in (name, f"{name}-api", f"{name}-pro"):
             stub = stub_bin / binary
             stub.write_text(_STUB_AGENT % {"name": binary, "version": version})
@@ -252,22 +260,99 @@ def capture_all(lane_dir: Path) -> dict:
     return {"schema": 1, "cells": cells}
 
 
-def compare(captured: dict, fixture: dict) -> list[str]:
-    """Return AC8 differences: Claude/Codex cells that are not byte-identical."""
+# ---------------------------------------------------------------------------
+# The two declared deltas -- everything AC8's "identically" is allowed to miss.
+#
+# AC8 says "existing Claude and Codex invocations behave identically." Two
+# acceptance criteria of the SAME issue mandate a change to the launch tuple, so
+# read literally AC8 contradicts AC2 and AC7. Lane 1's Plan-First verdict
+# resolved that as "identical except for deliberately-specified, ENUMERATED
+# additions" -- and required the enumeration to be committed rather than left as
+# a soft reading. This is that enumeration for the tuple itself;
+# `lane3_safety_additions.txt` is its companion for Lane 3 launch flags.
+#
+# Nothing outside these two is tolerated. The comparison below applies them to
+# the BASELINE and then demands byte-identity, so a third change -- however
+# well-intentioned -- fails the check until someone amends this list in its own
+# issue.
+#
+#   1. AC2 -- LANE_AGENT is exported. It did not exist anywhere in the repo
+#      before this issue (ADR-007 contract item 1 requires it alongside LANE),
+#      so every baseline cell records it as null.
+#   2. AC7 -- the systemd-inhibit --why string names the actual agent. Every
+#      baseline cell says "Claude Code" regardless of what is being launched.
+# ---------------------------------------------------------------------------
+DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why")
+
+# Operator-facing display name per agent, mirroring AGENT_DISPLAY in
+# _agent_registry.sh. Duplicated here deliberately and minimally: the point of
+# the check is to assert the shell's output independently, so reading the value
+# out of the file under test would make the assertion circular.
+AGENT_DISPLAY = {"claude": "Claude Code", "codex": "Codex", "gemini": "Gemini"}
+
+
+def _load_lane3_additions(path: Path) -> list[str]:
+    """Read the Lane 3 safety-addition closed list (required change 9)."""
+    if not path.exists():
+        return []
+    tokens = []
+    for line in path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            tokens.append(line)
+    return tokens
+
+
+def _apply_declared_deltas(cell: dict, agent: str) -> dict:
+    """Rewrite a baseline cell to carry the two deltas AC2 and AC7 mandate."""
+    updated = json.loads(json.dumps(cell))
+    if not updated.get("launched"):
+        return updated
+    updated["env"]["LANE_AGENT"] = agent
+    updated["argv"] = [
+        arg.replace("Claude Code", AGENT_DISPLAY[agent])
+        if arg.startswith("--why=") else arg
+        for arg in updated["argv"]
+    ]
+    return updated
+
+
+def compare(captured: dict, fixture: dict, lane3_additions: list[str]) -> list[str]:
+    """Return AC8 differences.
+
+    A Claude or Codex cell must equal its baseline exactly, once the two
+    declared deltas above are applied. At Lane 3, a token from the committed
+    safety-addition list may additionally appear -- today that list is empty, so
+    Lane 3 must be exactly identical, which is the point.
+    """
     diffs: list[str] = []
     got, want = captured["cells"], fixture["cells"]
     for key in sorted(set(got) | set(want)):
-        if not any(f"/{agent}/" in key for agent in AC8_AGENTS):
+        agent = key.split("/")[1]
+        if agent not in AC8_AGENTS:
             continue
         if key not in got:
             diffs.append(f"{key}: missing from capture")
-        elif key not in want:
+            continue
+        if key not in want:
             diffs.append(f"{key}: not present in baseline fixture")
-        elif got[key] != want[key]:
-            diffs.append(
-                f"{key}:\n    baseline: {json.dumps(want[key], sort_keys=True)}"
-                f"\n    captured: {json.dumps(got[key], sort_keys=True)}"
-            )
+            continue
+        expected = _apply_declared_deltas(want[key], agent)
+        actual = got[key]
+        if actual == expected:
+            continue
+        # A Lane 3 cell may differ by tokens on the committed closed list, and
+        # by nothing else.
+        if key.startswith("lane3/") and lane3_additions:
+            stripped = dict(actual)
+            stripped["argv"] = [a for a in actual["argv"]
+                                if a not in lane3_additions]
+            if stripped == expected:
+                continue
+        diffs.append(
+            f"{key}:\n    expected: {json.dumps(expected, sort_keys=True)}"
+            f"\n    captured: {json.dumps(actual, sort_keys=True)}"
+        )
     return diffs
 
 
@@ -295,15 +380,21 @@ def main() -> int:
 
     if args.compare:
         fixture = json.loads(args.compare.read_text())
-        diffs = compare(captured, fixture)
+        additions = _load_lane3_additions(
+            args.compare.parent / "lane3_safety_additions.txt")
+        diffs = compare(captured, fixture, additions)
         if diffs:
             print("[baseline] AC8 REGRESSION -- Claude/Codex launch tuples "
-                  "changed:", file=sys.stderr)
+                  "changed beyond the declared deltas "
+                  f"({', '.join(DECLARED_DELTAS)}):", file=sys.stderr)
             for diff in diffs:
                 print(f"  {diff}", file=sys.stderr)
             return 1
-        print("[baseline] AC8 holds: every Claude and Codex cell is identical "
-              "to the committed baseline")
+        print("[baseline] AC8 holds: every Claude and Codex cell matches the "
+              "committed baseline, differing only by the declared deltas "
+              f"({', '.join(DECLARED_DELTAS)})")
+        print(f"[baseline] Lane 3 safety additions permitted: "
+              f"{additions or '(none — the list is empty)'}")
 
     if not args.out and not args.compare:
         print(json.dumps(captured, indent=2, sort_keys=True))

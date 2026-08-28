@@ -30,7 +30,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-TEST_DIRS = ["gh", "hooks"]
+TEST_DIRS = ["gh", "hooks", "lane"]
 PATTERN = "test_*.py"
 
 

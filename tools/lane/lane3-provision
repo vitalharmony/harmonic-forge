@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Repair the Lane 3 worktree's preconditions (harmonic-forge#322 AC5).
+#
+# These are the two mutations `lane3` used to perform on its own, at launch:
+#
+#   1. `git fetch origin main` and a checkout onto it (harmonic-forge#255)
+#   2. relinking backend/.env to the main checkout's real file (harmonic-forge#264)
+#
+# They moved here because a gate that repairs its own preconditions cannot
+# report on them. A worktree silently brought up to date at launch is
+# indistinguishable, in the gate's own report, from one that was never stale.
+#
+# WHY A SEPARATE COMMAND AND NOT `lane3 --provision`
+#
+# A flag means the same script both mutates and does not, decided by an
+# argument. That reintroduces the exact hazard the split exists to remove the
+# moment the flag reaches an alias, a shell history, or muscle memory -- and a
+# gate that repaired its own preconditions *because someone habitually passed
+# --provision* is, in the gate report, identical to one that never needed
+# repair. A separate command is a separate deliberate act, runnable
+# independently of starting a session, and greppable in shell history as its
+# own event.
+#
+# It performs exactly the two mutations lane3 gave up, and nothing else. It
+# does not start a session.
+set -euo pipefail
+
+_lane_name="lane3-provision"
+
+if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "lane3-provision: not inside a git repository -- cd into a project first" >&2
+  exit 1
+fi
+parent="$(dirname "$root")"
+base="$(basename "$root")"
+if [[ "$base" =~ ^(.+)-lane[0-9]+$ ]]; then
+  base="${BASH_REMATCH[1]}"
+fi
+target="$parent/$base-lane3"
+
+if [ ! -d "$target" ]; then
+  echo "lane3-provision: expected worktree '$target' does not exist -- create it first (see 3-lane-protocol.md's Per-Lane Working Directories)" >&2
+  exit 1
+fi
+
+cd "$target"
+
+## 1. Staleness (harmonic-forge#255)
+echo "lane3-provision: fetching origin/main into $target" >&2
+if ! GIT_TERMINAL_PROMPT=0 timeout 60 git fetch origin main -q; then
+  echo "lane3-provision: git fetch origin main failed -- cannot bring this worktree up to date" >&2
+  exit 1
+fi
+
+remote_sha="$(git rev-parse FETCH_HEAD)"
+current_head="$(git rev-parse HEAD)"
+if [ "$current_head" = "$remote_sha" ]; then
+  echo "lane3-provision: already at origin/main ($remote_sha)" >&2
+elif ! git merge-base --is-ancestor "$remote_sha" "$current_head" 2>/dev/null; then
+  # Refuse to discard work rather than clobbering it. `lane3` refuses to start
+  # on drift; this refuses to repair drift destructively. Neither is the place
+  # to decide what happens to someone's uncommitted changes.
+  # Tracked changes only. `git checkout --detach` overwrites tracked files and
+  # leaves untracked ones alone -- and backend/.env, the very thing step 2
+  # repairs, is untracked in every project that has one. A blanket
+  # `--porcelain` would make this command refuse to run in exactly the state it
+  # exists to fix.
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    echo "lane3-provision: this worktree has uncommitted changes -- refusing to check out origin/main over them. Commit or move them first." >&2
+    exit 1
+  fi
+  echo "lane3-provision: checking out origin/main ($remote_sha), was $current_head" >&2
+  git checkout -q --detach "$remote_sha"
+else
+  echo "lane3-provision: already at or ahead of origin/main -- leaving HEAD at $current_head" >&2
+fi
+
+## 2. backend/.env sync (harmonic-forge#264)
+#
+# hrse#792: a Lane 3 gate lost the entire live HTTP/auth-endpoint test surface
+# to a stale backend/.env -- main had gained KEYCLOAK_AGENT_CLIENT_ID/_SECRET,
+# this worktree's own plain-file copy hadn't. backend/.env has no legitimate
+# per-worktree divergence, so a symlink makes drift structurally impossible
+# instead of merely detected. Creates/repairs the link only -- never reads or
+# prints the file's contents, so this never touches secret values, only where
+# they live on disk. Silently skipped for a project with no backend/.env at all
+# (harmonic-forge itself, or any non-HRSE2-shaped project).
+main_root="$parent/$base"
+if [ -f "$main_root/backend/.env" ]; then
+  main_env_real="$(readlink -f "$main_root/backend/.env")"
+  target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
+  if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
+    mkdir -p "$target/backend"
+    ln -sfn "$main_env_real" "$target/backend/.env"
+    echo "lane3-provision: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2
+  else
+    echo "lane3-provision: backend/.env already linked correctly" >&2
+  fi
+fi
+
+echo "lane3-provision: done -- \`lane3\` should now start without refusing" >&2
