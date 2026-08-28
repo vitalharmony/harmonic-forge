@@ -190,11 +190,32 @@ An enforcement design that is safe-by-default under one agent is fail-open
 under another. That is the practical content of "directive prose is never
 enforcement," and the reason #362 exists.
 
-**#362 shipped, and its "admin-policy deny" cells above are accurate for
-Lane 1 only.** `gemini-lane1.toml`'s narrow, default-deny-plus-allowlist
-shell posture genuinely enforces most of the rows above (raw GitHub
-posting, closing keywords, irreversible git ops, all fall outside its
-allowed `commandPrefix`/`commandRegex` set and hit the catch-all deny).
+**#362 shipped, and its "admin-policy deny" cells above became accurate for
+Lane 1 only after harmonic-forge#412 — for a different reason than #362
+claimed.** An earlier version of this section said `gemini-lane1.toml`'s
+narrow, default-deny-plus-allowlist shell posture "genuinely enforces" most
+of the rows above. **That claim was false and is retracted.** Live
+verification (2026-08-28, ground truth by `ls` on the target, never model
+narration) found three escapes through an allowlisted `commandPrefix`:
+`git status > FILE` wrote a file; `git diff --output=PATH HEAD` wrote
+outside the workspace; and `git fetch --upload-pack=PATH .` **executed
+`PATH` as a local program** — arbitrary code execution, not merely an
+unauthorized write. None contains a shell metacharacter except the first,
+and redirection is only ever downgraded `ALLOW → ASK_USER`, a downgrade
+switched off entirely under `--yolo`. A middle-ground allow over a
+metacharacter-excluding character class was built and live-tested, then
+falsified: git's write/execute flags are space-separable, so the flag value
+is a bare path made of characters any workable allow-class must permit.
+
+`gemini-lane1.toml` therefore now denies `run_shell_command` **whole-tool**,
+the one property this engine has been proven to enforce. The cells above are
+accurate for Lane 1 as a consequence of that deny, not of argument
+constraint. **Argument-constrained shell allowlisting is not an enforcement
+mechanism in Gemini CLI 0.56.0 and must not be treated as one.** The cost is
+real and accepted: Lane 1 loses its posting wrappers (`l1-post`,
+`lane-comment`, `gh-new-issue`) with the shell, and is analysis-only until an
+MCP posting surface replaces them.
+
 `gemini-lane2.toml` deliberately leaves `run_shell_command` fully open --
 confirmed live (harmonic-forge#362's own pitch-inspection) that an
 args-scoped deny on an otherwise-open shell is bypassable via one level of
@@ -202,12 +223,12 @@ wrapper indirection, the identical gap `block_irreversible_ops.py`'s own
 docstring concedes for Claude. So for Lane 2, every row above whose only
 Gemini mechanism is "admin-policy deny (#362)" is **unenforced** -- Lane 2
 under Gemini has no equivalent of `batch_auth.py`, `block_closing_keywords.py`,
-`block_irreversible_ops.py`, or `block_data_migration_close.py` today. Only
-the four whole-tool global denies (`write_file`/`replace` for Lane 1 only,
-`activate_skill`/`invoke_agent` for both lanes) are real, structural
-boundaries -- proven live, not merely schema-valid, by
-`tools/lane/policies/canary/run_canary.py` (16/16 passing at time of
-writing). See that file's own header and `gemini-lane2.toml`'s comments for
+`block_irreversible_ops.py`, or `block_data_migration_close.py` today. Only the whole-tool global denies (`write_file`/`replace` and, since #412,
+`run_shell_command` for Lane 1; `activate_skill`/`invoke_agent` for both
+lanes) are real, structural boundaries -- proven live, not merely
+schema-valid, by `tools/lane/policies/canary/run_canary.py`, which since
+#412/#413 carries all three escape classes as regression probes asserted on
+filesystem/process ground truth rather than on output text. See that file's own header and `gemini-lane2.toml`'s comments for
 the full reasoning; not repeated here to avoid a second copy drifting.
 
 ## 8. The acceptance matrix
@@ -219,9 +240,16 @@ this ADR:
 |---|---|---|---|---|---|---|
 | **Claude Code** 2.1.239 | supported | supported | supported | supported | supported | operator-launched |
 | **Codex** 0.149.0 | supported¹ | supported¹ | unqualified | unqualified | unqualified | operator-launched |
-| **Gemini** 0.56.0 | **supported** (#318, now admin-policy-protected, #362) | **partially supported²** (#362) | **blocked** — #326 | **blocked** — #327 | **blocked** — #327 | **blocked** — #327 |
+| **Gemini** 0.56.0 | **supported, shell-less³** (#318, #362, #412) | **partially supported²** (#362) | **blocked** — #326 | **blocked** — #327 | **blocked** — #327 | **blocked** — #327 |
 
 ¹ with accepted residual gaps, below.
+³ Lane 1 has **no `run_shell_command` at all** since harmonic-forge#412 --
+the narrow allowlist it replaced permitted arbitrary local code execution.
+A Gemini Lane 1 session can read, search, and fetch, but cannot run `git`,
+`gh`, or the `mise run l1-post` / `lane-comment` / `gh-new-issue` wrappers:
+it composes handoffs as text and the operator relays them. Interim by
+decision, not by oversight -- the replacement is an MCP posting surface
+taking structured parameters, where there is no shell string to attack.
 ² whole-tool global denies (`activate_skill`/`invoke_agent`) are real,
 canary-proven boundaries; `run_shell_command` is intentionally
 unmediated (§ 7's #362 note above) -- AC4 (`gh issue close`/`gh pr merge`

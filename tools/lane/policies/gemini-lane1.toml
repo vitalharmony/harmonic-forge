@@ -32,22 +32,22 @@
 # reviews Lane 2's diffs, and posts protocol comments through the sanctioned
 # wrappers. It has no legitimate need for file writes (already denied below),
 # destructive git operations, package installs, or arbitrary code execution
-# (`python -c`, `sh -c`, heredoc indirection). A blanket deny of
-# `run_shell_command` would make Lane 1 unable to do its actual job; a blanket
-# allow is a full shell escape -- self-author-and-close, self-push, or
-# arbitrary code execution, the exact class of incident the 3-lane structure
-# exists to prevent, now with no Claude-Code hook underneath it. The allow
-# list below is deliberately narrow and enumerated, not "everything except a
-# deny list" -- the same default-deny-plus-narrow-allow shape as the catch-all
-# rule, for the same fail-safe reason.
+# (`python -c`, `sh -c`, heredoc indirection). #362 concluded from this that a
+# blanket deny would make Lane 1 unable to do its job, and shipped a narrow
+# enumerated allowlist instead. **That conclusion was correct about the cost
+# and wrong about the alternative** (harmonic-forge#412): the narrow allowlist
+# permitted arbitrary local code execution, so the choice was never
+# "capability vs. safety" -- it was "capability vs. the appearance of safety."
+# Lane 1 now has no shell, and loses its posting channel with it; see the deny
+# rule below for the accepted cost and its intended replacement.
 #
-# NOT YET LIVE-VERIFIED end-to-end (flagged, not silently assumed): the exact
-# `commandPrefix`/`commandRegex` matching semantics against a real multi-word
-# shell command, and whether Lane 1's allow rules actually win their priority
-# race against the catch-all in practice, not just by schema reading. This is
-# exactly what the canary suite (`tools/lane/policies/canary/`) exists to
-# prove -- see its own file for what's been confirmed live versus what still
-# needs Lane 3's independent run.
+# ANSWERED, in the negative (harmonic-forge#412): an earlier version of this
+# header flagged the `commandPrefix`/`commandRegex` matching semantics as not
+# yet live-verified end-to-end. They have since been verified live, and the
+# allowlist they supported did not hold -- see the `run_shell_command` deny
+# below for the three escape classes and why no pattern closes them. The
+# canary suite (`tools/lane/policies/canary/`) now carries all three as
+# regression probes asserted on filesystem/process ground truth.
 
 # Default-deny base (harmonic-forge#362 REFORGE decision 2): a new CLI
 # release, MCP tool, or extension is denied by default, not silently
@@ -73,47 +73,55 @@ decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#362: Lane 1 does not spawn nested skills/agents outside the standard 3-lane loop."
 
-# Narrow, argument-constrained shell allowlist (DJC #2). Read-only git,
-# the sanctioned posting wrappers, and read-only GitHub REST GETs only.
+# `run_shell_command` is denied WHOLE-TOOL (harmonic-forge#412).
+#
+# The narrow, argument-constrained allowlist that stood here was not a
+# boundary. Verified live against Gemini CLI 0.56.0, ground truth by `ls` on
+# the target -- never the model's own narration -- three independent escapes
+# went straight through an allowlisted prefix:
+#
+#   git status > FILE                      -> file written (Class A)
+#   git diff --output=PATH HEAD            -> file written outside the workspace (Class B)
+#   git fetch --upload-pack=PATH .         -> PATH EXECUTED as a local program (Class C)
+#
+# Class A is only ever downgraded ALLOW -> ASK_USER, and that downgrade is
+# switched off entirely under --yolo (`shouldDowngradeForRedirection`, bundle
+# chunk-MYCBWRZE.js); the redirect target is skipped from per-subcommand
+# checking outright. `allowRedirection` is an allow-side rule field only --
+# nothing in the 0.56.0 schema forbids redirection under --yolo.
+#
+# Classes B and C contain no shell metacharacter at all, are atomic, and are
+# never decomposed. No `commandPrefix` refinement touches them: the prefix
+# matched is exactly the intended one.
+#
+# A middle-ground design was built and live-tested during #412's Plan-First
+# review -- a terminated `commandRegex` allow over a character class excluding
+# `= > < ; & | $ ( ) \ "`, closing A/B by construction rather than by
+# enumerating flags. It held for a full round, then was falsified: git's
+# write/execute flags are space-separable (`--upload-pack <path>`, no `=`),
+# and the flag VALUE is a bare filesystem path made of characters any workable
+# allow-class must permit. No pattern over the command string separates a safe
+# `git fetch` from `git fetch --upload-pack <script>` -- they differ only in a
+# flag name, which is the completeness burden this file's default-deny shape
+# exists to avoid. Do not reintroduce an allowlist here; it cannot be made to
+# hold, and each attempt reads as protection that is not there.
+#
+# Whole-tool deny is the one property this engine has been proven to enforce
+# live (harmonic-forge#326): the tool leaves the model's own tool list, so
+# there is no argument surface left to reason about.
+#
+# COST, accepted deliberately (#412, operator decision 2026-08-28): this
+# removes Lane 1's entire posting channel -- `mise run l1-post`,
+# `mise run lane-comment`, `mise run gh-new-issue` -- along with read-only
+# `git` and `gh api`. A Gemini Lane 1 session is analysis-only: it composes
+# handoffs as text and the operator relays them. Interim, not permanent -- the
+# replacement is an MCP posting surface taking structured parameters, where
+# there is no shell string to attack. Restoring shell here is not the fix.
 [[rule]]
 toolName = "run_shell_command"
-commandPrefix = [
-  "git log",
-  "git diff",
-  "git status",
-  "git fetch",
-  "mise run lane-comment",
-  "mise run l1-post",
-  "mise run gh-new-issue",
-]
-decision = "allow"
+decision = "deny"
 priority = 999
-
-# `gh api` is allowed only in its plain read (GET) shape -- a bare
-# `repos/{owner}/{repo}/(issues|pulls)/{n}` fetch, nothing appended. Verified
-# live (harmonic-forge#362) that `commandRegex` is spliced in as
-# `"command":"<this pattern>` (`buildArgsPatterns()`,
-# packages/core/dist/src/policy/utils.js) -- so a leading `^` here is
-# meaningless (it would anchor mid-string, right after the auto-prepended
-# `"command":"`, never matching) and was silently inert in an earlier
-# version of this rule. No trailing wildcard either: this pattern ends on a
-# literal `"` immediately after the issue/PR number, so any extra flag
-# appended in the actual command (a `-X`/`--method` mutation, `--paginate`,
-# anything) leaves a non-`"` character right where this pattern expects the
-# JSON string to close, and the rule correctly fails to match, falling
-# through to the catch-all deny. Also avoids the CLI's own ReDoS-safety
-# linter (`isSafeRegExp()`, same file): a bare `(/[0-9]+)?`-shaped optional
-# group trips its nested-quantifier heuristic and gets silently rejected at
-# load time with no hard failure -- confirmed live, an earlier version of
-# this rule was silently dropped this way. Deliberately narrower than the
-# original design (no bulk-list, no --paginate, no --jq) to stay inside a
-# pattern shape proven not to trip that heuristic; can widen later once
-# verified, not asserted, to still pass it.
-[[rule]]
-toolName = "run_shell_command"
-commandRegex = 'gh api repos/[^"/]+/[^"/]+/(issues|pulls)/[0-9]+"'
-decision = "allow"
-priority = 999
+denyMessage = "harmonic-forge#412: Lane 1 has no shell. An argument-constrained allowlist here was live-verified NOT to hold -- redirection, `git diff --output`, and `git fetch --upload-pack` (arbitrary local code execution) all passed it. Compose the handoff as text; the operator relays it."
 
 # Read/context tools -- no mutation risk, core review capability.
 [[rule]]
