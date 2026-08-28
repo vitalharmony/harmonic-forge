@@ -529,7 +529,13 @@ are operative here:
 `_cli_launch.sh`'s `gemini*` branch) that structurally denies `write_file`/
 `replace` for Lane 1 (role boundary — Lane 1 never edits files) and
 `activate_skill`/`invoke_agent` for both lanes — proven live, not merely
-schema-valid, by `tools/lane/policies/canary/run_canary.py`. **Lane 2's
+schema-valid, by `tools/lane/policies/canary/run_canary.py`. **Lane 1 has
+no shell** (harmonic-forge#412): an argument-constrained `run_shell_command`
+allowlist was live-verified to permit writes and arbitrary local code
+execution via redirection and native write flags (`git diff --output=`,
+`git fetch --upload-pack=`), so the tool is now denied whole-tool. A Gemini
+Lane 1 session composes handoffs as text; the operator relays them until an
+MCP-based posting surface exists. **Lane 2's
 `run_shell_command` is deliberately left fully open** — an `argsPattern`/
 `commandPrefix` deny-list on an otherwise-unconstrained shell was found live
 (harmonic-forge#362's pitch-inspection) to leave the tool visible and be
