@@ -3,6 +3,30 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(lane): capture pre-refactor launch tuples as the AC8 baseline (harmonic-forge#322)
+- tools/lane/baseline_capture.py         | 314 ++++++++++++
+- tools/lane/baseline_launch_tuples.json | 888 +++++++++++++++++++++++++++++++++
+- tools/lane/lane3_safety_additions.txt  |  40 ++
+- 3 files changed, 1242 insertions(+)
+
+## feat(lane): closed agent registry, laneN --agent, Lane 3 check-only (harmonic-forge#322)
+- tools/lane/_agent_registry.sh     | 259 +++++++++++++
+- tools/lane/_cli_launch.sh         | 344 ++++++++++++-----
+- tools/lane/_lane_args.sh          |  97 +++++
+- tools/lane/baseline_capture.py    | 121 +++++-
+- tools/lane/lane1                  |  24 +-
+- tools/lane/lane2                  |  50 ++-
+- tools/lane/lane3                  | 217 ++++++++---
+- tools/lane/lane3-provision        | 101 +++++
+- tools/lane/test_lane_launchers.py | 792 ++++++++++++++++++++++++++++++++++++++
+- tools/run_tests.py                |   2 +-
+- 10 files changed, 1812 insertions(+), 195 deletions(-)
+
+## docs(lane): --agent is the documented interface; record #322's decisions (harmonic-forge#322)
+- 3-lane-protocol.md                                 | 109 +++++++++++++++++----
+- ...-agent-adapter-contract-and-capability-tiers.md |  90 ++++++++++++++---
+- 2 files changed, 166 insertions(+), 33 deletions(-)
+
 ## fix(tooling): resolve model tier gate issue targets (harmonic-forge#367)
 - ...-agent-adapter-contract-and-capability-tiers.md |  2 +-
 - tools/hooks/model_tier_gate.py                     | 89 +++++++++++-----------
