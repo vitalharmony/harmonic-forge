@@ -173,6 +173,7 @@ priority = 999
 
 [[rule]]
 mcpName = "*"
+toolName = "*"
 decision = "deny"
 priority = 998
 denyMessage = "harmonic-forge#1414: only lane3-context.fetch_context is permitted in a Gemini Lane 3 session."
