@@ -113,7 +113,13 @@ denyMessage = "harmonic-forge#326: default-deny admin-tier base -- this tool is 
 
 # Mutation. Lane 3 never fixes anything -- the constraint the lane exists for.
 [[rule]]
-toolName = ["write_file", "replace"]
+toolName = "write_file"
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: Lane 3 never edits files. It reports findings; it does not fix them."
+
+[[rule]]
+toolName = "replace"
 decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#326: Lane 3 never edits files. It reports findings; it does not fix them."
@@ -127,7 +133,13 @@ denyMessage = "harmonic-forge#326: shell is denied whole-tool at Lane 3 -- an al
 
 # Network egress and ingestion. See "Injection, stated precisely" above.
 [[rule]]
-toolName = ["web_fetch", "google_web_search"]
+toolName = "web_fetch"
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: the diff and the issue thread are the only permitted attacker-influenced inputs at Lane 3. Every other ingestion channel is closed."
+
+[[rule]]
+toolName = "google_web_search"
 decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#326: the diff and the issue thread are the only permitted attacker-influenced inputs at Lane 3. Every other ingestion channel is closed."
@@ -140,7 +152,13 @@ denyMessage = "harmonic-forge#326: the diff and the issue thread are the only pe
 # this deny. activate_skill is equally reachable -- it activated `skill-creator`
 # and listed its bundled scripts.
 [[rule]]
-toolName = ["invoke_agent", "activate_skill"]
+toolName = "invoke_agent"
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: Lane 3 does not spawn nested agents or skills -- a nested session is a second actor the gate cannot report on."
+
+[[rule]]
+toolName = "activate_skill"
 decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#326: Lane 3 does not spawn nested agents or skills -- a nested session is a second actor the gate cannot report on."
@@ -170,13 +188,31 @@ denyMessage = "harmonic-forge#1414: only lane3-context.fetch_context is permitte
 # review use, and not registered headless today. Denied by the base.
 # ---------------------------------------------------------------------------
 [[rule]]
-toolName = [
-  "read_file",
-  "read_many_files",
-  "list_directory",
-  "glob",
-  "grep_search",
-  "update_topic",
-]
+toolName = "read_file"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "read_many_files"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "list_directory"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "glob"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "grep_search"
+decision = "allow"
+priority = 999
+
+[[rule]]
+toolName = "update_topic"
 decision = "allow"
 priority = 999
