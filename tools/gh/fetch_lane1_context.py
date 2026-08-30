@@ -44,6 +44,11 @@ before its own could still misclassify. Not observed in practice, and
 forge the footer text into a body posted through the shared tooling -- so a
 forged marker would have to be typed by hand outside that path.
 
+The default output remains the filtered context used before Lane 3 writes its
+test spec.  After AE, ``--target-metadata`` returns only the validated,
+immutable target identity; it never returns the AE prose.  ``--comment-id``
+uses the same trusted transport for a single explicitly named comment.
+
 Usage: python3 fetch_lane1_context.py --repo OWNER/REPO --issue N
 """
 
@@ -56,8 +61,14 @@ import sys
 _MARKER_RE = re.compile(r"<!--\s*l1-post\s+v1;.*?-->", re.DOTALL)
 _KIND_RE = re.compile(r"kind=([\w-]+)")
 _POSTED_BY_RE = re.compile(r"posted-by=([\w-]+)")
+_SHA_RE = re.compile(r"(?:^|;\s*)sha=([0-9a-f]{40})(?=;|\s|-->)")
 _LANE1_KINDS = {"handoff", "ready-for-l3", "sweep", "ae"}
 _LANE1_POSTED_BY = {"LANE1", "LANE-unset"}
+_CANONICAL_REPOS = {"vitalharmony/hrse", "vitalharmony/harmonic-forge"}
+
+
+class NoAttestedTarget(ValueError):
+    """No current AE exists yet; pre-AE context reads remain permitted."""
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -85,6 +96,36 @@ def is_lane1_comment(body: str) -> bool:
         posted_by_match = _POSTED_BY_RE.search(marker)
         return posted_by_match is not None and posted_by_match.group(1) in _LANE1_POSTED_BY
     return False
+
+
+def _marker_kind(body: str) -> str | None:
+    marker_match = _MARKER_RE.search(body)
+    if marker_match is None:
+        return None
+    kind_match = _KIND_RE.search(marker_match.group(0))
+    return kind_match.group(1) if kind_match else None
+
+
+def attested_target(repo: str, comments: list[dict]) -> dict[str, str]:
+    """Return the newest single-marker AE target, never the AE body.
+
+    An issue may contain historical AEs from superseded gate rounds. GitHub's
+    comment order makes the newest AE the current authorization. The current
+    AE itself must be structurally unambiguous and carry a full commit SHA.
+    """
+    if repo not in _CANONICAL_REPOS:
+        raise ValueError("repository is not a canonical supported target")
+    ae_comments = [c for c in comments if _marker_kind(c.get("body", "")) == "ae"]
+    if not ae_comments:
+        raise NoAttestedTarget("no valid Lane 1 AE exists for this issue")
+    body = ae_comments[-1].get("body", "")
+    markers = _MARKER_RE.findall(body)
+    if len(markers) != 1:
+        raise ValueError("current AE must contain exactly one Lane 1 attestation marker")
+    sha_match = _SHA_RE.search(markers[0])
+    if sha_match is None:
+        raise ValueError("current AE does not attest one immutable 40-character SHA")
+    return {"repository": repo, "sha": sha_match.group(1)}
 
 
 def fetch_issue_body(repo: str, issue: int) -> str:
@@ -120,17 +161,56 @@ def fetch_comments(repo: str, issue: int) -> list[dict]:
     return comments
 
 
+def fetch_named_comment(repo: str, issue: int, comment_id: int) -> str:
+    result = _run(["gh", "api", f"repos/{repo}/issues/comments/{comment_id}"])
+    if result.returncode != 0:
+        print(f"[FETCH-L1-CONTEXT] failed to fetch named comment:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    comment = json.loads(result.stdout)
+    expected_issue = f"https://api.github.com/repos/{repo}/issues/{issue}"
+    if comment.get("issue_url") != expected_issue:
+        raise ValueError("named comment does not belong to the requested issue")
+    body = comment.get("body")
+    if not isinstance(body, str):
+        raise ValueError("named comment has no readable body")
+    return body
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Fetch only the issue body and Lane-1-authored comments -- never the full thread."
     )
     parser.add_argument("--repo", required=True, help="Target repo, e.g. vitalharmony/hrse")
     parser.add_argument("--issue", required=True, type=int, help="Issue number")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--target-metadata", action="store_true", help="Emit validated AE target JSON only")
+    mode.add_argument("--comment-id", type=int, help="Emit one named comment after issue-membership validation")
     args = parser.parse_args()
+
+    if args.repo not in _CANONICAL_REPOS:
+        parser.error("--repo must name a canonical supported repository")
+    if args.comment_id is not None:
+        if args.comment_id < 1:
+            parser.error("--comment-id must be a positive integer")
+        print(fetch_named_comment(args.repo, args.issue, args.comment_id))
+        return 0
 
     body = fetch_issue_body(args.repo, args.issue)
     all_comments = fetch_comments(args.repo, args.issue)
-    included = [c for c in all_comments if is_lane1_comment(c.get("body", ""))]
+    if args.target_metadata:
+        try:
+            print(json.dumps(attested_target(args.repo, all_comments), sort_keys=True))
+        except (NoAttestedTarget, ValueError) as exc:
+            print(f"[FETCH-L1-CONTEXT] target metadata unavailable: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    # AE prose is authorization data, not spec-derivation context. The trusted
+    # provider consumes it for metadata but never returns it to the adapter.
+    included = [
+        c for c in all_comments
+        if is_lane1_comment(c.get("body", "")) and _marker_kind(c.get("body", "")) != "ae"
+    ]
     excluded_count = len(all_comments) - len(included)
 
     print(f"## Issue body ({args.repo}#{args.issue})\n")

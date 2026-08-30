@@ -4,13 +4,22 @@ subprocess calls mocked, no live gh/API calls.
 Run: python3 tools/gh/test_fetch_lane1_context.py"""
 
 import json
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import fetch_lane1_context as f
+
+SHA_1 = "1" * 40
+SHA_2 = "2" * 40
+
+
+def _ae(sha=SHA_1, prose="approved target"):
+    return {"body": f"{prose}\n<!-- l1-post v1; kind=ae; sha={sha}; body-sha256=x; checks=y -->"}
 
 
 def _completed(stdout="", returncode=0):
@@ -136,6 +145,71 @@ class TestFetchIssueBody(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 f.fetch_issue_body("o/r", 1)
         self.assertEqual(ctx.exception.code, 1)
+
+
+class TestAttestedTarget(unittest.TestCase):
+    def test_returns_only_canonical_repo_and_full_sha(self):
+        self.assertEqual(
+            f.attested_target("vitalharmony/harmonic-forge", [_ae()]),
+            {"repository": "vitalharmony/harmonic-forge", "sha": SHA_1},
+        )
+
+    def test_latest_ae_supersedes_historical_gate_round(self):
+        self.assertEqual(
+            f.attested_target("vitalharmony/harmonic-forge", [_ae(SHA_1), _ae(SHA_2)])["sha"],
+            SHA_2,
+        )
+
+    def test_missing_or_malformed_current_ae_fails_closed(self):
+        with self.assertRaises(f.NoAttestedTarget):
+            f.attested_target("vitalharmony/harmonic-forge", [])
+        with self.assertRaisesRegex(ValueError, "40-character SHA"):
+            f.attested_target("vitalharmony/harmonic-forge", [_ae("abc")])
+
+    def test_multiple_markers_in_current_ae_are_ambiguous(self):
+        body = _ae()["body"] + "\n" + _ae(SHA_2)["body"]
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            f.attested_target("vitalharmony/harmonic-forge", [{"body": body}])
+
+    def test_noncanonical_repository_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            f.attested_target("someone/fork", [_ae()])
+
+    def test_default_context_never_returns_ae_text(self):
+        handoff = {"body": "handoff\n<!-- l1-post v1; kind=handoff; sha=abc; checks=y -->"}
+        with patch.object(f, "fetch_issue_body", return_value="issue body"), \
+             patch.object(f, "fetch_comments", return_value=[handoff, _ae(prose="SECRET AE TEXT")]), \
+             patch.object(sys, "argv", ["fetch_lane1_context.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "326"]), \
+             redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(f.main(), 0)
+        self.assertIn("handoff", stdout.getvalue())
+        self.assertNotIn("SECRET AE TEXT", stdout.getvalue())
+
+
+class TestFetchNamedComment(unittest.TestCase):
+    def test_uses_single_comment_endpoint_and_checks_issue_membership(self):
+        response = json.dumps({
+            "issue_url": "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/326",
+            "body": "approved test spec",
+        })
+        with patch.object(f, "_run", return_value=_completed(response)) as run:
+            self.assertEqual(
+                f.fetch_named_comment("vitalharmony/harmonic-forge", 326, 123),
+                "approved test spec",
+            )
+        self.assertEqual(
+            run.call_args.args[0],
+            ["gh", "api", "repos/vitalharmony/harmonic-forge/issues/comments/123"],
+        )
+
+    def test_cross_issue_named_comment_fails_closed(self):
+        response = json.dumps({
+            "issue_url": "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/999",
+            "body": "wrong issue",
+        })
+        with patch.object(f, "_run", return_value=_completed(response)):
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                f.fetch_named_comment("vitalharmony/harmonic-forge", 326, 123)
 
 
 if __name__ == "__main__":

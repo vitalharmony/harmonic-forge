@@ -47,27 +47,24 @@ class Lane3ContextMcpTests(unittest.TestCase):
             self.assertEqual(SERVER._remote_repo(Path("/registered/hrse-lane3")), "vitalharmony/hrse")
 
     def test_returns_only_fixed_filtered_context_and_diff_operations(self) -> None:
-        seen: list[tuple[str, ...]] = []
-
-        def run(*args: str, cwd=None) -> str:
-            seen.append(args)
-            if args[:2] == ("git", "rev-parse"):
-                return "abc123\n"
-            if args[:2] == ("git", "diff"):
-                return "diff --git a/x b/x\n"
-            if args[0] == "python3":
-                return "# issue body and Lane 1 only\n"
-            raise AssertionError(args)
-
+        target = Path("/registered/hrse-lane3")
+        attested = SERVER.binding.AttestedTarget("vitalharmony/hrse", "a" * 40, target)
         with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/hrse-lane3")), \
-             patch.object(SERVER, "_run", side_effect=run):
+             patch.object(SERVER, "_provider", return_value=Path("/trusted/provider.py")), \
+             patch.object(SERVER.binding, "filtered_context", return_value="# issue body and Lane 1 only\n") as context_fetch, \
+             patch.object(SERVER.binding, "resolve_target", return_value=attested) as resolve, \
+             patch.object(SERVER.binding, "diff_from_main", return_value="diff --git a/x b/x\n"):
             context = SERVER._context("H1161")
         self.assertIn("issue: H1161", context)
         self.assertIn("# issue body and Lane 1 only", context)
         self.assertIn("diff --git", context)
-        self.assertIn(("git", "diff", "origin/main...HEAD"), seen)
-        fetch = next(call for call in seen if call[0] == "python3")
-        self.assertEqual(fetch[-4:], ("--repo", "vitalharmony/hrse", "--issue", "1161"))
+        self.assertIn(f"target_sha: {'a' * 40}", context)
+        context_fetch.assert_called_once_with(
+            Path("/trusted/provider.py"), "vitalharmony/hrse", "1161", target,
+        )
+        resolve.assert_called_once_with(
+            Path("/trusted/provider.py"), "vitalharmony/hrse", "1161", target,
+        )
 
     def test_server_advertises_only_the_two_bounded_lane3_tools(self) -> None:
         proc = subprocess.run(
@@ -79,6 +76,10 @@ class Lane3ContextMcpTests(unittest.TestCase):
         tools = reply["result"]["tools"]
         self.assertEqual({tool["name"] for tool in tools}, {"fetch_context", "fetch_comment", "post_gate_report", "read_file", "list_files", "search_text", "read_directive"})
         self.assertTrue(tools[0]["inputSchema"]["additionalProperties"] is False)
+        file_tools = {tool["name"]: tool for tool in tools if tool["name"] in SERVER.FILE_TOOLS}
+        self.assertTrue(all("issue" in tool["inputSchema"]["required"] for tool in file_tools.values()))
+        self.assertTrue(all("repository" not in tool["inputSchema"]["properties"] for tool in file_tools.values()))
+        self.assertTrue(all("sha" not in tool["inputSchema"]["properties"] for tool in file_tools.values()))
 
     def test_extension_and_policy_allow_only_the_bounded_mcp_tools(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text())
@@ -96,12 +97,41 @@ class Lane3ContextMcpTests(unittest.TestCase):
         self.assertIn('decision = "deny"', policy)
 
     def test_named_comment_must_belong_to_the_requested_issue(self) -> None:
-        response = json.dumps({"issue_url": "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/326", "body": "14-point spec"})
         with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/forge-lane3")), \
-             patch.object(SERVER, "_run", return_value=response) as run:
+             patch.object(SERVER, "_provider", return_value=Path("/trusted/provider.py")), \
+             patch.object(SERVER.binding, "named_comment", return_value="14-point spec") as fetch:
             result = SERVER._fetch_comment("F326", 123)
         self.assertIn("14-point spec", result)
-        self.assertEqual(run.call_args.args[:3], ("gh", "api", "repos/vitalharmony/harmonic-forge/issues/comments/123"))
+        fetch.assert_called_once_with(
+            Path("/trusted/provider.py"), "vitalharmony/harmonic-forge", "326", 123,
+            Path("/registered/forge-lane3"),
+        )
+
+    def test_adapter_has_no_raw_github_transport(self) -> None:
+        source = SERVER_PATH.read_text()
+        self.assertNotIn('"gh", "api"', source)
+        self.assertNotIn("issues/comments", source)
+
+    def test_target_is_recomputed_without_cross_call_state(self) -> None:
+        target = Path("/registered/forge-lane3")
+        attested = SERVER.binding.AttestedTarget(
+            "vitalharmony/harmonic-forge", "a" * 40, target,
+        )
+        with patch.object(SERVER, "_target_worktree", return_value=target), \
+             patch.object(SERVER, "_provider", return_value=Path("/trusted/provider.py")), \
+             patch.object(SERVER.binding, "resolve_target", return_value=attested) as resolve:
+            SERVER._attested_target("F326")
+            SERVER._attested_target("F326")
+        self.assertEqual(resolve.call_count, 2)
+        self.assertNotIn("tempfile", SERVER_PATH.read_text())
+
+    def test_shared_lane_launchers_are_unchanged(self) -> None:
+        root = SERVER_PATH.parents[3]
+        result = subprocess.run(
+            ["git", "diff", "--exit-code", "origin/main", "--", "tools/lane/lane2", "tools/lane/lane3"],
+            cwd=root, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_report_uses_fixed_self_checking_poster_for_matching_issue(self) -> None:
         with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/hrse-lane3")), \

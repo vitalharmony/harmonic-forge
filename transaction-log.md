@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane3): bind Gemini reads to attested target (F326)
+- tools/gh/test_fetch_lane1_context.py               |  74 ++++++++++++
+- tools/lane/test_lane3_context_mcp.py               |  68 ++++++++---
+- tools/lane/test_lane3_target_binding.py            |  84 ++++++++++++++
+- 6 files changed, 452 insertions(+), 91 deletions(-)
+
 ## feat(lane3): add dual fixed-root Gemini adapters
 - tools/lane/lane3                                 | 18 -----
 - tools/lane/policies/gemini-lane3.toml            | 68 +++++++++++++++++--
