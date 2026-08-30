@@ -45,6 +45,24 @@ if [[ "$base" =~ ^(.+)-lane[0-9]+$ ]]; then
 fi
 target="$parent/$base-lane3"
 
+# Gemini has no native workspace-switch operation after it starts. Resolve its
+# H/F target before launch so its built-in file tools and bounded MCP adapter
+# share one worktree. Other CLIs retain the established cwd-based path.
+if [ "${LANE_CLI:-}" = "gemini" ] && [ -t 0 ]; then
+  printf 'Gemini Lane 3 issue (H<N> or F<N>): ' >&2
+  read -r lane3_gemini_issue
+  if [[ "$lane3_gemini_issue" =~ ^H[1-9][0-9]*$ ]]; then
+    base="HRSE2"
+  elif [[ "$lane3_gemini_issue" =~ ^F[1-9][0-9]*$ ]]; then
+    base="harmonic-forge"
+  else
+    echo "lane3: Gemini requires a valid H<N> or F<N> issue before launch" >&2
+    exit 1
+  fi
+  target="$parent/$base-lane3"
+  export LANE3_ISSUE="$lane3_gemini_issue"
+fi
+
 if [ ! -d "$target" ]; then
   echo "lane3: expected worktree '$target' does not exist -- create it first (see 3-lane-protocol.md's Per-Lane Working Directories), not falling back to the main checkout" >&2
   exit 1
