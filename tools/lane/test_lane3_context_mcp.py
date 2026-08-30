@@ -28,45 +28,28 @@ class Lane3ContextMcpTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
 
     def test_only_a_prefixed_numeric_issue_is_accepted(self) -> None:
-        with patch.object(SERVER, "_is_canonical_lane3_worktree", return_value=True):
-            for value in ("1161", "H0", "H11;gh", "F1/path", 1161):
-                with self.subTest(value=value):
-                    with self.assertRaisesRegex(RuntimeError, "issue must"):
-                        SERVER._context(value)
+        for value in ("1161", "H0", "H11;gh", "F1/path", 1161):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(RuntimeError, "issue must"):
+                    SERVER._context(value)
 
-    def test_prefix_must_match_the_current_worktree_remote(self) -> None:
-        with patch.object(SERVER, "_is_canonical_lane3_worktree", return_value=True), \
-             patch.object(SERVER, "_remote_repo", return_value="vitalharmony/harmonic-forge"):
-            with self.assertRaisesRegex(RuntimeError, "does not match"):
-                SERVER._context("H1161")
+    def test_prefix_routes_to_the_registered_project_not_session_cwd(self) -> None:
+        target = Path("/registered/forge-lane3")
+        with patch.object(SERVER, "_target_worktree", return_value=target):
+            repo, number, selected = SERVER._issue_target("F326")
+        self.assertEqual((repo, number, selected), ("vitalharmony/harmonic-forge", "326", target))
 
     def test_remote_must_be_the_canonical_github_host_and_repo(self) -> None:
         with patch.object(SERVER, "_run", return_value="https://evil.example/vitalharmony/hrse.git\n"):
             with self.assertRaisesRegex(RuntimeError, "canonical"):
-                SERVER._remote_repo()
+                SERVER._remote_repo(Path("/registered/hrse-lane3"))
         with patch.object(SERVER, "_run", return_value="git@github.com:vitalharmony/hrse.git\n"):
-            self.assertEqual(SERVER._remote_repo(), "vitalharmony/hrse")
-
-    def test_context_requires_the_launcher_selected_lane3_worktree(self) -> None:
-        with patch.object(SERVER, "_is_canonical_lane3_worktree", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "canonical Lane 3"):
-                SERVER._context("H1161")
-
-    def test_worktree_binding_requires_main_and_lane3_in_one_registered_set(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            main, target = root / "forge", root / "forge-lane3"
-            main.mkdir()
-            target.mkdir()
-            (main / ".git").write_text("gitdir: elsewhere\n")
-            with patch.object(SERVER.Path, "cwd", return_value=target), \
-                 patch.object(SERVER, "_run", return_value=f"worktree {target}\n"):
-                self.assertFalse(SERVER._is_canonical_lane3_worktree())
+            self.assertEqual(SERVER._remote_repo(Path("/registered/hrse-lane3")), "vitalharmony/hrse")
 
     def test_returns_only_fixed_filtered_context_and_diff_operations(self) -> None:
         seen: list[tuple[str, ...]] = []
 
-        def run(*args: str) -> str:
+        def run(*args: str, cwd=None) -> str:
             seen.append(args)
             if args[:2] == ("git", "rev-parse"):
                 return "abc123\n"
@@ -76,8 +59,7 @@ class Lane3ContextMcpTests(unittest.TestCase):
                 return "# issue body and Lane 1 only\n"
             raise AssertionError(args)
 
-        with patch.object(SERVER, "_is_canonical_lane3_worktree", return_value=True), \
-             patch.object(SERVER, "_remote_repo", return_value="vitalharmony/hrse"), \
+        with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/hrse-lane3")), \
              patch.object(SERVER, "_run", side_effect=run):
             context = SERVER._context("H1161")
         self.assertIn("issue: H1161", context)
@@ -111,8 +93,7 @@ class Lane3ContextMcpTests(unittest.TestCase):
         self.assertIn('decision = "deny"', policy)
 
     def test_report_uses_fixed_self_checking_poster_for_matching_issue(self) -> None:
-        with patch.object(SERVER, "_is_canonical_lane3_worktree", return_value=True), \
-             patch.object(SERVER, "_remote_repo", return_value="vitalharmony/hrse"), \
+        with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/hrse-lane3")), \
              patch.object(SERVER, "_run", return_value="[POST-COMMENT] Posted: https://github.com/vitalharmony/hrse/issues/1161#issuecomment-1\n[POST-COMMENT] Self-check passed: posted content matches source exactly.\n") as run:
             result = SERVER._post_gate_report("H1161", "gate_report", "PASS")
         self.assertIn("issuecomment-1", result)
