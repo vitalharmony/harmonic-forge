@@ -213,16 +213,17 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 # through the system-installed lane3-context extension. Do not merely launch a
 # session that looks gated but lacks its only approved context capability.
 if [ "$LANE_AGENT" = "gemini" ]; then
-  extension_link="${HOME}/.gemini/extensions/lane3-context"
+  extension_record="${HOME}/.gemini/extensions/lane3-context/.gemini-extension-install.json"
   extension_source="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../gemini/lane3-context"
-  extension_target="$(readlink -f "$extension_link" 2>/dev/null || true)"
+  extension_registered="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("source", ""))' "$extension_record" 2>/dev/null || true)"
   extension_expected="$(readlink -f "$extension_source" 2>/dev/null || true)"
-  if [ ! -L "$extension_link" ] || [ -z "$extension_target" ] || \
-     [ ! -d "$extension_target" ] || \
-     [ ! -f "$extension_target/gemini-extension.json" ] || \
-     [ ! -f "$extension_target/lane3_context_mcp.py" ] || \
+  extension_registered_real="$(readlink -f "$extension_registered" 2>/dev/null || true)"
+  if [ ! -f "$extension_record" ] || [ -z "$extension_registered_real" ] || \
+     [ ! -d "$extension_registered_real" ] || \
+     [ ! -f "$extension_registered_real/gemini-extension.json" ] || \
+     [ ! -f "$extension_registered_real/lane3_context_mcp.py" ] || \
      [ -z "$extension_expected" ] || [ ! -d "$extension_expected" ] || \
-     [ "$extension_target" != "$extension_expected" ]; then
+     [ "$extension_registered_real" != "$extension_expected" ]; then
     cat >&2 <<EOF
 lane3: REFUSING TO START -- Gemini Lane 3 context extension is not installed from this platform checkout.
 
