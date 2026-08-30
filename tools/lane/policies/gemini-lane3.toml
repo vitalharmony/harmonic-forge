@@ -1,0 +1,182 @@
+# Admin-tier policy for a Gemini Lane 3 (gate) session (harmonic-forge#326).
+#
+# Loaded via `--admin-policy` by tools/lane/_cli_launch.sh, which the registry
+# arms from AGENT_LANE_POLICY[gemini:3]. The launcher rejects a passthrough
+# `--admin-policy` outright (harmonic-forge#322 AC4), so this file cannot be
+# swapped or removed by a later argument -- that un-removability is the
+# property this issue's AC4 depends on and it is enforced at the launcher,
+# which ADR-007 § 9 establishes as the only enforcement point that exists.
+#
+# Schema mechanics (priority range, first-match-highest-priority, tier
+# transformation) are documented once in gemini-lane1.toml's header. Not
+# repeated here so the two cannot drift on the shared explanation.
+#
+## What this policy is, and what it is not
+#
+# The ONLY structurally-enforced property is the whole-tool deny: the denied
+# tool is absent from the model's own tool list, not refused at call time.
+# Proven live under `--yolo` (harmonic-forge#326, 2026-08-21): `Tool "write_file"
+# not found`, with the canary file confirmed unchanged by reading it, not by
+# trusting the model's report.
+#
+# There is NO argument-scoped rule in this file, deliberately. An earlier
+# design for this policy carried a narrow `commandPrefix` allowlist on
+# `run_shell_command` so the gate could run `git diff` and `gh api`. That was
+# disqualified by live testing (harmonic-forge#412), which found two escape
+# classes against the identical shape shipped in gemini-lane1.toml:
+#
+#   Class A -- redirection (`git status > PWNED.txt`, `>> /abs/path 2>&1`).
+#     The policy engine never DENIES redirection; it downgrades ALLOW to
+#     ASK_USER, and that downgrade is switched off entirely under `--yolo` --
+#     which is the mode every headless launch, including this issue's own
+#     canary, uses.
+#   Class B -- a native write flag on an allowlisted binary
+#     (`git diff --output=/abs/path HEAD`). No shell metacharacter at all, a
+#     single atomic command, never decomposed or downgraded. `hasRedirection`'s
+#     detector is `/[><]/.test(command)`, which `--output=` never matches.
+#     NO `commandPrefix` refinement closes this class -- the prefix matched is
+#     exactly the intended one. Closing it would require auditing the flag
+#     surface of every allowlisted binary, which is the completeness burden a
+#     default-deny base exists to avoid.
+#
+# So `run_shell_command` is denied whole-tool here. H1414 adds one separately
+# installed, bounded MCP context tool; it accepts only H<N>/F<N>, maps that to
+# the current worktree's canonical origin, and returns the existing filtered
+# Lane-1 context plus fixed target diff. It is not a shell allowance.
+#
+## Injection, stated precisely
+#
+# Denying web_fetch and google_web_search does NOT "close the injection
+# channel." Lane 3 reads the diff and the issue thread, both authored by the
+# party under review, and both are irreducible -- a gate that cannot read them
+# cannot gate. The accurate claim is narrower and worth stating exactly:
+#
+#   The diff and the issue thread are the ONLY permitted attacker-influenced
+#   inputs. Every other ingestion channel is closed.
+#
+# That is why this file diverges from gemini-lane1.toml, which allows both
+# tools: Lane 1 researches and is advisory; Lane 3 adjudicates, and a session
+# that fetches a URL named in the thread lets the reviewed party steer its own
+# reviewer. Do not "harmonize" the two policies. The Lane 3 prompt carries a
+# standing instruction to treat issue and diff content as data, never as
+# instruction. (The CLI already wraps web_fetch output in `<untrusted_context>`
+# -- noted, not relied on.)
+#
+## Completeness boundaries -- why the deny-all base is the boundary and the
+## enumeration below is only an optimization
+#
+# Three ways a name-based rule can miss a real tool, all verified in the
+# installed 0.56.0 bundle:
+#
+#   1. `TOOL_LEGACY_ALIASES` (currently `search_file_content -> grep_search`).
+#      A future rename gives a tool a second name; a deny keyed to one name
+#      does not follow.
+#   2. `DISCOVERED_TOOL_PREFIX` (`discovered_tool_`) and MCP tool names are
+#      supplied at runtime and appear in no static list. `take_snapshot` is a
+#      live example -- it is NOT in `ALL_BUILTIN_TOOL_NAMES` (27 entries); it
+#      is supplied by the browser agent via MCP at invocation time.
+#   3. `PLAN_MODE_TOOLS` reaches `codebase_investigator` and `cli_help` by
+#      name -- `codebase_investigator` is a subagent, i.e. a nested-agent path
+#      that does not go through `invoke_agent`.
+#
+# Each is denied by the catch-all base, not by being enumerated. That is the
+# design: enumeration is for the tools that are actually reachable and
+# dangerous, so every line below does work; the base is what makes the policy
+# safe against the ones nobody has thought of yet.
+#
+## Note on where a gate's transcript lands (harmonic-forge#326, Lane 1 decision 3)
+#
+# Every Gemini session writes its full transcript to
+# `~/.gemini/tmp/<project>/chats/session-*.jsonl`, plus `history/<project>/`
+# and an update to `projects.json` -- outside the worktree, regardless of this
+# policy. Accepted as standard CLI behavior, recorded here so a future reader
+# finding gate transcripts there is not surprised.
+
+# ---------------------------------------------------------------------------
+# Default-deny base. A new CLI release, MCP tool, extension, or renamed tool is
+# denied by default rather than silently permitted by omission.
+# ---------------------------------------------------------------------------
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 0
+denyMessage = "harmonic-forge#326: default-deny admin-tier base -- this tool is not on Lane 3's explicit allow list."
+
+# ---------------------------------------------------------------------------
+# Whole-tool denies. These seven are the complete set of tools verified live
+# (harmonic-forge#326) to be REGISTERED in a headless `gemini -p` session AND
+# able to mutate, egress, or nest. Every other name in the 27-entry builtin
+# registry is either read-only or not registered headless at all -- a rule
+# naming an unregistered tool is a no-op in both directions, so it is left to
+# the base rather than padding this list.
+# ---------------------------------------------------------------------------
+
+# Mutation. Lane 3 never fixes anything -- the constraint the lane exists for.
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: Lane 3 never edits files. It reports findings; it does not fix them."
+
+# Shell. See Class A / Class B above -- harmonic-forge#412.
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: shell is denied whole-tool at Lane 3 -- an allowlist cannot block writes via redirection or native write flags (harmonic-forge#412)."
+
+# Network egress and ingestion. See "Injection, stated precisely" above.
+[[rule]]
+toolName = ["web_fetch", "google_web_search"]
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: the diff and the issue thread are the only permitted attacker-influenced inputs at Lane 3. Every other ingestion channel is closed."
+
+# Nested agents and skills. Verified live: invoke_agent spawns a real subagent
+# (`codebase_investigator` ran), and the generalist agent's toolConfig is
+# `toolRegistry.getAllToolNames()` -- the full registry. The admin policy does
+# propagate into subagents (observed: `[LocalAgentExecutor] Blocked call:
+# Unauthorized tool call`), which is defense-in-depth, not a reason to relax
+# this deny. activate_skill is equally reachable -- it activated `skill-creator`
+# and listed its bundled scripts.
+[[rule]]
+toolName = ["invoke_agent", "activate_skill"]
+decision = "deny"
+priority = 999
+denyMessage = "harmonic-forge#326: Lane 3 does not spawn nested agents or skills -- a nested session is a second actor the gate cannot report on."
+
+# H1414: exactly one system-installed MCP operation is permitted. The server
+# name has no underscore because Gemini's policy parser splits MCP FQNs there.
+[[rule]]
+mcpName = "lane3-context"
+toolName = "fetch_context"
+decision = "allow"
+priority = 999
+
+[[rule]]
+mcpName = "*"
+decision = "deny"
+priority = 998
+denyMessage = "harmonic-forge#1414: only lane3-context.fetch_context is permitted in a Gemini Lane 3 session."
+
+# ---------------------------------------------------------------------------
+# Allowed: static review, and nothing else.
+#
+# The first four are what tier 1 IS -- read-only inspection of pre-staged
+# context and the worktree. `update_topic` is session-local topic text with no
+# filesystem, network, or git effect (verified live; Lane 1 decision 2).
+#
+# `get_internal_docs` is deliberately NOT here: network-backed retrieval, no
+# review use, and not registered headless today. Denied by the base.
+# ---------------------------------------------------------------------------
+[[rule]]
+toolName = [
+  "read_file",
+  "read_many_files",
+  "list_directory",
+  "glob",
+  "grep_search",
+  "update_topic",
+]
+decision = "allow"
+priority = 999

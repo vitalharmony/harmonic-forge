@@ -127,11 +127,13 @@ declare -A AGENT_LANE_POLICY=(
   [codex:1]=""  [codex:2]=""  [codex:3]=""
   [gemini:1]="gemini-lane1.toml"
   [gemini:2]="gemini-lane2.toml"
-  # DECLARED EMPTY, not forgotten (NC7): harmonic-forge#326 owns the Lane 3
-  # policy file and it is not built. A Gemini Lane 3 session is therefore not
-  # policy-protected today. #326 fills this field and adds its flag to
-  # lane3_safety_additions.txt -- it does not reopen the launcher.
-  [gemini:3]=""
+  # Filled by harmonic-forge#326, exactly as harmonic-forge#322 NC7 designed:
+  # this slot was declared empty rather than omitted so #326 could fill a field
+  # instead of reopening the launcher. It did -- no change to _cli_launch.sh was
+  # needed, and #322's own
+  # test_deny_mechanism_is_registry_generic_not_gemini_specific had already
+  # proven this exact path injects the policy AND makes the flag un-removable.
+  [gemini:3]="gemini-lane3.toml"
 )
 
 # The agents this registry knows. `--agent` is CLOSED against this list: an
