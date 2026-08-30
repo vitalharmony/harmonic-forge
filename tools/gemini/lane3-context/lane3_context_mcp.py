@@ -27,6 +27,14 @@ FETCH_COMMENT_TOOL = "fetch_comment"
 REPORT_TOOL = "post_gate_report"
 REPORT_KINDS = {"test_spec", "gate_report", "blocked"}
 MAX_REPORT_CHARS = 20_000
+MAX_FILE_BYTES = 200_000
+FILE_TOOLS = ("read_file", "list_files", "search_text")
+DIRECTIVES = {
+    "three_lane_protocol": "3-lane-protocol.md",
+    "testing_gate": "rules/testing-gate.md",
+    "adapter_adr": "docs/decisions/ADR-007-multi-agent-adapter-contract-and-capability-tiers.md",
+    "launcher": "tools/lane/_cli_launch.sh",
+}
 
 
 def _run(*args: str, cwd: Path | None = None) -> str:
@@ -48,12 +56,65 @@ def _remote_repo(worktree: Path) -> str:
 
 def _target_worktree(prefix: str) -> Path:
     """Resolve H/F by the established lane registry, never session CWD."""
+    if os.environ.get("LANE3_TARGET_PREFIX") != prefix:
+        raise RuntimeError("this fixed-root adapter does not serve the requested issue prefix")
     target = LANE3_WORKTREES[prefix]
     if not target.is_dir() or not (target / ".git").exists():
         raise RuntimeError(f"the registered {prefix} Lane 3 worktree is unavailable")
     if _remote_repo(target) != REPOS[prefix]:
         raise RuntimeError(f"the registered {prefix} Lane 3 worktree has the wrong origin")
     return target
+
+
+def _safe_path(prefix: str, value: Any) -> Path:
+    if not isinstance(value, str) or not value or Path(value).is_absolute() or ".." in Path(value).parts:
+        raise RuntimeError("path must be a non-empty relative path without traversal")
+    target = _target_worktree(prefix)
+    resolved = (target / value).resolve()
+    if target not in resolved.parents and resolved != target:
+        raise RuntimeError("path escapes the fixed-root adapter")
+    return resolved
+
+
+def _read_file(prefix: str, path: Any) -> str:
+    file = _safe_path(prefix, path)
+    if not file.is_file() or file.stat().st_size > MAX_FILE_BYTES:
+        raise RuntimeError("file is unavailable or exceeds the bounded read limit")
+    return file.read_text(errors="replace")
+
+
+def _read_directive(name: Any) -> str:
+    if name not in DIRECTIVES:
+        raise RuntimeError("unknown directive name")
+    root = Path(__file__).resolve().parents[3]
+    file = root / DIRECTIVES[name]
+    if not file.is_file() or file.stat().st_size > MAX_FILE_BYTES:
+        raise RuntimeError("directive is unavailable or exceeds the bounded read limit")
+    return file.read_text(errors="replace")
+
+
+def _list_files(prefix: str, pattern: Any) -> str:
+    if not isinstance(pattern, str) or not pattern or Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+        raise RuntimeError("pattern must be relative and traversal-free")
+    target = _target_worktree(prefix)
+    matches = [str(path.relative_to(target)) for path in target.glob(pattern) if path.is_file()][:200]
+    return "\n".join(matches)
+
+
+def _search_text(prefix: str, query: Any, pattern: Any = "**/*") -> str:
+    if not isinstance(query, str) or not query or len(query) > 500:
+        raise RuntimeError("query must be non-empty text of at most 500 characters")
+    target = _target_worktree(prefix)
+    rows: list[str] = []
+    for file in target.glob(pattern if isinstance(pattern, str) else "**/*"):
+        if not file.is_file() or file.stat().st_size > MAX_FILE_BYTES:
+            continue
+        for line_no, line in enumerate(file.read_text(errors="replace").splitlines(), 1):
+            if query in line:
+                rows.append(f"{file.relative_to(target)}:{line_no}:{line}")
+                if len(rows) >= 200:
+                    return "\n".join(rows)
+    return "\n".join(rows)
 
 
 def _issue_target(issue: Any) -> tuple[str, str]:
@@ -147,12 +208,24 @@ def _handle(request: dict[str, Any]) -> None:
             "description": "Return filtered Lane 1 issue context and the current gate diff for one H<N> or F<N> issue.",
             "inputSchema": {"type": "object", "properties": {"issue": {"type": "string", "pattern": "^[HF][1-9][0-9]*$"}}, "required": ["issue"], "additionalProperties": False},
         }, {
+            "name": "read_directive", "description": "Read one named shared Lane 3 directive independent of startup CWD.",
+            "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "enum": sorted(DIRECTIVES)}}, "required": ["name"], "additionalProperties": False},
+        }, {
             "name": FETCH_COMMENT_TOOL,
             "description": "Return one named GitHub issue comment after verifying it belongs to the requested H<N> or F<N> issue.",
             "inputSchema": {"type": "object", "properties": {
                 "issue": {"type": "string", "pattern": "^[HF][1-9][0-9]*$"},
                 "comment_id": {"type": "integer", "minimum": 1},
             }, "required": ["issue", "comment_id"], "additionalProperties": False},
+        }, {
+            "name": "read_file", "description": "Read one bounded relative file from this adapter's fixed Lane 3 root.",
+            "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False},
+        }, {
+            "name": "list_files", "description": "List bounded matching files from this adapter's fixed Lane 3 root.",
+            "inputSchema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"], "additionalProperties": False},
+        }, {
+            "name": "search_text", "description": "Search bounded files in this adapter's fixed Lane 3 root.",
+            "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string"}}, "required": ["query"], "additionalProperties": False},
         }, {
             "name": REPORT_TOOL,
             "description": "Post a Lane 3 test spec, gate report, or blocked report to the matching issue through the canonical REST self-checking poster.",
@@ -171,6 +244,16 @@ def _handle(request: dict[str, Any]) -> None:
             text = _fetch_comment(arguments.get("issue"), arguments.get("comment_id"))
         elif params.get("name") == REPORT_TOOL:
             text = _post_gate_report(arguments.get("issue"), arguments.get("kind"), arguments.get("body"))
+        elif params.get("name") in FILE_TOOLS:
+            prefix = os.environ.get("LANE3_TARGET_PREFIX", "")
+            if params["name"] == "read_file":
+                text = _read_file(prefix, arguments.get("path"))
+            elif params["name"] == "list_files":
+                text = _list_files(prefix, arguments.get("pattern"))
+            else:
+                text = _search_text(prefix, arguments.get("query"), arguments.get("pattern"))
+        elif params.get("name") == "read_directive":
+            text = _read_directive(arguments.get("name"))
         else:
             raise RuntimeError("unknown lane3-context tool")
         result = {"content": [{"type": "text", "text": text}]}

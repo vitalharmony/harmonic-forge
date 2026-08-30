@@ -77,16 +77,18 @@ class Lane3ContextMcpTests(unittest.TestCase):
         )
         reply = json.loads(proc.stdout)
         tools = reply["result"]["tools"]
-        self.assertEqual([tool["name"] for tool in tools], ["fetch_context", "fetch_comment", "post_gate_report"])
+        self.assertEqual({tool["name"] for tool in tools}, {"fetch_context", "fetch_comment", "post_gate_report", "read_file", "list_files", "search_text", "read_directive"})
         self.assertTrue(tools[0]["inputSchema"]["additionalProperties"] is False)
 
     def test_extension_and_policy_allow_only_the_bounded_mcp_tools(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text())
-        server = manifest["mcpServers"]["lane3-context"]
-        self.assertEqual(server["includeTools"], ["fetch_context", "fetch_comment", "post_gate_report"])
+        servers = manifest["mcpServers"]
+        self.assertEqual(set(servers), {"lane3-hrse", "lane3-forge"})
+        self.assertEqual(set(servers["lane3-hrse"]["includeTools"]), {"fetch_context", "fetch_comment", "post_gate_report", "read_file", "list_files", "search_text", "read_directive"})
 
         policy = POLICY_PATH.read_text()
-        self.assertIn('mcpName = "lane3-context"', policy)
+        self.assertIn('mcpName = "lane3-hrse"', policy)
+        self.assertIn('mcpName = "lane3-forge"', policy)
         self.assertIn('toolName = "fetch_context"', policy)
         self.assertIn('toolName = "fetch_comment"', policy)
         self.assertIn('toolName = "post_gate_report"', policy)
