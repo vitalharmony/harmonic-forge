@@ -3,17 +3,31 @@
   "version": "1.0.0",
   "description": "Bounded Lane 3 issue context for Gemini gates.",
   "mcpServers": {
-    "lane3-context": {
+    "lane3-hrse": {
       "command": "python3",
       "args": ["${extensionPath}/lane3_context_mcp.py"],
       "env": {
         "GH_CONFIG_DIR": "$GH_CONFIG_DIR",
         "LANE": "$LANE",
         "LANE_AGENT": "$LANE_AGENT",
+        "LANE3_TARGET_PREFIX": "H",
         "GIT_PAGER": "cat",
         "GH_PAGER": "cat"
       },
-      "includeTools": ["fetch_context", "fetch_comment", "post_gate_report"]
+      "includeTools": ["fetch_context", "fetch_comment", "post_gate_report", "read_file", "list_files", "search_text", "read_directive"]
+    },
+    "lane3-forge": {
+      "command": "python3",
+      "args": ["${extensionPath}/lane3_context_mcp.py"],
+      "env": {
+        "GH_CONFIG_DIR": "$GH_CONFIG_DIR",
+        "LANE": "$LANE",
+        "LANE_AGENT": "$LANE_AGENT",
+        "LANE3_TARGET_PREFIX": "F",
+        "GIT_PAGER": "cat",
+        "GH_PAGER": "cat"
+      },
+      "includeTools": ["fetch_context", "fetch_comment", "post_gate_report", "read_file", "list_files", "search_text", "read_directive"]
     }
   }
 }

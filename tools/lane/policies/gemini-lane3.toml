@@ -163,23 +163,77 @@ decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#326: Lane 3 does not spawn nested agents or skills -- a nested session is a second actor the gate cannot report on."
 
-# H1414: exactly one system-installed MCP operation is permitted. The server
-# name has no underscore because Gemini's policy parser splits MCP FQNs there.
+# H1414: two fixed-root adapters are permitted, never a model-chosen CWD.
 [[rule]]
-mcpName = "lane3-context"
+mcpName = "lane3-hrse"
 toolName = "fetch_context"
 decision = "allow"
 priority = 999
 
 [[rule]]
-mcpName = "lane3-context"
-toolName = "fetch_comment"
+mcpName = "lane3-forge"
+toolName = "fetch_context"
 decision = "allow"
 priority = 999
 
 [[rule]]
-mcpName = "lane3-context"
+mcpName = "lane3-hrse"
+toolName = "fetch_comment"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-forge"
+toolName = "fetch_comment"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-hrse"
 toolName = "post_gate_report"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-forge"
+toolName = "post_gate_report"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-hrse"
+toolName = "read_file"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-forge"
+toolName = "read_file"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-hrse"
+toolName = "list_files"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-forge"
+toolName = "list_files"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-hrse"
+toolName = "search_text"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-forge"
+toolName = "search_text"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-hrse"
+toolName = "read_directive"
+decision = "allow"
+priority = 999
+[[rule]]
+mcpName = "lane3-forge"
+toolName = "read_directive"
 decision = "allow"
 priority = 999
 
@@ -188,7 +242,7 @@ mcpName = "*"
 toolName = "*"
 decision = "deny"
 priority = 998
-denyMessage = "harmonic-forge#1414: only lane3-context.fetch_context is permitted in a Gemini Lane 3 session."
+denyMessage = "harmonic-forge#1414: only the fixed-root lane3-hrse/lane3-forge MCP operations are permitted."
 
 # ---------------------------------------------------------------------------
 # Allowed: static review, and nothing else.
