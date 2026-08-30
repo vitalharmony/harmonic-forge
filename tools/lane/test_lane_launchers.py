@@ -53,9 +53,9 @@ class _FixtureTree:
         self.main, self.stub_bin = bc.build_fixture_tree(
             self.root, versions=self._versions)
         self.home = self.root / "home"
-        extension_link = self.home / ".gemini" / "extensions" / "lane3-context"
-        extension_link.parent.mkdir(parents=True)
-        extension_link.symlink_to(LANE_DIR.parent / "gemini" / "lane3-context")
+        extension_record = self.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
+        extension_record.parent.mkdir(parents=True)
+        extension_record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
         self.lane2 = self.root / "proj-lane2"
         self.lane3 = self.root / "proj-lane3"
         if self._with_backend_env:
@@ -280,9 +280,8 @@ class RegistryIntegrity(unittest.TestCase):
     def _run_with_broken_registry(self, mutate) -> dict:
         with _FixtureTree() as tree:
             lane_dir = self._copy_lane_dir(tree.root / "lanedir")
-            extension_link = tree.home / ".gemini" / "extensions" / "lane3-context"
-            extension_link.unlink()
-            extension_link.symlink_to(lane_dir.parent / "gemini" / "lane3-context")
+            extension_record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
+            extension_record.write_text(json.dumps({"source": str(lane_dir.parent / "gemini" / "lane3-context"), "type": "link"}))
             mutate(lane_dir / "_agent_registry.sh")
             return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
                                    env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
@@ -385,27 +384,25 @@ class SafetyFlagsUnremovable(unittest.TestCase):
     def test_gemini_lane3_refuses_missing_redirected_or_dangling_context_extension(self):
         """H1414: a fresh gate may start only with the canonical extension."""
         with _FixtureTree() as tree:
-            link = tree.home / ".gemini" / "extensions" / "lane3-context"
+            record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
             for state in ("missing", "redirected", "dangling"):
                 with self.subTest(state=state):
-                    if link.is_symlink() or link.exists():
-                        link.unlink()
+                    if record.exists():
+                        record.unlink()
                     if state == "redirected":
                         foreign = tree.root / "foreign-extension"
                         foreign.mkdir(exist_ok=True)
                         (foreign / "gemini-extension.json").write_text("{}")
                         (foreign / "lane3_context_mcp.py").write_text("")
-                        link.symlink_to(foreign)
+                        record.write_text(json.dumps({"source": str(foreign), "type": "link"}))
                     elif state == "dangling":
-                        link.symlink_to(tree.root / "missing-extension")
+                        record.write_text(json.dumps({"source": str(tree.root / "missing-extension"), "type": "link"}))
 
                     cell = tree.run("3", [], LANE_CLI="gemini")
                     self.assertFalse(cell["launched"], cell.get("stderr"))
                     self.assertIn("REFUSING TO START", cell["stderr"])
 
-                    if link.is_symlink() or link.exists():
-                        link.unlink()
-                    link.symlink_to(LANE_DIR.parent / "gemini" / "lane3-context")
+                    record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
 
     def test_declared_policy_flag_cannot_be_contradicted_in_equals_form(self):
         with _FixtureTree() as tree:
@@ -530,9 +527,8 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             copied_extension = lane_dir.parent / "gemini" / "lane3-context"
             copied_extension.parent.mkdir(parents=True)
             shutil.copytree(LANE_DIR.parent / "gemini" / "lane3-context", copied_extension)
-            extension_link = tree.home / ".gemini" / "extensions" / "lane3-context"
-            extension_link.unlink()
-            extension_link.symlink_to(copied_extension)
+            extension_record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
+            extension_record.write_text(json.dumps({"source": str(copied_extension), "type": "link"}))
             (lane_dir / "policies" / "gemini-lane3.toml").write_text(
                 '[[rules]]\nname = "placeholder"\n')
 
