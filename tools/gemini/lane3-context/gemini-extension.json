@@ -13,7 +13,7 @@
         "GIT_PAGER": "cat",
         "GH_PAGER": "cat"
       },
-      "includeTools": ["fetch_context", "post_gate_report"]
+      "includeTools": ["fetch_context", "fetch_comment", "post_gate_report"]
     }
   }
 }

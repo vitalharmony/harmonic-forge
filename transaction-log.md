@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(lane3): fetch named Gemini gate comments
+- tools/gemini/lane3-context/lane3_context_mcp.py  | 28 ++++++++++++++++++++++++
+- tools/lane/policies/gemini-lane3.toml            |  6 +++++
+- tools/lane/test_lane3_context_mcp.py             | 13 +++++++++--
+- 4 files changed, 46 insertions(+), 3 deletions(-)
+
 ## fix(lane3): route Gemini context by issue prefix
 - tools/gemini/lane3-context/lane3_context_mcp.py | 63 +++++++++----------------
 - tools/lane/test_lane3_context_mcp.py            | 49 ++++++-------------

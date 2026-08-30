@@ -173,6 +173,12 @@ priority = 999
 
 [[rule]]
 mcpName = "lane3-context"
+toolName = "fetch_comment"
+decision = "allow"
+priority = 999
+
+[[rule]]
+mcpName = "lane3-context"
 toolName = "post_gate_report"
 decision = "allow"
 priority = 999

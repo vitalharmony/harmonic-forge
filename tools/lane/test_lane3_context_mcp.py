@@ -77,20 +77,29 @@ class Lane3ContextMcpTests(unittest.TestCase):
         )
         reply = json.loads(proc.stdout)
         tools = reply["result"]["tools"]
-        self.assertEqual([tool["name"] for tool in tools], ["fetch_context", "post_gate_report"])
+        self.assertEqual([tool["name"] for tool in tools], ["fetch_context", "fetch_comment", "post_gate_report"])
         self.assertTrue(tools[0]["inputSchema"]["additionalProperties"] is False)
 
     def test_extension_and_policy_allow_only_the_bounded_mcp_tools(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text())
         server = manifest["mcpServers"]["lane3-context"]
-        self.assertEqual(server["includeTools"], ["fetch_context", "post_gate_report"])
+        self.assertEqual(server["includeTools"], ["fetch_context", "fetch_comment", "post_gate_report"])
 
         policy = POLICY_PATH.read_text()
         self.assertIn('mcpName = "lane3-context"', policy)
         self.assertIn('toolName = "fetch_context"', policy)
+        self.assertIn('toolName = "fetch_comment"', policy)
         self.assertIn('toolName = "post_gate_report"', policy)
         self.assertIn('mcpName = "*"', policy)
         self.assertIn('decision = "deny"', policy)
+
+    def test_named_comment_must_belong_to_the_requested_issue(self) -> None:
+        response = json.dumps({"issue_url": "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/326", "body": "14-point spec"})
+        with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/forge-lane3")), \
+             patch.object(SERVER, "_run", return_value=response) as run:
+            result = SERVER._fetch_comment("F326", 123)
+        self.assertIn("14-point spec", result)
+        self.assertEqual(run.call_args.args[:3], ("gh", "api", "repos/vitalharmony/harmonic-forge/issues/comments/123"))
 
     def test_report_uses_fixed_self_checking_poster_for_matching_issue(self) -> None:
         with patch.object(SERVER, "_target_worktree", return_value=Path("/registered/hrse-lane3")), \
