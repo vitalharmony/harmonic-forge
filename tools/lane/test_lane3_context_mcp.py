@@ -87,7 +87,7 @@ class Lane3ContextMcpTests(unittest.TestCase):
         fetch = next(call for call in seen if call[0] == "python3")
         self.assertEqual(fetch[-4:], ("--repo", "vitalharmony/hrse", "--issue", "1161"))
 
-    def test_server_advertises_exactly_one_bounded_tool(self) -> None:
+    def test_server_advertises_only_the_two_bounded_lane3_tools(self) -> None:
         proc = subprocess.run(
             ["python3", str(SERVER_PATH)], input=json.dumps({
                 "jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n",
@@ -95,19 +95,31 @@ class Lane3ContextMcpTests(unittest.TestCase):
         )
         reply = json.loads(proc.stdout)
         tools = reply["result"]["tools"]
-        self.assertEqual([tool["name"] for tool in tools], ["fetch_context"])
+        self.assertEqual([tool["name"] for tool in tools], ["fetch_context", "post_gate_report"])
         self.assertTrue(tools[0]["inputSchema"]["additionalProperties"] is False)
 
-    def test_extension_and_policy_allow_only_the_bounded_mcp_tool(self) -> None:
+    def test_extension_and_policy_allow_only_the_bounded_mcp_tools(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text())
         server = manifest["mcpServers"]["lane3-context"]
-        self.assertEqual(server["includeTools"], ["fetch_context"])
+        self.assertEqual(server["includeTools"], ["fetch_context", "post_gate_report"])
 
         policy = POLICY_PATH.read_text()
         self.assertIn('mcpName = "lane3-context"', policy)
         self.assertIn('toolName = "fetch_context"', policy)
+        self.assertIn('toolName = "post_gate_report"', policy)
         self.assertIn('mcpName = "*"', policy)
         self.assertIn('decision = "deny"', policy)
+
+    def test_report_uses_fixed_self_checking_poster_for_matching_issue(self) -> None:
+        with patch.object(SERVER, "_is_canonical_lane3_worktree", return_value=True), \
+             patch.object(SERVER, "_remote_repo", return_value="vitalharmony/hrse"), \
+             patch.object(SERVER, "_run", return_value="[POST-COMMENT] Posted: https://github.com/vitalharmony/hrse/issues/1161#issuecomment-1\n[POST-COMMENT] Self-check passed: posted content matches source exactly.\n") as run:
+            result = SERVER._post_gate_report("H1161", "gate_report", "PASS")
+        self.assertIn("issuecomment-1", result)
+        call = run.call_args.args
+        self.assertEqual(call[:2], ("python3", str(SERVER_PATH.parents[3] / "tools" / "gh" / "post_comment.py")))
+        self.assertEqual(call[2:6], ("--repo", "vitalharmony/hrse", "--issue", "1161"))
+        self.assertIn("<!-- lane3 kind=gate_report -->", call[-1])
 
 
 if __name__ == "__main__":
