@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Install the repo-tracked, single-tool Gemini Lane 3 extension (H1414).
+set -euo pipefail
+
+root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+extension="$root/tools/gemini/lane3-context"
+[ -f "$extension/gemini-extension.json" ] || { echo "lane3-context extension is incomplete" >&2; exit 1; }
+exec gemini extensions link "$extension" --consent

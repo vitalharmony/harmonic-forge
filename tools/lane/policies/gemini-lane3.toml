@@ -39,10 +39,10 @@
 #     surface of every allowlisted binary, which is the completeness burden a
 #     default-deny base exists to avoid.
 #
-# So `run_shell_command` is denied whole-tool here, and the gate's context is
-# pre-staged to files by tools/lane/lane3-stage-context before the session
-# starts. Same conclusion, same reason, as tools/lane/gemini-read-only-deny.toml
-# (harmonic-forge#366).
+# So `run_shell_command` is denied whole-tool here. H1414 adds one separately
+# installed, bounded MCP context tool; it accepts only H<N>/F<N>, maps that to
+# the current worktree's canonical origin, and returns the existing filtered
+# Lane-1 context plus fixed target diff. It is not a shell allowance.
 #
 ## Injection, stated precisely
 #
@@ -118,13 +118,12 @@ decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#326: Lane 3 never edits files. It reports findings; it does not fix them."
 
-# Shell. See Class A / Class B above -- harmonic-forge#412. Context is
-# pre-staged by tools/lane/lane3-stage-context instead.
+# Shell. See Class A / Class B above -- harmonic-forge#412.
 [[rule]]
 toolName = "run_shell_command"
 decision = "deny"
 priority = 999
-denyMessage = "harmonic-forge#326: shell is denied whole-tool at Lane 3 -- an allowlist cannot block writes via redirection or native write flags (harmonic-forge#412). Context is pre-staged to files; read it with read_file."
+denyMessage = "harmonic-forge#326: shell is denied whole-tool at Lane 3 -- an allowlist cannot block writes via redirection or native write flags (harmonic-forge#412)."
 
 # Network egress and ingestion. See "Injection, stated precisely" above.
 [[rule]]
@@ -145,6 +144,20 @@ toolName = ["invoke_agent", "activate_skill"]
 decision = "deny"
 priority = 999
 denyMessage = "harmonic-forge#326: Lane 3 does not spawn nested agents or skills -- a nested session is a second actor the gate cannot report on."
+
+# H1414: exactly one system-installed MCP operation is permitted. The server
+# name has no underscore because Gemini's policy parser splits MCP FQNs there.
+[[rule]]
+mcpName = "lane3-context"
+toolName = "fetch_context"
+decision = "allow"
+priority = 999
+
+[[rule]]
+mcpName = "*"
+decision = "deny"
+priority = 998
+denyMessage = "harmonic-forge#1414: only lane3-context.fetch_context is permitted in a Gemini Lane 3 session."
 
 # ---------------------------------------------------------------------------
 # Allowed: static review, and nothing else.

@@ -241,8 +241,14 @@ headless session and capable of mutation, egress, or nesting:
 `run_shell_command`, `write_file`, `replace`, `web_fetch`, `google_web_search`,
 `activate_skill`, `invoke_agent`. There is deliberately **no argument-scoped
 rule** — harmonic-forge#412 established that a `commandPrefix` allowlist on
-`run_shell_command` is not a boundary, so the gate's context is pre-staged to
-files by `tools/lane/lane3-stage-context` instead of being fetched in-session.
+`run_shell_command` is not a boundary. Gemini Lane 3 instead permits exactly
+one system-installed, repo-tracked MCP operation (harmonic-forge#1414):
+`lane3-context.fetch_context(H<N>|F<N>)`. Its typed identifier is bound to the
+active worktree's canonical remote; fixed internal operations return only the
+existing filtered Lane-1 context plus `origin/main...HEAD` and target SHA. It
+is not generic shell, GitHub, network, or test authority; all other MCP tools
+remain denied. This preserves a fresh `LANE_CLI=gemini lane3` gate session
+without making a manual pre-staging command a prerequisite.
 **This cell is qualified only on a passing run of
 `tools/lane/policies/canary/run_canary.py` by Lane 3**, per the reading rule
 below that a cell is earned by its own suite at a recorded CLI version.

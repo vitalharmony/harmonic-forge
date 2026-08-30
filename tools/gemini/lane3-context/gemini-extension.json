@@ -1,0 +1,19 @@
+{
+  "name": "lane3-context",
+  "version": "1.0.0",
+  "description": "Bounded Lane 3 issue context for Gemini gates.",
+  "mcpServers": {
+    "lane3-context": {
+      "command": "python3",
+      "args": ["${extensionPath}/lane3_context_mcp.py"],
+      "env": {
+        "GH_CONFIG_DIR": "$GH_CONFIG_DIR",
+        "LANE": "$LANE",
+        "LANE_AGENT": "$LANE_AGENT",
+        "GIT_PAGER": "cat",
+        "GH_PAGER": "cat"
+      },
+      "includeTools": ["fetch_context"]
+    }
+  }
+}

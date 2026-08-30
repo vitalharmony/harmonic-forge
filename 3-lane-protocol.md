@@ -566,16 +566,23 @@ to `ASK_USER` (and that downgrade is off under `--yolo`), and a native write
 flag such as `git diff --output=<path>` contains no shell metacharacter for any
 pattern to catch.
 
-**So a Gemini Lane 3 session cannot fetch its own context.** Run
-`lane3-stage-context --issue <N>` first: it writes the Lane-1-only issue
-context (preserving harmonic-forge#253's filter — Lane 3 still never sees Lane
-2's completion comment), the diff, and a manifest into
-`<worktree>/.lane3-context/`, which the session reads with `read_file`.
+**A Gemini Lane 3 session fetches only its bounded context through the
+system-installed `lane3-context` MCP extension (harmonic-forge#1414).** The
+normal launcher remains the sole operation:
 
 ```bash
-lane3-stage-context --issue 326    # stage the gate's inputs
-lane3 --agent gemini               # then gate
+LANE_CLI=gemini lane3
 ```
+
+After receiving `Test H<N>` or `Test F<N>`, Gemini calls the sole permitted
+tool, `lane3-context.fetch_context`. It accepts only that typed issue id,
+requires the prefix to match the active Lane 3 worktree's canonical remote,
+then returns `fetch_lane1_context.py`'s Lane-1-only output plus the fixed
+`origin/main...HEAD` diff and target SHA. It accepts no command, URL, path,
+ref, target SHA, or raw GitHub endpoint. Shell, raw network/GitHub, writes,
+and every other MCP tool remain denied. This is Tier 1 context only; it grants
+none of harmonic-forge#327's executable-test, service, browser, or migration
+authority.
 
 **The tier is qualified only by a passing run of
 `tools/lane/policies/canary/run_canary.py`, executed by Lane 3** — not by the

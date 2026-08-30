@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,10 @@ class _FixtureTree:
         self.root = Path(self._tmp.name).resolve()
         self.main, self.stub_bin = bc.build_fixture_tree(
             self.root, versions=self._versions)
+        self.home = self.root / "home"
+        extension_link = self.home / ".gemini" / "extensions" / "lane3-context"
+        extension_link.parent.mkdir(parents=True)
+        extension_link.symlink_to(LANE_DIR.parent / "gemini" / "lane3-context")
         self.lane2 = self.root / "proj-lane2"
         self.lane3 = self.root / "proj-lane3"
         if self._with_backend_env:
@@ -63,6 +68,7 @@ class _FixtureTree:
         return False
 
     def run(self, lane: str, args: list[str], **env_overrides) -> dict:
+        env_overrides.setdefault("HOME", str(self.home))
         return bc.capture_cell(LANE_DIR, self.main, self.stub_bin, lane, args,
                                env_overrides=env_overrides)
 
@@ -73,6 +79,7 @@ class _FixtureTree:
                     "GH_CONFIG_DIR"):
             env.pop(key, None)
         env["PATH"] = f"{self.stub_bin}{os.pathsep}{env['PATH']}"
+        env["HOME"] = str(self.home)
         env.update(env_overrides)
         return subprocess.run(
             ["bash", str(LANE_DIR / script), *(args or [])],
@@ -137,7 +144,7 @@ class NineCombinations(unittest.TestCase):
                         self.assertEqual(cell["env"]["LANE_AGENT"], agent)
                         self.assertEqual(
                             cell["env"]["GH_CONFIG_DIR"],
-                            str(Path.home() / ".config" / "gh-vitalharmony"))
+                            str(tree.home / ".config" / "gh-vitalharmony"))
                         # The agent's own command is always the first token
                         # after any env(1) prefix.
                         self.assertIn(agent, _agent_args(cell))
@@ -265,14 +272,20 @@ class RegistryIntegrity(unittest.TestCase):
         (dest / "policies").mkdir()
         for policy in (LANE_DIR / "policies").glob("*.toml"):
             (dest / "policies" / policy.name).write_text(policy.read_text())
+        copied_extension = dest.parent / "gemini" / "lane3-context"
+        copied_extension.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(LANE_DIR.parent / "gemini" / "lane3-context", copied_extension)
         return dest
 
     def _run_with_broken_registry(self, mutate) -> dict:
         with _FixtureTree() as tree:
             lane_dir = self._copy_lane_dir(tree.root / "lanedir")
+            extension_link = tree.home / ".gemini" / "extensions" / "lane3-context"
+            extension_link.unlink()
+            extension_link.symlink_to(lane_dir.parent / "gemini" / "lane3-context")
             mutate(lane_dir / "_agent_registry.sh")
             return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
-                                   env_overrides={"LANE_CLI": "claude"})
+                                   env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
 
     def test_missing_registry_refuses_to_launch(self):
         cell = self._run_with_broken_registry(lambda p: p.unlink())
@@ -368,6 +381,31 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                     self.assertFalse(cell["launched"])
                     self.assertIn("cannot be set, removed, or contradicted",
                                   cell["stderr"])
+
+    def test_gemini_lane3_refuses_missing_redirected_or_dangling_context_extension(self):
+        """H1414: a fresh gate may start only with the canonical extension."""
+        with _FixtureTree() as tree:
+            link = tree.home / ".gemini" / "extensions" / "lane3-context"
+            for state in ("missing", "redirected", "dangling"):
+                with self.subTest(state=state):
+                    if link.is_symlink() or link.exists():
+                        link.unlink()
+                    if state == "redirected":
+                        foreign = tree.root / "foreign-extension"
+                        foreign.mkdir(exist_ok=True)
+                        (foreign / "gemini-extension.json").write_text("{}")
+                        (foreign / "lane3_context_mcp.py").write_text("")
+                        link.symlink_to(foreign)
+                    elif state == "dangling":
+                        link.symlink_to(tree.root / "missing-extension")
+
+                    cell = tree.run("3", [], LANE_CLI="gemini")
+                    self.assertFalse(cell["launched"], cell.get("stderr"))
+                    self.assertIn("REFUSING TO START", cell["stderr"])
+
+                    if link.is_symlink() or link.exists():
+                        link.unlink()
+                    link.symlink_to(LANE_DIR.parent / "gemini" / "lane3-context")
 
     def test_declared_policy_flag_cannot_be_contradicted_in_equals_form(self):
         with _FixtureTree() as tree:
@@ -489,17 +527,23 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             for policy in (LANE_DIR / "policies").glob("*.toml"):
                 (lane_dir / "policies" / policy.name).write_text(
                     policy.read_text())
+            copied_extension = lane_dir.parent / "gemini" / "lane3-context"
+            copied_extension.parent.mkdir(parents=True)
+            shutil.copytree(LANE_DIR.parent / "gemini" / "lane3-context", copied_extension)
+            extension_link = tree.home / ".gemini" / "extensions" / "lane3-context"
+            extension_link.unlink()
+            extension_link.symlink_to(copied_extension)
             (lane_dir / "policies" / "gemini-lane3.toml").write_text(
                 '[[rules]]\nname = "placeholder"\n')
 
             injected = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
-                                       [], env_overrides={"LANE_CLI": "gemini"})
+                                       [], env_overrides={"LANE_CLI": "gemini", "HOME": str(tree.home)})
             self.assertTrue(injected["launched"], injected.get("stderr"))
             self.assertIn("--admin-policy", _agent_args(injected))
 
             denied = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
                                      ["--admin-policy", "/dev/null"],
-                                     env_overrides={"LANE_CLI": "gemini"})
+                                     env_overrides={"LANE_CLI": "gemini", "HOME": str(tree.home)})
             self.assertFalse(denied["launched"])
             self.assertIn("cannot be set, removed, or contradicted",
                           denied["stderr"])
