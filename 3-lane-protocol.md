@@ -769,6 +769,16 @@ atomic action, same turn, sweep strictly after** — use the repo's own
 atomic wrapper where one exists; otherwise confirm the comment order
 before telling HITL either is ready.
 
+**A routine retest after a FAIL does not need a new AE/sweep pair.**
+HRSE2's `check_lane3_ready.py` (hrse#1102, generalized hrse#1359) already
+carries the original AE/sweep's authorization forward onto a new SHA when
+Lane 1 posts a `ready-for-l3` naming that SHA after the original
+authorizing comment — the `ready-for-l3` alone is sufficient re-authorization
+for the fix-and-repush cycle. Reserve a fresh AE + sweep for when the
+*plan* itself changed (a reforged approach, new scope, or a sticky-wicket
+reforge) — posting one on every SHA bump regardless is unnecessary
+overhead this mechanism already exists to avoid (harmonic-forge#425).
+
 **An AE may widen what a gate's write tier covers; it may never waive a
 lane's absolute role prohibition** (harmonic-forge#401) — those are
 different boundaries, and only the first is HITL's to grant through this
