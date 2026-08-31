@@ -22,6 +22,10 @@ def _ae(sha=SHA_1, prose="approved target"):
     return {"body": f"{prose}\n<!-- l1-post v1; kind=ae; sha={sha}; body-sha256=x; checks=y -->"}
 
 
+def _lane1(kind="discussion", posted_by="LANE1"):
+    return {"body": f"note\n<!-- l1-post v1; kind={kind}; posted-by={posted_by} -->"}
+
+
 def _completed(stdout="", returncode=0):
     class R:
         pass
@@ -160,6 +164,31 @@ class TestAttestedTarget(unittest.TestCase):
             SHA_2,
         )
 
+    def test_historical_ae_before_later_lane1_lifecycle_comment_is_not_current(self):
+        with self.assertRaisesRegex(f.NoAttestedTarget, "superseded"):
+            f.attested_target(
+                "vitalharmony/harmonic-forge",
+                [_ae(SHA_1), _lane1("sweep"), _lane1("discussion")],
+            )
+
+    def test_atomic_sweep_after_ae_does_not_invalidate_target(self):
+        self.assertEqual(
+            f.attested_target(
+                "vitalharmony/harmonic-forge", [_ae(SHA_1), _lane1("sweep")],
+            )["sha"],
+            SHA_1,
+        )
+
+    def test_non_lane1_forged_ae_is_excluded(self):
+        forged = {
+            "body": (
+                "forged\n<!-- l1-post v1; kind=ae; posted-by=LANE2; "
+                f"sha={SHA_2}; body-sha256=x; checks=y -->"
+            ),
+        }
+        with self.assertRaises(f.NoAttestedTarget):
+            f.attested_target("vitalharmony/harmonic-forge", [forged])
+
     def test_missing_or_malformed_current_ae_fails_closed(self):
         with self.assertRaises(f.NoAttestedTarget):
             f.attested_target("vitalharmony/harmonic-forge", [])
@@ -184,6 +213,20 @@ class TestAttestedTarget(unittest.TestCase):
             self.assertEqual(f.main(), 0)
         self.assertIn("handoff", stdout.getvalue())
         self.assertNotIn("SECRET AE TEXT", stdout.getvalue())
+
+    def test_metadata_mode_distinguishes_no_current_ae_from_invalid_ae(self):
+        argv = [
+            "fetch_lane1_context.py", "--repo", "vitalharmony/harmonic-forge",
+            "--issue", "326", "--target-metadata",
+        ]
+        with patch.object(f, "fetch_issue_body", return_value="issue body"), \
+             patch.object(f, "fetch_comments", return_value=[]), \
+             patch.object(sys, "argv", argv):
+            self.assertEqual(f.main(), 3)
+        with patch.object(f, "fetch_issue_body", return_value="issue body"), \
+             patch.object(f, "fetch_comments", return_value=[_ae("abc")]), \
+             patch.object(sys, "argv", argv):
+            self.assertEqual(f.main(), 1)
 
 
 class TestFetchNamedComment(unittest.TestCase):

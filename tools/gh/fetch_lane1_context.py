@@ -91,7 +91,11 @@ def is_lane1_comment(body: str) -> bool:
         return False
     kind = kind_match.group(1)
     if kind in _LANE1_KINDS:
-        return True
+        # The shared posters do not currently add posted-by to these
+        # Lane-1-only kinds.  If a hand-authored marker does carry an explicit
+        # lane identity, however, it must not be allowed to forge one of them.
+        posted_by_match = _POSTED_BY_RE.search(marker)
+        return posted_by_match is None or posted_by_match.group(1) in _LANE1_POSTED_BY
     if kind == "discussion":
         posted_by_match = _POSTED_BY_RE.search(marker)
         return posted_by_match is not None and posted_by_match.group(1) in _LANE1_POSTED_BY
@@ -107,18 +111,32 @@ def _marker_kind(body: str) -> str | None:
 
 
 def attested_target(repo: str, comments: list[dict]) -> dict[str, str]:
-    """Return the newest single-marker AE target, never the AE body.
+    """Return the current single-marker Lane 1 AE target, never its body.
 
-    An issue may contain historical AEs from superseded gate rounds. GitHub's
-    comment order makes the newest AE the current authorization. The current
-    AE itself must be structurally unambiguous and carry a full commit SHA.
+    An issue may contain historical AEs from superseded gate rounds.  A later
+    eligible Lane 1 lifecycle comment invalidates the prior authorization;
+    only the atomic sweep that immediately follows an AE is part of the same
+    authorization event.  A later AE starts a new event.  The selected AE
+    itself must pass the established Lane 1 filter, be structurally
+    unambiguous, and carry a full commit SHA.
     """
     if repo not in _CANONICAL_REPOS:
         raise ValueError("repository is not a canonical supported target")
-    ae_comments = [c for c in comments if _marker_kind(c.get("body", "")) == "ae"]
-    if not ae_comments:
+    lane1_comments = [c for c in comments if is_lane1_comment(c.get("body", ""))]
+    ae_indexes = [
+        index for index, comment in enumerate(lane1_comments)
+        if _marker_kind(comment.get("body", "")) == "ae"
+    ]
+    if not ae_indexes:
         raise NoAttestedTarget("no valid Lane 1 AE exists for this issue")
-    body = ae_comments[-1].get("body", "")
+    ae_index = ae_indexes[-1]
+    later_kinds = [
+        _marker_kind(comment.get("body", ""))
+        for comment in lane1_comments[ae_index + 1:]
+    ]
+    if any(kind != "sweep" for kind in later_kinds):
+        raise NoAttestedTarget("the newest Lane 1 AE belongs to a superseded gate round")
+    body = lane1_comments[ae_index].get("body", "")
     markers = _MARKER_RE.findall(body)
     if len(markers) != 1:
         raise ValueError("current AE must contain exactly one Lane 1 attestation marker")
@@ -200,8 +218,11 @@ def main() -> int:
     if args.target_metadata:
         try:
             print(json.dumps(attested_target(args.repo, all_comments), sort_keys=True))
-        except (NoAttestedTarget, ValueError) as exc:
+        except NoAttestedTarget as exc:
             print(f"[FETCH-L1-CONTEXT] target metadata unavailable: {exc}", file=sys.stderr)
+            return 3
+        except ValueError as exc:
+            print(f"[FETCH-L1-CONTEXT] invalid target metadata: {exc}", file=sys.stderr)
             return 1
         return 0
 

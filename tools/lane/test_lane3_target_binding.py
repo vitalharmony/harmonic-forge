@@ -16,6 +16,21 @@ import lane3_target_binding as binding
 
 
 class AttestedTargetTests(unittest.TestCase):
+    def test_provider_no_ae_signal_performs_no_git_target_access(self) -> None:
+        unavailable = subprocess.CompletedProcess(
+            args=[], returncode=3, stdout="",
+            stderr="[FETCH-L1-CONTEXT] target metadata unavailable: no current AE",
+        )
+        with patch.object(binding.subprocess, "run", return_value=unavailable) as run:
+            with self.assertRaisesRegex(binding.NoAttestedTarget, "no current AE"):
+                binding.resolve_target(
+                    Path("/trusted/provider.py"), "vitalharmony/harmonic-forge", "326",
+                    Path("/registered/forge-lane3"),
+                )
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][0], "python3")
+        self.assertIn("--target-metadata", run.call_args.args[0])
+
     def test_provider_metadata_is_exact_and_commit_must_exist(self) -> None:
         sha = "a" * 40
         responses = [json.dumps({"repository": "vitalharmony/harmonic-forge", "sha": sha}), ""]

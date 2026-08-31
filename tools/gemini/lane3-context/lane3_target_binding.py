@@ -11,6 +11,10 @@ from pathlib import Path, PurePosixPath
 MAX_FILE_BYTES = 200_000
 
 
+class NoAttestedTarget(RuntimeError):
+    """The trusted provider reports that this gate round has no current AE."""
+
+
 @dataclass(frozen=True)
 class AttestedTarget:
     repository: str
@@ -21,6 +25,10 @@ class AttestedTarget:
 def _run(*args: str, cwd: Path | None = None) -> str:
     result = subprocess.run(args, cwd=cwd, text=True, errors="replace", capture_output=True)
     if result.returncode:
+        if result.returncode == 3 and "--target-metadata" in args:
+            raise NoAttestedTarget(
+                result.stderr.strip() or "no current Lane 1 AE exists for this gate round"
+            )
         raise RuntimeError(result.stderr.strip() or f"{' '.join(args[:2])} failed")
     return result.stdout
 

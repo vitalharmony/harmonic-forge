@@ -66,6 +66,36 @@ class Lane3ContextMcpTests(unittest.TestCase):
             Path("/trusted/provider.py"), "vitalharmony/hrse", "1161", target,
         )
 
+    def test_pre_ae_context_succeeds_without_target_or_diff_exposure(self) -> None:
+        target = Path("/registered/forge-lane3")
+        with patch.object(SERVER, "_target_worktree", return_value=target), \
+             patch.object(SERVER, "_provider", return_value=Path("/trusted/provider.py")), \
+             patch.object(SERVER.binding, "filtered_context", return_value="# safe context\n"), \
+             patch.object(SERVER.binding, "resolve_target", side_effect=SERVER.binding.NoAttestedTarget("no current AE")), \
+             patch.object(SERVER.binding, "diff_from_main") as diff:
+            context = SERVER._context("F326")
+        self.assertIn("# safe context", context)
+        self.assertNotIn("target_sha:", context)
+        self.assertNotIn("Target diff", context)
+        diff.assert_not_called()
+
+    def test_post_ae_binding_failures_are_not_downgraded_to_pre_ae_context(self) -> None:
+        target = Path("/registered/forge-lane3")
+        with patch.object(SERVER, "_target_worktree", return_value=target), \
+             patch.object(SERVER, "_provider", return_value=Path("/trusted/provider.py")), \
+             patch.object(SERVER.binding, "filtered_context", return_value="# safe context\n"), \
+             patch.object(SERVER.binding, "resolve_target", side_effect=RuntimeError("invalid metadata")):
+            with self.assertRaisesRegex(RuntimeError, "invalid metadata"):
+                SERVER._context("F326")
+
+    def test_target_backed_operations_still_fail_closed_without_current_ae(self) -> None:
+        target = Path("/registered/forge-lane3")
+        with patch.object(SERVER, "_target_worktree", return_value=target), \
+             patch.object(SERVER, "_provider", return_value=Path("/trusted/provider.py")), \
+             patch.object(SERVER.binding, "resolve_target", side_effect=SERVER.binding.NoAttestedTarget("no current AE")):
+            with self.assertRaisesRegex(SERVER.binding.NoAttestedTarget, "no current AE"):
+                SERVER._attested_target("F326")
+
     def test_server_advertises_only_the_two_bounded_lane3_tools(self) -> None:
         proc = subprocess.run(
             ["python3", str(SERVER_PATH)], input=json.dumps({
