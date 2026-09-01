@@ -661,3 +661,120 @@ class AuditUnboardedTests(unittest.TestCase):
         report.unboarded.append(rh.Finding("r", "#1", "on no board"))
         report.stranded.append(rh.Finding("r", "b", "real work"))
         self.assertTrue(report.actionable)
+
+
+class WorktreePruneTests(unittest.TestCase):
+    """hrse#427 AC2-6. Every git/gh call is mocked -- no test may depend on
+    the operator's real /tmp state (AC7)."""
+
+    CHECKOUT = "/home/x/checkout"
+    PORCELAIN = (
+        f"worktree {CHECKOUT}\n"
+        "HEAD aaaa\n"
+        "branch refs/heads/main\n"
+        "\n"
+        "worktree /tmp/w-merged\n"
+        "HEAD bbbb\n"
+        "branch refs/heads/feat/merged\n"
+        "\n"
+        "worktree /tmp/w-dirty\n"
+        "HEAD cccc\n"
+        "branch refs/heads/feat/dirty\n"
+        "\n"
+        "worktree /tmp/w-stranded\n"
+        "HEAD dddd\n"
+        "branch refs/heads/feat/stranded\n"
+        "\n"
+        "worktree /home/x/HRSE2-lane2\n"
+        "HEAD eeee\n"
+        "branch refs/heads/main\n"
+        "\n"
+    )
+
+    def _fake_run(self, args, cwd=None):
+        if args[:3] == ["git", "remote", "get-url"]:
+            return "git@github.com:acme/repo.git\n"
+        if args[:3] == ["git", "worktree", "list"]:
+            return self.PORCELAIN
+        if args[:2] == ["gh", "pr"]:
+            branch = args[args.index("--head") + 1]
+            return json.dumps([{"number": 42}]) if branch == "feat/merged" else json.dumps([])
+        if args[:2] == ["git", "status"]:
+            return " M some_file.py\n" if cwd == "/tmp/w-dirty" else ""
+        if args[:2] == ["git", "cherry"]:
+            return "+ abc123 unmerged commit\n" if cwd == "/tmp/w-stranded" else "- abc123 already upstream\n"
+        if args[:3] in (["git", "worktree", "remove"], ["git", "worktree", "prune"]):
+            return ""
+        raise AssertionError(f"unexpected call: {' '.join(args)} (cwd={cwd})")
+
+    def test_repo_for_checkout_parses_ssh_remote(self):
+        with patch.object(rh, "_run", side_effect=self._fake_run):
+            self.assertEqual(rh._repo_for_checkout(self.CHECKOUT), "acme/repo")
+
+    def test_squash_merged_branch_is_prunable(self):
+        """Trap 1: git cherry (patch-id) says this branch is fully
+        represented upstream even though it has no ancestry link to main --
+        the shape every squash-merged branch in this project has."""
+        with patch.object(rh, "_run", side_effect=self._fake_run):
+            c = rh.evaluate_worktree_prunability("acme/repo", "/tmp/w-merged", "feat/merged")
+        self.assertTrue(c.prunable)
+        self.assertIn("PR #42 merged", c.reasons[0])
+
+    def test_uncommitted_changes_block_pruning(self):
+        with patch.object(rh, "_run", side_effect=self._fake_run):
+            c = rh.evaluate_worktree_prunability("acme/repo", "/tmp/w-dirty", "feat/dirty")
+        self.assertFalse(c.prunable)
+        self.assertTrue(any("uncommitted" in r for r in c.reasons))
+
+    def test_no_merged_pr_and_unmatched_commits_is_stranded(self):
+        """Trap 2: absent from origin with no merged PR must never be
+        treated as 'safe to prune' -- reported as stranded instead, with
+        both failing conditions named."""
+        with patch.object(rh, "_run", side_effect=self._fake_run):
+            c = rh.evaluate_worktree_prunability("acme/repo", "/tmp/w-stranded", "feat/stranded")
+        self.assertFalse(c.prunable)
+        self.assertTrue(any("no merged PR" in r for r in c.reasons))
+        self.assertTrue(any("no patch-equivalent" in r for r in c.reasons))
+
+    def test_protected_lane_worktree_is_never_evaluated(self):
+        calls = []
+
+        def recording(args, cwd=None):
+            calls.append(cwd)
+            return self._fake_run(args, cwd)
+
+        with patch.object(rh, "_run", side_effect=recording):
+            rh.prune_worktrees(self.CHECKOUT, dry_run=True)
+        self.assertNotIn("/home/x/HRSE2-lane2", calls)
+
+    def test_dry_run_removes_nothing(self):
+        removed = []
+
+        def recording(args, cwd=None):
+            if args[:3] == ["git", "worktree", "remove"]:
+                removed.append(args[3])
+            return self._fake_run(args, cwd)
+
+        with patch.object(rh, "_run", side_effect=recording):
+            code = rh.prune_worktrees(self.CHECKOUT, dry_run=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(removed, [])
+
+    def test_execute_removes_only_the_prunable_worktree(self):
+        removed = []
+
+        def recording(args, cwd=None):
+            if args[:3] == ["git", "worktree", "remove"]:
+                removed.append(args[3])
+                return ""
+            return self._fake_run(args, cwd)
+
+        with patch.object(rh, "_run", side_effect=recording):
+            code = rh.prune_worktrees(self.CHECKOUT, dry_run=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(removed, ["/tmp/w-merged"])
+
+    def test_main_checkout_itself_is_never_a_candidate(self):
+        with patch.object(rh, "_run", side_effect=self._fake_run):
+            entries = rh._worktree_entries(self.CHECKOUT)
+        self.assertNotIn(self.CHECKOUT, [p for p, _ in entries])
