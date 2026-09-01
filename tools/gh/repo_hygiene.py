@@ -660,10 +660,22 @@ def prune_worktrees(checkout: str, dry_run: bool) -> int:
         print(f"[hygiene] {checkout}: could not list worktrees: {exc}", file=sys.stderr)
         return 1
 
+    # A worktree can be registered in git's metadata with its directory
+    # already gone from disk (removed by hand without `git worktree
+    # remove`) -- live-caught: `git status`/`git cherry` with `cwd=path`
+    # crash with FileNotFoundError, not GhError, for exactly this case.
+    # `git worktree prune` below cleans up the stale registration on its
+    # own; nothing else in this function needs to touch it.
+    missing = [(path, branch) for path, branch in entries
+               if Path(path).name not in PROTECTED_WORKTREE_NAMES and not Path(path).is_dir()]
+    for path, _ in missing:
+        print(f"[hygiene] {path}: registered but missing from disk -- "
+              f"will be cleared by the trailing `git worktree prune`")
+
     candidates = [
         evaluate_worktree_prunability(repo, path, branch)
         for path, branch in entries
-        if Path(path).name not in PROTECTED_WORKTREE_NAMES
+        if Path(path).name not in PROTECTED_WORKTREE_NAMES and Path(path).is_dir()
     ]
     prunable = [c for c in candidates if c.prunable]
     not_prunable = [c for c in candidates if not c.prunable]
@@ -678,14 +690,16 @@ def prune_worktrees(checkout: str, dry_run: bool) -> int:
         for c in prunable:
             print(f"  {c.path} [{c.branch}] — {'; '.join(c.reasons)}")
         print()
-    if not candidates:
+    if not candidates and not missing:
         print(f"[hygiene] {checkout}: no worktrees to consider for pruning")
-        return 0
-    if not prunable:
         return 0
 
     if dry_run:
-        print(f"[hygiene] --dry-run: {len(prunable)} worktree(s) would be removed, none touched")
+        if prunable:
+            print(f"[hygiene] --dry-run: {len(prunable)} worktree(s) would be removed, none touched")
+        return 0
+
+    if not prunable and not missing:
         return 0
 
     for c in prunable:
@@ -695,6 +709,10 @@ def prune_worktrees(checkout: str, dry_run: bool) -> int:
             print(f"[hygiene] failed to remove {c.path}: {exc}", file=sys.stderr)
             continue
         print(f"[hygiene] removed {c.path}")
+    # Runs even with zero `prunable` entries whenever `missing` is
+    # non-empty -- a registered-but-missing worktree is pure metadata
+    # cleanup with no data-loss risk, and this is the only step that
+    # clears it.
     try:
         _run(["git", "worktree", "prune"], cwd=checkout)
     except GhError as exc:
