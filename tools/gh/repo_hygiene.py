@@ -524,31 +524,201 @@ def audit_unboarded(repo: str, report: Report, _cache: dict = {}) -> None:
                 f"boarded but {' and '.join(missing)} unset — {issue['title'][:50]}"))
 
 
-def audit_worktrees(checkout: str, report: Report) -> None:
-    """Flag worktrees whose branch is gone or already merged. Purely local."""
-    try:
-        raw = _run(["git", "worktree", "list", "--porcelain"], cwd=checkout)
-    except GhError as exc:
-        report.worktrees.append(Finding(checkout, "-", f"could not list worktrees: {exc}"))
-        return
-
+def _worktree_entries(checkout: str) -> list[tuple[str, str]]:
+    """(path, branch) for every registered worktree except the checkout's own
+    entry (detached-HEAD entries have no `branch ` line and are skipped --
+    they cannot be matched to a remote branch at all). Shared by
+    `audit_worktrees` and `prune_worktrees` so the porcelain-parsing logic
+    exists in exactly one place."""
+    raw = _run(["git", "worktree", "list", "--porcelain"], cwd=checkout)
+    entries: list[tuple[str, str]] = []
     path = None
     for line in raw.splitlines():
         if line.startswith("worktree "):
             path = line.split(" ", 1)[1]
         elif line.startswith("branch ") and path:
             branch = line.split("refs/heads/", 1)[-1]
-            if path.rstrip("/") == checkout.rstrip("/"):
-                path = None
-                continue
-            try:
-                exists = _run(["git", "ls-remote", "--heads", "origin", branch], cwd=checkout).strip()
-            except GhError:
-                exists = "?"
-            if not exists:
-                report.worktrees.append(
-                    Finding(checkout, path, f"branch '{branch}' no longer on origin"))
+            if path.rstrip("/") != checkout.rstrip("/"):
+                entries.append((path, branch))
             path = None
+    return entries
+
+
+def audit_worktrees(checkout: str, report: Report) -> None:
+    """Flag worktrees whose branch is gone or already merged. Purely local."""
+    try:
+        entries = _worktree_entries(checkout)
+    except GhError as exc:
+        report.worktrees.append(Finding(checkout, "-", f"could not list worktrees: {exc}"))
+        return
+
+    for path, branch in entries:
+        try:
+            exists = _run(["git", "ls-remote", "--heads", "origin", branch], cwd=checkout).strip()
+        except GhError:
+            exists = "?"
+        if not exists:
+            report.worktrees.append(
+                Finding(checkout, path, f"branch '{branch}' no longer on origin"))
+
+
+# hrse#427: names never eligible for pruning, matched against a worktree
+# path's basename regardless of which checkout the sweep was invoked
+# against -- the shared lane worktrees are addressed by fixed name, not by
+# path prefix, because a lane worktree can sit anywhere.
+PROTECTED_WORKTREE_NAMES = frozenset({"HRSE2-lane2", "HRSE2-lane3"})
+
+
+def _repo_for_checkout(checkout: str) -> str | None:
+    """owner/repo parsed from the checkout's own `origin` remote -- pruning
+    needs GitHub's PR-merged authority (Trap 1), and the checkout already
+    knows which repo it is without a `--repo`/`--checkout` pairing the CLI
+    doesn't otherwise require (see `main`'s `mise run hygiene` invocation:
+    `--repo` and `--checkout` are independent, repeatable lists)."""
+    try:
+        url = _run(["git", "remote", "get-url", "origin"], cwd=checkout).strip()
+    except GhError:
+        return None
+    match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
+    return match.group(1) if match else None
+
+
+@dataclass
+class PruneCandidate:
+    path: str
+    branch: str
+    prunable: bool
+    reasons: list[str] = field(default_factory=list)  # failing conditions, or the merged-PR evidence
+
+
+def evaluate_worktree_prunability(repo: str, path: str, branch: str) -> PruneCandidate:
+    """The four conditions from hrse#427, each checked independently so a
+    worktree failing more than one reports all of them, not just the first.
+
+    Trap 1 (squash-merge defeats ancestry): the merged-PR check goes through
+    GitHub (`gh pr list --state merged`), never `git merge-base
+    --is-ancestor`/`git branch --merged` -- those return `unmerged` for
+    every squash-merged branch in this project, verified live across all 18
+    hrse worktrees when this issue was filed.
+
+    Trap 2 ("branch not on origin" is ambiguous): a merged PR is required,
+    not merely an absent remote branch -- an interrupted session that never
+    pushed is indistinguishable from a normal post-merge cleanup by remote
+    absence alone, and only the merged-PR check tells them apart.
+
+    `git cherry` (patch-id equivalence, not ancestry) is the third,
+    independent guard: even a branch with a merged PR on record could have
+    picked up an extra local commit afterward that was never part of that
+    PR -- reported as a failing condition rather than assumed away.
+    """
+    reasons: list[str] = []
+
+    try:
+        merged_prs = json.loads(_run([
+            "gh", "pr", "list", "--repo", repo, "--head", branch,
+            "--state", "merged", "--json", "number",
+        ]))
+    except (GhError, json.JSONDecodeError) as exc:
+        return PruneCandidate(path, branch, False, [f"could not check for a merged PR: {exc}"])
+    if not merged_prs:
+        reasons.append("no merged PR found for this branch on GitHub")
+
+    try:
+        status = _run(["git", "status", "--porcelain"], cwd=path).strip()
+    except GhError as exc:
+        return PruneCandidate(path, branch, False, [f"could not read git status: {exc}"])
+    if status:
+        reasons.append("uncommitted or untracked changes present")
+
+    try:
+        cherry = _run(["git", "cherry", "origin/main", branch], cwd=path)
+    except GhError as exc:
+        return PruneCandidate(path, branch, False, [f"could not compare commits by patch-id: {exc}"])
+    unmatched = [line for line in cherry.splitlines() if line.startswith("+")]
+    if unmatched:
+        reasons.append(
+            f"{len(unmatched)} commit(s) with no patch-equivalent on origin/main")
+
+    if reasons:
+        return PruneCandidate(path, branch, False, reasons)
+    return PruneCandidate(path, branch, True, [f"PR #{merged_prs[0]['number']} merged"])
+
+
+def prune_worktrees(checkout: str, dry_run: bool) -> int:
+    """hrse#427. Opt-in only -- never called unless `--prune-worktrees` is
+    passed. Removal is `git worktree remove` (not `--force`: the clean-status
+    condition above already guarantees nothing is force-discarded) followed
+    by one `git worktree prune`, never `rm -rf`."""
+    repo = _repo_for_checkout(checkout)
+    if repo is None:
+        print(f"[hygiene] {checkout}: cannot resolve a GitHub repo from `origin` -- skipping prune", file=sys.stderr)
+        return 1
+
+    try:
+        entries = _worktree_entries(checkout)
+    except GhError as exc:
+        print(f"[hygiene] {checkout}: could not list worktrees: {exc}", file=sys.stderr)
+        return 1
+
+    # A worktree can be registered in git's metadata with its directory
+    # already gone from disk (removed by hand without `git worktree
+    # remove`) -- live-caught: `git status`/`git cherry` with `cwd=path`
+    # crash with FileNotFoundError, not GhError, for exactly this case.
+    # `git worktree prune` below cleans up the stale registration on its
+    # own; nothing else in this function needs to touch it.
+    missing = [(path, branch) for path, branch in entries
+               if Path(path).name not in PROTECTED_WORKTREE_NAMES and not Path(path).is_dir()]
+    for path, _ in missing:
+        print(f"[hygiene] {path}: registered but missing from disk -- "
+              f"will be cleared by the trailing `git worktree prune`")
+
+    candidates = [
+        evaluate_worktree_prunability(repo, path, branch)
+        for path, branch in entries
+        if Path(path).name not in PROTECTED_WORKTREE_NAMES and Path(path).is_dir()
+    ]
+    prunable = [c for c in candidates if c.prunable]
+    not_prunable = [c for c in candidates if not c.prunable]
+
+    if not_prunable:
+        print(f"NOT PRUNABLE — {len(not_prunable)} worktree(s) in {checkout}:")
+        for c in not_prunable:
+            print(f"  {c.path} [{c.branch}] — {'; '.join(c.reasons)}")
+        print()
+    if prunable:
+        print(f"PRUNABLE — {len(prunable)} worktree(s) in {checkout}:")
+        for c in prunable:
+            print(f"  {c.path} [{c.branch}] — {'; '.join(c.reasons)}")
+        print()
+    if not candidates and not missing:
+        print(f"[hygiene] {checkout}: no worktrees to consider for pruning")
+        return 0
+
+    if dry_run:
+        if prunable:
+            print(f"[hygiene] --dry-run: {len(prunable)} worktree(s) would be removed, none touched")
+        return 0
+
+    if not prunable and not missing:
+        return 0
+
+    for c in prunable:
+        try:
+            _run(["git", "worktree", "remove", c.path], cwd=checkout)
+        except GhError as exc:
+            print(f"[hygiene] failed to remove {c.path}: {exc}", file=sys.stderr)
+            continue
+        print(f"[hygiene] removed {c.path}")
+    # Runs even with zero `prunable` entries whenever `missing` is
+    # non-empty -- a registered-but-missing worktree is pure metadata
+    # cleanup with no data-loss risk, and this is the only step that
+    # clears it.
+    try:
+        _run(["git", "worktree", "prune"], cwd=checkout)
+    except GhError as exc:
+        print(f"[hygiene] worktree prune failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def audit_checkout_branch(checkout: str, report: Report) -> None:
@@ -717,10 +887,19 @@ def main() -> int:
                         help="repository to audit; repeatable")
     parser.add_argument("--checkout", action="append", default=[], metavar="PATH",
                         help="local checkout whose worktrees to audit; repeatable")
+    parser.add_argument("--prune-worktrees", action="store_true",
+                        help="hrse#427: remove worktrees whose branch has a merged PR, no "
+                             "uncommitted changes, and no commit missing from origin/main by "
+                             "patch-id. Opt-in, default off -- does not change the report-only "
+                             "behavior of anything else in this module.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --prune-worktrees: print what would be removed, remove nothing")
     args = parser.parse_args()
 
     if not args.repo and not args.checkout:
         parser.error("nothing to audit — pass at least one --repo or --checkout")
+    if args.dry_run and not args.prune_worktrees:
+        parser.error("--dry-run only applies to --prune-worktrees")
 
     report = Report()
     for repo in args.repo:
@@ -744,6 +923,16 @@ def main() -> int:
         audit_checkout_branch(checkout, report)
         audit_stashes(checkout, report)
         audit_transaction_log(checkout, report)
+
+    # hrse#427: opt-in only, and deliberately run as a separate pass rather
+    # than folded into the loop above -- AC1 requires the flag's absence to
+    # leave every other audit's behavior, including the STALE WORKTREES
+    # report just above, byte-for-byte unchanged.
+    prune_exit = 0
+    if args.prune_worktrees:
+        print()
+        for checkout in args.checkout:
+            prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
 
     if report.unlabelled_migrations:
         print(f"UNLABELLED MIGRATIONS — {len(report.unlabelled_migrations)} "
@@ -814,7 +1003,7 @@ def main() -> int:
             or report.unboarded or report.checkout_off_main
             or report.stale_stashes or report.missing_transaction_log):
         print("repo hygiene: clean.")
-        return 0
+        return prune_exit
 
     # Only STRANDED fails. Orphaned branches are a cleanup opportunity, and
     # failing on them would leave this permanently red until someone tidies —
@@ -827,10 +1016,11 @@ def main() -> int:
                   "migration-abandoned (hrse#859/#867).")
         if report.stranded:
             print("Review the STRANDED list before deleting anything.")
-        print("Nothing was deleted.")
-        return 1
-    print("Nothing stranded. Nothing was deleted.")
-    return 0
+        if not args.prune_worktrees:
+            print("Nothing was deleted.")
+        return max(prune_exit, 1)
+    print("Nothing stranded." if args.prune_worktrees else "Nothing stranded. Nothing was deleted.")
+    return prune_exit
 
 
 if __name__ == "__main__":
