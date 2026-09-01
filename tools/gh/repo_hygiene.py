@@ -88,6 +88,7 @@ class Report:
     checkout_off_main: list[Finding] = field(default_factory=list)
     stale_stashes: list[Finding] = field(default_factory=list)
     missing_transaction_log: list[Finding] = field(default_factory=list)
+    board_status_drift: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -407,6 +408,9 @@ query($owner: String!, $number: Int!, $cursor: String) {
           venture: fieldValueByName(name: "Venture") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
+          status: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
         }
       }
     }
@@ -430,7 +434,12 @@ def _run_board_query(query: str, owner: str, number: str, cursor: str | None) ->
 
 
 def _board_state(owner: str, number: str) -> dict[tuple[str, int], dict]:
-    """(repo, issue) -> {field: value|None} for every OPEN item on a board.
+    """(repo, issue) -> {field: value|None} for every item on a board,
+    OPEN or CLOSED (harmonic-forge#430: `audit_board_status_drift` needs
+    closed items too, to find a board Status left un-advanced after the
+    underlying issue closed -- `audit_unboarded` only ever looks up numbers
+    it already sourced from an open-issues REST call, so including closed
+    items here is inert for it).
 
     Owner type is resolved once, on the first page, then reused for every
     later cursor -- a project board's owner cannot change mid-pagination.
@@ -472,13 +481,15 @@ def _board_state(owner: str, number: str) -> dict[tuple[str, int], dict]:
         items = project["items"]
         for node in items["nodes"]:
             content = node.get("content") or {}
-            if content.get("state") != "OPEN" or not content.get("number"):
+            if not content.get("number"):
                 continue
             key = ((content.get("repository") or {}).get("nameWithOwner", ""),
                    content["number"])
             state[key] = {
                 "Theme": (node.get("theme") or {}).get("name"),
                 "Venture": (node.get("venture") or {}).get("name"),
+                "Status": (node.get("status") or {}).get("name"),
+                "_issue_state": content.get("state"),
             }
         if not items["pageInfo"]["hasNextPage"]:
             return state
@@ -522,6 +533,55 @@ def audit_unboarded(repo: str, report: Report, _cache: dict = {}) -> None:
             report.unboarded.append(Finding(
                 repo, f"#{num}",
                 f"boarded but {' and '.join(missing)} unset — {issue['title'][:50]}"))
+
+
+#: `Status` value that means a board item's underlying issue can close without
+#: this check flagging it. Anything else (including no Status at all) left on
+#: a board item whose issue is closed is drift.
+_DONE_STATUS = "Done"
+
+
+def audit_board_status_drift(repo: str, report: Report, _cache: dict = {}) -> None:
+    """Board `Status != Done` on an item whose GitHub issue is actually
+    closed (harmonic-forge#430).
+
+    `board_sync.py`/`board_drift_check.py` were both retired (hrse#839) --
+    the second read the now-deleted `Priority` field and was killed rather
+    than rebuilt against `Status`. Nobody replaced it, so a card left on
+    (say) "In Progress" after its issue closes is invisible to every
+    existing check: `drift_check.py` (`/sprint-plan`) reads doc prose
+    against issue state, never a board field, and harmonic-forge carries no
+    `PRIORITIES.md` entries at all by design.
+
+    Report-only, matching this module's own posture -- never flips `Status`.
+    A human moving a card is the thing this whole design relies on staying
+    honest, so this check only ever names the gap.
+
+    Shares `_board_state`'s pagination (`hasNextPage`/`endCursor` cursor
+    loop, not `gh project` CLI truncation) and its `_cache` with
+    `audit_unboarded` when both run for the same repo in the same process,
+    since both now fetch the identical query -- one fetch per board, not per
+    check.
+    """
+    board = _REPO_BOARDS.get(repo)
+    if board is None:
+        return  # audit_unboarded already reports the missing mapping once
+    owner, number = board
+    if board not in _cache:
+        _cache[board] = _board_state(owner, number)
+    state = _cache[board]
+
+    for (item_repo, num), fields in state.items():
+        if item_repo != repo:
+            continue
+        if fields.get("_issue_state") != "CLOSED":
+            continue
+        status = fields.get("Status")
+        if status == _DONE_STATUS:
+            continue
+        report.board_status_drift.append(Finding(
+            repo, f"#{num}",
+            f"issue closed but board Status is {status!r}, not {_DONE_STATUS!r}"))
 
 
 def _worktree_entries(checkout: str) -> list[tuple[str, str]]:
@@ -902,6 +962,9 @@ def main() -> int:
         parser.error("--dry-run only applies to --prune-worktrees")
 
     report = Report()
+    board_cache: dict = {}  # shared across audit_unboarded and
+    # audit_board_status_drift for repos on the same board -- both fetch the
+    # identical `_board_state` query now, one fetch per board, not per check.
     for repo in args.repo:
         try:
             audit_repo(repo, report)
@@ -911,7 +974,8 @@ def main() -> int:
         try:
             audit_migrations(repo, report)
             audit_unlabelled_migrations(repo, report)
-            audit_unboarded(repo, report)
+            audit_unboarded(repo, report, board_cache)
+            audit_board_status_drift(repo, report, board_cache)
         except GhError as exc:
             # A repo with Issues disabled returns 410 here. That is a
             # reason to skip one audit, not to abandon the remaining
@@ -953,6 +1017,15 @@ def main() -> int:
         print("  An issue off a board, or missing Theme/Venture, appears in no "
               "capability slice and no burn-up (hrse#965/#967). Reported, not "
               "failed — it is a cleanup opportunity, not lost work.")
+        print()
+    if report.board_status_drift:
+        print(f"BOARD STATUS DRIFT — {len(report.board_status_drift)} closed "
+              f"issue(s) whose board card is not marked Done:")
+        for f in report.board_status_drift:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  Nothing auto-flips Status — a human moving a card is the "
+              "thing this whole design relies on staying honest (harmonic-forge#430). "
+              "Reported, not failed.")
         print()
     if report.unrun_migrations:
         print(f"UNRUN MIGRATIONS — {len(report.unrun_migrations)} closed "
@@ -1001,7 +1074,8 @@ def main() -> int:
     if not (report.stranded or report.orphaned or report.worktrees
             or report.unrun_migrations or report.unlabelled_migrations
             or report.unboarded or report.checkout_off_main
-            or report.stale_stashes or report.missing_transaction_log):
+            or report.stale_stashes or report.missing_transaction_log
+            or report.board_status_drift):
         print("repo hygiene: clean.")
         return prune_exit
 

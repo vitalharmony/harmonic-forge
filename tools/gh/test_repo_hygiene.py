@@ -544,6 +544,124 @@ class NewChecksAreReportOnlyTests(unittest.TestCase):
         self.assertTrue(r.actionable)
 
 
+def _board_node(number, *, issue_state, status, repo="vitalharmony/hrse"):
+    return {
+        "content": {"number": number, "state": issue_state,
+                     "repository": {"nameWithOwner": repo}},
+        "theme": {"name": "Tooling"},
+        "venture": {"name": "Platform"},
+        "status": ({"name": status} if status is not None else None),
+    }
+
+
+class BoardStatusDriftTests(unittest.TestCase):
+    """harmonic-forge#430: a board card left un-advanced after its issue
+    closes. Report-only, never flips Status."""
+
+    def test_closed_issue_not_marked_done_is_flagged(self):
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(42, issue_state="CLOSED", status="In Progress")]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=payload):
+            rh.audit_board_status_drift("vitalharmony/hrse", report, {})
+        self.assertEqual(len(report.board_status_drift), 1)
+        self.assertIn("#42", report.board_status_drift[0].name)
+        self.assertIn("In Progress", report.board_status_drift[0].detail)
+
+    def test_closed_issue_marked_done_is_not_flagged(self):
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(42, issue_state="CLOSED", status="Done")]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=payload):
+            rh.audit_board_status_drift("vitalharmony/hrse", report, {})
+        self.assertEqual(report.board_status_drift, [])
+
+    def test_open_issue_is_never_flagged_regardless_of_status(self):
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(42, issue_state="OPEN", status="Todo")]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=payload):
+            rh.audit_board_status_drift("vitalharmony/hrse", report, {})
+        self.assertEqual(report.board_status_drift, [])
+
+    def test_closed_issue_with_unset_status_is_flagged(self):
+        """No Status at all is not silently read as Done."""
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(42, issue_state="CLOSED", status=None)]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=payload):
+            rh.audit_board_status_drift("vitalharmony/hrse", report, {})
+        self.assertEqual(len(report.board_status_drift), 1)
+
+    def test_never_writes_to_the_board(self):
+        """Report-only: no mutating gh api call is ever issued."""
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(42, issue_state="CLOSED", status="In Progress")]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=payload) as mock_run:
+            rh.audit_board_status_drift("vitalharmony/hrse", report, {})
+        for call in mock_run.call_args_list:
+            args = call[0][0]
+            self.assertNotIn("-X", args)
+            self.assertNotIn("PATCH", args)
+            self.assertNotIn("POST", args)
+
+    def test_repo_not_on_any_board_is_silently_skipped(self):
+        """`audit_unboarded` already reports the missing mapping once —
+        this check must not report it a second time under a different name."""
+        report = rh.Report()
+        with patch.object(rh, "_run") as mock_run:
+            rh.audit_board_status_drift("vitalharmony/no-such-repo", report, {})
+        mock_run.assert_not_called()
+        self.assertEqual(report.board_status_drift, [])
+
+    def test_pagination_is_not_silently_truncated_past_30_items(self):
+        """harmonic-forge#430's own named trap: the investigation that filed
+        this issue produced a false '49 stale rows' finding from a `gh
+        issue list` call that silently truncated at its 30-result default.
+        This check must page fully via `hasNextPage`/`endCursor`, not stop
+        at one page — exercised here against 45 open-board items (>30) plus
+        one closed-and-drifted item split across two pages."""
+        page1_nodes = [_board_node(n, issue_state="OPEN", status="Todo")
+                       for n in range(1, 46)]
+        page1 = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": True, "endCursor": "CURSOR1"},
+                       "nodes": page1_nodes}}}}})
+        page2 = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(999, issue_state="CLOSED", status="In Review")]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", side_effect=[page1, page2]) as mock_run:
+            rh.audit_board_status_drift("vitalharmony/hrse", report, {})
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(len(report.board_status_drift), 1)
+        self.assertIn("#999", report.board_status_drift[0].name)
+
+    def test_board_status_drift_alone_does_not_fail_the_run(self):
+        report = rh.Report()
+        report.board_status_drift.append(rh.Finding("r", "#1", "not Done"))
+        self.assertFalse(report.actionable)
+
+    def test_shares_the_cache_with_audit_unboarded_for_the_same_board(self):
+        """One fetch per board serves both checks when they share a cache —
+        the two checks must not double the GraphQL cost for every repo."""
+        payload = json.dumps({"data": {"organization": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(42, issue_state="CLOSED", status="Done")]}}}}})
+        report = rh.Report()
+        cache: dict = {}
+        with patch.object(rh, "_run", return_value=payload) as mock_run, \
+                patch.object(rh, "_rest", return_value=[]):
+            rh.audit_unboarded("vitalharmony/hrse", report, cache)
+            rh.audit_board_status_drift("vitalharmony/hrse", report, cache)
+        self.assertEqual(mock_run.call_count, 1)
+
+
 class MainCleanGuardTests(unittest.TestCase):
     """A run with only new-category findings must not also print 'clean' —
     the hrse#808 handoff's explicit landmine: `main()`'s clean-guard
