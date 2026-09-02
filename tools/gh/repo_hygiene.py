@@ -89,6 +89,23 @@ class Report:
     stale_stashes: list[Finding] = field(default_factory=list)
     missing_transaction_log: list[Finding] = field(default_factory=list)
     board_status_drift: list[Finding] = field(default_factory=list)
+    #: harmonic-forge#433. A branch sharing no ancestor with the default
+    #: branch is a deliberate data/orphan branch (`metrics/board-snapshots`
+    #: is written by `publish_sprint_summary.py` and deployed from by
+    #: `board-dashboard.yml`). The comparison can never succeed, so reporting
+    #: it under a heading that asserts work may be lost fires on the same
+    #: known-good input forever and trains the reader to skim the section --
+    #: the failure `narrative_budget_check.py` was deleted for (hrse#808
+    #: Phase 3), inverted.
+    #:
+    #: Detected structurally, never by name. A `metrics/*` prefix rule would
+    #: match exactly one live branch, which is a hardcoded name wearing a
+    #: wildcard and misses the next orphan created under any other prefix.
+    unrelated_history: list[Finding] = field(default_factory=list)
+    #: Any OTHER comparison failure. Inability to compare is not evidence of
+    #: stranding (AC4), but it is still worth reporting -- it must leave
+    #: STRANDED without leaving the report.
+    incomparable: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -106,6 +123,16 @@ class Report:
         # (hrse#808) are report-only too -- nothing in the issue asked for a
         # new failing condition, and each is a "go look at this", not a
         # "you may be losing work" the way STRANDED is.
+        #
+        # harmonic-forge#433 deliberately does NOT narrow this. A proposal to
+        # fail only on "PR closed without merging" was withdrawn: the founding
+        # incident (harmonic-forge#98) had NO PR at all, so it lands in the
+        # `else:` arm below -- and `repo-hygiene.yml` gates its rolling-issue
+        # step on `rc == '1'`, so demoting that arm would produce no issue and
+        # no notification, only stdout in a weekly job log. #433 retitled the
+        # heading to match what is tested; the exit surface is unchanged.
+        # `unrelated_history` and `incomparable` are report-only by the same
+        # rule as `orphaned`.
         return bool(self.stranded or self.unrun_migrations)
 
 
@@ -139,7 +166,10 @@ def audit_repo(repo: str, report: Report) -> None:
             report.orphaned.append(Finding(repo, branch, "PR merged"))
             continue
 
-        # No open PR and not merged — does it carry work that exists nowhere else?
+        # No open PR and not merged — does it carry commits the default
+        # branch lacks? (harmonic-forge#433: a SHA-level question. It is
+        # NOT "work that exists nowhere else" — these are remote
+        # branches, so the work is on a remote by construction.)
         try:
             cmp = json.loads(_run([
                 "gh", "api",
@@ -148,7 +178,19 @@ def audit_repo(repo: str, report: Report) -> None:
             ]))
             ahead = cmp["ahead"]
         except GhError as exc:
-            report.stranded.append(Finding(repo, branch, f"could not compare: {exc}"))
+            # harmonic-forge#433 AC3/AC4. Bound to the LITERAL message: this
+            # is substring-matching English API prose, so it must match one
+            # phrase and nothing else. A deleted or renamed branch returns
+            # `{"message": "Not Found"}` on the same 404 status, and must not
+            # be classified as a deliberate orphan.
+            if "No common ancestor" in str(exc):
+                report.unrelated_history.append(Finding(
+                    repo, branch,
+                    f"shares no ancestor with {default} — orphan/data branch, "
+                    "not comparable and not stranded"))
+            else:
+                report.incomparable.append(
+                    Finding(repo, branch, f"could not compare: {exc}"))
             continue
 
         if ahead == 0:
@@ -1034,8 +1076,30 @@ def main() -> int:
             print(f"  {f.repo} [{f.name}] — {f.detail}")
         print()
     if report.stranded:
-        print(f"STRANDED — {len(report.stranded)} branch(es) may hold work that exists nowhere else:")
+        # harmonic-forge#433 AC1: the heading now states what the check
+        # actually tests. It said "may hold work that exists nowhere else",
+        # which is false for EVERY row it can emit -- `audit_repo()`
+        # enumerates REMOTE branches, so the work is on a remote by
+        # construction. Three branches were once reported under that wording
+        # while byte-identical to origin, and a push was authorized to rescue
+        # work that was never at risk.
+        print(f"STRANDED — {len(report.stranded)} unmerged branch(es) carrying "
+              "commits not present in the default branch:")
         for f in report.stranded:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
+    if report.unrelated_history:
+        print(f"UNRELATED HISTORY — {len(report.unrelated_history)} branch(es) "
+              "share no ancestor with the default branch (expected for data "
+              "branches; not stranded):")
+        for f in report.unrelated_history:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
+    if report.incomparable:
+        print(f"COULD NOT COMPARE — {len(report.incomparable)} branch(es) the "
+              "comparison failed for (inability to compare is not evidence of "
+              "stranding):")
+        for f in report.incomparable:
             print(f"  {f.repo} [{f.name}] — {f.detail}")
         print()
     if report.orphaned:

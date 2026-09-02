@@ -160,6 +160,15 @@ touch "$git_dir/LANE3_ACTIVE"
 echo "lane3-begin: $(pwd) marked Lane 3-active"
 '''
 
+[tasks.lane3-end]
+description = "Lane 3: clear the LANE3_ACTIVE marker set by lane3-begin (harmonic-forge#433). This is hrse#884 unfixed in this repo — the marker was write-only here, so a finished worktree read as Lane 3-active forever and had to be cleared by hand. No scheduler-lease release: unlike hrse, this repo has no backend and no lease."
+run = '''
+set -e
+git_dir="$(git rev-parse --absolute-git-dir)"
+rm -f "$git_dir/LANE3_ACTIVE"
+echo "lane3-end: $(pwd) cleared"
+'''
+
 [tasks.gate-checkout]
 description = "Lane 3: switch to a branch without discarding uncommitted work. Refuses pathspec forms and dirty trees. Refuses if a live process (dev server, running test) has its cwd inside this worktree — a second actor's checkout would otherwise silently yank state out from under it, no lock or error (harmonic-forge#137, real incident hrse#439: a concurrent checkout in HRSE2-lane3 disrupted an in-progress Lane 3 gate). Fetches first; falls back to a detached checkout if the branch is already checked out in a sibling worktree (real incident, hrse#335: harmonic-forge#29/#30 both blocked because the reviewed branch was already checked out in the lane2 worktree)."
 usage = '''
