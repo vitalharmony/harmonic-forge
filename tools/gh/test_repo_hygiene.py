@@ -15,7 +15,7 @@ class ClassificationTests(unittest.TestCase):
     """Branch classification. Every case here is one the 2026-08-12 manual
     sweep actually produced."""
 
-    def _audit(self, branches, prs, compares, default="main"):
+    def _audit(self, branches, prs, compares, errors=None, default="main"):
         def fake_run(args, cwd=None):
             joined = " ".join(args)
             if "--jq" in args and "default_branch" in joined:
@@ -26,9 +26,12 @@ class ClassificationTests(unittest.TestCase):
                 return json.dumps(prs)
             if "/compare/" in joined:
                 branch = joined.split("...")[1].split()[0]
+                if branch in errors:
+                    raise rh.GhError(errors[branch])
                 return json.dumps({"ahead": compares.get(branch, 0)})
             raise AssertionError(f"unexpected call: {joined}")
 
+        errors = errors or {}
         report = rh.Report()
         with patch.object(rh, "_run", side_effect=fake_run):
             rh.audit_repo("acme/repo", report)
@@ -60,7 +63,14 @@ class ClassificationTests(unittest.TestCase):
         self.assertIn("fully contained", r.orphaned[0].detail)
 
     def test_unique_commits_and_no_pr_is_stranded(self):
-        """The case that matters — work that exists nowhere else."""
+        """The case that matters — the harmonic-forge#98 shape.
+
+        Commits ahead, NO PR at all. harmonic-forge#433 considered
+        demoting this arm to report-only and rejected it: this is the
+        founding incident, and `repo-hygiene.yml` gates its rolling-issue
+        step on the exit code, so demoting it means no issue and no
+        notification.
+        """
         r = self._audit(["main", "feat/x"], [], {"feat/x": 3})
         self.assertEqual(len(r.stranded), 1)
         self.assertIn("no PR ever opened", r.stranded[0].detail)
@@ -89,9 +99,53 @@ class ClassificationTests(unittest.TestCase):
         report = rh.Report()
         with patch.object(rh, "_run", side_effect=fake_run):
             rh.audit_repo("acme/repo", report)
-        self.assertEqual(len(report.stranded), 1)
+        # harmonic-forge#433 AC4 moved this out of STRANDED without letting it
+        # go quiet: inability to compare is not evidence of stranding, but a
+        # failed lookup must still never read as "nothing here". The intent of
+        # this test is unchanged; only the category it lands in moved.
+        self.assertEqual(report.stranded, [])
+        self.assertEqual(len(report.incomparable), 1)
         self.assertEqual(report.orphaned, [])
 
+    # --- harmonic-forge#433: what STRANDED may contain, and what it may not ---
+
+    def test_no_common_ancestor_is_not_stranded(self):
+        """An orphan/data branch (`metrics/board-snapshots`) can never compare.
+
+        Reported forever under a heading asserting possible data loss, it is
+        the always-fires inverse of the always-passes check hrse#808 Phase 3
+        deleted `narrative_budget_check.py` for.
+        """
+        r = self._audit(
+            ["main", "metrics/board-snapshots"], [], {},
+            errors={"metrics/board-snapshots":
+                    "No common ancestor between main and metrics/board-snapshots."})
+        self.assertEqual(r.stranded, [])
+        self.assertEqual(len(r.unrelated_history), 1)
+        self.assertEqual(r.incomparable, [])
+
+    def test_generic_compare_failure_is_not_an_orphan(self):
+        """Bound to the literal message. A deleted or renamed branch returns
+        `Not Found` on the same 404 and must not be classified as deliberate."""
+        r = self._audit(["main", "feat/gone"], [], {},
+                        errors={"feat/gone": "Not Found (HTTP 404)"})
+        self.assertEqual(r.stranded, [])
+        self.assertEqual(r.unrelated_history, [])
+        self.assertEqual(len(r.incomparable), 1)
+        self.assertIn("could not compare", r.incomparable[0].detail)
+
+    def test_no_pr_at_all_still_trips_the_exit_code(self):
+        """The regression guard for harmonic-forge#433 finding 1, in both
+        directions: this arm must stay in `Report.actionable`."""
+        r = self._audit(["main", "feat/x"], [], {"feat/x": 3})
+        self.assertEqual(len(r.stranded), 1)
+        self.assertTrue(r.actionable)
+
+    def test_neither_new_category_trips_the_exit_code(self):
+        r = self._audit(["main", "metrics/snap", "feat/gone"], [], {},
+                        errors={"metrics/snap": "No common ancestor between a and b.",
+                                "feat/gone": "Not Found (HTTP 404)"})
+        self.assertFalse(r.actionable)
 
 class ExitCodeTests(unittest.TestCase):
     """Only STRANDED fails. Both failure modes this guards against were seen
@@ -961,3 +1015,4 @@ class WorktreePruneTests(unittest.TestCase):
         with patch.object(rh, "_run", side_effect=self._fake_run):
             entries = rh._worktree_entries(self.checkout)
         self.assertNotIn(self.checkout, [p for p, _ in entries])
+
