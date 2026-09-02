@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: a Tooling-Exception close needs a posted preclose-inspection.
+"""PreToolUse hook: a Tooling-Exception merge/close needs preclose-inspection.
 
 hrse#1487. CLAUDE.md requires `preclose-inspection` "AFTER Tooling Exception
 work is implemented and BEFORE Lane 1 requests closure" -- but until this
@@ -19,29 +19,51 @@ and green forever.
 
 ## What this guarantees, stated exactly
 
-Closing an issue via `gh issue close` or a `gh api PATCH ... state=closed`
-requires a posted `preclose-inspection` findings comment first, UNLESS the
-issue already shows a real Lane 2/Lane 3 gate trail (a `ready-for-l3`, `ae`,
-or `ae-and-sweep` marker from `l1_post.py` -- i.e. it went through the
-3-lane cycle, where a different gate already covers this). It does not
-label-gate, unlike `block_data_migration_close.py`'s `tooling-exception`
-label: hrse#1476 itself was never labelled `tooling-exception`, so a
-label-based check would not have caught the incident it exists to prevent.
-The gate trail check is what `l1_post.py` already enforces mechanically,
-not a human-applied label that can be forgotten.
+**Opt-in, on the `tooling-exception` label.** `gh pr merge`, `gh issue
+close`, and `gh api PATCH ... state=closed` are blocked on an issue that
+carries `tooling-exception` and does not carry `preclose-inspected`.
+Everything else passes untouched.
 
-**It does not and cannot prevent the close.** Fail-open by design, same
-rationale as every sibling hook here: it sees nothing of `gh api graphql`
-mutations, heredoc bodies, the GitHub web UI, or a close issued from Python
-or curl. Its audience is the honest-but-careless agent.
+The first two implementations gated on the *absence* of a signal -- no
+Lane 3 gate trail meant "Tooling Exception by elimination." Its own
+preclose-inspection review rejected that, and was right: the footprint was
+all 192 open hrse issues plus 80 forge issues rather than a marked subset,
+so an ordinary "not planned" close (14 on hrse since 2026-08-01) was denied
+and told to inspect a diff that does not exist. The only escape was
+applying `preclose-inspected`, which falsely asserts a review that never
+ran and corrodes the one signal the hook depends on. A gate whose escape
+hatch is a lie is worse than no gate.
 
-## The marker
+`block_data_migration_close.py:292` -- the hook this one is modeled on --
+is opt-in for exactly this reason (`if LABEL not in labels: continue`), and
+the deviation from it was the defect, not the design.
 
-A `preclose-inspection` findings comment is any issue comment whose body
-contains a heading matching `^#{1,4}\\s*preclose-inspection` (case
-insensitive), posted via `mise run lane-comment`. No attestation machinery
-(SHA, body hash) -- preclose-inspection is advisory, not a status claim
-about GitHub/live state, so it does not belong in `l1_post.py`'s kind set.
+`gh pr merge` is gated, not just the close: preclose-inspection reviews
+"the diff that is about to be merged" (`agents/preclose-inspection.md`), so
+a gate firing only on the close would enforce the review after the code had
+already landed on main. For a PR, the gate resolves the issues that PR
+would close and checks their labels -- a PR carries no labels that mean
+anything here.
+
+## Why a label, not a comment marker
+
+The first implementation gated on a `## Preclose-inspection` heading in an
+issue comment. Its review rejected that too: it reintroduced verbatim the
+class `block_data_migration_close.py` spent four review rounds eliminating
+-- **a marker whose format must be published is itself a valid credential
+wherever it is published.** Concretely, `tools/gh/fetch_lane1_context.py:21`
+contains the literal text `kind=ready-for-l3` in prose, and a fenced example
+of the required heading matched the heading regex documenting it.
+
+A label ends the class rather than narrowing it: naming `preclose-inspected`
+is not applying it, so this docstring, the deny message, and the protocol
+docs may all quote the mechanism freely. Label application is also a
+timeline event carrying actor and timestamp, which a pasted comment is not.
+
+**It does not and cannot prevent the merge or close.** Fail-open by design,
+same rationale as every sibling hook here: it sees nothing of `gh api
+graphql` mutations, heredoc bodies, the GitHub web UI, or a merge/close
+issued from Python or curl. Its audience is the honest-but-careless agent.
 """
 from __future__ import annotations
 
@@ -57,11 +79,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shell_parse import command_segments  # noqa: E402
 
-GATE_TRAIL_MARKER = re.compile(r"kind=(?:ready-for-l3|ae|ae-and-sweep)\b")
-PRECLOSE_HEADING = re.compile(r"(?im)^#{1,4}\s*preclose-inspection\b")
+PRECLOSE_LABEL = "preclose-inspected"
+#: The opt-in signal. Only issues explicitly scoped to the Tooling Exception
+#: are gated -- see "What this guarantees" above for why gating on the
+#: *absence* of a Lane 3 trail was wrong.
+TOOLING_EXCEPTION_LABEL = "tooling-exception"
+
+#: `gh pr merge` flags that consume the following token. Every other flag is
+#: valueless, so a bare number after it IS the PR/issue number. The inherited
+#: "skip any token whose predecessor starts with -" heuristic silently dropped
+#: the number in `gh pr merge --squash 1486`, because pr-merge's dominant flags
+#: (--squash/--merge/--rebase/--admin/--delete-branch) take no value -- the gate
+#: parsed to no target and allowed every such merge (hrse#1487 review finding 3).
+VALUE_TAKING_FLAGS = frozenset({
+    "--repo", "-R", "--comment", "-c", "--reason", "--body", "-b",
+    "--body-file", "-F", "--subject", "-t", "--title", "--match-head-commit",
+    "--author-email",
+})
 
 API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:/|$)")
 ISSUE_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
+PR_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 ENV_ASSIGNMENT = re.compile(r"^\w+=")
 ISSUE_NUMBER = re.compile(r"^#?(\d+)$")
 REPO_FLAGS = ("--repo", "-R")
@@ -107,34 +145,61 @@ def _flag_value(tokens: list[str], index: int, names: tuple[str, ...]) -> str | 
     return None
 
 
-def _parse_issue_close(tokens: list[str]) -> tuple[str | None, str] | None:
-    if len(tokens) < 4 or tokens[1] != "issue" or tokens[2] != "close":
-        return None
-
-    rest = tokens[3:]
+def _parse_positional_target(
+    rest: list[str], url_pattern: re.Pattern[str],
+) -> tuple[str | None, str | None]:
+    """(repo, number) from `gh <cmd> <sub> ...`'s remaining tokens."""
     repo: str | None = None
-    issue: str | None = None
+    number: str | None = None
 
     for i, token in enumerate(rest):
         value = _flag_value(rest, i, REPO_FLAGS)
         if value:
             repo = value
-        if issue is None and not token.startswith("-"):
+        if number is None and not token.startswith("-"):
             previous = rest[i - 1] if i else ""
-            if previous.startswith("-") and "=" not in previous:
+            # Only skip a token that is genuinely a preceding flag's VALUE.
+            # Testing `previous.startswith("-")` alone drops the real number
+            # after any valueless flag -- see VALUE_TAKING_FLAGS.
+            if previous in VALUE_TAKING_FLAGS:
                 continue
-            url = ISSUE_URL.search(token)
+            url = url_pattern.search(token)
             if url:
-                repo, issue = url.group(1), url.group(2)
+                repo, number = url.group(1), url.group(2)
                 continue
             match = ISSUE_NUMBER.match(token)
             if match:
-                issue = match.group(1)
+                number = match.group(1)
 
-    return (repo, issue) if issue else None
+    return repo, number
 
 
-def _parse_api_close(tokens: list[str]) -> tuple[str, str] | None:
+def _parse_issue_close(tokens: list[str]) -> tuple[str | None, str, str] | None:
+    """`gh issue close ...` -> (repo, issue_number, kind='issue')."""
+    if len(tokens) < 4 or tokens[1] != "issue" or tokens[2] != "close":
+        return None
+    repo, number = _parse_positional_target(tokens[3:], ISSUE_URL)
+    return (repo, number, "issue") if number else None
+
+
+def _parse_pr_merge(tokens: list[str]) -> tuple[str | None, str, str] | None:
+    """`gh pr merge ...` -> (repo, pr_number, kind='pr').
+
+    hrse#1487's own preclose-inspection: gating only the close enforces the
+    review after the diff has already landed on main, which is the opposite
+    of what `agents/preclose-inspection.md` specifies.
+    """
+    if len(tokens) < 3 or tokens[1] != "pr" or tokens[2] != "merge":
+        return None
+    repo, number = _parse_positional_target(tokens[3:], PR_URL)
+    # `gh pr merge` with no positional argument merges the current branch's
+    # PR. Resolving that needs the branch, which the payload does not carry
+    # reliably -- fail open rather than guess at a different PR.
+    return (repo, number, "pr") if number else None
+
+
+def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
+    """`gh api ... PATCH ... state=closed` -> (repo, issue, kind='issue')."""
     if len(tokens) < 3 or tokens[1] != "api":
         return None
 
@@ -156,7 +221,9 @@ def _parse_api_close(tokens: list[str]) -> tuple[str, str] | None:
         if match:
             target = (match.group(1), match.group(2))
 
-    return target if (is_patch and closes and target) else None
+    if is_patch and closes and target:
+        return (target[0], target[1], "issue")
+    return None
 
 
 def _strip_invocation_prefix(tokens: list[str]) -> list[str]:
@@ -168,20 +235,25 @@ def _strip_invocation_prefix(tokens: list[str]) -> list[str]:
     return tokens[index:]
 
 
-def find_close_targets(command: str) -> list[tuple[str | None, str]] | None:
+def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None:
+    """All (repo, number, kind) this command would merge or close.
+
+    Returns None when the command cannot be tokenized (fail-open).
+    """
     try:
         segments = command_segments(command)
     except ValueError:
         return None
 
-    targets: list[tuple[str | None, str]] = []
+    targets: list[tuple[str | None, str, str]] = []
     for raw_tokens in segments:
         tokens = _strip_invocation_prefix(raw_tokens)
         if not tokens:
             continue
         if os.path.basename(tokens[0]) != "gh":
             continue
-        parsed = _parse_issue_close(tokens) or _parse_api_close(tokens)
+        parsed = (_parse_issue_close(tokens) or _parse_pr_merge(tokens)
+                  or _parse_api_close(tokens))
         if parsed:
             targets.append(parsed)
     return targets
@@ -195,30 +267,66 @@ def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
     return out.strip() if out and out.strip() else None
 
 
-def comment_bodies(repo: str, issue: str) -> list[str] | None:
-    out = _gh("api", f"repos/{repo}/issues/{issue}/comments",
-              "--paginate", "--jq", ".[].body")
+def labels_for(repo: str, issue: str) -> set[str] | None:
+    """Label names on the issue, or None when they cannot be read.
+
+    `--jq` emits string scalars raw (like `jq -r`), one label name per line
+    -- verified empirically, and the same assumption
+    `block_data_migration_close.py:255-258` makes.
+    """
+    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name")
     if out is None:
         return None
-    # Each comment body is one jq-emitted JSON string per line; comments
-    # containing literal newlines still round-trip correctly since jq
-    # escapes them within the string, so splitting on raw newlines here
-    # would be wrong -- decode each line as its own JSON string instead.
-    bodies = []
-    for line in out.splitlines():
-        try:
-            bodies.append(json.loads(line))
-        except (json.JSONDecodeError, ValueError):
-            bodies.append(line)
-    return bodies
+    return {line.strip() for line in out.splitlines() if line.strip()}
 
 
-def has_gate_trail(bodies: list[str]) -> bool:
-    return any(GATE_TRAIL_MARKER.search(b) for b in bodies)
+#: `feat/1476-...`, `fix/1429-...`, `docs/1367-...`, `spike/1434-...` -- the
+#: branch naming this project actually uses. Verified across the 30 most
+#: recent merged PRs: every one carries its issue number here.
+BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)[-/]")
 
 
-def has_preclose_inspection(bodies: list[str]) -> bool:
-    return any(PRECLOSE_HEADING.search(b) for b in bodies)
+def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
+    """Issue numbers this PR is for, resolved from its BRANCH NAME.
+
+    A PR carries no labels of its own that mean anything here -- the gate
+    lives on the issue -- so a `gh pr merge` has to be mapped back to one.
+
+    Not `closingIssuesReferences`: that edge is populated only by GitHub's
+    auto-close keywords ("Closes #N"), and `block_lane1_status_claims.py`
+    **blocks that syntax outright** in this project, so the edge is
+    structurally always empty here. Measured live across the 30 most recent
+    merged hrse PRs: `closes=0` on every single one, while the branch name
+    carried the issue number on every single one. Resolving through the
+    GraphQL edge produced a gate that could never fire even once its query
+    was well-formed.
+    """
+    out = _gh("pr", "view", pr, "--repo", repo, "--json", "headRefName",
+              "--jq", ".headRefName")
+    if out is None:
+        return None
+    match = BRANCH_ISSUE.match(out.strip())
+    return [match.group(1)] if match else []
+
+
+def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
+    what = (f"PR #{via_pr}, which is for {repo}#{issue}," if via_pr
+            else f"{repo}#{issue}")
+    return (
+        f"Blocked: {what} is labelled {TOOLING_EXCEPTION_LABEL!r} and does "
+        f"not carry {PRECLOSE_LABEL!r}, so nothing records that "
+        f"preclose-inspection ran on the diff (hrse#1487).\n\n"
+        f"hrse#1476 merged exactly this way on 2026-09-01: implemented, "
+        f"verified, pushed, and headed straight to merge/close, skipping the "
+        f"review CLAUDE.md requires. Re-run for real it found 5 defects, one "
+        f"of which would have shipped the feature inert and green forever.\n\n"
+        f"Run preclose-inspection on the diff, act on its findings, post them "
+        f"as a comment, then:\n"
+        f"  gh issue edit {issue} --repo {repo} --add-label {PRECLOSE_LABEL}\n\n"
+        f"This hook only makes the merge/close require a deliberate labelling "
+        f"action -- it cannot prevent one, and does not see graphql "
+        f"mutations, heredoc bodies, or web-UI merges and closes."
+    )
 
 
 def main() -> None:
@@ -235,44 +343,38 @@ def main() -> None:
     command = (data.get("tool_input") or {}).get("command", "")
     payload_cwd = data.get("cwd") or None
 
-    targets = find_close_targets(command)
+    targets = find_gated_targets(command)
     if not targets:
         _allow()
         return
 
     resolved: dict[str | None, str | None] = {}
-    for explicit_repo, issue in targets:
+    for explicit_repo, number, kind in targets:
         if explicit_repo not in resolved:
             resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
         repo = resolved[explicit_repo]
         if repo is None:
             continue
 
-        bodies = comment_bodies(repo, issue)
-        if bodies is None:  # fail-open, same rationale as _gh
-            continue
+        if kind == "pr":
+            issues = issues_closed_by_pr(repo, number)
+            if not issues:  # unlinked PR, or unreadable -- fail open
+                continue
+            pairs = [(issue, number) for issue in issues]
+        else:
+            pairs = [(number, None)]
 
-        if has_gate_trail(bodies):
-            continue  # went through the real 3-lane gate; a different check covers this
-        if has_preclose_inspection(bodies):
-            continue
+        for issue, via_pr in pairs:
+            labels = labels_for(repo, issue)
+            if labels is None:  # fail-open, same rationale as _gh
+                continue
+            if TOOLING_EXCEPTION_LABEL not in labels:
+                continue  # opt-in: not scoped to the Tooling Exception
+            if PRECLOSE_LABEL in labels:
+                continue
 
-        _deny(
-            f"Blocked: {repo}#{issue} shows no Lane 2/Lane 3 gate trail "
-            f"(no ready-for-l3/ae/ae-and-sweep marker), so this went the "
-            f"Tooling Exception route -- and carries no posted "
-            f"preclose-inspection findings comment (hrse#1487).\n\n"
-            f"hrse#1476 merged exactly this way on 2026-09-01: implemented, "
-            f"verified, pushed, and headed straight to merge/close, skipping "
-            f"the review CLAUDE.md requires. Run preclose-inspection now, "
-            f"post its findings as a comment with a heading matching "
-            f"'## Preclose-inspection' via `mise run lane-comment`, then "
-            f"retry the close.\n\n"
-            f"This hook only makes the close require a deliberate posted "
-            f"review -- it cannot prevent one, and does not see graphql "
-            f"mutations, heredoc bodies, or web-UI closes."
-        )
-        return
+            _deny(_deny_message(repo, issue, via_pr))
+            return
 
     _allow()
 

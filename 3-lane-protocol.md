@@ -978,6 +978,36 @@ same posture: explicit, per-issue, never assumed.
   normal gate run is itself a gate-profile session, so testing new gate
   rules needs the old rules to already permit them: a bootstrap problem,
   not an allow-list patch.
+- **`preclose-inspection` is that second read, and it is now enforced
+  rather than remembered (hrse#1487).** Run it on the diff that is about
+  to be merged, act on its findings, then record that it ran:
+
+  ```
+  gh issue edit <N> --repo <owner/repo> --add-label preclose-inspected
+  ```
+
+  `tools/hooks/block_missing_preclose_inspection.py` blocks `gh pr merge`,
+  `gh issue close`, and `gh api PATCH … state=closed` on an issue labelled
+  `tooling-exception` that does not yet carry `preclose-inspected`.
+
+  **It is opt-in, on `tooling-exception`** — like the data-migration close
+  gate it is modelled on, and unlike its own first two implementations,
+  which gated on the *absence* of a Lane 3 trail and therefore fired on
+  every unlabelled issue in both repos. A "not planned" close has no diff
+  to inspect, and a gate whose only escape is asserting a review that never
+  ran corrodes the signal it depends on. So label the issue
+  `tooling-exception` when scoping it under this exception — that label is
+  what arms the gate.
+
+  The gate reads **labels, not comment text**: a marker whose format must
+  be published is a valid credential wherever it is published, which is why
+  naming `preclose-inspected` here — or in the hook's own deny message —
+  does not grant it.
+
+  Real incident, hrse#1476 (2026-09-01): Lane 1 implemented, verified,
+  pushed, and went straight to merge/close, skipping the review entirely.
+  It only ran because the operator asked afterward, and then found five
+  defects, one of which would have shipped the feature inert and green.
 
 ## Escalation
 
