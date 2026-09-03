@@ -184,6 +184,91 @@ class TestFailClosedOnMalformedPayload(unittest.TestCase):
         self.assertTrue(_is_denied(_json.loads(printed)))
 
 
+_XF = "/home/u/harmonic-forge/tools/lane/cross_family_call.sh"
+_OK_ARGS = "--caller claude --families 2 --posture verify --brief /tmp/brief.md"
+
+
+class TestCrossFamilyPermitBranch(unittest.TestCase):
+    """harmonic-forge#448 — argument-exact allowlist for cross_family_call.sh.
+
+    Test Case 10: the branch permits only the exact `verify` shape and denies
+    every invocation-form variant.
+    """
+
+    def _assert_permitted(self, command: str) -> None:
+        self.assertFalse(_is_denied(m.decision(command)), f"expected permit for: {command}")
+
+    def _assert_denied(self, command: str) -> None:
+        self.assertTrue(_is_denied(m.decision(command)), f"expected denial for: {command}")
+
+    def test_exact_verify_shape_permitted_direct_path(self):
+        self._assert_permitted(f"{_XF} {_OK_ARGS}")
+
+    def test_exact_verify_shape_permitted_relative_path(self):
+        self._assert_permitted(f"tools/lane/cross_family_call.sh {_OK_ARGS}")
+
+    def test_exact_verify_shape_permitted_bash_prefixed(self):
+        """Change 4: bash-prefixed and direct-path forms are governed
+        identically. Before #448 this exact command was denied purely for its
+        `bash` head while the direct-path form was permitted for lack of one."""
+        self._assert_permitted(f"bash {_XF} {_OK_ARGS}")
+
+    def test_direct_path_probe_posture_denied(self):
+        """The hole Change 4 closes: before #448 this fell through
+        `head != 'gh'` to a permit, because the basename is neither a
+        shell-escape token nor a mutation wrapper."""
+        self._assert_denied(
+            f"{_XF} --caller claude --families 2 --posture probe --brief /tmp/b.md --cwd /tmp/s"
+        )
+
+    def test_read_only_posture_denied(self):
+        self._assert_denied(f"{_XF} --caller claude --families 2 --posture read-only --brief /tmp/b.md")
+
+    def test_three_families_denied(self):
+        self._assert_denied(f"{_XF} --caller claude --families 3 --posture verify --brief /tmp/b.md")
+
+    def test_non_claude_caller_denied(self):
+        self._assert_denied(f"{_XF} --caller codex --families 2 --posture verify --brief /tmp/b.md")
+
+    def test_extra_trailing_token_denied(self):
+        self._assert_denied(f"{_XF} {_OK_ARGS} --cwd /tmp/scratch")
+
+    def test_reordered_args_denied(self):
+        self._assert_denied(
+            f"{_XF} --posture verify --caller claude --families 2 --brief /tmp/b.md"
+        )
+
+    def test_missing_brief_value_denied(self):
+        self._assert_denied(f"{_XF} --caller claude --families 2 --posture verify --brief")
+
+    def test_brief_value_that_is_a_flag_denied(self):
+        self._assert_denied(f"{_XF} --caller claude --families 2 --posture verify --brief --cwd")
+
+    def test_bare_invocation_denied(self):
+        self._assert_denied(_XF)
+
+    def test_bash_c_opaque_string_still_denied(self):
+        """`bash -c '<string>'` must NOT reach the argument-exact test — its
+        argv[1] is `-c`, not a path, so it falls through to the shell-escape
+        deny. The hook cannot classify an opaque string."""
+        self._assert_denied(f"bash -c '{_XF} {_OK_ARGS}'")
+
+    def test_permitted_shape_in_a_pipeline_segment_is_still_classified(self):
+        """Each segment is classified independently, so a permitted helper
+        call piped into a denied command still denies."""
+        self._assert_denied(f"{_XF} {_OK_ARGS} | gh issue close 1")
+
+    def test_env_prefixed_exact_shape_permitted(self):
+        """`_resolve_wrapper_prefix` runs before this branch, so a leading
+        VAR=value assignment resolves away rather than defeating the match."""
+        self._assert_permitted(f"FOO=bar {_XF} {_OK_ARGS}")
+
+    def test_unrelated_shell_script_still_permitted(self):
+        """The branch is scoped to this one basename — it must not change the
+        verdict for any other script."""
+        self._assert_permitted("/home/u/harmonic-forge/tools/lane/some_other.sh --whatever")
+
+
 class TestNonBashToolIsNoop(unittest.TestCase):
     def test_non_bash_tool_permits(self):
         import io

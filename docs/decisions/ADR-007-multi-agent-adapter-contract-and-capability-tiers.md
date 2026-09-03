@@ -407,6 +407,61 @@ reasoning that produced the defect.
   applied to Codex elsewhere in this ADR, pending a repo-side deny mechanism
   for Codex equivalent to Gemini's admin policy.
 
+- `verify` (harmonic-forge#448) is **Codex-only**, consumed by
+  `pitch-inspection`'s cross-family branch, and is the first posture built
+  around removing an inherited capability rather than adding a restriction.
+  `codex exec --ignore-user-config -m gpt-5.6-sol --sandbox read-only`, with
+  trust re-added by `-c` for exactly the one `--cwd` it is given. It reuses
+  the existing `CODEX_HIGH = "gpt-5.6-sol"` tier pin, so no new model tier is
+  introduced. Enforcement is on the resolved target list, not on
+  `--caller`/`--families` separately: `invoke_claude` takes no posture
+  argument and `invoke_gemini` maps every non-`probe` posture to its
+  read-only admin policy, so an unguarded `verify` would silently run under a
+  posture whose guarantees exist only in the Codex branch. Any non-Codex
+  target exits non-zero.
+
+  **What `--ignore-user-config` buys, verified live (Codex v0.152.0).** It
+  does not load `$CODEX_HOME/config.toml`, which is where `[mcp_servers.*]`
+  lives. The live user config grants Gmail, Drive, Docs, Sheets and Slides
+  through `workspace-mcp`, entirely unconfined by `--sandbox` — so before
+  this posture existed, a cross-family reviewer would have *inherited* that
+  access. Removing it by construction, rather than by asking the reviewer not
+  to use it, is the point. Auth still resolves via `CODEX_HOME`, so this
+  needs no credential copying. A dedicated `CODEX_HOME` was considered and
+  rejected for exactly that reason: `auth.json` lives there, so repointing it
+  would break authentication.
+
+  **Residual gap — the reviewer's `gh`-mutation boundary is prose only.**
+  Codex hooks **do not fire** under `--ignore-user-config`. Tested live in
+  both discovery forms — a project-level `.codex/hooks.json` reached via
+  `-C`, and an inline `-c hooks={…}` table — each with a `.*` matcher
+  returning a `PreToolUse` deny. Both parse (`--strict-config` accepts the
+  inline `hooks` key and rejects unknown keys, so the shape is correct) and
+  neither executes: the probe's shell command ran unblocked in both runs.
+  Dropping `config.toml` also drops the `[projects."<path>"] trust_level`
+  records that hook trust depends on, and the only flag that overrides this
+  is `--dangerously-bypass-hook-trust`, which is not shippable inside a
+  security control. This is recorded as an accepted residual gap in the same
+  spirit as the `--sandbox read-only` file-write gap above — reproduced, not
+  suspected. It is why `verify` must never be described as gating writes to
+  GitHub.
+
+  **Decided 2026-09-03 (operator):** ship this way. The alternative — dropping
+  `--ignore-user-config` to restore hooks — hands the reviewer back the
+  Gmail/Drive/Docs/Sheets/Slides MCP grant, which is the larger exposure. The
+  gh-mutation gap is accepted; the MCP grant is not. Note the asymmetry is
+  deliberate and not a ranking of how likely each is to be exercised: the MCP
+  grant reaches the operator's live mail and documents, while the gh gap
+  reaches issue state that is versioned, attributed, and recoverable.
+
+  Consequently the reviewer's read-only instruction in `VERIFY_CONTRACT` is
+  the entire gh-mutation boundary. It is prose, and prose is not enforcement
+  (§ above says so directly) — but it must at least exist and be applied
+  unconditionally, so it ships in the helper-appended contract rather than in
+  any individual brief, and a test asserts its presence. `--sandbox read-only`
+  does not substitute for it: `gh issue close` is a network call, not a
+  filesystem write.
+
 **Normalized stdout envelope.** One JSON-lines record per invoked family:
 
 ```
@@ -416,6 +471,25 @@ reasoning that produced the defect.
 `status: invalid-report` when the native output cannot be parsed into the
 `report` shape — the helper never invents findings. `native` preserves each
 CLI's own JSON for diagnosis.
+
+Under `verify`, `report` additionally carries an `assumptions` array, one
+entry per asserted assumption in the brief:
+
+```
+"assumptions":[{"assumption":"…","verdict":"confirmed|refuted|uncheckable","evidence":"<output actually obtained>"}]
+```
+
+The verdict set is closed and `emit_envelope` normalizes it. Every
+normalization is a **downgrade**: a `confirmed`/`refuted` verdict whose
+`evidence` is missing or blank becomes `uncheckable`, and an unrecognized
+token becomes `uncheckable`. A missing or non-array `assumptions` key makes
+the whole report `invalid-report`, since a verify pass that returned no
+verdicts produced nothing. Nothing can upgrade a verdict, so a malformed
+report can only ever come out weaker than the model claimed — which is the
+property that makes the output usable as evidence at all. The enforcement is
+on the *presence of executed evidence*, never on how convincing the
+reasoning reads; that is deliberate, because persuasive-and-false is the
+exact failure the cross-family call exists to catch.
 
 **Which roles use two families, which use three.**
 
