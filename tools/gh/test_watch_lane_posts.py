@@ -2,12 +2,14 @@
 """Unit tests for watch_lane_posts.py (harmonic-forge#442) -- pure parsing
 logic only, no live gh/API calls. Fixtures are real comment bodies from
 hrse#1530 (trimmed), not invented shapes."""
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from watch_lane_posts import _BRANCH_ISSUE_RE, _classify, discover_from_worktree
+from watch_lane_posts import _BRANCH_ISSUE_RE, _classify, discover_from_worktree, discover_queue
 
 
 class ClassifyTests(unittest.TestCase):
@@ -108,6 +110,93 @@ class DiscoverFromWorktreeTests(unittest.TestCase):
     def test_non_git_path_is_none(self):
         tmp = tempfile.mkdtemp()
         self.assertIsNone(discover_from_worktree(tmp))
+
+
+def _fake_completed(stdout, returncode=0):
+    result = subprocess.CompletedProcess(args=[], returncode=returncode)
+    result.stdout = stdout
+    result.stderr = ""
+    return result
+
+
+class DiscoverQueueTests(unittest.TestCase):
+    """`discover_queue` never touches a real network; every `gh` call is
+    mocked. Real marker/heading shapes throughout, matching `_classify`'s
+    own fixtures."""
+
+    def _l1(self, kind):
+        return f"## Some post\n\n<!-- l1-post v1; kind={kind}; posted-by=LANE1 -->"
+
+    def _mock_gh(self, search_results: dict, comments: dict):
+        """`search_results`: {kind: [issue numbers]}. `comments`: {issue:
+        [comment bodies, in order]}."""
+        def run(argv, **kwargs):
+            if argv[:3] == ["gh", "search", "issues"]:
+                # argv: gh search issues --repo R --state open "<marker text>" --json number
+                marker = argv[argv.index("--repo") + 4]
+                kind = marker.rsplit("kind=", 1)[-1]
+                numbers = search_results.get(kind, [])
+                return _fake_completed(json.dumps([{"number": n} for n in numbers]))
+            if argv[:2] == ["gh", "api"]:
+                # argv: gh api repos/R/issues/N/comments
+                issue = int(argv[2].rsplit("/", 2)[-2])
+                bodies = comments.get(issue, [])
+                return _fake_completed(json.dumps([{"body": b} for b in bodies]))
+            raise AssertionError(f"unexpected gh call: {argv}")
+        return run
+
+    def test_issue_with_matching_marker_as_latest_comment_is_queued(self):
+        with patch("watch_lane_posts.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
+                      comments={1530: [self._l1("handoff"), self._l1("ready-for-l3")]},
+                  )):
+            self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {1530: "ready-for-l3"})
+
+    def test_issue_superseded_by_a_later_comment_is_not_queued(self):
+        """The self-clearing property: once Lane 3 (or anyone) posts after
+        the marker, the issue drops out with no separate bookkeeping."""
+        with patch("watch_lane_posts.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
+                      comments={1530: [self._l1("ready-for-l3"),
+                                       "## Lane 3 Gate Results — PASS"]},
+                  )):
+            self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {})
+
+    def test_no_search_hits_yields_empty_queue(self):
+        with patch("watch_lane_posts.subprocess.run",
+                  side_effect=self._mock_gh(search_results={}, comments={})):
+            self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {})
+
+    def test_issue_found_by_two_kind_searches_is_deduplicated(self):
+        """A search hit is only a candidate; the real classification decides
+        the kind. An issue matching two searches (e.g. it once carried an
+        `ae` marker, later superseded by `ready-for-l3`) must appear once,
+        with whichever kind is actually latest."""
+        with patch("watch_lane_posts.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [1530], "ae": [1530], "sweep": []},
+                      comments={1530: [self._l1("ae"), self._l1("ready-for-l3")]},
+                  )):
+            queue = discover_queue("vitalharmony/hrse", "l3")
+            self.assertEqual(queue, {1530: "ready-for-l3"})
+
+    def test_two_real_currently_queued_issues_hrse1058_and_1531(self):
+        """Live shape observed 2026-09-03: two separate issues, each with
+        its own ready-for-l3 comment, no cross-contamination."""
+        with patch("watch_lane_posts.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [1058, 1531], "ae": [], "sweep": []},
+                      comments={
+                          1058: [self._l1("handoff"), "## L2P", "## L2D",
+                                 self._l1("ready-for-l3")],
+                          1531: [self._l1("handoff"), "## L2P", "## L2D",
+                                 self._l1("ready-for-l3")],
+                      },
+                  )):
+            queue = discover_queue("vitalharmony/hrse", "l3")
+            self.assertEqual(queue, {1058: "ready-for-l3", 1531: "ready-for-l3"})
 
 
 if __name__ == "__main__":

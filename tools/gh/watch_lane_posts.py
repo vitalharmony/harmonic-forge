@@ -55,11 +55,32 @@ standalone from a terminal. Prints ONE line per new comment whose detected
 `lane` (`l1`/`l2`/`l3`) is in `--watch`; every other comment (plain chat,
 a lane not being watched) is silent.
 
+**A worktree only tells you about ONE issue.** Lane 3 has no single
+worktree the way Lane 2 does -- it needs to find WHICHEVER issue is
+currently queued to it, repo-wide, without anyone naming a number.
+`--queue-for l3` answers that: it searches the repo for open issues
+carrying an `l1-post` marker whose `kind` is `ready-for-l3`, `ae`, or
+`sweep` (the three kinds that hand Lane 3 something to do), via
+`gh search issues ... "l1-post v1; kind=<kind>"` -- a literal-substring
+search, not a keyword match, so it doesn't pick up unrelated mentions of
+the word (verified live 2026-09-03: zero false positives across all three
+kinds on this repo's real history). A search hit only means the marker
+exists SOMEWHERE on the issue, so each candidate's full comment history is
+then re-checked: an issue only counts as currently queued if that marker
+is still the LATEST classified comment -- once Lane 3 (or anyone) posts
+anything after it, the issue drops out of the queue on its own, with no
+separate "I'm done" bookkeeping required anywhere.
+
 Usage
 -----
-    # Self-discovering (the normal case): watch whatever issue THIS
-    # worktree's current branch is on, re-derived every cycle. Run from
-    # inside the worktree, or pass its path explicitly:
+    # The Lane 3 case: find whatever is queued to me, repo-wide, no
+    # worktree and no issue number needed:
+    python3 watch_lane_posts.py --queue-for l3 --repo vitalharmony/hrse \\
+        --interval 30
+
+    # Self-discovering from a worktree (the Lane 2 case): watch whatever
+    # issue THIS worktree's current branch is on, re-derived every cycle.
+    # Run from inside the worktree, or pass its path explicitly:
     python3 watch_lane_posts.py --worktrees . --watch l1 --interval 30
     python3 watch_lane_posts.py --worktrees ~/Harmonic_Projects/HRSE2-lane2 \\
         ~/Harmonic_Projects/HRSE2-lane3 --watch l2 --watch l3
@@ -69,9 +90,10 @@ Usage
     python3 watch_lane_posts.py --repo vitalharmony/hrse --issues 1530 \\
         --watch l2 --watch l3 --interval 30
 
-`--worktrees` and `--repo`/`--issues` may be combined; the watched set is
-their union, re-derived (for `--worktrees`) every cycle. Exits only on
-error or Ctrl-C; runs until stopped otherwise.
+`--queue-for`, `--worktrees`, and `--repo`/`--issues` may all be combined;
+the watched set is their union, re-derived every cycle for `--queue-for`
+and `--worktrees` alike. Exits only on error or Ctrl-C; runs until stopped
+otherwise.
 """
 from __future__ import annotations
 
@@ -104,6 +126,16 @@ _PREFIX_REPO = {
 }
 
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
+
+#: `l1-post` kinds that hand each lane something to do. Only `l3` is
+#: implemented for `--queue-for` today (the concrete, live need); `l2`'s
+#: kinds are listed for completeness and future use, but `l2` almost
+#: always has its own worktree to self-discover from instead (see
+#: `discover_from_worktree`), so the queue path matters less there.
+QUEUE_KINDS = {
+    "l3": ("ready-for-l3", "ae", "sweep"),
+    "l2": ("handoff", "discussion"),
+}
 
 
 def _now() -> str:
@@ -182,6 +214,61 @@ def _classify(body: str) -> tuple[str, str] | None:
     return None
 
 
+def _search_candidates(repo: str, marker_text: str) -> set[int]:
+    """Open issues whose comment history contains `marker_text` SOMEWHERE --
+    a coarse, cheap pre-filter. `discover_queue` re-checks each one to see
+    if that marker is still the LATEST classified comment."""
+    result = subprocess.run(
+        ["gh", "search", "issues", "--repo", repo, "--state", "open",
+         marker_text, "--json", "number"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[watch_lane_posts] gh search failed: {result.stderr.strip()}",
+              file=sys.stderr)
+        return set()
+    try:
+        return {row["number"] for row in json.loads(result.stdout)}
+    except json.JSONDecodeError:
+        return set()
+
+
+def _fetch_all_comments(repo: str, issue: int) -> list[dict]:
+    result = subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{issue}/comments"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+
+
+def discover_queue(repo: str, lane: str) -> dict[int, str]:
+    """`{issue: kind}` for every open issue currently queued to `lane` --
+    an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
+    LATEST classified comment on that issue. Self-clearing: once anything
+    is posted after that marker, the issue drops out on its own, so there
+    is no separate "done" bookkeeping anywhere."""
+    kinds = QUEUE_KINDS[lane]
+    candidates: set[int] = set()
+    for kind in kinds:
+        candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}")
+
+    queued: dict[int, str] = {}
+    for issue in candidates:
+        last_kind: tuple[str, str] | None = None
+        for comment in _fetch_all_comments(repo, issue):
+            classified = _classify(comment.get("body", ""))
+            if classified is not None:
+                last_kind = classified
+        if last_kind and last_kind[0] == "l1" and last_kind[1] in kinds:
+            queued[issue] = last_kind[1]
+    return queued
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -193,25 +280,35 @@ def main() -> int:
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
                              "re-derived) -- for watching an issue with no worktree")
-    parser.add_argument("--watch", required=True, action="append",
+    parser.add_argument("--queue-for", choices=sorted(QUEUE_KINDS), default=None,
+                        help="repo-wide: find ANY open issue currently queued to this lane "
+                             "(paired with --repo), no worktree or issue number needed")
+    parser.add_argument("--watch", action="append", default=[],
                         choices=["l1", "l2", "l3"],
-                        help="lane whose posts to surface -- l1, l2, and/or l3 (repeatable)")
+                        help="lane whose posts to surface on watched issues -- l1, l2, "
+                             "and/or l3 (repeatable). Not required when only --queue-for "
+                             "is used -- queue entry/exit is its own event.")
     parser.add_argument("--interval", type=int, default=30, help="poll interval, seconds")
     args = parser.parse_args()
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")
-    if not args.worktrees and not args.issues:
-        parser.error("give at least one of --worktrees or --repo/--issues")
+    if args.queue_for and not args.repo:
+        parser.error("--queue-for requires --repo")
+    if not args.worktrees and not args.issues and not args.queue_for:
+        parser.error("give at least one of --worktrees, --repo/--issues, or --queue-for")
+    if not args.watch and not args.queue_for:
+        parser.error("--watch is required unless --queue-for is given")
 
     watch = set(args.watch)
     static_pairs = {(args.repo, n) for n in args.issues} if args.repo else set()
     since = _now()
     print(f"[watch_lane_posts] worktrees={args.worktrees or None} "
-          f"static={sorted(static_pairs) or None} lanes={sorted(watch)} "
-          f"every {args.interval}s", file=sys.stderr)
+          f"static={sorted(static_pairs) or None} queue_for={args.queue_for or None} "
+          f"lanes={sorted(watch) or None} every {args.interval}s", file=sys.stderr)
 
     last_discovered: set[tuple[str, int]] = set()
+    last_queue: dict[int, str] = {}
     while True:
         time.sleep(args.interval)
         now = _now()
@@ -222,6 +319,17 @@ def main() -> int:
             print(f"[watch_lane_posts] now watching {sorted(discovered | static_pairs)}",
                   file=sys.stderr)
             last_discovered = discovered
+
+        if args.queue_for:
+            queue = discover_queue(args.repo, args.queue_for)
+            for issue, kind in queue.items():
+                if last_queue.get(issue) != kind:
+                    print(f"{args.repo}#{issue} queued-for-{args.queue_for} kind={kind}")
+                    sys.stdout.flush()
+            for issue in set(last_queue) - set(queue):
+                print(f"{args.repo}#{issue} left-queue-for-{args.queue_for}")
+                sys.stdout.flush()
+            last_queue = queue
 
         for repo, issue in discovered | static_pairs:
             for comment in _fetch_comments(repo, issue, since):
