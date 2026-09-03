@@ -39,6 +39,12 @@ echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
 # exists yet)" while 336 passing tests sat in the repo unrun. Running them
 # here means `mise run check` means what a reader assumes it means.
 python3 tools/run_tests.py
+# harmonic-forge#454: cross-registry ID collision sweep. Prints SKIPPED (not
+# "clean") in a single-repo checkout, so a no-op is distinguishable from a
+# pass. NOTE: forge CI does not run this — harmonic-forge is public and hrse
+# is private, so CI has no credential to check out the sibling. That is a
+# stated, accepted gap, not missing wiring.
+python3 tools/rules/check_cross_registry.py
 """
 
 [tasks.commit]

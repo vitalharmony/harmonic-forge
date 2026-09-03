@@ -137,6 +137,18 @@ def collect_source_spans(root: Path, globs: tuple[str, ...] = _ANNOTATED_GLOBS) 
     found: dict[str, tuple[Path, str]] = {}
     for pattern in globs:
         for path in sorted(root.glob(pattern)):
+            # Skip symlinks. HRSE2's `.claude/rules/` contains three symlinks
+            # into `harmonic-forge/rules/` (backend-python.md,
+            # frontend-typescript.md, lane-shorthand.md); those files are
+            # annotated in FORGE's registry, so following the link makes their
+            # IDs look like orphans here. harmonic-forge#447 always intended to
+            # skip them -- it only passed because forge's own annotation had
+            # not merged yet, so the targets carried no markers. Once #452
+            # landed, hrse's drift check started failing on R-0122 et al.
+            # Resolved by not following the link, which is what "skipping the
+            # symlinked paths" meant.
+            if path.is_symlink():
+                continue
             for rule_id, text in extract_spans(path).items():
                 if rule_id in found:
                     raise ValueError(
@@ -152,6 +164,62 @@ def load_registry(registry_path: Path) -> list[dict]:
         raise SystemExit(f"registry not found: {registry_path}")
     with registry_path.open("rb") as handle:
         return tomllib.load(handle).get("rule", [])
+
+
+def load_band(registry_path: Path) -> tuple[int, int]:
+    """This registry's allocation band (harmonic-forge#454).
+
+    Declared in the registry file, not in this tool, so a third repo is a
+    header addition rather than a code change.
+
+    An absent key is a HARD FAILURE, never a fallback to whole-file `max()`.
+    That fallback is precisely the bug #454 exists to remove: with two repos
+    allocating from one ID space, `max()+1` over a single file returned an ID
+    the sibling already owned, and no check could see it — each drift check
+    reads only its own registry. Failing loudly is the point; a silent
+    fallback would reinstate the defect the first time someone adds a registry
+    and forgets the header.
+    """
+    if not registry_path.exists():
+        raise SystemExit(f"registry not found: {registry_path}")
+    with registry_path.open("rb") as handle:
+        data = tomllib.load(handle)
+    missing = [k for k in ("band_min", "band_max") if k not in data]
+    if missing:
+        raise SystemExit(
+            f"{registry_path}: missing {', '.join(missing)}. Every registry must "
+            f"declare its allocation band (harmonic-forge#454) — without it "
+            f"`--next-id` would fall back to whole-file max() and hand out an ID "
+            f"a sibling registry already owns."
+        )
+    band_min, band_max = int(data["band_min"]), int(data["band_max"])
+    if band_min > band_max:
+        raise SystemExit(f"{registry_path}: band_min {band_min} exceeds band_max {band_max}")
+    return band_min, band_max
+
+
+def next_id(registry_path: Path) -> str:
+    """`max(id within this registry's band) + 1`.
+
+    Banded, so it cannot return an ID belonging to the sibling registry. Rows
+    OUTSIDE the band are ignored rather than rejected — hrse's merged
+    R-0253..R-0329 live in forge's band and are an accepted permanent
+    exception (see either registry header). Allocation only ever moves up, so
+    the hole they occupy is never revisited.
+    """
+    band_min, band_max = load_band(registry_path)
+    in_band = [
+        int(r["id"].split("-")[1])
+        for r in load_registry(registry_path)
+        if r.get("id") and band_min <= int(r["id"].split("-")[1]) <= band_max
+    ]
+    candidate = (max(in_band) + 1) if in_band else band_min
+    if candidate > band_max:
+        raise SystemExit(
+            f"{registry_path}: band {band_min}..{band_max} is exhausted "
+            f"({len(in_band)} rows). Widen the band in the registry header."
+        )
+    return f"R-{candidate:04d}"
 
 
 def check(root: Path, registry_path: Path,
@@ -232,9 +300,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.next_id:
-        rules = load_registry(args.registry)
-        highest = max((int(r["id"].split("-")[1]) for r in rules if r.get("id")), default=0)
-        print(f"R-{highest + 1:04d}")
+        print(next_id(args.registry))
         return 0
 
     globs = tuple(args.globs) if args.globs else _ANNOTATED_GLOBS

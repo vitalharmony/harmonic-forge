@@ -34,6 +34,26 @@
 # symlinked paths there, which resolve back into this repo.
 # `.claude/skills/` is deliberately out of scope.
 
+# ID BANDS — why this is not one global counter (harmonic-forge#454)
+#   Two repos hold registries sharing one ID space, and each allocates from
+#   its own file. A single global counter therefore handed out IDs the other
+#   repo already owned: forge's `--next-id` returned R-0253 while hrse held
+#   R-0253..R-0329. Nothing detected it — each drift check reads only its own
+#   registry, so both reported clean.
+#
+#   Each repo now allocates inside a band. The invariant is NOT "this band is
+#   exclusively mine" — it is **allocation never descends into occupied
+#   ranges**. `--next-id` is max(id in band) + 1, so it only ever moves up.
+#
+#   ACCEPTED FOREIGN RANGE: R-0253..R-0329 (77 ids) inside this band belong to
+#   hrse, merged before banding existed. They are legitimate and permanent, not
+#   a defect and not a collision. The cross-registry sweep knows about them.
+#   Forge's own max is R-0330, so allocation starts above them and never
+#   revisits the hole.
+
+band_min = 1
+band_max = 4999
+
 [[rule]]
 id = "R-0001"
 file = "rules/universal-agent.md"
