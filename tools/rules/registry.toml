@@ -1171,3 +1171,924 @@ anchor = "rules"
 statement = "Capture browser evidence yourself when the browser tools are available to the session."
 text_sha = "7184986cfdd0657c"
 hooks = []
+
+[[rule]]
+id = "R-0141"
+file = "3-lane-protocol.md"
+anchor = "Lanes are roles, not fixed tools"
+statement = "The protocol's requirements (independent-eyes gating, no lane closes/merges on its own, HITL-gate language) are tool-agnostic and apply identically regardless of which tool fills a lane."
+text_sha = "e77183c3a5a2f8e9"
+hooks = []
+
+[[rule]]
+id = "R-0142"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 reads the GitHub issue (spec, acceptance criteria, labels)."
+text_sha = "7de5da3e7be4e3ed"
+hooks = []
+
+[[rule]]
+id = "R-0143"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 maps required changes against the project's CLAUDE.md/.windsurfrules."
+text_sha = "cac79230326cb4f5"
+hooks = []
+
+[[rule]]
+id = "R-0144"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 cites exact file(s) and line range(s) affected before writing the handoff."
+text_sha = "d69e82541618e150"
+hooks = []
+
+[[rule]]
+id = "R-0145"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 produces a Lane 1 Handoff Artifact from templates/lane1-handoff.md."
+text_sha = "e5be6c9169fe59b5"
+hooks = []
+
+[[rule]]
+id = "R-0146"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 includes one concrete test case per requirement in the handoff."
+text_sha = "b07a6146aef6336f"
+hooks = []
+
+[[rule]]
+id = "R-0147"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "For test cases requiring interactive UI verification, Lane 1 front-loads concrete selectors/interaction paths already known from reading the code."
+text_sha = "276d3f0e4f15a041"
+hooks = []
+
+[[rule]]
+id = "R-0148"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 posts the handoff as a comment on the GitHub issue itself, not just in chat."
+text_sha = "d7aaef580251cce9"
+hooks = []
+
+[[rule]]
+id = "R-0149"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 never guesses at an ambiguous spec — it stops and asks the Tech Lead."
+text_sha = "91a73397b934715d"
+hooks = []
+
+[[rule]]
+id = "R-0150"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "A close that leaves work outstanding links a tracker in the same action; a closing comment describing outstanding work is a record, not a tracker."
+text_sha = "0e187cc324a0922d"
+hooks = []
+
+[[rule]]
+id = "R-0151"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Outstanding-work enforcement targets specific mechanically-detectable classes; extend by adding classes, never by pattern-matching prose authored by the party being checked."
+text_sha = "05fdd9530219d024"
+hooks = [
+  { script = "block_data_migration_close.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0152"
+file = "3-lane-protocol.md"
+anchor = "Lane 1 — Blueprint"
+statement = "Lane 1 does not write production code directly, except explicit platform/tooling assignments."
+text_sha = "a5430a6e9117ba91"
+hooks = []
+
+[[rule]]
+id = "R-0153"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Given a short trigger, Lane 2 fetches the issue and Lane 1's handoff comment from GitHub itself via REST before doing anything else."
+text_sha = "774a731380af628d"
+hooks = []
+
+[[rule]]
+id = "R-0154"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 executes exactly what the handoff specifies — no scope creep."
+text_sha = "49bb69bfcb8e1684"
+hooks = []
+
+[[rule]]
+id = "R-0155"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 stays within the handoff's file targets and never invokes a task explicitly scoped to another lane, even to verify its own change."
+text_sha = "2efa101e8fe277ee"
+hooks = []
+
+[[rule]]
+id = "R-0156"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 makes at most 3 fix attempts on a single root cause; the 4th failure stops and reports, including what was tried and ruled out."
+text_sha = "a9c112c118b08894"
+hooks = []
+
+[[rule]]
+id = "R-0157"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 never executes the write/apply path of a data-modifying script, categorically, regardless of what the handoff says."
+text_sha = "bfc3606993fced7c"
+hooks = []
+
+[[rule]]
+id = "R-0158"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 reads the cited file(s) and quotes the root-cause line before editing."
+text_sha = "0c71cfd7e03fe55f"
+hooks = []
+
+[[rule]]
+id = "R-0159"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 obeys universal-agent.md plus the language-specific rule files."
+text_sha = "4e50871e2ff66227"
+hooks = []
+restates = "R-0001"
+
+[[rule]]
+id = "R-0160"
+file = "3-lane-protocol.md"
+anchor = "Lane 2 — Muscle"
+statement = "Lane 2 posts to the issue on every stop, unprompted, via l2_post.py."
+text_sha = "12a5a00a30331fc8"
+hooks = []
+
+[[rule]]
+id = "R-0161"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Any tool assigned to Lane 3 must meet every Lane 3 requirement via its own equivalent mechanism, and should carry a hard permission/sandbox restriction rather than prose alone."
+text_sha = "077f84dc39f4d480"
+hooks = []
+
+[[rule]]
+id = "R-0162"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 has a per-project skill file at {project}/.claude/skills/lane3-gate/SKILL.md that hard-wires the never-fixes-anything constraint."
+text_sha = "85d83b952eab3be4"
+hooks = []
+
+[[rule]]
+id = "R-0163"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 reads the issue independently and never reads Lane 2's code or Lane 2's implementation-report comment before writing its test spec."
+text_sha = "bb91e3cb06b14303"
+hooks = []
+
+[[rule]]
+id = "R-0164"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 writes a test spec from the issue's acceptance criteria."
+text_sha = "50630ffbf1d2363d"
+hooks = []
+
+[[rule]]
+id = "R-0165"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 submits the test spec for Tech Lead HITL approval before executing anything."
+text_sha = "672f9cdbc3a60e62"
+hooks = []
+
+[[rule]]
+id = "R-0166"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "After approval, Lane 3 executes tests against Lane 2's implementation at the thresholds in testing-gate.md."
+text_sha = "41f5341c41230baa"
+hooks = []
+
+[[rule]]
+id = "R-0167"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Interactive tool modes are never used for automated execution; browser automation runs headless with a non-interactive reporter."
+text_sha = "29d0f6ad9fa444f4"
+hooks = []
+
+[[rule]]
+id = "R-0168"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 is the only lane authorized to execute a data-modifying script's write/apply path, and the HITL-approved test spec must say so explicitly."
+text_sha = "cc8951e6ba5b4b88"
+hooks = []
+
+[[rule]]
+id = "R-0169"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "A data-migration issue closes when the migration has run, evidenced — marked data-migration at filing time, closed only with migration-executed or migration-abandoned."
+text_sha = "70de9249b5f6899f"
+hooks = [
+  { script = "block_data_migration_close.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0170"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "The credential for a close gate is a label, never text in a comment — a published example marker is itself a valid credential."
+text_sha = "a8d57ca87acd0311"
+hooks = []
+
+[[rule]]
+id = "R-0171"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "The load-bearing control on migration closes is the after-the-fact sweep folded into the standing hygiene pass; the PreToolUse hook remains fail-open by design."
+text_sha = "05655bc2224f48c6"
+hooks = []
+
+[[rule]]
+id = "R-0172"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 is blocked from committing until 100% of tests pass at the required coverage threshold."
+text_sha = "188e5d55d4fec2f4"
+hooks = []
+
+[[rule]]
+id = "R-0173"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 never fixes application code, ever, under any circumstance; its only permitted writes are its own test specs/scripts and an already-HITL-approved migration's apply path."
+text_sha = "193ad1673ae9ef77"
+hooks = []
+
+[[rule]]
+id = "R-0174"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 makes at most 3 auto-fix attempts on a single root cause (test-spec issues only); the 4th escalates to the Tech Lead."
+text_sha = "323b80a670a898e8"
+hooks = []
+
+[[rule]]
+id = "R-0175"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3's post-pass style/refactor review is report-only — it identifies violations and never fixes them, even trivial ones."
+text_sha = "6aeb95726b5c41ed"
+hooks = []
+
+[[rule]]
+id = "R-0176"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Every pass/fail claim is backed by live execution and the gate report carries that evidence as an artifact; a source-code citation is not evidence."
+text_sha = "4673e5440dae4fbb"
+hooks = []
+
+[[rule]]
+id = "R-0177"
+file = "3-lane-protocol.md"
+anchor = "Lane 3 — Control Gate"
+statement = "Lane 3 fast-fails on external blockers — one clean repro, then stop and report immediately, never routing around, mocking past, or retrying first."
+text_sha = "5e283a7ea2bb9cab"
+hooks = []
+
+[[rule]]
+id = "R-0178"
+file = "3-lane-protocol.md"
+anchor = "Observe-and-report"
+statement = "When a gate requires an artifact only a writing lane can create, Lane 1 creates the artifact and Lane 3 observes it, reaching its own verdict on evidence it did not manufacture."
+text_sha = "9f3c9cd9d8119ec1"
+hooks = []
+
+[[rule]]
+id = "R-0179"
+file = "3-lane-protocol.md"
+anchor = "Observe-and-report"
+statement = "Observe-and-report requires all four conditions: __gate__-prefixed branches, trivial reversible never-merged changes, closed and deleted afterward including on failure, and Lane 3 recording the underlying signal not merely the downstream status."
+text_sha = "097ee22fc5427305"
+hooks = []
+
+[[rule]]
+id = "R-0180"
+file = "3-lane-protocol.md"
+anchor = "Observe-and-report"
+statement = "Observe-and-report applies only when the artifact is genuinely unproducible by Lane 3 — convenience does not qualify."
+text_sha = "4bf77937a26a8e0c"
+hooks = []
+
+[[rule]]
+id = "R-0181"
+file = "3-lane-protocol.md"
+anchor = "Per-Lane Working Directories — git worktree"
+statement = "Each repo has a dedicated git worktree per lane; Lane 2 always operates in <repo>-lane2/, Lane 3 in <repo>-lane3/, Lane 1 and the operator in the main checkout. A lane whose worktree does not exist stops and asks rather than falling back."
+text_sha = "11ab791985b96f7d"
+hooks = [
+  { script = "block_lane1_status_claims.py", events = ["PreToolUse"], wired_in = ["HRSE2/.claude/settings.json", "HRSE2-lane2/.claude/settings.json", "HRSE2-lane3/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0182"
+file = "3-lane-protocol.md"
+anchor = "Per-Lane Working Directories — git worktree"
+statement = "A lane session starts via the lane1/lane2/lane3 launcher scripts rather than a bare CLI invocation; lane3 refuses to start on unrepaired drift rather than repairing it."
+text_sha = "33e159001193f7fd"
+hooks = []
+
+[[rule]]
+id = "R-0183"
+file = "3-lane-protocol.md"
+anchor = "Per-Lane Working Directories — git worktree"
+statement = "Never redirect a running session into a different lane role mid-conversation; restart with the right launcher instead."
+text_sha = "956511fa61c44ae4"
+hooks = []
+
+[[rule]]
+id = "R-0184"
+file = "3-lane-protocol.md"
+anchor = "Per-CLI launch wiring — laneN --agent"
+statement = "--agent claude|codex|gemini is the canonical launcher interface, resolved against a closed registry; an unrecognized value is a hard error that execs nothing."
+text_sha = "b1ee9ce78b220956"
+hooks = []
+
+[[rule]]
+id = "R-0185"
+file = "3-lane-protocol.md"
+anchor = "Per-CLI launch wiring — laneN --agent"
+statement = "LANE_CLI is retained for aliases only, and passing both --agent and LANE_CLI is an error rather than a precedence question."
+text_sha = "8c62388685f84a6d"
+hooks = []
+
+[[rule]]
+id = "R-0186"
+file = "3-lane-protocol.md"
+anchor = "Per-CLI launch wiring — laneN --agent"
+statement = "Agent minimum versions are floored at the minor, not the patch."
+text_sha = "d3f916f7a0097911"
+hooks = []
+
+[[rule]]
+id = "R-0187"
+file = "3-lane-protocol.md"
+anchor = "lane3 performs zero mutations — and lane3-provision"
+statement = "The gate launcher performs zero mutations, because a gate that repairs its own preconditions cannot report on them."
+text_sha = "bc8f9f45f8e3c168"
+hooks = []
+
+[[rule]]
+id = "R-0188"
+file = "3-lane-protocol.md"
+anchor = "lane3 performs zero mutations — and lane3-provision"
+statement = "Worktree staleness refuses with --ack-stale as the escape hatch; an unlinked backend/.env refuses with no escape hatch."
+text_sha = "420a291605d6d4af"
+hooks = []
+
+[[rule]]
+id = "R-0189"
+file = "3-lane-protocol.md"
+anchor = "lane3 performs zero mutations — and lane3-provision"
+statement = "The gate launcher's mutations live in a separate lane3-provision command, never a --provision flag on lane3."
+text_sha = "c941706254ed4297"
+hooks = []
+
+[[rule]]
+id = "R-0190"
+file = "3-lane-protocol.md"
+anchor = "lane3 performs zero mutations — and lane3-provision"
+statement = "The Gemini launcher's GOOGLE_API_KEY/GEMINI_API_KEY unsets are load-bearing, and GOOGLE_CLOUD_PROJECT is required for the Workspace-managed account."
+text_sha = "4f4ee008ef5b6edc"
+hooks = []
+
+[[rule]]
+id = "R-0191"
+file = "3-lane-protocol.md"
+anchor = "lane3 performs zero mutations — and lane3-provision"
+statement = "A passing gemini -p is not evidence the OAuth path works unless the keys were explicitly unset for that run."
+text_sha = "6ab062eb74c58a21"
+hooks = []
+
+[[rule]]
+id = "R-0192"
+file = "3-lane-protocol.md"
+anchor = "The adapter contract — what \"supported\" means"
+statement = "Which agent may fill which lane is governed by ADR-007, not by whether the launcher will start it: enforcement is the launcher not the repo, directive prose is never enforcement, and capability tiers are per-capability against a specific CLI version."
+text_sha = "9c8a4a822858eee1"
+hooks = []
+
+[[rule]]
+id = "R-0193"
+file = "3-lane-protocol.md"
+anchor = "The adapter contract — what \"supported\" means"
+statement = "Gemini is approved for Lane 1, partially for Lane 2, and Lane 3 tier 1 only; gh issue close/gh pr merge remain demonstrably reachable from a Gemini Lane 2 session, and ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook."
+text_sha = "89947ec89ea43d41"
+hooks = []
+
+[[rule]]
+id = "R-0194"
+file = "3-lane-protocol.md"
+anchor = "Gemini Lane 3 — tier 1 (static review) only"
+statement = "Gemini Lane 3 tier 1 is static review only, denied whole-tool with no argument-scoped rule, because an argument allowlist on run_shell_command is not a boundary."
+text_sha = "0fa92eef30452005"
+hooks = []
+
+[[rule]]
+id = "R-0195"
+file = "3-lane-protocol.md"
+anchor = "Gemini Lane 3 — tier 1 (static review) only"
+statement = "A Gemini Lane 3 session fetches only its bounded context through the lane3-context MCP extension, which accepts only a typed issue id."
+text_sha = "d453a808e0cccca9"
+hooks = []
+
+[[rule]]
+id = "R-0196"
+file = "3-lane-protocol.md"
+anchor = "Gemini Lane 3 — tier 1 (static review) only"
+statement = "A capability tier is qualified only by a passing canary run executed by Lane 3, not by the policy's author, and re-run on every CLI upgrade."
+text_sha = "8e64a9e00899d039"
+hooks = []
+
+[[rule]]
+id = "R-0197"
+file = "3-lane-protocol.md"
+anchor = "Lane role signal — LANE"
+statement = "LANE is a real OS-level environment variable set once by the launcher at process launch and inherited by the session's entire subprocess tree, which project hooks read to enforce lane-specific constraints."
+text_sha = "3c6729eab395573d"
+hooks = [
+  { script = "block_lane1_status_claims.py", events = ["PreToolUse"], wired_in = ["HRSE2/.claude/settings.json", "HRSE2-lane2/.claude/settings.json", "HRSE2-lane3/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0198"
+file = "3-lane-protocol.md"
+anchor = "Lane role signal — LANE"
+statement = "LANE is not adversarial, not a hard security boundary, not inferred from conversation text, and not something a session declares about itself mid-session."
+text_sha = "ee8dd4b5161f6b34"
+hooks = []
+
+[[rule]]
+id = "R-0199"
+file = "3-lane-protocol.md"
+anchor = "Per-Issue Implementation Worktree"
+statement = "Lane 2's implementation work for a given issue happens in a disposable /tmp/<repo>-<issue>-impl worktree created fresh per issue, never directly in <repo>-lane2/."
+text_sha = "b702da68290c270c"
+hooks = [
+  { script = "block_lane1_status_claims.py", events = ["PreToolUse"], wired_in = ["HRSE2/.claude/settings.json", "HRSE2-lane2/.claude/settings.json", "HRSE2-lane3/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0200"
+file = "3-lane-protocol.md"
+anchor = "Per-Lane Worktree Reuse Across Issues"
+statement = "Per-lane isolation is per-lane, not per-issue: a shared lane worktree is reused sequentially and git worktree does not block checking out a different branch into it."
+text_sha = "df530b52e31dcb9e"
+hooks = []
+
+[[rule]]
+id = "R-0201"
+file = "3-lane-protocol.md"
+anchor = "Per-Lane Worktree Reuse Across Issues"
+statement = "Before switching branches in a shared per-lane worktree, check for live processes with cwd inside it — always use mise run gate-checkout, never a bare git checkout/rebase."
+text_sha = "c7b5e9085a4b527b"
+hooks = []
+
+[[rule]]
+id = "R-0202"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Lane 2 and Lane 3 post their own results directly to the issue thread; Lane 1 routes through l1-post/lane-comment. Every trigger names the issue explicitly."
+text_sha = "9b3fa1699cc00569"
+hooks = []
+
+[[rule]]
+id = "R-0203"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "The only channel between lanes is a GitHub issue comment HITL relays; no lane contacts another lane's live session directly, regardless of content or urgency."
+text_sha = "8b9b5db6df7ebf6d"
+hooks = [
+  { script = "deny_cross_session_contact.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0204"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Issue numbers carry a repo prefix when more than one repo is in flight; the prefix table lives in rules/lane-shorthand.md and is not duplicated."
+text_sha = "e189657f2e6d7c4d"
+hooks = []
+
+[[rule]]
+id = "R-0205"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Every issue reference carries the H/F/I/O prefix always — in a status update, summary, or plain mention, not only in trigger phrases, with no context exception."
+text_sha = "4cb2edfffd89eb2d"
+hooks = [
+  { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0206"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "A lane-status token is a pointer to that lane's actual report on the issue thread, never a substitute for it."
+text_sha = "3942840ab839803e"
+hooks = []
+
+[[rule]]
+id = "R-0207"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "B is not a failure verdict and is available on every lane; L3F routes to reimplementation while L3B routes to remediation then a re-run of the same commit."
+text_sha = "f171f4d7eae72bc2"
+hooks = []
+
+[[rule]]
+id = "R-0208"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "AE must be posted as an actual issue comment, not only said in chat, and AE and its gate-readiness sweep are one atomic action in the same turn with the sweep strictly after."
+text_sha = "cb6aab3059c14c43"
+hooks = [
+  { script = "remind_gate_readiness_sweep.py", events = ["PostToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+]
+restates = "R-0125"
+
+[[rule]]
+id = "R-0209"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "A routine retest after a FAIL does not need a new AE/sweep pair; a ready-for-l3 naming the new SHA carries the original authorization forward."
+text_sha = "927908cef6da4034"
+hooks = []
+
+[[rule]]
+id = "R-0210"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "An AE may widen what a gate's write tier covers but may never waive a lane's absolute role prohibition."
+text_sha = "d6e2c36d30b39a2e"
+hooks = []
+
+[[rule]]
+id = "R-0211"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Before acting on any trigger, the receiving lane checks the issue's state; if the issue is already closed, stop and ask HITL to confirm the number."
+text_sha = "e05f3f64f8d02441"
+hooks = []
+
+[[rule]]
+id = "R-0212"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Every trigger naming an issue — including a bare continue/proceed — means a full unfiltered re-read of the body and every comment first."
+text_sha = "d50522e1502e8275"
+hooks = [
+  { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0213"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Lane 1 diagnoses and posts a handoff comment unprompted once diagnosis is done; no trigger is needed."
+text_sha = "f81f54fcec3d9d30"
+hooks = []
+
+[[rule]]
+id = "R-0214"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "\"Implement #N\" sends Lane 2 to implement and post a completion report; for a plan-first issue this trigger is never sent first."
+text_sha = "2d3339f14fdd3758"
+hooks = []
+
+[[rule]]
+id = "R-0215"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "\"Plan #N\" sends Lane 2 to post its implementation plan and stop."
+text_sha = "2ebb789f0994bad1"
+hooks = []
+
+[[rule]]
+id = "R-0216"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "\"Plan up for #N\" sends Lane 1 to run pitch-inspection in plan-review mode and post the verdict, then the withheld Implementation Spec."
+text_sha = "c9a92b9012d2f809"
+hooks = []
+
+[[rule]]
+id = "R-0217"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "On \"Lane 2 done for #N\" Lane 1 checks the full working-tree diff, not just the predicted files, and independently spot-verifies at least one behavioral claim live using fast read-only tools — never a formal suite built for Lane 3's gated execution."
+text_sha = "39ca1ab36c9a6da3"
+hooks = []
+
+[[rule]]
+id = "R-0218"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "If Lane 1 finds a problem it posts a correction comment specifying exactly what Lane 2 must fix and reports to HITL, who re-triggers with \"Reimplement #N\"."
+text_sha = "c5bcd9f5f6fd1190"
+hooks = []
+
+[[rule]]
+id = "R-0219"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "If confirmed clean, Lane 1 drafts a second comment addressed to Lane 3 carrying any caveats and posts it, then tells HITL it is ready."
+text_sha = "4d1c148a6e06ff90"
+hooks = []
+
+[[rule]]
+id = "R-0220"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "On \"Test #N\" Lane 3 fetches only the issue body and Lane 1's comments via fetch_lane1_context.py, never a manual gh read of the full thread."
+text_sha = "67b20c421fb3f105"
+hooks = []
+
+[[rule]]
+id = "R-0221"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "On \"Lane 3 done for #N\" Lane 1 confirms every claim by inspecting each check's attached evidence artifact, not by trusting the prose claim."
+text_sha = "f6d7365a841662a7"
+hooks = []
+
+[[rule]]
+id = "R-0222"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "A problem in the gate routes back via \"Reimplement #N\" for an implementation bug or \"Retest #N\" for a gate/spec issue; HITL decides which."
+text_sha = "491b47ffb36b88b6"
+hooks = []
+
+[[rule]]
+id = "R-0223"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Lane 1 recommends closing — never a unilateral close."
+text_sha = "d656515418fe8fa3"
+hooks = []
+
+[[rule]]
+id = "R-0224"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Closing requires the operator's explicit \"Close #N\" every time, from every lane, with no exception for confidence or a clean local test pass."
+text_sha = "f572b4a285f365ec"
+hooks = []
+
+[[rule]]
+id = "R-0225"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "A merge-time break routes back to implementation unless Lane 1 can show — not assert — every gated file hash-verified unchanged, the full suite re-run against the known baseline, and any changed assertion broken deliberately two ways and restored."
+text_sha = "21512516a6b3da5f"
+hooks = []
+
+[[rule]]
+id = "R-0226"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "The Tooling Exception applies only when all three scope conditions hold; it never defaults open, and when in doubt the work is application code."
+text_sha = "22fe9bfc1a780088"
+hooks = []
+
+[[rule]]
+id = "R-0227"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "The Tooling Exception is explicit, per-issue, and never assumed."
+text_sha = "9f01e0ad4ab80917"
+hooks = []
+
+[[rule]]
+id = "R-0228"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "Under the exception a single implementer designs and writes the tooling in one pass, with no Lane 1 handoff, Lane 2 relay, or per-round Lane 3 gates."
+text_sha = "f90593a57ccae160"
+hooks = []
+
+[[rule]]
+id = "R-0229"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "The exception requires one human-reviewed pass before commit, checking scope, containment, and honesty."
+text_sha = "92327777413f0ccc"
+hooks = []
+
+[[rule]]
+id = "R-0230"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "Even under the exception the implementer never grades its own verification — get a second read before trusting the result."
+text_sha = "8f620d65ddc6c049"
+hooks = []
+
+[[rule]]
+id = "R-0231"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "Lane 3 still gates the tooling's first consequential use, the run whose result approves or blocks shipping work."
+text_sha = "900c2885ac708120"
+hooks = []
+
+[[rule]]
+id = "R-0232"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "An issue modifying Lane 3's own gate enforcement is Tooling-Exception-eligible by default, stated at filing time."
+text_sha = "4f0ce601147c6ab4"
+hooks = []
+
+[[rule]]
+id = "R-0233"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "preclose-inspection runs on the diff about to be merged and is recorded with the preclose-inspected label, enforced by block_missing_preclose_inspection.py."
+text_sha = "f9acb7ef67fb6e5f"
+hooks = [
+  { script = "block_missing_preclose_inspection.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0234"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "The preclose gate is opt-in on the tooling-exception label, and reads labels rather than comment text."
+text_sha = "2922405e8595924d"
+hooks = []
+
+[[rule]]
+id = "R-0235"
+file = "3-lane-protocol.md"
+anchor = "Escalation"
+statement = "Any lane escalates to the Tech Lead rather than guessing, looping, or silently narrowing scope; repeated tool/command failures three times for the same underlying reason escalate the same way as failed fix attempts."
+text_sha = "8116cdd72f760c28"
+hooks = []
+
+[[rule]]
+id = "R-0236"
+file = "3-lane-protocol.md"
+anchor = "Cross-lane thrashing — the \"sticky wicket\" circuit breaker"
+statement = "Two consecutive FAIL/declined-completion verdicts on the same issue trigger the sticky-wicket subagent — countable, not a vibe check."
+text_sha = "1dde6dbfa234f399"
+hooks = []
+
+[[rule]]
+id = "R-0237"
+file = "3-lane-protocol.md"
+anchor = "Cross-lane thrashing — the \"sticky wicket\" circuit breaker"
+statement = "The unrelated-bug carve-out is category-level, not symptom-level: classify each finding at the shared structural level and invoke at verdict two when the categories match."
+text_sha = "a00e31acba733dd9"
+hooks = []
+
+[[rule]]
+id = "R-0238"
+file = "3-lane-protocol.md"
+anchor = "Pre-Flight Second Read"
+statement = "Lane 1 invokes pitch-inspection before posting a handoff whenever design alternatives are not \"none\", a load-bearing assumption is \"asserted\", or the implementation mutates git state or live data outside the Tooling Exception."
+text_sha = "bb9075cff8ff173c"
+hooks = []
+
+[[rule]]
+id = "R-0239"
+file = "3-lane-protocol.md"
+anchor = "Pre-Flight Second Read"
+statement = "pitch-inspection is one pass with no loop; disagreement after one revision escalates to the operator, never a second pre-flight round."
+text_sha = "a51cf1d4215f814d"
+hooks = []
+
+[[rule]]
+id = "R-0240"
+file = "3-lane-protocol.md"
+anchor = "Pre-Handoff Precondition Trace"
+statement = "A handoff whose receiving action is a live/--apply/data-mutating command must carry a complete Pre-Flight Preconditions field; a blank or incomplete field is itself a pitch-inspection trigger."
+text_sha = "8cde88a548af64ae"
+hooks = []
+
+[[rule]]
+id = "R-0241"
+file = "3-lane-protocol.md"
+anchor = "Pre-Handoff Precondition Trace"
+statement = "Lane 2 re-verifies each precondition itself rather than trusting Lane 1's field on faith, and reports a discrepancy rather than proceeding past one."
+text_sha = "145144f5f4b64b05"
+hooks = []
+
+[[rule]]
+id = "R-0242"
+file = "3-lane-protocol.md"
+anchor = "Long-Running Script Handoffs"
+statement = "A handoff specifying a script making more than 50 sequential network calls must require incremental checkpointing and resume, a bounded-work control, and a network-free report mode; a handoff omitting any of them must not be posted."
+text_sha = "f745ff5865c6a784"
+hooks = []
+
+[[rule]]
+id = "R-0243"
+file = "3-lane-protocol.md"
+anchor = "Live-Verification Specs for Pre-Existing Services"
+statement = "Before approving a Lane 3 test case that invokes a pre-existing service live, Lane 1 cites a measured duration budget, scopes the check when it exceeds a turn, asserts return shape rather than value-equality against live external data, and routes unbounded runs to a non-blocking deferred check."
+text_sha = "c396c1d0d65bbea3"
+hooks = []
+
+[[rule]]
+id = "R-0244"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "Plan-first is required when Delegated Judgment Calls is anything other than \"none\", the implementation mutates git state or live data, or HITL says \"Plan-first #N\"."
+text_sha = "01f05fd8276ca4f5"
+hooks = []
+
+[[rule]]
+id = "R-0245"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "For a plan-first issue Lane 1's handoff omits the Implementation Spec section entirely, so there is nothing for Lane 2 to implement from until the plan review passes."
+text_sha = "3bd261c8dcce9690"
+hooks = []
+
+[[rule]]
+id = "R-0246"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "On \"Plan #N\" Lane 2 posts its implementation plan covering each delegated judgment call and the failure/cleanup paths of any mutating mechanics, and stops."
+text_sha = "0f0018e14027f076"
+hooks = []
+
+[[rule]]
+id = "R-0247"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "Lane 1 invokes pitch-inspection in plan-review mode covering only the delta Lane 2 introduced, and posts the verdict as a single comment."
+text_sha = "6456290a7bfe6b0c"
+hooks = []
+
+[[rule]]
+id = "R-0248"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "A REFORGE verdict goes back to Lane 2 for one revised plan; a second REFORGE escalates to HITL, never a third review round."
+text_sha = "0228f49af04715cb"
+hooks = []
+
+[[rule]]
+id = "R-0249"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "A plan-first issue where Lane 2 starts implementing without a posted-and-reviewed plan is a protocol violation and must be filed, not merely noted in a gate comment."
+text_sha = "64cb994b9a3b4b36"
+hooks = []
+
+[[rule]]
+id = "R-0250"
+file = "3-lane-protocol.md"
+anchor = "GitHub Comment Formatting — Every Lane, Every Post"
+statement = "Any lane posting a comment containing a code block writes the body to a file and posts via gh api -F body=@<path>, then fetches the comment back to confirm it rendered legibly."
+text_sha = "e3b79a7b5f08845a"
+hooks = [
+  { script = "block_inline_prose.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
+]
+
+[[rule]]
+id = "R-0251"
+file = "3-lane-protocol.md"
+anchor = "GitHub Account Scoping — Every Lane, Every Command"
+statement = "gh-as refuses to run if a slot is unconfigured, its token is expired, or the slot's authenticated identity does not match its name."
+text_sha = "a5c6db04c5767f74"
+hooks = []
+
+[[rule]]
+id = "R-0252"
+file = "3-lane-protocol.md"
+anchor = "Team Topology"
+statement = "Tool choice per lane is a per-collaborator decision; what is non-negotiable regardless of tool is the protocol itself."
+text_sha = "81adc6335a544232"
+hooks = []
+restates = "R-0141"
