@@ -2097,3 +2097,11 @@ statement = "Tool choice per lane is a per-collaborator decision; what is non-ne
 text_sha = "81adc6335a544232"
 hooks = []
 restates = "R-0141"
+
+[[rule]]
+id = "R-0330"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Every protocol status claim (handoff, ready-for-l3, sweep, ae, ae-and-sweep) is posted through `mise run l1-post --kind <kind>`; `lane-comment` stamps kind=discussion and is for ordinary discussion only, and is never a fallback when l1-post errors."
+text_sha = "2409f14964cef9b1"
+hooks = []
