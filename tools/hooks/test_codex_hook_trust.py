@@ -3,16 +3,23 @@
 
 THE ONE LESSON THAT SURVIVED EVERY ROUND OF #455
 ---------------------------------------------------
-Presence of a `hooks.state` entry proves nothing and absence proves nothing.
-Both were read as evidence during this issue's history and both were wrong:
+Presence of a `hooks.state` entry proves nothing, absence proves nothing, and
+a probe the target repo cannot fail proves least of all. All three were read as
+evidence during this issue's history and all three were wrong:
 
-  * `HRSE2-lane2` has zero entries of its own and its hooks fire anyway.
-  * `harmonic-forge` is project-trusted with a valid `hooks.json` and its
-    hooks do not fire.
+  * `HRSE2-lane2` holds zero entries of its own and its hooks fire regardless —
+    it reads its ROOT checkout's file.
+  * `harmonic-forge` was project-trusted with a valid `hooks.json` and its hooks
+    were silently skipped, because no `hooks.state` entry named its path.
+  * Worst of the three: `harmonic-forge` was probed with `sudo`, which only
+    HRSE2's `gate_codex_tool.py` denies. forge wires no such hook, so that probe
+    showed the command running whether or not hooks fired. It could not have
+    distinguished the two states, and was briefly reported as proof they did not
+    fire. The conclusion happened to be right; the evidence was worthless.
 
-Only running a command that an unconditional deny should block told the truth.
-So the live test below is the real check, and the offline ones are a coverage
-net beneath it — never a substitute.
+Only running a command THAT REPO'S OWN hooks deny told the truth. So the live
+test below is the real check, it carries a per-repo probe, and the offline ones
+are a coverage net beneath it — never a substitute.
 
 THE MECHANISM (source-verified, `openai/codex` tag `rust-v0.153.1`)
 --------------------------------------------------------------------
@@ -49,12 +56,27 @@ _CANDIDATE_ROOTS = (
 
 _STATE_KEY = re.compile(r'^\[hooks\.state\."([^"]+)"\]', re.M)
 
-#: An unconditional deny in HRSE2's `gate_codex_tool.py` — not LANE-conditional
-#: and not tier-conditional, so "fired" and "did not fire" are distinguishable.
-#: The git-mutation denies in that same file ARE LANE-conditional; do not use
-#: them as a probe.
-_LIVE_PROBE_PROMPT = "Run this exact shell command and report what happened: sudo id"
-_LIVE_PROBE_MARKER = "sudo"
+#: The probe command must be one THAT REPO'S OWN hooks actually deny. This bit
+#: hard during harmonic-forge#456: `sudo` is denied by HRSE2's
+#: `gate_codex_tool.py`, but harmonic-forge wires no such hook, so a `sudo`
+#: probe there showed the command running whether or not hooks fired — it could
+#: never have distinguished the two, and was briefly read as proof they did not.
+#:
+#: Per repo, a command that repo's hooks deny, and that is harmless if allowed.
+#: The `gh` POST targets a nonexistent issue, so an unblocked call 404s rather
+#: than posting anything.
+_PROBES = {
+    "HRSE2": (
+        "Run this exact shell command and report what happened: sudo id",
+        "sudo",  # gate_codex_tool.py, unconditional deny
+    ),
+    "harmonic-forge": (
+        "Run this exact shell command and report exactly what happened, including "
+        "any hook or permission message: gh api "
+        "repos/vitalharmony/harmonic-forge/issues/999999/comments -X POST -f body=probe",
+        "raw GitHub issue posting",  # block_lane2_status_claims.py
+    ),
+}
 
 
 def is_linked_worktree(path: Path) -> bool:
@@ -146,22 +168,38 @@ class LiveFiresProof(unittest.TestCase):
     trust hash and the failure is silent.
     """
 
-    def _probe(self, cwd: Path) -> str:
+    def _probe(self, cwd: Path, prompt: str) -> str:
         proc = subprocess.run(
-            ["codex", "exec", "--sandbox", "read-only", "--json", _LIVE_PROBE_PROMPT],
+            ["codex", "exec", "--sandbox", "read-only", "--json", prompt],
             cwd=str(cwd), capture_output=True, text=True, stdin=subprocess.DEVNULL,
             timeout=300,
         )
         return proc.stdout
 
-    def test_unconditional_deny_actually_fires_in_hrse2(self):
-        root = Path.home() / "Harmonic_Projects" / "HRSE2"
-        if not root.exists():
-            self.skipTest("HRSE2 not present")
-        out = self._probe(root)
-        self.assertIn("hook", out.lower(),
-                      "no hook block reported — the deny did not fire")
-        self.assertIn(_LIVE_PROBE_MARKER, out)
+    def test_each_root_checkout_actually_denies_its_own_probe(self):
+        for name, (prompt, marker) in _PROBES.items():
+            root = Path.home() / "Harmonic_Projects" / name
+            if not (root / ".codex" / "hooks.json").exists():
+                continue
+            with self.subTest(repo=name):
+                out = self._probe(root, prompt)
+                self.assertIn("hook", out.lower(),
+                              f"{name}: no hook block reported — the deny did not fire")
+                self.assertIn(marker, out, f"{name}: probe did not reach its own hook")
+
+    def test_a_linked_worktree_inherits_its_root_checkouts_trust(self):
+        """harmonic-forge#455 AC2, as a test: a linked worktree denies using the
+        ROOT checkout's trust, holding no entry of its own."""
+        lane = Path.home() / "Harmonic_Projects" / "harmonic-forge-lane2"
+        if not lane.exists():
+            self.skipTest("harmonic-forge-lane2 not present")
+        self.assertTrue(is_linked_worktree(lane))
+        prompt, marker = _PROBES["harmonic-forge"]
+        out = self._probe(lane, prompt)
+        self.assertIn("hook", out.lower())
+        self.assertIn(marker, out)
+        self.assertNotIn(str(lane / ".codex" / "hooks.json"), trusted_key_paths(),
+                         "the worktree minted its own entry — the redirect did not apply")
 
 
 if __name__ == "__main__":
