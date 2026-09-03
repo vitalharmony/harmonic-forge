@@ -74,6 +74,18 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_marker.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
