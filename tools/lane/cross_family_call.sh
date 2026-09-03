@@ -150,6 +150,17 @@ EOF
 # product of a verify pass, so it gets its own key rather than being encoded
 # in prose inside `summary`.
 #
+# It also carries the reviewer's read-only instruction, and that placement is
+# load-bearing rather than tidy. Codex hooks DO NOT FIRE under
+# `--ignore-user-config` (verified live -- see the note above `invoke_codex`),
+# so after the operator's 2026-09-03 decision to ship that way, this prose IS
+# the reviewer's entire gh-mutation boundary. A boundary that is prose only
+# must at minimum exist and be applied unconditionally, so it lives in the
+# helper-appended contract rather than in any individual brief -- a caller
+# that forgets to write it still gets it. It is a real control in the weak
+# sense that the model usually complies, and no control at all against a model
+# that does not; do not describe it as gating writes.
+#
 # The three verdict tokens are closed, and `uncheckable` is load-bearing: a
 # reviewer that cannot reach the evidence must say so rather than reason from
 # the brief's own text and return `confirmed`. That failure -- well-argued
@@ -171,6 +182,15 @@ Rules for "verdict":
 brief's own text and report "confirmed" -- if you did not run or read
 something, the verdict is "uncheckable". A confirmed/refuted verdict with an
 empty "evidence" will be discarded and recorded as "uncheckable".
+
+You are a READ-ONLY reviewer. Do not mutate anything, on GitHub or on disk.
+Specifically: no `gh issue close`, `gh pr merge`, `gh issue comment`, `gh api`
+with a write method, no commits, pushes, branch or label changes, and no file
+writes. Read commands (`gh issue view`, `gh api` GET, `git log/show/diff`,
+reading files) are exactly what you are here to run -- use them freely. If
+answering an assumption would require a mutation, the verdict is
+"uncheckable"; say so rather than performing it. Report back; you are not the
+actor.
 EOF
 
 prompt_text() {

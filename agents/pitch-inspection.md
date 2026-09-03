@@ -91,6 +91,12 @@ must still evaluate, never as a verdict:
   The reviewer runs with `--ignore-user-config`, so it has no Gmail, Drive,
   Docs, Sheets or Slides access at all; any assumption resting on those is
   structurally uncheckable from there. Do not re-run to try to improve it.
+- The reviewer is instructed to be read-only, and that instruction is the
+  whole of its GitHub-write boundary — Codex hooks do not fire under
+  `--ignore-user-config` (ADR-007, accepted residual gap, operator decision
+  2026-09-03). So if a returned envelope shows the reviewer having mutated
+  anything, that is a real incident to report in your verdict, not a
+  curiosity: nothing downstream would have caught it.
 - A `refuted` verdict does not by itself decide your verdict. Read the
   evidence and reach your own conclusion — a cross-family reviewer is
   fallible in its own uncorrelated ways, which is the entire reason its

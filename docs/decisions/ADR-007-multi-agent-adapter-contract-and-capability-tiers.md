@@ -446,6 +446,22 @@ reasoning that produced the defect.
   suspected. It is why `verify` must never be described as gating writes to
   GitHub.
 
+  **Decided 2026-09-03 (operator):** ship this way. The alternative — dropping
+  `--ignore-user-config` to restore hooks — hands the reviewer back the
+  Gmail/Drive/Docs/Sheets/Slides MCP grant, which is the larger exposure. The
+  gh-mutation gap is accepted; the MCP grant is not. Note the asymmetry is
+  deliberate and not a ranking of how likely each is to be exercised: the MCP
+  grant reaches the operator's live mail and documents, while the gh gap
+  reaches issue state that is versioned, attributed, and recoverable.
+
+  Consequently the reviewer's read-only instruction in `VERIFY_CONTRACT` is
+  the entire gh-mutation boundary. It is prose, and prose is not enforcement
+  (§ above says so directly) — but it must at least exist and be applied
+  unconditionally, so it ships in the helper-appended contract rather than in
+  any individual brief, and a test asserts its presence. `--sandbox read-only`
+  does not substitute for it: `gh issue close` is a network call, not a
+  filesystem write.
+
 **Normalized stdout envelope.** One JSON-lines record per invoked family:
 
 ```

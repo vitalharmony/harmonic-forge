@@ -342,6 +342,49 @@ class TestVerifyEnvelopeNormalization(unittest.TestCase):
         self.assertEqual(env["status"], "invalid-report")
 
 
+class TestVerifyContractCarriesReadOnlyBoundary(unittest.TestCase):
+    """The reviewer's gh-mutation boundary is prose only, so the prose must
+    actually be there (harmonic-forge#448, operator decision 2026-09-03).
+
+    This exists because the boundary was once claimed in a completion report
+    while no such instruction was present in either contract — the same
+    confabulation class the whole issue targets. A test is the only thing that
+    makes "the brief tells it not to" a checkable statement instead of a
+    remembered one.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = SCRIPT.read_text()
+        start = cls.source.index("read -r -d '' VERIFY_CONTRACT")
+        cls.contract = cls.source[start:cls.source.index("\nEOF", start)]
+
+    def test_verify_contract_forbids_mutation(self):
+        self.assertIn("READ-ONLY reviewer", self.contract)
+        self.assertIn("Do not mutate anything", self.contract)
+
+    def test_verify_contract_names_the_specific_write_commands(self):
+        """A generic "don't mutate" is easy to reason past; the named
+        commands are the ones that actually matter here."""
+        for command in ("gh issue close", "gh pr merge", "gh issue comment"):
+            with self.subTest(command=command):
+                self.assertIn(command, self.contract)
+
+    def test_verify_contract_still_permits_reads(self):
+        """The reviewer's whole purpose is running read commands — an
+        over-broad prohibition would make every assumption uncheckable."""
+        self.assertIn("gh issue view", self.contract)
+        self.assertIn("use them freely", self.contract)
+
+    def test_mutation_requiring_assumption_routes_to_uncheckable(self):
+        self.assertIn("uncheckable", self.contract.split("READ-ONLY reviewer")[1])
+
+    def test_boundary_is_helper_appended_not_caller_supplied(self):
+        """It must ship in the contract the helper appends, so a brief that
+        never thinks to include it still gets it."""
+        self.assertIn('"$VERIFY_CONTRACT"', self.source)
+
+
 class TestAC7FrozenReplay(unittest.TestCase):
     """AC7 — replay against hrse#1530's real handoff (Implementation Spec).
 
