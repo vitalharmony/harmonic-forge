@@ -13,15 +13,45 @@ own telemetry breaking. See 3-lane-protocol.md Tooling Exception.
 Wired identically for Claude Code (Edit|Write matcher) and Codex
 (apply_patch matcher) -- both feed the same PreToolUse JSON shape over
 stdin, confirmed live 2026-08-09 (harmonic-forge#202 comments).
+
+harmonic-forge#440: also wired on `Bash`, and gated the same way -- eleven
+of thirteen `PreToolUse` hooks in `hrse`'s own `.claude/settings.json`
+guard `Bash`, but this one guarded only `Edit|Write`, and the default
+launcher permission mode (`--permission-mode auto`) explicitly steers
+sessions toward heredocs/`sed`/short scripts over the dedicated Edit/Write
+tools -- so a `deep`-tier implementation could, and did (hrse#1438), land
+entirely through Bash writes with the gate never firing. Detection reuses
+`shell_parse`'s shared heredoc-masking/segment-splitting (do not write a
+second parser) rather than a whole-string regex, the same failure class
+two prior hooks in this directory were rewritten to fix
+(harmonic-forge#167/#245).
+
+Also fills a coverage gap this issue's own audit missed: `harmonic-forge`'s
+own `.claude/settings.json` had never wired this hook on `Edit|Write` at
+all (only `Bash`, added by an earlier, narrower fix) -- so hook/tooling
+work in this repo itself, exactly the kind of `deep`-tier work this gate
+exists to cover, was ungated on that path.
+
+Lane 3 is exempted outright (`LANE == "3"`), before any board lookup:
+Lane 3 verifies an implementation that already exists and should not need
+the high-tier model to run a test suite against it (operator decision,
+2026-09-02) -- and it was bound here only by accident, since gating
+`Edit|Write` alone left Lane 3's gate work untouched, but extending
+coverage to `Bash` without this exemption would make Lane 3 the *most*
+bound lane on every heredoc in its own gate scripts.
 """
 
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 try:
@@ -278,6 +308,151 @@ def resolve_claude_model(transcript_path: str) -> str | None:
     return None
 
 
+# harmonic-forge#440: a redirection token, optionally fd-prefixed
+# (`>`, `>>`, `2>`, `>>file`, `2>file.log`) but not an fd-duplication
+# target (`&1`, `&2`, ...). Applied per-token after `command_segments`/
+# `mask_heredoc_bodies` has already stripped heredoc bodies and split on
+# shell control operators -- a token is either a real redirection or
+# ordinary command-argument text, and `mask_heredoc_bodies` is what keeps
+# prose *inside* a heredoc body (e.g. a comment mentioning "redirect with
+# >") from ever reaching this check.
+#
+# `&` is itself one of `command_segments`' punctuation_chars (needed
+# elsewhere to split `&&`/background `&`), and a pure-punctuation token is
+# dropped entirely rather than kept as a segment's content (it only ends
+# the current segment) -- so `2>&1` is not one token and the `&` does not
+# survive as a token at all: `command_segments("cmd 2>&1")` returns
+# `[["cmd", "2>"], ["1"]]`. A bare `_REDIRECT_TOKEN_RE` match on `"2>"`
+# alone cannot tell an fd-duplication apart from a real redirection whose
+# target landed in the next segment; `bash_command_writes_files` below
+# does that by checking whether a *bare* redirect operator (nothing glued
+# after it) is immediately followed by a next segment that is exactly one
+# all-digit token -- the shape `N>&M`/`>&M` always takes once shredded.
+_REDIRECT_TOKEN_RE = re.compile(r"^\d*>{1,2}([^&].*)?$")
+_BARE_REDIRECT_RE = re.compile(r"^\d*>{1,2}$")
+_ALL_DIGITS_RE = re.compile(r"^\d+$")
+
+# harmonic-forge#440 (preclose-inspection finding): a redirect to a device
+# that discards or is not a real persisted file. `>/dev/null 2>&1` is one
+# of the single most common shapes in this exact codebase's own scripts
+# (silencing a probe command) and must not cost a board lookup.
+_NULL_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+# `tee` always writes every path argument it's given (a bare `tee` with
+# zero file args just echoes stdin to stdout, but that shape is not worth
+# special-casing -- the false positive costs a `/model` switch, not a
+# blocked command).
+_WRITE_PROGRAMS = frozenset({"tee"})
+
+# harmonic-forge#440 (preclose-inspection finding, the exact incident
+# shape): an interpreter fed a script over a heredoc can write arbitrary
+# files from inside that script, and `mask_heredoc_bodies` -- correctly,
+# for every other purpose this module and its siblings use it for --
+# replaces the body before any of this runs, so nothing here can inspect
+# what the script actually does. Conservative in the direction this
+# module's docstring already commits to: treat ANY of these interpreters
+# reading a heredoc as a write, rather than trying to read the (masked)
+# body.
+_SCRIPT_INTERPRETERS = frozenset({
+    "python3", "python", "python2", "node", "nodejs", "ruby", "perl",
+    "bash", "sh", "zsh", "ksh",
+})
+_HEREDOC_MARKER_RE = re.compile(r"^<<-?['\"]?\w+['\"]?$")
+
+
+def _sed_has_in_place_flag(tokens: list[str]) -> bool:
+    """`sed -i`/`-i.bak`/bundled `-ie`/`--in-place[=SUFFIX]` all write the
+    input file in place. Bundled short flags use the same set-membership
+    check `block_irreversible_ops.py`'s `_check_git_clean` already uses for
+    `git clean`'s `-fd`/`-xfd`/`-fdx` -- one convention for "is this letter
+    among the bundled short flags", not a second one invented here."""
+    for token in tokens:
+        if token == "--in-place" or token.startswith("--in-place="):
+            return True
+        if token.startswith("-") and not token.startswith("--") and "i" in set(token[1:]):
+            return True
+    return False
+
+
+def _raw_quoted_segments(command: str) -> list[list[str]]:
+    """Same shape as `shell_parse.command_segments`, but tokenized with
+    `shlex.shlex(..., posix=False)` so quote characters survive on each
+    token instead of being stripped.
+
+    Needed only for the redirect check below: `command_segments`'s posix
+    mode dequotes `'>'` down to the same bare `>` token a real operator
+    produces, so a quoted literal `>` (e.g. `grep -rn '>' .`) was
+    indistinguishable from an unquoted redirect (harmonic-forge#440,
+    preclose-inspection finding). Real bash agrees this distinction
+    matters: a redirect operator inside quotes is not recognized as one.
+    Local to this module -- `shell_parse`'s shared tokenizer stays posix
+    on purpose, since every one of its other callers wants arguments
+    dequoted -- so this is an additional narrow pass, not a competing
+    general-purpose parser.
+    """
+    punctuation = ";&|()\n"
+    lexer = shlex.shlex(mask_heredoc_bodies(command), posix=False, punctuation_chars=punctuation)
+    lexer.whitespace_split = True
+    lexer.whitespace = lexer.whitespace.replace("\n", "")
+    segments: list[list[str]] = [[]]
+    for token in lexer:
+        if token and all(char in punctuation for char in token):
+            if segments[-1]:
+                segments.append([])
+        else:
+            segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+def bash_command_writes_files(command: str) -> bool:
+    """True if this Bash command's own text can write to the filesystem.
+
+    Conservative by construction, matching this directory's established
+    posture (see `block_irreversible_ops.py`'s module docstring): this
+    hook denies a code-writing tool call, so a false negative here just
+    means the gate stays silent on a write it should have caught (the
+    same fail-open direction every other resolution failure in this module
+    already takes), while a false positive only costs an unnecessary
+    `/model` switch. Static parsing cannot resolve command substitution,
+    aliases, or a function -- not attempted here, same as elsewhere in
+    this directory.
+    """
+    try:
+        segments = command_segments(command)
+        raw_segments = _raw_quoted_segments(command)
+    except ValueError:
+        return False
+    for seg_index, raw_tokens in enumerate(segments):
+        raw_quoted = raw_segments[seg_index] if seg_index < len(raw_segments) else []
+        for tok_index, token in enumerate(raw_tokens):
+            if not _REDIRECT_TOKEN_RE.match(token):
+                continue
+            quoted_form = raw_quoted[tok_index] if tok_index < len(raw_quoted) else token
+            if quoted_form[:1] in ("'", '"'):
+                continue  # a quoted literal (e.g. `grep '>' file`), not a real redirect
+            if tok_index == len(raw_tokens) - 1 and _BARE_REDIRECT_RE.match(token):
+                next_segment = segments[seg_index + 1] if seg_index + 1 < len(segments) else None
+                if next_segment and len(next_segment) == 1 and _ALL_DIGITS_RE.match(next_segment[0]):
+                    continue  # `N>` + next segment `M` == shredded `N>&M`, an fd duplication
+            target = _REDIRECT_TOKEN_RE.match(token).group(1) or ""
+            if target and target in _NULL_TARGETS:
+                continue  # writes to a device that discards, not a real file
+            if not target and tok_index + 1 < len(raw_tokens) and raw_tokens[tok_index + 1] in _NULL_TARGETS:
+                continue  # bare `>` `/dev/null` as two tokens
+            return True
+        tokens = strip_invocation_prefix(raw_tokens)
+        if not tokens:
+            continue
+        program = os.path.basename(tokens[0])
+        if program in _WRITE_PROGRAMS:
+            return True
+        if program == "sed" and _sed_has_in_place_flag(tokens[1:]):
+            return True
+        if program in _SCRIPT_INTERPRETERS and any(_HEREDOC_MARKER_RE.match(t) for t in tokens[1:]):
+            return True
+    return False
+
+
 def required_tier_met(payload: dict, high_required: bool) -> bool:
     if "model" in payload:  # Codex: model is a direct field
         model = payload["model"]
@@ -294,12 +469,19 @@ def _main() -> None:
     if os.environ.get("LANE_MODEL"):
         _allow()  # explicit operator override
 
+    if os.environ.get("LANE") == "3":
+        _allow()  # harmonic-forge#440: Lane 3 verifies, never designs/implements
+
     payload = json.loads(sys.stdin.read())
     if not isinstance(payload, dict):
         _allow()
 
     tool_name = payload.get("tool_name")
-    if tool_name not in ("Edit", "Write", "MultiEdit", "apply_patch"):
+    if tool_name == "Bash":
+        command = (payload.get("tool_input") or {}).get("command", "")
+        if not bash_command_writes_files(command):
+            _allow()  # no board lookup for a command that writes nothing
+    elif tool_name not in ("Edit", "Write", "MultiEdit", "apply_patch"):
         _allow()
 
     cwd = payload.get("cwd") or os.getcwd()
