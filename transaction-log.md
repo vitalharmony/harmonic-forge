@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): preclose-inspection findings — python heredoc writes, /dev/null and quoted '>' false positives, harmonic-forge Edit|Write wiring (harmonic-forge#440)
+- .claude/settings.json               |  5 +++
+- tools/hooks/model_tier_gate.py      | 76 +++++++++++++++++++++++++++++++++++--
+- tools/hooks/test_model_tier_gate.py | 42 +++++++++++++++++++-
+- 3 files changed, 119 insertions(+), 4 deletions(-)
+
 ## fix(hooks): model_tier_gate covers Bash writes, exempts Lane 3 (harmonic-forge#440)
 - .codex/hooks.json                   |   6 ++
 - tools/hooks/model_tier_gate.py      | 114 +++++++++++++++++++++++-

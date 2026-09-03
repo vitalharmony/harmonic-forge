@@ -498,10 +498,33 @@ class BashWriteDetectionTests(unittest.TestCase):
     def test_heredoc_write_via_cat(self):
         self.assertTrue(m.bash_command_writes_files("cat > file.txt <<'EOF'\nhello\nEOF\n"))
 
-    def test_python_heredoc_write(self):
+    def test_python_heredoc_write_with_explicit_redirect(self):
         self.assertTrue(m.bash_command_writes_files(
             "python3 - <<'PY' > out.py\nprint('hi')\nPY\n"
         ))
+
+    def test_python_heredoc_write_with_no_redirect_at_all(self):
+        """The actual incident shape (hrse#1438): the interpreter writes a
+        file from *inside* the (masked) script body, with no shell-level
+        redirect at all -- the case the previous version of this test
+        never exercised, because it always appended `> out.py`."""
+        command = (
+            "python3 - <<'PY'\n"
+            "open('backend/app/services/foo.py', 'w').write(code)\n"
+            "PY\n"
+        )
+        self.assertTrue(m.bash_command_writes_files(command))
+
+    def test_other_interpreters_reading_a_heredoc_are_writes_too(self):
+        for interpreter in ("node", "ruby", "perl", "bash", "sh"):
+            with self.subTest(interpreter=interpreter):
+                command = f"{interpreter} <<'EOF'\nsome script body\nEOF\n"
+                self.assertTrue(m.bash_command_writes_files(command))
+
+    def test_cat_reading_a_heredoc_to_stdout_is_not_a_write(self):
+        """`cat` is not a script interpreter -- printing a heredoc to
+        stdout, with no redirect, writes nothing."""
+        self.assertFalse(m.bash_command_writes_files("cat <<'EOF'\nhello\nEOF\n"))
 
     def test_sed_in_place_short_flag(self):
         self.assertTrue(m.bash_command_writes_files("sed -i 's/a/b/' file.txt"))
@@ -545,6 +568,23 @@ class BashWriteDetectionTests(unittest.TestCase):
 
     def test_unparseable_command_fails_open_to_no_write(self):
         self.assertFalse(m.bash_command_writes_files("echo 'unterminated"))
+
+    def test_redirect_to_dev_null_is_not_a_write(self):
+        for command in ("ls > /dev/null", "ls >/dev/null", "cmd 2>/dev/null",
+                         "command -v podman >/dev/null 2>&1"):
+            with self.subTest(command=command):
+                self.assertFalse(m.bash_command_writes_files(command))
+
+    def test_redirect_to_real_file_is_still_a_write(self):
+        self.assertTrue(m.bash_command_writes_files("ls > /tmp/not-null.txt"))
+
+    def test_quoted_redirect_character_is_not_a_write(self):
+        for command in ("grep -rn '>' .", 'grep -rn ">" file.txt', "echo 'a>b'"):
+            with self.subTest(command=command):
+                self.assertFalse(m.bash_command_writes_files(command))
+
+    def test_unquoted_redirect_adjacent_to_quoted_text_is_still_a_write(self):
+        self.assertTrue(m.bash_command_writes_files("echo '>' > real_file.txt"))
 
 
 class MainBashGatingTests(unittest.TestCase):

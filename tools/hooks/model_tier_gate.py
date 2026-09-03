@@ -23,8 +23,14 @@ tools -- so a `deep`-tier implementation could, and did (hrse#1438), land
 entirely through Bash writes with the gate never firing. Detection reuses
 `shell_parse`'s shared heredoc-masking/segment-splitting (do not write a
 second parser) rather than a whole-string regex, the same failure class
-three prior hooks in this directory were rewritten to fix
-(harmonic-forge#167/#245/#478/#481).
+two prior hooks in this directory were rewritten to fix
+(harmonic-forge#167/#245).
+
+Also fills a coverage gap this issue's own audit missed: `harmonic-forge`'s
+own `.claude/settings.json` had never wired this hook on `Edit|Write` at
+all (only `Bash`, added by an earlier, narrower fix) -- so hook/tooling
+work in this repo itself, exactly the kind of `deep`-tier work this gate
+exists to cover, was ungated on that path.
 
 Lane 3 is exempted outright (`LANE == "3"`), before any board lookup:
 Lane 3 verifies an implementation that already exists and should not need
@@ -38,13 +44,14 @@ bound lane on every heredoc in its own gate scripts.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 try:
@@ -325,11 +332,32 @@ _REDIRECT_TOKEN_RE = re.compile(r"^\d*>{1,2}([^&].*)?$")
 _BARE_REDIRECT_RE = re.compile(r"^\d*>{1,2}$")
 _ALL_DIGITS_RE = re.compile(r"^\d+$")
 
+# harmonic-forge#440 (preclose-inspection finding): a redirect to a device
+# that discards or is not a real persisted file. `>/dev/null 2>&1` is one
+# of the single most common shapes in this exact codebase's own scripts
+# (silencing a probe command) and must not cost a board lookup.
+_NULL_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
 # `tee` always writes every path argument it's given (a bare `tee` with
 # zero file args just echoes stdin to stdout, but that shape is not worth
 # special-casing -- the false positive costs a `/model` switch, not a
 # blocked command).
 _WRITE_PROGRAMS = frozenset({"tee"})
+
+# harmonic-forge#440 (preclose-inspection finding, the exact incident
+# shape): an interpreter fed a script over a heredoc can write arbitrary
+# files from inside that script, and `mask_heredoc_bodies` -- correctly,
+# for every other purpose this module and its siblings use it for --
+# replaces the body before any of this runs, so nothing here can inspect
+# what the script actually does. Conservative in the direction this
+# module's docstring already commits to: treat ANY of these interpreters
+# reading a heredoc as a write, rather than trying to read the (masked)
+# body.
+_SCRIPT_INTERPRETERS = frozenset({
+    "python3", "python", "python2", "node", "nodejs", "ruby", "perl",
+    "bash", "sh", "zsh", "ksh",
+})
+_HEREDOC_MARKER_RE = re.compile(r"^<<-?['\"]?\w+['\"]?$")
 
 
 def _sed_has_in_place_flag(tokens: list[str]) -> bool:
@@ -344,6 +372,36 @@ def _sed_has_in_place_flag(tokens: list[str]) -> bool:
         if token.startswith("-") and not token.startswith("--") and "i" in set(token[1:]):
             return True
     return False
+
+
+def _raw_quoted_segments(command: str) -> list[list[str]]:
+    """Same shape as `shell_parse.command_segments`, but tokenized with
+    `shlex.shlex(..., posix=False)` so quote characters survive on each
+    token instead of being stripped.
+
+    Needed only for the redirect check below: `command_segments`'s posix
+    mode dequotes `'>'` down to the same bare `>` token a real operator
+    produces, so a quoted literal `>` (e.g. `grep -rn '>' .`) was
+    indistinguishable from an unquoted redirect (harmonic-forge#440,
+    preclose-inspection finding). Real bash agrees this distinction
+    matters: a redirect operator inside quotes is not recognized as one.
+    Local to this module -- `shell_parse`'s shared tokenizer stays posix
+    on purpose, since every one of its other callers wants arguments
+    dequoted -- so this is an additional narrow pass, not a competing
+    general-purpose parser.
+    """
+    punctuation = ";&|()\n"
+    lexer = shlex.shlex(mask_heredoc_bodies(command), posix=False, punctuation_chars=punctuation)
+    lexer.whitespace_split = True
+    lexer.whitespace = lexer.whitespace.replace("\n", "")
+    segments: list[list[str]] = [[]]
+    for token in lexer:
+        if token and all(char in punctuation for char in token):
+            if segments[-1]:
+                segments.append([])
+        else:
+            segments[-1].append(token)
+    return [segment for segment in segments if segment]
 
 
 def bash_command_writes_files(command: str) -> bool:
@@ -361,16 +419,26 @@ def bash_command_writes_files(command: str) -> bool:
     """
     try:
         segments = command_segments(command)
+        raw_segments = _raw_quoted_segments(command)
     except ValueError:
         return False
     for seg_index, raw_tokens in enumerate(segments):
+        raw_quoted = raw_segments[seg_index] if seg_index < len(raw_segments) else []
         for tok_index, token in enumerate(raw_tokens):
             if not _REDIRECT_TOKEN_RE.match(token):
                 continue
+            quoted_form = raw_quoted[tok_index] if tok_index < len(raw_quoted) else token
+            if quoted_form[:1] in ("'", '"'):
+                continue  # a quoted literal (e.g. `grep '>' file`), not a real redirect
             if tok_index == len(raw_tokens) - 1 and _BARE_REDIRECT_RE.match(token):
                 next_segment = segments[seg_index + 1] if seg_index + 1 < len(segments) else None
                 if next_segment and len(next_segment) == 1 and _ALL_DIGITS_RE.match(next_segment[0]):
                     continue  # `N>` + next segment `M` == shredded `N>&M`, an fd duplication
+            target = _REDIRECT_TOKEN_RE.match(token).group(1) or ""
+            if target and target in _NULL_TARGETS:
+                continue  # writes to a device that discards, not a real file
+            if not target and tok_index + 1 < len(raw_tokens) and raw_tokens[tok_index + 1] in _NULL_TARGETS:
+                continue  # bare `>` `/dev/null` as two tokens
             return True
         tokens = strip_invocation_prefix(raw_tokens)
         if not tokens:
@@ -379,6 +447,8 @@ def bash_command_writes_files(command: str) -> bool:
         if program in _WRITE_PROGRAMS:
             return True
         if program == "sed" and _sed_has_in_place_flag(tokens[1:]):
+            return True
+        if program in _SCRIPT_INTERPRETERS and any(_HEREDOC_MARKER_RE.match(t) for t in tokens[1:]):
             return True
     return False
 
