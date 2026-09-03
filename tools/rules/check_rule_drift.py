@@ -37,6 +37,20 @@ THREE FAILURES, ALL DELIBERATE
 2. **Span drift.** `text_sha` no longer matches the annotated span.
 3. **Orphans in either direction.** A registry row whose ID has no marker
    in any source file, or a marker with no registry row.
+4. **An unrecognized registry field.** tomllib accepts any key, so a
+   misspelled field is read by nothing and reported by nothing. See
+   `_KNOWN_FIELDS`.
+
+WHAT THIS SCHEME CANNOT EXPRESS
+---------------------------------
+`_OPEN`/`_CLOSE` are `^...$`-anchored, so a marker occupies its own line and
+**a rule boundary falling mid-line cannot be marked**. `3-lane-protocol.md`
+wraps at ~72 characters, so a second obligation inside a paragraph usually
+begins mid-line. Six such obligations exist; relaxing the anchors and
+reflowing the prose were both rejected (operator decision 2026-09-03), so
+they are recorded on their containing rule as `folded_obligations` and
+reported by `query_rules.py --folded`. The registry undercounts by that
+amount, deliberately and visibly.
 """
 
 from __future__ import annotations
@@ -56,6 +70,13 @@ _DEFAULT_REGISTRY = Path(__file__).resolve().parent / "registry.toml"
 #: and it must skip the three symlinked paths there, which resolve back
 #: into this repo's `rules/` and would otherwise be annotated twice.
 _ANNOTATED_GLOBS = ("rules/*.md", "3-lane-protocol.md")
+
+#: Every field a registry row may carry. An unrecognized field is a hard
+#: failure, not an ignored extra — see the check in `run_checks`.
+_KNOWN_FIELDS = {
+    "id", "file", "anchor", "statement", "text_sha", "hooks", "restates",
+    "rationale_refs", "enforcement", "folded_obligations",
+}
 
 _OPEN = re.compile(r"^\s*<!--\s*(R-\d{4})\s*-->\s*$")
 _CLOSE = re.compile(r"^\s*<!--\s*/(R-\d{4})\s*-->\s*$")
@@ -138,6 +159,18 @@ def check(root: Path, registry_path: Path) -> list[str]:
     have someone fix one drift and rerun to discover the next."""
     failures: list[str] = []
     rules = load_registry(registry_path)
+
+    for index, rule in enumerate(rules):
+        rule_id = rule.get("id", f"<row {index}>")
+        unknown = sorted(set(rule) - _KNOWN_FIELDS)
+        if unknown:
+            failures.append(
+                f"{rule_id}: unrecognized registry field(s) {unknown}. A misspelled field "
+                f"is read by nothing and reported by nothing — `folded_obligations` typed as "
+                f"`folded_obligation` would silently drop a known-folded rule from "
+                f"`query_rules.py --folded`, which is exactly the invisible undercount that "
+                f"field exists to prevent."
+            )
 
     seen: dict[str, int] = {}
     for index, rule in enumerate(rules):

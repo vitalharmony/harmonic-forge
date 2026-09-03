@@ -1301,6 +1301,7 @@ anchor = "Lane 2 — Muscle"
 statement = "Lane 2 makes at most 3 fix attempts on a single root cause; the 4th failure stops and reports, including what was tried and ruled out."
 text_sha = "a9c112c118b08894"
 hooks = []
+folded_obligations = ["When reporting completion after multiple attempts, include what was tried and ruled out, not just the final working diff."]
 
 [[rule]]
 id = "R-0157"
@@ -1514,6 +1515,7 @@ anchor = "Per-Lane Working Directories — git worktree"
 statement = "A lane session starts via the lane1/lane2/lane3 launcher scripts rather than a bare CLI invocation; lane3 refuses to start on unrepaired drift rather than repairing it."
 text_sha = "33e159001193f7fd"
 hooks = []
+folded_obligations = ["`lane3` refuses to start on unrepaired drift rather than repairing it."]
 
 [[rule]]
 id = "R-0183"
@@ -1602,6 +1604,7 @@ anchor = "The adapter contract — what \"supported\" means"
 statement = "Gemini is approved for Lane 1, partially for Lane 2, and Lane 3 tier 1 only; gh issue close/gh pr merge remain demonstrably reachable from a Gemini Lane 2 session, and ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook."
 text_sha = "89947ec89ea43d41"
 hooks = []
+folded_obligations = ["ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook.", "Both Gemini lane policies are un-removable via a passthrough `--admin-policy`."]
 
 [[rule]]
 id = "R-0194"
@@ -1678,6 +1681,7 @@ anchor = "HITL Gate Language"
 statement = "Lane 2 and Lane 3 post their own results directly to the issue thread; Lane 1 routes through l1-post/lane-comment. Every trigger names the issue explicitly."
 text_sha = "9b3fa1699cc00569"
 hooks = []
+folded_obligations = ["Every trigger names the issue explicitly (`#N`); an unnumbered trigger is ambiguous."]
 
 [[rule]]
 id = "R-0203"
@@ -1807,6 +1811,7 @@ anchor = "HITL Gate Language"
 statement = "On \"Lane 2 done for #N\" Lane 1 checks the full working-tree diff, not just the predicted files, and independently spot-verifies at least one behavioral claim live using fast read-only tools — never a formal suite built for Lane 3's gated execution."
 text_sha = "39ca1ab36c9a6da3"
 hooks = []
+folded_obligations = ["Lane 1's spot-check stays to fast, deterministic, read-only tools and never runs a formal suite built for Lane 3's gated execution."]
 
 [[rule]]
 id = "R-0218"

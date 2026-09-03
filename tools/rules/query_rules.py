@@ -7,6 +7,7 @@
     --enforcement hook|prose|unenforced
     --hooks-report              AC3: rules<->live wiring, both directions
     --duplicates                AC4: prose rules restating a hook-enforced rule
+    --folded                    obligations with no ID of their own
 
 WHY THE HOOK SCAN IS LIVE AND SCOPE-QUALIFIED
 -----------------------------------------------
@@ -167,6 +168,34 @@ def hooks_report(rules: list[dict], root: Path) -> int:
     return 1 if (unbacked or unmapped) else 0
 
 
+def folded_report(rules: list[dict]) -> int:
+    """Obligations known to be buried inside another rule's span.
+
+    Markers are line-anchored (`check_rule_drift._OPEN`/`_CLOSE` are `^...$`),
+    so a rule boundary falling mid-line cannot be expressed. The protocol's
+    prose wraps at ~72 characters, so a second obligation inside a paragraph
+    usually starts mid-line. Rather than relax the anchor scheme or reflow
+    prose (both rejected, operator decision 2026-09-03), these are recorded
+    here so the undercount is VISIBLE rather than silent — the registry's
+    honesty about its own coverage is the point.
+
+    These cannot be individually counted or retired. That is the accepted
+    cost, and this report is what keeps it from being forgotten.
+    """
+    folded = [r for r in rules if r.get("folded_obligations")]
+    total = sum(len(r["folded_obligations"]) for r in folded)
+    for rule in folded:
+        print(f"{rule['id']} ({rule['file']}) — {len(rule['folded_obligations'])} folded:")
+        for obligation in rule["folded_obligations"]:
+            print(f"    {obligation}")
+    print()
+    print(f"rules carrying a folded obligation: {len(folded)}")
+    print(f"obligations with no ID of their own: {total}")
+    print(f"  registry undercounts by {total} against {len(rules)} annotated "
+          f"({total / (len(rules) + total) * 100:.1f}% of true total)")
+    return 0
+
+
 def duplicates_report(rules: list[dict]) -> int:
     """AC4 — the first measurement the registry exists to make, and the
     number the corpus trim is sized from. Stored via `restates`, not
@@ -198,6 +227,7 @@ def main() -> int:
     parser.add_argument("--enforcement", choices=["hook", "prose", "unenforced"])
     parser.add_argument("--hooks-report", action="store_true")
     parser.add_argument("--duplicates", action="store_true")
+    parser.add_argument("--folded", action="store_true")
     parser.add_argument("--count", action="store_true")
     args = parser.parse_args()
 
@@ -205,6 +235,8 @@ def main() -> int:
 
     if args.hooks_report:
         return hooks_report(rules, args.root)
+    if args.folded:
+        return folded_report(rules)
     if args.duplicates:
         return duplicates_report(rules)
     if args.count:

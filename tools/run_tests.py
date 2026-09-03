@@ -30,7 +30,13 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-TEST_DIRS = ["gh", "hooks", "lane"]
+# `rules` was missing until harmonic-forge#447's second pass: the registry
+# suite had been shipped and reported as passing while `mise run check` never
+# loaded it. A suite the verification gate does not run is the
+# `narrative_budget_check.py` failure class this repo has already deleted a
+# tool over — passing locally is not passing. Adding a new leaf directory
+# under `tools/` means adding it here too; nothing else discovers it.
+TEST_DIRS = ["gh", "hooks", "lane", "rules"]
 PATTERN = "test_*.py"
 
 

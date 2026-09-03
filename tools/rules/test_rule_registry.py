@@ -8,6 +8,7 @@ side can be vacuously strict; one only exercised on the passing side is the
 for.
 """
 
+import tempfile
 import subprocess
 import sys
 import textwrap
@@ -267,6 +268,89 @@ class HookInventory(unittest.TestCase):
     def test_enforcement_is_derived_not_stored(self):
         self.assertEqual(query.enforcement_of({"hooks": [{"script": "x"}]}), "hook")
         self.assertEqual(query.enforcement_of({"hooks": []}), "prose")
+
+
+class UnknownRegistryField(unittest.TestCase):
+    """A misspelled field must fail, not be silently ignored.
+
+    `folded_obligations` records obligations that have no ID of their own.
+    Typed as `folded_obligation` it would be read by nothing and reported by
+    nothing — the rule would drop out of `--folded` and the undercount would
+    become invisible again, which is the exact failure the field exists to
+    prevent. tomllib accepts any key, so this is the only place it can fail.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.root = Path(self.tmpdir.name)
+        _write(self.root, "rules/x.md", """
+            <!-- R-0001 -->
+            - A rule.
+            <!-- /R-0001 -->
+            """)
+        self.sha = drift.span_sha("- A rule.")
+
+    def _check(self, extra: str) -> list[str]:
+        registry = _registry(self.root, f"""
+            [[rule]]
+            id = "R-0001"
+            file = "rules/x.md"
+            anchor = "x"
+            statement = "A rule."
+            text_sha = "{self.sha}"
+            hooks = []
+            {extra}
+            """)
+        return drift.check(self.root, registry)
+
+    def test_known_field_passes(self):
+        self.assertEqual(self._check('folded_obligations = ["a second obligation"]'), [])
+
+    def test_misspelled_field_fails(self):
+        failures = self._check('folded_obligation = ["a second obligation"]')
+        self.assertEqual(len(failures), 1)
+        self.assertIn("unrecognized registry field", failures[0])
+        self.assertIn("folded_obligation", failures[0])
+
+    def test_every_field_the_live_registry_uses_is_declared(self):
+        """Guards the declaration itself: a field added to real rows but not
+        to _KNOWN_FIELDS would fail the live registry, and a field removed
+        from the set would too. This catches it at the source instead."""
+        rules = query.load_rules(_ROOT / "tools" / "rules" / "registry.toml")
+        used = {key for rule in rules for key in rule}
+        self.assertEqual(used - drift._KNOWN_FIELDS, set())
+
+
+class FoldedObligations(unittest.TestCase):
+    """The known-folded record (operator decision 2026-09-03: accept the
+    undercount, make it visible)."""
+
+    def setUp(self) -> None:
+        self.rules = query.load_rules(_ROOT / "tools" / "rules" / "registry.toml")
+
+    def test_live_registry_records_the_folded_obligations(self):
+        folded = [r for r in self.rules if r.get("folded_obligations")]
+        self.assertTrue(folded, "the known-folded obligations must be recorded")
+        total = sum(len(r["folded_obligations"]) for r in folded)
+        self.assertGreaterEqual(total, len(folded),
+                                "a rule may fold more than one obligation")
+
+    def test_folded_obligations_are_non_empty_strings(self):
+        for rule in self.rules:
+            for obligation in rule.get("folded_obligations", []):
+                with self.subTest(rule=rule["id"]):
+                    self.assertIsInstance(obligation, str)
+                    self.assertTrue(obligation.strip(),
+                                    "an empty entry records nothing")
+
+    def test_folded_rules_are_real_annotated_rules(self):
+        """A folded obligation hangs off a rule that actually exists — the
+        record is worthless if it points at a stale ID."""
+        ids = {r["id"] for r in self.rules}
+        for rule in self.rules:
+            if rule.get("folded_obligations"):
+                self.assertIn(rule["id"], ids)
 
 
 if __name__ == "__main__":
