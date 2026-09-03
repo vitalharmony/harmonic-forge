@@ -12,18 +12,27 @@ not touch business logic, data contracts, or backend behavior.
 
 ## Rules
 
+<!-- R-0074 -->
 1. This path applies only when the ticket is genuinely UI-only. If the
    change touches a data contract, a service, or business logic alongside
    the UI, use the standard `testing-gate.md` path instead — don't waive
    coverage on a ticket that isn't actually UI-only.
+<!-- /R-0074 -->
+<!-- R-0075 -->
 2. Visual regression comparison runs via Playwright screenshot diffing.
    A diff that hasn't been explicitly reviewed and accepted blocks the gate
    — it does not auto-pass on "looks fine."
+<!-- /R-0075 -->
+<!-- R-0076 -->
 3. Smoke tests must actually render the component and exercise its key
    interaction (click, input, toggle) — a test that only imports the module
    without rendering it does not count.
+<!-- /R-0076 -->
+<!-- R-0077 -->
 4. Same HITL and live-verification standard as the standard path: no
    "Evidence type: Source" pass claims.
+<!-- /R-0077 -->
+<!-- R-0078 -->
 5. **A `net::ERR_*` blocker report must include the entry URL, the full
    redirect chain, and the response status of every hop — never just the
    bare error string and originally-requested URL.** Playwright attributes
@@ -37,6 +46,8 @@ not touch business logic, data contracts, or backend behavior.
    reused browser context carrying an existing SSO cookie — invisible in
    the bare error string. Capture `page.url()` at failure and the
    `redirectedFrom()` chain, not just the exception text.
+<!-- /R-0078 -->
+<!-- R-0079 -->
 6. Gate specs for a page served by a live third-party dependency (e.g. an
    IdP-hosted login page) must name the exact entry URL and require
    browser-context hygiene (fresh non-persistent context, no
@@ -44,6 +55,7 @@ not touch business logic, data contracts, or backend behavior.
    entry point — context reuse can silently change page behavior (e.g. an
    OIDC endpoint skipping its login form because of an existing session
    cookie), the same root cause named in Rule 5's incident.
+<!-- /R-0079 -->
 
 **Open item:** the visual-regression tooling itself (Playwright config,
 baseline screenshots) is not yet set up on every project using this variant
