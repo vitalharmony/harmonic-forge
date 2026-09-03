@@ -268,6 +268,41 @@ Named here so they are falsifiable rather than invisible. Each is a
 deliberate acceptance, not an oversight, and each is disqualifying the moment
 it is no longer accepted.
 
+- **Codex hook trust is path-keyed, and a linked worktree's own
+  `.codex/hooks.json` is never read** (harmonic-forge#455/#456). Source-verified
+  against `openai/codex` tag `rust-v0.153.1`, matching the installed
+  `codex-cli 0.153.1` — cited rather than inferred, because three rounds of
+  behavioral inference on this got it wrong three different ways.
+
+  `hooks/src/lib.rs:113` composes the trust key as
+  `{key_source}:{event}:{group_index}:{handler_index}`; `discovery.rs:665`
+  builds it and `:805-808` compares `trusted_hash == current_hash`, with an
+  absent key falling through to `HookTrustStatus::Untrusted` and a **silent
+  skip**. `core/src/config/loader/mod.rs:1126-1136` and `:1830` redirect a
+  linked worktree's hooks folder to its **root checkout's**, so `key_source`
+  is the root checkout's path.
+
+  Three consequences, each of which was misread at least once during #455:
+
+  1. **Only root checkouts need trust.** Lane worktrees inherit their root
+     checkout's automatically. A worktree's own `hooks.json` is dead config by
+     design — do not "fix" it.
+  2. **Editing a `.codex/hooks.json` silently unwires it.** The hash binds
+     content, so every edit invalidates the entry and the hooks stop firing
+     with no error. Any change to one of these files needs a re-mint.
+  3. **Trust cannot be minted non-interactively.** The `trusted_hash` preimage
+     is not reproducible from outside (34 candidate encodings tried across
+     #455/#446, all misses), so only Codex produces it, on interactive
+     acceptance. Project trust is a separate per-path gate, canonicalized at
+     `loader/mod.rs:1450-1459` so a symlink alias and its target resolve alike.
+
+  **The methodological point, which is the part worth keeping:** presence of a
+  trust entry proves nothing and absence proves nothing — `HRSE2-lane2` has no
+  entries and fires; `harmonic-forge` is project-trusted and does not. Only
+  running a command an unconditional deny should block distinguishes the two.
+  `tools/hooks/test_codex_hook_trust.py` encodes that as a coverage net plus an
+  opt-in live probe.
+
 - **Codex, Lanes 1–3: no `batch_auth`/`batch_gate` counterpart.** A Codex
   session can run `gh issue close` / `gh pr merge` with no authorization
   check. Accepted because Codex has been in production use across both lanes
