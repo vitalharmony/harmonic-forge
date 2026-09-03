@@ -106,6 +106,19 @@ class Report:
     #: stranding (AC4), but it is still worth reporting -- it must leave
     #: STRANDED without leaving the report.
     incomparable: list[Finding] = field(default_factory=list)
+    #: harmonic-forge#438. Open, mergeable, green PRs that nobody merged --
+    #: `audit_repo()` correctly treats a branch with an open PR as active,
+    #: not stranded, but nothing else in this toolchain looked at open PRs
+    #: at all, so this state was invisible by design. Fails the check
+    #: (`actionable`, below): nothing is blocking the merge, so leaving it
+    #: unreported is exactly how a merge gets forgotten for a day, as it did
+    #: for real (PRs #1451/#1501/#1513).
+    green_unmerged_prs: list[Finding] = field(default_factory=list)
+    #: The complement: an open PR that IS blocked on something (not
+    #: mergeable, or checks red/pending) -- report-only, same posture as
+    #: `orphaned`. A human decision is legitimately pending; that is not an
+    #: incident.
+    blocked_open_prs: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -133,7 +146,12 @@ class Report:
         # heading to match what is tested; the exit surface is unchanged.
         # `unrelated_history` and `incomparable` are report-only by the same
         # rule as `orphaned`.
-        return bool(self.stranded or self.unrun_migrations)
+        # `green_unmerged_prs` (harmonic-forge#438) fails alongside stranded/
+        # unrun_migrations: nothing is blocking the merge, so this is a
+        # forgotten action, not a pending human decision -- the same
+        # "may be losing work" bar STRANDED and unrun migrations already
+        # clear. `blocked_open_prs` does NOT fail, same posture as `orphaned`.
+        return bool(self.stranded or self.unrun_migrations or self.green_unmerged_prs)
 
 
 def audit_repo(repo: str, report: Report) -> None:
@@ -207,6 +225,50 @@ def audit_repo(repo: str, report: Report) -> None:
             # behalf. Report-only means a noisy true positive costs a glance.
             report.stranded.append(
                 Finding(repo, branch, f"{ahead} commit(s) ahead, no PR ever opened"))
+
+
+def audit_open_prs(repo: str, report: Report) -> None:
+    """Classify every OPEN pull request: green-and-mergeable-but-unmerged,
+    or genuinely blocked on a human decision (harmonic-forge#438).
+
+    `audit_repo()` skips a branch with an open PR when classifying branches
+    -- correct, a branch with an open PR is not stranded -- but that skip
+    means nothing else in this toolchain ever looks at what STATE that open
+    PR is in. A PR that is mergeable and green just sat there, invisible,
+    for as long as nobody happened to check by hand: measured live,
+    `docs/adr027-episodes` (PR #1451) from 2026-09-01 04:53Z to 2026-09-02,
+    with the ADR it carried absent from `main` the whole time.
+
+    `mergeable`/`mergeable_state` are populated only on the single-PR detail
+    endpoint, never the list endpoint (an async-computed field, `mergeable`
+    is `None` while GitHub is still working it out) -- one detail call per
+    currently-open PR, same shape as `audit_unlabelled_migrations`'s
+    per-commit issue lookups. `mergeable_state == "clean"` is GitHub's own
+    computed signal that required status checks have passed, there is no
+    conflict, and the branch is up to date if that is required -- the REST
+    field equivalent of what the GraphQL `mergeStateStatus` enum reports,
+    kept REST-only per this module's design note 3 (git + REST, never
+    GraphQL, to protect the shared CI quota).
+    """
+    for pr in _rest(f"repos/{repo}/pulls?state=open&per_page=100"):
+        number = pr["number"]
+        ref = pr["head"]["ref"]
+        detail = _rest(f"repos/{repo}/pulls/{number}")
+        if not detail:
+            continue
+        detail = detail[0]
+        mergeable = detail.get("mergeable")
+        mergeable_state = detail.get("mergeable_state")
+        if mergeable is True and mergeable_state == "clean":
+            report.green_unmerged_prs.append(Finding(
+                repo, f"#{number}",
+                f"branch {ref!r} — mergeable and checks green, not merged — "
+                f"gh pr merge {number} --repo {repo}"))
+        else:
+            report.blocked_open_prs.append(Finding(
+                repo, f"#{number}",
+                f"branch {ref!r} — mergeable={mergeable}, "
+                f"mergeable_state={mergeable_state!r} — waiting on a human"))
 
 
 MIGRATION_LABEL = "data-migration"
@@ -1018,6 +1080,7 @@ def main() -> int:
             audit_unlabelled_migrations(repo, report)
             audit_unboarded(repo, report, board_cache)
             audit_board_status_drift(repo, report, board_cache)
+            audit_open_prs(repo, report)
         except GhError as exc:
             # A repo with Issues disabled returns 410 here. That is a
             # reason to skip one audit, not to abandon the remaining
@@ -1074,6 +1137,21 @@ def main() -> int:
               f"issue(s) with no record the migration ran:")
         for f in report.unrun_migrations:
             print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
+    if report.green_unmerged_prs:
+        print(f"GREEN & UNMERGED — {len(report.green_unmerged_prs)} open PR(s) "
+              "mergeable and passing, but not merged:")
+        for f in report.green_unmerged_prs:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  Nothing is blocking these — the merge step was forgotten "
+              "(harmonic-forge#438). Run the named `gh pr merge` command.")
+        print()
+    if report.blocked_open_prs:
+        print(f"OPEN PRS AWAITING A HUMAN — {len(report.blocked_open_prs)} not "
+              "mergeable, or checks red/pending:")
+        for f in report.blocked_open_prs:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  Legitimately waiting on a decision. Reported, not failed.")
         print()
     if report.stranded:
         # harmonic-forge#433 AC1: the heading now states what the check
@@ -1139,7 +1217,8 @@ def main() -> int:
             or report.unrun_migrations or report.unlabelled_migrations
             or report.unboarded or report.checkout_off_main
             or report.stale_stashes or report.missing_transaction_log
-            or report.board_status_drift):
+            or report.board_status_drift or report.green_unmerged_prs
+            or report.blocked_open_prs):
         print("repo hygiene: clean.")
         return prune_exit
 
@@ -1154,6 +1233,8 @@ def main() -> int:
                   "migration-abandoned (hrse#859/#867).")
         if report.stranded:
             print("Review the STRANDED list before deleting anything.")
+        if report.green_unmerged_prs:
+            print("Merge the GREEN & UNMERGED list's PRs — nothing is blocking them.")
         if not args.prune_worktrees:
             print("Nothing was deleted.")
         return max(prune_exit, 1)

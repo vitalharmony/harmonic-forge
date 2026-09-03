@@ -176,6 +176,93 @@ class ExitCodeTests(unittest.TestCase):
         r.unrun_migrations.append(rh.Finding("a/b", "#849", "closed 2026-08-13"))
         self.assertTrue(r.actionable)
 
+    def test_green_unmerged_pr_is_actionable(self):
+        """harmonic-forge#438: nothing is blocking the merge, so this fails
+        the check the same way STRANDED and an unrun migration do."""
+        r = rh.Report()
+        r.green_unmerged_prs.append(rh.Finding("a/b", "#1513", "mergeable, clean"))
+        self.assertTrue(r.actionable)
+
+    def test_blocked_open_pr_alone_does_not_fail(self):
+        """A human decision is legitimately pending — report-only, same
+        posture as `orphaned`."""
+        r = rh.Report()
+        r.blocked_open_prs.append(rh.Finding("a/b", "#1514", "checks red"))
+        self.assertFalse(r.actionable)
+
+
+class AuditOpenPRsTests(unittest.TestCase):
+    """harmonic-forge#438: open PRs split by mergeable-and-green vs blocked.
+
+    `mergeable`/`mergeable_state` only exist on the single-PR detail
+    endpoint, never the list endpoint — every case here fakes both calls.
+    """
+
+    def _audit(self, list_prs, details_by_number):
+        def fake_rest(path):
+            if path.endswith("/pulls?state=open&per_page=100"):
+                return list_prs
+            for number, detail in details_by_number.items():
+                if path.endswith(f"/pulls/{number}"):
+                    return [detail]
+            raise AssertionError(f"unexpected _rest call: {path}")
+
+        report = rh.Report()
+        with patch.object(rh, "_rest", side_effect=fake_rest):
+            rh.audit_open_prs("acme/repo", report)
+        return report
+
+    def _list_pr(self, number, ref):
+        return {"number": number, "head": {"ref": ref}}
+
+    def test_mergeable_and_clean_is_green_unmerged(self):
+        """PR #1513's exact shape from harmonic-forge#438's evidence table:
+        `state: OPEN`, `mergeable: MERGEABLE` (REST: `mergeable: True`),
+        `mergeStateStatus: CLEAN` (REST: `mergeable_state: 'clean'`),
+        `verify: SUCCESS` (implied by GitHub's own `clean` computation)."""
+        r = self._audit(
+            [self._list_pr(1513, "docs/roadmap-2.9-thesis")],
+            {1513: {"mergeable": True, "mergeable_state": "clean"}},
+        )
+        self.assertEqual(len(r.green_unmerged_prs), 1)
+        self.assertIn("#1513", r.green_unmerged_prs[0].name)
+        self.assertIn("gh pr merge 1513", r.green_unmerged_prs[0].detail)
+        self.assertEqual(r.blocked_open_prs, [])
+
+    def test_not_mergeable_is_blocked(self):
+        r = self._audit(
+            [self._list_pr(1, "feat/conflict")],
+            {1: {"mergeable": False, "mergeable_state": "dirty"}},
+        )
+        self.assertEqual(r.green_unmerged_prs, [])
+        self.assertEqual(len(r.blocked_open_prs), 1)
+        self.assertIn("waiting on a human", r.blocked_open_prs[0].detail)
+
+    def test_mergeable_but_checks_not_clean_is_blocked(self):
+        """`mergeable=True` alone is not enough — `unstable` means mergeable
+        but a check hasn't concluded successfully."""
+        r = self._audit(
+            [self._list_pr(2, "feat/pending-check")],
+            {2: {"mergeable": True, "mergeable_state": "unstable"}},
+        )
+        self.assertEqual(r.green_unmerged_prs, [])
+        self.assertEqual(len(r.blocked_open_prs), 1)
+
+    def test_mergeable_still_computing_is_blocked_not_erred(self):
+        """`mergeable` is `None` while GitHub computes it asynchronously —
+        must be treated as not-yet-green, never crash."""
+        r = self._audit(
+            [self._list_pr(3, "feat/brand-new")],
+            {3: {"mergeable": None, "mergeable_state": "unknown"}},
+        )
+        self.assertEqual(r.green_unmerged_prs, [])
+        self.assertEqual(len(r.blocked_open_prs), 1)
+
+    def test_no_open_prs_is_a_no_op(self):
+        r = self._audit([], {})
+        self.assertEqual(r.green_unmerged_prs, [])
+        self.assertEqual(r.blocked_open_prs, [])
+
 
 class UnlabelledMigrationTests(unittest.TestCase):
     """hrse#871 — migration commits whose issue never got the label."""
@@ -764,6 +851,44 @@ class MainCleanGuardTests(unittest.TestCase):
             rc = rh.main()
         self.assertIn("repo hygiene: clean.", buf.getvalue())
         self.assertEqual(rc, 0)
+
+    def _run_main_with_one_repo_finding(self, category, *, fails):
+        """harmonic-forge#438's own two new categories, same landmine guard
+        as `_run_main_with_one_checkout_finding` above but through the
+        `--repo` loop, since `audit_open_prs` is wired there, not
+        `--checkout`."""
+        import io
+        from contextlib import redirect_stdout
+
+        def fake_audit_open_prs(repo, report):
+            getattr(report, category).append(rh.Finding(repo, "#1", "x"))
+
+        def noop(*_args, **_kwargs):
+            return None
+
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["repo_hygiene.py", "--repo", "a/b"]), \
+             patch.object(rh, "audit_repo", noop), \
+             patch.object(rh, "audit_migrations", noop), \
+             patch.object(rh, "audit_unlabelled_migrations", noop), \
+             patch.object(rh, "audit_unboarded", noop), \
+             patch.object(rh, "audit_board_status_drift", noop), \
+             patch.object(rh, "audit_open_prs", fake_audit_open_prs), \
+             redirect_stdout(buf):
+            rc = rh.main()
+        return rc, buf.getvalue()
+
+    def test_green_unmerged_prs_alone_fails_and_does_not_print_clean(self):
+        rc, out = self._run_main_with_one_repo_finding("green_unmerged_prs", fails=True)
+        self.assertNotIn("repo hygiene: clean.", out)
+        self.assertIn("GREEN & UNMERGED", out)
+        self.assertEqual(rc, 1)
+
+    def test_blocked_open_prs_alone_does_not_fail_or_print_clean(self):
+        rc, out = self._run_main_with_one_repo_finding("blocked_open_prs", fails=False)
+        self.assertNotIn("repo hygiene: clean.", out)
+        self.assertIn("OPEN PRS AWAITING A HUMAN", out)
+        self.assertEqual(rc, 0, "report-only category must not fail the run")
 
 
 if __name__ == "__main__":

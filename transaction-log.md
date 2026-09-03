@@ -3,6 +3,24 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hygiene): report open, mergeable, green PRs — the merge-forgotten state (harmonic-forge#438)
+
+Nothing in the toolchain reported an open PR that is mergeable and passing
+but not merged; `audit_repo()`'s own skip of open-PR branches (correct —
+not stranded) meant that state was invisible everywhere, not mislabeled.
+PRs #1451/#1501/#1513 sat unmerged, unnoticed, for up to a day.
+
+- New `audit_open_prs()`: one detail fetch per currently-open PR (mergeable/
+  mergeable_state only exist there, never on the list endpoint), split into
+  `green_unmerged_prs` (mergeable and mergeable_state == 'clean' — fails the
+  check) and `blocked_open_prs` (waiting on a human — report-only).
+- Existing STRANDED/ORPHANED classification (audit_repo) untouched; the
+  else-arm docstring stays as-is per the issue author's own correction.
+- 9 new tests; all 765 tests pass.
+- tools/gh/repo_hygiene.py      |  85 +++++++++++++++++++++++++++-
+- tools/gh/test_repo_hygiene.py | 125 ++++++++++++++++++++++++++++++++++++++++++
+- 2 files changed, 208 insertions(+), 2 deletions(-)
+
 ## feat(lane3): add dual fixed-root Gemini adapters
 - tools/lane/lane3                                 | 18 -----
 - tools/lane/policies/gemini-lane3.toml            | 68 +++++++++++++++++--
