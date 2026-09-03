@@ -1,0 +1,9 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/home/user/.claude/projects/-tmp-probe/00000000.jsonl",
+  "cwd": "/tmp/hrse2-1234-impl",
+  "prompt_id": "85825719-7f5f-4b2d-836c-3c099e26c265",
+  "hook_event_name": "SessionStart",
+  "source": "compact",
+  "model": "claude-sonnet-5"
+}
