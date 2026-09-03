@@ -89,6 +89,37 @@ _SHELL_ESCAPE_COMMANDS = {"bash", "sh", "eval", "xargs"}
 _MUTATION_WRAPPER_BASENAMES = {"post_comment.py", "gh_issue.py"}
 _MUTATION_MISE_TASKS = {"l1-comment", "post-comment", "gh-new-issue", "lane-comment"}
 
+# --- cross-family review helper (harmonic-forge#448) ---
+#
+# `cross_family_call.sh` spawns a sibling CLI whose own actions are entirely
+# outside Claude's hook system. `pitch-inspection` needs exactly one shape of
+# it (the `verify` posture) and nothing else, so this is governed by an
+# argument-exact ALLOWLIST rather than by adding the basename to
+# `_MUTATION_WRAPPER_BASENAMES` — that set is an unconditional deny, and using
+# it here would block `pitch-inspection` from the one path it legitimately
+# needs, disabling the feature this hook is supposed to make safe.
+#
+# Scope, stated plainly so it is not over-read: this is an INVOCATION-FORM
+# control only. The brief's *contents* are opaque to this hook, so it is not
+# what stops the spawned reviewer from mutating GitHub — that is
+# `cross_family_call.sh`'s own `--ignore-user-config` + sandbox posture. What
+# this branch guarantees is narrower and still worth having: the advisory
+# subagent cannot reach for a broader posture (`probe`, which grants
+# `--yolo`/`workspace-write`), a third family, or an extra argument.
+#
+# Classification is on the RESOLVED BASENAME + ARGV, never on the literal
+# command string, so `bash …/cross_family_call.sh …` and a direct
+# `tools/lane/cross_family_call.sh …` are governed identically. Before #448
+# the two diverged: the bash-prefixed form was denied by the shell-escape
+# check while the direct form fell through `head != "gh"` to a permit.
+_CROSS_FAMILY_BASENAME = "cross_family_call.sh"
+_CROSS_FAMILY_PERMITTED_ARGS = (
+    "--caller", "claude",
+    "--families", "2",
+    "--posture", "verify",
+    "--brief",
+)
+
 _READ_METHOD_TOKENS = {"-x", "--method"}
 
 # Named read shapes permitted for the classic (non-`api`) gh subcommands.
@@ -130,6 +161,51 @@ def _matches_mutation_wrapper(tokens: list[str]) -> bool:
         if Path(token).name in _MUTATION_WRAPPER_BASENAMES:
             return True
     return False
+
+
+def _cross_family_argv(tokens: list[str]) -> list[str] | None:
+    """The argv of a `cross_family_call.sh` invocation, or None if this
+    segment isn't one.
+
+    Recognizes both the direct-path form (`tools/lane/cross_family_call.sh
+    …`) and a `bash`/`sh`-prefixed form, so the two cannot diverge. A
+    `bash -c '<string>'` invocation is deliberately NOT recognized here: its
+    argv[1] is `-c`, not a path, so it returns None and falls through to the
+    shell-escape deny, which is the correct outcome — the hook cannot
+    classify what's inside an opaque `-c` string.
+    """
+    if not tokens:
+        return None
+    if Path(tokens[0]).name == _CROSS_FAMILY_BASENAME:
+        return tokens
+    if (
+        Path(tokens[0]).name in ("bash", "sh")
+        and len(tokens) >= 2
+        and Path(tokens[1]).name == _CROSS_FAMILY_BASENAME
+    ):
+        return tokens[1:]
+    return None
+
+
+def _cross_family_permitted(argv: list[str]) -> bool:
+    """Exactly one invocation shape is permitted, in exactly this order:
+
+        <path>/cross_family_call.sh --caller claude --families 2 \\
+            --posture verify --brief <path>
+
+    Anything else — a different posture, a third family, a different caller,
+    a reordering, or a single extra token — is denied. Order is required
+    rather than parsed into a flag map on purpose: this is an allowlist in a
+    security gate, and an exact-sequence match has no argument-parsing
+    surface of its own to get wrong.
+    """
+    args = argv[1:]
+    if len(args) != len(_CROSS_FAMILY_PERMITTED_ARGS) + 1:
+        return False
+    if tuple(args[:-1]) != _CROSS_FAMILY_PERMITTED_ARGS:
+        return False
+    brief = args[-1]
+    return bool(brief) and not brief.startswith("-")
 
 
 def _find_explicit_method(args: list[str]) -> str | None:
@@ -231,6 +307,18 @@ def _classify(tokens: list[str]) -> bool:
     resolved = _resolve_wrapper_prefix(tokens)
     if not resolved:
         return True  # empty segment (e.g. trailing pipe artifact) — nothing to deny
+
+    # Evaluated FIRST, before the shell-escape and mutation-wrapper checks
+    # (harmonic-forge#448). It has to precede the shell-escape check so the
+    # `bash …/cross_family_call.sh …` form reaches the argument-exact test
+    # instead of being denied for its `bash` head, and it has to precede the
+    # mutation-wrapper check so this stays an allowlist decision rather than
+    # an unconditional deny. Both permitted and denied outcomes return here —
+    # nothing about a `cross_family_call.sh` segment falls through to the
+    # `head != "gh"` permit that used to let the direct-path form pass.
+    cross_family = _cross_family_argv(resolved)
+    if cross_family is not None:
+        return _cross_family_permitted(cross_family)
 
     head = Path(resolved[0]).name
     if head in _SHELL_ESCAPE_COMMANDS:

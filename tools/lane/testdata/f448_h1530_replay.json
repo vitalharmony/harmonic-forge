@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "FROZEN replay fixture for harmonic-forge#448 AC7. Do not regenerate.",
+    "",
+    "This records one real confabulation: hrse#1530's Lane 1 handoff asserted",
+    "that 30 of 211 tracked contacts (14%) would be wrongly excluded from",
+    "background sync. The magnitude was wrong. The query below was run",
+    "against the live graph on the date recorded, and its result is frozen",
+    "here deliberately.",
+    "",
+    "The count is frozen rather than re-derived live because the fixture",
+    "population grows: a test that re-counted would assert a moving number",
+    "and would start failing for reasons that have nothing to do with the",
+    "code under test. What AC7 checks is that the pipeline carries a",
+    "`refuted` verdict with executed evidence attached -- not that any",
+    "particular number is still true today."
+  ],
+  "issue": "vitalharmony/hrse#1530",
+  "claim_under_review": "30 of 211 tracked contacts (14%) carry a status that excludes them from background sync",
+  "frozen_query": "MATCH (p:Person)<-[t:TRACKING]-() WHERE p.status IS NOT NULL RETURN p.name AS name, p.status AS status ORDER BY name",
+  "frozen_query_date": "2026-09-01",
+  "frozen_result": {
+    "total_with_status": 30,
+    "test_fixtures": 27,
+    "gate_fixtures": 2,
+    "real_contacts": 1,
+    "real_contact_names": ["Crystal Alvarez"],
+    "note": "Crystal Alvarez was added deliberately and carries NO status, so she is not excluded. The 14% figure counted fixture rows as if they were real contacts."
+  },
+  "reviewer_report": {
+    "summary": "The exclusion-magnitude claim is refuted: 29 of the 30 rows are fixtures.",
+    "findings": [
+      {
+        "claim": "The handoff's '30 of 211 / 14%' figure counts test and gate fixtures as real contacts.",
+        "evidence": "27 test fixtures + 2 gate fixtures + 1 real contact = 30 rows; the single real contact carries no status."
+      }
+    ],
+    "assumptions": [
+      {
+        "assumption": "30 of 211 tracked contacts (14%) are wrongly excluded from background sync",
+        "verdict": "refuted",
+        "evidence": "$ cypher-shell 'MATCH (p:Person)<-[t:TRACKING]-() WHERE p.status IS NOT NULL RETURN count(*)'\n30\n(2026-09-01) -- of which 27 test fixtures, 2 gate fixtures, 1 real contact"
+      }
+    ]
+  }
+}
