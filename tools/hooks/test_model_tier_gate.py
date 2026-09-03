@@ -478,5 +478,176 @@ class TailRead(unittest.TestCase):
         self.assertIsNone(m.resolve_claude_model(str(path)))
 
 
+class BashWriteDetectionTests(unittest.TestCase):
+    """harmonic-forge#440: `bash_command_writes_files()` must catch the exact
+    shapes the incident named (redirection, `sed -i`, `tee`) while leaving
+    read-only commands and heredoc-body prose alone."""
+
+    def test_plain_redirect_with_spaces(self):
+        self.assertTrue(m.bash_command_writes_files("echo hi > file.txt"))
+
+    def test_plain_redirect_no_spaces(self):
+        self.assertTrue(m.bash_command_writes_files("echo hi >file.txt"))
+
+    def test_append_redirect(self):
+        self.assertTrue(m.bash_command_writes_files("echo hi >> file.txt"))
+
+    def test_fd_prefixed_redirect(self):
+        self.assertTrue(m.bash_command_writes_files("cmd 2> err.log"))
+
+    def test_heredoc_write_via_cat(self):
+        self.assertTrue(m.bash_command_writes_files("cat > file.txt <<'EOF'\nhello\nEOF\n"))
+
+    def test_python_heredoc_write(self):
+        self.assertTrue(m.bash_command_writes_files(
+            "python3 - <<'PY' > out.py\nprint('hi')\nPY\n"
+        ))
+
+    def test_sed_in_place_short_flag(self):
+        self.assertTrue(m.bash_command_writes_files("sed -i 's/a/b/' file.txt"))
+
+    def test_sed_in_place_long_flag(self):
+        self.assertTrue(m.bash_command_writes_files("sed --in-place 's/a/b/' file.txt"))
+
+    def test_sed_in_place_bundled_flag(self):
+        self.assertTrue(m.bash_command_writes_files("sed -ie 's/a/b/' file.txt"))
+
+    def test_tee_writes(self):
+        self.assertTrue(m.bash_command_writes_files("echo hi | tee file.txt"))
+
+    def test_fd_duplication_is_not_a_write(self):
+        """`2>&1` merges stderr into stdout -- no filesystem write."""
+        self.assertFalse(m.bash_command_writes_files("cmd 2>&1"))
+
+    def test_read_only_commands_are_not_writes(self):
+        for command in ("git status", "pytest -q", "ls -la", "grep -rn foo .", "cat file.txt"):
+            with self.subTest(command=command):
+                self.assertFalse(m.bash_command_writes_files(command))
+
+    def test_sed_without_in_place_is_not_a_write(self):
+        self.assertFalse(m.bash_command_writes_files("sed 's/a/b/' file.txt"))
+
+    def test_heredoc_body_prose_mentioning_redirection_is_not_a_write(self):
+        """AC3: a heredoc body that merely *talks about* `>` must not trigger --
+        `mask_heredoc_bodies` (shared with every other hook in this
+        directory) is what keeps prose out of the parse."""
+        command = (
+            "cat > notes.md <<'EOF'\n"
+            "redirect with > like this, or pipe to tee\n"
+            "EOF\n"
+        )
+        # The heredoc *itself* still writes notes.md via the leading `>` --
+        # assert True here, then prove the body text alone (no leading
+        # write) is inert.
+        self.assertTrue(m.bash_command_writes_files(command))
+        body_only = "cat <<'EOF'\nredirect with > like this, or pipe to tee\nEOF\n"
+        self.assertFalse(m.bash_command_writes_files(body_only))
+
+    def test_unparseable_command_fails_open_to_no_write(self):
+        self.assertFalse(m.bash_command_writes_files("echo 'unterminated"))
+
+
+class MainBashGatingTests(unittest.TestCase):
+    """harmonic-forge#440: end-to-end `_main()` behavior for the `Bash`
+    matcher — the regression this issue was filed for (AC7), the
+    no-board-lookup-on-read-only guarantee (AC2), and the `LANE=3`
+    exemption (AC4)."""
+
+    def _run_main(self, payload: dict, env: dict | None = None) -> str:
+        import io
+        stdin = io.StringIO(json.dumps(payload))
+        stdout = io.StringIO()
+        full_env = dict(os.environ)
+        full_env.pop("LANE_MODEL", None)
+        full_env.pop("LANE", None)
+        if env:
+            full_env.update(env)
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), \
+             patch.dict(os.environ, full_env, clear=True):
+            try:
+                m._main()
+            except SystemExit:
+                pass
+        return stdout.getvalue()
+
+    def _transcript(self, model: str) -> str:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "transcript.jsonl"
+        path.write_text(json.dumps({"message": {"model": model}}) + "\n")
+        return str(path)
+
+    def test_ac7_regression_bash_heredoc_write_denied_on_sonnet(self):
+        """The exact incident shape: cwd on the hrse#1438 branch, tier
+        `deep`, model `claude-sonnet-5`, tool `Bash` with a heredoc write."""
+        payload = {
+            "tool_name": "Bash",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"command": "cat > f.py <<'EOF'\ncode\nEOF\n"},
+        }
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+
+    def test_ac7_regression_lane3_allows_the_same_payload(self):
+        payload = {
+            "tool_name": "Bash",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"command": "cat > f.py <<'EOF'\ncode\nEOF\n"},
+        }
+        with patch.object(m, "resolve_tier") as fake_resolve_tier:
+            out = self._run_main(payload, env={"LANE": "3"})
+            fake_resolve_tier.assert_not_called()
+        self.assertEqual(out, "")
+
+    def test_ac2_read_only_bash_never_calls_resolve_tier(self):
+        payload = {
+            "tool_name": "Bash",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "tool_input": {"command": "git status"},
+        }
+        with patch.object(m, "resolve_tier") as fake_resolve_tier:
+            out = self._run_main(payload)
+            fake_resolve_tier.assert_not_called()
+        self.assertEqual(out, "")
+
+    def test_ac1_bash_write_denied_matches_edit_denial_shape(self):
+        payload = {
+            "tool_name": "Bash",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"command": "sed -i 's/a/b/' f.py"},
+        }
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn("/model opus", out)
+
+    def test_ac5_edit_write_behavior_unchanged_without_lane(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+        }
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+
+    def test_ac4_lane3_allows_edit_write_too(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+        }
+        with patch.object(m, "resolve_tier") as fake_resolve_tier:
+            out = self._run_main(payload, env={"LANE": "3"})
+            fake_resolve_tier.assert_not_called()
+        self.assertEqual(out, "")
+
+
 if __name__ == "__main__":
     unittest.main()

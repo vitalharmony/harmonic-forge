@@ -16,6 +16,12 @@
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\"",
             "timeout": 5,
             "statusMessage": "Checking Lane 3 AE/sweep self-authorization"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking model tier for this issue"
           }
         ]
       },
