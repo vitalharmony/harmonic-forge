@@ -133,9 +133,9 @@ def extract_spans(path: Path) -> dict[str, str]:
     return spans
 
 
-def collect_source_spans(root: Path) -> dict[str, tuple[Path, str]]:
+def collect_source_spans(root: Path, globs: tuple[str, ...] = _ANNOTATED_GLOBS) -> dict[str, tuple[Path, str]]:
     found: dict[str, tuple[Path, str]] = {}
-    for pattern in _ANNOTATED_GLOBS:
+    for pattern in globs:
         for path in sorted(root.glob(pattern)):
             for rule_id, text in extract_spans(path).items():
                 if rule_id in found:
@@ -154,7 +154,8 @@ def load_registry(registry_path: Path) -> list[dict]:
         return tomllib.load(handle).get("rule", [])
 
 
-def check(root: Path, registry_path: Path) -> list[str]:
+def check(root: Path, registry_path: Path,
+          globs: tuple[str, ...] = _ANNOTATED_GLOBS) -> list[str]:
     """Every failure, collected — not the first. A partial report would
     have someone fix one drift and rerun to discover the next."""
     failures: list[str] = []
@@ -183,7 +184,7 @@ def check(root: Path, registry_path: Path) -> list[str]:
         seen[rule_id] = index
 
     try:
-        source = collect_source_spans(root)
+        source = collect_source_spans(root, globs)
     except ValueError as exc:
         return failures + [str(exc)]
 
@@ -192,7 +193,7 @@ def check(root: Path, registry_path: Path) -> list[str]:
         if rule_id not in source:
             failures.append(
                 f"{rule_id}: in the registry but no `<!-- {rule_id} -->` span found in "
-                f"{', '.join(_ANNOTATED_GLOBS)} — rule deleted or moved without its ID."
+                f"{', '.join(globs)} — rule deleted or moved without its ID."
             )
             continue
         path, text = source[rule_id]
@@ -220,6 +221,12 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=_PLATFORM_ROOT,
                         help="platform root containing rules/ and 3-lane-protocol.md")
     parser.add_argument("--registry", type=Path, default=_DEFAULT_REGISTRY)
+    parser.add_argument("--glob", action="append", dest="globs", metavar="PATTERN",
+                        help="annotated-file glob, relative to --root; repeatable. "
+                             "Defaults to this repo's own corpus. HRSE2's pass supplies "
+                             "its own (`.claude/rules/*.md`, `.windsurfrules`, ...) because "
+                             "its corpus lives at different paths, NOT because it is a "
+                             "different kind of corpus.")
     parser.add_argument("--next-id", action="store_true",
                         help="print the next free ID (the registry is its own allocator) and exit")
     args = parser.parse_args()
@@ -230,7 +237,8 @@ def main() -> int:
         print(f"R-{highest + 1:04d}")
         return 0
 
-    failures = check(args.root, args.registry)
+    globs = tuple(args.globs) if args.globs else _ANNOTATED_GLOBS
+    failures = check(args.root, args.registry, globs)
     if failures:
         print(f"rule-registry drift: {len(failures)} failure(s)", file=sys.stderr)
         for failure in failures:

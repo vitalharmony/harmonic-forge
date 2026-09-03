@@ -322,6 +322,90 @@ class UnknownRegistryField(unittest.TestCase):
         self.assertEqual(used - drift._KNOWN_FIELDS, set())
 
 
+class ConfigurableGlobs(unittest.TestCase):
+    """`--glob` exists so HRSE2's half can reuse this tool rather than fork it.
+
+    HRSE2's corpus lives at `.claude/rules/*.md`, `.windsurfrules` and
+    `CLAUDE.md` — different paths, not a different kind of corpus. A second
+    copy of the drift check is exactly the duplication `harmonic-forge#328`
+    found drifts, so the paths are a parameter and the logic is shared.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.root = Path(self.tmpdir.name)
+        _write(self.root, ".claude/rules/hrse2.md", """
+            <!-- R-0253 -->
+            - An HRSE2-only obligation.
+            <!-- /R-0253 -->
+            """)
+        self.sha = drift.span_sha("- An HRSE2-only obligation.")
+        self.registry = _registry(self.root, f"""
+            [[rule]]
+            id = "R-0253"
+            file = ".claude/rules/hrse2.md"
+            anchor = "a"
+            statement = "An HRSE2-only obligation."
+            text_sha = "{self.sha}"
+            hooks = []
+            """)
+
+    def test_default_globs_do_not_see_the_hrse2_layout(self):
+        """Without --glob the file is invisible, so the rule reads as an
+        orphan. This is what makes the flag necessary rather than cosmetic."""
+        failures = drift.check(self.root, self.registry)
+        self.assertTrue(any("no `<!-- R-0253 -->` span" in f for f in failures))
+
+    def test_supplied_globs_find_the_hrse2_corpus(self):
+        failures = drift.check(self.root, self.registry, (".claude/rules/*.md",))
+        self.assertEqual(failures, [])
+
+    def test_multiple_globs_are_unioned(self):
+        _write(self.root, ".windsurfrules", """
+            <!-- R-0254 -->
+            - A second obligation, in a differently-named file.
+            <!-- /R-0254 -->
+            """)
+        registry = _registry(self.root, f"""
+            [[rule]]
+            id = "R-0253"
+            file = ".claude/rules/hrse2.md"
+            anchor = "a"
+            statement = "s"
+            text_sha = "{self.sha}"
+            hooks = []
+
+            [[rule]]
+            id = "R-0254"
+            file = ".windsurfrules"
+            anchor = "a"
+            statement = "s"
+            text_sha = "{drift.span_sha('- A second obligation, in a differently-named file.')}"
+            hooks = []
+            """)
+        self.assertEqual(
+            drift.check(self.root, registry, (".claude/rules/*.md", ".windsurfrules")), [])
+
+    def test_drift_still_detected_under_custom_globs(self):
+        """The flag must not weaken the check it reroutes."""
+        _write(self.root, ".claude/rules/hrse2.md", """
+            <!-- R-0253 -->
+            - An HRSE2-only obligation, reworded.
+            <!-- /R-0253 -->
+            """)
+        failures = drift.check(self.root, self.registry, (".claude/rules/*.md",))
+        self.assertTrue(any("span text changed" in f for f in failures))
+
+    def test_failure_message_names_the_supplied_globs(self):
+        """The 'not found in X' message must name the globs actually searched,
+        or it sends the reader to the wrong paths."""
+        _write(self.root, ".claude/rules/hrse2.md", "- no markers here\n")
+        failures = drift.check(self.root, self.registry, (".claude/rules/*.md",))
+        self.assertTrue(any(".claude/rules/*.md" in f for f in failures))
+        self.assertFalse(any("3-lane-protocol.md" in f for f in failures))
+
+
 class FoldedObligations(unittest.TestCase):
     """The known-folded record (operator decision 2026-09-03: accept the
     undercount, make it visible)."""
