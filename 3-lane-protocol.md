@@ -11,6 +11,7 @@ Condensed operational directives. For philosophy/rationale, see
                                  Lane 3: Control Gate — operator-assigned tool
 ```
 
+<!-- R-0141 -->
 **Lanes are roles, not fixed tools.** All three lanes are filled by
 whichever tool the operator running that session assigns. Devin Local /
 Devin AA was this doc's original reference pairing for Lane 2/Lane 3 and
@@ -29,6 +30,7 @@ own tool preferences for these roles — the protocol's actual requirements
 (independent-eyes gating, no lane closes/merges on its own, HITL-gate
 language, etc.) are tool-agnostic and apply identically regardless of
 which specific tool is filling any lane on a given session.
+<!-- /R-0141 -->
 
 ## Lane 1 — Blueprint (reference tool: Claude Code)
 
@@ -40,11 +42,22 @@ a Claude-Code-specific file/path is named. See `rules/universal-lane1.md`
 (Claude-Code-CLI mechanics) for the deeper directive set this section
 summarizes.*
 
+<!-- R-0142 -->
 - Reads the GitHub issue (spec, acceptance criteria, labels).
+<!-- /R-0142 -->
+<!-- R-0143 -->
 - Maps required changes against the project's `CLAUDE.md`/`.windsurfrules`.
+<!-- /R-0143 -->
+<!-- R-0144 -->
 - Cites exact file(s) and line range(s) affected before writing the handoff.
+<!-- /R-0144 -->
+<!-- R-0145 -->
 - Produces a Lane 1 Handoff Artifact (`templates/lane1-handoff.md`).
+<!-- /R-0145 -->
+<!-- R-0146 -->
 - Includes one concrete test case per requirement in the handoff.
+<!-- /R-0146 -->
+<!-- R-0147 -->
 - **For test cases requiring interactive UI verification, front-loads
   concrete selectors/interaction paths already known from reading the
   code** (exact button labels, roles, click sequences) rather than telling
@@ -56,13 +69,19 @@ summarizes.*
   #159. This doesn't replace Lane 3's own exploration where genuinely
   needed, it just removes the exploration Lane 1 could have shortcut by
   already having read the component.
+<!-- /R-0147 -->
+<!-- R-0148 -->
 - **Posts the handoff as a comment on the GitHub issue itself** — not just
   in chat. The issue is the permanent record: root cause, prompt, and (once
   Lane 2/3 finish) the diff and Lane 3 gate result all live on the same
   issue. This is deliberate — it's the raw material for any future
   cross-issue pattern analysis (recurring bug classes, handoff-quality vs.
   first-pass-success correlation), not just a courtesy copy.
+<!-- /R-0148 -->
+<!-- R-0149 -->
 - Never guesses at an ambiguous spec — stops and asks the Tech Lead.
+<!-- /R-0149 -->
+<!-- R-0150 -->
 - **A close that leaves work outstanding links a tracker in the same
   action.** If merging an issue's code leaves anything still to happen —
   a migration to run, a manual verification, an operator step, a
@@ -79,6 +98,8 @@ summarizes.*
   notice in conversation. The information was present, honest, and
   written down — and no part of the system was looking at it.
 
+<!-- /R-0150 -->
+<!-- R-0151 -->
   This is stated as a rule and deliberately **not** enforced by tooling.
   A detector would have to decide from prose whether a comment describes
   outstanding work, and pattern-matching prose authored by the party
@@ -90,8 +111,11 @@ summarizes.*
   `data-migration` issue on a label, and hrse#867/#871 sweep for the same
   invariant after the fact. Extend by adding classes, not by guessing at
   prose.
+<!-- /R-0151 -->
+<!-- R-0152 -->
 - Does not write production code directly (exception: explicit platform/
   tooling assignments — see `rules/universal-lane1.md`).
+<!-- /R-0152 -->
 
 ## Lane 2 — Muscle (qualified agents: see ADR-007 § 8)
 
@@ -103,17 +127,24 @@ See the project's own rules file (e.g. HRSE2's `.windsurfrules` "Codex
 role" section) for how a given tool's Lane 2 assignment is actually
 triggered and scoped.*
 
+<!-- R-0153 -->
 - Given a short trigger (e.g. "implement #N") rather than pasted content,
   **fetches the issue and Lane 1's handoff comment from GitHub directly**
   (`gh api repos/OWNER/REPO/issues/N/comments --paginate --jq '.[].body'`,
   REST — see harmonic-forge#220) before doing anything else — same
   expectation already placed on Lane 3 for its own independent issue read.
   Do not wait for or require the handoff to be pasted in chat.
+<!-- /R-0153 -->
+<!-- R-0154 -->
 - Executes exactly what the handoff specifies — no scope creep.
+<!-- /R-0154 -->
+<!-- R-0155 -->
 - Stays within the file targets the handoff defines, and this applies to
   tooling too — never invokes a task explicitly scoped to another lane
   (e.g. `gate-checkout`) even to verify its own change; check the
   underlying script instead.
+<!-- /R-0155 -->
+<!-- R-0156 -->
 - **3 fix attempts max on a single root cause; 4th failure stops and
   reports back instead of continuing to iterate.** This cap already
   existed for Lane 3 (see Escalation, below) but was never written for
@@ -130,6 +161,8 @@ triggered and scoped.*
   was tried and ruled out**, not just the final working diff — that
   history is exactly what Lane 1's review should look at when deciding if
   the fix is sound or got there by luck.
+<!-- /R-0156 -->
+<!-- R-0157 -->
 - **Never executes the write/apply path of a data-modifying script —
   categorically, no exception, regardless of what the handoff says.**
   Lane 2 may write a migration/fix script and verify it via dry-run or
@@ -151,16 +184,24 @@ triggered and scoped.*
   apply in the moment. Same posture on any other lane's own scope decision
   (e.g. Lane 3's `--execute` pass) — surface a fact, never frame or ask
   about it, and never assert readiness for the next lane.
+<!-- /R-0157 -->
+<!-- R-0158 -->
 - Reads the cited file(s) and quotes the root-cause line before editing.
+<!-- /R-0158 -->
+<!-- R-0159 -->
 - Obeys `rules/universal-agent.md` + language-specific rule files (300-line
   cap, no raw LLM/API calls outside the designated gateway, parameterized
   queries).
+<!-- /R-0159 -->
+<!-- R-0160 -->
 - **Posts to the issue on every stop, unprompted** (completion, BLOCKED,
   plan, correction, rebase — chat is not the record), via `l2_post.py`,
   which also closes the raw-transport hole above (harmonic-forge#371).
+<!-- /R-0160 -->
 
 ## Lane 3 — Control Gate (qualified agents: see ADR-007 § 8 — Codex's Lane 3 cells are *unqualified*, meaning no suite has been run, not that it is unsafe)
 
+<!-- R-0161 -->
 *Devin AA was this section's original reference implementation — retired
 as of 2026-08 (harmonic-forge#317). An operator assigning Claude, Codex,
 or another tool to Lane 3 must still meet every requirement below
@@ -176,7 +217,9 @@ equivalent hard restriction (a permission/sandbox profile denying
 write/edit/commit/push tools for that session) wherever the tool supports
 one, not just an instruction file it's trusted to follow — see
 harmonic-forge#317's capability-tier work for Gemini's version of this.*
+<!-- /R-0161 -->
 
+<!-- R-0162 -->
 - **Own skill file, per-project: `{project}/.claude/skills/lane3-gate/SKILL.md`**
   (repo-local — as of 2026-07-10, not yet synced across projects by
   `sync_rules.py`; currently HRSE2-only). This is a hard-wired enforcement
@@ -191,6 +234,8 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   out, worth revisiting whether it should be added to `sync_rules.py`'s
   distribution so other projects get the same hard-wired protection, not
   just prose.
+<!-- /R-0162 -->
+<!-- R-0163 -->
 - Runs locally. Reads the GitHub issue independently — **never reads Lane
   2's code, or Lane 2's own implementation-report comment on the issue
   thread, before writing its test spec.** Lane 3 reads only: the issue
@@ -201,12 +246,20 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   fixture instead"). Co-locating every lane's output on one issue is a
   deliberate convenience for Lane 1's own review — it must not become a
   backdoor letting Lane 3 anchor on Lane 2's self-report.
+<!-- /R-0163 -->
+<!-- R-0164 -->
 - Writes a test spec from the issue's acceptance criteria.
+<!-- /R-0164 -->
+<!-- R-0165 -->
 - Submits the test spec for Tech Lead HITL approval
   (`templates/hitl-test-review.md`) before executing anything.
+<!-- /R-0165 -->
+<!-- R-0166 -->
 - After approval, executes tests against Lane 2's implementation. See
   `rules/testing-gate.md` (standard) or `rules/frontend-ui-golden-path.md`
   (UI-only variant) for thresholds.
+<!-- /R-0166 -->
+<!-- R-0167 -->
 - **Interactive tool modes are never used for automated execution.** Any
   browser-automation invocation runs headless with a non-interactive
   reporter (e.g. `--reporter=line`) — never `--debug`, `--ui`, `codegen`,
@@ -215,6 +268,8 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   the command hangs until a human notices and cancels it (real failure
   mode, #152). A command needing interactive confirmation is a signal to
   stop and ask, not to keep retrying variants hoping one works headlessly.
+<!-- /R-0167 -->
+<!-- R-0168 -->
 - **Lane 3 is the only lane authorized to execute a data-modifying
   script's write/apply path.** When an issue's scope is itself a data
   migration or correction (not just testing already-written application
@@ -225,6 +280,8 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   pre-execution approval gate Lane 3 already has for every spec, closing
   the #154/#155 gap structurally: nothing runs against real data without
   HITL having approved that specific action first.
+<!-- /R-0168 -->
+<!-- R-0169 -->
 - **A data-migration issue does not close on the code merge — it closes
   when the migration has run, evidenced.** Real incident, hrse#849
   (2026-08-13): the code merged, the issue closed, and the closing
@@ -237,6 +294,8 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   a comment when the run is deliberately not happening. Enforced by
   `tools/hooks/block_data_migration_close.py` (hrse#859).
 
+<!-- /R-0169 -->
+<!-- R-0170 -->
   **The credential is a label, not text in a comment — an expensive
   lesson.** Four review rounds rejected comment-parsing designs; the
   decisive one (hrse#866) showed that once an example marker's exact
@@ -254,6 +313,8 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   tests ran, not that rows changed — hrse#848 passed 12 of 13 checks with
   the thirteenth knowingly unexecuted.)
 
+<!-- /R-0170 -->
+<!-- R-0171 -->
   **The load-bearing control is the after-the-fact sweep, hrse#867
   (shipped 2026-08-14)**: closed `data-migration` issues lacking
   `migration-executed`, folded into the standing hygiene pass — catches
@@ -263,8 +324,12 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   64 minutes after it closed, so neither control would have caught it as
   it actually happened (hrse#871). The hook remains fail-open by design;
   it makes the mistake rare, not impossible.
+<!-- /R-0171 -->
+<!-- R-0172 -->
 - Blocked from committing until 100% of tests pass at the required coverage
   threshold.
+<!-- /R-0172 -->
+<!-- R-0173 -->
 - **Lane 3 never fixes application code, ever, under any circumstance —
   full stop** — self-introduced, pre-existing, trivial, or blocking test
   execution entirely, it makes no difference. Lane 3's only permitted
@@ -286,17 +351,25 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   run was live human-authorized and fine; two were not — a real bug
   fixed instead of reported, and a plaintext credential hardcoded into a
   compose file instead of fixing the actual invocation problem.)
+<!-- /R-0173 -->
+<!-- R-0174 -->
 - 3 auto-fix attempts max on a single root cause (test-spec issues only, per
   above); 4th failure escalates to Tech Lead instead of retrying.
+<!-- /R-0174 -->
+<!-- R-0175 -->
 - After tests pass, performs a style/refactor pass per the project's
   `.windsurfrules` — **report-only, same absolute rule as above**: identifies
   violations, never fixes them itself, even trivial ones.
+<!-- /R-0175 -->
+<!-- R-0176 -->
 - Every pass/fail claim must be backed by live execution (request/response,
   log line, before/after count) — a source-code citation is not evidence.
   **The gate report carries that evidence as an artifact, inline or by
   reference** (`~/Harmonic_Projects/testplan/{issue}/` for anything too
   large to paste), not just prose asserting it happened — see
   `rules/testing-gate.md` rule 3 for the full requirement.
+<!-- /R-0176 -->
+<!-- R-0177 -->
 - **Fast-fail on external blockers.** If a live check is blocked by a
   genuine external dependency — a bug in another open issue this ticket's
   verification requires, a missing precondition, an environment gap that
@@ -312,9 +385,11 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   from the auto-fix rule above (Lane 3's own test-spec issues) — an
   external blocker in another lane's work is always an immediate
   stop-and-report, never something to route around.
+<!-- /R-0177 -->
 
 ### Observe-and-report — a gate fixture only a writing lane can create (harmonic-forge#401)
 
+<!-- R-0178 -->
 **When a gate requires an artifact only a writing lane can create, Lane 1
 creates the artifact and Lane 3 observes it.** The verification role stays
 with Lane 3 — it still reaches its own verdict, on evidence it did not
@@ -322,6 +397,7 @@ manufacture; only the fixture's creation moves. Distinct from a Tooling
 Exception (which collapses the lanes into a single implementer): this
 splits one action across two lanes while the gate's independence stays
 intact.
+<!-- /R-0178 -->
 
 Real incident, hrse#1343: TC4 required proving GitHub's own required-check
 behavior — a step reporting `skipped`, not `success` — unverifiable
@@ -331,6 +407,7 @@ correctly, before any file was touched). Lane 1 opened
 `__gate__/h1343-tc4` and PR #1346; Lane 3 observed the delete test
 reporting `skipped` and `verify` reporting green.
 
+<!-- R-0179 -->
 **Four conditions, all required** — without them this is Lane 1 doing as
 it pleases and calling the result a fixture:
 1. `__gate__`-prefixed branches — recognizable as gate residue, matching
@@ -341,16 +418,20 @@ it pleases and calling the result a fixture:
 4. Lane 3 records the underlying signal, not merely the downstream
    status — a step skipped for the wrong reason is indistinguishable
    otherwise.
+<!-- /R-0179 -->
 
+<!-- R-0180 -->
 **The boundary on the boundary: applies only when the artifact is
 genuinely unproducible by Lane 3.** A gate that merely finds it easier to
 have Lane 1 write something does not qualify — this must not become a
 convenient route around the prohibition. A PR qualifies because it is the
 only thing GitHub will evaluate a required check against; most gate needs
 do not reach this bar.
+<!-- /R-0180 -->
 
 ## Per-Lane Working Directories — git worktree
 
+<!-- R-0181 -->
 Each repo a lane touches has a dedicated `git worktree` per lane
 (`<repo>-lane2/`, `<repo>-lane3/`, sibling to the main checkout), sharing
 one `.git` (history/objects/remotes) so there's no clone duplication —
@@ -361,12 +442,14 @@ time). **Lane 2 always operates in `<repo>-lane2/`; Lane 3 always in
 `<repo>-lane3/`; Lane 1 and the human operator use the main checkout.** A
 lane starting work in a repo without its dedicated worktree existing yet
 should stop and ask, not fall back to the shared main checkout.
+<!-- /R-0181 -->
 
 This isolates the *filesystem*, not concurrent *live infrastructure*
 mutation (two lanes can still collide applying to the same live cluster
 at the same time) — Lane 3's read-only-except-human-attended-mutations
 boundary already covers that risk separately.
 
+<!-- R-0182 -->
 **The normal way to start a lane session** (harmonic-forge#142) is one of
 the `lane1`/`lane2`/`lane3` launcher scripts (`tools/lane/`, symlinked
 onto `$PATH`) rather than a bare `claude`/other-CLI invocation. Each
@@ -386,14 +469,18 @@ same way `_gh_config_dir.sh` is — before harmonic-forge#318 the same block
 was duplicated inline in each of the three. **`lane3` additionally refuses
 to start on unrepaired drift rather than repairing it** (harmonic-forge#322
 AC5, below).
+<!-- /R-0182 -->
+<!-- R-0183 -->
 **Proper hygiene is restarting the
 session with the right script, never redirecting a running session into
 a different lane role mid-conversation** — `LANE` is fixed for a
 process's entire lifetime by design (see below), so there is nothing a
 running session could do to change it even if asked to.
+<!-- /R-0183 -->
 
 #### Per-CLI launch wiring — `laneN --agent`
 
+<!-- R-0184 -->
 **`--agent claude|codex|gemini` is the canonical interface** (ADR-007 § 3,
 implemented in harmonic-forge#322). Native CLI arguments follow, optionally
 after a bare `--`:
@@ -408,6 +495,7 @@ lane3 --ack-stale "gating PR #123"     # Lane 3 only; see below
 place that knows what each agent needs — a version floor, a per-lane policy
 slot, an operator-facing display name, a default flag. An unrecognized
 `--agent` value is a hard error that execs nothing.
+<!-- /R-0184 -->
 
 | agent | what the launcher injects | why |
 |---|---|---|
@@ -415,6 +503,7 @@ slot, an operator-facing display name, a default flag. An unrecognized
 | `gemini` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421 …`, plus `--admin-policy` at Lanes 1 and 2 | harmonic-forge#318, #362 |
 | `codex` | nothing — bare passthrough | flag injection broke Codex's own argument parsing (harmonic-forge#179) |
 
+<!-- R-0185 -->
 `LANE_AGENT` is exported alongside `LANE`, and both are fixed for the
 session's lifetime by the same mechanism (see § Lane role signal below —
 process-environment inheritance, not `readonly`, which does not survive
@@ -429,7 +518,9 @@ what they said and reports nothing). A `LANE_CLI` matching no registered
 agent is likewise refused rather than execed: before harmonic-forge#322 it
 fell through to bare passthrough and silently received no policy injection
 and no version floor.
+<!-- /R-0185 -->
 
+<!-- R-0186 -->
 **Minimum versions** (AC9) are floored at the *minor*, not the patch:
 `claude >= 2.1`, `codex >= 0.150`, `gemini >= 0.56`, recorded against the
 exact patch versions each was qualified at (`2.1.250` / `0.150.1` /
@@ -437,7 +528,9 @@ exact patch versions each was qualified at (`2.1.250` / `0.150.1` /
 update while duplicating the parity suite's own version bookkeeping
 (harmonic-forge#325); ADR-007 already handles version-specific qualification
 there.
+<!-- /R-0186 -->
 
+<!-- R-0187 -->
 #### `lane3` performs zero mutations — and `lane3-provision`
 
 The gate launcher used to `git fetch origin main` and `ln -sf` the
@@ -449,6 +542,8 @@ was never stale.
 
 Both protections survive as **checks** — neither was dropped (AC6):
 
+<!-- /R-0187 -->
+<!-- R-0188 -->
 | drift | detected how | on drift |
 |---|---|---|
 | worktree behind `origin/main` (harmonic-forge#255) | `git ls-remote origin refs/heads/main`, which writes no refs; then `git cat-file -e` on the returned SHA, then an ancestry comparison against that SHA — never against the stale local `origin/main` ref | **refuse**, with `--ack-stale "<reason>"` as the escape hatch |
@@ -461,7 +556,9 @@ following `l1_post.py`'s `--ack-overlap` precedent). `backend/.env` has no
 legitimate per-worktree divergence at all, so there is nothing to
 acknowledge — and a gate run against a stale env silently loses its live
 HTTP/auth test surface (hrse#792).
+<!-- /R-0188 -->
 
+<!-- R-0189 -->
 Both mutations now live in **`lane3-provision`**, run deliberately and
 separately:
 
@@ -473,7 +570,9 @@ lane3             # then start the gate
 Not a `--provision` flag on `lane3`, because a flag means the same script
 both mutates and does not, decided by an argument — which reintroduces the
 hazard the moment it reaches an alias, a shell history, or muscle memory.
+<!-- /R-0189 -->
 
+<!-- R-0190 -->
 **The two Gemini unsets are load-bearing, not hygiene.** Standing operator
 directive: the Gemini CLI always uses the OAuth path; `GOOGLE_API_KEY` and
 `GEMINI_API_KEY` exist for programmatic use elsewhere. That is not the
@@ -493,7 +592,9 @@ Google's Code Assist path, and personal `@gmail.com` accounts need not.
 Without it, every invocation dies with `ProjectIdRequiredError` before any
 tool call. `hrse-497421` is a project id, not a credential — it is
 committed deliberately. Export `GOOGLE_CLOUD_PROJECT` yourself to override.
+<!-- /R-0190 -->
 
+<!-- R-0191 -->
 Two traps that cost a full diagnosis cycle in harmonic-forge#318:
 
 1. While `~/.gemini/settings.json` pins
@@ -503,9 +604,11 @@ Two traps that cost a full diagnosis cycle in harmonic-forge#318:
 2. **A passing `gemini -p` is not evidence the OAuth path works** unless
    the keys were explicitly unset for that run — the API-key path produces
    identical-looking output.
+<!-- /R-0191 -->
 
 #### The adapter contract — what "supported" means
 
+<!-- R-0192 -->
 Which agent may fill which lane is governed by
 [`docs/decisions/ADR-007-multi-agent-adapter-contract-and-capability-tiers.md`](docs/decisions/ADR-007-multi-agent-adapter-contract-and-capability-tiers.md),
 not by whether the launcher will start it. Three properties from that ADR
@@ -522,7 +625,9 @@ are operative here:
 3. **Capability tiers are per-capability, not per-agent.** Qualified for
    Lane 3 tier 1 confers nothing about tier 2, and a qualification is
    against a specific CLI version.
+<!-- /R-0192 -->
 
+<!-- R-0193 -->
 **Current state: Gemini is approved for Lane 1, partially for Lane 2, and for
 Lane 3 tier 1 (static review) only** (harmonic-forge#318/#362/#326). #362 landed an admin-tier policy
 (`tools/lane/policies/gemini-lane1.toml`/`gemini-lane2.toml`, wired through
@@ -547,9 +652,11 @@ and letting last-flag-wins decide. That closes the launcher-side half of the
 dependency F326 carries — it does not make the policy a boundary the model
 cannot reason past, which is a separate claim this platform deliberately does
 not make (ADR-007 § 9).
+<!-- /R-0193 -->
 
 #### Gemini Lane 3 — tier 1 (static review) only
 
+<!-- R-0194 -->
 `tools/lane/policies/gemini-lane3.toml` (harmonic-forge#326), armed by
 `AGENT_LANE_POLICY[gemini:3]`. **Tier 1 is static review: no test execution,
 no live services, no migrations** — tiers 2–4 are harmonic-forge#327's and
@@ -565,7 +672,9 @@ lesson of harmonic-forge#412: a `commandPrefix` allowlist on
 to `ASK_USER` (and that downgrade is off under `--yolo`), and a native write
 flag such as `git diff --output=<path>` contains no shell metacharacter for any
 pattern to catch.
+<!-- /R-0194 -->
 
+<!-- R-0195 -->
 **A Gemini Lane 3 session fetches only its bounded context through the
 system-installed `lane3-context` MCP extension (harmonic-forge#1414).** The
 normal launcher remains the sole operation:
@@ -583,15 +692,19 @@ ref, target SHA, or raw GitHub endpoint. Shell, raw network/GitHub, writes,
 and every other MCP tool remain denied. This is Tier 1 context only; it grants
 none of harmonic-forge#327's executable-test, service, browser, or migration
 authority.
+<!-- /R-0195 -->
 
+<!-- R-0196 -->
 **The tier is qualified only by a passing run of
 `tools/lane/policies/canary/run_canary.py`, executed by Lane 3** — not by the
 author of the policy. Re-run it on every Gemini CLI upgrade; ADR-007's reading
 rule is that a cell is qualified against a version, and an upgrade invalidates
 it until the suite is re-run.
+<!-- /R-0196 -->
 
 ### Lane role signal — `LANE`
 
+<!-- R-0197 -->
 `LANE` is a real OS-level environment variable, set once by the launcher
 script at process launch, inherited by that session's entire subprocess
 tree — including every `PreToolUse` hook subprocess Claude Code spawns
@@ -608,7 +721,9 @@ outside `~/Harmonic_Projects/testplan/` (harmonic-forge#150), gating the
 `gate-*` mise tasks (harmonic-forge#151), and gating Codex's own
 `scripts/gate_codex_tool.py`'s `mise run gate-*` dispatch on the same
 `LANE` signal (harmonic-forge#152, extended by harmonic-forge#190).
+<!-- /R-0197 -->
 
+<!-- R-0198 -->
 **What `LANE` is not**: not adversarial, not a hard security boundary,
 not inferred from conversation text, and not something a session
 declares about itself mid-session. It exists specifically because two
@@ -631,9 +746,11 @@ mistyped mid-conversation, misread from prose, or left stale by another
 session, because it isn't shared state at all — it's a fact about how
 one specific process was started, visible only to that process's own
 children.
+<!-- /R-0198 -->
 
 ### Per-Issue Implementation Worktree — distinct from the fixed per-lane worktree above
 
+<!-- R-0199 -->
 Lane 2's actual *implementation work for a given issue* happens in a
 separate, disposable `/tmp/<repo>-<issue>-impl` worktree, created fresh
 per issue from the fixed `<repo>-lane2/` session worktree above — never
@@ -647,9 +764,11 @@ single live enforcement point for this convention today** — not the
 launcher scripts. And **`tools/lane/lane2`/`lane3` have zero scripted
 awareness of the per-issue impl worktree** — creating and removing it is
 a purely manual, session-driven step.
+<!-- /R-0199 -->
 
 ## Per-Lane Worktree Reuse Across Issues — Check Before You Checkout
 
+<!-- R-0200 -->
 Per-lane isolation (above) is per-*lane*, not per-*issue*: `<repo>-lane3/`
 is a single fixed directory reused sequentially across every issue Lane 3
 gates. Nothing stops a second actor from checking out a *different*
@@ -660,7 +779,9 @@ one (harmonic-forge#137, real incident hrse#439, 2026-07-30: a second
 session checked out and rebased a different issue's branch in
 `HRSE2-lane3` while Lane 3 was actively gating hrse#439 there, disrupting
 the live gate).
+<!-- /R-0200 -->
 
+<!-- R-0201 -->
 **Before switching branches in a shared per-lane worktree, check for live
 processes with cwd inside it.** `gate-checkout` does this automatically
 (`tools/worktree/check_worktree_busy.py`, walking `/proc/*/cwd`) and
@@ -670,6 +791,7 @@ never a bare `git checkout`/`git rebase` in a shared lane worktree. If it
 refuses: wait, ask the operator, or do prep work (rebase, conflict
 resolution) in a disposable scratch worktree (e.g. `/tmp/<repo>-<issue>-prep`)
 instead, only touching the shared lane worktree once it's confirmed idle.
+<!-- /R-0201 -->
 
 ## Shared Working Directory — Commit Before You Yield
 
@@ -679,6 +801,7 @@ rule, not protocol-specific, and applies identically to every lane/tool.
 
 ## HITL Gate Language
 
+<!-- R-0202 -->
 Lane 2 and Lane 3 sessions (either CLI) post their own results directly to
 the GitHub issue thread; Lane 1 (or a session with no `LANE` set) routes
 through `mise run l1-post`/`lane-comment` instead (harmonic-forge#190/#191/#193 —
@@ -691,7 +814,9 @@ issue explicitly (`#N`) — multiple issues can be in flight at once, and an
 unnumbered trigger is ambiguous. Some triggers go to Lane 1; others go
 directly to Lane 2 or Lane 3 in their own respective interfaces, and Lane 1
 never sees them or acts on them.
+<!-- /R-0202 -->
 
+<!-- R-0203 -->
 **The only channel between lanes is a GitHub issue comment HITL relays.**
 No lane contacts another lane's live session directly — cross-session
 messaging or any HITL-bypassing mechanism, regardless of content or
@@ -700,7 +825,9 @@ the tool-call level where the repo can — but a hook only protects a
 session whose settings wire it (hooks distribute by hand, unlike this
 file), so treat this as the standing rule until it does everywhere, not
 as a solved problem.
+<!-- /R-0203 -->
 
+<!-- R-0204 -->
 **Repo-prefixed issue numbers, when more than one repo is in flight.**
 Once a collaborator works across multiple repos in the same session, a bare
 `#N` is ambiguous the moment both repos happen to have an open issue with
@@ -713,7 +840,9 @@ drifted (harmonic-forge#289). It also carries the parts a list cannot —
 that `L` is permanently reserved, that the set is derived from
 `isArchived` rather than hand-maintained, and that a cross-account prefix
 returning empty means wrong credentials, never absence.
+<!-- /R-0204 -->
 
+<!-- R-0205 -->
 **Universal, not just for triggers (extended 2026-07-19).** Every issue
 reference — a status update, a summary, a plain mention in a comment or
 in chat, not only the trigger phrases above — carries the `H`/`F`/`I`/`O`
@@ -722,7 +851,9 @@ often relays an agent's own issue references directly into commands sent
 to other lanes; an unprefixed number forces HITL to disambiguate it
 first, which defeats the convention's purpose. "Closed #313" is wrong;
 "Closed H313" is right, in a summary just as much as in a trigger.
+<!-- /R-0205 -->
 
+<!-- R-0206 -->
 **Lane-status shorthand.** A quick status update, not a trigger. **The
 token table is in `rules/lane-shorthand.md`**, which loads in every session;
 it is not duplicated here (harmonic-forge#289). Note `L2P` is **retired** in
@@ -733,7 +864,9 @@ instead of acting.
 A status token is a pointer to go read that lane's actual report on the
 issue thread, never a substitute for it — the verification standard above
 applies in full.
+<!-- /R-0206 -->
 
+<!-- R-0207 -->
 **`B` is not a failure verdict, and it is available on every lane** (`L1B`,
 `L2B`, `L3B`) — a lane reporting BLOCKED is the protocol working. The
 correct response is to fix the blocking condition and re-run, **not** to
@@ -746,6 +879,7 @@ conflating them sends the wrong work to the wrong lane:
   implementation is *not* what is in question; a precondition, the
   environment, or the baseline is. Routes to remediation, then a re-run of
   the same commit.
+<!-- /R-0207 -->
 
 Real incident (hrse#847, 2026-08-13): every non-live check passed and the
 implementation was sound, but a concurrently-running backend on a stale
@@ -758,6 +892,7 @@ shape: on hrse#849 Lane 2 twice self-blocked — once on a Plan-First gate
 not yet passed, once on being asked to run a data-modifying script it is
 categorically not authorized to run — and both refusals were correct.
 
+<!-- R-0208 -->
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
 TCs in an already-approved test spec, distinct from approving the spec's
 content (that's the `L3S` → HITL-approval step itself). Like every other
@@ -768,7 +903,9 @@ already verifies the gate-readiness sweep. **`AE` and its sweep are one
 atomic action, same turn, sweep strictly after** — use the repo's own
 atomic wrapper where one exists; otherwise confirm the comment order
 before telling HITL either is ready.
+<!-- /R-0208 -->
 
+<!-- R-0209 -->
 **A routine retest after a FAIL does not need a new AE/sweep pair.**
 HRSE2's `check_lane3_ready.py` (hrse#1102, generalized hrse#1359) already
 carries the original AE/sweep's authorization forward onto a new SHA when
@@ -778,14 +915,18 @@ for the fix-and-repush cycle. Reserve a fresh AE + sweep for when the
 *plan* itself changed (a reforged approach, new scope, or a sticky-wicket
 reforge) — posting one on every SHA bump regardless is unnecessary
 overhead this mechanism already exists to avoid (harmonic-forge#425).
+<!-- /R-0209 -->
 
+<!-- R-0210 -->
 **An AE may widen what a gate's write tier covers; it may never waive a
 lane's absolute role prohibition** (harmonic-forge#401) — those are
 different boundaries, and only the first is HITL's to grant through this
 trigger. When a gate needs an artifact only a writing lane can produce,
 see § Lane 3's observe-and-report pattern above rather than authorizing
 the barred lane to produce it directly.
+<!-- /R-0210 -->
 
+<!-- R-0211 -->
 **Before acting on any trigger, the receiving lane checks the issue's
 state.** If `#N` is already closed, stop and ask HITL to confirm the
 number before doing anything — don't proceed on the assumption a closed
@@ -795,16 +936,22 @@ to make in a fast-moving session with many issues open at once, and
 proceeding against the wrong issue wastes a full lane cycle and produces
 a confusing record on the wrong thread. This applies to whichever lane
 receives the trigger — Lane 1, Lane 2, or Lane 3 alike.
+<!-- /R-0211 -->
 
+<!-- R-0212 -->
 **Every trigger naming an issue — including a bare "continue"/"proceed" —
 means a full, unfiltered re-read first**, body and every comment; a
 repeated trigger is often the signal something changed, not evidence it
 didn't. Enforce at the trigger phrase itself where the repo can, not by
 recall.
+<!-- /R-0212 -->
 
+<!-- R-0213 -->
 1. **Lane 1** diagnoses and posts a handoff comment on issue #N (and
    displays it in chat). No trigger needed — this happens unprompted once
    diagnosis is done.
+<!-- /R-0213 -->
+<!-- R-0214 -->
 2. **HITL says "Implement #N"** (→ Lane 2). Lane 2 fetches the issue and
    Lane 1's handoff comment from GitHub itself and implements it, posting
    its own completion report as a comment on #N. **For a plan-first issue
@@ -817,12 +964,16 @@ recall.
    living in the same comment. Two distinct trigger words remove the
    contradiction instead of relying on Lane 2 resolving it correctly every
    time (see ADR-005).
+<!-- /R-0214 -->
+<!-- R-0215 -->
    - **2a. HITL says "Plan #N"** (→ Lane 2, plan-first issues only). Lane 2
      fetches the issue and Lane 1's handoff — which for a plan-first issue
      contains no Implementation Spec section yet (see § Plan-First
      Implementation) — and posts its implementation plan as a comment,
      then stops. There is nothing to implement from yet, so nothing to
      skip ahead into.
+<!-- /R-0215 -->
+<!-- R-0216 -->
    - **2b. HITL relays "Plan up for #N"** (→ Lane 1, plan-first issues
      only, once Lane 2's plan comment from step 2a exists). Lane 1 invokes
      `pitch-inspection` in plan-review mode and posts the verdict, then
@@ -830,6 +981,8 @@ recall.
      Implementation Spec as a follow-up comment — see § Plan-First
      Implementation for the full process. Only after that does HITL send
      "Implement #N".
+<!-- /R-0216 -->
+<!-- R-0217 -->
 3. **HITL says "Lane 2 done for #N"** (→ Lane 1). Lane 1 checks the **full
    working-tree diff** (`git status` / `git diff` across the whole repo,
    not just the files the handoff predicted) against the handoff's
@@ -855,15 +1008,21 @@ recall.
    as the Lane 2/Lane 3 data-execution-authority split above — once a
    capability is designated to one lane, another lane doesn't borrow it
    for convenience, no matter how tempting it is when the tooling is new.
+<!-- /R-0217 -->
+<!-- R-0218 -->
    - **If a problem is found:** Lane 1 posts a correction comment on #N
      specifying exactly what Lane 2 needs to fix, and reports this to HITL
      instead of proceeding. Once addressed, HITL re-triggers with
      **"Reimplement #N"** (distinct from the first-pass **"Implement #N"**
      — this word specifically signals a correction loop, not new work),
      looping back to step 2.
+<!-- /R-0218 -->
+<!-- R-0219 -->
    - **If confirmed clean:** Lane 1 drafts a second comment addressed to
      Lane 3 (carrying any caveats the review turned up) and posts it to
      #N, then tells HITL it's ready.
+<!-- /R-0219 -->
+<!-- R-0220 -->
 4. **HITL says "Test #N"** (→ Lane 3). Lane 3 fetches the issue body,
    Lane 1's original handoff comment, and Lane 1's Lane-3-addressed
    comment from step 3 — never Lane 2's comment — via
@@ -875,6 +1034,8 @@ recall.
    it for HITL approval (`templates/hitl-test-review.md`) before executing
    anything. After approval, Lane 3 executes and posts its gate report as
    a comment on #N.
+<!-- /R-0220 -->
+<!-- R-0221 -->
 5. **HITL says "Lane 3 done for #N"** (→ Lane 1). Lane 1 reads #N's Lane 3
    gate comment, confirms every claim is backed by live execution (not
    source-code reasoning) **by inspecting each check's attached evidence
@@ -884,14 +1045,20 @@ recall.
    itself during its style/refactor pass — see `rules/testing-gate.md`),
    and independently spot-verifies at least one claim live if anything is
    surprising, high-stakes, or contradicts prior known state.
+<!-- /R-0221 -->
+<!-- R-0222 -->
    - **If a problem is found:** Lane 1 reports the specific issue to HITL
      with a recommendation on whether it routes back to Lane 2 (an
      implementation bug — HITL says **"Reimplement #N"**, loop to step 2)
      or requires Lane 3 to re-test (a gate/spec issue — HITL says
      **"Retest #N"**, distinct from the first-pass **"Test #N"**, loop to
      step 4). HITL decides which.
+<!-- /R-0222 -->
+<!-- R-0223 -->
    - **If confirmed clean:** Lane 1 recommends closing — never a
      unilateral close.
+<!-- /R-0223 -->
+<!-- R-0224 -->
 6. **HITL says "Close #N"** (→ Lane 1). Lane 1 posts a closing summary
    comment (referencing the gate evidence) and closes the issue. This is
    the only trigger that results in a close, and it is never self-initiated
@@ -903,12 +1070,15 @@ recall.
    is: closing requires the human operator's explicit "Close #N," every
    time, from every lane, with no exception for confidence or a clean local
    test pass.
+<!-- /R-0224 -->
 
+<!-- R-0225 -->
    **A merge-time break routes back to step 2 unless Lane 1 can show —
    not assert — all three:** every gated file hash-verified unchanged, the
    full suite re-run against the known baseline, and any changed assertion
    broken deliberately two ways and restored. Short of that, it isn't
    mechanical.
+<!-- /R-0225 -->
 
 ## Tooling Exception — Dev/Test Tooling Skips the Full Loop
 
@@ -921,6 +1091,7 @@ day's credit budget, with the per-round cost dominated by loop overhead
 themselves. Full incident and decision record:
 `docs/decisions/ADR-002-tooling-vs-application-3-lane-exception.md`.
 
+<!-- R-0226 -->
 **Scope — ALL of the following must hold, or the full loop applies:**
 1. The work product is a development/test/verification harness, migration
    script, or repo-local automation — it is never imported by, served by,
@@ -936,17 +1107,23 @@ themselves. Full incident and decision record:
    application code. Anything that touches application source, schemas,
    CI that gates merges, secrets handling, or data in the graph is NOT
    tooling work regardless of where the file lives.
+<!-- /R-0226 -->
 
+<!-- R-0227 -->
 This is the project-level analog of the platform-tooling exception in
 `rules/universal-lane1.md` ("The operator may scope platform-level
 tooling/documentation work directly to Claude Code."), and carries the
 same posture: explicit, per-issue, never assumed.
+<!-- /R-0227 -->
 
+<!-- R-0228 -->
 **Process under the exception:**
 - **Single implementer.** One agent (whichever lane the operator assigns,
   including Lane 1/Claude Code as an explicit exception to "Lane 1 never
   implements") designs and writes the tooling in one pass. No Lane 1
   handoff document, no Lane 2 relay, no per-round Lane 3 gates.
+<!-- /R-0228 -->
+<!-- R-0229 -->
 - **One human-reviewed pass, before commit.** The operator (or a
   designated reviewer who is not the implementer) reviews for exactly
   three things: (1) scope — it is genuinely tooling per the boundary
@@ -955,6 +1132,8 @@ same posture: explicit, per-issue, never assumed.
   verify live behavior, not prose claims (`rules/testing-gate.md` still
   applies to what the tooling *asserts*, even though the tooling itself
   skips the gate).
+<!-- /R-0229 -->
+<!-- R-0230 -->
 - **Even under this exception, the implementer never grades its own
   verification.** If the implementer is Lane 1, a fix Lane 1 just wrote is
   not verified by Lane 1 running it and declaring success — that is the
@@ -966,6 +1145,8 @@ same posture: explicit, per-issue, never assumed.
   night as #233: Lane 1 wrote a one-line fix, ran it through the suite
   itself without independent review, and had gotten the fix backwards —
   caught only because `sticky-wicket` was invoked afterward. See ADR-002.
+<!-- /R-0230 -->
+<!-- R-0231 -->
 - **Lane 3 still gates the moment the tooling's output matters.** The
   tooling's *first consequential use* — the run whose result approves or
   blocks shipping work — is a Lane 3 gate with the standard evidence
@@ -973,11 +1154,15 @@ same posture: explicit, per-issue, never assumed.
   one human-reviewed pass; a defect discovered at that later gate is a
   finding against the tooling, handled under this same exception (fix it,
   one more human-reviewed pass, no return to the full loop).
+<!-- /R-0231 -->
+<!-- R-0232 -->
 - **An issue modifying Lane 3's own gate enforcement is
   Tooling-Exception-eligible by default, stated at filing time** — a
   normal gate run is itself a gate-profile session, so testing new gate
   rules needs the old rules to already permit them: a bootstrap problem,
   not an allow-list patch.
+<!-- /R-0232 -->
+<!-- R-0233 -->
 - **`preclose-inspection` is that second read, and it is now enforced
   rather than remembered (hrse#1487).** Run it on the diff that is about
   to be merged, act on its findings, then record that it ran:
@@ -989,7 +1174,9 @@ same posture: explicit, per-issue, never assumed.
   `tools/hooks/block_missing_preclose_inspection.py` blocks `gh pr merge`,
   `gh issue close`, and `gh api PATCH … state=closed` on an issue labelled
   `tooling-exception` that does not yet carry `preclose-inspected`.
+<!-- /R-0233 -->
 
+<!-- R-0234 -->
   **It is opt-in, on `tooling-exception`** — like the data-migration close
   gate it is modelled on, and unlike its own first two implementations,
   which gated on the *absence* of a Lane 3 trail and therefore fired on
@@ -1003,6 +1190,7 @@ same posture: explicit, per-issue, never assumed.
   be published is a valid credential wherever it is published, which is why
   naming `preclose-inspected` here — or in the hook's own deny message —
   does not grant it.
+<!-- /R-0234 -->
 
   Real incident, hrse#1476 (2026-09-01): Lane 1 implemented, verified,
   pushed, and went straight to merge/close, skipping the review entirely.
@@ -1011,6 +1199,7 @@ same posture: explicit, per-issue, never assumed.
 
 ## Escalation
 
+<!-- R-0235 -->
 Any lane escalates to the Tech Lead (human) rather than guessing, looping, or
 silently narrowing scope, when:
 - The issue spec is ambiguous (Lane 1).
@@ -1025,9 +1214,11 @@ silently narrowing scope, when:
   bad Playwright command failures while exploring how to interact with the
   app for #152, requiring Marc to manually cancel the terminal multiple
   times, well past the point escalation should have fired.
+<!-- /R-0235 -->
 
 ### Cross-lane thrashing — the "sticky wicket" circuit breaker
 
+<!-- R-0236 -->
 The rules above cap retries *within* one lane's single attempt. A different
 failure mode is cross-lane: the same **issue** cycles Lane 2 completion
 claim → Lane 3 gate FAIL (or Lane 1 declining a completion claim) round
@@ -1044,7 +1235,9 @@ accumulated — to read the full issue thread and diagnose whether the
 underlying *approach* is structurally wrong, not just the latest bug. This
 is the cross-lane analog of a software circuit breaker: after N failures,
 stop retrying the same thing and ask whether the thing itself is broken.
+<!-- /R-0236 -->
 
+<!-- R-0237 -->
 **The unrelated-bug carve-out is category-level, not symptom-level.** Before
 Lane 1 declines to invoke `sticky-wicket` because the two verdicts appear to
 have different immediate causes, it must classify each finding at the shared
@@ -1055,6 +1248,7 @@ counter when both findings belong to one structural category. If the category
 matches—or the second round shows escalating effort without that category
 shrinking—invoke at verdict two. Decline only when the categories are
 genuinely unrelated, and state that distinction explicitly.
+<!-- /R-0237 -->
 
 The threshold was lowered from 3 to 2 after HRSE2 #233: by round 3 the
 thrashing pattern was already fully visible in hindsight, and every
@@ -1092,6 +1286,7 @@ maker (Lane 1) grading its own design, not just its own code. See
 evaluation that produced this (including the case against a broader
 version, which was rejected).
 
+<!-- R-0238 -->
 **Trigger — self-declared by Lane 1's own handoff, not a separate risk
 assessment.** `templates/lane1-handoff.md` carries two mandatory fields:
 *Design Alternatives Considered* and *Load-Bearing Assumptions*. Lane 1
@@ -1104,17 +1299,20 @@ before posting the handoff, whenever any of:
    (beyond the deliverable's normal function) **and** the issue is not
    already routed through the Tooling Exception (which has its own
    human-reviewed pass covering this).
+<!-- /R-0238 -->
 
 Most handoffs — a single obvious design, no unverified assumptions, no
 self-mutating automation — post with zero additional review. The two
 template fields cost nothing to fill in as "none"; the second read only
 fires when Lane 1 itself has flagged something contestable.
 
+<!-- R-0239 -->
 **One pass, no loop.** `pitch-inspection` returns PROCEED / PROCEED WITH
 NAMED CHANGES / REFORGE BEFORE HANDOFF. Lane 1 revises once if needed and
 posts. If Lane 1 disagrees with the verdict after that one revision, that
 is an escalation to the human operator — never a second pre-flight round.
 Building a new thrash source one stage earlier would defeat the point.
+<!-- /R-0239 -->
 
 **What this does not cover:** verification-honesty failures (a lane
 reporting completion that doesn't match reality) are not a design problem;
@@ -1129,6 +1327,7 @@ target's own guard-clause chain before anything was sent. The trace-and-
 verify pass was voluntary and memory-triggered, so it only happened once
 demanded explicitly. This makes it structural instead.
 
+<!-- R-0240 -->
 **Trigger:** the handoff's receiving action is a live/`--apply`/data-
 mutating command, or the deliverable's actual location differs from the
 issue's tracking repo. Satisfied by `templates/lane1-handoff.md`'s
@@ -1138,12 +1337,15 @@ chain read, evidence pasted inline), verified-present (checked live in the
 human, e.g. a live-console-only value — name it, don't force-verify it).
 A blank/incomplete field on a qualifying handoff is a `pitch-inspection`
 trigger, same bar as an "asserted" Load-Bearing Assumption.
+<!-- /R-0240 -->
 
+<!-- R-0241 -->
 **Symmetric on Lane 2's side.** Lane 2 does not trust Lane 1's field on
 faith, the same way Lane 3 never trusts Lane 2's completion claims — it
 re-verifies each precondition itself before writing any code, and reports
 back a discrepancy rather than proceeding past one. Lane 1 traces wrong
 sometimes too (see #93's own incident record).
+<!-- /R-0241 -->
 
 **What this does not cover:** genuinely unknowable externals (an OAuth
 console value, a third party's live state) stay external-blocked, routed
@@ -1158,6 +1360,7 @@ Lane 3's execution lifetime was shorter than the run, producing three
 consecutive FAIL rounds. Observability patches made the timeout more visible
 without changing the untestable all-or-nothing execution shape.
 
+<!-- R-0242 -->
 **Trigger:** a handoff specifies a script that will make more than 50
 sequential network calls, or Lane 1 otherwise expects one full run may outlive
 a single Lane 3 execution turn. Before Lane 2 writes any code, the handoff's
@@ -1179,6 +1382,7 @@ handoff that omits any of them is incomplete and must not be posted for
 implementation. These requirements define a verifiable job shape; adding
 progress logs, longer timeouts, or a terminal-only report does not satisfy
 them.
+<!-- /R-0242 -->
 
 ## Live-Verification Specs for Pre-Existing Services — Cite a Duration Budget, Scope the Check
 
@@ -1186,12 +1390,14 @@ Real incident, HRSE2 #455: a pure structural refactor (no behavior change) requi
 
 This differs from "Long-Running Script Handoffs" above: that section governs new scripts Lane 2 is about to write, where Lane 1 can require checkpoint/resume/bounded-work up front. Here the long-running thing is pre-existing code that cannot be redesigned by the issue under test.
 
+<!-- R-0243 -->
 **Before approving any Lane 3 test case requiring live invocation of a pre-existing service, Lane 1 must:**
 
 1. **Cite a measured duration budget.** Check the service's own logs or prior run history for its actual wall-clock duration -- do not guess or assume it will finish inside a Lane 3 turn.
 2. **If that duration exceeds a Lane 3 turn, scope the check to a bounded subset** -- a single entity, a single integration/branch of the service, or a direct call to an internal sub-function -- rather than a full, unbounded invocation.
 3. **Assert return shape, not value-equality, whenever the subject depends on live external data.** Two runs against a live third-party dataset will legitimately differ; require key-set/structure comparison instead.
 4. **Route any genuinely unbounded full-service run to the operator or a detached background job as a non-blocking deferred check.** It must never gate a PR inside a single Lane 3 turn.
+<!-- /R-0243 -->
 
 ## Plan-First Implementation — Reviewing Lane 2's Plan Before Credits Burn
 
@@ -1223,6 +1429,7 @@ fix considered but not sufficient alone since it stops the *commit*, not
 the premature write-then-discard cycle a hook can't distinguish from
 legitimate iteration).
 
+<!-- R-0244 -->
 **Trigger — self-declared by the handoff, not a size judgment.**
 `templates/lane1-handoff.md` carries a mandatory field, *Delegated
 Judgment Calls* (design decisions Lane 1 explicitly leaves to Lane 2;
@@ -1233,7 +1440,9 @@ Plan-first is required when any of:
    condition as `pitch-inspection` trigger 3), whether or not the issue is
    under the Tooling Exception.
 3. HITL explicitly says "Plan-first #N."
+<!-- /R-0244 -->
 
+<!-- R-0245 -->
 **Handoff-splitting — the gate is now physical, not voluntary.** For a
 plan-first issue, Lane 1's handoff comment **omits the Implementation Spec
 section entirely** — design content, affected-files table, root cause,
@@ -1242,7 +1451,9 @@ and test cases are all still posted, but the numbered step-by-step
 instructions are withheld. There is nothing for Lane 2 to implement from
 until the plan review passes, so "implement anyway" is no longer a
 self-restraint failure — the spec simply isn't there yet.
+<!-- /R-0245 -->
 
+<!-- R-0246 -->
 **Process — one extra relay, never a full round-trip:**
 - On "Plan #N" (see § HITL Gate Language step 2a) for a plan-first issue,
   Lane 2 posts its implementation plan as a comment on #N — covering, at
@@ -1251,12 +1462,16 @@ self-restraint failure — the spec simply isn't there yet.
   **stops.** The plan is a natural prefix of work Lane 2 was doing anyway
   (it has already fetched the issue and read the cited files); the
   marginal cost is one comment.
+<!-- /R-0246 -->
+<!-- R-0247 -->
 - HITL relays "Plan up for #N" (→ Lane 1). Lane 1 invokes `pitch-inspection`
   in **plan-review mode** (see `agents/pitch-inspection.md`), passing the
   original handoff plus Lane 2's plan; the review covers only the delta
   Lane 2 introduced, not a re-review of the whole handoff. Lane 1 posts the
   verdict as a single comment on #N. This is a Claude-side subagent call —
   no gate cycle needed.
+<!-- /R-0247 -->
+<!-- R-0248 -->
 - **PROCEED / PROCEED WITH NAMED CHANGES:** Lane 1 posts the withheld
   Implementation Spec as a follow-up comment (incorporating any named
   changes), then HITL sends **"Implement #N"** — now unambiguous, since it
@@ -1265,10 +1480,13 @@ self-restraint failure — the spec simply isn't there yet.
   the named flaw goes back to Lane 2 for one revised plan; if the second
   plan still draws REFORGE, that is an escalation to HITL, never a third
   review round. Same no-thrash cap as the Pre-Flight Second Read.
+<!-- /R-0248 -->
+<!-- R-0249 -->
 - A plan-first issue where Lane 2 starts implementing without a
   posted-and-reviewed plan is a protocol violation, same class as skipping
   the HITL close gate — file it per § STANDING-RULE VIOLATIONS GET FILED
   in `rules/universal-agent.md`, do not just note it in a gate comment.
+<!-- /R-0249 -->
 
 **What this does not cover:** faithfulness of Lane 2's later completion
 reports to the approved plan (verification-honesty, governed by
@@ -1289,6 +1507,7 @@ without independently re-verifying every claim from scratch. This is a
 mechanical formatting bug, not a judgment call — fix it as a standing rule,
 not a subagent.
 
+<!-- R-0250 -->
 **Any lane posting a comment containing a code block:**
 1. Write the comment body to a file first, then post via
    `gh api repos/OWNER/REPO/issues/N/comments -F body=@<path>` (REST — see
@@ -1299,6 +1518,7 @@ not a subagent.
    equivalent) and confirm it rendered legibly — no swallowed code blocks,
    no stripped content. This is the verify-live-not-source standard
    applied to a lane's own GitHub output, not just to code behavior.
+<!-- /R-0250 -->
 
 ## GitHub Account Scoping — Every Lane, Every Command
 
@@ -1306,12 +1526,14 @@ Core rule, incident record, and `gh-as` usage: see `universal-agent.md`'s
 "GitHub account scoping — never `gh auth switch`" section (harmonic-forge#170
 dedupe — this was a near-verbatim duplicate).
 
+<!-- R-0251 -->
 Residue not covered there: one-time setup is `gh-as --init <account>`;
 `gh-as --list` shows each configured slot and the identity it actually
 resolves to. **`gh-as` refuses to run** if a slot is unconfigured, its
 token is expired, or the slot's authenticated identity doesn't match its
 name — a command cannot silently execute against the wrong account
 because a token was replaced out of band.
+<!-- /R-0251 -->
 
 ## Team Topology
 
@@ -1321,6 +1543,7 @@ because a token was replaced out of band.
 | Feature delivery | Kyle (CymaGraph/HRSE2), Greg (Ke'nekted) | Consume golden paths; run the 3-lane loop locally; never edit platform rules directly |
 | Product demand | Shawn | Defines acceptance criteria on issues; approves shipped features |
 
+<!-- R-0252 -->
 **Tool choice per lane is a per-collaborator decision, not a platform mandate.**
 Kyle, Greg, Ajit, and future collaborators each pick whichever tool they
 run for Lane 2/Lane 3 on their own machine — Claude Code and Codex are the
@@ -1331,3 +1554,4 @@ itself (see the note under the lane diagram above): independent-eyes
 gating, no lane closes/merges on its own, and — per the Lane 3 note above
 — mechanical enforcement of the never-fixes-anything rule wherever the
 chosen tool supports it, not prose alone.
+<!-- /R-0252 -->

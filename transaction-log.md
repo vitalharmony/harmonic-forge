@@ -3,6 +3,51 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(rules): stable rule IDs + registry for rules/*.md (harmonic-forge#447)
+
+Assigns R-NNNN IDs to 140 enforceable rules across all 8 rules/*.md files
+and builds the machine-readable registry the violation-counting work needs.
+No rule text changed -- 280 insertions, 0 deletions, every added line a
+paired marker, asserted mechanically not by reading.
+
+Scheme: global monotonic R-NNNN, registry-as-allocator. Chosen against the
+relocation-stability constraint (the corpus trim this unblocks moves rules
+between files in bulk), which rules out per-file sequential; content-derived
+was rejected because it changes when wording changes, defeating 'violations
+of this rule since it was written'. Concurrent allocation can collide at
+merge -- detected by the drift check, resolved as an ordinary merge
+conflict, since preventing it needs a central allocator.
+
+Classification unit is the OBLIGATION, not the bullet: one bullet may yield
+several IDs (3-lane-protocol.md:133-153 carries two rules with different
+enforcement layers plus narrative), and narrative attaches to the rule it
+justifies rather than getting an ID.
+
+Per the spec's three named changes:
+- text_sha over the annotated span, whitespace-normalised per line, so a
+  reflow is not drift but a word change is. statement is a paraphrase and
+  cannot detect a rewording. file/anchor are descriptive only; the inline
+  marker is the locator.
+- hooks = [{script, events, wired_in}], not a scalar enforcement field.
+  The live scan covers 7 settings.json locations plus agent frontmatter and
+  finds 21 distinct hook scripts with visibly non-uniform wiring -- so 'is
+  rule X mechanized' has no single answer and any scalar would be false
+  somewhere.
+- restates field carries AC4's duplicate relation; 10 rules restate another.
+
+Two hooks a tools/hooks-scoped, single-settings-file scan misses entirely:
+block_closing_keywords.py (user-global only, and outside tools/hooks/) and
+deny_advisory_subagent_gh_writes.py (agent frontmatter only).
+
+Scope: rules/*.md. 3-lane-protocol.md is the second annotation pass and is
+where most hook-enforced rules actually live -- which is why AC4's
+hook-backed duplicate count is 0 in this pass and will not stay that way.
+20 tests; full forge suite 815 passing.
+- tools/rules/query_rules.py        |  242 ++++++++
+- tools/rules/registry.toml         | 1173 +++++++++++++++++++++++++++++++++++++
+- tools/rules/test_rule_registry.py |  273 +++++++++
+- 12 files changed, 2180 insertions(+)
+
 ## fix(hooks): preclose-inspection findings — python heredoc writes, /dev/null and quoted '>' false positives, harmonic-forge Edit|Write wiring (harmonic-forge#440)
 - .claude/settings.json               |  5 +++
 - tools/hooks/model_tier_gate.py      | 76 +++++++++++++++++++++++++++++++++++--
