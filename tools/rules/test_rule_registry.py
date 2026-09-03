@@ -270,6 +270,58 @@ class HookInventory(unittest.TestCase):
         self.assertEqual(query.enforcement_of({"hooks": []}), "prose")
 
 
+class SymlinkedRuleFiles(unittest.TestCase):
+    """A symlinked rule file belongs to the registry it points INTO.
+
+    HRSE2's `.claude/rules/` symlinks three files into `harmonic-forge/rules/`.
+    Those are annotated in forge's registry, so following the link from hrse
+    makes forge's IDs look like orphans there. This regressed live the moment
+    harmonic-forge#452 merged: hrse's drift check began failing on R-0122,
+    because the previously-unannotated symlink target suddenly had markers.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.root = Path(self.tmpdir.name)
+        # a file owned by "the other repo", already annotated there
+        other = self.root / "other" / "shared.md"
+        _write(self.root, "other/shared.md", """
+            <!-- R-0122 -->
+            - A rule owned by the sibling registry.
+            <!-- /R-0122 -->
+            """)
+        (self.root / "rules").mkdir(parents=True, exist_ok=True)
+        (self.root / "rules" / "shared.md").symlink_to(other)
+        _write(self.root, "rules/own.md", """
+            <!-- R-0001 -->
+            - A rule this registry owns.
+            <!-- /R-0001 -->
+            """)
+        self.registry = _registry(self.root, f"""
+            [[rule]]
+            id = "R-0001"
+            file = "rules/own.md"
+            anchor = "a"
+            statement = "s"
+            text_sha = "{drift.span_sha('- A rule this registry owns.')}"
+            hooks = []
+            """)
+
+    def test_symlinked_file_is_not_treated_as_an_orphan(self):
+        self.assertEqual(drift.check(self.root, self.registry, ("rules/*.md",)), [])
+
+    def test_the_real_file_is_still_checked(self):
+        """The skip must not swallow the non-symlinked files beside it."""
+        _write(self.root, "rules/own.md", """
+            <!-- R-0001 -->
+            - A rule this registry owns, reworded.
+            <!-- /R-0001 -->
+            """)
+        failures = drift.check(self.root, self.registry, ("rules/*.md",))
+        self.assertTrue(any("span text changed" in f for f in failures))
+
+
 class UnknownRegistryField(unittest.TestCase):
     """A misspelled field must fail, not be silently ignored.
 
