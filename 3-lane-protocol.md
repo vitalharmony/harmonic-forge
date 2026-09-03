@@ -685,6 +685,22 @@ through `mise run l1-post`/`lane-comment` instead (harmonic-forge#190/#191/#193 
 before that fix, Codex Lane 3 always posted directly while Claude Lane 3
 was unconditionally blocked, an accidental asymmetry, not a design). This
 lets the human
+
+**`l1-post` and `lane-comment` are not interchangeable — pick by claim kind, not by
+which one is unblocked.** Every protocol status claim (`handoff`, `ready-for-l3`,
+`sweep`, `ae`, `ae-and-sweep`) goes through `mise run l1-post --kind <kind>`, which
+stamps a machine-readable `<!-- l1-post v1; kind=... -->` marker that downstream
+tooling (e.g. `harmonic-forge/tools/gh/fetch_lane1_context.py`'s `_LANE1_KINDS`
+filter) keys on. `lane-comment` stamps `kind=discussion` and is for ordinary,
+non-protocol discussion only. Posting an AE (or any of the other kinds) via
+`lane-comment` produces a comment that reads correctly to a human but is invisible
+to Lane 3's own spec/AE fetch — it will report the gate blocked with no valid AE
+found, even though a plausible-looking one is sitting on the thread (cymagraph-infra#344,
+2026-09-02). If `l1-post` itself errors (e.g. it can't resolve `--sha`), the fix is
+to run it from a local checkout of the *target* repo at the *target* commit — never
+to fall back to `lane-comment` or raw `gh api` as a workaround.
+
+This
 operator (HITL) drive the loop with short, canonical trigger phrases
 instead of relaying pasted content between tools. Every trigger names the
 issue explicitly (`#N`) — multiple issues can be in flight at once, and an
