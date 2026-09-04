@@ -19,6 +19,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\""
+          },
+          {
+            "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane2_status_claims.py\""
           },
           {
