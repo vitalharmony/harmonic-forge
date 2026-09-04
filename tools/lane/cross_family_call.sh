@@ -275,7 +275,59 @@ invoke_gemini() {
   fi
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
-    env -u GOOGLE_API_KEY -u GEMINI_API_KEY \
+    # harmonic-forge#462: `~/.gemini/settings.json` pins
+    # `selectedType: "oauth-personal"` (the operator's interactive login),
+    # and Gemini honors that pin -- and any cached
+    # `~/.gemini/oauth_creds.json` -- over a `GEMINI_API_KEY` env var even
+    # when one is present. oauth-personal is also the auth tier Google has
+    # discontinued for this client (`IneligibleTierError`), so every
+    # invocation using the real HOME dies there before `GEMINI_API_KEY` is
+    # ever consulted. A throwaway HOME carrying only
+    # `selectedType: "gemini-api-key"` is the only way to force the key
+    # path without touching the operator's real global settings --
+    # confirmed live: without it, `API key not valid` is never reached at
+    # all, the process dies on the auth-tier error first. Scoped to this
+    # subshell's own trap so it never leaks into a caller that also
+    # invokes Codex or Claude in the same `cross_family_call.sh` run.
+    #
+    # Two follow-on findings from preclose-inspection on this same issue,
+    # both against Gemini's OWN config-root resolution
+    # (`homedir()` in the installed CLI bundle), which checks
+    # `GEMINI_CLI_HOME` before falling back to `$HOME`:
+    #
+    #   1. If the caller's environment exports `GEMINI_CLI_HOME`, `env
+    #      HOME=...` alone does not override it -- Gemini resolves back to
+    #      the operator's real `~/.gemini/`, silently defeating this whole
+    #      mechanism. `GEMINI_CLI_HOME` is unset explicitly so the
+    #      throwaway `HOME` is the only candidate `homedir()` can return.
+    #   2. Gemini's dotenv fallback (`<homedir>/.gemini/.env`, then
+    #      `<homedir>/.env`) resolves via the same `homedir()` -- so once a
+    #      working key exists, an operator who supplies it via
+    #      `~/.gemini/.env` (the vendor-documented location that keeps the
+    #      secret out of the process environment, rather than exporting it)
+    #      would find it invisible here, a silent regression versus the
+    #      pre-fix behavior. `GEMINI_API_KEY`/`GOOGLE_API_KEY` are passed
+    #      through explicitly from the real environment (if set) precisely
+    #      so the exported-var path keeps working even though the dotenv
+    #      path cannot be reached from an isolated HOME.
+    gemini_authtype_home="$(mktemp -d)"
+    trap 'rm -rf "$gemini_authtype_home"' EXIT
+    mkdir -p "$gemini_authtype_home/.gemini"
+    cat >"$gemini_authtype_home/.gemini/settings.json" <<'SETTINGS'
+{"security":{"auth":{"selectedType":"gemini-api-key"}}}
+SETTINGS
+    # If the operator supplies the key via Gemini's documented dotenv path
+    # rather than exporting it, that file lives under the REAL home and
+    # would otherwise be invisible from the throwaway one -- copy it in
+    # (not symlink: keeps the throwaway dir self-contained after the real
+    # HOME's file changes mid-run).
+    if [ -f "$HOME/.gemini/.env" ]; then
+      cp "$HOME/.gemini/.env" "$gemini_authtype_home/.gemini/.env"
+    fi
+    env -u GEMINI_CLI_HOME \
+      "HOME=$gemini_authtype_home" \
+      ${GEMINI_API_KEY:+"GEMINI_API_KEY=$GEMINI_API_KEY"} \
+      ${GOOGLE_API_KEY:+"GOOGLE_API_KEY=$GOOGLE_API_KEY"} \
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m gemini-2.5-pro \
