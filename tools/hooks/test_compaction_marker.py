@@ -9,11 +9,13 @@ which is the failure this issue's AC1 called out by name.
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from enum import Enum
 from pathlib import Path
 from unittest import mock
 
@@ -67,6 +69,16 @@ class Payload(unittest.TestCase):
     def _context(self, env) -> str:
         return cm.handle(load_fixture(), env)["hookSpecificOutput"]["additionalContext"]
 
+    def _context_in(self, env, cwd: str) -> str:
+        """Same, with the session's cwd overridden (harmonic-forge#464).
+
+        `agent-foundation.md` routes on the repo, not the lane, so a test that
+        cannot vary cwd cannot assert that routing at all.
+        """
+        payload = load_fixture()
+        payload["cwd"] = cwd
+        return cm.handle(payload, env)["hookSpecificOutput"]["additionalContext"]
+
     def test_states_the_two_tier_corpus_split(self):
         """The correction that mattered most: saying only "your directives are
         back" would suppress the recovery action, because the auto-loaded
@@ -92,6 +104,47 @@ class Payload(unittest.TestCase):
         two = self._context({"LANE": "2"})
         self.assertNotIn("universal-lane1.md", two)
         self.assertNotIn("testing-gate.md", two)
+
+    # --- harmonic-forge#464: the two entries the duplicated list dropped ---
+
+    def test_universal_claude_is_named_to_every_lane(self):
+        """It was in the docstring's corpus list and in neither tuple, so it
+        reached nobody. Unconditional by decision: Lane 2 and Lane 3 accept
+        either Claude Code or Codex, and one ignorable path costs less than the
+        silent drop this issue documents."""
+        for env in ({"LANE": "1"}, {"LANE": "2"}, {"LANE": "3"}, {}):
+            with self.subTest(env=env):
+                self.assertIn("universal-claude.md", self._context(env))
+
+    def test_agent_foundation_routes_on_the_repo_not_the_lane(self):
+        """The finding that changed this issue's shape: the corpus routes on two
+        axes. Both directions are asserted — testing only the positive would
+        pass just as well if the path were unconditional, which is the bug in
+        the other direction."""
+        inside = self._context_in({"LANE": "2"}, cm.forge_root() + "/tools/hooks")
+        self.assertIn("agent-foundation.md", inside)
+
+        outside = self._context_in({"LANE": "2"}, "/home/mmangus/Harmonic_Projects/HRSE2")
+        self.assertNotIn("agent-foundation.md", outside)
+
+    def test_the_forge_root_itself_counts_as_inside(self):
+        """A session whose cwd IS the checkout, not a subdirectory of it."""
+        self.assertIn(
+            "agent-foundation.md", self._context_in({"LANE": "2"}, cm.forge_root()),
+        )
+
+    def test_repo_scoping_survives_a_symlinked_or_relative_cwd(self):
+        """Both sides are resolved before comparing. An unresolved compare would
+        drop the file for exactly the sessions that need it — this issue's own
+        failure shape, reintroduced."""
+        awkward = cm.forge_root() + "/tools/../tools/hooks"
+        self.assertIn("agent-foundation.md", self._context_in({"LANE": "2"}, awkward))
+
+    def test_an_unresolvable_cwd_does_not_raise(self):
+        """A deleted or unreadable cwd costs one unnamed path, never the
+        session's recovery note."""
+        text = self._context_in({"LANE": "2"}, "/nonexistent/\x00bad")
+        self.assertIn("3-lane-protocol.md", text)
 
     def test_lane_unset_says_unknown_and_does_not_crash(self):
         for env in ({}, {"LANE": ""}, {"LANE": "   "}):
@@ -193,6 +246,117 @@ class Cli(unittest.TestCase):
     def test_non_compact_payload_prints_empty_object(self):
         out = self._run(json.dumps(load_fixture() | {"source": "startup"}))
         self.assertEqual(out, {})
+
+
+class CorpusDeclaration(unittest.TestCase):
+    """harmonic-forge#464 — the declaration is the only enumeration, and a
+    malformed one fails visibly.
+
+    Every case here builds a **synthetic** `CorpusFile`/`CORPUS`. The real
+    declaration is never mutated: a test that removed an entry to prove the
+    deriver notices would leave the hook broken if the process died between the
+    removal and the restore, and this hook runs when a session is least able to
+    cope with that.
+    """
+
+    def test_the_module_holds_exactly_one_enumeration_of_corpus_paths(self):
+        """AC1, and the actual defect: the docstring listed six corpus files and
+        the tuples named four. Two hand-maintained copies of one fact drift —
+        that is what a second copy does."""
+        source = (Path(cm.__file__)).read_text(encoding="utf-8")
+        docstring = ast.get_docstring(ast.parse(source)) or ""
+
+        # Basenames, not full paths. Asserting the full path would pass on a
+        # prefix technicality: the docstring could say `universal-claude.md`
+        # while CORPUS holds `rules/universal-claude.md`, and the two lists
+        # would be free to drift exactly as they did.
+        for entry in cm.CORPUS:
+            basename = entry.path.rsplit("/", 1)[-1]
+            with self.subTest(path=entry.path):
+                self.assertNotIn(
+                    basename, docstring,
+                    f"{basename} is named in both CORPUS and the module "
+                    f"docstring — the duplication this issue removed",
+                )
+
+        # And no revived tuple: the derived values must not come back as
+        # literals somebody edits alongside CORPUS.
+        self.assertFalse(hasattr(cm, "_ALWAYS"), "_ALWAYS is a second list")
+        self.assertFalse(hasattr(cm, "_BY_LANE"), "_BY_LANE is a second list")
+
+    def test_every_real_entry_routes_somewhere_or_states_why_not(self):
+        """The two dropped files were dropped by being in no branch at all. An
+        entry must reach a lane, a repo, or carry a stated exclusion."""
+        reachable = {
+            cm.Routing.ALWAYS, cm.Routing.BY_LANE, cm.Routing.FORGE_REPO,
+        }
+        for entry in cm.CORPUS:
+            with self.subTest(path=entry.path):
+                if entry.routing in reachable:
+                    continue
+                self.assertIs(entry.routing, cm.Routing.EXCLUDED)
+                self.assertTrue(entry.reason, "an exclusion must state its reason")
+
+    def test_an_unhandled_routing_value_fails_loudly(self):
+        """The drift case, over a synthetic declaration.
+
+        Silently dropping an unrouted entry is this issue itself; silently
+        including it would make the EXCLUDED tier meaningless. So it raises —
+        and `handle()` turns that into a visible message rather than a crash
+        (asserted below)."""
+        class _Rogue(str, Enum):
+            NOWHERE = "nowhere"
+
+        rogue = cm.CorpusFile.__new__(cm.CorpusFile)
+        object.__setattr__(rogue, "path", "rules/ghost.md")
+        object.__setattr__(rogue, "routing", _Rogue.NOWHERE)
+        object.__setattr__(rogue, "lane", None)
+        object.__setattr__(rogue, "reason", None)
+
+        with mock.patch.object(cm, "CORPUS", (rogue,)):
+            with self.assertRaises(ValueError) as caught:
+                cm.corpus_for("2", "/tmp")
+        self.assertIn("rules/ghost.md", str(caught.exception))
+
+    def test_a_bad_declaration_degrades_visibly_and_still_injects(self):
+        """A malformed CORPUS must not cost the session its recovery note, and
+        must not read as "nothing to re-read" — which is the shape this whole
+        issue is about."""
+        class _Rogue(str, Enum):
+            NOWHERE = "nowhere"
+
+        rogue = cm.CorpusFile.__new__(cm.CorpusFile)
+        object.__setattr__(rogue, "path", "rules/ghost.md")
+        object.__setattr__(rogue, "routing", _Rogue.NOWHERE)
+        object.__setattr__(rogue, "lane", None)
+        object.__setattr__(rogue, "reason", None)
+
+        with mock.patch.object(cm, "CORPUS", (rogue,)):
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(cm, "MARKER_DIR", Path(tmp) / "m"):
+                    out = cm.handle(load_fixture(), {"LANE": "2"})
+
+        self.assertIn("systemMessage", out)
+        self.assertIn("corpus declaration is invalid", out["systemMessage"])
+        context = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("could not be built", context)
+        self.assertIn("re-read the issue thread", context)
+
+    def test_by_lane_without_a_lane_is_refused_at_construction(self):
+        """A routing that needs a lane and has none would match no lane and
+        reach nobody — silently, which is the defect."""
+        with self.assertRaises(ValueError):
+            cm.CorpusFile("rules/x.md", cm.Routing.BY_LANE)
+
+    def test_an_exclusion_without_a_reason_is_refused(self):
+        """AC: a deliberately-not-reinjected file states why in source, rather
+        than being an absence somebody has to infer."""
+        with self.assertRaises(ValueError):
+            cm.CorpusFile("rules/x.md", cm.Routing.EXCLUDED)
+        # With a reason it is accepted, and routes to nobody.
+        excluded = cm.CorpusFile("rules/x.md", cm.Routing.EXCLUDED, reason="covered elsewhere")
+        with mock.patch.object(cm, "CORPUS", (excluded,)):
+            self.assertEqual(cm.corpus_for("2", cm.forge_root()), [])
 
 
 class Wiring(unittest.TestCase):
