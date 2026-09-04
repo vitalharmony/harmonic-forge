@@ -19,14 +19,14 @@ spending the context budget this issue exists to protect.
 But the auto-loaded surface is NOT the lane's directive corpus, and conflating
 the two was this issue's most expensive error. `harmonic-forge/CLAUDE.md` is 19
 lines -- a pointer -- and the repo has no `.claude/rules/` at all. The real
-corpus is Read-tool-loaded and never comes back on its own:
+corpus is Read-tool-loaded and never comes back on its own.
 
-    3-lane-protocol.md          1573
-    rules/universal-agent.md     598
-    rules/testing-gate.md        250
-    rules/universal-lane1.md     229
-    rules/universal-claude.md     90
-    docs/agent-foundation.md      75
+That corpus is enumerated ONCE, in `CORPUS` below, and the injection is derived
+from it. It used to be listed here as well, with line counts, and the two lists
+drifted by two entries -- named here as lost and then routed to nobody
+(harmonic-forge#464). A second hand-maintained copy of one fact is what produced
+that, so there is now one. No filename belongs in this docstring: naming one
+here is how the duplicate list starts again.
 
 Telling a compacted session "your directives are back" would suppress the exact
 recovery action it needs. So the payload states the split -- auto-loaded surface
@@ -47,7 +47,9 @@ import os
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 #: Same convention as `item_list_cache.py:30` / `model_tier_gate.py:94`.
@@ -58,9 +60,77 @@ MARKER_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-compaction-gate"
 #: early is strictly worse than keeping it -- see `prune_markers`.
 TTL_SECONDS = 7 * 24 * 60 * 60
 
-#: The corpus a compacted session must re-read, by LANE. Paths, never content.
-_ALWAYS = ("3-lane-protocol.md", "rules/universal-agent.md")
-_BY_LANE = {"1": ("rules/universal-lane1.md",), "3": ("rules/testing-gate.md",)}
+class Routing(str, Enum):
+    """How one corpus file reaches a compacted session.
+
+    Two axes, not one, which is the finding that shaped harmonic-forge#464:
+    some of the corpus routes by **lane** and some by **repo**, and a structure
+    that can only express lanes has nowhere to put the second kind.
+    """
+
+    #: Every session, whatever its lane or cwd.
+    ALWAYS = "always"
+    #: Only the lane named in `CorpusFile.lane`.
+    BY_LANE = "by_lane"
+    #: Only a session whose cwd is inside the harmonic-forge checkout.
+    FORGE_REPO = "forge_repo"
+    #: Corpus, deliberately not re-injected. Requires a stated `reason` --
+    #: an exclusion should be readable in source, not inferred from a file's
+    #: absence from a list, which is precisely how #464's two went missing.
+    #: No entry uses this today.
+    EXCLUDED = "excluded"
+
+
+@dataclass(frozen=True)
+class CorpusFile:
+    """One corpus path and the rule for who is told to re-read it."""
+
+    path: str
+    routing: Routing
+    #: Required for `BY_LANE`, meaningless otherwise.
+    lane: str | None = None
+    #: Required for `EXCLUDED`, meaningless otherwise.
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.routing is Routing.BY_LANE and not self.lane:
+            raise ValueError(f"{self.path}: BY_LANE routing needs a lane")
+        if self.routing is Routing.EXCLUDED and not self.reason:
+            raise ValueError(f"{self.path}: EXCLUDED routing needs a stated reason")
+        if self.routing is not Routing.BY_LANE and self.lane:
+            raise ValueError(f"{self.path}: lane is meaningless for {self.routing.value}")
+
+
+#: **The single enumeration of the protocol corpus.** Paths, never content.
+#:
+#: Nothing else in this module may list corpus paths. `corpus_for()` derives the
+#: injection from this and the module docstring points here rather than
+#: repeating it -- that duplication is what harmonic-forge#464 removed.
+#:
+#: Line counts are deliberately not recorded: they were a third hand-maintained
+#: fact in the old docstring block and would go stale the same way.
+CORPUS: tuple[CorpusFile, ...] = (
+    CorpusFile("3-lane-protocol.md", Routing.ALWAYS),
+    CorpusFile("rules/universal-agent.md", Routing.ALWAYS),
+    # Every lane, unconditionally. Lane 2 and Lane 3 accept either Claude Code
+    # or Codex (`rules/universal-lane1.md` § Current lane assignment), so this
+    # is a deliberate choice rather than an oversight: `universal-lane1.md`
+    # defers to this file for tool-use safeguards, the memory system and the
+    # concrete advisory-invocation mechanism, and the cost of naming one
+    # ignorable path to a Codex session is smaller than the cost of dropping it.
+    # A `LANE_AGENT` gate was considered and rejected -- an unset variable there
+    # fails by silently dropping the file, which is this bug in a harder-to-see
+    # form.
+    CorpusFile("rules/universal-claude.md", Routing.ALWAYS),
+    CorpusFile("rules/universal-lane1.md", Routing.BY_LANE, lane="1"),
+    CorpusFile("rules/testing-gate.md", Routing.BY_LANE, lane="3"),
+    # Repo-scoped, not lane-scoped: vendor-neutral direction for agents working
+    # *inside* the forge repo ("Editing the platform from inside the platform is
+    # the one case with no other coverage"). Loaded by forge's `CLAUDE.md`, a
+    # 19-line pointer, so it is Read-loaded and genuinely lost -- but naming it
+    # to an HRSE2 lane session is noise.
+    CorpusFile("docs/agent-foundation.md", Routing.FORGE_REPO),
+)
 
 
 def forge_root() -> str:
@@ -79,14 +149,63 @@ def lane_of(env: dict[str, str]) -> str:
     return lane if lane else "unknown"
 
 
-def corpus_for(lane: str) -> list[str]:
+def _inside_forge_repo(cwd: str, root: str) -> bool:
+    """Is this session working inside the harmonic-forge checkout?
+
+    Both sides are resolved before comparing, so a symlinked or relative cwd
+    does not silently miss — which would drop `agent-foundation.md` for exactly
+    the sessions that need it, this issue's own failure shape.
+
+    A cwd that cannot be resolved (deleted directory, permission error) is
+    treated as "not in the forge repo": the cost is one unnamed path, against a
+    raise in a hook that runs when the session is least able to cope with one.
+    """
+    try:
+        resolved_cwd = Path(cwd).resolve()
+        resolved_root = Path(root).resolve()
+    except (OSError, ValueError):
+        return False
+    return resolved_cwd == resolved_root or resolved_root in resolved_cwd.parents
+
+
+def _routes_to(entry: "CorpusFile", lane: str, cwd: str, root: str) -> bool:
+    """Whether one corpus entry is named to this session.
+
+    An unhandled `Routing` raises rather than defaulting either way. Silently
+    dropping an unrouted entry is harmonic-forge#464 itself; silently including
+    it would make the `EXCLUDED` tier meaningless. `handle()` catches this and
+    still ships the injection, so a bad declaration degrades visibly instead of
+    costing the session its recovery note.
+    """
+    if entry.routing is Routing.ALWAYS:
+        return True
+    if entry.routing is Routing.BY_LANE:
+        return entry.lane == lane
+    if entry.routing is Routing.FORGE_REPO:
+        return _inside_forge_repo(cwd, root)
+    if entry.routing is Routing.EXCLUDED:
+        return False
+    raise ValueError(f"{entry.path}: unhandled routing {entry.routing!r}")
+
+
+def corpus_for(lane: str, cwd: str = "") -> list[str]:
+    """The paths this session is told to re-read, derived from `CORPUS`.
+
+    `cwd` defaults to empty so an existing caller that only knows the lane keeps
+    working; an empty cwd simply routes no repo-scoped file, which is the same
+    answer it would have given before repo scoping existed.
+    """
     root = forge_root()
-    return [f"{root}/{p}" for p in _ALWAYS + _BY_LANE.get(lane, ())]
+    return [
+        f"{root}/{entry.path}"
+        for entry in CORPUS
+        if _routes_to(entry, lane, cwd, root)
+    ]
 
 
 def build_context(compacted_at: str, lane: str, cwd: str) -> str:
     """The injected payload. Situational state and paths — no rule text."""
-    paths = "\n".join(f"  - {p}" for p in corpus_for(lane))
+    paths = "\n".join(f"  - {p}" for p in corpus_for(lane, cwd))
     return (
         f"This session was compacted at {compacted_at}. You are LANE={lane} in {cwd}.\n"
         f"Your CLAUDE.md and .claude/rules/ directives were re-loaded automatically. "
@@ -171,9 +290,30 @@ def handle(payload: dict, env: dict[str, str], now: float | None = None) -> dict
             # recovery note, which is the thing that actually helps right now.
             pass
 
+    try:
+        context = build_context(compacted_at, lane, cwd)
+    except ValueError as err:
+        # A malformed `CORPUS` entry — an unhandled routing value. Visible, not
+        # silent: a bad declaration must not cost the session its recovery note,
+        # and it must not look like "nothing to re-read" either, which is the
+        # exact shape harmonic-forge#464 was about. `systemMessage` surfaces it
+        # to the operator alongside a payload naming what can still be derived.
+        return {
+            "systemMessage": f"compaction_marker: corpus declaration is invalid — {err}",
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": (
+                    f"This session was compacted at {compacted_at}. You are LANE={lane} "
+                    f"in {cwd}.\nThe protocol-corpus list could not be built ({err}) — "
+                    f"re-read your directives from {forge_root()} manually.\n"
+                    f"Your task state is also gone — re-read the issue thread before acting."
+                ),
+            },
+        }
+
     return {"hookSpecificOutput": {
         "hookEventName": "SessionStart",
-        "additionalContext": build_context(compacted_at, lane, cwd),
+        "additionalContext": context,
     }}
 
 
