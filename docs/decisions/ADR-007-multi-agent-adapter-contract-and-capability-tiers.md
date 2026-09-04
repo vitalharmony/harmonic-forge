@@ -412,6 +412,31 @@ conversation. This is what makes a headless call *better* than a
 same-session subagent for adversarial work: the refuter cannot anchor on the
 reasoning that produced the defect.
 
+**Gemini auth, verified live (harmonic-forge#462).** `~/.gemini/settings.json`
+pins `selectedType: "oauth-personal"` on this machine, and Gemini honors that
+pin — plus any cached `~/.gemini/oauth_creds.json` — over a `GEMINI_API_KEY`
+env var even when one is present. `oauth-personal` is also the auth tier
+Google has discontinued for this client (`IneligibleTierError: … no longer
+supported for Gemini Code Assist for individuals`), and Application Default
+Credentials (ADC) — what `cross_family_call.sh` forced before this issue by
+unsetting both `GOOGLE_API_KEY`/`GEMINI_API_KEY` — is separately dead (`403
+PERMISSION_DENIED … no valid license of this product`). Of the three auth
+paths Gemini CLI supports, only **`gemini-api-key`** currently reaches the
+API at all on this account. `invoke_gemini` now runs Gemini under a
+throwaway `HOME` carrying `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`
+in its own `.gemini/settings.json` — the only way found to force the key
+path without touching the operator's real global config — and no longer
+unsets either API key. This affects every posture, not only `probe`.
+**Two follow-on findings from `preclose-inspection` on this same issue,
+both against Gemini's own config-root resolution:** the installed CLI
+checks `GEMINI_CLI_HOME` before `$HOME`, so `env HOME=...` alone does not
+force the throwaway settings if a caller's environment happens to export
+that var — it is explicitly unset alongside the `HOME` override. And
+Gemini's dotenv fallback (`<homedir>/.gemini/.env`, then `<homedir>/.env`)
+resolves via the same `homedir()`, so a key supplied that way rather than
+exported would otherwise become invisible from an isolated `HOME` — the
+real `~/.gemini/.env`, if present, is copied into the throwaway one.
+
 **Postures, and where the boundary actually lives.**
 
 - `probe` is the only posture that ever passes Gemini `--yolo`. It requires

@@ -440,5 +440,131 @@ class TestAC7FrozenReplay(unittest.TestCase):
         self.assertEqual(env["report"]["assumptions"][0]["verdict"], "uncheckable")
 
 
+class TestAC2GeminiAuthMechanism(unittest.TestCase):
+    """harmonic-forge#462: `invoke_gemini` must not unset the API keys, and
+    must force `gemini-api-key` auth via a throwaway HOME rather than the
+    operator's real `~/.gemini/settings.json` (which pins the discontinued
+    `oauth-personal` tier)."""
+
+    def test_no_unconditional_key_unset_remains(self) -> None:
+        source = SCRIPT.read_text()
+        self.assertNotIn("-u GOOGLE_API_KEY", source)
+        self.assertNotIn("-u GEMINI_API_KEY", source)
+
+    def test_gemini_invocation_gets_its_own_throwaway_home_selecting_the_key_auth_type(self) -> None:
+        """A stub `gemini` records the HOME it was actually invoked with and
+        that HOME's settings.json content, so this proves the mechanism --
+        not just that the source text mentions it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stub_dir = Path(tmpdir) / "stubbin"
+            stub_dir.mkdir()
+            capture = Path(tmpdir) / "capture.json"
+            for name in ("codex", "claude"):
+                stub = stub_dir / name
+                stub.write_text(
+                    '#!/usr/bin/env bash\n'
+                    'echo \'{"type":"item.completed","item":{"type":"agent_message",'
+                    '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n'
+                )
+                stub.chmod(0o755)
+            gemini_stub = stub_dir / "gemini"
+            gemini_stub.write_text(
+                '#!/usr/bin/env bash\n'
+                f'settings=$(cat "$HOME/.gemini/settings.json" 2>/dev/null || echo "MISSING")\n'
+                f'printf \'{{"home":"%s","settings":%s,"gemini_key":"%s","google_key":"%s"}}\' '
+                f'"$HOME" "$settings" "${{GEMINI_API_KEY:-UNSET}}" "${{GOOGLE_API_KEY:-UNSET}}" '
+                f'> "{capture}"\n'
+                'echo \'{"summary": "stub"}\'\n'
+            )
+            gemini_stub.chmod(0o755)
+            brief = Path(tmpdir) / "brief.md"
+            brief.write_text("cold brief\n")
+            cwd = Path(tmpdir) / "scratch"
+            cwd.mkdir()
+
+            # preclose-inspection finding: never capture a REAL secret into a
+            # file, even one meant to be discarded -- both keys are
+            # overridden to dummy values before the script ever runs, so
+            # whatever the stub writes to disk is a fixture, not a live
+            # credential. `GEMINI_CLI_HOME` is also stripped from the test's
+            # own environment so a real one (if ever set on a dev machine)
+            # can't mask the fix's own `-u GEMINI_CLI_HOME` from mattering.
+            env = dict(os.environ)
+            env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
+            env["GEMINI_API_KEY"] = "test-gemini-key"
+            env["GOOGLE_API_KEY"] = "test-google-key"
+            env.pop("GEMINI_CLI_HOME", None)
+            real_home = env.get("HOME", "")
+            subprocess.run(
+                ["bash", str(SCRIPT), "--caller", "claude", "--families", "3",
+                 "--posture", "read-only", "--brief", str(brief), "--cwd", str(cwd)],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env,
+            )
+
+            self.assertTrue(capture.exists(), "gemini stub never ran")
+            captured = json.loads(capture.read_text())
+            self.assertNotEqual(captured["home"], real_home,
+                                 "gemini must run under a throwaway HOME, not the operator's real one")
+            self.assertEqual(
+                captured["settings"],
+                {"security": {"auth": {"selectedType": "gemini-api-key"}}},
+            )
+            self.assertEqual(captured["gemini_key"], "test-gemini-key",
+                              "GEMINI_API_KEY must reach the gemini process, not be unset")
+            self.assertEqual(captured["google_key"], "test-google-key",
+                              "GOOGLE_API_KEY must also reach the gemini process, not be unset")
+
+    def test_a_real_gemini_cli_home_does_not_defeat_the_throwaway_home(self) -> None:
+        """preclose-inspection finding: Gemini's own config-root resolution
+        checks GEMINI_CLI_HOME before HOME, so `env HOME=...` alone does not
+        force the throwaway settings if the caller's environment happens to
+        export GEMINI_CLI_HOME -- it must be explicitly unset."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stub_dir = Path(tmpdir) / "stubbin"
+            stub_dir.mkdir()
+            capture = Path(tmpdir) / "capture.json"
+            for name in ("codex", "claude"):
+                stub = stub_dir / name
+                stub.write_text(
+                    '#!/usr/bin/env bash\n'
+                    'echo \'{"type":"item.completed","item":{"type":"agent_message",'
+                    '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n'
+                )
+                stub.chmod(0o755)
+            gemini_stub = stub_dir / "gemini"
+            # Mirrors the installed CLI's own precedence: GEMINI_CLI_HOME
+            # wins over HOME if the fix fails to strip it.
+            gemini_stub.write_text(
+                '#!/usr/bin/env bash\n'
+                'resolved_home="${GEMINI_CLI_HOME:-$HOME}"\n'
+                f'printf \'{{"resolved_home":"%s","gemini_cli_home_seen":"%s"}}\' '
+                '"$resolved_home" "${GEMINI_CLI_HOME:-UNSET}" '
+                f'> "{capture}"\n'
+                'echo \'{"summary": "stub"}\'\n'
+            )
+            gemini_stub.chmod(0o755)
+            brief = Path(tmpdir) / "brief.md"
+            brief.write_text("cold brief\n")
+            cwd = Path(tmpdir) / "scratch"
+            cwd.mkdir()
+
+            fake_real_gemini_cli_home = str(Path(tmpdir) / "operators-real-gemini-home")
+            env = dict(os.environ)
+            env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
+            env["GEMINI_CLI_HOME"] = fake_real_gemini_cli_home
+            subprocess.run(
+                ["bash", str(SCRIPT), "--caller", "claude", "--families", "3",
+                 "--posture", "read-only", "--brief", str(brief), "--cwd", str(cwd)],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env,
+            )
+
+            self.assertTrue(capture.exists(), "gemini stub never ran")
+            captured = json.loads(capture.read_text())
+            self.assertEqual(captured["gemini_cli_home_seen"], "UNSET",
+                              "GEMINI_CLI_HOME must be stripped before invoking gemini")
+            self.assertNotEqual(captured["resolved_home"], fake_real_gemini_cli_home,
+                                 "a caller-set GEMINI_CLI_HOME must not survive into the gemini process")
+
+
 if __name__ == "__main__":
     unittest.main()
