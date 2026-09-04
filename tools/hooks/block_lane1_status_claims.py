@@ -76,6 +76,23 @@ a narrower scope than the general file-write deny this hook implements
 for Claude Code. Same `LANE` mechanism as the Lane 2 guard above,
 deny-by-default instead of deny-one-place, since Lane 3 has no
 legitimate write target besides gate artifacts.
+
+Both of those path predicates also apply on the `Bash` surface
+(harmonic-forge#458). They did not, originally, and the gap was found the
+only way it could be: a LANE=2 session wrote a protected file with a
+`python3` script after the `Edit` tool denied it. Reproduced live, all six
+shapes — `Edit` and `Write` denied; a scripted write, a heredoc script, and
+a bare `echo x > <protected>` redirect all allowed. The bare redirect is
+the finding that mattered: the issue was filed as a scripted-write bypass,
+but the simplest possible shell construct did it with no script at all.
+
+Note that broadening the tool matcher — the obvious fix, and the one the
+handoff proposed — would not have caught the reported incident. The
+matcher was ALREADY `Bash` in the checkout the write ran from; the hook was
+invoked and chose not to block, because its `Bash` branch only ever checked
+transports. One predicate, two surfaces, wired to one of them. The matcher
+was separately missing in harmonic-forge's own settings, which is fixed in
+the same change, but it was the second half of the bug, not the first.
 """
 
 import json
@@ -87,7 +104,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from shell_parse import command_segments  # noqa: E402  (harmonic-forge#167)
+from shell_parse import (  # noqa: E402  (harmonic-forge#167)
+    command_segments,
+    strip_invocation_prefix,
+)
 
 HRSE_REPO = "vitalharmony/hrse"
 REPO_SETTING = re.compile(r'(?m)^\s*GH_REPO\s*=\s*"([^"]+)"\s*$')
@@ -101,6 +121,42 @@ LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 EDIT_WRITE_TOOLS = {"Edit", "Write"}
 LANE_WORKTREE_SUFFIX = re.compile(r"^(.+)-lane\d+$")
 TESTPLAN_ROOT = (Path.home() / "Harmonic_Projects" / "testplan").resolve()
+
+# --- Bash-surface write detection (harmonic-forge#458) ----------------------
+#: A standalone redirect operator: `>`, `>>`, `2>`, `&>`. The target is the
+#: NEXT token. `shell_parse.command_segments` does not treat `>` as
+#: punctuation, so both this and the glued form below are needed.
+REDIRECT_TOKEN = re.compile(r"^(?:[0-9]*|&)>>?$")
+
+#: The glued form `echo x>/path` / `2>/dev/null`, which arrives as one token.
+#: Rejects any token containing whitespace, so a quoted `-m "a > b"` commit
+#: message is never mistaken for a redirect.
+GLUED_REDIRECT = re.compile(r"^(?P<pre>[^>\s]*)>{1,2}(?P<target>[^>\s]+)$")
+
+#: Interpreters whose one-liners/heredocs can write without any shell-visible
+#: write construct — the shape that produced this issue's incident.
+INTERPRETERS = {"python", "python3", "node", "nodejs", "ruby", "perl",
+                "bash", "sh", "zsh"}
+
+#: A write verb inside interpreter text. Deliberately a fixed list rather than
+#: anything general: see the module docstring's note on what this cannot see.
+#: The `>` alternative requires a path-shaped operand so that an ordinary
+#: numeric comparison (`if len(x) > 3`) inside a READ script is not a write.
+INTERPRETER_WRITE_VERB = re.compile(
+    r"""open\s*\([^)]*['"][rbt]*[wax+][^'"]*['"]"""
+    r"""|write_text\s*\(|write_bytes\s*\(|writelines\s*\("""
+    r"""|os\.replace\s*\(|os\.rename\s*\("""
+    r"""|shutil\.(?:copy\w*|move)\s*\("""
+    r"""|>>?\s*['"]?(?:~|\.{0,2}/)"""
+)
+
+#: Path-shaped runs in raw command text — anything containing a `/`. Coarse on
+#: purpose: every candidate is then handed to the SAME predicates that govern
+#: the `Edit`/`Write` surface, which is what decides whether it is protected.
+PATH_CANDIDATE = re.compile(r"[~\w.\-/]*/[~\w.\-/]*")
+
+#: Size-shaped operands (`truncate -s 0`), never paths.
+SIZE_OPERAND = re.compile(r"^[+\-<>/%]?\d+[KMGTPkmgtp]?[Bb]?$")
 
 
 def resolve_main_checkout_root(cwd: Path) -> Path | None:
@@ -464,6 +520,165 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
     return False
 
 
+def ignorable_write_target(target: str) -> bool:
+    """Targets that are never a file this project protects.
+
+    `&1` is the tail of `2>&1` after the glued-redirect split, not a path.
+    `/dev/*` covers the single most frequent redirect in this codebase
+    (`> /dev/null`) — treating it as a protected write would deny it under
+    LANE=3, where every path outside testplan is protected.
+    """
+    return (not target
+            or target.startswith("&")
+            or target == "/dev"
+            or target.startswith("/dev/"))
+
+
+def bash_write_targets(segment: list[str]) -> list[str]:
+    """Paths a single shell segment writes to, by static construct.
+
+    Statically-decidable shapes only — redirects, `tee`, `sed -i`,
+    `cp`/`mv`/`install` destinations, `truncate`, `dd of=`. Interpreter
+    one-liners carry no shell-visible write construct and are handled
+    separately by `interpreter_write_paths` (harmonic-forge#458).
+    """
+    targets: list[str] = []
+    index = 0
+    while index < len(segment):
+        token = segment[index]
+        if REDIRECT_TOKEN.match(token) and index + 1 < len(segment):
+            targets.append(segment[index + 1])
+            index += 2
+            continue
+        glued = GLUED_REDIRECT.match(token)
+        if glued:
+            targets.append(glued.group("target"))
+        index += 1
+
+    tokens = strip_invocation_prefix(segment)
+    if not tokens:
+        return targets
+    verb = Path(tokens[0]).name
+    args = tokens[1:]
+    positional = [arg for arg in args if not arg.startswith("-")]
+
+    if verb == "tee":
+        targets.extend(positional)
+    elif verb == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
+        # Without -e/-f, sed's FIRST positional is the script (`s/x/y/`), not a
+        # file — and a script is path-shaped enough to resolve inside a
+        # protected checkout, so dropping it matters.
+        explicit_script = any(
+            a in ("-e", "--expression", "-f", "--file")
+            or a.startswith(("--expression=", "--file="))
+            for a in args
+        )
+        targets.extend(positional if explicit_script else positional[1:])
+    elif verb in ("cp", "mv", "install") and len(positional) >= 2:
+        targets.append(positional[-1])
+    elif verb == "truncate":
+        targets.extend(a for a in positional if not SIZE_OPERAND.match(a))
+    elif verb == "dd":
+        targets.extend(a[len("of="):] for a in args if a.startswith("of="))
+
+    return [t for t in targets if not ignorable_write_target(t)]
+
+
+def interpreter_write_paths(segment: list[str], command: str) -> list[str]:
+    """Path candidates from an interpreter invocation that also writes.
+
+    BOTH signals are required — a protected path AND a write verb in the same
+    command text. Neither alone is enough, and that is the whole design: the
+    survey that established which hooks carry which matcher (this issue's own
+    judgment call 2) was a `python3` heredoc that READ every protected settings
+    file, and a path-mention-only rule would have denied the investigation.
+
+    Scans the RAW command rather than the parsed segment because
+    `command_segments` masks heredoc bodies — `python3 <<'PY' ... PY` is
+    exactly one of the shapes reproduced live for this issue, and its body is
+    `__HEREDOC_BODY__` by the time it reaches a segment.
+
+    Evadable, and stated as such: `getattr(open, ...)`, a base64'd payload,
+    `exec()`. The threat model is an agent taking a convenient shortcut — which
+    is what actually happened in harmonic-forge#446 — not an adversary.
+    `block_irreversible_ops.py` concedes the same class for shell wrappers
+    rather than pretending to close it; this follows that precedent.
+    """
+    tokens = strip_invocation_prefix(segment)
+    if not tokens or Path(tokens[0]).name not in INTERPRETERS:
+        return []
+    if not INTERPRETER_WRITE_VERB.search(command):
+        return []
+    return [c for c in PATH_CANDIDATE.findall(command)
+            if c and "/" in c and not ignorable_write_target(c)]
+
+
+#: Upper bound on paths examined per segment. `write_on_main_branch` shells out
+#: to git twice per candidate, and the interpreter rule's path extraction is
+#: deliberately coarse — a pathological command must not turn a PreToolUse hook
+#: into a visible stall.
+MAX_WRITE_TARGETS = 20
+
+
+def protected_write_denial(targets: list[str], cwd: Path, construct: str) -> dict | None:
+    """The `Edit`/`Write` predicates, reached from the `Bash` surface.
+
+    ALL THREE of them, which the plan for this issue got wrong: it named
+    `lane2_write_in_main_checkout` and `lane3_write_outside_testplan` only, and
+    with just those two the live re-run still allowed every scripted and
+    redirect shape. The predicate that actually denies the reported incident is
+    `write_on_main_branch` (harmonic-forge#384) — the write was into ANOTHER
+    project's main checkout (`~/harmonic-forge` from an HRSE2 session), which
+    the Lane 2 predicate deliberately does not cover, since it resolves the
+    protected root from the session's own cwd. Wiring the first two alone would
+    have shipped a fix that passed its tests and left the bypass open.
+
+    No new protected surface: a command denied here is one that would already
+    have been denied had the same file been touched with `Edit`. The bug
+    (harmonic-forge#458) is that the two surfaces shared these predicates and
+    only one was wired to them.
+    """
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for target in targets:
+        if target not in seen:
+            seen.add(target)
+            deduped.append(target)
+    for target in deduped[:MAX_WRITE_TARGETS]:
+        if lane2_write_in_main_checkout(target, cwd):
+            return denial(
+                f"Blocked: this session was launched as Lane 2 (LANE=2) and "
+                f"this command writes into the main checkout via {construct} "
+                f"({target!r}) — harmonic-forge#458. A shell write is the same "
+                "violation as an `Edit` here (harmonic-forge#142): Lane 2 work "
+                "belongs in its own dedicated worktree. Re-run it against the "
+                "project's -lane2 worktree or a fresh "
+                "/tmp/<project>-<issue>-impl worktree."
+            )
+        if lane3_write_outside_testplan(target):
+            return denial(
+                f"Blocked: this session was launched as Lane 3 (LANE=3) and "
+                f"this command writes outside ~/Harmonic_Projects/testplan/ "
+                f"via {construct} ({target!r}) — harmonic-forge#458. Lane 3 "
+                "never fixes anything, ever (harmonic-forge#150); the only "
+                "writable path is the testplan root, for gate artifacts too "
+                "large for an issue comment. Redirect scratch output there "
+                "instead."
+            )
+        if write_on_main_branch(target, cwd):
+            return denial(
+                f"Blocked: {target!r} is a tracked file in a checkout that has "
+                f"`main` checked out, and this command writes to it via "
+                f"{construct} (harmonic-forge#384/#458). Branch first: "
+                "`git checkout -b <name>` — a shell write is the same "
+                "violation as an `Edit`, and creating files and branching "
+                "afterward is the same violation again. This check applies "
+                "regardless of LANE, including a Lane 1 session with no LANE "
+                "set at all."
+            )
+    return None
+
+
 def denial(message: str) -> dict:
     return {
         "hookSpecificOutput": {
@@ -491,6 +706,19 @@ def decision(command: object, cwd: Path) -> dict:
             target = Path(segment[1]).expanduser()
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
+        # harmonic-forge#458: the path predicates below govern the Edit/Write
+        # surface and, until now, nothing else — so `echo x > <protected>` and
+        # `python3 -c "open(<protected>,'w')"` walked straight past a guard
+        # that denies the identical write through `Edit`.
+        write_denial = protected_write_denial(
+            bash_write_targets(segment), effective_cwd, "a shell write construct")
+        if write_denial is not None:
+            return write_denial
+        write_denial = protected_write_denial(
+            interpreter_write_paths(segment, command), effective_cwd,
+            "an interpreter one-liner")
+        if write_denial is not None:
+            return write_denial
         if os.environ.get("LANE") == "3":
             bulk_read_reason = bulk_comment_read_denial(segment)
             if bulk_read_reason is not None:
