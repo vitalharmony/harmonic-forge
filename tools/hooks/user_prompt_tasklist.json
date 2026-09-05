@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "hrse#1546 — the versioned source of a UserPromptSubmit hook that lives",
+    "in the UNTRACKED ~/.claude/settings.json.",
+    "",
+    "WHY USER LEVEL. AC1 is 'every prompt in every session'. A project",
+    ".claude/settings.json fires only for sessions whose cwd is inside that",
+    "project, and measured 2026-09-05: hrse had 2 UserPromptSubmit hooks,",
+    "harmonic-forge 1, ~/.claude/settings.json zero. The session that",
+    "surfaced this issue had no LANE — i.e. was running outside hrse — which",
+    "is exactly the session a project-level hook cannot reach.",
+    "",
+    "WHY THIS FILE EXISTS. The live file is untracked, so it has no review",
+    "and no history. This copy restores both without changing where the hook",
+    "fires or what it does. If the two ever disagree, this one is the intent",
+    "and the live one is the fact — reconcile toward this.",
+    "",
+    "WHY A BARE echo AND NOT A SCRIPT. A UserPromptSubmit hook blocks the",
+    "prompt on exit code 2. An inline echo of a literal string has no failure",
+    "mode that reaches it: no file read, no interpreter start, no stdin",
+    "consumed. AC3 ('never blocks a prompt') therefore holds by construction",
+    "rather than by care. A python3 script would be the natural symmetry with",
+    "expand_lane_shorthand.py and is strictly worse here — it can fail to",
+    "import, and it costs an interpreter start on every single prompt.",
+    "",
+    "WHY IT READS NO STDIN. The other two hooks on this event do: the",
+    "conditional reminder pipes the prompt payload through a bare grep, and",
+    "expand_lane_shorthand.py parses it. Each hook is its own process with",
+    "its own stdin, but a third stdin-consuming hook is the one way this",
+    "could have interfered, so it deliberately consumes none. That is AC4.",
+    "",
+    "WHY THE TEXT IS NOT REWORDED. It is the operator's own sentence,",
+    "verbatim, because it is the one that demonstrably works. A paraphrase —",
+    "capitalised, politened, expanded into a rule — is an untested change to",
+    "the only part of this that was ever validated. AC2.",
+    "",
+    "COST, MEASURED NOT ESTIMATED (AC5). Via the Anthropic count_tokens",
+    "endpoint on 2026-09-05, subtracting a one-character envelope floor:",
+    "13 tokens on claude-opus-5 and claude-sonnet-5, 10 on",
+    "claude-haiku-4-5. 52 characters. A chars/4 estimate would have said 13",
+    "— right for Opus by coincidence and wrong for Haiku, which is why the",
+    "AC asks for a real number.",
+    "",
+    "INSTALL: merge the `hooks` object below into ~/.claude/settings.json,",
+    "appending to any existing UserPromptSubmit array rather than replacing",
+    "it."
+  ],
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"use the todolist widget so I can track your progress\"}}' || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
