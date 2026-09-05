@@ -70,8 +70,14 @@ re-verifies each item itself before implementing (same section).
 ### Implementation Spec
 **If this handoff triggers Plan-First Implementation** (`3-lane-protocol.md`
 § Plan-First Implementation — Delegated Judgment Calls above is non-"none",
-the work mutates git/live data, or HITL said "Plan-first #N"): **omit this
-section from the initial post.** Post everything above as the handoff,
+the work mutates git/live data, or HITL said "Plan-first #N"): **keep this
+heading and mark the section withheld** — e.g. "**Withheld pending Lane 2's
+plan.**" Do not delete it: an absent section is indistinguishable from a
+forgotten one, to a reviewer and to `l1_post.py` alike, and a section that
+states its own intent is mechanically checkable. `validate_plan_first_spec`
+(hrse#980) refuses a `--plan-first true` handoff whose Implementation Spec
+carries no such marker, or whose numbered steps begin above it. Post
+everything above as the handoff,
 stop there, and wait for HITL to relay "Plan #N" (not "Implement #N" — see
 `3-lane-protocol.md` § HITL Gate Language step 2a). Once Lane 2's plan
 draws a PROCEED/PROCEED WITH NAMED CHANGES verdict, post this section as a

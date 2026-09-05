@@ -984,8 +984,11 @@ recall.
 <!-- R-0215 -->
    - **2a. HITL says "Plan #N"** (→ Lane 2, plan-first issues only). Lane 2
      fetches the issue and Lane 1's handoff — which for a plan-first issue
-     contains no Implementation Spec section yet (see § Plan-First
-     Implementation) — and posts its implementation plan as a comment,
+     carries an Implementation Spec section explicitly marked withheld
+     rather than an absent one (see § Plan-First Implementation; hrse#980
+     corrected this text, which used to say "contains no Implementation
+     Spec section yet" and instructed authors to produce artifacts
+     `l1_post.py` rejects) — and posts its implementation plan as a comment,
      then stops. There is nothing to implement from yet, so nothing to
      skip ahead into.
 <!-- /R-0215 -->
