@@ -2157,3 +2157,19 @@ anchor = "derived-lane-states"
 statement = "A marker quoted as evidence is never a transition: fenced blocks are stripped before any marker is read, footers included."
 text_sha = "7d243cc240241a05"
 hooks = []
+
+[[rule]]
+id = "R-0335"
+file = "rules/testing-gate.md"
+anchor = "gate-readiness-sweep"
+statement = "A gate-readiness sweep leads with Readiness/Blockers/Next in bold-labelled lines above any evidence section or details block; readiness, not a verdict, because the sweep is pre-execution."
+text_sha = "e4f1cb49c3e28a63"
+hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-post --kind ae", "l1-post --kind ae-and-sweep"], wired_in = "hrse" }]
+
+[[rule]]
+id = "R-0336"
+file = "rules/testing-gate.md"
+anchor = "gate-readiness-sweep"
+statement = "An AE leads with Authorized (which spec, which branch and SHA) and Next, above any evidence; it reports no finding and is not asked for one."
+text_sha = "44e4b01f0db6ef67"
+hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-post --kind ae", "l1-post --kind ae-and-sweep"], wired_in = "hrse" }]

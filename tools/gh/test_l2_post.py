@@ -136,3 +136,84 @@ class TestSnapshot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLeadBlock(unittest.TestCase):
+    """harmonic-forge#472 — outcome first, evidence collapsed.
+
+    The emitter, not a convention: AC4 rejects prose asking a lane to
+    remember, so these assert the shape a lane physically cannot avoid.
+    """
+
+    LEAD = {"Status": "implemented, unpushed", "Change": "three files",
+            "Next": "L1 reviews"}
+
+    def test_the_lead_precedes_the_narrative_and_the_evidence(self):
+        """AC1. Positional, not merely present — `assertIn` on all three
+        would pass on the old body, which led with the receipts."""
+        body = lp.compose_body("completion", [{"exit_code": 0}], "long narrative",
+                               self.LEAD)
+        self.assertLess(body.index("**Status:**"), body.index("### Narrative"))
+        self.assertLess(body.index("**Next:**"), body.index("<details>"))
+        self.assertLess(body.index("### Narrative"), body.index("```json"))
+
+    def test_receipts_are_retained_in_full_inside_the_details_block(self):
+        """AC2. Nothing deleted, nothing moved to a second comment."""
+        receipts = [{"argv": ["echo", "hi"], "exit_code": 0}]
+        body = lp.compose_body("completion", receipts, "n", self.LEAD)
+        opened = body.index("<details>")
+        closed = body.index("</details>")
+        self.assertIn('"echo"', body[opened:closed])
+        self.assertIn('"exit_code": 0', body[opened:closed])
+        self.assertIn("Verified receipts — 1", body)
+
+    def test_a_reader_who_never_expands_still_has_the_outcome(self):
+        """AC3, stated as the test the AC actually describes: strip the
+        collapsed section and the outcome and next action survive."""
+        body = lp.compose_body("completion", [{"x": 1}], "n", self.LEAD)
+        visible = body[:body.index("<details>")]
+        self.assertIn("implemented, unpushed", visible)
+        self.assertIn("L1 reviews", visible)
+
+    def test_the_marker_heading_stays_top_level(self):
+        """AC6 on the issue: `lane_state.py` reads `## L2D` and hrse#1590
+        made position load-bearing, so the heading may not move inside the
+        collapsed block."""
+        body = lp.compose_body("completion", [], "n", self.LEAD)
+        self.assertTrue(body.startswith("## L2D "))
+        self.assertLess(body.index("## L2D"), body.index("<details>"))
+
+    def test_completion_and_blocked_refuse_a_missing_lead(self):
+        for kind in ("completion", "blocked"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(SystemExit) as ctx:
+                    lp.validate_lead(kind, {"Status": "x", "Change": "", "Next": "y"})
+                self.assertIn("--change", str(ctx.exception))
+
+    def test_a_plan_may_omit_the_lead(self):
+        """Question 2, answered as the plan's stated lean: a plan's finding
+        IS the plan, and a mandatory one-line summary of what follows in full
+        produces filler."""
+        lp.validate_lead("plan", {})
+        body = lp.compose_body("plan", [], "the plan", {})
+        self.assertNotIn("**Status:**", body)
+        self.assertIn("### Narrative", body)
+
+    def test_an_empty_string_field_renders_no_line(self):
+        """`main()` always passes all three keys — argparse defaults them to
+        `""` — so a "was this key supplied" check would emit `**Status:**`
+        with nothing after it on every plan post. The dict is never sparse in
+        the real caller, which is why presence cannot be the test."""
+        body = lp.compose_body("plan", [], "n",
+                               {"Status": "", "Change": "", "Next": "review it"})
+        self.assertNotIn("**Status:**", body)
+        self.assertIn("**Next:** review it", body)
+
+    def test_a_partial_lead_renders_only_what_was_given(self):
+        body = lp.compose_body("plan", [], "n", {"Next": "review it"})
+        self.assertIn("**Next:** review it", body)
+        self.assertNotIn("**Status:**", body)
+
+    def test_whitespace_only_lead_values_do_not_count_as_supplied(self):
+        with self.assertRaises(SystemExit):
+            lp.validate_lead("completion", {"Status": "  ", "Change": "c", "Next": "n"})
