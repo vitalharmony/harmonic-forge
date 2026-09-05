@@ -79,6 +79,47 @@ for the UI-only variant.
      `.devin/skills/lane3-gate/SKILL.md` and `AGENTS.md`) for the
      identical rule stated at the actual entry point.
 <!-- /R-0128 -->
+<!-- R-0335 -->
+   - **The sweep leads with its own summary block, above any evidence
+     (harmonic-forge#472).** Three bold-labelled lines directly under the
+     heading, before the first `###` section or `<details>` block:
+
+     ```markdown
+     ## Gate-readiness sweep — H164
+
+     **Readiness:** all 9 cases executable as written.
+     **Blockers:** none.
+     **Next:** Lane 3 executes, then reports PASS/FAIL.
+
+     Write tier: R
+
+     ### Per-case readiness
+     1. TC1 — ready: dry-run mode live-verifiable, no writes.
+     ```
+
+     Readiness/blockers/next, **not** verdict/finding/next: a sweep is a
+     PRE-execution artifact, so it has no verdict and rule 3's own
+     fabricated-outcome check refuses one. `l1_post.py`'s `validate_lead`
+     enforces this and refuses a sweep that buries its assessment — this
+     paragraph documents an enforced rule rather than asking a lane to
+     remember one.
+<!-- /R-0335 -->
+<!-- R-0336 -->
+   - **The AE leads with what it authorized and what happens next.** Two
+     lines, same position, same enforcement:
+
+     ```markdown
+     ## AE — H164
+
+     **Authorized:** the spec in issuecomment-5548514543, against
+     `feat/164-thing` @ `d5339ca`.
+     **Next:** Lane 3 executes the approved cases and reports.
+     ```
+
+     An AE grants permission; it reports no finding, and it is not asked
+     for one. Forcing it into a verdict/finding template produces a heading
+     that lies.
+<!-- /R-0336 -->
 <!-- R-0129 -->
    - **A dependency present only via an undocumented ad-hoc install (not
      declared in the project's actual manifest — `requirements.txt`,

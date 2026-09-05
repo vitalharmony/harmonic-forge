@@ -60,14 +60,76 @@ def snapshot(repo: str, issue: int) -> dict:
     return body
 
 
-def compose_body(kind: str, receipts: list[dict], narrative: str) -> str:
+#: harmonic-forge#472. The lead block, per artifact rather than one universal
+#: verdict/finding/next schema — the correction the red team made and Lane 1
+#: ratified. Forcing four artifacts into one template produces headings that
+#: lie: a sweep is pre-execution and has no verdict, an AE is an authorization
+#: and reports no finding. Lane 2's three artifacts genuinely do share a shape
+#: (status / what changed or what blocks / what happens next), so they share
+#: one here — and nothing beyond them does.
+LEAD_LABELS = ("Status", "Change", "Next")
+
+#: Required on `completion` and `blocked`, optional on `plan`.
+#:
+#: The asymmetry is deliberate and is the open question 2 on the issue,
+#: answered here as the plan's stated lean rather than left to block the
+#: work: a plan's "finding" IS the plan, and a mandatory one-line summary of
+#: something the reader is about to read in full produces filler. A completion
+#: and a blocker both report an outcome that a reader needs before deciding
+#: whether to read further, which is the operator's actual complaint.
+LEAD_REQUIRED_KINDS = ("completion", "blocked")
+
+
+def lead_block(lead: dict[str, str]) -> str:
+    """The visible three lines. Empty string when nothing was supplied."""
+    lines = [f"**{label}:** {lead[label].strip()}"
+             for label in LEAD_LABELS if lead.get(label, "").strip()]
+    return "\n".join(lines) + "\n\n" if lines else ""
+
+
+def compose_body(kind: str, receipts: list[dict], narrative: str,
+                 lead: dict[str, str] | None = None) -> str:
+    """Outcome first, evidence collapsed (harmonic-forge#472).
+
+    Two changes from the shape this replaced, both structural rather than
+    advisory — AC4 rejects "a convention a lane is asked to remember", and a
+    lane physically cannot post through this function without them:
+
+    1. The lead block sits above the narrative, so a reader who reads three
+       lines knows the outcome and the next action (AC3).
+    2. The receipts JSON moved BELOW the narrative and into a collapsed
+       `<details>`. It was the first thing in the comment — evidence ahead of
+       outcome, which is the defect this issue names. Nothing is deleted and
+       nothing moves to a second comment (AC2).
+
+    The `## L2P|L2D|L2B` heading stays at the top level, outside `<details>`:
+    `lane_state.py` reads it, and hrse#1590 made position load-bearing.
+    """
     label = {"plan": "L2P", "completion": "L2D", "blocked": "L2B"}[kind]
     fenced = json.dumps(receipts, indent=2, sort_keys=True)
+    count = len(receipts)
     return (
         f"## {label} — receipt-backed status (harmonic-forge#371)\n\n"
-        f"### Verified receipts\n```json\n{fenced}\n```\n\n"
-        f"### Narrative\n{narrative}\n"
+        f"{lead_block(lead or {})}"
+        f"### Narrative\n{narrative}\n\n"
+        f"<details><summary>Verified receipts — {count}</summary>\n\n"
+        f"```json\n{fenced}\n```\n\n"
+        f"</details>\n"
     )
+
+
+def validate_lead(kind: str, lead: dict[str, str]) -> None:
+    """Refuse a completion or a blocked post that buries its outcome."""
+    if kind not in LEAD_REQUIRED_KINDS:
+        return
+    missing = [label for label in LEAD_LABELS if not lead.get(label, "").strip()]
+    if missing:
+        raise SystemExit(
+            f"--kind {kind} requires the lead block (harmonic-forge#472): "
+            f"missing {', '.join('--' + label.lower() for label in missing)}. "
+            "A reader who never expands the evidence still has to know the "
+            "outcome and what happens next."
+        )
 
 
 def post(repo: str, issue: int, body: str) -> dict:
@@ -114,6 +176,15 @@ def main() -> int:
     post_p.add_argument("--issue", type=int, required=True)
     post_p.add_argument("--receipts", nargs="*", default=[])
     post_p.add_argument("--narrative-file", type=Path, required=True)
+    post_p.add_argument("--status", default="",
+                        help="Lead block: where this issue now stands. Required "
+                             "for --kind completion/blocked (harmonic-forge#472).")
+    post_p.add_argument("--change", default="",
+                        help="Lead block: what changed, or what blocks. Required "
+                             "for --kind completion/blocked.")
+    post_p.add_argument("--next", dest="next_action", default="",
+                        help="Lead block: the literal next action. Required for "
+                             "--kind completion/blocked.")
 
     snap_p = sub.add_parser("snapshot", help="fetch and record a fresh comment snapshot")
     snap_p.add_argument("--repo", required=True)
@@ -146,7 +217,9 @@ def main() -> int:
 
     receipts = load_receipts(args.receipts)
     narrative = args.narrative_file.read_text()
-    body = compose_body(args.kind, receipts, narrative)
+    lead = {"Status": args.status, "Change": args.change, "Next": args.next_action}
+    validate_lead(args.kind, lead)
+    body = compose_body(args.kind, receipts, narrative, lead)
     result = post(args.repo, args.issue, body)
     print(json.dumps(result))
     return 0

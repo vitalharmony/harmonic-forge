@@ -120,8 +120,11 @@ flag "--kind <kind>" help="plan | completion | blocked" required=#true
 flag "--issue <issue>" help="Issue number" required=#true
 flag "--narrative-file <file>" help="Path to a file containing the narrative section" required=#true
 flag "--receipts <receipts>" help="Space-separated receipt JSON paths" var=#true
+flag "--status <status>" help="Lead block: where the issue now stands (required for completion/blocked, harmonic-forge#472)"
+flag "--change <change>" help="Lead block: what changed, or what blocks"
+flag "--next <next>" help="Lead block: the literal next action"
 '''
-run = "python3 tools/gh/l2_post.py post --kind \"$usage_kind\" --repo \"$GH_REPO\" --issue \"$usage_issue\" --narrative-file \"$usage_narrative_file\" --receipts $usage_receipts"
+run = "python3 tools/gh/l2_post.py post --kind \"$usage_kind\" --repo \"$GH_REPO\" --issue \"$usage_issue\" --narrative-file \"$usage_narrative_file\" --receipts $usage_receipts --status \"$usage_status\" --change \"$usage_change\" --next \"$usage_next\""
 
 [tasks.l2-snapshot]
 description = "Fetch and record a fresh comment snapshot for an issue (tools/gh/l2_post.py snapshot, harmonic-forge#371) -- the only source a Lane 2 'no new comment exists' claim may be sourced from (AC3)."
