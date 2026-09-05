@@ -346,33 +346,58 @@ emit_envelope() {
     return
   fi
 
-  local native_json text
+  # harmonic-forge#466: every payload below stays in a FILE and is never
+  # assigned to a shell variable that later becomes an argv element. Linux
+  # caps a *single* argument at MAX_ARG_STRLEN (32 pages = 131,072 bytes),
+  # independently of ARG_MAX (2,097,152 here) -- so the total-argument budget
+  # was never the constraint and raising it would not have helped. A
+  # `read-only` review of a real codebase produces a native stream far past
+  # 128 KB because the stream carries every tool call and reasoning item, not
+  # just the final message: measured at 754,034 bytes on 2026-09-04, 5.75x the
+  # cap. The helper broke precisely when it was doing its job.
+  local native_norm text_file unfenced_file report_file report_tmp
+  native_norm="$(mktemp)"; text_file="$(mktemp)"
+  unfenced_file="$(mktemp)"; report_file="$(mktemp)"; report_tmp="$(mktemp)"
+  # Cleanup is local to this function and restores nothing, because
+  # `emit_envelope` is never called from a trap-bearing subshell -- the only
+  # existing trap belongs to the Gemini home dir (line 314) and is scoped to
+  # its own subshell.
+  trap 'rm -f "$native_norm" "$text_file" "$unfenced_file" "$report_file" "$report_tmp"' RETURN
+
+  # One normalized native VALUE per family, written to disk. `jq -s '.[0]'`
+  # for the single-object families is what `cat` used to produce; `jq -s '.'`
+  # for Codex's JSONL is what its own `-s` already produced. Both keep the
+  # `|| null` fallback the Codex branch had, extended to the other two: a
+  # malformed stream now yields `native: null` rather than aborting the
+  # envelope, which is strictly better than the old behaviour on that path.
   case "$family" in
     claude)
-      native_json="$(cat "$native_file")"
-      text="$(jq -r '.result // empty' "$native_file" 2>/dev/null || true)"
+      jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+      jq -r '.result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       ;;
     codex)
-      native_json="$(jq -s '.' "$native_file" 2>/dev/null || echo 'null')"
-      text="$(jq -rs '[.[] | select(.type=="item.completed" and .item.type=="agent_message")] | last | .item.text // empty' "$native_file" 2>/dev/null || true)"
+      jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+      jq -rs '[.[] | select(.type=="item.completed" and .item.type=="agent_message")] | last | .item.text // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       ;;
     gemini)
-      native_json="$(cat "$native_file")"
-      text="$(jq -r '.response // empty' "$native_file" 2>/dev/null || true)"
+      jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+      jq -r '.response // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       ;;
   esac
 
   # Strip a markdown fence some families wrap their JSON reply in
-  # (```json ... ``` or plain ``` ... ```) before parsing.
-  local unfenced
-  unfenced="$(printf '%s' "$text" | sed -e '/^```/d')"
+  # (```json ... ``` or plain ``` ... ```) before parsing. `sed` reads the
+  # file rather than a `printf "$text"` pipeline: `printf` is a builtin and so
+  # was never itself at risk, but the AC is that no unbounded value is an argv
+  # element anywhere, and a grep cannot tell a builtin from an exec.
+  sed -e '/^```/d' "$text_file" >"$unfenced_file"
 
-  local report_json status
-  if [ -n "$unfenced" ] && report_json="$(printf '%s' "$unfenced" | jq -c '.' 2>/dev/null)" \
-     && printf '%s' "$report_json" | jq -e 'type == "object" and (.findings | type == "array")' >/dev/null 2>&1; then
+  local status
+  if [ -s "$unfenced_file" ] && jq -c '.' "$unfenced_file" >"$report_file" 2>/dev/null \
+     && jq -e 'type == "object" and (.findings | type == "array")' "$report_file" >/dev/null 2>&1; then
     status="ok"
   else
-    report_json="null"
+    printf 'null\n' >"$report_file"
     status="invalid-report"
   fi
 
@@ -391,9 +416,12 @@ emit_envelope() {
   #
   # Nothing here can upgrade a verdict, so a malformed report can only ever
   # come out weaker than the model claimed, never stronger.
+  # The jq PROGRAM below is unchanged -- only its input moved from argv to a
+  # file. These three downgrades are load-bearing (harmonic-forge#448) and
+  # nothing here may weaken them.
   if [ "$posture" = verify ] && [ "$status" = "ok" ]; then
-    if printf '%s' "$report_json" | jq -e '.assumptions | type == "array"' >/dev/null 2>&1; then
-      report_json="$(printf '%s' "$report_json" | jq -c '
+    if jq -e '.assumptions | type == "array"' "$report_file" >/dev/null 2>&1; then
+      jq -c '
         .assumptions = [
           .assumptions[]
           | .evidence = (.evidence // "")
@@ -402,16 +430,21 @@ emit_envelope() {
               elif (.verdict != "uncheckable") and ((.evidence | gsub("^\\s+|\\s+$"; "")) == "") then "uncheckable"
               else .verdict end
             )
-        ]')"
+        ]' "$report_file" >"$report_tmp" && mv "$report_tmp" "$report_file"
     else
-      report_json="null"
+      printf 'null\n' >"$report_file"
       status="invalid-report"
     fi
   fi
 
+  # `--slurpfile` reads a file into an ARRAY of the JSON values it holds, so
+  # each is indexed back out with `[0]`. Both files are guaranteed to hold
+  # exactly one valid JSON value by construction above -- including the
+  # literal `null` on every failure path -- so neither index can be missing.
+  # The four remaining `--arg`/`--argjson` values are bounded scalars.
   jq -n --arg family "$family" --arg posture "$posture" --arg status "$status" --argjson exit_code "$exit_code" \
-    --argjson report "$report_json" --argjson native "$native_json" \
-    '{family:$family, posture:$posture, status:$status, exit_code:$exit_code, report:$report, native:$native}'
+    --slurpfile report "$report_file" --slurpfile native "$native_norm" \
+    '{family:$family, posture:$posture, status:$status, exit_code:$exit_code, report:$report[0], native:$native[0]}'
 }
 
 # --- dispatch ---
