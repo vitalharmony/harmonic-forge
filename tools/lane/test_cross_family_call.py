@@ -566,5 +566,143 @@ class TestAC2GeminiAuthMechanism(unittest.TestCase):
                                  "a caller-set GEMINI_CLI_HOME must not survive into the gemini process")
 
 
+
+class TestOversizedNativeStream(unittest.TestCase):
+    """harmonic-forge#466 — payloads reach `jq` through files, never argv.
+
+    Linux caps a *single* argument at `MAX_ARG_STRLEN` (32 pages = 131,072
+    bytes), independently of `ARG_MAX` (2,097,152 on this machine), so the
+    total-argument budget was never the constraint and raising it would not
+    have helped. Reproduced before the fix at exit 126 with
+    `/usr/bin/jq: Argument list too long` and an empty envelope.
+
+    The failure scaled with review quality: a `read-only` review of a real
+    codebase carries every tool call and reasoning item in its native stream,
+    not just the final message. The observed run's stream was 754,034 bytes,
+    5.75x the cap — the helper broke precisely when it was doing its job.
+    """
+
+    #: Comfortably past both the per-argument cap and `ARG_MAX`, so a fix that
+    #: merely trimmed the payload under 128 KB would still fail here.
+    TARGET_BYTES = 2 * 1024 * 1024
+
+    def _big_codex_stream(self, report: object) -> str:
+        """A Codex JSONL stream over `TARGET_BYTES` ending in a valid report.
+
+        Bulked with `reasoning` items rather than one enormous message,
+        because that is the real shape: the stream is long because the model
+        did a lot of work, not because any single item is huge.
+        """
+        filler = "x" * 300
+        lines = []
+        size = 0
+        while size < self.TARGET_BYTES:
+            line = json.dumps({
+                "type": "item.completed",
+                "item": {"id": f"i{len(lines)}", "type": "reasoning", "text": filler},
+            })
+            lines.append(line)
+            size += len(line) + 1
+        lines.append(codex_native(report).strip())
+        return "\n".join(lines) + "\n"
+
+    def test_a_two_megabyte_stream_produces_a_well_formed_envelope(self):
+        """TC1. Asserts the envelope's SHAPE, not merely a zero exit — the
+        AC is explicit about that, because an exit code alone would pass
+        against an empty stdout."""
+        stream = self._big_codex_stream({"findings": [{"title": "a finding"}]})
+        self.assertGreater(len(stream.encode()), self.TARGET_BYTES)
+        env = emit_envelope("codex", "read-only", 0, stream)
+        self.assertEqual(
+            sorted(env),
+            ["exit_code", "family", "native", "posture", "report", "status"])
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(env["report"], {"findings": [{"title": "a finding"}]})
+
+    def test_the_oversized_native_stream_survives_intact(self):
+        """Not merely present: every item of it. A fix that truncated the
+        stream to fit would satisfy a shape check and lose the evidence the
+        envelope exists to carry."""
+        stream = self._big_codex_stream({"findings": []})
+        expected_items = len(stream.strip().splitlines())
+        env = emit_envelope("codex", "read-only", 0, stream)
+        self.assertIsInstance(env["native"], list)
+        self.assertEqual(len(env["native"]), expected_items)
+        self.assertEqual(env["native"][-1]["item"]["type"], "agent_message")
+
+    def test_an_oversized_report_also_survives(self):
+        """`report_json` had the identical exposure. The handoff marks "the
+        report never exceeds the cap" as ASSERTED and says not to rely on it,
+        so it is tested rather than assumed."""
+        big_report = {"findings": [{"title": "f", "detail": "y" * 200_000}]}
+        env = emit_envelope("codex", "read-only", 0, codex_native(big_report))
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(len(env["report"]["findings"][0]["detail"]), 200_000)
+
+    def test_a_small_stream_is_unchanged(self):
+        """TC2 — no behavioural change on the path that already worked."""
+        env = emit_envelope("codex", "read-only", 0,
+                            codex_native({"findings": [{"title": "small"}]}))
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(env["family"], "codex")
+        self.assertEqual(env["exit_code"], 0)
+        self.assertEqual(env["report"], {"findings": [{"title": "small"}]})
+
+    def test_a_single_object_family_still_yields_the_object_not_an_array(self):
+        """`--slurpfile` reads a file into an ARRAY, so the single-object
+        families need the `[0]` index. Without it `native` would silently
+        become a one-element list — valid JSON, wrong shape, and invisible to
+        any test that only checked the envelope's keys."""
+        env = emit_envelope("claude", "read-only", 0,
+                            json.dumps({"result": json.dumps({"findings": []})}))
+        self.assertIsInstance(env["native"], dict)
+        self.assertIn("result", env["native"])
+
+    def test_a_malformed_native_stream_still_produces_an_envelope(self):
+        """The `|| null` fallback the Codex branch already had, now on all
+        three. Losing the envelope entirely is the worse failure: the caller
+        learns nothing, which is exactly this issue's complaint."""
+        env = emit_envelope("gemini", "read-only", 0, "this is not json at all\n")
+        self.assertIsNone(env["native"])
+        self.assertEqual(env["status"], "invalid-report")
+
+    def test_no_unbounded_value_is_passed_as_an_argv_element(self):
+        """TC3, asserted structurally against the script's own text.
+
+        The two variables that carried unbounded payloads must not exist at
+        all any more — a `grep` for them is the whole check the AC asks for,
+        and it stays true against future edits in a way a behavioural test
+        on today's payload sizes would not.
+        """
+        source = SCRIPT.read_text()
+        for name in ("native_json", "report_json"):
+            self.assertNotIn(name, source,
+                             f"${name} still exists; it is the argv exposure this issue removed")
+        self.assertIn("--slurpfile", source)
+
+
+class TestVerifyNormalizationSurvivesTheFileMove(unittest.TestCase):
+    """harmonic-forge#466 TC4/TC5 — the behaviour that must NOT change.
+
+    `TestVerifyVerdictNormalization` above already covers these paths and
+    still passes untouched; these restate the two the handoff calls out by
+    name, so a future reader sees them tied to this issue rather than having
+    to infer the coverage.
+    """
+
+    def test_an_assumption_with_empty_evidence_still_downgrades(self):
+        env = emit_envelope("codex", "verify", 0, codex_native({
+            "findings": [],
+            "assumptions": [{"claim": "c", "verdict": "confirmed", "evidence": "   "}],
+        }))
+        self.assertEqual(env["report"]["assumptions"][0]["verdict"], "uncheckable")
+
+    def test_an_invalid_report_still_yields_invalid_report_and_a_null_report(self):
+        env = emit_envelope("codex", "read-only", 0,
+                            codex_native("not an object with findings"))
+        self.assertEqual(env["status"], "invalid-report")
+        self.assertIsNone(env["report"])
+
+
 if __name__ == "__main__":
     unittest.main()
