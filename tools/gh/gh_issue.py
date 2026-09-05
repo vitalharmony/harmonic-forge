@@ -265,29 +265,57 @@ def set_tier(item_id: str, project_owner: str, project_number: str, tier: str) -
     return _set_tier(item_id, ctx["project_id"], ctx["fields"], tier)
 
 
+#: harmonic-forge#468: the targeted lookup that replaced a 5000-item scan.
+#:
+#: Roughly one GraphQL complexity point — it can only ever return this one
+#: issue's project items — against hundreds for the board scan this used to do.
+_ITEM_ID_QUERY = """
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      projectItems(first: 10) {
+        nodes { id project { number } }
+      }
+    }
+  }
+}
+"""
+
+
 def _find_existing_item(issue_url: str, project_owner: str, project_number: str) -> str | None:
     """Project item id for an issue already on the board, or None.
 
-    Only called after `item-add` failed, so the extra listing cost is paid
-    on the rare path rather than on every filing. `--limit` is explicit
-    because the default is 30 and these boards are larger than that; a
-    freshly created item is not reliably in the first page.
+    Only called after `item-add` failed, so this is the rare path — but it used
+    to pull **every item on the board** (`--limit 5000`) to find one issue by
+    URL, which is precisely the "what is X for issue N" shape harmonic-forge#468
+    exists to make cheap. The board scan is gone; this asks the issue directly.
+
+    Derives owner/repo/number from the issue URL rather than taking them as
+    parameters, so no caller has to change.
     """
+    match = re.search(r"github\.com/([^/]+)/([^/]+)/issues/(\d+)", issue_url)
+    if not match:
+        return None
+    repo_owner, repo_name, issue_number = match.groups()
+
     result = _run(
-        ["gh", "project", "item-list", project_number,
-         "--owner", project_owner, "--format", "json", "--limit", str(BOARD_ITEM_SCAN_LIMIT)],
+        ["gh", "api", "graphql",
+         "-f", f"query={_ITEM_ID_QUERY}",
+         "-F", f"owner={repo_owner}", "-F", f"repo={repo_name}",
+         "-F", f"number={int(issue_number)}"],
         check=False,
     )
     if result.returncode != 0:
         return None
     try:
-        items = json.loads(result.stdout)["items"]
-    except (json.JSONDecodeError, KeyError):
+        payload = json.loads(result.stdout)
+        issue = (payload.get("data") or {}).get("repository", {}).get("issue")
+        nodes = ((issue or {}).get("projectItems") or {}).get("nodes") or []
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return None
-    for item in items:
-        content = item.get("content") or {}
-        if content.get("url") == issue_url:
-            return item.get("id")
+    for node in nodes:
+        if str((node.get("project") or {}).get("number")) == str(project_number):
+            return node.get("id")
     return None
 
 

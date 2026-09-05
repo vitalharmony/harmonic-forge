@@ -125,11 +125,14 @@ class TestStandaloneSetTier(unittest.TestCase):
         self.assertNotIn("--number", edit_cmd, "must write the Tier select, not the numeric field")
 
 
-ITEM_LIST_JSON = json.dumps({"items": [
-    {"id": "PVTI_other", "content": {"url": "https://github.com/o/r/issues/1"}},
-    {"id": "PVTI_target", "content": {"url": "https://github.com/o/r/issues/42"}},
-    {"id": "PVTI_no_content"},
-]})
+# harmonic-forge#468: the recovery path no longer scans the board. It asks the
+# issue for its own project items — ~1 GraphQL point instead of up to 5000 rows
+# — so the fixture is the GraphQL response shape, and the "wrong board" row is
+# what the board-number filter has to reject.
+ITEM_LOOKUP_JSON = json.dumps({"data": {"repository": {"issue": {"projectItems": {"nodes": [
+    {"id": "PVTI_other", "project": {"number": 3}},
+    {"id": "PVTI_target", "project": {"number": 1}},
+]}}}}})
 
 
 class TestMissingTierFieldFailsLoudly(unittest.TestCase):
@@ -160,7 +163,7 @@ class TestAlreadyOnBoardRecovery(unittest.TestCase):
         # two field mutations succeed.
         return [
             _completed("", returncode=1),   # item-add
-            _completed(ITEM_LIST_JSON),     # item-list recovery
+            _completed(ITEM_LOOKUP_JSON),    # targeted item-id lookup
             _completed(VIEW_JSON),          # project view
             _completed(FIELDS_JSON),        # field-list
             _completed("{}"),               # set Status
@@ -189,19 +192,39 @@ class TestAlreadyOnBoardRecovery(unittest.TestCase):
         """A real add failure must not be laundered into success."""
         responses = [
             _completed("", returncode=1),  # item-add
-            _completed(json.dumps({"items": []})),  # nothing to recover
+            _completed(json.dumps({"data": {"repository": {"issue": None}}})),  # nothing to recover
         ]
         with patch("gh_issue._run", side_effect=responses):
             self.assertFalse(gh_issue.add_to_board(self.URL, "o", "1", "fast"))
 
-    def test_item_list_uses_an_explicit_limit(self):
-        """The default is 30 and these boards are larger; a freshly created
-        item is not reliably in the first page."""
+    def test_recovery_never_scans_the_board(self):
+        """harmonic-forge#468, and the inverse of the assertion this replaces.
+
+        This used to require an explicit `--limit` on an `item-list` recovery,
+        because the default page of 30 could miss a freshly created item on a
+        900-row board. The fix removed the scan entirely rather than sizing it:
+        finding one issue's item id is the "field X on issue N" shape, about one
+        GraphQL point against hundreds. A regression here is a full-board scan
+        on a routine filing path.
+        """
         with patch("gh_issue._run", side_effect=self._responses()) as m:
             gh_issue.add_to_board(self.URL, "o", "1", "fast")
-        list_cmd = m.call_args_list[1][0][0]
-        self.assertIn("item-list", list_cmd)
-        self.assertIn("--limit", list_cmd)
+        for call in m.call_args_list:
+            self.assertNotIn(
+                "item-list", call[0][0],
+                f"the recovery path scanned the board: {' '.join(call[0][0])}",
+            )
+
+    def test_recovery_asks_the_issue_directly(self):
+        """The positive half — it must actually do the targeted lookup, not
+        merely avoid the scan."""
+        with patch("gh_issue._run", side_effect=self._responses()) as m:
+            gh_issue.add_to_board(self.URL, "o", "1", "fast")
+        lookup = m.call_args_list[1][0][0]
+        self.assertEqual(lookup[:3], ["gh", "api", "graphql"])
+        joined = " ".join(lookup)
+        self.assertIn("projectItems", joined)
+        self.assertIn("number=42", joined)
 
     def test_recovery_is_not_attempted_on_the_happy_path(self):
         """The extra listing cost must be paid only on the rare path."""

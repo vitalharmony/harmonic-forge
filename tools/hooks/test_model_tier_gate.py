@@ -31,7 +31,7 @@ def _completed(stdout="", returncode=0):
 # `deep` is the escalating tier, so this payload exercises the branch that
 # actually gates work.
 TIER_QUERY_JSON = json.dumps({"data": {"repository": {"issue": {"projectItems": {
-    "nodes": [{"project": {"number": 3}, "tier": {"name": "deep"}}],
+    "nodes": [{"project": {"number": 3}, "value": {"name": "deep"}}],
 }}}}})
 
 
@@ -113,7 +113,11 @@ class TestCachedItemList(unittest.TestCase):
             m.resolve_tier("/some/cwd", 999)
             m.resolve_tier("/some/cwd", 1000)
 
-        self.assertEqual(len(list(self.cache_dir.glob("tier__*.json"))), 2)
+        # harmonic-forge#468: the prefix is `field__<name>__` now, because the
+        # field name became part of the key — without it, reading `Sequence`
+        # would overwrite the cached `Tier` for the same issue and the gate
+        # would read a sequence number as a tier.
+        self.assertEqual(len(list(self.cache_dir.glob("field__tier__*.json"))), 2)
 
 
 class TierResolutionTests(unittest.TestCase):
@@ -146,8 +150,10 @@ class TierResolutionTests(unittest.TestCase):
             return m.resolve_tier("/cwd", 999)
 
     def _payload(self, tier=None, project=3):
+        # harmonic-forge#468: the query aliases the field value as `value` now
+        # that it reads any field, not only Tier.
         node = {"project": {"number": project},
-                "tier": {"name": tier} if tier else None}
+                "value": {"name": tier} if tier else None}
         return json.dumps({"data": {"repository": {"issue": {
             "projectItems": {"nodes": [node]}}}}})
 
