@@ -2125,3 +2125,35 @@ anchor = "HITL Gate Language"
 statement = "Every protocol status claim (handoff, ready-for-l3, sweep, ae, ae-and-sweep) is posted through `mise run l1-post --kind <kind>`; `lane-comment` stamps kind=discussion and is for ordinary discussion only, and is never a fallback when l1-post errors."
 text_sha = "2409f14964cef9b1"
 hooks = []
+
+[[rule]]
+id = "R-0331"
+file = "rules/lane-shorthand.md"
+anchor = "derived-lane-states"
+statement = "gate.ae-without-sweep is an abnormal partial transition, not a waypoint: R-0208 makes AE and sweep one atomic action, and the state names Lane 1 as the sweep's owner."
+text_sha = "95df70f461e20ce6"
+hooks = []
+
+[[rule]]
+id = "R-0332"
+file = "rules/lane-shorthand.md"
+anchor = "derived-lane-states"
+statement = "gate.executable covers both a fresh AE+sweep pair and that authorization carried forward onto a new SHA by a ready-for-l3 after a FAIL (R-0209); demanding a fresh AE there blocks correctly-authorized work."
+text_sha = "a57d491fcff9716e"
+hooks = []
+
+[[rule]]
+id = "R-0333"
+file = "rules/lane-shorthand.md"
+anchor = "derived-lane-states"
+statement = "Lane-state authority is the l1-post kind= footer, never a heading; headings are a cross-check whose disagreement is reported as validated=False, and the Lane 3 Test Spec and Gate Results are heading-provenance only because no emitter stamps them."
+text_sha = "e816e121d4dbe537"
+hooks = []
+
+[[rule]]
+id = "R-0334"
+file = "rules/lane-shorthand.md"
+anchor = "derived-lane-states"
+statement = "A marker quoted as evidence is never a transition: fenced blocks are stripped before any marker is read, footers included."
+text_sha = "7d243cc240241a05"
+hooks = []
