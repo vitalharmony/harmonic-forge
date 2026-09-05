@@ -335,6 +335,18 @@ SETTINGS
   )
 }
 
+# harmonic-forge#467: the minimum escaping the failure envelope needs, so it
+# can be built without `jq` -- see the dispatch loop for why depending on `jq`
+# there would defeat the fix. Backslash first, then quote, or the quote's own
+# escape gets re-escaped. A literal newline in a `mktemp` path would still
+# break the JSON; that is accepted rather than handled, because `mktemp` and
+# `TMPDIR` do not produce one and a full escaper here would be more code than
+# the failure path deserves.
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+
 # --- normalization: native output -> {family,posture,status,exit_code,report,native} ---
 
 emit_envelope() {
@@ -448,6 +460,31 @@ emit_envelope() {
 }
 
 # --- dispatch ---
+#
+# harmonic-forge#467: a formatting failure must never destroy a verdict that
+# was successfully produced, and must never look like a clean pass.
+#
+# **What actually swallows the status, corrected from the handoff.** The
+# handoff assumed command substitution in this loop absorbed it. There is no
+# command substitution here -- `emit_envelope` writes straight to stdout --
+# and `set -e` propagates a failing envelope step out of the script correctly:
+# forcing the E2BIG failure against the pre-fix script exits **126**, not 0.
+# The exit 0 the incident recorded was therefore introduced OUTSIDE this
+# script, by whatever the caller wrapped the invocation in; a pipe is the
+# usual culprit, since a pipeline reports its last command's status unless the
+# caller also sets `pipefail`.
+#
+# That makes the exit code the half of this fix a caller can most easily
+# discard, and the stderr diagnostic and the preserved-output path the halves
+# that survive it. All three are implemented; only the last two are robust to
+# a caller that drops the status.
+#
+# The loop also no longer dies on the first bad family. Aborting mid-loop was
+# its own defect: with `--families 3` the remaining target never ran, the
+# earlier one's envelope had already been printed, and nothing in the output
+# said a family was missing.
+overall_status=0
+preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
 for family in "${targets[@]}"; do
   tmp_out="$(mktemp)"
@@ -457,6 +494,58 @@ for family in "${targets[@]}"; do
     codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" || exit_code=$? ;;
     gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" || exit_code=$? ;;
   esac
-  emit_envelope "$family" "$posture" "$exit_code" "$tmp_out"
-  rm -f "$tmp_out"
+
+  # Buffered, not streamed: a half-written envelope emitted before the failure
+  # would be worse than none, because it parses as truncated JSON rather than
+  # failing outright. `if cmd; then` is also what suspends `set -e` for this
+  # one call so the failure can be handled here instead of killing the run.
+  envelope_out="$(mktemp)"
+  envelope_err="$(mktemp)"
+  if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" \
+       >"$envelope_out" 2>"$envelope_err"; then
+    cat "$envelope_out"
+    rm -f "$tmp_out"
+  else
+    envelope_rc=$?
+    overall_status=1
+    mkdir -p "$preserve_dir"
+    preserved="$preserve_dir/cross-family-${family}-${posture}-$$.native"
+    cp "$tmp_out" "$preserved" 2>/dev/null || preserved="(could not preserve; original at $tmp_out)"
+    {
+      printf 'cross_family_call: FAILED to build the result envelope\n'
+      printf '  family:   %s\n' "$family"
+      printf '  posture:  %s\n' "$posture"
+      printf '  failure:  envelope construction exited %s\n' "$envelope_rc"
+      printf '  native output preserved at: %s\n' "$preserved"
+      if [ -s "$envelope_err" ]; then
+        printf '  underlying error:\n'
+        sed -e 's/^/    /' "$envelope_err"
+      fi
+    } >&2
+    # The failing family still gets a row on stdout, so a consumer reading
+    # only stdout sees a family that failed rather than a family that
+    # vanished. `native_preserved_at` appears ONLY here -- on a path that
+    # previously emitted nothing at all, so no existing consumer can regress.
+    #
+    # **Built with `printf`, not `jq`, and that is the point.** The envelope
+    # step just failed; the overwhelmingly likely reason is `jq` itself, as it
+    # was in the incident (harmonic-forge#466). A failure envelope that
+    # depended on the tool that failed would emit nothing exactly when it is
+    # needed, which is this issue's entire complaint one level down. Only two
+    # values are interpolated and both are escaped; `family` and `posture` are
+    # closed token sets validated long before dispatch.
+    printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s"}\n' \
+      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")"
+    # `tmp_out` is deliberately NOT removed when preservation failed: the
+    # message above points at it, and the incident this issue records was
+    # recovered only because such a file happened to survive. Luck is now a
+    # mechanism.
+    case "$preserved" in
+      "(could not preserve"*) : ;;
+      *) rm -f "$tmp_out" ;;
+    esac
+  fi
+  rm -f "$envelope_out" "$envelope_err"
 done
+
+exit "$overall_status"

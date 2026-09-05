@@ -23,6 +23,8 @@ Test-case numbering follows the Implementation Spec's "Test Cases (for Lane
 
 from __future__ import annotations
 
+import re
+import shutil
 import json
 import os
 import subprocess
@@ -702,6 +704,160 @@ class TestVerifyNormalizationSurvivesTheFileMove(unittest.TestCase):
                             codex_native("not an object with findings"))
         self.assertEqual(env["status"], "invalid-report")
         self.assertIsNone(env["report"])
+
+
+
+def parse_envelopes(stdout: str) -> list[dict]:
+    """Decode the run's concatenated JSON envelopes.
+
+    Not `splitlines()`: `jq` pretty-prints the success envelope across many
+    lines while the failure envelope is one line, so a line-oriented parse
+    reads `}` as a document. A streaming `raw_decode` handles both shapes and
+    would keep working if either formatting changed.
+    """
+    decoder = json.JSONDecoder()
+    out, index = [], 0
+    text = stdout.strip()
+    while index < len(text):
+        value, index = decoder.raw_decode(text, index)
+        out.append(value)
+        while index < len(text) and text[index] in " \t\r\n":
+            index += 1
+    return out
+
+
+def make_failing_envelope_path(tmpdir: str, families=("codex", "claude", "gemini")) -> str:
+    """A PATH whose sibling CLIs work but whose `jq` fails on the ENVELOPE step.
+
+    Forcing the failure through `jq -n` rather than through an oversized
+    payload is deliberate: harmonic-forge#466 fixed the oversize case, and a
+    test that reproduced the failure only via E2BIG would stop exercising this
+    issue's fix the moment that one landed. This makes the two independently
+    verifiable, which TC6 asks for explicitly.
+
+    Every other `jq` invocation delegates to the real binary, so the run
+    reaches the envelope step normally and fails only there.
+    """
+    stub_dir = Path(tmpdir) / "failbin"
+    stub_dir.mkdir(exist_ok=True)
+    real_jq = shutil.which("jq")
+    assert real_jq, "jq must be installed for these tests"
+    (stub_dir / "jq").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-n" ]; then\n'
+        '  echo "stub jq: refusing the envelope step" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'exec {real_jq} "$@"\n'
+    )
+    (stub_dir / "jq").chmod(0o755)
+    for name in ("codex", "claude", "gemini"):
+        stub = stub_dir / name
+        if name in families:
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\","
+                "\"text\":\"{\\\"summary\\\":\\\"stub\\\",\\\"findings\\\":[]}\"}}'\n"
+            )
+        else:
+            stub.write_text("#!/usr/bin/env bash\necho notjson\n")
+        stub.chmod(0o755)
+    return f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+class TestEnvelopeFailureIsLoud(unittest.TestCase):
+    """harmonic-forge#467 — a lost review must never read as a clean pass.
+
+    The incident: a `read-only` cross-family review printed a `jq` error and
+    the calling harness reported *"Background command completed (exit code
+    0)"*. A caller trusting that would have reported a successful red-team
+    pass with zero findings — the worst possible outcome for a tool whose only
+    purpose is an independent adversarial verdict. Silence read as "clean".
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.brief = Path(self.tmp.name) / "brief.md"
+        self.brief.write_text("a cold brief\n")
+        self.preserve = Path(self.tmp.name) / "preserved"
+        self.path = make_failing_envelope_path(self.tmp.name)
+
+    def _run(self, families="2", path=None):
+        env_dir = str(self.preserve)
+        os.environ["CROSS_FAMILY_PRESERVE_DIR"] = env_dir
+        self.addCleanup(os.environ.pop, "CROSS_FAMILY_PRESERVE_DIR", None)
+        return run_script("--caller", "claude", "--families", families,
+                          "--posture", "read-only", "--brief", str(self.brief),
+                          path=path or self.path)
+
+    def test_a_failed_envelope_exits_non_zero(self):
+        """TC1. The code itself, not merely that some output appeared."""
+        self.assertNotEqual(self._run().returncode, 0)
+
+    def test_the_diagnostic_names_the_family_the_posture_and_the_failure(self):
+        """TC2. "Something went wrong" is not actionable; the raw shell error
+        alone does not say which of three families produced it."""
+        err = self._run().stderr
+        self.assertIn("FAILED to build the result envelope", err)
+        self.assertIn("read-only", err)
+        self.assertRegex(err, r"family:\s+(codex|claude|gemini)")
+        self.assertIn("envelope construction exited", err)
+
+    def test_the_underlying_error_is_carried_not_replaced(self):
+        """The named diagnostic is added to the raw error, never instead of
+        it — the raw text is what identifies the actual cause next time."""
+        self.assertIn("stub jq: refusing the envelope step", self._run().stderr)
+
+    def test_the_native_output_is_preserved_at_a_printed_path(self):
+        """TC3, the half that matters most. In the real incident the verdict
+        survived only because a `mktemp` file happened to; the path was never
+        printed and recovery was luck. Reading the printed path must yield the
+        reviewer's actual content."""
+        err = self._run().stderr
+        match = re.search(r"native output preserved at: (\S+)", err)
+        self.assertIsNotNone(match, f"no preserved path in stderr:\n{err}")
+        preserved = Path(match.group(1))
+        self.assertTrue(preserved.is_file(), f"{preserved} does not exist")
+        self.assertIn("agent_message", preserved.read_text())
+
+    def test_stdout_still_carries_a_row_for_the_failing_family(self):
+        """AC4's first half: a family that failed must not simply vanish from
+        the output. A consumer reading only stdout would otherwise see two
+        envelopes where three were requested and have nothing to notice."""
+        env = parse_envelopes(self._run().stdout)[-1]
+        self.assertEqual(env["status"], "envelope-error")
+        self.assertIsNone(env["report"])
+        self.assertIn("native_preserved_at", env)
+
+    def test_a_successful_run_is_unchanged(self):
+        """TC5. Exit 0, no diagnostic, and the same envelope as today —
+        asserted against the ORIGINAL stub PATH, whose jq is the real one."""
+        good = make_stub_path(self.tmp.name)
+        result = self._run(path=good)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("FAILED to build the result envelope", result.stderr)
+        env = parse_envelopes(result.stdout)[-1]
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(sorted(env),
+                         ["exit_code", "family", "native", "posture", "report", "status"])
+
+    def test_one_family_failing_does_not_abort_the_others(self):
+        """TC4. Before this, `set -e` killed the loop at the first failure:
+        later families never ran, earlier ones had already printed, and
+        nothing in the output said a family was missing."""
+        result = run_script("--caller", "claude", "--families", "3",
+                            "--posture", "read-only", "--brief", str(self.brief),
+                            path=self.path)
+        self.assertNotEqual(result.returncode, 0)
+        envelopes = parse_envelopes(result.stdout)
+        # `--families 3` resolves to TWO targets: the caller is excluded from
+        # its own review. Asserted against the resolved target list rather
+        # than the flag's number, which is the same distinction
+        # harmonic-forge#448 draws for the verify guard.
+        self.assertEqual(len(envelopes), 2, "a failing family dropped the whole run")
+        self.assertTrue(all(e["status"] == "envelope-error" for e in envelopes))
+        self.assertEqual(len({e["family"] for e in envelopes}), 2)
 
 
 if __name__ == "__main__":
