@@ -2147,7 +2147,7 @@ id = "R-0333"
 file = "rules/lane-shorthand.md"
 anchor = "derived-lane-states"
 statement = "Lane-state authority is the l1-post kind= footer, never a heading; headings are a cross-check whose disagreement is reported as validated=False, and the Lane 3 Test Spec and Gate Results are heading-provenance only because no emitter stamps them."
-text_sha = "e816e121d4dbe537"
+text_sha = "d25a1aa4d3b99555"
 hooks = []
 
 [[rule]]
@@ -2173,3 +2173,11 @@ anchor = "gate-readiness-sweep"
 statement = "An AE leads with Authorized (which spec, which branch and SHA) and Next, above any evidence; it reports no finding and is not asked for one."
 text_sha = "44e4b01f0db6ef67"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-post --kind ae", "l1-post --kind ae-and-sweep"], wired_in = "hrse" }]
+
+[[rule]]
+id = "R-0337"
+file = "rules/lane-shorthand.md"
+anchor = "derived-lane-states"
+statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework, never as ordinary discussion; it renders the same Fix H<N> trigger as a gate FAIL under a distinct l1.rework key."
+text_sha = "76979902e0659a26"
+hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind rework"], wired_in = "hrse" }]
