@@ -1813,7 +1813,7 @@ id = "R-0215"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "\"Plan #N\" sends Lane 2 to post its implementation plan and stop."
-text_sha = "2ebb789f0994bad1"
+text_sha = "b19e13ba7831e46a"
 hooks = []
 
 [[rule]]
