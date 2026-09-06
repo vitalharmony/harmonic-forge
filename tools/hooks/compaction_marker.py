@@ -254,72 +254,172 @@ def note_reload(session_id: str, when: str) -> bool:
     return True
 
 
-#: harmonic-forge#480 JDC3. How far back from the end of a transcript to look
-#: for the compaction record. At the moment this hook fires the record is the
-#: newest thing in the file, so this budget is slack, not a search window --
-#: it exists so an unexpectedly-shaped transcript costs a bounded read rather
-#: than a 21-80 MB one. Measured: the five live transcripts on this machine
-#: run 13-53 MB.
-TRIGGER_SCAN_BYTES = 1 << 20
+def resolve_trigger(session_id: str, transcript_path: str = "") -> str | None:
+    """Fill in a marker's `trigger` from the transcript. Returns what it holds.
+
+    **Update-only and set-once**, exactly like `note_reload` above and for the
+    same reasons: a `PreToolUse` that could create a marker would manufacture a
+    compaction that never happened, and re-resolving would let a later
+    compaction's record overwrite this one's answer.
+
+    Called from `compaction_reload_probe.py` rather than from the `SessionStart`
+    hook -- see `trigger_of`'s docstring for the 42-68 ms measurement that makes
+    the earlier call site structurally unable to succeed (harmonic-forge#489).
+
+    `transcript_path` falls back to the one the marker carries, so the probe
+    works even on a payload that omits it.
+    """
+    target = MARKER_DIR / f"{session_id}.json"
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if "trigger" in payload:
+        return payload["trigger"] if isinstance(payload["trigger"], str) else None
+
+    path = transcript_path or payload.get("transcript_path") or ""
+    found = trigger_of(path, not_before=payload.get("compacted_at"))
+    if found is None:
+        # Left ABSENT, not written as null: the record may simply not have been
+        # flushed yet on a very fast first tool call, and a null would freeze
+        # that transient state permanently under the set-once rule above.
+        return None
+    payload["trigger"] = found
+    try:
+        write_marker(session_id, payload)
+    except (OSError, ValueError):
+        return None
+    return found
 
 
-def trigger_of(transcript_path: str) -> str | None:
+#: The distance from EOF at which a transcript's newest `compactMetadata`
+#: record actually sits, measured across all 37 transcripts on this machine
+#: (harmonic-forge#489):
+#:
+#:     min      16,191      p50  3,581,245
+#:     p90  12,009,408      max 13,945,800   (13.3 MiB)
+#:
+#: The former 1 MiB budget was outside that distance on **32 of 37**. It was
+#: not resized, it was deleted: a chunked reverse scan stops at the record, so
+#: its cost is a function of the DISTANCE, not the file size -- a 112 MB
+#: transcript resolved in 6.4 ms, and the worst case across all 37 was 14.7 MB
+#: read in 6.6 ms. A budget picked from this sample is a bet against the next
+#: busier session; the scan needs no constant at all.
+CHUNK_BYTES = 1 << 20
+
+
+def trigger_of(transcript_path: str, not_before: str | None = None) -> str | None:
     """`auto` / `manual` / `None` -- how the compaction was triggered.
 
     **NOT from the hook payload.** harmonic-forge#480's gate directed reading
     `payload.get("trigger")` in `handle()` "since the SessionStart compaction
     event carries one". It does not. Measured across every transcript on this
-    machine, the field exists in exactly one place:
+    machine, the field exists in exactly one place -- on a `system` record
+    inside the TRANSCRIPT, alongside `preTokens` / `postTokens` /
+    `cumulativeDroppedTokens`. The captured real payload in
+    `testdata/sessionstart_compact.json` carries no `trigger` either.
 
-        80x  .compactMetadata.trigger = 'auto'
-         5x  .compactMetadata.trigger = 'manual'
+    **This must NOT be called from the `SessionStart` hook** (harmonic-forge#489).
+    F480 assumed "at hook time the compaction record is the newest thing in the
+    file". Measured on five real markers, the record's own timestamp is 42-68 ms
+    AFTER the marker's `compacted_at` -- the hook reads before the harness has
+    written the record, so the record is not merely far back, it is ABSENT. All
+    five markers recorded `trigger: null` for that reason, and widening the scan
+    would have found the PREVIOUS compaction's record and reported its trigger
+    as this one's: usually `auto`, usually right by luck, always describing the
+    wrong event, and silently empty on a session's first compaction.
 
-    -- on a `system` record inside the TRANSCRIPT, alongside `preTokens` /
-    `postTokens` / `cumulativeDroppedTokens`. That is the same shape quoted as
-    evidence for the payload claim (`trigger=auto pre=967526 post=13847
-    cumulativeDroppedTokens=2915628`), which is this record rather than a hook
-    payload. The captured real payload in `testdata/sessionstart_compact.json`
-    carries no `trigger` either.
+    The fix is to call this at read time (first `PreToolUse`), where F480's
+    assumption is finally true, and to prove the pairing rather than assume it:
 
-    So `payload.get("trigger")` would have been `None` on every real
-    invocation -- a field that ships, reads as implemented, and never
-    populates. harmonic-forge#451 would then deny on `auto` for a value that
-    is always absent.
+    `not_before` -- an ISO timestamp, normally the marker's `compacted_at`.
+    A record older than it belongs to an earlier compaction and is rejected.
+    That turns the 42-68 ms delta from the hazard above into the evidence that
+    the record found is this compaction's.
 
-    Scanned from the END: at hook time the compaction record is the newest in
-    the file. Returns `None` rather than raising on anything unreadable --
-    this hook runs when a session is least able to cope with a crash, and a
-    missing trigger costs #451 one discriminator, while an exception costs the
-    session its recovery note.
+    Returns `None` rather than raising on anything unreadable -- a missing
+    trigger costs harmonic-forge#451 one discriminator, while an exception in a
+    `PreToolUse` costs the session every tool call.
     """
     if not transcript_path:
         return None
     try:
         with open(transcript_path, "rb") as stream:
             stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            start = max(0, size - TRIGGER_SCAN_BYTES)
-            stream.seek(start)
-            chunk = stream.read()
+            position = stream.tell()
+            tail = b""
+            while position > 0:
+                step = min(CHUNK_BYTES, position)
+                position -= step
+                stream.seek(position)
+                # Carry a small overlap so a record straddling a chunk
+                # boundary is not split in half and missed.
+                chunk = stream.read(step) + tail[:512]
+                if b'"compactMetadata"' in chunk:
+                    found, stop = _trigger_in(chunk, not_before)
+                    if found is not None:
+                        return found
+                    if stop:
+                        return None
+                tail = chunk
     except OSError:
         return None
-    # The budget can cut mid-record, leaving a partial first line. It is NOT
-    # dropped: a truncated JSON object fails to parse and is skipped by the
-    # handler below anyway, while dropping it unconditionally would discard a
-    # VALID first record whenever the cut happens to land on a newline. The
-    # explicit slice was written first and mutation testing showed it inert —
-    # inert in the good case and harmful in the boundary one.
+    return None
+
+
+def _trigger_in(chunk: bytes,
+                not_before: str | None) -> tuple[str | None, bool]:
+    """`(trigger, stop)` for one chunk, scanned newest-record-first.
+
+    `stop` means a record older than `not_before` was reached. Records are
+    append-ordered, so everything further back is older still: continuing would
+    walk the whole file only to find a record that belongs, by definition, to an
+    earlier compaction. Stopping is the difference between "no answer" and "the
+    previous compaction's answer", which is the defect harmonic-forge#489 exists
+    to close.
+    """
+    floor = _parse_stamp(not_before)
     for raw in reversed(chunk.split(b"\n")):
         if b'"compactMetadata"' not in raw:
             continue
         try:
             record = json.loads(raw)
         except ValueError:
+            # A chunk boundary cut this record in half, or it is a fenced
+            # quotation of a footer rather than a record. Either way the next
+            # line back is the one to try; the overlap above means a genuine
+            # record is never lost to the cut.
             continue
+        if not isinstance(record, dict):
+            continue
+        stamp = _parse_stamp(record.get("timestamp"))
+        if floor is not None and stamp is not None and stamp < floor:
+            return None, True
         found = (record.get("compactMetadata") or {}).get("trigger")
         if isinstance(found, str) and found:
-            return found
-    return None
+            return found, False
+    return None, False
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    """An ISO timestamp as an aware `datetime`, or `None`.
+
+    **Parsed, never string-compared.** The two sides genuinely differ in
+    spelling: the transcript writes `...T04:23:24.146Z` and the marker writes
+    `...T04:23:24.104434+00:00`. Lexicographic order across those two forms is
+    not chronological order -- `Z` (0x5A) sorts after `+` (0x2B) at the same
+    offset -- so a string comparison would invert for any pair whose seconds
+    match, which is exactly the pair this predicate is asked about.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def lane_of(env: dict[str, str]) -> str:
@@ -548,13 +648,19 @@ def handle(payload: dict, env: dict[str, str], now: float | None = None) -> dict
             write_marker(session_id, {
                 "compacted_at": compacted_at, "source": "compact",
                 "lane": lane, "lane_source": lane_source, "cwd": cwd,
-                # harmonic-forge#480 JDC3: harmonic-forge#451 denies only on
-                # `auto`, so the discriminator has to be persisted here rather
-                # than retrofitted there. `None` when the transcript could not
-                # be read or carried no compaction record -- absent, never
-                # guessed, since defaulting to `auto` would make #451 deny on
-                # a value nobody established.
-                "trigger": trigger_of(payload.get("transcript_path") or ""),
+                "transcript_path": payload.get("transcript_path") or "",
+                # harmonic-forge#489: `trigger` is deliberately NOT written
+                # here. F480 resolved it at this point and got `null` on every
+                # real compaction -- measured, the harness appends the
+                # `compactMetadata` record 42-68 ms AFTER this hook reads, so
+                # there is nothing to find yet. `compaction_reload_probe.py`
+                # resolves it on the first `PreToolUse`, where the record
+                # exists and is genuinely the newest in the file.
+                #
+                # ABSENT rather than `null`: "not resolved yet" and "resolved,
+                # no answer" are different states, and #451 must not treat the
+                # first as the second. `transcript_path` is carried so the
+                # probe does not have to re-derive it.
             })
             prune_markers(now)
         except (OSError, ValueError):

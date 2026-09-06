@@ -802,24 +802,88 @@ class TriggerComesFromTheTranscriptNotThePayload(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNone(cm.trigger_of(path))
 
-    def test_a_truncated_first_line_is_dropped_not_parsed(self) -> None:
-        """The scan is bounded, so the budget can cut mid-record. A truncated
-        JSON object is not a record."""
+    def test_a_record_straddling_a_chunk_boundary_is_still_found(self) -> None:
+        """The reverse scan reads in chunks, so a record can be cut in half by
+        a boundary. The overlap carried between chunks is what stops that
+        losing it — without the overlap this record parses as two fragments,
+        neither of which is JSON."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "t.jsonl"
-            filler = json.dumps({"type": "user", "pad": "x" * 4096})
-            path.write_text(
-                "\n".join([filler] * 400) + "\n"
-                + json.dumps({"type": "system", "compactMetadata": {"trigger": "auto"}}) + "\n")
-            self.assertGreater(path.stat().st_size, cm.TRIGGER_SCAN_BYTES)
+            record = json.dumps({"type": "system", "id": "y" * 4096,
+                                 "compactMetadata": {"trigger": "auto"}})
+            # Pad so the record lands astride a CHUNK_BYTES boundary.
+            pad_before = cm.CHUNK_BYTES - (len(record) // 2)
+            path.write_text("x" * pad_before + "\n" + record + "\n"
+                            + json.dumps({"type": "user", "m": "after"}) + "\n")
             self.assertEqual(cm.trigger_of(str(path)), "auto")
 
-    def test_the_scan_is_bounded(self) -> None:
-        """Live transcripts run 13-53 MB. An unbounded read at the moment a
-        session is rebuilding is not acceptable."""
-        self.assertLessEqual(cm.TRIGGER_SCAN_BYTES, 4 << 20)
+    def test_a_record_far_past_the_old_budget_is_found(self) -> None:
+        """harmonic-forge#489's regression case, at the observed magnitude.
 
-    def test_it_reaches_the_marker(self) -> None:
+        The deleted `TRIGGER_SCAN_BYTES` was 1 MiB. Measured across all 37
+        transcripts on this machine the newest record sat a median of 3.5 MB
+        and a maximum of 13.3 MiB from EOF — outside that budget on 32 of 37.
+        8 MB is past any budget that was ever plausible.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            with path.open("w") as fh:
+                fh.write(json.dumps(
+                    {"type": "system", "compactMetadata": {"trigger": "auto"}}) + "\n")
+                filler = json.dumps({"type": "user", "pad": "z" * 8192}) + "\n"
+                for _ in range(1024):          # ~8 MB after the record
+                    fh.write(filler)
+            self.assertGreater(path.stat().st_size, 8 << 20)
+            self.assertFalse(hasattr(cm, "TRIGGER_SCAN_BYTES"),
+                             "the budget was deleted, not resized")
+            self.assertEqual(cm.trigger_of(str(path)), "auto")
+
+    def test_a_record_older_than_not_before_is_rejected(self) -> None:
+        """The defect a wider window would have shipped: finding the PREVIOUS
+        compaction's record and reporting its trigger as this one's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text(json.dumps({
+                "type": "system", "timestamp": "2026-09-06T04:00:00.000Z",
+                "compactMetadata": {"trigger": "auto"}}) + "\n")
+            self.assertIsNone(cm.trigger_of(
+                str(path), not_before="2026-09-06T04:23:24.104434+00:00"))
+
+    def test_a_record_newer_than_not_before_is_accepted(self) -> None:
+        """The real ordering: five live markers show the record's timestamp
+        42-68 ms AFTER the marker's `compacted_at`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text(json.dumps({
+                "type": "system", "timestamp": "2026-09-06T04:23:24.146Z",
+                "compactMetadata": {"trigger": "auto"}}) + "\n")
+            self.assertEqual(cm.trigger_of(
+                str(path), not_before="2026-09-06T04:23:24.104434+00:00"), "auto")
+
+    def test_the_two_timestamp_spellings_compare_chronologically(self) -> None:
+        """Not lexicographically. The transcript writes `...146Z`, the marker
+        writes `...104434+00:00`, and `Z` (0x5A) sorts after `+` (0x2B) — so a
+        string comparison inverts for exactly the pairs this is asked about.
+        These are the real bytes from session ab5817ae.
+        """
+        record = "2026-09-06T04:23:24.146Z"
+        marker = "2026-09-06T04:23:24.104434+00:00"
+        self.assertGreater(cm._parse_stamp(record), cm._parse_stamp(marker))
+
+    def test_a_naive_timestamp_is_not_a_crash(self) -> None:
+        """A record without an offset is assumed UTC rather than raising —
+        comparing aware and naive datetimes is a TypeError, and this runs on
+        every tool call of a compacted session."""
+        self.assertIsNotNone(cm._parse_stamp("2026-09-06T04:23:24.146"))
+        for junk in (None, "", "not-a-date", 17):
+            with self.subTest(junk=junk):
+                self.assertIsNone(cm._parse_stamp(junk))
+
+    def test_handle_does_not_write_a_trigger_at_all(self) -> None:
+        """harmonic-forge#489. `SessionStart` cannot resolve it — the record is
+        written 42-68 ms later — so the key is ABSENT, not `null`. "Not yet
+        resolved" and "resolved, no answer" are different states and
+        harmonic-forge#451 must not read the first as the second."""
         with tempfile.TemporaryDirectory() as tmp:
             markers = Path(tmp) / "markers"
             with mock.patch.object(cm, "MARKER_DIR", markers):
@@ -827,19 +891,104 @@ class TriggerComesFromTheTranscriptNotThePayload(unittest.TestCase):
                            "transcript_path": str(FIXTURES / "transcript_auto.jsonl")},
                           {"LANE": "2"})
                 written = json.loads((markers / "s1.json").read_text())
-        self.assertEqual(written["trigger"], "auto")
+        self.assertNotIn("trigger", written)
+        self.assertEqual(written["lane"], "2")
 
-    def test_an_unreadable_transcript_still_writes_the_marker(self) -> None:
-        """`trigger: null` is absent, never guessed. Defaulting to `auto`
-        would make harmonic-forge#451 deny on a value nobody established."""
+    def test_handle_carries_the_transcript_path_forward(self) -> None:
+        """So the probe can resolve the trigger without re-deriving it, and
+        still works on a `PreToolUse` payload that omits the path."""
         with tempfile.TemporaryDirectory() as tmp:
             markers = Path(tmp) / "markers"
             with mock.patch.object(cm, "MARKER_DIR", markers):
-                cm.handle({"source": "compact", "session_id": "s1", "cwd": "/x/HRSE2-lane2",
-                           "transcript_path": "/nonexistent/none.jsonl"}, {"LANE": "2"})
+                cm.handle({"source": "compact", "session_id": "s1", "cwd": "/x",
+                           "transcript_path": "/some/where.jsonl"}, {"LANE": "2"})
                 written = json.loads((markers / "s1.json").read_text())
-        self.assertIsNone(written["trigger"])
-        self.assertEqual(written["lane"], "2")
+        self.assertEqual(written["transcript_path"], "/some/where.jsonl")
+
+
+class ResolveTriggerIsUpdateOnlyAndSetOnce(unittest.TestCase):
+    """harmonic-forge#489 — the read-time half.
+
+    Same two invariants `note_reload` carries, for the same reasons: a
+    `PreToolUse` that could CREATE a marker would manufacture a compaction that
+    never happened, and re-resolving would let a later compaction's record
+    overwrite this one's answer.
+    """
+
+    def _marker(self, markers: Path, **extra) -> None:
+        markers.mkdir(parents=True, exist_ok=True)
+        payload = {"compacted_at": "2026-09-06T04:23:24.104434+00:00",
+                   "source": "compact", "lane": "2", "cwd": "/x"}
+        payload.update(extra)
+        (markers / "s1.json").write_text(json.dumps(payload))
+
+    def _transcript(self, tmp: Path, stamp: str, trigger: str = "auto") -> str:
+        path = tmp / "t.jsonl"
+        path.write_text(json.dumps({"type": "system", "timestamp": stamp,
+                                    "compactMetadata": {"trigger": trigger}}) + "\n")
+        return str(path)
+
+    def test_it_fills_in_the_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            self._marker(markers)
+            path = self._transcript(Path(tmp), "2026-09-06T04:23:24.146Z")
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                self.assertEqual(cm.resolve_trigger("s1", path), "auto")
+                written = json.loads((markers / "s1.json").read_text())
+        self.assertEqual(written["trigger"], "auto")
+
+    def test_it_never_creates_a_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            path = self._transcript(Path(tmp), "2026-09-06T04:23:24.146Z")
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                self.assertIsNone(cm.resolve_trigger("s1", path))
+            self.assertFalse((markers / "s1.json").exists())
+
+    def test_it_is_set_once(self) -> None:
+        """A second compaction's record must not overwrite the first's answer
+        on a marker that already carries one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            self._marker(markers, trigger="manual")
+            path = self._transcript(Path(tmp), "2026-09-06T04:23:24.146Z", "auto")
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                self.assertEqual(cm.resolve_trigger("s1", path), "manual")
+                written = json.loads((markers / "s1.json").read_text())
+        self.assertEqual(written["trigger"], "manual")
+
+    def test_an_unresolvable_trigger_stays_absent_not_null(self) -> None:
+        """The record may simply not have been flushed yet on a very fast first
+        tool call. Writing `null` would freeze that transient state forever
+        under the set-once rule above."""
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            self._marker(markers)
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                self.assertIsNone(cm.resolve_trigger("s1", "/nonexistent.jsonl"))
+                written = json.loads((markers / "s1.json").read_text())
+        self.assertNotIn("trigger", written)
+
+    def test_it_falls_back_to_the_path_the_marker_carries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            path = self._transcript(Path(tmp), "2026-09-06T04:23:24.146Z")
+            self._marker(markers, transcript_path=path)
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                self.assertEqual(cm.resolve_trigger("s1"), "auto")
+
+    def test_a_previous_compactions_record_is_not_adopted(self) -> None:
+        """End to end, the defect harmonic-forge#489 closes: the only record in
+        the file predates this compaction, so the answer is no answer."""
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            self._marker(markers)
+            path = self._transcript(Path(tmp), "2026-09-06T03:00:00.000Z")
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                self.assertIsNone(cm.resolve_trigger("s1", path))
+                written = json.loads((markers / "s1.json").read_text())
+        self.assertNotIn("trigger", written)
 
 
 class TriggerRejectsNonValues(unittest.TestCase):
