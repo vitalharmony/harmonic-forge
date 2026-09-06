@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -144,9 +145,86 @@ def lane_of(env: dict[str, str]) -> str:
     Never a bare `LANE=` and never a raise: this hook runs at the moment a
     session is least able to cope with a crash, and a session with no `LANE` is
     a legitimate state (an operator shell, a subagent), not an error.
+
+    **Not the answer on its own** -- see `resolve_lane`. `LANE` is wrong for
+    every daemon-spawned background job on a machine whose daemon was first
+    started from a Lane 1 shell (harmonic-forge#479).
     """
     lane = (env.get("LANE") or "").strip()
     return lane if lane else "unknown"
+
+
+#: A worktree named for its lane. Matched against every path COMPONENT, not
+#: the basename: a session's cwd is routinely a subdirectory of its worktree
+#: (`HRSE2-lane3/backend` is a real recorded marker), and a basename-only
+#: match returns nothing there -- silently indistinguishable from a Lane 1
+#: checkout that legitimately has no suffix. That was 1 of the 5 markers on
+#: disk when this was written.
+#:
+#: Checked against every worktree basename across both repos for false
+#: matches: only `HRSE2-lane2`, `HRSE2-lane3`, `harmonic-forge-lane2` and
+#: `harmonic-forge-lane3` match. `hrse2-1443-impl`, `harmonic-forge-f326`,
+#: `hrse2-733p` and the rest do not.
+_LANE_DIR = re.compile(r"^.*-lane(\d+)$", re.I)
+
+
+def lane_from_cwd(cwd: str) -> str | None:
+    """The lane a path lives in, or `None` when nothing says.
+
+    `None` is not "lane unknown" -- it is "this path carries no claim",
+    which is the normal state of Lane 1's own unsuffixed checkout and must
+    never be read as a contradiction.
+    """
+    for part in Path(cwd).parts:
+        found = _LANE_DIR.match(part)
+        if found:
+            return found.group(1)
+    return None
+
+
+def resolve_lane(env: dict[str, str], cwd: str) -> tuple[str, str]:
+    """`(lane, source)` -- cross-check `LANE` against the cwd it runs in.
+
+    **Why `LANE` cannot be trusted alone (harmonic-forge#479).** `lane1`/
+    `lane2`/`lane3` export `LANE` into the *interactive* process they exec. A
+    background job is spawned by the long-lived `claude daemon run`, which is
+    not in the launcher's process tree at all -- it inherits whatever shell
+    first started the daemon. On this machine that was a Lane 1 shell, so
+    every daemon-spawned background job reports `LANE=1` regardless of the
+    launcher used or the worktree it actually runs in.
+
+    Live incident: a marker recorded `"lane": "1"` with
+    `"cwd": ".../HRSE2-lane2"`, and the injection built from it told a Lane 2
+    session *"You are LANE=1"*. That session stopped and asked the operator
+    whether it was Lane 1 -- twice.
+
+    **The blast radius is asymmetric, and worse for Lane 3 than for Lane 2.**
+    Only two corpus files are `BY_LANE`: `universal-lane1.md` (lane 1) and
+    `testing-gate.md` (lane 3). Lane 2 has none of its own, so a Lane 2
+    session mislabelled as Lane 1 is handed one file it does not need and
+    loses nothing. A **Lane 3** job mislabelled as Lane 1 loses
+    `testing-gate.md` -- the gate's own rules, dropped from the reload list of
+    the lane whose entire job is the gate.
+
+    Three sources, because two would collapse a routine case into a bug
+    report:
+
+      `env`          -- they agree, or the cwd makes no claim. Nothing to see.
+      `cwd`          -- `LANE` was unset and the cwd filled it in. Routine:
+                        an unset var has nothing to contradict, so this is
+                        strictly more information at no risk.
+      `cwd_override` -- `LANE` was set and WRONG. This is the daemon bug,
+                        and it is the value worth surfacing to an operator.
+    """
+    env_lane = lane_of(env)
+    cwd_lane = lane_from_cwd(cwd)
+    if cwd_lane is None:
+        return env_lane, "env"
+    if env_lane == "unknown":
+        return cwd_lane, "cwd"
+    if env_lane != cwd_lane:
+        return cwd_lane, "cwd_override"
+    return env_lane, "env"
 
 
 def _inside_forge_repo(cwd: str, root: str) -> bool:
@@ -274,14 +352,19 @@ def handle(payload: dict, env: dict[str, str], now: float | None = None) -> dict
     now = time.time() if now is None else now
     compacted_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
     session_id = payload.get("session_id") or ""
-    lane = lane_of(env)
     cwd = payload.get("cwd") or "an unknown directory"
+    # harmonic-forge#479: resolved BEFORE the marker and the injection are
+    # built, so both carry the same corrected value. Fixing only the marker
+    # would leave `build_context()` still printing "You are LANE=1" into a
+    # Lane 2 session -- which is the half of the incident the operator
+    # actually saw.
+    lane, lane_source = resolve_lane(env, cwd)
 
     if session_id:
         try:
             write_marker(session_id, {
                 "compacted_at": compacted_at, "source": "compact",
-                "lane": lane, "cwd": cwd,
+                "lane": lane, "lane_source": lane_source, "cwd": cwd,
             })
             prune_markers(now)
         except (OSError, ValueError):

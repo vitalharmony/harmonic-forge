@@ -405,3 +405,139 @@ class Wiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaneCrossCheck(unittest.TestCase):
+    """harmonic-forge#479 — `LANE` is wrong for every daemon-spawned
+    background job on a machine whose daemon was first started from a Lane 1
+    shell.
+
+    The fixtures below are the five markers that existed on disk when this
+    was written, reproduced as `(env, cwd)` pairs. Four are real recorded
+    states; the fifth is the shape they warn about.
+    """
+
+    def test_the_live_incident_is_caught(self) -> None:
+        """Marker `ab5817ae`: `"lane": "1"` recorded with
+        `"cwd": ".../HRSE2-lane2"`. The injection built from it told a Lane 2
+        session "You are LANE=1", and that session stopped to ask the
+        operator whether it was Lane 1 — twice."""
+        lane, source = cm.resolve_lane(
+            {"LANE": "1"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2")
+        self.assertEqual((lane, source), ("2", "cwd_override"))
+
+    def test_a_matching_pair_is_left_alone(self) -> None:
+        """Marker `4e7d1fbe` — an interactive Lane 2 session, correct."""
+        self.assertEqual(
+            cm.resolve_lane(
+                {"LANE": "2"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2"),
+            ("2", "env"))
+
+    def test_lane_1s_unsuffixed_checkout_makes_no_claim(self) -> None:
+        """Marker `a58a3627`. `HRSE2` is Lane 1's own convention; an absent
+        suffix is not evidence of anything and must never read as a
+        contradiction."""
+        self.assertEqual(
+            cm.resolve_lane(
+                {"LANE": "1"}, "/home/mmangus/Harmonic_Projects/HRSE2"),
+            ("1", "env"))
+
+    def test_an_unset_lane_with_no_claim_stays_unknown(self) -> None:
+        """Marker `d89c456b`."""
+        self.assertEqual(
+            cm.resolve_lane(
+                {}, "/home/mmangus/Harmonic_Projects/HRSE2"),
+            ("unknown", "env"))
+
+    def test_an_unset_lane_is_filled_in_by_the_cwd(self) -> None:
+        """An unset var has nothing to contradict, so this is strictly more
+        information at no risk — and it is `cwd`, not `cwd_override`, because
+        nothing was wrong."""
+        self.assertEqual(
+            cm.resolve_lane(
+                {}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2"),
+            ("2", "cwd"))
+
+
+class LaneFromCwdMatchesAPathComponent(unittest.TestCase):
+    """The correction to this issue's own Implementation Spec, which said to
+    match the cwd's BASENAME."""
+
+    def test_a_subdirectory_of_a_lane_worktree_still_resolves(self) -> None:
+        """Marker `e0cc7963`'s cwd is `HRSE2-lane3/backend`. A basename-only
+        match returns `None` there — silently indistinguishable from Lane 1's
+        legitimately unsuffixed checkout. That was 1 of the 5 markers on
+        disk, i.e. 20% of the available evidence, skipped."""
+        self.assertEqual(
+            cm.lane_from_cwd(
+                "/home/mmangus/Harmonic_Projects/HRSE2-lane3/backend"), "3")
+
+    def test_the_lane_3_case_the_original_framing_missed(self) -> None:
+        """The blast radius is asymmetric. Only `universal-lane1.md` (lane 1)
+        and `testing-gate.md` (lane 3) are BY_LANE, and Lane 2 has neither —
+        so a mislabelled Lane 2 session loses nothing, while a mislabelled
+        Lane 3 job loses the gate's own rules."""
+        lane, source = cm.resolve_lane(
+            {"LANE": "1"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane3/backend")
+        self.assertEqual((lane, source), ("3", "cwd_override"))
+        # `corpus_for` returns absolute paths; compare on the suffix.
+        gate_in = lambda lane: any(  # noqa: E731
+            p.endswith("rules/testing-gate.md") for p in cm.corpus_for(lane))
+        self.assertTrue(gate_in("3"), "Lane 3 must be told to re-read the gate's own rules")
+        self.assertFalse(gate_in("1"), "and Lane 1 must not be — that is what makes the mislabel costly")
+
+    def test_no_real_worktree_name_false_matches(self) -> None:
+        """Every worktree basename across both repos, checked when this was
+        written. A per-issue worktree or a non-lane suffix must make no
+        claim, or the fallback would override a correct `LANE`."""
+        for name in ("hrse2-1443-impl", "harmonic-forge-f326", "hrse2-733p",
+                     "harmonic-forge-release", "forge-432-impl", "HRSE2",
+                     "harmonic-forge", "hrse2-relnotes"):
+            with self.subTest(name=name):
+                self.assertIsNone(
+                    cm.lane_from_cwd(f"/home/mmangus/x/{name}"))
+
+    def test_the_real_lane_worktrees_all_match(self) -> None:
+        for name, lane in (("HRSE2-lane2", "2"), ("HRSE2-lane3", "3"),
+                           ("harmonic-forge-lane2", "2"),
+                           ("harmonic-forge-lane3", "3")):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    cm.lane_from_cwd(f"/home/mmangus/x/{name}"), lane)
+
+    def test_the_match_is_case_insensitive(self) -> None:
+        self.assertEqual(cm.lane_from_cwd("/x/HRSE2-LANE2"), "2")
+
+
+class LaneSourceReachesTheMarkerAndTheInjection(unittest.TestCase):
+    """Fixing only the marker would leave `build_context()` still printing
+    "You are LANE=1" into a Lane 2 session — which is the half of the
+    incident the operator actually saw."""
+
+    def _handle(self, env, cwd, tmp):
+        with mock.patch.object(cm, "MARKER_DIR", Path(tmp)):
+            out = cm.handle(
+                {"source": "compact", "session_id": "s1", "cwd": cwd}, env)
+            marker = json.loads((Path(tmp) / "s1.json").read_text())
+        return out, marker
+
+    def test_the_marker_records_the_corrected_lane_and_its_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, marker = self._handle(
+                {"LANE": "1"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2", tmp)
+        self.assertEqual(marker["lane"], "2")
+        self.assertEqual(marker["lane_source"], "cwd_override")
+
+    def test_the_injected_text_carries_the_corrected_lane_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out, _ = self._handle(
+                {"LANE": "1"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2", tmp)
+        blob = json.dumps(out)
+        self.assertIn("LANE=2", blob)
+        self.assertNotIn("LANE=1", blob)
+
+    def test_a_correct_session_records_env_as_its_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, marker = self._handle(
+                {"LANE": "2"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2", tmp)
+        self.assertEqual(marker["lane_source"], "env")
