@@ -862,3 +862,116 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProbePolicyBoundary(unittest.TestCase):
+    """harmonic-forge#432 — `probe` posture's Gemini branch was unbounded.
+
+    Measured live 2026-09-06 (gemini 0.57.0), the reach was asymmetric in a
+    way the flag name does not suggest: under `--yolo`, `run_shell_command`
+    read an absolute path outside `--cwd` on the first attempt, while
+    `write_file` to the same path was refused by Gemini's own workspace
+    bound. The shell tool was the entire hole.
+
+    These are the structural assertions. The behavioural proof is a live
+    Gemini call and belongs to Lane 3's gate; what is checkable here is that
+    the policy exists, denies exactly one tool, and is actually passed.
+    """
+
+    POLICY = SCRIPT.parent / "gemini-probe-deny.toml"
+    SOURCE = SCRIPT.read_text()
+
+    def test_the_probe_policy_file_exists(self) -> None:
+        self.assertTrue(self.POLICY.is_file(), f"missing: {self.POLICY}")
+
+    def test_it_denies_run_shell_command(self) -> None:
+        import tomllib
+        rules = tomllib.loads(self.POLICY.read_text())["rule"]
+        denied = {r["toolName"] for r in rules if r["decision"] == "deny"}
+        self.assertIn("run_shell_command", denied)
+
+    def test_it_does_not_deny_writes(self) -> None:
+        """The distinction that keeps `probe` a probe. Reusing the
+        `read-only` deny policy here would remove the capability this
+        posture exists to grant — Codex's own probe branch runs
+        `--sandbox workspace-write` — and quietly turn `probe` into
+        `read-only`. Gemini's file tools are workspace-bounded already."""
+        import tomllib
+        rules = tomllib.loads(self.POLICY.read_text())["rule"]
+        denied = set()
+        for rule in rules:
+            if rule["decision"] == "deny":
+                name = rule["toolName"]
+                denied |= set(name) if isinstance(name, list) else {name}
+        self.assertNotIn("write_file", denied)
+        self.assertNotIn("replace", denied)
+        self.assertEqual(denied, {"run_shell_command"},
+                         "probe's policy must deny exactly the one tool that escapes --cwd")
+
+    def test_probe_posture_passes_the_policy_alongside_yolo(self) -> None:
+        """`--yolo` without a policy is the defect. Both must be present."""
+        branch = self.SOURCE[self.SOURCE.index("invoke_gemini() {"):]
+        branch = branch[:branch.index("\n}")]
+        self.assertIn('mode_args=(--yolo --admin-policy "$probe_policy")', branch)
+        self.assertNotIn("mode_args=(--yolo)", branch)
+
+    def test_read_only_posture_still_gets_its_own_policy(self) -> None:
+        branch = self.SOURCE[self.SOURCE.index("invoke_gemini() {"):]
+        branch = branch[:branch.index("\n}")]
+        self.assertIn('mode_args=(--admin-policy "$readonly_policy")', branch)
+
+
+class TestFailsClosedOnMissingPolicy(unittest.TestCase):
+    """The guard `_cli_launch.sh` provides for every other Gemini entry
+    point and this script never had, because it shells out to `gemini`
+    directly. The CLI does not fail closed on its own: verified live
+    2026-08-28 and recorded in `_cli_launch.sh`, a bad `--admin-policy`
+    prints a stderr warning and the session runs unprotected under
+    `--yolo`. So this check is the only thing between a deleted file and an
+    unbounded session."""
+
+    def _run_with_policies_hidden(self, hide: list[str]):
+        """Copy the tool dir, remove the named policies, run from the copy.
+
+        The script resolves its policies relative to its own location, so a
+        copy is how a missing file is simulated without touching the real
+        checkout.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "lane"
+            shutil.copytree(SCRIPT.parent, dest)
+            for name in hide:
+                (dest / name).unlink()
+            return subprocess.run(
+                ["bash", str(dest / SCRIPT.name),
+                 "--caller", "claude", "--families", "2",
+                 "--posture", "read-only", "--brief", str(dest / SCRIPT.name)],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                env={**os.environ, "PATH": make_stub_path(tmp)},
+            )
+
+    def test_a_missing_probe_policy_refuses_to_run(self) -> None:
+        result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("admin policy file missing", result.stderr)
+        self.assertIn("gemini-probe-deny.toml", result.stderr)
+
+    def test_a_missing_read_only_policy_refuses_to_run(self) -> None:
+        result = self._run_with_policies_hidden(["gemini-read-only-deny.toml"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("admin policy file missing", result.stderr)
+
+    def test_the_refusal_explains_why_the_cli_cannot_be_trusted_to(self) -> None:
+        """A bare 'file missing' would read as a broken install. The reason
+        it is fatal — the CLI runs unprotected rather than failing — is the
+        part a reader needs."""
+        result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
+        self.assertIn("does NOT fail closed", result.stderr)
+
+    def test_it_checks_every_posture_not_just_the_one_being_run(self) -> None:
+        """The run above is `--posture read-only`, and the missing file is
+        `probe`'s. A per-invocation check would have passed it: a policy
+        file absent from the checkout is a broken install, and finding out
+        only on the run that happens to need it is how this stays hidden."""
+        result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
+        self.assertEqual(result.returncode, 2)

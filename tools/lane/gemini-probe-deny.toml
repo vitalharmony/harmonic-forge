@@ -1,0 +1,43 @@
+# Admin-tier deny policy for cross_family_call.sh's `probe` posture
+# (harmonic-forge#432).
+#
+# WHY THIS EXISTS, AND WHY IT DENIES ONLY ONE TOOL
+#
+# `probe` is the only posture that passes Gemini `--yolo`. Measured live
+# 2026-09-06 against gemini 0.57.0, the blast radius is NOT what the flag
+# name suggests, and it is not symmetric across tools:
+#
+#   --yolo, `cat <abs path outside --cwd>` via run_shell_command
+#       -> REACHED the file. Caller-scoped `--cwd` bounds nothing.
+#
+#   --yolo, write_file to an absolute path outside --cwd
+#       -> "Path not in workspace: ... resolves outside the allowed
+#          workspace directories". No file created.
+#
+# So Gemini's FILE tools are workspace-bounded on their own, even under
+# `--yolo`. Its SHELL tool is not. `run_shell_command` is the entire hole,
+# and denying it is the entire fix.
+#
+# Denying writes as well -- i.e. reusing `gemini-read-only-deny.toml` --
+# would have removed the capability `probe` exists to grant, since the
+# sibling `invoke_codex` probe branch runs `--sandbox workspace-write`. The
+# point of this file is to give the Gemini branch the SAME effective
+# boundary Codex's probe already has, not a stricter one that quietly turns
+# `probe` into `read-only`.
+#
+# VERIFIED, all three directions, same session:
+#   shell escape          -> denied ("the required tool is unavailable")
+#   file-tool escape      -> denied by Gemini's own workspace bound
+#   in-workspace write    -> SUCCEEDED, so probe's job still works
+#
+# The deny is at the admin tier because that is the only mechanism proven
+# (harmonic-forge#326) to survive `--yolo` and to remove the tool from the
+# model's own tool list rather than refuse it at call time -- the model's
+# own words under this policy were "I cannot execute shell commands because
+# the required tool is unavailable", not "I was refused".
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 900
+denyMessage = "cross_family_call.sh probe posture (harmonic-forge#432): shell execution is denied at the admin policy tier. Gemini's file tools are already workspace-bounded; run_shell_command is the only tool that escapes --cwd under --yolo."
