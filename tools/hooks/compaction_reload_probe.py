@@ -79,6 +79,7 @@ from compaction_marker import (  # noqa: E402
     corpus_for,
     is_corpus_reload,
     note_reload,
+    resolve_trigger,
 )
 
 #: harmonic-forge#451 JDC3. Mirrors `model_tier_gate.py`'s `LANE_MODEL`
@@ -146,6 +147,23 @@ def handle(payload: dict, now: str | None = None,
     if marker is None:
         return {}
 
+    # harmonic-forge#489. Resolved HERE, on a `PreToolUse`, because the
+    # `SessionStart` hook that used to do it structurally cannot: the harness
+    # appends the compaction record 42-68 ms AFTER that hook reads, so it found
+    # nothing on all five real compactions measured, and `trigger` was `null`
+    # on every one of them -- which made the deny below dead code in production
+    # while passing its own fixtures. The reading itself stays in
+    # `compaction_marker`; this only asks for the answer.
+    #
+    # BEFORE the corpus-reload branch, deliberately: the trigger is a property
+    # of the compaction, not of what the session did next. Guarded on the key's
+    # ABSENCE rather than on a falsy value, so a resolved-but-unknown trigger
+    # is not re-resolved on every subsequent tool call.
+    trigger = marker.get("trigger")
+    if "trigger" not in marker:
+        trigger = resolve_trigger(session_id,
+                                  payload.get("transcript_path") or "")
+
     if is_corpus_reload(payload.get("tool_name") or "",
                         payload.get("tool_input") or {}):
         # BEFORE the deny, always. Without this the deny blocks the reads
@@ -156,7 +174,7 @@ def handle(payload: dict, now: str | None = None,
 
     if marker.get("reloaded_at"):
         return {}
-    if marker.get("trigger") != "auto":
+    if trigger != "auto":
         # `manual` is the operator compacting deliberately (JDC2); `None`
         # means the compaction record could not be read. Neither is a fact
         # that justifies blocking work.
