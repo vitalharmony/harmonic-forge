@@ -5,18 +5,24 @@ is grown by the harness, so a live-pinned count is one that changes without any
 commit — a test that fails on somebody else's memory write proves nothing about
 this code.
 
-**AC6 IS NOT SATISFIED AS WRITTEN, AND THAT IS DELIBERATE.** It pins counts to
-`testdata/store_d494c39/`, a frozen copy of the operator's real memory store.
-`harmonic-forge` is a PUBLIC repository, and that store holds a file documenting
-a live Keycloak test credential plus investor context, resume canon, customer
-naming rules and tenant priorities. Committing it here would be its first
-publication and is not reversible in practice.
+**AC6 IS PINNED TO `testdata/conventions/`, A SYNTHETIC FIXTURE.** The issue as
+filed named `testdata/store_d494c39/`, a frozen copy of the operator's real
+memory store. That copy is not here and must never be: `harmonic-forge` is a
+PUBLIC repository, and the store holds a file documenting a live Keycloak test
+credential alongside investor context, resume canon, customer-naming rules and
+tenant priorities. Committing it would be its first publication, and a public
+push is not reversible in practice.
 
-`testdata/conventions/` is a SYNTHETIC fixture reproducing the same structural
-conditions AC6 exists to pin — one orphan, both naming conventions resolving,
-one issue reference — with no operator content. It gives AC6's shape (1 / 0 / 0)
-without its provenance. Whether the real frozen copy may live somewhere private
-instead is Lane 1's decision, not this suite's.
+`testdata/conventions/` reproduces every structural condition AC6 exists to pin
+— one orphan, both naming conventions resolving including the shortened-`name:`
+shape, one issue reference — with no operator content, giving AC6's numbers
+(1 orphan / 0 dead links / 0 broken refs) without its provenance. It is also the
+better fixture on the merits: a frozen real snapshot would drift the moment the
+live store is next edited, and a private-repo copy would make this suite pass
+vacuously in a public-only checkout.
+
+Amended by Lane 1 on 2026-09-06 (harmonic-forge#494, "L1 — Question 1 decided"),
+which ratified dropping the frozen copy rather than relocating or redacting it.
 """
 from __future__ import annotations
 

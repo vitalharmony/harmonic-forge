@@ -34,12 +34,15 @@ counts. It is **not** what the gate runs against — it carries one deliberate
 orphan.
 
 **A frozen copy of the real store is NOT in this repo, and must not be.**
-harmonic-forge#494 specified one; `harmonic-forge` is a PUBLIC repository and
-the operator memory store holds a file documenting a live Keycloak test
-credential alongside investor context, resume canon, customer-naming rules and
-tenant priorities. `testdata/conventions/` reproduces the structural conditions
-that fixture existed to pin — one orphan, both naming conventions resolving, one
-issue reference — with no operator content.
+harmonic-forge#494 originally specified one. `harmonic-forge` is PUBLIC and the
+operator memory store holds a file documenting a live Keycloak test credential
+alongside investor context, resume canon, customer-naming rules and tenant
+priorities, so committing it would be a first publication that cannot be undone.
+Lane 1 amended the acceptance criteria accordingly on 2026-09-06.
+
+`testdata/conventions/` reproduces the structural conditions that fixture existed
+to pin — one orphan, both naming conventions resolving, one issue reference —
+with no operator content, and cannot drift when the live store is next edited.
 
 ## SessionStart hook — operator install
 
