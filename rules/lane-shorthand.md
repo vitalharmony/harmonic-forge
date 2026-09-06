@@ -86,6 +86,7 @@ number or prose, so the display string stays free to be reworded.
 | `gate.executable` | `authorized, gate executable` | AE + sweep, or that pair carried forward (R-0209) |
 | `gate.pass` | `gated` | Lane 3 passed |
 | `gate.fail` | `FAIL, back to L2 → Fix H<N>` | Lane 3 failed |
+| `l1.rework` | `L1 asked for rework, back to L2 → Fix H<N>` | Lane 1 asked Lane 2 for more work on the branch — a rebase, a correction. **Same trigger as `gate.fail`, deliberately; different key** (hrse#1609) |
 | `unknown` | `unknown` | the fail-loud default |
 
 <!-- R-0331 -->
@@ -116,7 +117,7 @@ mandated heading is missing, the transition is still derived but marked
 
 Two artifacts are the exception, and the exception is a known gap rather than
 a design: the **Lane 3 Test Spec** and the **Lane 3 Gate Results** have no
-emitter — `l1_post.py --kind` is `handoff|ready-for-l3|sweep|ae|ae-and-sweep`
+emitter — `l1_post.py --kind` is `handoff|ready-for-l3|sweep|ae|ae-and-sweep|rework`
 and `l2_post.py` covers only `L2P`/`L2D`/`L2B` — so they carry no footer at
 all. They are read from their headings with `provenance="heading:..."`, which
 keeps the model honest about what it knows. The two artifacts that decide
@@ -130,6 +131,29 @@ never emits one inside a fence. Found live: hrse#1590's own plan comment
 tabulates another issue's footers as evidence, and reading the raw body put a
 `gate.fail` on a thread that had never been gated.
 <!-- /R-0334 -->
+
+### `kind=rework` — why a request for work is not a discussion
+
+<!-- R-0337 -->
+**A Lane 1 comment asking Lane 2 for more work on an existing branch is posted
+with `--kind rework`, never as ordinary discussion.** `_Markers.newest()`
+excludes `discussion` by design — on its own it is Lane 1 talking, not a lane
+transition — so a rebase request posted that way left the row still naming
+Lane 3 while Lane 2 owed the work and nobody had been told (hrse#1609; observed
+live on hrse#1578 and hrse#1606).
+
+**Inferring it from a discussion instead was measured and rejected.** Across
+every thread on `vitalharmony/hrse`, 63 have a post-`l2.done` discussion as
+their newest marker, and **none of them is a request for work** — they are
+closing notes, merge confirmations and gate sign-offs. Treating a newer
+discussion as "Lane 2 owes work" would have been wrong 63 times out of 63 on a
+model whose contract is fail-loud.
+
+The trigger it renders is `Fix H<N>` — the same one a gate FAIL renders,
+because what Lane 2 must do is identical: re-read the issue and do the work on
+the branch. Only the operator-facing token is shared; the key stays
+`l1.rework`, so the row still says which of the two it is.
+<!-- /R-0337 -->
 
 ## `close` — one compound instruction, not three approvals
 
