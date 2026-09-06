@@ -156,6 +156,31 @@ done
 # config (harmonic-forge#448).
 VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-gpt-5.6-sol}"
 
+# harmonic-forge#482. The previous pin, `gemini-2.5-pro`, was hardcoded at the
+# call site since harmonic-forge#366 and now fails every Gemini invocation:
+#
+#     ModelNotFoundError: This model models/gemini-2.5-pro is no longer
+#     available to new users
+#
+# **A floating alias, deliberately, and this is the substantive choice in this
+# issue.** A concrete pin is what broke; pinning another concrete version
+# schedules the identical outage for whenever that one retires. Two concrete
+# candidates were live-checked and both carry that same clock:
+# `gemini-2.5-flash` (the issue's own suggestion) and `gemini-3.1-pro-preview`
+# — a *preview*, which is a deprecation notice with extra steps.
+#
+# The determinism argument for a concrete pin is real and it is why
+# `VERIFY_MODEL` above is pinned. It does not apply here: `verify` is
+# Codex-only and reproducible by design, while `read-only`/`probe` are
+# ADVISORY — they surface findings a human reads, and nothing compares two
+# runs for equality. Capability matters more than repeatability for an
+# adversarial reviewer, so the alias keeps the PRO tier the original chose
+# rather than silently downgrading every posture to flash.
+#
+# Overridable, same shape as VERIFY_MODEL, so a caller who does need a fixed
+# version can have one without editing this file.
+GEMINI_MODEL="${CROSS_FAMILY_GEMINI_MODEL:-gemini-pro-latest}"
+
 # Appended to every brief, for every family, regardless of what the caller
 # wrote (harmonic-forge#366 correction: a Codex probe brief with no explicit
 # reply-shape instruction produced a fully correct plain-prose answer that
@@ -367,7 +392,7 @@ SETTINGS
       ${GOOGLE_API_KEY:+"GOOGLE_API_KEY=$GOOGLE_API_KEY"} \
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
-      gemini --skip-trust "${mode_args[@]}" -m gemini-2.5-pro \
+      gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
         -p "$(prompt_text "$posture" "$brief")" -o json </dev/null 2>/dev/null
   )
 }
