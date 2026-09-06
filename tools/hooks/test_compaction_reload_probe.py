@@ -164,3 +164,170 @@ class TheFastPathIsRealNotDecorative(unittest.TestCase):
         self.assertEqual(
             json.loads((Path(self.tmp.name) / "s1.json").read_text())["reloaded_at"],
             "already")
+
+
+AUTO_MARKER = {
+    "compacted_at": "2026-09-05T07:55:34+00:00", "source": "compact",
+    "lane": "3", "lane_source": "cwd_override", "cwd": "/x/HRSE2-lane3",
+    "trigger": "auto",
+}
+
+
+class DenyBackstop(unittest.TestCase):
+    """harmonic-forge#451 — enforcement. F446 injects and asks; the salience
+    test showed a session with the rule text already in context not acting on
+    it. This does not require the session's cooperation."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        for module in (cm, probe):
+            patcher = mock.patch.object(module, "MARKER_DIR", self.dir)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def marker(self, **overrides):
+        payload = {**AUTO_MARKER, **overrides}
+        (self.dir / "s1.json").write_text(json.dumps(payload))
+        return payload
+
+    def call(self, tool="Bash", value="ls -la", env=None):
+        key = "file_path" if tool == "Read" else "command"
+        return probe.handle({"session_id": "s1", "tool_name": tool,
+                             "tool_input": {key: value}}, now="T", env=env or {})
+
+    def decision(self, out):
+        return (out.get("hookSpecificOutput") or {}).get("permissionDecision")
+
+    # --- TC1: the deny itself -------------------------------------------
+
+    def test_an_auto_compacted_unreloaded_session_is_denied(self) -> None:
+        self.marker()
+        self.assertEqual(self.decision(self.call()), "deny")
+
+    def test_it_is_deny_not_ask(self) -> None:
+        """Ratified. `ask` presumes a human at the keyboard, which is exactly
+        what a background-spawned session does not have — and that is the
+        session this backstop most needs to catch."""
+        self.marker()
+        self.assertNotEqual(self.decision(self.call()), "ask")
+
+    def test_the_reason_names_this_lanes_corpus(self) -> None:
+        """Lane-specific via F479's corrected `lane`. A Lane 3 session must
+        be pointed at `testing-gate.md`; a Lane 1 one must not."""
+        self.marker(lane="3")
+        reason = self.call()["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("rules/testing-gate.md", reason)
+        self.marker(lane="1")
+        reason = self.call()["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("rules/universal-lane1.md", reason)
+        self.assertNotIn("rules/testing-gate.md", reason)
+
+    def test_the_reason_names_the_escape_hatch(self) -> None:
+        self.marker()
+        self.assertIn(probe.ESCAPE_HATCH,
+                      self.call()["hookSpecificOutput"]["permissionDecisionReason"])
+
+    # --- the deadlock, which is the point -------------------------------
+
+    def test_a_corpus_read_is_allowed_while_blocked(self) -> None:
+        """Without this the deny blocks the reads that clear it, on the first
+        tool call of every enforced compaction — a permanent lockout, and
+        `deny` rather than `ask` means no human can override it in the
+        moment."""
+        self.marker()
+        self.assertIsNone(self.decision(self.call("Bash", "cat rules/testing-gate.md")))
+
+    def test_a_corpus_read_via_the_read_tool_is_allowed_while_blocked(self) -> None:
+        self.marker()
+        self.assertIsNone(self.decision(
+            self.call("Read", "/h/harmonic-forge/rules/testing-gate.md")))
+
+    def test_the_allowed_read_also_clears_the_block(self) -> None:
+        """Allowing it is half the job; the next call must not be denied."""
+        self.marker()
+        self.call("Bash", "cat rules/testing-gate.md")
+        self.assertEqual(json.loads((self.dir / "s1.json").read_text())["reloaded_at"], "T")
+        self.assertIsNone(self.decision(self.call()))
+
+    def test_a_non_read_that_merely_mentions_the_corpus_is_still_denied(self) -> None:
+        """The exemption is `is_corpus_reload`, not "the command contains a
+        corpus path" — otherwise the block is bypassed by naming a file."""
+        self.marker()
+        self.assertEqual(
+            self.decision(self.call("Bash", 'grep -rn "rules/testing-gate.md" .')), "deny")
+
+    # --- TC2-TC5: the allow paths ---------------------------------------
+
+    def test_an_already_reloaded_session_is_allowed(self) -> None:
+        self.marker(reloaded_at="2026-09-05T08:00:00+00:00")
+        self.assertIsNone(self.decision(self.call()))
+
+    def test_a_manual_compaction_is_allowed(self) -> None:
+        """JDC2: the operator compacting deliberately is not the failure this
+        catches."""
+        self.marker(trigger="manual", reloaded_at=None)
+        self.assertIsNone(self.decision(self.call()))
+
+    def test_an_undeterminable_trigger_is_allowed(self) -> None:
+        """`None` means the compaction record could not be read, not that it
+        was automatic. Denying on it would block work on a fact nobody
+        established."""
+        self.marker(trigger=None)
+        self.assertIsNone(self.decision(self.call()))
+
+    def test_a_session_that_never_compacted_is_allowed(self) -> None:
+        self.assertIsNone(self.decision(self.call()))
+
+    # --- TC6/TC7: hatch and failure -------------------------------------
+
+    def test_the_escape_hatch_allows_and_announces_itself(self) -> None:
+        self.marker()
+        out = self.call(env={probe.ESCAPE_HATCH: "1"})
+        self.assertIsNone(self.decision(out))
+        self.assertIn(probe.ESCAPE_HATCH, out["systemMessage"])
+
+    def test_the_hatch_is_checked_before_anything_else(self) -> None:
+        """Including before the marker is read — an operator overriding a
+        gate should not depend on the gate's own state being readable."""
+        (self.dir / "s1.json").write_text("{not json")
+        out = self.call(env={probe.ESCAPE_HATCH: "1"})
+        self.assertIn(probe.ESCAPE_HATCH, out["systemMessage"])
+
+    def test_a_malformed_marker_fails_open_and_visibly(self) -> None:
+        """AC5. Silence would be harmonic-forge#440 — a gate that stopped
+        working and told nobody. Blocking would be worse: the state needed to
+        clear the block is the state that is broken."""
+        (self.dir / "s1.json").write_text("{not json")
+        out = self.call()
+        self.assertIsNone(self.decision(out))
+        self.assertIn("unreadable", out["systemMessage"])
+
+    def test_a_non_object_marker_also_fails_open_visibly(self) -> None:
+        (self.dir / "s1.json").write_text("[1, 2, 3]")
+        out = self.call()
+        self.assertIsNone(self.decision(out))
+        self.assertTrue(out.get("systemMessage"))
+
+
+class DenyLogicIsNotDuplicated(unittest.TestCase):
+    """AC4 — harmonic-forge#328's finding. The enforcement half must import
+    the detection, not restate it."""
+
+    SOURCE = Path(probe.__file__).read_text()
+
+    def test_it_imports_rather_than_reimplements(self) -> None:
+        self.assertIn("from compaction_marker import", self.SOURCE)
+        for token in ("READ_VERBS", "CorpusFile(", "compactMetadata"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, self.SOURCE)
+
+    def test_the_corpus_comes_from_the_shared_module(self) -> None:
+        self.assertIs(probe.corpus_for, cm.corpus_for)
+        self.assertIs(probe.is_corpus_reload, cm.is_corpus_reload)
+
+    def test_the_docstring_no_longer_claims_it_never_blocks(self) -> None:
+        """It said so deliberately, and that stopped being true."""
+        self.assertNotIn("It never blocks", probe.__doc__)
+        self.assertIn("harmonic-forge#451", probe.__doc__)
