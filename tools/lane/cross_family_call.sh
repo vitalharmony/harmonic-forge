@@ -268,7 +268,7 @@ invoke_claude() {
   local posture="$1" brief="$2" cwd="$3"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
-    claude -p "$(prompt_text "$posture" "$brief")" --output-format json </dev/null 2>/dev/null
+    claude -p "$(prompt_text "$posture" "$brief")" --output-format json </dev/null
   )
 }
 
@@ -308,16 +308,35 @@ invoke_codex() {
   local posture="$1" brief="$2" cwd="$3"
   local sandbox="read-only"
   local cd_args=() config_args=() model_args=()
+  # harmonic-forge#483: `--skip-git-repo-check` on BOTH branches that set
+  # `-C`. `codex exec` refuses to run outside a git repository, and `probe`'s
+  # own contract is "an isolated scratch directory the caller creates" -- a
+  # fresh scratch dir is not a repo, so every probe invocation died with
+  # `Not inside a trusted directory and --skip-git-repo-check was not
+  # specified` before any sandbox was applied. `read-only` never sets `-C`,
+  # inherits the caller's real repo, and is why the two postures differed.
+  #
+  # `verify` is included deliberately, past this issue's one-posture title
+  # (ratified). It sets `-C` too and fails identically on a non-repo `--cwd`
+  # -- confirmed live, exit 1, same message. It works today only because its
+  # callers happen to pass a lane worktree, and nothing validates that: the
+  # shared `--cwd` check asserts the directory EXISTS, not that it is a repo.
+  #
+  # NOT the `trust_level` config `verify` already carries. That was the
+  # obvious fix -- reuse the mechanism in the sibling branch -- and it does
+  # not work: measured live, `-c projects."$cwd".trust_level="trusted"` still
+  # exits 1 with the same message. Trust level and the git-repo check are
+  # separate gates, and only this flag clears the second.
   if [ "$posture" = probe ]; then
     sandbox="workspace-write"
-    [ -n "$cwd" ] && cd_args=(-C "$cwd")
+    [ -n "$cwd" ] && cd_args=(-C "$cwd" --skip-git-repo-check)
   elif [ "$posture" = verify ]; then
-    cd_args=(-C "$cwd")
+    cd_args=(-C "$cwd" --skip-git-repo-check)
     model_args=(--ignore-user-config -m "$VERIFY_MODEL")
     config_args=(-c "projects.\"$cwd\".trust_level=\"trusted\"")
   fi
   codex exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
-    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief")" </dev/null 2>/dev/null
+    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief")" </dev/null
 }
 
 invoke_gemini() {
@@ -393,7 +412,7 @@ SETTINGS
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
-        -p "$(prompt_text "$posture" "$brief")" -o json </dev/null 2>/dev/null
+        -p "$(prompt_text "$posture" "$brief")" -o json </dev/null
   )
 }
 
@@ -412,11 +431,21 @@ json_escape() {
 # --- normalization: native output -> {family,posture,status,exit_code,report,native} ---
 
 emit_envelope() {
-  local family="$1" posture="$2" exit_code="$3" native_file="$4"
+  local family="$1" posture="$2" exit_code="$3" native_file="$4" stderr_file="${5:-}"
 
   if [ "$exit_code" -ne 0 ] || [ ! -s "$native_file" ]; then
+    # harmonic-forge#483: the CLI's own error text, on the failure path ONLY.
+    # A `process-error` envelope used to carry nothing but an exit code, so
+    # the one line that explained it was already gone. Optional 5th argument
+    # so existing callers -- including the unit tests that source this
+    # function in isolation -- keep working unchanged.
+    local stderr_text=""
+    if [ -n "$stderr_file" ] && [ -s "$stderr_file" ]; then
+      stderr_text="$(tail -c 4000 "$stderr_file")"
+    fi
     jq -n --arg family "$family" --arg posture "$posture" --argjson exit_code "$exit_code" \
-      '{family:$family, posture:$posture, status:"process-error", exit_code:$exit_code, report:null, native:null}'
+      --arg stderr "$stderr_text" \
+      '{family:$family, posture:$posture, status:"process-error", exit_code:$exit_code, report:null, native:null, stderr:(if $stderr == "" then null else $stderr end)}'
     return
   fi
 
@@ -550,11 +579,26 @@ preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
 for family in "${targets[@]}"; do
   tmp_out="$(mktemp)"
+  # harmonic-forge#483: captured here rather than discarded inside each
+  # `invoke_*`. The entire diagnosis of this issue was ONE line the CLI wrote
+  # to stderr and `2>/dev/null` deleted, which turned a five-second read into
+  # a full reproduction pass.
+  #
+  # Captured, not passed through: Codex writes `Reading additional input from
+  # stdin...` to stderr on every SUCCESSFUL run, so an unconditional
+  # passthrough would put that noise in every envelope. It is surfaced only on
+  # a non-zero exit -- see `emit_envelope`.
+  #
+  # Applied to all three families, not only Codex. The redirect belongs at the
+  # one dispatch site rather than in three functions, and the hole it closes
+  # is identical in each -- the same reason `verify` is fixed alongside
+  # `probe` above.
+  tmp_err="$(mktemp)"
   exit_code=0
   case "$family" in
-    claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" || exit_code=$? ;;
-    codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" || exit_code=$? ;;
-    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" || exit_code=$? ;;
+    claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
+    codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
+    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
   esac
 
   # Buffered, not streamed: a half-written envelope emitted before the failure
@@ -563,7 +607,7 @@ for family in "${targets[@]}"; do
   # one call so the failure can be handled here instead of killing the run.
   envelope_out="$(mktemp)"
   envelope_err="$(mktemp)"
-  if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" \
+  if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        >"$envelope_out" 2>"$envelope_err"; then
     cat "$envelope_out"
     rm -f "$tmp_out"
@@ -607,7 +651,11 @@ for family in "${targets[@]}"; do
       *) rm -f "$tmp_out" ;;
     esac
   fi
-  rm -f "$envelope_out" "$envelope_err"
+  # harmonic-forge#483: `tmp_err` is cleaned up on both paths, unlike
+  # `tmp_out`. Its content is already inside the envelope by the time either
+  # branch finishes, so leaving it behind would preserve nothing new -- the
+  # reason `tmp_out` survives a failed preservation does not apply here.
+  rm -f "$envelope_out" "$envelope_err" "$tmp_err"
 done
 
 exit "$overall_status"

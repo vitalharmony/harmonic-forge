@@ -1083,3 +1083,113 @@ class TestGeminiModelAnswersLive(unittest.TestCase):
                 data=json.dumps({"contents": [{"parts": [{"text": "x"}]}]}).encode(),
                 headers={"Content-Type": "application/json"}), timeout=60)
         self.assertEqual(ctx.exception.code, 404)
+
+
+class TestCodexGitRepoCheck(unittest.TestCase):
+    """harmonic-forge#483 — `codex exec` refuses to run outside a git repo,
+    and `probe`'s own contract is an isolated scratch directory, which is not
+    one. Reproduced live: `exit=1`, empty stdout, and the whole explanation on
+    the stderr the script was discarding.
+    """
+
+    SOURCE = SCRIPT.read_text()
+
+    def codex_branch(self) -> str:
+        body = self.SOURCE[self.SOURCE.index("invoke_codex() {"):]
+        return body[:body.index("\n}")]
+
+    def test_both_branches_that_set_c_also_skip_the_repo_check(self) -> None:
+        branch = self.codex_branch()
+        for line in ('cd_args=(-C "$cwd" --skip-git-repo-check)',
+                     '[ -n "$cwd" ] && cd_args=(-C "$cwd" --skip-git-repo-check)'):
+            with self.subTest(line=line):
+                self.assertIn(line, branch)
+
+    def test_no_c_is_set_without_the_flag(self) -> None:
+        """The invariant, not the two current call sites: a future posture
+        that sets `-C` and forgets the flag reintroduces this exactly."""
+        for line in self.codex_branch().splitlines():
+            if "cd_args=(-C" in line:
+                with self.subTest(line=line.strip()):
+                    self.assertIn("--skip-git-repo-check", line)
+
+    def test_read_only_still_sets_no_c_at_all(self) -> None:
+        """`read-only` inherits the caller's cwd, which is why it never hit
+        this. Changing that would give it the same dependency on the caller's
+        directory being a repo."""
+        branch = self.codex_branch()
+        head = branch[:branch.index('if [ "$posture" = probe ]')]
+        self.assertIn("cd_args=()", head)
+
+    def test_trust_level_is_not_used_as_the_fix(self) -> None:
+        """The near-miss. Reusing `verify`'s existing
+        `projects."$cwd".trust_level="trusted"` is the fix a reviewer would
+        approve on sight, and measured live it still exits 1 with the same
+        message — trust level and the git-repo check are separate gates."""
+        branch = self.codex_branch()
+        self.assertIn("trust_level", branch, "verify still carries it for its own reason")
+        verify = branch[branch.index('elif [ "$posture" = verify ]'):]
+        self.assertIn("--skip-git-repo-check", verify)
+
+
+class TestStderrIsCapturedNotDiscarded(unittest.TestCase):
+    SOURCE = SCRIPT.read_text()
+
+    def test_no_invoke_function_swallows_stderr(self) -> None:
+        """One discarded line was the entire diagnosis of this issue."""
+        for name in ("invoke_claude", "invoke_codex", "invoke_gemini"):
+            with self.subTest(function=name):
+                body = self.SOURCE[self.SOURCE.index(f"{name}() {{"):]
+                body = body[:body.index("\n}")]
+                self.assertNotIn("2>/dev/null", body)
+
+    def test_the_dispatch_loop_captures_it_for_every_family(self) -> None:
+        for name in ("invoke_claude", "invoke_codex", "invoke_gemini"):
+            with self.subTest(family=name):
+                self.assertIn(f'{name} "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err"',
+                              self.SOURCE)
+
+    def test_it_is_captured_rather_than_passed_through(self) -> None:
+        """Codex writes `Reading additional input from stdin...` on every
+        SUCCESSFUL run, so an unconditional passthrough would put that in
+        every envelope."""
+        self.assertNotIn('2>&1', self.SOURCE.split("for family in")[1][:2000])
+
+    def test_the_error_envelope_carries_the_stderr(self) -> None:
+        envelope = emit_envelope_with_stderr(
+            "codex", "probe", 1, "",
+            "Not inside a trusted directory and --skip-git-repo-check was not specified.")
+        self.assertEqual(envelope["status"], "process-error")
+        self.assertIn("--skip-git-repo-check", envelope["stderr"])
+
+    def test_a_success_envelope_carries_no_stderr_field_value(self) -> None:
+        """Surfaced on failure only — the success path must stay clean."""
+        envelope = emit_envelope_with_stderr("codex", "probe", 1, "", "")
+        self.assertIsNone(envelope["stderr"])
+
+    def test_the_fifth_argument_is_optional(self) -> None:
+        """Existing callers, including the unit tests that source this
+        function in isolation, keep working unchanged."""
+        envelope = emit_envelope_with_stderr("codex", "probe", 1, "", None)
+        self.assertEqual(envelope["exit_code"], 1)
+        self.assertIsNone(envelope["stderr"])
+
+
+def emit_envelope_with_stderr(family, posture, exit_code, native_text, stderr_text):
+    """Call the real `emit_envelope`, optionally with the 5th argument."""
+    source = SCRIPT.read_text()
+    start = source.index("emit_envelope() {")
+    end = source.index("# --- dispatch ---")
+    body = "set -euo pipefail\n" + source[start:end]
+    with tempfile.TemporaryDirectory() as tmp:
+        native = Path(tmp) / "native"
+        native.write_text(native_text)
+        args = f'"{family}" "{posture}" {exit_code} "{native}"'
+        if stderr_text is not None:
+            err = Path(tmp) / "err"
+            err.write_text(stderr_text)
+            args += f' "{err}"'
+        script = f"{body}\nemit_envelope {args}\n"
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
