@@ -975,3 +975,111 @@ class TestFailsClosedOnMissingPolicy(unittest.TestCase):
         only on the run that happens to need it is how this stays hidden."""
         result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
         self.assertEqual(result.returncode, 2)
+
+
+class TestGeminiModelPin(unittest.TestCase):
+    """harmonic-forge#482 — the pinned model was deprecated and every Gemini
+    posture failed before any posture logic ran."""
+
+    SOURCE = SCRIPT.read_text()
+
+    @staticmethod
+    def _executable(source: str) -> str:
+        """Comment lines stripped.
+
+        The naive `assertNotIn("gemini-2.5-pro", source)` fails on this
+        change's own comment, which names the dead model to explain why the
+        pin moved — an absence assertion satisfied by its own documentation,
+        which is hrse#1441's recorded failure shape. What matters is that no
+        *executable* line still passes it to the CLI.
+        """
+        return "\n".join(line for line in source.splitlines()
+                          if not line.lstrip().startswith("#"))
+
+    def test_the_dead_model_is_not_passed_to_the_cli(self) -> None:
+        self.assertNotIn("gemini-2.5-pro", self._executable(self.SOURCE))
+
+    def test_the_dead_model_is_still_named_in_the_reasoning(self) -> None:
+        """And the comment SHOULD keep naming it — the next reader needs to
+        know which pin died and why an alias replaced it. Asserted so a
+        later cleanup does not strip the reasoning to make the check above
+        look tidier."""
+        self.assertIn("gemini-2.5-pro", self.SOURCE)
+
+    def test_the_model_is_a_named_variable_not_a_call_site_literal(self) -> None:
+        """It was hardcoded inside `invoke_gemini`'s command since
+        harmonic-forge#366, which is why nothing referenced it and no test
+        could have caught its retirement."""
+        self.assertIn('GEMINI_MODEL="${CROSS_FAMILY_GEMINI_MODEL:-', self.SOURCE)
+        self.assertIn('-m "$GEMINI_MODEL"', self.SOURCE)
+
+    def test_the_default_is_a_floating_alias(self) -> None:
+        """A concrete pin is what broke; another concrete pin schedules the
+        same outage. Both live candidates carried the same clock —
+        `gemini-2.5-flash` and `gemini-3.1-pro-preview`, the latter a preview.
+        """
+        match = re.search(r'GEMINI_MODEL="\$\{CROSS_FAMILY_GEMINI_MODEL:-([^}]+)\}"',
+                          self.SOURCE)
+        self.assertIsNotNone(match)
+        self.assertTrue(match.group(1).endswith("-latest"),
+                        f"expected a floating alias, got {match.group(1)!r}")
+
+    def test_it_keeps_the_pro_tier(self) -> None:
+        """Substituting flash would silently downgrade every posture's
+        reviewer. `verify` stays pinned and Codex-only; it is unaffected."""
+        self.assertIn("gemini-pro-latest", self.SOURCE)
+        self.assertIn('VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-', self.SOURCE)
+
+
+@unittest.skipUnless(os.environ.get("CROSS_FAMILY_LIVE") == "1",
+                     "live: set CROSS_FAMILY_LIVE=1 (spends an API call)")
+class TestGeminiModelAnswersLive(unittest.TestCase):
+    """The check that would have caught harmonic-forge#482, and the shape of
+    it is the finding.
+
+    A `GET .../models/<name>` on the dead model returns **HTTP 200**, and it
+    is present in the `models` list — measured 2026-09-06. Only
+    `:generateContent` returns 404. So an availability check written the
+    obvious way, against the catalogue, would have reported the deprecated
+    model as healthy.
+    """
+
+    def _key(self) -> str:
+        env = Path.home() / "Harmonic_Projects/HRSE2/backend/.env"
+        for line in env.read_text().splitlines():
+            if line.startswith("GEMINI_API_KEY"):
+                return line.partition("=")[2].strip().strip("'\"")
+        self.skipTest("no GEMINI_API_KEY available")
+
+    def _model(self) -> str:
+        return re.search(
+            r'GEMINI_MODEL="\$\{CROSS_FAMILY_GEMINI_MODEL:-([^}]+)\}"',
+            SCRIPT.read_text()).group(1)
+
+    def test_the_pinned_model_actually_generates(self) -> None:
+        import urllib.request
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{self._model()}:generateContent?key={self._key()}")
+        body = json.dumps({"contents": [{"parts": [{"text": "Reply: OK"}]}]}).encode()
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_a_catalogue_check_would_not_have_caught_this(self) -> None:
+        """The negative control, and the reason the test above posts rather
+        than gets: the retired model is still listed and still answers a
+        GET."""
+        import urllib.error, urllib.request
+        key = self._key()
+        with urllib.request.urlopen(
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-2.5-pro?key={key}", timeout=60) as response:
+            self.assertEqual(response.status, 200, "GET still says the model is fine")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(urllib.request.Request(
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-2.5-pro:generateContent?key={key}",
+                data=json.dumps({"contents": [{"parts": [{"text": "x"}]}]}).encode(),
+                headers={"Content-Type": "application/json"}), timeout=60)
+        self.assertEqual(ctx.exception.code, 404)
