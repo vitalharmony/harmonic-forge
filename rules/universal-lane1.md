@@ -128,6 +128,35 @@ produce three or four reconciles; landing each one separately means three or
 four rebases charged to whoever happens to have a branch open.
 <!-- /R-0098 -->
 
+### The confirm-then-post gap is its own race (hrse#1624, 2026-09-06)
+
+R-0095 through R-0098 above reduce how often `main` moves. They cannot make it
+never move, and a second recurrence showed why that residue matters: hrse#745
+was rebased **four times in one session**, each rebase clean and each gate
+green, because a merge landed between Lane 1 asking for the rebase and Lane 1
+posting `ready-for-l3`. hrse#1616 hit a milder version of the same thing. The
+branch was never wrong; it kept being overtaken.
+
+<!-- R-0338 -->
+**Post `ready-for-l3` in the same action as confirming a rebase, never as two
+separate turns.** The confirmation and the authorization are one decision —
+"this base is current, therefore gate it" — and splitting them across turns
+opens a window with no owner, in which any merge silently invalidates the
+half already done. Lane 2 cannot close it: by the time it is told to rebase
+again, the window has already elapsed.
+
+This does not weaken R-0209. That rule covers a SHA bump discovered **after**
+the gate is under way, and is stated purely in terms of a `ready-for-l3`
+naming the SHA existing on the thread — it says nothing about how that comment
+is produced, so posting it in the same action as the rebase confirmation
+changes nothing about the carry-forward.
+
+The mechanical half is `l1_post.py`'s own check, which fetches `origin/main`
+immediately before testing ancestry (hrse#1624) so a stale base is refused
+rather than silently accepted. That makes the tool honest about the race; only
+the ordering above actually removes it.
+<!-- /R-0338 -->
+
 The structural half of this belongs in the project — a generated schema block
 sharing a file with hand-written process notes guarantees the collision
 (hrse#892). This rule holds regardless of whether that is fixed, because a

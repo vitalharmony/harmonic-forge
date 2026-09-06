@@ -2181,3 +2181,11 @@ anchor = "derived-lane-states"
 statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework, never as ordinary discussion; it renders the same Fix H<N> trigger as a gate FAIL under a distinct l1.rework key."
 text_sha = "76979902e0659a26"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind rework"], wired_in = "hrse" }]
+
+[[rule]]
+id = "R-0338"
+file = "rules/universal-lane1.md"
+anchor = "doc-only-merges-wait"
+statement = "Lane 1 posts ready-for-l3 in the same action as confirming a rebase, never as two separate turns; the gap between them is a race in which any merge silently invalidates the confirmation."
+text_sha = "a39769f213f0cfc6"
+hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind ready-for-l3"], wired_in = "hrse" }]
