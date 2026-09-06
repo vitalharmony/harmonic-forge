@@ -22,6 +22,11 @@
 # `probe` posture is the only posture that ever passes Gemini `--yolo`; it
 # requires `--cwd` naming an isolated scratch directory the caller is
 # responsible for creating and removing (never this repo's own worktree).
+# `--cwd` is NOT a security boundary on its own -- measured live 2026-09-06,
+# `--yolo` read an absolute path outside it via `run_shell_command` on the
+# first try. It is bounded by `gemini-probe-deny.toml` (harmonic-forge#432),
+# which denies that one tool; Gemini's file tools enforce the workspace
+# bound themselves, even under `--yolo`.
 #
 # `verify` posture (harmonic-forge#448) is Codex-only and deterministic:
 # `--ignore-user-config` means the reviewer inherits NOTHING from
@@ -118,6 +123,31 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly_policy="$script_dir/gemini-read-only-deny.toml"
+probe_policy="$script_dir/gemini-probe-deny.toml"
+
+# harmonic-forge#432: fail closed on a missing policy file, HERE, because
+# `_cli_launch.sh`'s guard does not reach this script -- it shells out to
+# `gemini` directly. And the Gemini CLI does not fail closed on its own:
+# verified live 2026-08-28 and recorded in `_cli_launch.sh`, a bad
+# `--admin-policy` prints a stderr warning and "the session starts anyway,
+# completely unprotected under `--yolo`."
+#
+# So a deleted or renamed policy file would silently restore exactly the
+# unbounded `probe` this issue exists to close, and nothing would say so.
+# Checked for every posture rather than only the one about to run: a policy
+# file missing from the checkout is a broken install, not a per-invocation
+# condition, and finding out only on the run that happens to need it is how
+# this class of gap stays hidden.
+for policy_file in "$readonly_policy" "$probe_policy"; do
+  if [ ! -f "$policy_file" ]; then
+    echo "cross_family_call: admin policy file missing: $policy_file" >&2
+    echo "  Refusing to run. The Gemini CLI does NOT fail closed on a missing" >&2
+    echo "  --admin-policy -- it warns on stderr and runs unprotected, so this" >&2
+    echo "  check is the only thing standing between a missing file and an" >&2
+    echo "  unbounded session (harmonic-forge#432)." >&2
+    exit 2
+  fi
+done
 
 # Pinned here, not inherited from `~/.codex/config.toml` -- `verify` passes
 # `--ignore-user-config`, so without an explicit `-m` the reviewer would fall
@@ -269,7 +299,14 @@ invoke_gemini() {
   local posture="$1" brief="$2" cwd="$3"
   local mode_args=()
   if [ "$posture" = probe ]; then
-    mode_args=(--yolo)
+    # harmonic-forge#432: `--yolo` alone let this posture read any absolute
+    # path on disk via `run_shell_command`, measured live -- `--cwd` bounded
+    # nothing. The probe-tier policy denies that one tool and nothing else,
+    # which lands the Gemini branch on the same effective boundary
+    # `invoke_codex`'s probe branch already has from `--sandbox
+    # workspace-write`: writes allowed, but only inside the workspace.
+    # See `gemini-probe-deny.toml` for the three measurements.
+    mode_args=(--yolo --admin-policy "$probe_policy")
   else
     mode_args=(--admin-policy "$readonly_policy")
   fi

@@ -444,6 +444,36 @@ real `~/.gemini/.env`, if present, is copied into the throwaway one.
   caller, never a shared lane worktree. This is the posture
   `preclose-check`'s known-answer probe uses to prove a family can find a
   seeded defect at all before it gets a seat on a vote.
+
+  **`--cwd` is not the boundary, and `--yolo` alone had none**
+  (harmonic-forge#432). Measured live 2026-09-06 against gemini 0.57.0, the
+  reach was asymmetric across tools in a way the flag name does not suggest:
+
+  | attempt, targeting an absolute path outside `--cwd` | `--yolo` alone |
+  |---|---|
+  | `cat <path>` via `run_shell_command` | **reached the file** |
+  | `write_file` to `<path>` | denied — *"Path not in workspace"* |
+
+  Gemini's **file** tools enforce the workspace bound themselves, even under
+  `--yolo`; its **shell** tool does not. `run_shell_command` was the entire
+  hole, so `tools/lane/gemini-probe-deny.toml` denies that one tool and
+  nothing else. Re-measured under it: the shell escape is denied (*"the
+  required tool is unavailable"* — removed from the tool list, not refused
+  at call time), the file-tool escape stays denied by Gemini's own bound,
+  and an in-workspace write still succeeds. That last one is the point —
+  reusing the `read-only` deny policy here would have removed the capability
+  `probe` exists to grant, and quietly turned `probe` into `read-only`.
+
+  The result is that Gemini's `probe` now sits on the same effective
+  boundary Codex's `probe` already had from `--sandbox workspace-write`:
+  writes allowed, but only inside the workspace.
+
+  `cross_family_call.sh` also now **fails closed on a missing policy file**,
+  checked for every posture at startup. That check has to live in this
+  script: `_cli_launch.sh`'s equivalent guard never applied here, because
+  this script shells out to `gemini` directly — and the CLI itself does not
+  fail closed on a bad `--admin-policy`, it warns on stderr and runs
+  unprotected.
 - `read-only` is the posture the real consumers (`preclose-check`,
   `sticky-wicket`) use for the adversarial call itself. **Its Gemini
   boundary is an admin-tier deny policy
