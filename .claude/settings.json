@@ -70,6 +70,16 @@
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\""
           }
         ]
+      },
+      {
+        "matcher": "Bash|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_reload_probe.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

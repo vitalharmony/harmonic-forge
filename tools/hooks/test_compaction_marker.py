@@ -541,3 +541,343 @@ class LaneSourceReachesTheMarkerAndTheInjection(unittest.TestCase):
             _, marker = self._handle(
                 {"LANE": "2"}, "/home/mmangus/Harmonic_Projects/HRSE2-lane2", tmp)
         self.assertEqual(marker["lane_source"], "env")
+
+
+FIXTURES = Path(__file__).resolve().parent / "testdata" / "compaction_markers"
+
+
+class CorpusReloadDetector(unittest.TestCase):
+    """harmonic-forge#480 — three conditions, each earned from a real false
+    positive rather than imagined."""
+
+    def reload(self, command: str) -> bool:
+        return cm.is_corpus_reload("Bash", {"command": command})
+
+    def test_a_read_verb_with_a_corpus_path_counts(self) -> None:
+        self.assertTrue(self.reload(
+            "cd /home/mmangus/harmonic-forge && sed -n '1,240p' rules/universal-lane1.md"))
+        self.assertTrue(self.reload(
+            "cd /home/mmangus/harmonic-forge && cat rules/universal-claude.md"))
+
+    def test_wc_does_not_count(self) -> None:
+        """The near-miss the verb list exists to decide about. `wc` reads the
+        file and returns a COUNT, never content — marking "reloaded" for
+        having measured the corpus is the opposite of what this detects."""
+        self.assertFalse(self.reload(
+            "cd /home/mmangus/harmonic-forge && wc -l 3-lane-protocol.md rules/universal-agent.md"))
+        self.assertNotIn("wc", cm.READ_VERBS)
+
+    def test_a_heredoc_disqualifies_the_whole_command(self) -> None:
+        """A Python heredoc that WRITES a file frequently contains a corpus
+        path in the text being written. "The command mentions a corpus path"
+        matches every one of them."""
+        self.assertFalse(self.reload(
+            'python3 - <<PY\nprint("rules/testing-gate.md")\nPY'))
+
+    def test_cat_as_a_writer_does_not_count(self) -> None:
+        """`cat` is on the read list and is a writer here. Real shape, from
+        the motivating transcript's action 29."""
+        self.assertFalse(self.reload(
+            "cd /tmp/x && cat >> tests.py <<EOF\nsee 3-lane-protocol.md\nEOF"))
+
+    def test_a_redirected_segment_does_not_count(self) -> None:
+        self.assertFalse(self.reload("cat rules/universal-agent.md > /tmp/copy"))
+
+    def test_a_corpus_path_merely_mentioned_does_not_count(self) -> None:
+        """The condition that separates a read from a search."""
+        self.assertFalse(self.reload('grep -rn "3-lane-protocol.md" .'))
+        self.assertFalse(self.reload("ls -la rules/testing-gate.md"))
+
+    def test_the_read_tool_needs_none_of_that(self) -> None:
+        self.assertTrue(cm.is_corpus_reload(
+            "Read", {"file_path": "/home/mmangus/harmonic-forge/rules/testing-gate.md"}))
+        self.assertFalse(cm.is_corpus_reload("Read", {"file_path": "/x/other.md"}))
+
+    def test_a_write_tool_never_counts_however_it_is_shaped(self) -> None:
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertFalse(cm.is_corpus_reload(
+                    tool, {"file_path": "/home/mmangus/harmonic-forge/3-lane-protocol.md"}))
+
+    def test_a_segment_after_cd_is_judged_on_its_own_verb(self) -> None:
+        self.assertFalse(self.reload("cd /home/mmangus/harmonic-forge"))
+
+
+class DetectorAgainstFrozenFixtures(unittest.TestCase):
+    """The five real markers, and the tool calls a marker alone cannot carry.
+
+    Frozen on 2026-09-06 — `/tmp` plus a TTL prune plus rewrite-on-recompaction
+    means a reference-in-place is unusable within days, which is how this
+    issue's own predecessor lost two of its three cited rows.
+    """
+
+    def calls(self, session_prefix: str) -> dict:
+        hits = list(FIXTURES.glob(f"{session_prefix}*.tool_calls.json"))
+        self.assertEqual(len(hits), 1, f"expected one fixture for {session_prefix}")
+        return json.loads(hits[0].read_text())
+
+    def verdict(self, session_prefix: str):
+        for record in self.calls(session_prefix)["records"]:
+            if cm.is_corpus_reload(record["tool_name"], record["tool_input"]):
+                return record["action"]
+        return None
+
+    def test_all_five_markers_are_vendored(self) -> None:
+        self.assertEqual(len(list(FIXTURES.glob("*.json"))), 10,
+                         "five markers plus five tool-call captures")
+
+    def test_the_planning_session_reloaded_at_action_3_not_2(self) -> None:
+        """`ab5817ae` is the session that planned this issue. Its own filing
+        said action 2; action 2 was `wc -l`, which returns no content. The
+        first real read is action 3."""
+        self.assertEqual(self.verdict("ab5817ae"), 3)
+
+    def test_the_other_four_did_not_reload(self) -> None:
+        for prefix in ("4e7d1fbe", "a58a3627", "d89c456b", "e0cc7963"):
+            with self.subTest(session=prefix):
+                self.assertIsNone(self.verdict(prefix))
+
+    def test_the_three_false_positive_shapes_are_all_present(self) -> None:
+        """The rows worth vendoring. A fixture set without them would pass
+        against a detector that only checks for a corpus path in the text."""
+        records = self.calls("ab5817ae")["records"]
+        rejected = [r for r in records
+                    if not cm.is_corpus_reload(r["tool_name"], r["tool_input"])]
+        self.assertEqual([r["action"] for r in rejected], [2, 20, 29, 38])
+
+
+class NoteReloadIsUpdateOnlyAndSetOnce(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        patcher = mock.patch.object(cm, "MARKER_DIR", self.dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def marker(self, **extra):
+        payload = {"compacted_at": "2026-09-05T07:55:34+00:00", "source": "compact",
+                   "lane": "2", "cwd": "/x/HRSE2-lane2", **extra}
+        (self.dir / "s1.json").write_text(json.dumps(payload))
+        return payload
+
+    def test_it_never_creates_a_marker(self) -> None:
+        """A PreToolUse that could create one would manufacture a compaction
+        that never happened, and harmonic-forge#451 would deny on it."""
+        self.assertFalse(cm.note_reload("s1", "2026-09-05T08:00:00+00:00"))
+        self.assertEqual(list(self.dir.glob("*.json")), [])
+
+    def test_it_records_the_timestamp_on_an_existing_marker(self) -> None:
+        self.marker()
+        self.assertTrue(cm.note_reload("s1", "2026-09-05T08:00:00+00:00"))
+        written = json.loads((self.dir / "s1.json").read_text())
+        self.assertEqual(written["reloaded_at"], "2026-09-05T08:00:00+00:00")
+
+    def test_it_preserves_every_other_field(self) -> None:
+        original = self.marker()
+        cm.note_reload("s1", "2026-09-05T08:00:00+00:00")
+        written = json.loads((self.dir / "s1.json").read_text())
+        for key, value in original.items():
+            with self.subTest(key=key):
+                self.assertEqual(written[key], value)
+
+    def test_it_is_set_once(self) -> None:
+        """The question is "has a reload happened since the boundary", so the
+        first answers it. Rewriting would lose the original timestamp."""
+        self.marker(reloaded_at="2026-09-05T08:00:00+00:00")
+        self.assertFalse(cm.note_reload("s1", "2026-09-05T09:00:00+00:00"))
+        self.assertEqual(
+            json.loads((self.dir / "s1.json").read_text())["reloaded_at"],
+            "2026-09-05T08:00:00+00:00")
+
+    def test_a_corrupt_marker_is_not_overwritten(self) -> None:
+        (self.dir / "s1.json").write_text("{not json")
+        self.assertFalse(cm.note_reload("s1", "2026-09-05T08:00:00+00:00"))
+        self.assertEqual((self.dir / "s1.json").read_text(), "{not json")
+
+
+class HeredocAndRedirectAreSegmentScoped(unittest.TestCase):
+    """The three shapes that fixed this predicate, found by mutation testing
+    rather than by reading the code."""
+
+    def reload(self, command: str) -> bool:
+        return cm.is_corpus_reload("Bash", {"command": command})
+
+    def test_the_motivating_false_positive_is_rejected_by_the_verb_rule_alone(self) -> None:
+        """Actions 20 and 38: a Python heredoc whose BODY names a corpus
+        path. `python3` is not a read verb, so this never needed a heredoc
+        rule — which is why the first version's heredoc rule looked like it
+        was doing work and was not."""
+        self.assertFalse(self.reload(
+            'cd /tmp/x && python3 - <<PY\np = "rules/testing-gate.md"\nPY'))
+
+    def test_cat_reading_from_a_heredoc_is_rejected(self) -> None:
+        """The shape the heredoc rule DOES earn: `cat` is a read verb and the
+        corpus path is an argument, but it is heredoc content that was never
+        read from disk."""
+        self.assertFalse(self.reload(
+            "echo x && cat <<EOF\nrules/universal-agent.md\nEOF"))
+
+    def test_a_real_read_beside_an_unrelated_heredoc_still_counts(self) -> None:
+        """The false NEGATIVE a whole-command heredoc rejection introduced.
+        Scoping both disqualifiers per segment is what fixed it."""
+        self.assertTrue(self.reload(
+            "cat rules/universal-agent.md && python3 - <<PY\nprint(1)\nPY"))
+
+    def test_a_real_read_beside_an_unrelated_redirect_still_counts(self) -> None:
+        self.assertTrue(self.reload(
+            "echo hi > /tmp/x && cat rules/universal-agent.md"))
+
+
+class ReadToolPathMatchIsSuffixNotSubstring(unittest.TestCase):
+    """A substring test would match a path that merely CONTAINS a corpus
+    path — an editor backup, a diff dump, an archive of the corpus. Those
+    are not the file, and reading one is not a reload."""
+
+    def read(self, path: str) -> bool:
+        return cm.is_corpus_reload("Read", {"file_path": path})
+
+    def test_the_real_file_counts(self) -> None:
+        self.assertTrue(self.read("/home/mmangus/harmonic-forge/rules/testing-gate.md"))
+
+    def test_a_path_that_merely_contains_it_does_not(self) -> None:
+        for path in ("/tmp/rules/testing-gate.md.bak",
+                     "/tmp/rules/testing-gate.md.orig",
+                     "/tmp/archive/rules/testing-gate.md/notes.txt"):
+            with self.subTest(path=path):
+                self.assertFalse(self.read(path))
+
+
+class TriggerComesFromTheTranscriptNotThePayload(unittest.TestCase):
+    """harmonic-forge#480 JDC3, and a correction to how the gate said to
+    implement it.
+
+    The FAIL directed reading `payload.get("trigger")` "since the SessionStart
+    compaction event carries one". Measured across every transcript on this
+    machine, `trigger` exists in exactly one place — `compactMetadata.trigger`
+    on a `system` record inside the transcript — 80 `auto` and 5 `manual`. The
+    captured real payload in `sessionstart_compact.json` carries none, so the
+    instructed version would have been `None` on every real invocation.
+    """
+
+    def test_the_captured_real_payload_carries_no_trigger(self) -> None:
+        """The measurement that makes this a correction rather than a
+        preference. If a future harness version adds the field, this fails
+        and the simpler implementation becomes available."""
+        self.assertNotIn("trigger", load_fixture())
+
+    def test_a_real_auto_record_is_read(self) -> None:
+        self.assertEqual(cm.trigger_of(str(FIXTURES / "transcript_auto.jsonl")), "auto")
+
+    def test_a_real_manual_record_is_read(self) -> None:
+        self.assertEqual(cm.trigger_of(str(FIXTURES / "transcript_manual.jsonl")), "manual")
+
+    def test_both_fixtures_are_verbatim_real_records(self) -> None:
+        """Extracted from live transcripts, not synthesised — a hand-written
+        `{"compactMetadata": {"trigger": "auto"}}` would pass a parser that
+        the real record's shape breaks."""
+        for name in ("transcript_auto.jsonl", "transcript_manual.jsonl"):
+            with self.subTest(name=name):
+                record = json.loads((FIXTURES / name).read_text().splitlines()[-1])
+                meta = record["compactMetadata"]
+                self.assertIn("preservedSegment", meta)
+                self.assertIn("cumulativeDroppedTokens", meta)
+
+    def test_the_newest_record_wins(self) -> None:
+        """A long-running session compacts more than once. The trigger being
+        recorded is this compaction's, not the first one's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text(
+                json.dumps({"type": "system", "compactMetadata": {"trigger": "manual"}}) + "\n"
+                + json.dumps({"type": "user", "message": "work"}) + "\n"
+                + json.dumps({"type": "system", "compactMetadata": {"trigger": "auto"}}) + "\n")
+            self.assertEqual(cm.trigger_of(str(path)), "auto")
+
+    def test_it_degrades_to_none_and_never_raises(self) -> None:
+        """This hook runs when a session is least able to cope with a crash.
+        A missing trigger costs harmonic-forge#451 one discriminator; an
+        exception costs the session its recovery note."""
+        for path in ("", "/nonexistent/none.jsonl", "/etc/hostname", "/etc"):
+            with self.subTest(path=path):
+                self.assertIsNone(cm.trigger_of(path))
+
+    def test_a_truncated_first_line_is_dropped_not_parsed(self) -> None:
+        """The scan is bounded, so the budget can cut mid-record. A truncated
+        JSON object is not a record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            filler = json.dumps({"type": "user", "pad": "x" * 4096})
+            path.write_text(
+                "\n".join([filler] * 400) + "\n"
+                + json.dumps({"type": "system", "compactMetadata": {"trigger": "auto"}}) + "\n")
+            self.assertGreater(path.stat().st_size, cm.TRIGGER_SCAN_BYTES)
+            self.assertEqual(cm.trigger_of(str(path)), "auto")
+
+    def test_the_scan_is_bounded(self) -> None:
+        """Live transcripts run 13-53 MB. An unbounded read at the moment a
+        session is rebuilding is not acceptable."""
+        self.assertLessEqual(cm.TRIGGER_SCAN_BYTES, 4 << 20)
+
+    def test_it_reaches_the_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                cm.handle({"source": "compact", "session_id": "s1", "cwd": "/x/HRSE2-lane2",
+                           "transcript_path": str(FIXTURES / "transcript_auto.jsonl")},
+                          {"LANE": "2"})
+                written = json.loads((markers / "s1.json").read_text())
+        self.assertEqual(written["trigger"], "auto")
+
+    def test_an_unreadable_transcript_still_writes_the_marker(self) -> None:
+        """`trigger: null` is absent, never guessed. Defaulting to `auto`
+        would make harmonic-forge#451 deny on a value nobody established."""
+        with tempfile.TemporaryDirectory() as tmp:
+            markers = Path(tmp) / "markers"
+            with mock.patch.object(cm, "MARKER_DIR", markers):
+                cm.handle({"source": "compact", "session_id": "s1", "cwd": "/x/HRSE2-lane2",
+                           "transcript_path": "/nonexistent/none.jsonl"}, {"LANE": "2"})
+                written = json.loads((markers / "s1.json").read_text())
+        self.assertIsNone(written["trigger"])
+        self.assertEqual(written["lane"], "2")
+
+
+class TriggerRejectsNonValues(unittest.TestCase):
+    """`""` and a missing key are not triggers. Returning either would make
+    harmonic-forge#451 compare its deny condition against a value that means
+    "we did not find out"."""
+
+    def trigger(self, meta) -> str | None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text(json.dumps({"type": "system", "compactMetadata": meta}) + "\n")
+            return cm.trigger_of(str(path))
+
+    def test_an_empty_trigger_is_not_a_value(self) -> None:
+        self.assertIsNone(self.trigger({"trigger": "", "preTokens": 1}))
+
+    def test_a_missing_trigger_key_is_not_a_value(self) -> None:
+        self.assertIsNone(self.trigger({"preTokens": 1}))
+
+    def test_a_non_string_trigger_is_not_a_value(self) -> None:
+        for bogus in (True, 1, ["auto"], {"v": "auto"}, None):
+            with self.subTest(bogus=bogus):
+                self.assertIsNone(self.trigger({"trigger": bogus}))
+
+    def test_a_record_with_no_compact_metadata_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text(
+                json.dumps({"type": "system", "compactMetadata": {"trigger": "auto"}}) + "\n"
+                + json.dumps({"type": "user", "message": "later work"}) + "\n")
+            self.assertEqual(cm.trigger_of(str(path)), "auto")
+
+    def test_a_valid_record_on_the_first_line_of_the_window_is_kept(self) -> None:
+        """The boundary the removed slice would have broken: when the read
+        budget lands exactly on a newline, the first line is a complete
+        record and must not be discarded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            record = json.dumps({"type": "system", "compactMetadata": {"trigger": "manual"}})
+            path.write_text(record + "\n")
+            self.assertEqual(cm.trigger_of(str(path)), "manual")

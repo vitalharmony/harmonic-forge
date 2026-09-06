@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -137,6 +138,188 @@ CORPUS: tuple[CorpusFile, ...] = (
 def forge_root() -> str:
     """Where the protocol corpus lives, for the paths named in the injection."""
     return os.environ.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
+
+
+#: harmonic-forge#480. Verbs that READ a file's contents. Beside `CORPUS`
+#: rather than in the consuming hook, deliberately: this module's own
+#: docstring records (harmonic-forge#464) that a second hand-maintained copy
+#: of one fact is what makes two lists drift, and a corpus path list and a
+#: "what counts as reading one" list are one fact in two halves.
+#:
+#: `wc` is deliberately ABSENT. It reads the file and returns a COUNT, never
+#: content -- and it is the near-miss this list exists to decide about: the
+#: session that motivated this issue ran `wc -l` on four corpus files at tool
+#: action 2, then actually read two of them at actions 3 and 4. Marking
+#: "reloaded" for having measured the corpus is the opposite of what this
+#: detects.
+READ_VERBS = frozenset({"cat", "sed", "head", "tail", "less", "more", "bat", "view"})
+
+#: A command is split on these before any segment is examined, so
+#: `cd x && cat corpus.md` is judged on the `cat`, not the `cd`.
+_SEGMENT = re.compile(r"&&|\|\||;|\|")
+
+#: Output redirection makes a segment a WRITE regardless of its verb.
+#: `cat >> file <<EOF` leads with `cat`, which is on the read list above.
+#: Real example from the motivating transcript, action 29.
+_REDIRECT = re.compile(r"(?<![0-9])>>?")
+
+
+def is_corpus_reload(tool_name: str, tool_input: dict) -> bool:
+    """Did this tool call actually re-read a corpus file?
+
+    Three conditions, each earned from a false positive in real transcript
+    data rather than imagined:
+
+    1. **A segment containing a heredoc or a redirect is skipped.** Both
+       make it a write, or make a corpus path an argument that was never
+       read. `cat` is a writer in `cat >> tests.py <<EOF`, and a reader of
+       the wrong thing in `cat <<EOF ... rules/universal-agent.md ... EOF`.
+    2. **The corpus path must be an ARGUMENT to a read verb**, not merely
+       present in the segment's text. This is what separates
+       `sed -n '1,240p' rules/universal-lane1.md` from a Python heredoc that
+       mentions the same filename -- actions 20 and 38 of the motivating
+       transcript, both of which this rule alone already rejects, since
+       `python3` is not a read verb.
+
+    Per SEGMENT, not per command, and that distinction was earned: a
+    whole-command heredoc rejection also threw away
+    `cat rules/universal-agent.md && python3 - <<PY ... PY`, which is a real
+    reload with an unrelated heredoc after it.
+
+    The `Read` tool needs none of that -- it cannot write.
+    """
+    if tool_name == "Read":
+        path = str((tool_input or {}).get("file_path") or "")
+        # Basename only: `path.endswith(entry.path)` was also here and never
+        # added a match, since any path ending in `rules/testing-gate.md`
+        # ends in `testing-gate.md` too. Mutation testing found it inert;
+        # a redundant clause that reads like a second check is worse than
+        # one clause that is honestly the whole rule.
+        return any(path.endswith(Path(entry.path).name) for entry in CORPUS)
+    if tool_name != "Bash":
+        return False
+    command = str((tool_input or {}).get("command") or "")
+    names = [Path(entry.path).name for entry in CORPUS]
+    for segment in _SEGMENT.split(command):
+        segment = segment.strip()
+        # Both disqualifiers are PER SEGMENT, not per command. Rejecting the
+        # whole command on a heredoc anywhere was the first shape written and
+        # mutation testing showed it wrong in both directions:
+        #
+        #   `cd x && python3 - <<PY ... "rules/testing-gate.md" ... PY`
+        #       the motivating false positive -- already False without any
+        #       heredoc rule at all, because `python3` is not a read verb.
+        #   `echo x && cat <<EOF ... rules/universal-agent.md ... EOF`
+        #       False ONLY because of this rule. `cat` reading FROM a heredoc
+        #       makes the corpus path an argument that was never read.
+        #   `cat rules/universal-agent.md && python3 - <<PY ... PY`
+        #       a genuine reload that a whole-command rule REJECTED.
+        if not segment or "<<" in segment or _REDIRECT.search(segment):
+            continue
+        try:
+            parts = shlex.split(segment)
+        except ValueError:
+            continue
+        if not parts or parts[0] not in READ_VERBS:
+            continue
+        if any(any(name in argument for name in names) for argument in parts[1:]):
+            return True
+    return False
+
+
+def note_reload(session_id: str, when: str) -> bool:
+    """Record that this session re-read its corpus. `True` if it wrote.
+
+    **Update-only: never creates a marker.** A `PreToolUse` that could create
+    one would manufacture a compaction that never happened, and
+    harmonic-forge#451 would then deny on it. A session with no marker has
+    not compacted, and that is the common case this must leave untouched.
+
+    **Set-once.** The question is "has a reload happened since the
+    boundary", so the first one answers it; later reads are noise and
+    rewriting would lose the original timestamp.
+    """
+    target = MARKER_DIR / f"{session_id}.json"
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(payload, dict) or payload.get("reloaded_at"):
+        return False
+    payload["reloaded_at"] = when
+    try:
+        write_marker(session_id, payload)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+#: harmonic-forge#480 JDC3. How far back from the end of a transcript to look
+#: for the compaction record. At the moment this hook fires the record is the
+#: newest thing in the file, so this budget is slack, not a search window --
+#: it exists so an unexpectedly-shaped transcript costs a bounded read rather
+#: than a 21-80 MB one. Measured: the five live transcripts on this machine
+#: run 13-53 MB.
+TRIGGER_SCAN_BYTES = 1 << 20
+
+
+def trigger_of(transcript_path: str) -> str | None:
+    """`auto` / `manual` / `None` -- how the compaction was triggered.
+
+    **NOT from the hook payload.** harmonic-forge#480's gate directed reading
+    `payload.get("trigger")` in `handle()` "since the SessionStart compaction
+    event carries one". It does not. Measured across every transcript on this
+    machine, the field exists in exactly one place:
+
+        80x  .compactMetadata.trigger = 'auto'
+         5x  .compactMetadata.trigger = 'manual'
+
+    -- on a `system` record inside the TRANSCRIPT, alongside `preTokens` /
+    `postTokens` / `cumulativeDroppedTokens`. That is the same shape quoted as
+    evidence for the payload claim (`trigger=auto pre=967526 post=13847
+    cumulativeDroppedTokens=2915628`), which is this record rather than a hook
+    payload. The captured real payload in `testdata/sessionstart_compact.json`
+    carries no `trigger` either.
+
+    So `payload.get("trigger")` would have been `None` on every real
+    invocation -- a field that ships, reads as implemented, and never
+    populates. harmonic-forge#451 would then deny on `auto` for a value that
+    is always absent.
+
+    Scanned from the END: at hook time the compaction record is the newest in
+    the file. Returns `None` rather than raising on anything unreadable --
+    this hook runs when a session is least able to cope with a crash, and a
+    missing trigger costs #451 one discriminator, while an exception costs the
+    session its recovery note.
+    """
+    if not transcript_path:
+        return None
+    try:
+        with open(transcript_path, "rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            start = max(0, size - TRIGGER_SCAN_BYTES)
+            stream.seek(start)
+            chunk = stream.read()
+    except OSError:
+        return None
+    # The budget can cut mid-record, leaving a partial first line. It is NOT
+    # dropped: a truncated JSON object fails to parse and is skipped by the
+    # handler below anyway, while dropping it unconditionally would discard a
+    # VALID first record whenever the cut happens to land on a newline. The
+    # explicit slice was written first and mutation testing showed it inert —
+    # inert in the good case and harmful in the boundary one.
+    for raw in reversed(chunk.split(b"\n")):
+        if b'"compactMetadata"' not in raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        found = (record.get("compactMetadata") or {}).get("trigger")
+        if isinstance(found, str) and found:
+            return found
+    return None
 
 
 def lane_of(env: dict[str, str]) -> str:
@@ -365,6 +548,13 @@ def handle(payload: dict, env: dict[str, str], now: float | None = None) -> dict
             write_marker(session_id, {
                 "compacted_at": compacted_at, "source": "compact",
                 "lane": lane, "lane_source": lane_source, "cwd": cwd,
+                # harmonic-forge#480 JDC3: harmonic-forge#451 denies only on
+                # `auto`, so the discriminator has to be persisted here rather
+                # than retrofitted there. `None` when the transcript could not
+                # be read or carried no compaction record -- absent, never
+                # guessed, since defaulting to `auto` would make #451 deny on
+                # a value nobody established.
+                "trigger": trigger_of(payload.get("transcript_path") or ""),
             })
             prune_markers(now)
         except (OSError, ValueError):
