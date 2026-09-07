@@ -65,7 +65,7 @@ test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1
 """
 
 [tasks.context-budget]
-description = "Measure a repo's always-loaded context surface — user + project CLAUDE.md and their @-imports, unscoped .claude/rules/, .windsurfrules, the memory index (harmonic-forge#497). Path-scoped rules are excluded on purpose: they load on a file match, not at session start, so counting them would tune the budget against text nothing pays. Report-only unless --gate. Token figures are bytes/4 estimates and must never be quoted as counts."
+description = "Measure a repo's always-loaded context surface — user + project CLAUDE.md and their @-imports, unscoped .claude/rules/, the memory index (harmonic-forge#497). Measured, not assumed: .windsurfrules is NOT counted (the harness does not inject it) and `globs:` does NOT scope a rule file (those ARE injected at start). Only appliesTo:/paths:/scope: suppress injection. Report-only unless --gate. Token figures are bytes/4 estimates and must never be quoted as counts."
 usage = '''
 flag "--repo <repo>" help="Measure this repo's surface (default: cwd)."
 flag "--budget <budget>" help="Byte ceiling (default 60000)."
@@ -81,6 +81,21 @@ python3 tools/memory/context_budget.py \
   ${usage_summary:+--summary} \
   ${usage_json:+--json}
 """
+
+[tasks.memory-triage]
+description = "Classify every feedback memory against the rule registries and emit promotion dispositions (harmonic-forge#495). Read-only on the store, both repos and GitHub — it proposes, never edits or files. DUP/LOCAL/STATE are decided mechanically from frontmatter; FOLD rows carry RANKED rule candidates, not a verdict, because no similarity cutoff separates 'already a rule' from 'about the same subject' in a 261-rule single-protocol corpus. The judgment layer is skills/memory-triage/SKILL.md."
+usage = '''
+flag "--store <store>" help="Memory store to classify (default: the configured shared store)."
+flag "--repo-root <repo_root>" help="Repo to read rules from. Repeatable. Default: both."
+flag "--json" help="Machine-readable rows."
+flag "--counts" help="Only the class counts."
+'''
+run = """
+python3 tools/memory/memory_triage.py \\
+  ${usage_store:+--store "$usage_store"} \\
+  ${usage_repo_root:+--repo-root "$usage_repo_root"} \\
+  ${usage_json:+--json} \\
+  ${usage_counts:+--counts}"""
 
 [tasks.memory-backfill]
 description = "Backfill first_seen/instances into feedback memories (harmonic-forge#500). Dry-run by default; --apply writes. Idempotent, never overwrites an existing field."
