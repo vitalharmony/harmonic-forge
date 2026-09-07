@@ -45,6 +45,10 @@ python3 tools/run_tests.py
 # is private, so CI has no credential to check out the sibling. That is a
 # stated, accepted gap, not missing wiring.
 python3 tools/rules/check_cross_registry.py
+# harmonic-forge#494: memory-store lint. Gated against the frozen CLEAN fixture,
+# never the live store — the live store is grown by the harness, not by any
+# branch, so a live-pinned exit-1 check is one no commit could turn green.
+python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate
 """
 
 [tasks.commit]
