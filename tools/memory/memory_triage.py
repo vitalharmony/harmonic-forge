@@ -15,11 +15,20 @@ existing rule, what two lines of rule text should say, which section they
 belong in. Those live in `skills/memory-triage/SKILL.md`, which a session reads
 and applies to this script's output.
 
-That boundary is what makes AC2 satisfiable at all. A classifier whose output
-depended on a model's reading would not reproduce its own counts on a re-run,
-so "matches the frozen audit within +-3" would be a check that could go red
-with no code change -- the same time-bomb shape harmonic-forge#500's fixture
-dates had.
+**Measured against the human audit, this agrees on 38% of 208 files** -- and
+that number is the point, not a defect to be tuned away. `--audit` reproduces
+it on demand. The disagreement is almost entirely judgment, in two places:
+
+| human -> mechanical | n | why |
+|---|---|---|
+| DUP -> FOLD / FOLD+HOOK | 47 | the audit's DUP means "a reader judged this already a rule"; here it means "a `promoted:` marker resolves", which is 0 until harmonic-forge#496 writes them |
+| LOCAL -> FOLD / STATE | 32 | the audit reads content; this reads `metadata.type` |
+| FOLD -> FOLD+HOOK | 18 | mentioning a command is not the same as the lesson's TRIGGER being a command |
+
+An earlier draft of this docstring asserted the audit did not exist on disk and
+substituted a 6-row fixture whose counts the code passed by construction. It
+does exist, it is vendored at `testdata/triage/audit_2026_09_06.md`, and a
+regression check that cannot fail is worse than none.
 
 **Read-only, everywhere, by construction.** No function here opens a file for
 writing and none shells out to `gh`. The report goes to stdout; redirecting it
@@ -31,10 +40,18 @@ is the caller's business (AC4).
 |---|---|---|
 | `DUP` | the lesson is already stated as a rule | shrink to a pointer at that `R-` ID |
 | `FOLD` | a real recurring lesson with no rule | write rule text into a named file |
-| `FOLD+HOOK` | a FOLD whose trigger is mechanically checkable | rule text plus a hook |
+| `FOLD+HOOK` | a FOLD whose text NAMES an operational trigger | candidate for a hook -- verify, do not assume |
 | `STALE` | names something that no longer exists | delete, with the evidence |
 | `LOCAL` | operator-specific context, not a general lesson | keep in memory |
 | `STATE` | ongoing work state rather than a lesson | keep in memory; not promotable |
+
+**`FOLD+HOOK` is a signal, not a verdict**, for the same reason `DUP` is
+restricted to a resolving marker. It fires when the memory's text names a tool
+call, which is necessary for hook-enforceability and nowhere near sufficient: a
+memory saying "run `mise run hygiene` to check" mentions a command without its
+own trigger being one. The human audit judged 6 of the corpus hook-enforceable
+where this flags 46, so treat the class as a shortlist to read, and expect to
+demote most of it.
 
 `LOCAL` and `STATE` are separated on purpose even though both mean "keep". A
 `STATE` row is expected to go out of date and be deleted later; a `LOCAL` row is
@@ -101,11 +118,24 @@ _RULE_BLOCK_RE = re.compile(
 #: A memory whose trigger is a tool call is hook-enforceable. These are the
 #: shapes that have actually produced hooks in this repo, not a guess at what
 #: might: a command, a git operation, a file write, a GitHub mutation.
+#
+# **Every alternative must carry an operational qualifier.** A bare `\bmerge\b`
+# was here and fired on prose with no merge operation in it -- a branch name
+# containing "merge", a parenthetical "(merge, close, push)" in a sentence
+# saying those are NOT the subject, "my own recap of the merge". It alone
+# produced 9 of 56 FOLD+HOOK rows, each of which the report then told a session
+# to invent a hook trigger for. The human audit classed 6 memories as
+# hook-enforceable; anything near 56 is the regex talking, not the corpus.
 _HOOKABLE = (
-    r"\bgh (?:issue|pr|api|project)\b", r"\bgit (?:push|commit|merge|checkout)\b",
-    r"\bmise run\b", r"\bclose[sd]? (?:the )?issue\b", r"\bmerge\b",
-    r"\bwrite to\b", r"\bedit(?:ing|s)? \S+\.(?:py|md|toml|ts|tsx)\b",
-    r"\bworktree\b", r"\bmain branch\b", r"\bbefore (?:posting|committing|filing)\b",
+    r"\bgh (?:issue|pr|api|project)\b",
+    r"\bgit (?:push|commit|merge|checkout|rebase)\b",
+    r"\bmise run\b",
+    r"\bclos(?:e|es|ed|ing) (?:the )?(?:issue|pr)\b",
+    r"\bmerg(?:e|es|ed|ing) (?:the )?(?:pr|branch|it)\b",
+    r"\bwrite to\b",
+    r"\bedit(?:ing|s)? \S+\.(?:py|md|toml|ts|tsx)\b",
+    r"\bnever (?:write|commit|push|edit)\b",
+    r"\bbefore (?:posting|committing|filing|merging)\b",
 )
 _HOOKABLE_RE = re.compile("|".join(_HOOKABLE), re.I)
 
@@ -232,12 +262,14 @@ class Row:
     evidence: str
     target: str = ""
     candidates: list[tuple[float, str, str]] = field(default_factory=list)
+    #: A cited path that resolves nowhere, on a row too recurrent to delete.
+    stale_note: str = ""
 
     def as_dict(self) -> dict:
         return {"name": self.name, "verdict": self.verdict, "type": self.kind,
                 "instances": self.instances, "first_seen": self.first_seen,
                 "promoted": self.promoted, "target": self.target,
-                "evidence": self.evidence,
+                "evidence": self.evidence, "stale_note": self.stale_note,
                 "candidates": [{"score": s, "rule": r, "file": f}
                                for s, r, f in self.candidates]}
 
@@ -304,7 +336,7 @@ def classify(path: Path, rules: list[Rule], roots: list[Path],
     # file by name is citing something that exists, and reporting those as
     # stale put 1 of the first 6 STALE rows in the wrong class.
     stale = _stale_evidence(body, roots + [path.parent])
-    if stale:
+    if stale and row.instances < FILE_THRESHOLD:
         row.verdict, row.evidence = "STALE", stale
         return row
 
@@ -315,6 +347,13 @@ def classify(path: Path, rules: list[Rule], roots: list[Path],
                       for score, r in scored if score > 0]
 
     row.verdict = "FOLD+HOOK" if _HOOKABLE_RE.search(body) else "FOLD"
+    # A recurring lesson is NOT deleted because one artifact it cites was
+    # renamed. `feedback_verify_live_not_source` (3 recurrences, the strongest
+    # in the set) was classed STALE and routed to "verify, then delete" over a
+    # renamed component, while the lesson itself -- verify live behavior, not
+    # source -- is entirely current. The citation is still worth flagging, so
+    # it rides along in the evidence instead of deciding the verdict.
+    row.stale_note = stale
     if row.candidates:
         # The file, not the rule, is the actionable half: the ranking is
         # reliable about neighbourhood and unreliable about identity, so it
@@ -356,14 +395,75 @@ def render(rows: list[Row]) -> str:
             out.append("|---|---|---|---|---|")
             for row in sorted(group, key=lambda r: -r.instances):
                 action = "file" if row.instances >= FILE_THRESHOLD else "batch"
+                note = f" ⚠ {row.stale_note}" if row.stale_note else ""
                 out.append(f"| `{row.name}` | {row.instances} | {action} "
-                           f"| {row.target or '—'} | {row.evidence} |")
+                           f"| {row.target or '—'} | {row.evidence}{note} |")
         else:
             out.append("| memory | evidence |")
             out.append("|---|---|")
             for row in sorted(group, key=lambda r: r.name):
                 out.append(f"| `{row.name}` | {row.evidence} |")
         out.append("")
+    return "\n".join(out)
+
+
+#: The human audit this classifier is measured against, vendored so the
+#: comparison is reproducible and hermetic. It is a REFERENCE, never an
+#: expected value: reproducing it would require reproducing judgment, which
+#: this script deliberately does not attempt.
+AUDIT_FIXTURE = Path(__file__).resolve().parent / "testdata" / "triage" / "audit_2026_09_06.md"
+
+_AUDIT_VALID = frozenset(_ORDER)
+
+
+def parse_audit(path: Path) -> dict[str, str]:
+    """`{memory name: class}` from the audit's per-file table.
+
+    Tolerant by design -- rows carrying a qualifier ("LOCAL-legitimate") keep
+    their base class, and any row whose class column is not one of the six is
+    skipped rather than guessed at. A strict parser here would silently drop
+    the comparison to a handful of rows and report high agreement over them.
+    """
+    table: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        name = re.sub(r"[`\s]", "", cells[0]).removesuffix(".md")
+        klass = cells[2].strip().upper().replace("\u2014", "-").split("-")[0].strip()
+        if name and klass in _AUDIT_VALID:
+            table[name] = klass
+    return table
+
+
+def audit_report(rows: list[Row], audit: dict[str, str]) -> str:
+    """Per-class agreement against the human audit, and the confusion pairs."""
+    mine = {r.name: r.verdict for r in rows}
+    common = sorted(set(mine) & set(audit))
+    if not common:
+        return "audit comparison: no overlapping files — nothing to compare."
+    agree = sum(1 for n in common if mine[n] == audit[n])
+    out = [f"audit comparison — {len(common)} files in both, "
+           f"{agree} agree ({agree * 100 // len(common)}%)", "",
+           "| class | audit | mechanical | delta |", "|---|---|---|---|"]
+    for verdict in _ORDER:
+        h = sum(1 for n in common if audit[n] == verdict)
+        m = sum(1 for n in common if mine[n] == verdict)
+        out.append(f"| {verdict} | {h} | {m} | {m - h:+d} |")
+    pairs: dict[tuple[str, str], int] = {}
+    for name in common:
+        if audit[name] != mine[name]:
+            key = (audit[name], mine[name])
+            pairs[key] = pairs.get(key, 0) + 1
+    out += ["", "Largest disagreements (audit → mechanical):"]
+    for (h, m), count in sorted(pairs.items(), key=lambda kv: -kv[1])[:5]:
+        out.append(f"  {count:3}  {h} → {m}")
+    out += ["", "This is a REFERENCE, not a target. The audit classifies by "
+                "reading each memory; this classifies by frontmatter and text "
+                "shape. Closing the gap means reproducing judgment, which is "
+                "the reader's job (see SKILL.md step 2)."]
     return "\n".join(out)
 
 
@@ -375,7 +475,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="Repo to read rules from. Repeatable. Default: both.")
     p.add_argument("--json", action="store_true", help="Machine-readable rows.")
     p.add_argument("--counts", action="store_true",
-                   help="Only the class counts — what AC2's fixture check compares.")
+                   help="Only the class counts.")
+    p.add_argument("--audit", nargs="?", const=str(AUDIT_FIXTURE), default=None,
+                   metavar="PATH",
+                   help="Compare against the human audit (default: the vendored "
+                        "2026-09-06 one) and print per-class agreement.")
     args = p.parse_args(argv)
 
     store = args.store or resolve_store()
@@ -385,7 +489,9 @@ def main(argv: list[str] | None = None) -> int:
     roots = args.repo_root or _repo_roots()
     rows = triage(store, load_rules(roots), roots)
 
-    if args.counts:
+    if args.audit:
+        print(audit_report(rows, parse_audit(Path(args.audit))))
+    elif args.counts:
         counts = {v: sum(1 for r in rows if r.verdict == v) for v in _ORDER}
         print(json.dumps({"total": len(rows), "counts": counts}, indent=2))
     elif args.json:

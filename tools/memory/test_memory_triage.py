@@ -15,6 +15,7 @@ vocabulary statistics nobody controls.
 from __future__ import annotations
 
 import io
+import os
 import json
 import sys
 import tempfile
@@ -95,6 +96,22 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(row.verdict, "STALE")
         self.assertIn("nonexistent_helper_xyz.py", row.evidence)
 
+    def test_a_path_cited_by_basename_alone_resolves(self) -> None:
+        """`_stale_evidence` falls back to `rglob(basename)` because memories
+        cite `memory_lint.py`, not `tools/memory/memory_lint.py`. That branch
+        decides 88% of the class: dropping it takes the live STALE count from
+        2 to 39 — all false "delete" dispositions — and the suite still passed,
+        because the only negative case wrote the cited file at the exact path
+        the `exists()` branch already handles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "deep" / "nested"
+            nested.mkdir(parents=True)
+            (nested / "buried_tool.py").write_text("x", encoding="utf-8")
+            self.assertEqual(mt._stale_evidence("see `buried_tool.py`", [root]), "")
+            self.assertIn("gone_tool.py",
+                          mt._stale_evidence("see `gone_tool.py`", [root]))
+
     def test_a_cited_sibling_memory_is_not_stale(self) -> None:
         """A memory citing another memory by filename is citing something that
         exists. Before the store was added as a search root this put a live
@@ -135,7 +152,80 @@ class ClassificationTests(unittest.TestCase):
                              "FOLD+HOOK")
 
 
+class StaleDemotionTests(unittest.TestCase):
+    """A stale citation must not delete a recurring lesson (preclose finding)."""
+
+    def _row(self, instances: int) -> mt.Row:
+        loaded = mt.load_rules(RULES)
+        idf = mt.build_idf(loaded)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "feedback_cite.md"
+            path.write_text(
+                f"---\nname: feedback_cite\ndescription: d\ninstances: {instances}\n"
+                "metadata:\n  type: feedback\n---\n\n"
+                "Verify live behavior. See `absolutely_gone_file.py`.\n",
+                encoding="utf-8")
+            return mt.classify(path, loaded, RULES, idf)
+
+    def test_a_one_off_with_a_dead_citation_is_stale(self) -> None:
+        self.assertEqual(self._row(1).verdict, "STALE")
+
+    def test_a_recurring_lesson_keeps_its_fold_verdict(self) -> None:
+        """`feedback_verify_live_not_source` — 3 recurrences, the strongest in
+        the set — was routed to "verify, then delete" over a renamed component
+        while the lesson itself was entirely current."""
+        row = self._row(3)
+        self.assertIn(row.verdict, ("FOLD", "FOLD+HOOK"))
+        self.assertIn("absolutely_gone_file.py", row.stale_note)
+
+    def test_the_dead_citation_still_reaches_the_report(self) -> None:
+        """Demoting it to a note is only safe if the reader still sees it."""
+        self.assertIn("absolutely_gone_file.py", mt.render([self._row(3)]))
+
+
+class AuditComparisonTests(unittest.TestCase):
+    """AC2, restated: the audit is a measured REFERENCE, not an expected value."""
+
+    def test_the_vendored_audit_parses(self) -> None:
+        audit = mt.parse_audit(mt.AUDIT_FIXTURE)
+        self.assertGreater(len(audit), 200)
+        self.assertEqual(set(audit.values()) - set(mt._ORDER), set())
+
+    def test_the_audit_carries_every_class(self) -> None:
+        """A parser that silently dropped most rows would report high
+        agreement over the handful it kept."""
+        self.assertEqual(set(mt.parse_audit(mt.AUDIT_FIXTURE).values()),
+                         set(mt._ORDER))
+
+    def test_the_report_states_agreement_and_labels_it_a_reference(self) -> None:
+        audit = {"a": "FOLD", "b": "DUP"}
+        rows = [mt.Row(name="a", path=Path("a"), kind="feedback", instances=2,
+                       first_seen="", promoted="", verdict="FOLD", evidence=""),
+                mt.Row(name="b", path=Path("b"), kind="feedback", instances=2,
+                       first_seen="", promoted="", verdict="FOLD", evidence="")]
+        text = mt.audit_report(rows, audit)
+        self.assertIn("2 files in both, 1 agree (50%)", text)
+        self.assertIn("DUP → FOLD", text)
+        self.assertIn("REFERENCE, not a target", text)
+
+    def test_no_overlap_says_so_rather_than_dividing_by_zero(self) -> None:
+        self.assertIn("nothing to compare", mt.audit_report([], {"x": "FOLD"}))
+
+
 class RankingTests(unittest.TestCase):
+    def test_a_fold_target_is_a_filename_not_a_rule_id(self) -> None:
+        """AC3 says every FOLD row names a target that exists on disk.
+        Changing `row.candidates[0][2]` to `[1]` makes every target an `R-` id
+        and the AC false for all 140 live rows — and passed, because the only
+        target assertion in the suite was on the DUP row, where an `R-` id is
+        correct."""
+        for name in ("feedback_worktree", "feedback_scheduling"):
+            with self.subTest(memory=name):
+                target = rows()[name].target
+                self.assertTrue(target.endswith(".md"), target)
+                self.assertFalse(target.startswith("R-"), target)
+                self.assertTrue((FIXTURE / "rules" / target).is_file(), target)
+
     def test_each_fold_ranks_its_own_subject_rule_first(self) -> None:
         by_name = rows()
         self.assertEqual(by_name["feedback_worktree"].candidates[0][1], "R-9001")
@@ -158,16 +248,28 @@ class RankingTests(unittest.TestCase):
 
     def test_too_few_shared_words_scores_zero(self) -> None:
         """A high score off two or three coincidental words is an artifact of
-        short texts, not evidence."""
+        short texts, not evidence.
+
+        The word counts here are LITERAL, not derived from
+        `MIN_SHARED_WORDS`. Reading the constant to build the input made the
+        expectation move with the change under test, so every value except 0
+        passed — including 8, which alters two live rows' reported target.
+        """
         loaded = mt.load_rules(RULES)
         idf = mt.build_idf(loaded)
         rule = next(r for r in loaded if r.rule_id == "R-9001")
-        few = set(list(rule.words)[:mt.MIN_SHARED_WORDS - 1])
-        self.assertEqual(mt._overlap(few, rule.words, idf), 0.0)
+        words = sorted(rule.words)
+        self.assertGreaterEqual(len(words), 5, "fixture rule too small to test the floor")
+        self.assertEqual(mt.MIN_SHARED_WORDS, 4)
+        self.assertEqual(mt._overlap(set(words[:3]), rule.words, idf), 0.0)
+        self.assertGreater(mt._overlap(set(words[:4]), rule.words, idf), 0.0)
 
-    def test_at_most_the_configured_number_of_candidates(self) -> None:
+    def test_at_most_three_candidates(self) -> None:
+        """Literal 3, not `mt.CANDIDATES` — reading the constant meant setting
+        it to 1 or 10 passed while every row's candidate list changed."""
+        self.assertEqual(mt.CANDIDATES, 3)
         for row in rows().values():
-            self.assertLessEqual(len(row.candidates), mt.CANDIDATES)
+            self.assertLessEqual(len(row.candidates), 3)
 
 
 class OutputTests(unittest.TestCase):
@@ -200,7 +302,8 @@ class OutputTests(unittest.TestCase):
         for row in payload:
             self.assertEqual(
                 set(row), {"name", "verdict", "type", "instances", "first_seen",
-                           "promoted", "target", "evidence", "candidates"})
+                           "promoted", "target", "evidence", "candidates",
+                           "stale_note"})
 
     def test_actionable_classes_are_rendered_first(self) -> None:
         """FOLD rows are the only ones that produce work. Ordering them after
@@ -209,10 +312,31 @@ class OutputTests(unittest.TestCase):
         self.assertLess(text.index("## FOLD+HOOK"), text.index("## LOCAL"))
         self.assertLess(text.index("## FOLD ("), text.index("## STATE"))
 
-    def test_the_filing_bar_is_applied_to_fold_rows(self) -> None:
+    def test_the_filing_bar_boundary_is_inclusive(self) -> None:
+        """`>=` vs `>` at the threshold. The old test asserted only the
+        instances-4 row, which is "file" under either comparison — so
+        regressing to `>` passed, and on the live store that silently
+        downgrades every instances==2 row to "do not file", emptying the class
+        the bar exists to identify."""
         text = self._run(self._fixture_argv())
-        self.assertIn("| 4 | file ", text)
-        self.assertEqual(mt.FILE_THRESHOLD, 2)
+        self.assertIn("| `feedback_scheduling` | 2 | file ", text)   # == threshold
+        self.assertIn("| `feedback_worktree` | 4 | file ", text)     # above
+
+    def test_below_the_threshold_is_batch_not_file(self) -> None:
+        """The "batch" side of the branch was never asserted at all."""
+        loaded = mt.load_rules(RULES)
+        idf = mt.build_idf(loaded)
+        head = ("---\nname: feedback_once\ndescription: d\ninstances: 1\n"
+                "metadata:\n  type: feedback\n---\n\nA one-off note.\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "feedback_once.md"
+            path.write_text(head, encoding="utf-8")
+            row = mt.classify(path, loaded, RULES, idf)
+        self.assertEqual(row.instances, 1)
+        self.assertLess(row.instances, mt.FILE_THRESHOLD)
+        text = mt.render([row])
+        self.assertIn("| batch |", text)
+        self.assertNotIn("| file |", text)
 
     def test_a_missing_store_exits_two_not_zero(self) -> None:
         """Exit 2 distinguishes "could not run" from "ran and found nothing".
@@ -231,12 +355,49 @@ class ReadOnlyTests(unittest.TestCase):
         after = {p: p.read_bytes() for p in sorted(FIXTURE.rglob("*")) if p.is_file()}
         self.assertEqual(before, after)
 
-    def test_the_module_opens_nothing_for_writing(self) -> None:
-        source = (HERE / "memory_triage.py").read_text(encoding="utf-8")
-        for forbidden in ('"w"', "'w'", "write_text", "mkdir", "unlink",
-                          "subprocess", "os.replace"):
-            self.assertNotIn(forbidden, source,
-                             f"read-only tool must not reference {forbidden}")
+    def test_a_full_run_writes_nothing_anywhere_under_home(self) -> None:
+        """Behavioral, not a source grep.
+
+        The grep this replaces checked for `"w"` and `write_text` but not `'a'`,
+        `write_bytes`, `open(p, mode)`, `shutil.copy`, `Path.touch` or
+        `os.system` — appending to a file under $HOME during `main()` passed
+        both AC4 tests and left the file on disk. It also made the string
+        `subprocess` unusable anywhere in the module, comments included.
+        """
+        with tempfile.TemporaryDirectory() as home:
+            fake = Path(home)
+            (fake / "marker").write_text("x", encoding="utf-8")
+            before = self._snapshot(fake)
+            with mock.patch.dict(os.environ, {"HOME": str(fake)}), \
+                    mock.patch.object(Path, "home", staticmethod(lambda: fake)), \
+                    mock.patch.object(sys, "stdout", io.StringIO()):
+                mt.main(["--store", str(STORE), "--repo-root", str(RULES[0])])
+            self.assertEqual(self._snapshot(fake), before)
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {str(p.relative_to(root)): p.read_bytes()
+                for p in sorted(root.rglob("*")) if p.is_file()}
+
+    def test_the_ast_shows_no_write_mode_open(self) -> None:
+        """The structural half, done properly: every `open()`/`Path.open()` in
+        the module is inspected for a mode argument rather than the source
+        being string-searched."""
+        import ast
+
+        tree = ast.parse((HERE / "memory_triage.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            if name not in {"open", "write_text", "write_bytes", "touch", "mkdir"}:
+                continue
+            self.assertEqual(name, "open", f"{name}() is a write path")
+            modes = [a.value for a in node.args[1:] if isinstance(a, ast.Constant)]
+            modes += [k.value.value for k in node.keywords
+                      if k.arg == "mode" and isinstance(k.value, ast.Constant)]
+            for mode in modes:
+                self.assertNotRegex(str(mode), r"[wax+]", f"open(mode={mode!r})")
 
 
 if __name__ == "__main__":

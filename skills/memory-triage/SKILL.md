@@ -5,6 +5,23 @@ description: Classify every feedback memory in the shared store against the rule
 
 # memory-triage
 
+## Wiring — required once per project
+
+This skill is forge-canonical and **is not distributed by existing**.
+`UNIVERSAL_SKILL_DIRS` in `sync_rules.py` is empty by design: a skill's
+description is surfaced and directly invocable the moment it is linked, so
+nothing is opted in for free. Link it per project:
+
+```
+python3 ~/harmonic-forge/sync_rules.py --project <path> --skill memory-triage
+```
+
+Until that runs for a given project, `/memory-triage` does nothing *there*.
+Running the script directly works from anywhere regardless, and
+`mise run memory-triage` works in harmonic-forge.
+
+## What it is for
+
 The memory store is loaded into every session. It reached 238 files before
 anyone looked, and pruning it was a manual campaign that redid the same
 classification from scratch each time (hrse#458, F385-F389). This makes the
@@ -25,14 +42,28 @@ Output is six classes, actionable ones first:
 
 | class | what it means | your job |
 |---|---|---|
-| `FOLD+HOOK` | recurring lesson, no rule, trigger is a tool call | draft rule text **and** name the hook event |
+| `FOLD+HOOK` | the text NAMES a tool call — a hook *candidate* | read it first; most demote to `FOLD` |
 | `FOLD` | recurring lesson, no rule, prose-enforced | draft rule text |
 | `DUP` | already promoted to a rule that exists | shrink the file to a pointer |
-| `STALE` | cites a path that exists in no repo and no store | verify, then delete |
+| `STALE` | one-off (`instances < 2`) citing a path that exists nowhere | verify, then delete |
 | `LOCAL` | operator context, not a general lesson | leave it |
 | `STATE` | ongoing work state | leave it; it ages out on its own |
 
 ## Step 2 — what the script decided, and what it deliberately did not
+
+**`FOLD+HOOK` is a shortlist, not a verdict.** It fires when the memory's text
+names a tool call, which is necessary for hook-enforceability and nowhere near
+sufficient — a memory saying "run `mise run hygiene` to check" mentions a
+command without its own trigger being one. The 2026-09-06 human audit judged
+**6** memories hook-enforceable where this flags **46**. Expect to demote most
+of the class, and never invent a hook trigger just because the row is in it.
+
+**A recurring lesson is never deleted for a stale citation.** A memory with 2+
+recurrences that cites a vanished path keeps its `FOLD` verdict and carries the
+dead path as a `⚠` note instead. `feedback_verify_live_not_source` — the
+strongest recurrence in the set — was being routed to "verify, then delete"
+over a renamed component while the lesson itself was entirely current. Fix the
+citation; keep the lesson.
 
 **Decided mechanically, trust it:** `LOCAL`, `STATE` and `DUP`. All three come
 from the file's declared `metadata.type` or a `promoted:` marker resolving to a
@@ -56,6 +87,22 @@ the same subject. So:
 the first implementation. It called 103 of 209 memories duplicates, including a
 scheduling-link memory matched against an AE-sweep rule. The reasoning is
 recorded at `CANDIDATES` in the source; read it before proposing a cutoff.
+
+## Step 2.5 — check yourself against the human audit
+
+```
+python3 ~/harmonic-forge/tools/memory/memory_triage.py --audit
+```
+
+Prints per-class agreement against the vendored 2026-09-06 audit (208 files,
+classified by reading each one). **It agrees on 37%.** That is expected and
+recorded, not a defect to tune away: the audit's `DUP` means "a reader judged
+this already a rule" and this script's means "a `promoted:` marker resolves",
+and the audit reads content where this reads `metadata.type`.
+
+Use it as a second opinion on rows you are unsure about, and as the honest
+measure of how much of this job is still yours. It is a reference, never a
+target — a script that reproduced it would be reproducing judgment.
 
 ## Step 3 — the filing bar applies, and the script marks it
 
