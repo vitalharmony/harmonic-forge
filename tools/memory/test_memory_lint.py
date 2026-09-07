@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import datetime
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -423,6 +424,110 @@ class AgingCheckTests(unittest.TestCase):
                 found = [f for f in lint.check_aging(store)
                          if f.startswith("feedback_recurred_unpromoted.md")]
         self.assertEqual(found, [])
+
+
+class PreCloseRegressionTests(unittest.TestCase):
+    """The five defects `preclose-inspection` found in F500's first draft.
+
+    Each is pinned here because each was invisible in the diff that
+    introduced it: three were time- or environment-dependent, and two were
+    silent mis-scorings that only showed against the live store.
+    """
+
+    def test_fixtures_are_immune_to_the_calendar(self) -> None:
+        """FINDING 1: `clean/feedback_alpha.md` pins an absolute
+        `first_seen:`, so on 2026-09-15 it crossed the 14-day threshold and
+        turned harmonic-forge's own commit gate and CI red with no code
+        change. The gate now pins `--today`; this asserts the flag actually
+        governs, so the fixture cannot age out again."""
+        self.assertEqual(
+            lint.check_aging(CLEAN, today=datetime.date(2026, 12, 25)), [],
+            "the clean fixture must stay green at ANY date")
+        self.assertEqual(lint.run(CLEAN, gate=True,
+                                  today=datetime.date(2030, 1, 1)), 0)
+
+    def test_the_gate_pins_today_for_every_fixture_run(self) -> None:
+        """The wiring half of the same finding: an unpinned fixture run in
+        `mise run check` is a time bomb whose expiry is invisible in the diff
+        that plants it."""
+        check = (FORGE_ROOT / "mise.toml").read_text()
+        check = check[check.index("[tasks.check]"):check.index("[tasks.memory-backfill]")]
+        for line in check.splitlines():
+            if "memory_lint.py" in line and "--store" in line:
+                self.assertIn("--today", line, f"unpinned fixture run: {line}")
+
+    def test_the_aging_assertion_pins_exit_code_one(self) -> None:
+        """FINDING 5: `run()` returns 2 for a MISSING store, so a bare
+        non-zero test passed if the fixture were deleted — while the comment
+        above it claimed the check was proven."""
+        check = (FORGE_ROOT / "mise.toml").read_text()
+        self.assertIn('test "$rc" -eq 1', check)
+        self.assertEqual(lint.run(TESTDATA / "does_not_exist", gate=True), 2,
+                         "a missing store must be distinguishable from a finding")
+
+    def test_promoted_ids_validate_without_a_home_directory(self) -> None:
+        """FINDING 2: `_corpus()` read registries only from absolute
+        `Path.home()` paths, which exist on no CI runner. `rule_ids` came
+        back empty there and `promoted:` validation silently became a no-op,
+        so any string acted as a promotion marker."""
+        _mise, rule_ids, _roots = lint._corpus()
+        self.assertTrue(rule_ids, "no rule IDs resolved — validation is a no-op")
+        self.assertIn(str(FORGE_ROOT / "tools" / "rules" / "registry.toml"),
+                      [str(FORGE_ROOT / "tools" / "rules" / "registry.toml")])
+        self.assertTrue(
+            (FORGE_ROOT / "tools" / "rules" / "registry.toml").is_file(),
+            "the in-repo registry is what makes this work off the operator's box")
+
+
+class InstanceParsingTests(unittest.TestCase):
+    """FINDING 3: `instances:` was scored from advice prose and from
+    citations of OTHER memories' enumerations. A wrong count does not merely
+    misreport — for a file under the age threshold it is the sole reason a
+    gating promotion obligation appears, so it invents work.
+    """
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(HERE))
+        import backfill_frontmatter
+        self.parse = backfill_frontmatter.parse_instances
+
+    def test_advice_prose_is_not_a_count(self) -> None:
+        self.assertEqual(
+            self.parse("retry the connection check at least once or twice "
+                       "after a brief pause.")[0], 1)
+
+    def test_narrating_one_incident_twice_is_not_two_incidents(self) -> None:
+        self.assertEqual(
+            self.parse('`check_lane3_ready.py` reported "ready" — twice, '
+                       "before and after the edit.")[0], 1)
+
+    def test_advice_to_not_wait_for_a_second_time_is_not_a_count(self) -> None:
+        self.assertEqual(
+            self.parse("Do this immediately — don't wait to be asked a "
+                       "second time.")[0], 1)
+
+    def test_a_citation_of_another_memorys_enumeration_is_not_borrowed(self) -> None:
+        self.assertEqual(
+            self.parse("Same shape as [[feedback_git_er_done_bias]] instance 4.")[0], 1)
+
+    def test_a_line_leading_enumeration_heading_is_a_count(self) -> None:
+        self.assertEqual(self.parse("**Instance 6 (2026-08-27):** it happened.")[0], 6)
+        self.assertEqual(self.parse("**Tenth instance** — again.")[0], 10)
+
+    def test_a_cardinal_count_mid_sentence_is_still_a_count(self) -> None:
+        """Deliberately NOT line-anchored: "confirmed six times" is genuine
+        prose, unlike the enumeration headings above."""
+        self.assertEqual(self.parse("This was corrected four times.")[0], 4)
+        self.assertEqual(self.parse("confirmed six times across sessions")[0], 6)
+
+    def test_a_recurrence_verb_near_twice_is_a_count(self) -> None:
+        self.assertEqual(self.parse("Recurred twice in one session.")[0], 2)
+
+    def test_the_highest_stated_count_wins(self) -> None:
+        """A file recording both an early and a later occurrence has recurred
+        the later number of times."""
+        self.assertEqual(
+            self.parse("**8th occurrence** here.\n\n**Tenth instance** later.")[0], 10)
 
 
 class FrontmatterParserTests(unittest.TestCase):

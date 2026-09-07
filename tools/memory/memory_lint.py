@@ -335,7 +335,16 @@ def _corpus() -> tuple[str, set[str], list[Path]]:
         (r / "mise.toml").read_text(encoding="utf-8", errors="replace")
         for r in roots if (r / "mise.toml").is_file()
     )
-    registries = [Path.home() / "harmonic-forge/tools/rules/registry.toml",
+    # harmonic-forge#500: this repo's OWN registry is resolved relative to
+    # the module, not through `Path.home()`. The absolute paths below exist
+    # on the operator's machine and on no CI runner (`.github/workflows`
+    # checks out under `/home/runner/work/`), so `rule_ids` came back empty
+    # there — and an empty set silently disabled the `promoted:` validation
+    # that Check 8 treats as an authorization input, letting any string act
+    # as a promotion marker. The sibling paths are kept as a best-effort
+    # extra source; the in-repo one is what makes the check work anywhere.
+    registries = [Path(__file__).resolve().parents[1] / "rules" / "registry.toml",
+                  Path.home() / "harmonic-forge/tools/rules/registry.toml",
                   Path.home() / "Harmonic_Projects/HRSE2/.claude/rules/registry.toml"]
     rule_ids: set[str] = set()
     for reg in registries:
@@ -492,7 +501,7 @@ def check_aging(store: Path, today: date | None = None) -> list[str]:
 # Runner
 # ---------------------------------------------------------------------------
 
-def run(store: Path, gate: bool) -> int:
+def run(store: Path, gate: bool, today: date | None = None) -> int:
     print(f"store: {store}")
     if not store.is_dir():
         print(f"ERROR: memory store not found: {store}", file=sys.stderr)
@@ -506,7 +515,7 @@ def run(store: Path, gate: bool) -> int:
         ("Check 4 — broken [[slug]] refs", broken),
         ("Check 5 — missing frontmatter", check_missing_frontmatter(store)),
         ("Check 6 — index load cap", cap_findings),
-        ("Check 8 — lesson aging and promotion", check_aging(store)),
+        ("Check 8 — lesson aging and promotion", check_aging(store, today)),
     ]
     advisory: list[tuple[str, list[str]]] = [
         ("Check 3 — stale project memories", check_stale_projects(store)),
@@ -539,12 +548,18 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--store", type=Path, default=None,
                    help="Lint this store instead of the resolved one (tests, fixtures).")
+    p.add_argument("--today", type=date.fromisoformat, default=None,
+                   help="Treat this ISO date as today (harmonic-forge#500). "
+                        "Fixture runs MUST pin it: a fixture carrying an "
+                        "absolute `first_seen:` silently crosses the 14-day "
+                        "threshold on a future date and turns the repo's own "
+                        "commit gate red with no code change.")
     p.add_argument("--gate", action="store_true",
                    help="Exit 1 on gating findings. Without it the run is report-only "
                         "and exits 0 — see the module docstring for why the live store "
                         "is never gated.")
     args = p.parse_args(argv)
-    return run(args.store or resolve_store(), args.gate)
+    return run(args.store or resolve_store(), args.gate, args.today)
 
 
 if __name__ == "__main__":

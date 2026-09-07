@@ -22,21 +22,42 @@ maintenance tool, not a one-shot migration.
 
 ## `first_seen`
 
-The incident dates are written in the prose (132 of 144 files carry at least
-one ISO date), so the earliest ISO date in the body is the best evidence
-available and is used first. Falling back to the file's git-tracked add date
-in the memory store is second-best and materially worse: the whole store was
-seeded in one commit on 2026-09-06, so that fallback collapses every file
-without a prose date onto the same day. That is why the prose is preferred and
-why the fallback is reported rather than applied silently.
+The earliest ISO date evidenced anywhere in the file, excluding the `modified:`
+and `originSessionId:` metadata lines. Falling back to the file's git add date
+is second-best and materially worse: the whole store was seeded in one commit
+on 2026-09-06, so the fallback stamps every file that hits it with that one
+date. The fallback is reported per-file, never applied silently.
+
+**Measured, not estimated: 55 of 144 files (38%) hit that fallback.** The issue
+predicted ~12, from a count of files carrying any ISO date; the gap is that
+several of those carry a date only in a `modified:` line, which is a
+maintenance timestamp rather than incident evidence and is deliberately
+excluded. For those 55 the age arm of the promotion threshold is measured from
+the seed date rather than the real one — it under-reports age, so it delays
+promotion rather than forcing it early, and the field is never overwritten, so
+a hand correction sticks. Reported here because a third of the store carrying
+an approximate date is a property worth knowing when reading Check 8's output,
+not a detail to bury.
 
 ## `instances`
 
-65 files carry an explicit recurrence marker in the prose ("corrected four
-times", "8th occurrence", "Recurred twice", "Tenth instance"). Those are
-parsed. Absent a marker, the value is 1 — the conservative direction, because
-`instances >= 2` is what triggers the promotion requirement, so guessing high
-would manufacture promotion obligations nobody recorded.
+Parsed from the recurrence marker: line-leading enumeration headings
+("**Instance 6**", "**Tenth instance**"), cardinal counts ("corrected four
+times"), and uncounted recurrence verbs ("Recurred twice" -> 2). Absent a
+marker, 1 — the conservative direction, because `instances >= 2` is what
+triggers the promotion requirement, so guessing high manufactures obligations
+nobody recorded.
+
+**20 of 144 files carry a parseable marker.** An earlier, looser version
+scored 36 and four of those were wrong: it read advice ("retry once or
+**twice**"), narration of a single incident ("reported ready **twice**, before
+and after") and a citation of a *different* memory's enumeration
+("`[[feedback_git_er_done_bias]]` instance 4") as counts. Two of the four were
+under the age threshold, so the manufactured count was the only reason each
+emitted a gating promotion finding — a wrong `instances` does not just
+misreport, it invents work. Hence: enumerations must be line-leading, bare
+multipliers need a recurrence verb within 40 characters, and wikilinks are
+stripped before counting.
 
 **Ordinals and cardinals mean different things and are read differently.**
 "the fourth occurrence" is a count of 4; "corrected four times" is also 4;
@@ -73,10 +94,20 @@ _CARDINALS = {
 
 _NOUN = r"(?:time|occurrence|instance|recurrence)s?"
 
-#: "the fourth occurrence", "Tenth instance", "8th occurrence".
+#: Markdown a memory's enumeration heading may lead with: `**`, `-`, `#`,
+#: or nothing.
+_LEAD = r"(?m)^[ \t]*(?:[-*#>]+[ \t]*)?(?:\*\*)?"
+
+#: "**Fourth occurrence**", "**Tenth instance**", "8th occurrence" — as a
+#: LINE-LEADING heading. Enumerations in this store are written as section
+#: headings; the same words mid-sentence are prose. Live false positive the
+#: unanchored version produced: "don't wait to be asked a **second time**"
+#: (advice) scored `feedback_lane1_relays_ae` as 2. A cardinal count
+#: ("confirmed six times") is genuinely mid-sentence and keeps its own,
+#: separate, unanchored patterns below.
 _ORDINAL_WORD_RE = re.compile(
-    rf"\b({'|'.join(_ORDINALS)})\s+{_NOUN}\b", re.I)
-_ORDINAL_DIGIT_RE = re.compile(rf"\b(\d+)(?:st|nd|rd|th)\s+{_NOUN}\b", re.I)
+    rf"{_LEAD}({'|'.join(_ORDINALS)})\s+{_NOUN}\b", re.I)
+_ORDINAL_DIGIT_RE = re.compile(rf"{_LEAD}(\d+)(?:st|nd|rd|th)\s+{_NOUN}\b", re.I)
 
 #: "corrected four times", "recurred 3 times", "bitten twice".
 _CARDINAL_WORD_RE = re.compile(
@@ -89,13 +120,20 @@ _CARDINAL_DIGIT_RE = re.compile(rf"\b(\d+)\s+{_NOUN}\b", re.I)
 #: instead of 6 until this was added, which is exactly the file F500's AC2
 #: names as a spot-check. Kept as its own regex rather than an alternation
 #: inside the cardinal one so a miss here is attributable to this shape.
-_NOUN_FIRST_RE = re.compile(rf"\b{_NOUN}\s+(\d+)\b", re.I)
+_NOUN_FIRST_RE = re.compile(rf"{_LEAD}{_NOUN}\s+(\d+)\b", re.I)
 
-#: A bare "twice"/"thrice" with no following noun ("corrected twice, and the
-#: second time it was worse"). Deliberately narrow, and tried only after the
-#: counted shapes above have missed, so a phrase carrying both is scored by
-#: the explicit one.
-_BARE_MULTIPLIER_RE = re.compile(r"\b(twice|thrice)\b", re.I)
+#: A recurrence VERB within a short window before a bare multiplier. The
+#: unrestricted `\b(twice|thrice)\b` this replaces matched advice and
+#: narrative as readily as counts -- live false positives it produced:
+#: "retry the connection check at least once or **twice**" (advice, scored 2)
+#: and "`check_lane3_ready.py` reported \"ready\" — **twice**, before and
+#: after" (a narrated detail of ONE incident, scored 2). Both files were
+#: under the age threshold, so the manufactured count was the sole reason
+#: each emitted a gating promotion finding.
+_RECURRENCE_VERB = (r"corrected|recurred|repeated|happened|bitten|caught|"
+                    r"missed|flagged|violated|occurred|slipped")
+_BARE_MULTIPLIER_RE = re.compile(
+    rf"\b(?:{_RECURRENCE_VERB})\b[^.]{{0,40}}?\b(twice|thrice)\b", re.I)
 
 #: Uncounted recurrence language: "recurred", "recurring", "again". F500's
 #: scope names "recurred" as an explicit marker, and it is — but it states no
@@ -150,15 +188,30 @@ def has_field(frontmatter: list[str], field: str) -> bool:
     return any(line.startswith(f"{field}:") for line in frontmatter)
 
 
+#: `[[other_memory]] instance 4` cites ANOTHER file's enumeration. Live false
+#: positive: `feedback_wait_after_asking` scored 4 by importing
+#: `[[feedback_git_er_done_bias]] instance 4`. Wikilinks are stripped before
+#: counting so a citation cannot lend its neighbour's count.
+_WIKILINK_RE = re.compile(r"\[\[[^\]]+\]\]")
+
+
 def parse_instances(body: str) -> tuple[int, str | None]:
     """`(count, evidence)`. `evidence` is the matched phrase, or None when
-    nothing matched and the count fell back to 1."""
+    nothing matched and the count fell back to 1.
+
+    Counts are read only from phrasing that states a recurrence of THIS
+    memory's own lesson. Advice ("retry once or twice"), narration of a
+    single incident ("reported ready twice, before and after") and citations
+    of another memory's enumeration are all excluded -- each produced a live
+    false positive whose only effect was a spurious promotion obligation.
+    """
     # All counted shapes are scanned TOGETHER and the highest wins, rather
     # than returning on the first regex that matches anything. Trying them in
     # sequence scored `feedback_verify_time_before_mentioning` as 8 ("8th
     # occurrence", an ordinal) while the same file's later "Tenth instance"
     # went unread — the file records ten, and the count that matters for
     # promotion is the latest one, not the first phrasing encountered.
+    body = _WIKILINK_RE.sub(" ", body)
     best: tuple[int, str] | None = None
     for regex in (_ORDINAL_WORD_RE, _ORDINAL_DIGIT_RE,
                   _CARDINAL_WORD_RE, _CARDINAL_DIGIT_RE, _NOUN_FIRST_RE):
