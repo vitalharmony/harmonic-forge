@@ -2189,3 +2189,11 @@ anchor = "doc-only-merges-wait"
 statement = "Lane 1 posts ready-for-l3 in the same action as confirming a rebase, never as two separate turns; the gap between them is a race in which any merge silently invalidates the confirmation."
 text_sha = "a39769f213f0cfc6"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind ready-for-l3"], wired_in = "hrse" }]
+
+[[rule]]
+id = "R-0339"
+file = "3-lane-protocol.md"
+anchor = "session-lifetime-restart-at-the-batch-boundary"
+statement = "A lane session is restarted at the batch boundary and never carried past its second compaction; the statusline shows compact:N so the count is visible without opening the transcript."
+text_sha = "4843f5393330aafa"
+hooks = [{ script = "tools/hooks/statusline_compaction.py", events = ["statusLine"], wired_in = "user settings" }]
