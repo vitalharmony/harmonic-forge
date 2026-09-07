@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent
 # `narrative_budget_check.py` failure class this repo has already deleted a
 # tool over — passing locally is not passing. Adding a new leaf directory
 # under `tools/` means adding it here too; nothing else discovers it.
-TEST_DIRS = ["gh", "hooks", "lane", "memory", "rules"]
+TEST_DIRS = ["gh", "hooks", "lane", "memory", "onboard", "rules"]
 PATTERN = "test_*.py"
 
 

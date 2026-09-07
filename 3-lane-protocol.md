@@ -431,6 +431,21 @@ do not reach this bar.
 
 ## Per-Lane Working Directories — git worktree
 
+### Adding a repo: `mise run forge-onboard`, not this procedure
+
+<!-- R-0340 -->
+`projects.toml` in harmonic-forge is the manifest of every onboarded and
+projected repo, and `mise run forge-onboard --project <name> --apply` is the
+normal way to bring one under this protocol — worktrees, directives,
+entrypoints, and the shared-memory check in one idempotent command. Run it
+without `--apply` to verify; `mise run hygiene` does that across every entry.
+Add a repo by adding a manifest entry and a `rules/lane-shorthand.md` prefix
+row, never by performing the steps below by hand (harmonic-forge#498).
+<!-- /R-0340 -->
+
+The rest of this section is the *reasoning* behind what that command does, and
+what to check when it reports a gap.
+
 <!-- R-0181 -->
 Each repo a lane touches has a dedicated `git worktree` per lane
 (`<repo>-lane2/`, `<repo>-lane3/`, sibling to the main checkout), sharing
