@@ -1,0 +1,11 @@
+---
+name: feedback_promoted_too_big
+description: Promoted but still an incident log (AC4)
+metadata:
+  type: feedback
+first_seen: 2026-09-04
+instances: 3
+promoted: R-0006
+---
+
+Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. Still carrying the whole original incident narrative. 

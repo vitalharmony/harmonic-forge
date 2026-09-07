@@ -48,7 +48,30 @@ python3 tools/rules/check_cross_registry.py
 # harmonic-forge#494: memory-store lint. Gated against the frozen CLEAN fixture,
 # never the live store — the live store is grown by the harness, not by any
 # branch, so a live-pinned exit-1 check is one no commit could turn green.
-python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate
+# harmonic-forge#500: `--today` is PINNED for every fixture run. Without it the
+# fixtures' absolute `first_seen:` dates cross the 14-day threshold on a future
+# calendar day and turn this gate red with no code change — a time bomb whose
+# expiry is invisible in the diff that plants it.
+python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate --today 2026-09-06
+# `clean` proves Check 8 stays silent on a healthy store; `aging` proves it
+# actually fires — a gate that only ever runs against green data cannot tell you
+# it still works. Exit code pinned to exactly 1: `run()` returns 2 for a MISSING
+# store, so a bare non-zero test would pass if the fixture were deleted, while
+# the comment above still claimed the check was proven.
+# `|| rc=$?` is required: this block runs under `errexit`, so an unguarded
+# non-zero exit aborts the task before the assertion can read it.
+rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --gate --today 2026-09-06 >/dev/null || rc=$?
+test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under --gate (got $rc)"; exit 1; }
+"""
+
+[tasks.memory-backfill]
+description = "Backfill first_seen/instances into feedback memories (harmonic-forge#500). Dry-run by default; --apply writes. Idempotent, never overwrites an existing field."
+usage = '''
+flag "--apply" help="Write the fields. Without it the run reports and touches nothing."
+flag "--store <store>" help="Backfill this store instead of the resolved one."
+'''
+run = """
+python3 tools/memory/backfill_frontmatter.py ${usage_apply:+--apply} ${usage_store:+--store "$usage_store"}
 """
 
 [tasks.commit]
