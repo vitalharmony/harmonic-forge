@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,6 +46,7 @@ TESTDATA = HERE / "testdata"
 CONVENTIONS = TESTDATA / "conventions"
 CLEAN = TESTDATA / "clean"
 DIRTY = TESTDATA / "dirty"
+AGING = TESTDATA / "aging"
 FORGE_ROOT = HERE.parent.parent
 
 
@@ -324,6 +326,125 @@ class Wiring(unittest.TestCase):
         """harmonic-forge#447: a suite `mise run check` never loads ships dead."""
         run_tests = (FORGE_ROOT / "tools" / "run_tests.py").read_text()
         self.assertIn('"memory"', run_tests)
+
+
+class AgingCheckTests(unittest.TestCase):
+    """harmonic-forge#500 — Check 8, and the inverted grandfathering.
+
+    The inversion is the whole point: harmonic-forge#494 would have gated
+    only files that HAD `first_seen:`, and zero of the live store's 144
+    `feedback_*` files had it, so the check would have gated on nothing on
+    delivery. Here a missing field is itself the finding.
+    """
+
+    def _findings(self, store: Path) -> list[str]:
+        return lint.check_aging(store)
+
+    def _named(self, store: Path, filename: str) -> list[str]:
+        return [f for f in self._findings(store) if f.startswith(filename)]
+
+    def test_ac3_a_file_missing_first_seen_is_itself_a_finding(self) -> None:
+        """The inversion. Under #494's original grandfathering this file
+        would have been SKIPPED, which is exactly how the check gated on
+        nothing."""
+        found = self._named(AGING, "feedback_no_first_seen.md")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("missing first_seen", found[0])
+
+    def test_ac3_the_missing_field_finding_gates(self) -> None:
+        """Not merely reported: it must reach exit 1 under `--gate`."""
+        self.assertEqual(lint.run(AGING, gate=True), 1)
+
+    def test_ac4_instances_over_threshold_without_promoted_fails(self) -> None:
+        found = self._named(AGING, "feedback_recurred_unpromoted.md")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("instances=3", found[0])
+        self.assertIn("allow_unpromoted.toml", found[0])
+
+    def test_ac4_a_valid_promoted_marker_clears_it(self) -> None:
+        """Same instances count, but promoted to an ID that exists in a
+        registry and shrunk to a pointer -- no finding at all."""
+        self.assertEqual(self._named(AGING, "feedback_promoted_ok.md"), [])
+
+    def test_ac4_a_promoted_file_over_the_pointer_size_fails(self) -> None:
+        """A 2 KB "pointer" is the original incident log with a marker bolted
+        on, and still costs its full weight in every session."""
+        found = self._named(AGING, "feedback_promoted_too_big.md")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("> 600", found[0])
+
+    def test_a_promoted_id_absent_from_both_registries_fails(self) -> None:
+        found = self._named(AGING, "feedback_promoted_unknown_id.md")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("neither rule registry", found[0])
+
+    def test_a_fresh_one_off_never_fires(self) -> None:
+        """The check must not simply flag everything -- a memory under both
+        thresholds is the normal case and has to stay silent, or the signal
+        is worthless."""
+        self.assertEqual(self._named(AGING, "feedback_fresh.md"), [])
+
+    def test_the_clean_fixture_stays_green_under_the_new_check(self) -> None:
+        """`mise run check` gates against `testdata/clean`. Adding Check 8
+        without updating that fixture would have turned the repo's own gate
+        red on landing -- the same self-inflicted failure harmonic-forge#494
+        hit with its README."""
+        self.assertEqual(lint.check_aging(CLEAN), [])
+        self.assertEqual(lint.run(CLEAN, gate=True), 0)
+
+    def test_only_feedback_files_are_aged(self) -> None:
+        """`project_*`/`reference_*`/`user_*` memories are not lessons and
+        carry no promotion obligation; the policy is about feedback."""
+        names = [f.split(":")[0] for f in self._findings(AGING)]
+        self.assertTrue(all(n.startswith("feedback") for n in names), names)
+
+    def test_allow_unpromoted_requires_a_reason(self) -> None:
+        """An entry with an empty reason must not silence the finding: an
+        exemption with no stated reason is indistinguishable from an
+        oversight."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            shutil.copytree(AGING, store, dirs_exist_ok=True)
+            allow = Path(tmp) / "allow.toml"
+            allow.write_text('feedback_recurred_unpromoted.md = ""\n')
+            with unittest.mock.patch.object(lint, "_ALLOW_UNPROMOTED", allow):
+                found = [f for f in lint.check_aging(store)
+                         if f.startswith("feedback_recurred_unpromoted.md")]
+        self.assertEqual(len(found), 1, "empty reason must not exempt")
+
+    def test_allow_unpromoted_with_a_real_reason_exempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            shutil.copytree(AGING, store, dirs_exist_ok=True)
+            allow = Path(tmp) / "allow.toml"
+            allow.write_text(
+                'feedback_recurred_unpromoted.md = "judgment call, no predicate"\n')
+            with unittest.mock.patch.object(lint, "_ALLOW_UNPROMOTED", allow):
+                found = [f for f in lint.check_aging(store)
+                         if f.startswith("feedback_recurred_unpromoted.md")]
+        self.assertEqual(found, [])
+
+
+class FrontmatterParserTests(unittest.TestCase):
+    """harmonic-forge#500: the parser had to learn to leave the nested
+    `metadata:` block, or every field the backfill appends reads as missing.
+    """
+
+    def test_a_top_level_key_after_the_metadata_block_is_seen(self) -> None:
+        text = ("---\nname: x\ndescription: y\nmetadata:\n  type: feedback\n"
+                "  modified: 2026-01-01\nfirst_seen: 2026-02-03\ninstances: 4\n---\n\nbody\n")
+        fm = lint._parse_frontmatter(text)
+        self.assertEqual(fm.get("first_seen"), "2026-02-03")
+        self.assertEqual(fm.get("instances"), "4")
+        self.assertEqual(fm.get("metadata.type"), "feedback")
+
+    def test_a_nested_key_is_still_not_read_as_top_level(self) -> None:
+        """The dedent rule must not go the other way: an indented key stays
+        nested, or `metadata.type` would collide with a top-level `type`."""
+        text = ("---\nname: x\nmetadata:\n  type: feedback\n"
+                "  instances: 99\n---\n\nbody\n")
+        fm = lint._parse_frontmatter(text)
+        self.assertNotIn("instances", fm)
 
 
 if __name__ == "__main__":

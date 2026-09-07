@@ -1,0 +1,21 @@
+# Feedback memories exempted from the promotion rule (harmonic-forge#500).
+#
+# A `feedback_*` memory at `instances >= 2` or older than 14 days must be
+# promoted to an `R-` rule or a hook and shrunk to a pointer. This file is the
+# escape hatch for the cases where that is genuinely wrong.
+#
+# ONE ENTRY PER LINE, `filename = "reason"`. The reason is required and is not
+# decoration: an exemption with no stated reason is indistinguishable from an
+# oversight, which is the state Check 8 exists to end. A future reader must be
+# able to tell why this file was allowed to keep costing context.
+#
+# Legitimate reasons look like:
+#   - the lesson is about a judgment call no rule can express as a predicate
+#   - it records operator-specific context (a preference, a relationship, a
+#     credential boundary) that belongs in memory rather than a shared rule
+#   - promotion is filed and in flight; name the issue
+#
+# NOT a legitimate reason: "not worth promoting yet". That is the threshold's
+# job to decide, and it already did.
+
+# (empty — every entry here is a deliberate, reasoned exception)

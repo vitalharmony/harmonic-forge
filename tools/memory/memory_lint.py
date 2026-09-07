@@ -89,7 +89,25 @@ def memory_files(store: Path) -> list[Path]:
 # Frontmatter parsing (no PyYAML)
 # ---------------------------------------------------------------------------
 
+#: Top-level frontmatter keys this lint reads. `first_seen`/`instances`/
+#: `promoted` were added by harmonic-forge#500 for the aging check.
+_TOP_LEVEL_KEYS = ("name", "description", "first_seen", "instances", "promoted")
+
+
 def _parse_frontmatter(text: str) -> dict[str, str]:
+    """Top-level keys, plus `metadata.type` from the nested block.
+
+    **The metadata block is exited on dedent, not held to the end of the
+    frontmatter (harmonic-forge#500).** The original set `in_metadata_block`
+    and never cleared it, so every line after `metadata:` was treated as one
+    of its children. That was harmless while the only keys read were `name`
+    and `description` — both conventionally written above `metadata:` — and
+    became a real defect the moment #500 appended `first_seen:`/`instances:`
+    after it: the backfill wrote them at column 0, the parser read them as
+    nested, and `check_aging` reported 144 files as missing fields that were
+    sitting in them. Indentation is what distinguishes the two, so
+    indentation is what the parser now uses.
+    """
     result: dict[str, str] = {}
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -99,6 +117,11 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
         if line.strip() == "---":
             break
         stripped = line.strip()
+        if not stripped:
+            continue
+        # A non-indented line ends the nested block, whatever it is.
+        if in_metadata_block and line[:1] not in (" ", "\t"):
+            in_metadata_block = False
         if stripped == "metadata:":
             in_metadata_block = True
             continue
@@ -107,7 +130,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
             if m:
                 result["metadata.type"] = m.group(1).strip()
             continue
-        m = re.match(r"^(name|description):\s*(.+)", stripped)
+        m = re.match(rf"^({'|'.join(_TOP_LEVEL_KEYS)}):\s*(.+)", stripped)
         if m:
             result[m.group(1)] = m.group(2).strip()
     return result
@@ -345,6 +368,127 @@ def check_staleness(store: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Check 8 — lesson aging and promotion (harmonic-forge#500)
+# ---------------------------------------------------------------------------
+
+#: A `feedback_*` memory reaching either threshold must be promoted to a rule
+#: or hook and shrunk to a pointer (harmonic-forge#493's policy).
+PROMOTION_INSTANCES = 2
+PROMOTION_AGE_DAYS = 14
+
+#: A memory carrying `promoted:` is a pointer to the rule that now holds the
+#: lesson, not the incident log it replaced. The size cap is what makes the
+#: promotion real rather than nominal -- a 2 KB "pointer" is the original file
+#: with a header bolted on, and it still costs its full weight in every
+#: session that loads the store.
+MAX_PROMOTED_BYTES = 600
+
+_ALLOW_UNPROMOTED = Path(__file__).resolve().parent / "allow_unpromoted.toml"
+
+
+def _allow_unpromoted() -> dict[str, str]:
+    """`{filename: reason}` for files exempted from the promotion rule.
+
+    Hand-maintained and deliberately not auto-populated: an exemption with no
+    stated reason is indistinguishable from an oversight, which is the state
+    this whole check exists to end. Parsed with a two-line reader rather than
+    tomllib so the file's shape stays obvious to a human editing it under
+    time pressure.
+    """
+    if not _ALLOW_UNPROMOTED.is_file():
+        return {}
+    allowed: dict[str, str] = {}
+    for line in _ALLOW_UNPROMOTED.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        allowed[key.strip().strip('"')] = value.strip().strip('"')
+    return allowed
+
+
+def check_aging(store: Path, today: date | None = None) -> list[str]:
+    """Feedback memories that are due for promotion, or cannot be assessed.
+
+    **The grandfathering is INVERTED relative to how harmonic-forge#494 first
+    specified it, and that inversion is the entire point of this check
+    existing.** #494 would have reported-only on a missing `first_seen:` and
+    gated only files that had it. Measured live on 2026-09-06: **zero** of the
+    144 `feedback_*` files carried the field, so every one was grandfathered
+    and the check gated on nothing -- the `promoted:` requirement, the
+    `allow_unpromoted.toml` hatch and the pointer-size rule were all
+    unreachable on delivery. Nothing in the #493 tree ever populated the
+    fields either, so it would have stayed inert rather than temporarily so.
+
+    Here, a MISSING field is itself the finding. `backfill_frontmatter.py`
+    populates them; after that, a file without them is a new memory written
+    without them, which is exactly what should be caught.
+    """
+    today = today or date.today()
+    allowed = _allow_unpromoted()
+    _mise, rule_ids, _roots = _corpus()
+    findings: list[str] = []
+
+    for f in memory_files(store):
+        if not f.name.startswith("feedback"):
+            continue
+        text = f.read_text(encoding="utf-8")
+        fm = _parse_frontmatter(text)
+
+        missing = [k for k in ("first_seen", "instances") if k not in fm]
+        if missing:
+            findings.append(
+                f"{f.name}: missing {', '.join(missing)} — run "
+                "`tools/memory/backfill_frontmatter.py --apply`")
+            continue
+
+        try:
+            instances = int(str(fm["instances"]).strip())
+        except ValueError:
+            findings.append(f"{f.name}: instances: {fm['instances']!r} is not a number")
+            continue
+        try:
+            first_seen = date.fromisoformat(str(fm["first_seen"]).strip())
+        except ValueError:
+            findings.append(f"{f.name}: first_seen: {fm['first_seen']!r} is not a date")
+            continue
+
+        promoted = fm.get("promoted", "").strip()
+        if promoted:
+            # Checked BEFORE the threshold test: a promoted file is over the
+            # threshold by definition (that is why it was promoted), so
+            # testing the threshold first would report every promoted file.
+            if promoted not in rule_ids and rule_ids:
+                findings.append(
+                    f"{f.name}: promoted: {promoted} is in neither rule registry")
+            size = len(text.encode("utf-8"))
+            if size > MAX_PROMOTED_BYTES:
+                findings.append(
+                    f"{f.name}: carries promoted: {promoted} but is {size} bytes "
+                    f"(> {MAX_PROMOTED_BYTES}) — a promoted memory is a pointer, "
+                    "shrink it in the same commit that sets the marker")
+            continue
+
+        age = (today - first_seen).days
+        over = []
+        if instances >= PROMOTION_INSTANCES:
+            over.append(f"instances={instances}")
+        if age >= PROMOTION_AGE_DAYS:
+            over.append(f"{age}d old")
+        # `allowed.get(...)` not `in allowed`: an entry with an EMPTY reason
+        # must not exempt. F500 requires a non-empty reason, and the file's
+        # own header says why -- an exemption with no stated reason is
+        # indistinguishable from an oversight, which is the state this check
+        # exists to end. Caught by its own test; the first implementation
+        # checked membership alone and silently honoured `file = ""`.
+        if over and not allowed.get(f.name, "").strip():
+            findings.append(
+                f"{f.name}: {' and '.join(over)} — needs `promoted: R-NNNN` or "
+                "an entry in tools/memory/allow_unpromoted.toml with a reason")
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -362,6 +506,7 @@ def run(store: Path, gate: bool) -> int:
         ("Check 4 — broken [[slug]] refs", broken),
         ("Check 5 — missing frontmatter", check_missing_frontmatter(store)),
         ("Check 6 — index load cap", cap_findings),
+        ("Check 8 — lesson aging and promotion", check_aging(store)),
     ]
     advisory: list[tuple[str, list[str]]] = [
         ("Check 3 — stale project memories", check_stale_projects(store)),

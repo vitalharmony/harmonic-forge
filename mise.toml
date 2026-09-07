@@ -49,6 +49,21 @@ python3 tools/rules/check_cross_registry.py
 # never the live store — the live store is grown by the harness, not by any
 # branch, so a live-pinned exit-1 check is one no commit could turn green.
 python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate
+# harmonic-forge#500: Check 8's own fixture set. `clean` proves the check stays
+# silent on a healthy store; `aging` proves it actually fires — a gate that only
+# ever runs against green data cannot tell you it still works.
+python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --gate \
+  && { echo "memory_lint: the aging fixture MUST fail under --gate"; exit 1; } || true
+"""
+
+[tasks.memory-backfill]
+description = "Backfill first_seen/instances into feedback memories (harmonic-forge#500). Dry-run by default; --apply writes. Idempotent, never overwrites an existing field."
+usage = '''
+flag "--apply" help="Write the fields. Without it the run reports and touches nothing."
+flag "--store <store>" help="Backfill this store instead of the resolved one."
+'''
+run = """
+python3 tools/memory/backfill_frontmatter.py ${usage_apply:+--apply} ${usage_store:+--store "$usage_store"}
 """
 
 [tasks.commit]
