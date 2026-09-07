@@ -119,6 +119,11 @@ summarizes.*
 
 ## Lane 2 — Muscle (qualified agents: see ADR-007 § 8)
 
+<!-- R-0350 -->
+Lane 2 pushes its own branches and does not narrate the push. PR, merge and
+close remain outside its boundary.
+<!-- /R-0350 -->
+
 *Devin Local was this section's original reference implementation — retired
 as of 2026-08 (harmonic-forge#317). An operator assigning Claude, Codex, or
 another tool to Lane 2 follows the same requirements below, with that
@@ -643,7 +648,7 @@ are operative here:
 <!-- /R-0192 -->
 
 <!-- R-0193 -->
-**Current state: Gemini is approved for Lane 1, partially for Lane 2, and for
+**Historical (Gemini eliminated 2026-08-31, harmonic-forge#496); retained for the guard-equivalence record.** Gemini was approved for Lane 1, partially for Lane 2, and for
 Lane 3 tier 1 (static review) only** (harmonic-forge#318/#362/#326). #362 landed an admin-tier policy
 (`tools/lane/policies/gemini-lane1.toml`/`gemini-lane2.toml`, wired through
 `_cli_launch.sh`'s `gemini*` branch) that structurally denies `write_file`/
@@ -672,6 +677,7 @@ not make (ADR-007 § 9).
 #### Gemini Lane 3 — tier 1 (static review) only
 
 <!-- R-0194 -->
+**Historical — Gemini was eliminated 2026-08-31.**
 `tools/lane/policies/gemini-lane3.toml` (harmonic-forge#326), armed by
 `AGENT_LANE_POLICY[gemini:3]`. **Tier 1 is static review: no test execution,
 no live services, no migrations** — tiers 2–4 are harmonic-forge#327's and
@@ -994,6 +1000,9 @@ means a full, unfiltered re-read first**, body and every comment; a
 repeated trigger is often the signal something changed, not evidence it
 didn't. Enforce at the trigger phrase itself where the repo can, not by
 recall.
+The re-read is the body **and** the comments: JDCs and Load-Bearing
+Assumptions live in the handoff comment, and the shorthand hook's truncated
+preview is not the document.
 <!-- /R-0212 -->
 
 <!-- R-0213 -->
@@ -1076,7 +1085,7 @@ recall.
      #N, then tells HITL it's ready.
 <!-- /R-0219 -->
 <!-- R-0220 -->
-4. **HITL says "Test #N"** (→ Lane 3). Lane 3 fetches the issue body,
+4. **HITL says "Spec H<N>"** (→ Lane 3). Lane 3 fetches the issue body,
    Lane 1's original handoff comment, and Lane 1's Lane-3-addressed
    comment from step 3 — never Lane 2's comment — via
    `harmonic-forge/tools/gh/fetch_lane1_context.py` (harmonic-forge#254),
@@ -1104,7 +1113,7 @@ recall.
      with a recommendation on whether it routes back to Lane 2 (an
      implementation bug — HITL says **"Reimplement #N"**, loop to step 2)
      or requires Lane 3 to re-test (a gate/spec issue — HITL says
-     **"Retest #N"**, distinct from the first-pass **"Test #N"**, loop to
+     **"Retest #N"**, distinct from the first-pass **"Spec H<N>"**, loop to
      step 4). HITL decides which.
 <!-- /R-0222 -->
 <!-- R-0223 -->
@@ -1227,6 +1236,10 @@ same posture: explicit, per-issue, never assumed.
   `tools/hooks/block_missing_preclose_inspection.py` blocks `gh pr merge`,
   `gh issue close`, and `gh api PATCH … state=closed` on an issue labelled
   `tooling-exception` that does not yet carry `preclose-inspected`.
+`preclose-inspection` is required exactly when Lane 1 both implemented and is
+closing. Lane 2-implemented work gets Lane 1's own read instead — the hook
+fires on the `tooling-exception` label, so an unlabeled self-implemented issue
+has no net at all.
 <!-- /R-0233 -->
 
 <!-- R-0234 -->

@@ -78,6 +78,12 @@ for the UI-only variant.
      Lane 3 skill/directive file (e.g. HRSE2's
      `.devin/skills/lane3-gate/SKILL.md` and `AGENTS.md`) for the
      identical rule stated at the actual entry point.
+     **The sweep leads with `Write tier <R|W|P>` — exactly one literal
+     letter, the ceiling of every TC's tier. Prose ("mixed", "read-only")
+     matches nothing and BLOCKs identically to omitting the line.**
+     `check_lane3_ready.py` validates the `l1-post` footer, never the
+     heading: confirm the byte-exact heading independently — "ready" from
+     that tool is necessary, not sufficient.
 <!-- /R-0128 -->
 <!-- R-0335 -->
    - **The sweep leads with its own summary block, above any evidence

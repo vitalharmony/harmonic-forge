@@ -102,7 +102,7 @@ _LEAD = r"(?m)^[ \t]*(?:[-*#>]+[ \t]*)?(?:\*\*)?"
 #: LINE-LEADING heading. Enumerations in this store are written as section
 #: headings; the same words mid-sentence are prose. Live false positive the
 #: unanchored version produced: "don't wait to be asked a **second time**"
-#: (advice) scored `feedback_lane1_relays_ae` as 2. A cardinal count
+#: (advice) scored the AE-relay memory (now R-0208) as 2. A cardinal count
 #: ("confirmed six times") is genuinely mid-sentence and keeps its own,
 #: separate, unanchored patterns below.
 _ORDINAL_WORD_RE = re.compile(

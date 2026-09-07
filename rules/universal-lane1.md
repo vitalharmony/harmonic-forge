@@ -11,6 +11,11 @@ safeguards) live in `universal-claude.md` instead.* Combine with
 
 ## Current lane assignment (harmonic-forge#113)
 
+**Gemini was eliminated as a lane tool on 2026-08-31.** Lane 1 is Claude Code;
+Lanes 2 and 3 accept Claude Code or Codex. `3-lane-protocol.md`'s R-0193/R-0194
+are retained as the record of what its policies did and why, not as current
+assignment — read them as history.
+
 As of this writing, Lane 1 is filled by Claude Code. **Lane 2 and Lane 3
 both accept either Claude Code or Codex** — confirmed live, hrse#327,
 2026-08-15: a Lane 3 gate ran under a Claude Code CLI session
@@ -164,6 +169,13 @@ doc merge still moves the base even when it touches no shared file.
 
 ## Lane 1 handoff artifact
 
+<!-- R-0346 -->
+A handoff is not ready until Lane 2 can execute every AC without touching
+setup: provision and prove each dependency in the target worktree, diff key
+sets rather than file existence, run any live harness once yourself, and state
+what you verified.
+<!-- /R-0346 -->
+
 <!-- R-0099 -->
 Use `templates/lane1-handoff.md`. Read it in full when writing a
 handoff; do not reconstruct its section list from memory or this
@@ -247,6 +259,9 @@ GitHub, lane, and implementation actions. `pitch-inspection` gets one
 pass; after one disputed revision, escalate to the operator. See
 `universal-claude.md`'s Advisory triggers section for the concrete
 invocation mechanism.
+A documented, countable advisory trigger is self-authorizing — invoke it in
+the same turn that surfaces it, never as a DECISIONS NEEDED line; state visibly
+whether it was invoked and why.
 <!-- /R-0110 -->
 
 ## Session-start ritual
