@@ -78,12 +78,36 @@ class StoreResolution(unittest.TestCase):
     def test_the_resolved_store_agrees_from_every_repo(self) -> None:
         """TC1. `resolve_store` takes the repo root as an argument, so running
         it with three different roots is the same question the handoff asked by
-        launching three sessions."""
-        roots = [Path.home() / "Harmonic_Projects/HRSE2",
-                 Path.home() / "harmonic-forge",
-                 Path.home() / "Harmonic_Projects/cymagraph-infra"]
-        resolved = {lint.resolve_store(r) for r in roots}
-        self.assertEqual(len(resolved), 1, f"repos disagree on the store: {resolved}")
+        launching three sessions.
+
+        **Hermetic as of harmonic-forge#500.** The first version read the
+        operator's real `~/.claude/settings.json` and asserted three real repo
+        paths collapsed to one — which is a property of that machine's
+        configuration, not of this code. On CI, where no `autoMemoryDirectory`
+        is set, the fallback correctly returns a different path per repo and
+        the assertion failed on correct behaviour. The property worth pinning
+        is the one the code owns: WHEN the key is set, every repo resolves to
+        it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config"
+            cfg.mkdir()
+            store = Path(tmp) / "shared-store"
+            store.mkdir()
+            (cfg / "settings.json").write_text(
+                json.dumps({"autoMemoryDirectory": str(store)}))
+            original = os.environ.get("CLAUDE_CONFIG_DIR")
+            os.environ["CLAUDE_CONFIG_DIR"] = str(cfg)
+            try:
+                roots = [Path("/anywhere/HRSE2"), Path("/anywhere/harmonic-forge"),
+                         Path("/somewhere/else/cymagraph-infra")]
+                resolved = {lint.resolve_store(r) for r in roots}
+            finally:
+                if original is None:
+                    os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                else:
+                    os.environ["CLAUDE_CONFIG_DIR"] = original
+        self.assertEqual(resolved, {store},
+                         f"repos disagree on the store: {resolved}")
 
     def test_falls_back_to_the_repo_derived_path_without_the_key(self) -> None:
         """TC2 — no crash, and the fallback is the legacy shape."""
@@ -239,15 +263,37 @@ class ExitContract(unittest.TestCase):
 class SessionStartDelivery(unittest.TestCase):
     """TC9 — the four cases. An empty stdout is a failure in every one."""
 
-    def _invoke(self) -> tuple[int, dict]:
-        proc = subprocess.run(
-            [sys.executable, str(HERE / "session_start_summary.py")],
-            input="{}", capture_output=True, text=True)
+    def _invoke(self, store: Path | None = None) -> tuple[int, dict]:
+        """Run the hook as a subprocess, optionally against a pinned store.
+
+        **`store` exists because of harmonic-forge#500.** The healthy-store
+        case previously inherited the ambient environment and so depended on
+        the operator having a real memory store on disk. On CI there is none,
+        the hook correctly reported the store as missing, and the test failed
+        on correct behaviour. Pinning a fixture via `CLAUDE_CONFIG_DIR` — the
+        same key `resolve_store` reads — makes "healthy" a property of the
+        fixture rather than of whoever is running the suite.
+        """
+        env = dict(os.environ)
+        tmpdir = None
+        if store is not None:
+            tmpdir = tempfile.TemporaryDirectory()
+            cfg = Path(tmpdir.name)
+            (cfg / "settings.json").write_text(
+                json.dumps({"autoMemoryDirectory": str(store)}))
+            env["CLAUDE_CONFIG_DIR"] = str(cfg)
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(HERE / "session_start_summary.py")],
+                input="{}", capture_output=True, text=True, env=env)
+        finally:
+            if tmpdir is not None:
+                tmpdir.cleanup()
         self.assertTrue(proc.stdout.strip(), "empty stdout is never a valid output")
         return proc.returncode, json.loads(proc.stdout)
 
     def test_healthy_store_emits_additional_context_and_exits_zero(self) -> None:
-        rc, payload = self._invoke()
+        rc, payload = self._invoke(store=CLEAN)
         self.assertEqual(rc, 0)
         self.assertEqual(payload["hookSpecificOutput"]["hookEventName"], "SessionStart")
         self.assertIn("memory:", payload["hookSpecificOutput"]["additionalContext"])
@@ -279,15 +325,23 @@ class SessionStartDelivery(unittest.TestCase):
         self.assertIn("additionalContext", payload["hookSpecificOutput"])
 
     def test_a_raising_lint_still_emits_with_a_system_message(self) -> None:
+        """harmonic-forge#500: `resolve_store` is pinned to a fixture here too.
+        Without it, on a machine with no store the hook reported the MISSING
+        STORE and never reached the injected failure — so the test asserted
+        the wrong error text and failed for a reason unrelated to what it
+        names."""
         def boom(*_a, **_k):
             raise RuntimeError("synthetic lint failure")
 
         original = lint.check_orphans
+        original_resolve = lint.resolve_store
         lint.check_orphans = boom  # type: ignore[assignment]
+        lint.resolve_store = lambda *a, **k: CLEAN  # type: ignore[assignment]
         try:
             payload = summary.build_payload()
         finally:
             lint.check_orphans = original  # type: ignore[assignment]
+            lint.resolve_store = original_resolve  # type: ignore[assignment]
         self.assertIn("systemMessage", payload)
         self.assertIn("synthetic lint failure", payload["systemMessage"])
         self.assertIn("hookSpecificOutput", payload)
