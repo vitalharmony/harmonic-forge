@@ -684,9 +684,9 @@ def denial(message: str) -> dict:
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": message,
+            "permissionDecisionReason": _batch_note(message),
         },
-        "systemMessage": message,
+        "systemMessage": _batch_note(message),
     }
 
 
@@ -767,6 +767,21 @@ def decision(command: object, cwd: Path) -> dict:
             "sessions (`LANE=2`/`LANE=3`) may post their own results directly."
     )
 
+
+
+def _batch_note(message: str, target_key: str | None = None) -> str:
+    """Append the interrupted-batch line (harmonic-forge#509 AC3).
+
+    Message-only. Never softens this hook's verdict — see `batch_context`'s
+    docstring for why a hook consulting `batch_auth` to return `allow` would
+    reintroduce the `#336` composition failure.
+    """
+    try:
+        from batch_context import annotate  # noqa: PLC0415
+
+        return annotate(message, target_key=target_key)
+    except Exception:
+        return message
 
 def main() -> None:
     try:

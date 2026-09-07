@@ -64,6 +64,31 @@ rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --
 test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under --gate (got $rc)"; exit 1; }
 """
 
+[tasks.batch-preflight]
+description = "Report what will halt a BATCH before it starts (harmonic-forge#509). Reports, never auto-satisfies: running preclose-inspection is Lane 1 work with its own findings, not a checkbox. Exit 0 nothing known will halt, 1 a precondition is unmet, 2 the run could not happen -- three-valued so a caller can tell a finding from its own misconfiguration."
+usage = '''
+flag "--key <key>" help="Issue key, e.g. F509. Repeatable." var=#true
+flag "--from-state" help="Take the keys from every live BATCH authorization instead of --key."
+'''
+run = """
+# harmonic-forge#509: `--key` is repeatable, and `${usage_key:+--key "$usage_key"}`
+# collapsed every value into ONE quoted argument -- `--key F509 --key F502`
+# reached the script as a single key literally named "F509 F502", so NEITHER
+# issue was checked and the preclose check degraded to `??` for the whole batch
+# while the report still printed a confident summary. mise joins a `var=#true`
+# flag's values with spaces, so the fix is to let the shell word-split them and
+# prefix each with --key.
+python3 - "$usage_key" ${usage_from_state:+--from-state} <<'PYEOF'
+import subprocess, sys
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+args = []
+for key in raw.split():
+    args += ["--key", key]
+args += sys.argv[2:]
+sys.exit(subprocess.call([sys.executable, "tools/hooks/batch_preflight.py", *args]))
+PYEOF
+"""
+
 [tasks.context-budget]
 description = "Measure a repo's always-loaded context surface — user + project CLAUDE.md and their @-imports, unscoped .claude/rules/, the memory index (harmonic-forge#497). Measured, not assumed: .windsurfrules is NOT counted (the harness does not inject it) and `globs:` does NOT scope a rule file (those ARE injected at start). Only appliesTo:/paths:/scope: suppress injection. Report-only unless --gate. Token figures are bytes/4 estimates and must never be quoted as counts."
 usage = '''
