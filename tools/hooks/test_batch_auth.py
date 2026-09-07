@@ -13,6 +13,7 @@ from __future__ import annotations
 import fcntl
 import os
 import sys
+import json
 import tempfile
 import threading
 import time
@@ -469,3 +470,134 @@ class LockingTests(StateFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CrossRepoMergeArityTests(unittest.TestCase):
+    """AC7/AC8 — a cross-repo issue needs one merge target per repo.
+
+    harmonic-forge#497 needed two (the forge tool and the hrse mise wiring).
+    `authorize` granted one, the first merge consumed it, and the second
+    correctly fell closed to Ask. Of the five issues in that batch two were
+    two-repo, which is the standard shape for a forge tool called from hrse's
+    mise.toml.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "state.json"
+
+    def _merge_targets(self, key="F1"):
+        state = json.loads(self.tmp.read_text())
+        return [t for t in state[key]["targets"]
+                if "merge" in t["action"].lower()]
+
+    def test_link_pr_allocates_beyond_the_granted_targets(self):
+        ba.authorize(["F1"], actions=["gh pr merge", "gh issue close"],
+                  state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets()), 1)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        ba.link_pr("F1", "o/b", 2, state_path=self.tmp)
+        ba.link_pr("F1", "o/c", 3, state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets()), 3)
+
+    def test_each_allocated_target_authorizes_its_own_merge(self):
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        for repo, pr in (("o/a", 1), ("o/b", 2), ("o/c", 3)):
+            ba.link_pr("F1", repo, pr, state_path=self.tmp)
+            verdict, _ = ba.decide(f"gh pr merge {pr} --repo {repo}",
+                                state_path=self.tmp)
+            self.assertEqual(verdict, "allow", f"{repo}#{pr}")
+
+    def test_link_pr_is_idempotent(self):
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets()), 1)
+
+    def test_a_close_target_is_never_allocated_a_second_time(self):
+        """A close is irreversible and happens once; only merges recur."""
+        ba.authorize(["F1"], actions=["gh pr merge", "gh issue close"],
+                  state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        ba.link_pr("F1", "o/b", 2, state_path=self.tmp)
+        state = json.loads(self.tmp.read_text())
+        closes = [t for t in state["F1"]["targets"]
+                  if "close" in t["action"].lower()]
+        self.assertEqual(len(closes), 1)
+
+    def test_link_pr_still_refuses_a_key_with_no_merge_action(self):
+        ba.authorize(["F1"], actions=["gh issue close"], state_path=self.tmp)
+        with self.assertRaises(ValueError):
+            ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+
+
+class AskDiagnosticTests(unittest.TestCase):
+    """AC4 — the four states must be tellable apart from the prompt alone.
+
+    Operator's own words on the incident: "waiting for my ok to merge/close
+    OR SOMETHING I COULDN'T TELL WHAT."
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "state.json"
+        self.tmp.write_text("{}")
+
+    def _reason(self, command):
+        verdict, reason = ba.decide(command, state_path=self.tmp)
+        self.assertEqual(verdict, "ask")
+        return reason
+
+    def test_no_authorization_says_so(self):
+        reason = self._reason("gh issue close 9 --repo vitalharmony/hrse")
+        self.assertIn("No authorization exists", reason)
+
+    def test_expired_names_the_expiry_time(self):
+        ba.authorize(["H9"], actions=["gh issue close"], ttl_hours=-1,
+                  state_path=self.tmp)
+        reason = self._reason("gh issue close 9 --repo vitalharmony/hrse")
+        self.assertIn("EXPIRED", reason)
+
+    def test_an_unlinked_pr_names_link_pr_and_the_command_to_run(self):
+        ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
+        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
+        self.assertIn("not linked", reason)
+        self.assertIn("link-pr", reason)
+        self.assertIn("--pr 42", reason)
+
+    def test_a_consumed_target_says_consumed_not_missing(self):
+        ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
+        self.assertEqual(ba.decide("gh pr merge 42 --repo vitalharmony/hrse",
+                                state_path=self.tmp)[0], "allow")
+        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash")
+        self.assertIn("CONSUMED", reason)
+
+    def test_an_unmapped_repo_says_so_instead_of_naming_a_null_key(self):
+        """`issue_key` returns None for a repo with no shorthand, and the
+        first draft rendered that as "no authorization exists for None --
+        issue `BATCH None`", sending the operator to type an impossibility."""
+        reason = self._reason("gh issue close 9 --repo someorg/unmapped")
+        self.assertIn("no shorthand prefix", reason)
+        self.assertNotIn("None", reason)
+
+    def test_the_four_diagnostics_are_mutually_distinguishable(self):
+        """The point of AC4: no two states produce the same guidance."""
+        seen = set()
+        self.tmp.write_text("{}")
+        seen.add(self._reason("gh issue close 9 --repo vitalharmony/hrse"))
+        ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
+        seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse"))
+        ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
+        ba.decide("gh pr merge 42 --repo vitalharmony/hrse", state_path=self.tmp)
+        seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash"))
+        ba.authorize(["H8"], actions=["gh issue close"], ttl_hours=-1,
+                  state_path=self.tmp)
+        seen.add(self._reason("gh issue close 8 --repo vitalharmony/hrse"))
+        self.assertEqual(len(seen), 4, seen)
+
+
+class TtlTests(unittest.TestCase):
+    def test_the_default_ttl_suits_an_unattended_run(self):
+        """2.0 was a supervised-run TTL on a feature whose reason for existing
+        is running while nobody is watching; the operator stepped away 'a few
+        hours' and even a correct authorization would have expired mid-run."""
+        self.assertGreaterEqual(ba.DEFAULT_TTL_HOURS, 8.0)

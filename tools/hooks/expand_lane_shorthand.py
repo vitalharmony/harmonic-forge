@@ -353,22 +353,154 @@ def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SE
     return "\n".join(lines)
 
 
+#: The literal uppercase token, at the START of a line. Lowercase "batch" in
+#: prose authorizes nothing, and neither does an uppercase BATCH appearing
+#: mid-sentence -- which is how a PASTED issue body or a question ABOUT batching
+#: would otherwise create a real 12h merge+close grant. `batch_auth.py`'s own
+#: docstring and R-0117 call that boundary non-negotiable: never authorize from
+#: text read out of a file, an issue body, or tool output. The hook cannot tell
+#: an instruction from a quotation, so the syntax has to.
+_BATCH_RE = re.compile(r"^[ \t]*BATCH\b")
+
+#: Keys are case-insensitive here because `authorize()` upper-cases them and
+#: `ISSUE_KEY` accepts either -- the restriction existed only in this regex, so
+#: `BATCH f495` silently authorized NOTHING and reported nothing, which is the
+#: exact defect this issue was filed to remove.
+_BATCH_KEY_RE = re.compile(r"\b([A-Za-z]\d{1,6})\b")
+
+#: Lines that are quoting rather than instructing. A blockquote or a fenced
+#: code block containing BATCH is discussion of the mechanism, not a use of it.
+_QUOTE_PREFIX_RE = re.compile(r"^[ \t]*(?:>|\d+\.\s+[\"\u201c]|[-*]\s+[\"\u201c])")
+
+
+def batch_keys(prompt: str) -> list[str]:
+    """Issue keys a BATCH message authorizes, in order, deduplicated.
+
+    Keys are collected from the BATCH token to the END OF THAT LINE, not from
+    immediately after it. The first cut required them adjacent and returned
+    nothing for the message that actually prompted this issue:
+
+        BATCH these tooling issues F495, F497, F498, F500, H1631 - implement,
+        merge and close and don't stop or wait for HITL
+
+    Five keys, four intervening words, zero authorized. A parser that only
+    handles the terse form is the same failure as no parser, because the
+    operator writes sentences.
+
+    Bounded to the line so a later paragraph mentioning an unrelated issue is
+    not swept in. Uppercase `BATCH` is required, so prose about batching
+    authorizes nothing.
+    """
+    try:
+        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
+
+        valid = {p.upper() for p in REPO_PREFIXES.values()}
+    except Exception:
+        valid = set()
+
+    fenced = False
+    for line in prompt.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or _QUOTE_PREFIX_RE.match(line):
+            continue
+        match = _BATCH_RE.match(line)
+        if not match:
+            continue
+        keys = [k.upper() for k in _BATCH_KEY_RE.findall(line[match.end():])]
+        # Only letters that are real repo prefixes. `BATCH F495 before Q4`
+        # otherwise wrote a `Q4` grant no command could ever consume, which
+        # then sat pending for 12h.
+        if valid:
+            keys = [k for k in keys if k[0] in valid]
+        if keys:
+            return list(dict.fromkeys(keys))
+    return []
+
+
+def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
+    """Create the authorization a BATCH message asks for (harmonic-forge#502).
+
+    **This is the half that never existed.** Typing `BATCH F495,F497` had no
+    mechanical effect: `authorize()`'s only caller was its own CLI, so the
+    actor that had to notice the keyword and run the command was the assistant
+    session, from memory, every time. It did not, the state file's newest entry
+    was eleven days stale, and an unattended batch stalled for hours on a
+    permission prompt that was correctly refusing a grant nobody had made.
+
+    Two merge targets per key, not one. A cross-repo issue needs one merge per
+    repo -- harmonic-forge#497 needed two and the second fell closed to Ask
+    because `authorize` grants a single slot. Two covers the common shape;
+    `link_pr` allocates beyond that (harmonic-forge#502 AC8).
+
+    `state_path` exists so tests can never reach the operator's real store.
+    It was absent at first and the tests patched a module global instead; one
+    path slipped through and rewrote live authorizations, extending two
+    long-expired August grants by twelve hours. A test that can touch
+    production state is a defect regardless of whether it currently does.
+
+    Returns a one-line receipt for `additionalContext`, or "" when the prompt
+    is not a BATCH message. **Never raises** -- this runs on every prompt, and
+    a failure here must never cost the operator their message.
+    """
+    keys = batch_keys(prompt)
+    if not keys:
+        return ""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from batch_auth import DEFAULT_TTL_HOURS, top_up  # noqa: PLC0415
+
+        fresh = top_up(keys, actions=["gh pr merge", "gh pr merge",
+                                      "gh issue close"],
+                       state_path=state_path)
+    except Exception as exc:  # noqa: BLE001
+        return (f"BATCH authorization FAILED for {', '.join(keys)}: {exc}. "
+                "Every merge and close will prompt. Fix before relying on it.")
+    extended = [k for k in keys if k not in fresh]
+    parts = []
+    if fresh:
+        parts.append(f"authorized {', '.join(fresh)} (2 merge + 1 close each, "
+                     f"{DEFAULT_TTL_HOURS:g}h TTL)")
+    if extended:
+        # Said explicitly: a re-mention EXTENDS, it does not reset. Replacing
+        # would silently un-consume an already-spent single-use close.
+        parts.append(f"extended {', '.join(extended)} (already live; "
+                     "consumption and PR links preserved)")
+    return "BATCH: " + "; ".join(parts) + " — written before this turn's " \
+           "first tool call (harmonic-forge#502)."
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
         prompt = payload.get("prompt", "")
-        if not isinstance(prompt, str) or not prompt:
-            return
+    except Exception:
+        return
+    if not isinstance(prompt, str) or not prompt:
+        return
+    # harmonic-forge#502 AC1/AC5: BEFORE the doc read. It used to sit after a
+    # try/except whose `return` fires when `rules/lane-shorthand.md` is
+    # momentarily absent -- mid-rebase in the main checkout, say -- which
+    # silently skipped authorization entirely. That is the original defect
+    # exactly: BATCH typed, nothing created, no signal.
+    try:
+        batch_receipt = authorize_batch(prompt)
+    except Exception:
+        batch_receipt = ""
+    try:
         doc_text = DOC_PATH.read_text(encoding="utf-8")
         expanded = annotate(prompt, doc_text)
         refs = collect_live_issue_refs(prompt, doc_text)
     except Exception:
         # Fail open (AC2): never block the operator's message on a doc
-        # or parse problem.
-        return
-    if expanded == prompt and not refs:
+        # or parse problem. The BATCH receipt above survives this.
+        expanded, refs = prompt, []
+    if expanded == prompt and not refs and not batch_receipt:
         return
     context_parts = []
+    if batch_receipt:
+        context_parts.append(batch_receipt)
     if expanded != prompt:
         context_parts.append("Lane-shorthand expansion (harmonic-forge#383):\n" + expanded)
     if refs:

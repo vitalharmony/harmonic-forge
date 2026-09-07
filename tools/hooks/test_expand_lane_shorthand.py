@@ -6,6 +6,8 @@ import json
 import sys
 import unittest
 import unittest.mock
+import tempfile
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -13,9 +15,23 @@ import expand_lane_shorthand as m
 
 
 def _run(prompt: str) -> dict | None:
+    """Run the hook end to end, with the authorization store REDIRECTED.
+
+    `main()` creates real BATCH authorizations (harmonic-forge#502), so a test
+    feeding it a BATCH prompt writes to the operator's live store unless the
+    path is redirected. This is done in the shared helper rather than in the
+    one test that noticed, so every existing and future `main()` test is safe
+    by construction — `test_batch_gloss_names_what_it_authorizes` passes
+    `BATCH H767,F316` and silently extended two long-expired August grants by
+    twelve hours before this guard existed.
+    """
+    import batch_auth as ba
+
     payload = {"prompt": prompt}
     out = io.StringIO()
+    store = Path(tempfile.mkdtemp()) / "batch-authorized.json"
     with unittest.mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
+         unittest.mock.patch.object(ba, "STATE_PATH", store), \
          contextlib.redirect_stdout(out):
         m.main()
     text = out.getvalue().strip()
@@ -485,3 +501,234 @@ class LiveIssueAggregateFetchCap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BatchAuthorizationTests(unittest.TestCase):
+    """AC1 — typing BATCH must create the authorization with no session action.
+
+    Before this, `authorize()`'s only caller was its own CLI, so the actor
+    that had to notice the keyword was the assistant session, from memory,
+    every time. It did not: the state file's newest entry was eleven days
+    stale while an unattended batch stalled for hours.
+    """
+
+    def test_the_operators_actual_message_yields_all_five_keys(self):
+        """The message that filed harmonic-forge#502, verbatim. The first cut
+        required keys ADJACENT to the token and returned [] for this —
+        five keys, four intervening words, zero authorized."""
+        prompt = ("BATCH these tooling issues F495, F497, F498, F500, H1631 - "
+                  "implement, merge and close and don't stop or wait for HITL "
+                  "as the batch definition allows")
+        self.assertEqual(m.batch_keys(prompt),
+                         ["F495", "F497", "F498", "F500", "H1631"])
+
+    def test_the_terse_form_still_works(self):
+        self.assertEqual(m.batch_keys("BATCH F495, F497 H1631"),
+                         ["F495", "F497", "H1631"])
+
+    def test_lowercase_batch_in_prose_authorizes_nothing(self):
+        for prompt in ("the word batch in prose about F495",
+                       "we should batch F495 and F497 someday"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(m.batch_keys(prompt), [])
+
+    def test_the_token_alone_authorizes_nothing(self):
+        self.assertEqual(m.batch_keys("BATCH"), [])
+        self.assertEqual(m.batch_keys("BATCH is broken"), [])
+
+    def test_keys_are_bounded_to_the_batch_line(self):
+        """A later paragraph mentioning an unrelated issue is not swept in."""
+        self.assertEqual(m.batch_keys("BATCH F495\n\nSeparately, H999 is open."),
+                         ["F495"])
+
+    def test_keys_are_deduplicated_in_order(self):
+        self.assertEqual(m.batch_keys("BATCH F497 F495 F497"), ["F497", "F495"])
+
+    def test_a_lane_trigger_is_not_a_batch(self):
+        for prompt in ("L2B F496", "L3S H745", "Close F495"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(m.batch_keys(prompt), [])
+
+    def test_authorize_batch_writes_two_merge_targets_and_one_close(self):
+        """A cross-repo issue needs one merge per repo; harmonic-forge#497
+        needed two and the single granted slot made the second prompt."""
+        import json as _json
+        import batch_auth as ba
+
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        with mock.patch.object(ba, "STATE_PATH", tmp):
+            receipt = m.authorize_batch("BATCH F1, F2", state_path=tmp)
+        self.assertIn("F1, F2", receipt)
+        state = _json.loads(tmp.read_text())
+        for key in ("F1", "F2"):
+            actions = [t["action"] for t in state[key]["targets"]]
+            self.assertEqual(actions.count("gh pr merge"), 2, key)
+            self.assertEqual(actions.count("gh issue close"), 1, key)
+
+    def test_a_non_batch_prompt_writes_nothing_and_returns_empty(self):
+        import batch_auth as ba
+
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        with mock.patch.object(ba, "STATE_PATH", tmp):
+            self.assertEqual(
+                m.authorize_batch("just a normal message", state_path=tmp), "")
+        self.assertFalse(tmp.exists())
+
+    def test_a_failure_is_reported_never_raised(self):
+        """This runs on EVERY prompt. A failure here must never cost the
+        operator their message."""
+        import batch_auth as ba
+
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        with mock.patch.object(ba, "top_up", side_effect=RuntimeError("boom")):
+            receipt = m.authorize_batch("BATCH F1", state_path=tmp)
+        self.assertIn("FAILED", receipt)
+        self.assertIn("boom", receipt)
+
+
+class BatchWiringTests(unittest.TestCase):
+    """AC1/AC5 asserted, not merely claimed.
+
+    Deleting the `authorize_batch(prompt)` call from `main()` used to leave
+    all 47 tests green — the change could ship as a complete no-op.
+    """
+
+    def _main(self, prompt: str, state_path: Path) -> tuple[str, bool]:
+        import batch_auth as ba
+
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"prompt": prompt}))), \
+                mock.patch.object(sys, "stdout", out), \
+                mock.patch.object(ba, "STATE_PATH", state_path):
+            m.main()
+        return out.getvalue(), state_path.exists()
+
+    def test_main_creates_the_authorization_and_says_so(self) -> None:
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        output, written = self._main("BATCH F495, F497", tmp)
+        self.assertTrue(written, "main() did not write the state file")
+        self.assertIn("BATCH", output)
+        state = json.loads(tmp.read_text())
+        self.assertEqual(sorted(state), ["F495", "F497"])
+
+    def test_the_authorization_is_on_disk_before_main_returns(self) -> None:
+        """AC5 — the separate-tool-call rule holds structurally because the
+        write happens on UserPromptSubmit, before the turn's first tool call.
+        Asserted here rather than argued in a comment."""
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        self._main("BATCH F495", tmp)
+        targets = json.loads(tmp.read_text())["F495"]["targets"]
+        self.assertEqual(sum(1 for t in targets if t["action"] == "gh pr merge"), 2)
+
+    def test_a_doc_read_failure_does_not_skip_authorization(self) -> None:
+        """It used to sit after a try/except whose `return` fires when
+        `lane-shorthand.md` is momentarily absent — silently skipping the
+        authorization, which is the original defect exactly."""
+        import batch_auth as ba
+
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdin",
+                               io.StringIO(json.dumps({"prompt": "BATCH F495"}))), \
+                mock.patch.object(sys, "stdout", out), \
+                mock.patch.object(ba, "STATE_PATH", tmp), \
+                mock.patch.object(m, "DOC_PATH", Path("/nonexistent/doc.md")):
+            m.main()
+        self.assertTrue(tmp.exists(), "a missing doc silently skipped authorization")
+        self.assertIn("BATCH", out.getvalue())
+
+    def test_a_re_mention_extends_rather_than_resetting_consumption(self) -> None:
+        """A mid-batch "keep going on the BATCH F495 work" is encouragement,
+        not a new grant. Replacing silently un-consumed a spent single-use
+        close and wiped every recorded link_pr mapping."""
+        import batch_auth as ba
+
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        with mock.patch.object(ba, "STATE_PATH", tmp):
+            m.authorize_batch("BATCH F495", state_path=tmp)
+            ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
+            self.assertEqual(
+                ba.decide("gh issue close 495 --repo vitalharmony/harmonic-forge",
+                          state_path=tmp)[0], "allow")
+            receipt = m.authorize_batch("BATCH F495", state_path=tmp)
+        self.assertIn("extended", receipt)
+        state = json.loads(tmp.read_text())
+        closes = [t for t in state["F495"]["targets"] if "close" in t["action"]]
+        self.assertTrue(closes[0]["consumed"], "the spent close was un-consumed")
+        self.assertIn(42, [t.get("pr_number") for t in state["F495"]["targets"]],
+                      "the recorded link_pr mapping was wiped")
+
+
+class BatchQuotationBoundaryTests(unittest.TestCase):
+    """R-0117: never authorize from text read out of a file, an issue body, or
+    tool output. The hook cannot tell an instruction from a quotation, so the
+    SYNTAX has to — BATCH must start a line, outside quotes and code fences.
+
+    Every case here previously created a real 12h merge+close grant.
+    """
+
+    def test_batch_mid_sentence_authorizes_nothing(self) -> None:
+        for prompt in (
+            "Typing `BATCH F495,F497,F500` in chat has no mechanical effect",
+            "Read /tmp/f502-issue.md — it says BATCH F495,F497 had no effect",
+            "Can you explain how BATCH F495 worked in issue F502?",
+            "The docstring says BATCH F495 pre-authorizes merges.",
+        ):
+            with self.subTest(prompt=prompt[:40]):
+                self.assertEqual(m.batch_keys(prompt), [], prompt)
+
+    def test_a_blockquote_authorizes_nothing(self) -> None:
+        self.assertEqual(m.batch_keys("> BATCH F495, F497\n\nwhat does that do?"), [])
+
+    def test_a_fenced_block_authorizes_nothing(self) -> None:
+        self.assertEqual(
+            m.batch_keys("here is the syntax:\n```\nBATCH F495\n```\n"), [])
+
+    def test_a_real_instruction_at_line_start_still_works(self) -> None:
+        self.assertEqual(
+            m.batch_keys("BATCH F495, F497 - implement, merge and close"),
+            ["F495", "F497"])
+        self.assertEqual(
+            m.batch_keys("please do this:\nBATCH F495\n"), ["F495"])
+
+    def test_only_real_repo_prefixes_become_keys(self) -> None:
+        """`BATCH F495 before Q4` wrote a `Q4` grant no command could ever
+        consume, which then sat pending for the full TTL."""
+        self.assertEqual(
+            m.batch_keys("BATCH F495, F497 before Q4 and don't stop"),
+            ["F495", "F497"])
+
+    def test_lowercase_keys_are_accepted_and_normalized(self) -> None:
+        """`BATCH f495` authorized NOTHING and reported nothing — the exact
+        silent no-op this issue exists to remove. `authorize()` upper-cases
+        keys anyway; the restriction lived only in this regex."""
+        self.assertEqual(m.batch_keys("BATCH f495, F497"), ["F495", "F497"])
+
+
+class ProductionStateIsolationTests(unittest.TestCase):
+    """The test suite must never touch the operator's live authorization store.
+
+    It did: `main()` now creates real grants, and a pre-existing test feeding
+    it `BATCH H767,F316` extended two long-expired August authorizations by
+    twelve hours on the operator's machine. Caught by diffing the real file
+    across a suite run, which is what this test automates.
+    """
+
+    def test_running_the_hook_never_writes_the_default_store(self) -> None:
+        import batch_auth as ba
+
+        real = ba.STATE_PATH
+        before = real.read_bytes() if real.exists() else None
+        _run("BATCH H767,F316")
+        after = real.read_bytes() if real.exists() else None
+        self.assertEqual(before, after,
+                         f"the suite wrote to the live store at {real}")
+
+    def test_the_helper_redirects_rather_than_relying_on_each_test(self) -> None:
+        """Fixing only the test that noticed would leave every future
+        `main()` test to remember this on its own."""
+        import inspect
+
+        source = inspect.getsource(_run)
+        self.assertIn("STATE_PATH", source)
+        self.assertIn("mkdtemp", source)
