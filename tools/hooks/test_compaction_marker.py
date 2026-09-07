@@ -403,6 +403,49 @@ class Wiring(unittest.TestCase):
         )
 
 
+
+class CompactionCountTests(unittest.TestCase):
+    """The `compactions` counter (harmonic-forge#497)."""
+
+    def _compact(self, tmp: Path, session: str = "s") -> dict:
+        import compaction_marker as cm
+        with mock.patch.object(cm, "MARKER_DIR", tmp):
+            cm.handle({"session_id": session, "source": "compact", "cwd": "/x",
+                       "transcript_path": ""}, {})
+            return cm.read_marker(session) or {}
+
+    def test_a_first_compaction_counts_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._compact(Path(tmp)).get("compactions"), 1)
+
+    def test_the_count_increments_across_compactions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            counts = [self._compact(path).get("compactions") for _ in range(4)]
+        self.assertEqual(counts, [1, 2, 3, 4])
+
+    def test_a_pre_counter_marker_seeds_at_one_not_zero(self) -> None:
+        """A marker with no `compactions` key was written before the field
+        existed — but its existence proves a prior compaction. Seeding at 0
+        counted that session's SECOND compaction as its first, suppressing the
+        restart `!` for exactly the long-lived sessions R-0339 targets."""
+        import compaction_marker as cm
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "s.json").write_text(json.dumps(
+                {"compacted_at": "2026-09-06T00:00:00+00:00", "source": "compact"}),
+                encoding="utf-8")
+            self.assertEqual(self._compact(path).get("compactions"), 2)
+
+    def test_a_corrupt_count_still_records_this_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "s.json").write_text(
+                json.dumps({"compacted_at": "2026-09-06T00:00:00+00:00",
+                            "source": "compact", "compactions": "lots"}),
+                encoding="utf-8")
+            self.assertEqual(self._compact(path).get("compactions"), 2)
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -605,6 +605,21 @@ def prune_markers(now: float) -> None:
             continue
 
 
+def read_marker(session_id: str) -> dict | None:
+    """This session's marker, or None when absent/corrupt (harmonic-forge#497).
+
+    Corrupt reads as absent deliberately: a partially-written or hand-edited
+    marker must not propagate a bad value into the count, and `write_marker`'s
+    atomic replace means a torn read is transient rather than permanent.
+    """
+    target = MARKER_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def write_marker(session_id: str, payload: dict) -> None:
     """Atomic write — temp file in the same directory, then `os.replace`.
 
@@ -645,8 +660,30 @@ def handle(payload: dict, env: dict[str, str], now: float | None = None) -> dict
 
     if session_id:
         try:
+            # harmonic-forge#497: the marker is overwritten on every
+            # compaction, so it records the LATEST one and, without this,
+            # carried no way to tell a first compaction from a tenth. The
+            # count is what the statusline renders and what the restart rule
+            # (R-0339) is stated in terms of, so it is read back and
+            # incremented rather than recomputed -- there is no other record
+            # of prior compactions once the marker is replaced.
+            previous = read_marker(session_id) or {}
+            # A marker with NO `compactions` key was written by the hook before
+            # this field existed -- but its existence proves a prior compaction
+            # happened. Defaulting to 0 there counted such a session's SECOND
+            # compaction as its first, which suppressed the `!` at
+            # RESTART_THRESHOLD for exactly the long-lived sessions R-0339
+            # targets. Seed from 1 when a marker exists, 0 when none does.
+            seed = 1 if previous else 0
+            try:
+                compactions = int(previous.get("compactions", seed)) + 1
+            except (TypeError, ValueError):
+                # A corrupt or hand-edited count must not lose the fact that
+                # at least this compaction happened.
+                compactions = seed + 1
             write_marker(session_id, {
                 "compacted_at": compacted_at, "source": "compact",
+                "compactions": compactions,
                 "lane": lane, "lane_source": lane_source, "cwd": cwd,
                 "transcript_path": payload.get("transcript_path") or "",
                 # harmonic-forge#489: `trigger` is deliberately NOT written

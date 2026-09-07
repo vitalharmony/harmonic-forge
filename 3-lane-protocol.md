@@ -702,6 +702,25 @@ rule is that a cell is qualified against a version, and an upgrade invalidates
 it until the suite is re-run.
 <!-- /R-0196 -->
 
+### Session lifetime — restart at the batch boundary
+
+A session's always-loaded surface — user `CLAUDE.md`, project `CLAUDE.md` and
+its imports, unscoped rules, the memory index — measured 88 KB (~22k tokens)
+for an HRSE2 Lane 1 session on 2026-09-06. Compaction discards the
+conversation, not that preamble, so a heavily-compacted session is one whose
+remaining room to think has been repeatedly halved around a fixed cost. Across
+all sessions since 2026-09-01 there were 160 compactions.
+
+<!-- R-0339 -->
+**Restart a lane session at the batch boundary; never carry one past its
+second compaction.** A session's compaction count is shown in the statusline
+as `compact:N`, with `!` from the second onward (harmonic-forge#497). The
+boundary matters more than the number: restarting mid-issue discards context
+the next session must rebuild from the thread, while restarting between issues
+costs only what the issue thread already records. `tools/memory/
+context_budget.py` reports what a fresh session will pay.
+<!-- /R-0339 -->
+
 ### Lane role signal — `LANE`
 
 <!-- R-0197 -->

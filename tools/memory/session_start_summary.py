@@ -49,8 +49,25 @@ def _summary() -> str:
         f"{len(lint.check_orphans(store))} orphan(s), "
         f"{len(broken)} broken link(s), "
         f"{len(lint.check_staleness(store))} stale (report-only). "
+        f"{_context_line()}"
         f"Run `python3 {Path(__file__).parent / 'memory_lint.py'}` for detail."
     )
+
+
+def _context_line() -> str:
+    """The always-loaded context total (harmonic-forge#497), or "" on failure.
+
+    **Degrades to empty rather than raising.** The memory half of this summary
+    is the part the hook exists for; a budget measurement that cannot run must
+    not cost the session its store report. `build_payload`'s own except would
+    otherwise convert a `context_budget` bug into "the memory store was NOT
+    checked this session", which would be false and alarming.
+    """
+    try:
+        import context_budget
+        return context_budget.summary_line(Path.cwd()) + ". "
+    except Exception:  # noqa: BLE001 - see above
+        return ""
 
 
 def build_payload() -> dict[str, object]:

@@ -64,6 +64,24 @@ rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --
 test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under --gate (got $rc)"; exit 1; }
 """
 
+[tasks.context-budget]
+description = "Measure a repo's always-loaded context surface — user + project CLAUDE.md and their @-imports, unscoped .claude/rules/, .windsurfrules, the memory index (harmonic-forge#497). Path-scoped rules are excluded on purpose: they load on a file match, not at session start, so counting them would tune the budget against text nothing pays. Report-only unless --gate. Token figures are bytes/4 estimates and must never be quoted as counts."
+usage = '''
+flag "--repo <repo>" help="Measure this repo's surface (default: cwd)."
+flag "--budget <budget>" help="Byte ceiling (default 60000)."
+flag "--gate" help="Exit 1 when over budget. Without it the run is report-only and exits 0."
+flag "--summary" help="One line instead of the table."
+flag "--json" help="Machine-readable rows."
+'''
+run = """
+python3 tools/memory/context_budget.py \
+  ${usage_repo:+--repo "$usage_repo"} \
+  ${usage_budget:+--budget "$usage_budget"} \
+  ${usage_gate:+--gate} \
+  ${usage_summary:+--summary} \
+  ${usage_json:+--json}
+"""
+
 [tasks.memory-backfill]
 description = "Backfill first_seen/instances into feedback memories (harmonic-forge#500). Dry-run by default; --apply writes. Idempotent, never overwrites an existing field."
 usage = '''
