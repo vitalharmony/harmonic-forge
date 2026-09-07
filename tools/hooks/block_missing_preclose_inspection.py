@@ -109,14 +109,29 @@ def _allow() -> None:
     print(json.dumps({}))
 
 
-def _deny(reason: str) -> None:
+
+def _batch_note(message: str, target_key: str | None = None) -> str:
+    """Append the interrupted-batch line (harmonic-forge#509 AC3).
+
+    Message-only. Never softens this hook's verdict — see `batch_context`'s
+    docstring for why a hook consulting `batch_auth` to return `allow` would
+    reintroduce the `#336` composition failure.
+    """
+    try:
+        from batch_context import annotate  # noqa: PLC0415
+
+        return annotate(message, target_key=target_key)
+    except Exception:
+        return message
+
+def _deny(reason: str, target_key: str | None = None) -> None:
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
+            "permissionDecisionReason": _batch_note(reason, target_key),
         },
-        "systemMessage": reason,
+        "systemMessage": _batch_note(reason, target_key),
     }))
 
 
@@ -373,7 +388,18 @@ def main() -> None:
             if PRECLOSE_LABEL in labels:
                 continue
 
-            _deny(_deny_message(repo, issue, via_pr))
+            # harmonic-forge#509: pass the acting key so the annotation can
+            # name THIS issue rather than listing the batch. "stopped on F509"
+            # is actionable; "a batch is live" is not — and with more live keys
+            # than the elision cap, the acting key may not even appear in the
+            # list.
+            try:
+                from batch_auth import issue_key  # noqa: PLC0415
+
+                _acting = issue_key(repo, issue)
+            except Exception:
+                _acting = None
+            _deny(_deny_message(repo, issue, via_pr), target_key=_acting)
             return
 
     _allow()
