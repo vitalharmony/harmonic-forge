@@ -748,7 +748,7 @@ id = "R-0086"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
 statement = "Default to the Monitor tool for any wait on an external, indeterminate-duration event rather than a raw background polling loop."
-text_sha = "9ddd700f417a040b"
+text_sha = "f15e8ce04665558d"
 hooks = []
 
 [[rule]]
@@ -943,7 +943,7 @@ id = "R-0110"
 file = "rules/universal-lane1.md"
 anchor = "advisory-triggers"
 statement = "Give an advisory pass only the issue, question, facts, expected verdict format and a read-only boundary; the parent remains responsible for all GitHub, lane and implementation actions."
-text_sha = "435d6255a948a78a"
+text_sha = "eee0378a758ca7c5"
 hooks = []
 
 [[rule]]
@@ -1093,7 +1093,7 @@ id = "R-0128"
 file = "rules/testing-gate.md"
 anchor = "rules"
 statement = "The sweep comment must use the mechanically required heading format, which exists because the rule failed twice as prose."
-text_sha = "5ce1fc5cdd204629"
+text_sha = "b4bf90f9ba422291"
 hooks = []
 
 [[rule]]
@@ -1622,7 +1622,7 @@ id = "R-0193"
 file = "3-lane-protocol.md"
 anchor = "The adapter contract — what \"supported\" means"
 statement = "Gemini is approved for Lane 1, partially for Lane 2, and Lane 3 tier 1 only; gh issue close/gh pr merge remain demonstrably reachable from a Gemini Lane 2 session, and ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook."
-text_sha = "89947ec89ea43d41"
+text_sha = "5fedf268c35c2d19"
 hooks = []
 folded_obligations = ["ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook.", "Both Gemini lane policies are un-removable via a passthrough `--admin-policy`."]
 
@@ -1631,7 +1631,7 @@ id = "R-0194"
 file = "3-lane-protocol.md"
 anchor = "Gemini Lane 3 — tier 1 (static review) only"
 statement = "Gemini Lane 3 tier 1 is static review only, denied whole-tool with no argument-scoped rule, because an argument allowlist on run_shell_command is not a boundary."
-text_sha = "0fa92eef30452005"
+text_sha = "53f6e3832852d7f3"
 hooks = []
 
 [[rule]]
@@ -1787,7 +1787,7 @@ id = "R-0212"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "Every trigger naming an issue — including a bare continue/proceed — means a full unfiltered re-read of the body and every comment first."
-text_sha = "d50522e1502e8275"
+text_sha = "aee9c2dc3de75663"
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
 ]
@@ -1854,7 +1854,7 @@ id = "R-0220"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "On \"Test #N\" Lane 3 fetches only the issue body and Lane 1's comments via fetch_lane1_context.py, never a manual gh read of the full thread."
-text_sha = "67b20c421fb3f105"
+text_sha = "92d263611c08638c"
 hooks = []
 
 [[rule]]
@@ -1870,7 +1870,7 @@ id = "R-0222"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "A problem in the gate routes back via \"Reimplement #N\" for an implementation bug or \"Retest #N\" for a gate/spec issue; HITL decides which."
-text_sha = "491b47ffb36b88b6"
+text_sha = "e1461617cc6b904f"
 hooks = []
 
 [[rule]]
@@ -1958,7 +1958,7 @@ id = "R-0233"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
 statement = "preclose-inspection runs on the diff about to be merged and is recorded with the preclose-inspected label, enforced by block_missing_preclose_inspection.py."
-text_sha = "f9acb7ef67fb6e5f"
+text_sha = "4ce31e3701f3d17d"
 hooks = [
   { script = "block_missing_preclose_inspection.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
 ]
@@ -2220,3 +2220,61 @@ anchor = "batch"
 statement = "A gh pr merge carries no issue number, so it is authorized only via a recorded link-pr; when a merge or close is refused the prompt names which of four states applies -- no authorization, expired, consumed, or PR not linked."
 text_sha = "9299f1c2a2858706"
 hooks = [{ script = "tools/hooks/batch_auth.py", events = ["PreToolUse"], wired_in = "project settings" }]
+
+[[rule]]
+id = "R-0343"
+file = "rules/lane-shorthand.md"
+anchor = "operator-to-lane-triggers"
+statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session."
+text_sha = "61d4e1b3a7bd42e2"
+
+[[rule]]
+id = "R-0344"
+file = "rules/universal-agent.md"
+anchor = "capability-is-not-authorization"
+statement = "Capability is not authorization: an installed tool, loaded data, an ambiguous verb, a question just answered, and another lane's status report are not work orders."
+text_sha = "138af0d496b6077e"
+
+[[rule]]
+id = "R-0345"
+file = "rules/universal-agent.md"
+anchor = "establish-state-before-acting"
+statement = "Before acting on any failure, establish what the working state requires and check the whole set; if the next step is a retry rather than a check, stop and look."
+text_sha = "e8fce4264bd5027c"
+
+[[rule]]
+id = "R-0346"
+file = "rules/universal-lane1.md"
+anchor = "handoff-runnable-before-posting"
+statement = "A handoff is not ready until Lane 2 can execute every AC without touching setup: dependencies provisioned and proven, key sets diffed, any live harness run once by Lane 1."
+text_sha = "8427b2d354a72ba5"
+
+[[rule]]
+id = "R-0347"
+file = "rules/universal-claude.md"
+anchor = "last-call-refetch-before-ending-a-turn"
+statement = "The last tool call before ending a turn re-fetches every in-flight thread; only an open HITL question stops a batch, and 'blocked on another lane' must cite the comment id."
+text_sha = "7a994b55747f8178"
+hooks = [{ script = "tools/hooks/require_last_call_refetch.py", events = ["Stop"], wired_in = "user settings" }]
+
+[[rule]]
+id = "R-0348"
+file = "rules/universal-claude.md"
+anchor = "no-lane-means-no-lane-work"
+statement = "No LANE means no lane work: a lane trigger, a routing question, a status report and a stale-looking doc are information, never a licence to invoke a work-performing skill."
+text_sha = "60e540eba6b846d0"
+
+[[rule]]
+id = "R-0349"
+file = "rules/universal-claude.md"
+anchor = "never-bare-cd-in-the-persistent-shell"
+statement = "Never a bare `cd <path> && cmd` — the Bash tool holds one persistent shell for the session; use `git -C <dir>` or a subshell."
+text_sha = "f253d1877db64409"
+hooks = [{ script = "tools/hooks/deny_bare_cd.py", events = ["PreToolUse:Bash"], wired_in = "user settings" }]
+
+[[rule]]
+id = "R-0350"
+file = "3-lane-protocol.md"
+anchor = "lane2-pushes-its-own-branches"
+statement = "Lane 2 pushes its own branches and does not narrate the push; PR, merge and close remain outside its boundary."
+text_sha = "ce49e320018ac545"

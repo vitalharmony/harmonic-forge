@@ -43,7 +43,7 @@ real (`/`-bearing) repo-prefixed issue reference -- the same tokens the
 inline gloss above already recognizes -- this hook also live-fetches
 that issue's current body and full comment list via `gh issue view` and
 appends them to additionalContext. This is the mechanism half of
-`feedback_always_reread_issue_on_every_trigger`: the fetch fires on
+R-0211/R-0212 (the live-re-read rules): the fetch fires on
 every match, unconditionally, regardless of whether the surrounding
 prompt looks like a fresh "Implement #N" or a bare continuation
 ("continue", "unblocked") -- the regex match is on the token, not on
@@ -524,8 +524,7 @@ def main() -> None:
             )
         context_parts.append(
             "Live issue re-read, mechanically enforced on every trigger "
-            "(harmonic-forge#397, feedback_always_reread_issue_on_every_"
-            "trigger):\n\n" + "\n\n".join(live_blocks)
+            "(harmonic-forge#397, R-0212):\n\n" + "\n\n".join(live_blocks)
         )
     print(json.dumps({
         "hookSpecificOutput": {

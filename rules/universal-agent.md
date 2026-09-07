@@ -292,7 +292,21 @@ one-off. Never place single-use scripts inside the application source tree
 read as disposable (e.g. `1-fix_nodes.py`).
 <!-- /R-0030 -->
 
+## CAPABILITY IS NOT AUTHORIZATION
+
+<!-- R-0344 -->
+A newly-installed tool, data already loaded, an ambiguous sequencing verb, a
+question you just answered, and another lane's status report are each **not**
+work orders. Pause and ask whether using it is this step's job.
+<!-- /R-0344 -->
+
 ## BUG-FIX PROTOCOL (ALL AGENTS)
+
+<!-- R-0345 -->
+Before acting on any failure, establish what the working state requires and
+check the whole set. If the next step is a retry rather than a check, stop and
+look.
+<!-- /R-0345 -->
 
 <!-- R-0031 -->
 Every bug fix — implementing or reviewing — follows read-propose-execute.

@@ -19,3 +19,53 @@
 # job to decide, and it already did.
 
 # (empty — every entry here is a deliberate, reasoned exception)
+
+# --- harmonic-forge#496 ---
+
+# Cited by name in an operator-applied file outside any repo, so the citation
+# cannot be rewritten to the rule id the way the in-store wikilinks were.
+"feedback_verify_time_before_mentioning.md" = "cited by name in ~/.claude/CLAUDE.md as the evidence record for the time-of-day rule; that file is operator-applied and outside any repo, so the citation cannot be rewritten"
+
+# Operator preference / reference data — not a rule, never promotable.
+
+"feedback_always_include_scheduling_link.md" = "operator preference or reference data — not a rule, never promotable"
+"feedback_classifier_blocks_agent_launcher_installs.md" = "operator preference or reference data — not a rule, never promotable"
+"feedback_expanded_summary_format.md" = "operator preference or reference data — not a rule, never promotable"
+"feedback_gmail_reply_drafts.md" = "operator preference or reference data — not a rule, never promotable"
+"feedback_marc_gurtman_test_authorization.md" = "operator preference or reference data — not a rule, never promotable"
+"feedback_outreach_offer_first.md" = "operator preference or reference data — not a rule, never promotable"
+"feedback_red_hat_credential_accuracy.md" = "operator preference or reference data — not a rule, never promotable"
+
+# Ranked below the top-15 in the 2026-09-06 audit; batched into the next
+# promotion pass rather than promoted here.
+
+"feedback_always_cleanup_leftover_files.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_always_post_handoff_corrections.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_check_harmonic_forge_branch_before_merges_depend_on_it.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_check_vertical_active_state_before_sweep.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dictation_core_priority.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dont_ask_before_safe_reversible_cleanup.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dont_ask_when_tooling_gap_is_the_answer.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dont_guess_scope.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dont_narrate_known_protocol.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dont_track_other_lanes_owed_work.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_dont_wait_for_ready_for_l3_trigger.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_file_issue_before_implementing.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_handoff_accompanies_every_filing.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_incremental_doc_updates.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_l3_batch_prompt_needs_explicit_ae.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_lane2_no_execute_scope_opinions.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_lane3_self_report_shorthand.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_lane3_single_worktree_sequential_only.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_never_start_issue_unasked.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_plan_first_implement_auto_substitute.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_state_outcome_dont_equivocate.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_tooling_exception_test_credential_scope.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_verify_all_credential_requirements.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+"feedback_verify_routing_field_before_batch_proposal.md" = "ranked below the top-15 in the 2026-09-06 audit; batched into the next promotion pass"
+
+# Audit row 5: the target is ~/.claude/CLAUDE.md, which is operator-applied and
+# outside any repo, so there is no rule id to point at. The amendment is drafted
+# in harmonic-forge#496's completion comment for the operator to paste.
+
+"feedback_bluf_discipline_recurring.md" = "audit row 5 — promotion target is ~/.claude/CLAUDE.md (operator-applied, outside any repo); amendment drafted in harmonic-forge#496"

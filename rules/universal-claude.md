@@ -41,6 +41,23 @@ derivable from code or Git.
 
 ## Tool-use safeguards
 
+<!-- R-0347 -->
+- The last tool call before ending a turn re-fetches the newest comment on
+  every in-flight thread. Only an open HITL question stops a batch; "blocked on
+  another lane" must cite the comment id that establishes it. Enforced by
+  `tools/hooks/require_last_call_refetch.py` (Stop).
+<!-- /R-0347 -->
+<!-- R-0348 -->
+- No `LANE` means no lane work. A lane trigger, a routing question, a status
+  report and a stale-looking doc are information; never invoke a
+  work-performing skill off your own reading of the situation.
+<!-- /R-0348 -->
+<!-- R-0349 -->
+- Never a bare `cd <path> && cmd` — the Bash tool holds one persistent shell
+  for the session. Use `git -C <dir>` or `(cd <dir> && cmd)`. Enforced by
+  `tools/hooks/deny_bare_cd.py` (PreToolUse, Bash).
+<!-- /R-0349 -->
+
 <!-- R-0083 -->
 - Prefer `gh api` REST endpoints over GraphQL-backed `gh` subcommands
   (`gh issue view/comment/close/create`, `gh pr create/merge/checks`)
@@ -69,6 +86,9 @@ derivable from code or Git.
   loop — `Monitor` surfaces a stalled or errored wait instead of sitting
   silent until timeout. `Bash --run_in_background` stays correct for a
   single bounded wait with a clear exit condition (harmonic-forge#312).
+  Arming and stopping a Monitor are one unit of work: arm silently, never
+  notify on this session's own post, and `TaskStop` in the same turn the
+  awaited event is handled.
 <!-- /R-0086 -->
 <!-- R-0087 -->
 - **Every merge silently closes a stacked child PR pointing at the merged
