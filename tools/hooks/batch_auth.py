@@ -126,7 +126,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
-DEFAULT_TTL_HOURS = 2.0
+#: BATCH exists for UNATTENDED batches, and the default was 2.0 -- a
+#: supervised-run TTL on a feature whose whole reason for existing is running
+#: while nobody is watching. The operator stepped away "a few hours" and came
+#: back to a stalled lane; even a correctly-issued authorization would have
+#: expired mid-run and produced the identical symptom (harmonic-forge#502).
+#:
+#: 12 hours: long enough that no plausible batch outlives it, short enough that
+#: a forgotten grant does not sit live for days. It is not derived from batch
+#: size on purpose -- a size-derived TTL would be a second thing to get wrong,
+#: and the failure mode of "too short" is the one that actually bit.
+DEFAULT_TTL_HOURS = 12.0
 DEFAULT_ACTIONS = ("gh pr merge", "gh issue close")
 
 # harmonic-forge#369: the read -> live-entry-check -> consume/write sequence
@@ -254,6 +264,47 @@ def _new_target(action: str) -> dict:
     return {"action": action, "consumed": False, "consumed_by": None, "repo": None, "pr_number": None}
 
 
+def top_up(
+    keys: list[str],
+    actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
+    ttl_hours: float = DEFAULT_TTL_HOURS,
+    state_path: Path | None = None,
+) -> list[str]:
+    """Extend a live grant instead of replacing it; authorize fresh keys.
+
+    **`authorize()` REPLACES an entry outright**, resetting consumption and
+    wiping every recorded `link_pr` mapping. That was safe while its only
+    caller was a deliberate CLI invocation. It is not safe now that a chat
+    message creates grants: a mid-batch "keep going on the BATCH F495, F497
+    work" is encouragement, not a new grant, and replacing on it silently
+    made an already-spent single-use CLOSE re-usable and sent every linked PR
+    back to Ask on its next merge -- the prompt-storm this issue removes.
+
+    So: a key with a LIVE entry has its expiry extended and its targets left
+    exactly as they are. A key with no entry, or an expired one, is authorized
+    normally. Returns the keys that were newly authorized, so the caller can
+    say which is which rather than claiming success for both.
+    """
+    actual_path = STATE_PATH if state_path is None else state_path
+    fresh: list[str] = []
+    with _locked_state(actual_path):
+        state = _load(state_path)
+        now = _now()
+        expires = (now + timedelta(hours=ttl_hours)).isoformat()
+        for key in keys:
+            key = key.upper()
+            entry = state.get(key)
+            if entry is not None and _entry_live(entry, now):
+                entry["expires_at"] = expires
+                continue
+            fresh.append(key)
+        _save(state, state_path)
+    if fresh:
+        authorize(fresh, actions=actions, ttl_hours=ttl_hours,
+                  state_path=state_path)
+    return fresh
+
+
 def authorize(
     keys: list[str],
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
@@ -305,9 +356,40 @@ def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None)
         entry = state.get(key)
         if entry is None:
             raise ValueError(f"no authorization entry for {key!r} -- authorize it first")
-        target = next((t for t in entry.get("targets", []) if "merge" in t.get("action", "").lower()), None)
-        if target is None:
+        merges = [t for t in entry.get("targets", [])
+                  if "merge" in t.get("action", "").lower()]
+        if not merges:
             raise ValueError(f"{key!r} was not authorized for a merge action -- authorize it with --action 'gh pr merge' first")
+
+        # Already linked to THIS pr? Idempotent, so a re-run is free.
+        for target in merges:
+            if target.get("repo") == repo and target.get("pr_number") == pr_number:
+                return
+
+        # An unlinked, unconsumed slot takes it.
+        target = next((t for t in merges
+                       if not t.get("consumed") and t.get("pr_number") is None), None)
+
+        # harmonic-forge#502 AC8: otherwise ALLOCATE one. `authorize` grants a
+        # single merge target per key, but a CROSS-REPO issue needs one per
+        # repo -- harmonic-forge#497 needed two (the forge tool and the hrse
+        # mise wiring), the first consumed the only slot, and the second merge
+        # correctly fell closed to Ask. Of the five issues in that batch, two
+        # were two-repo; it is the standard shape for a forge tool called from
+        # hrse's mise.toml, so a one-merge grant is wrong for roughly half the
+        # tooling backlog.
+        #
+        # Allocating here rather than at `authorize` time is deliberate: the
+        # number of repos an issue touches is not knowable when the operator
+        # types BATCH, and it IS knowable the moment a PR is opened. The close
+        # target stays single-use -- a close is irreversible and happens once.
+        if target is None:
+            template = merges[0]
+            target = {"action": template.get("action", "gh pr merge"),
+                      "consumed": False, "consumed_by": None,
+                      "pr_number": None, "repo": None}
+            entry.setdefault("targets", []).append(target)
+
         target["repo"] = repo
         target["pr_number"] = pr_number
         _save(state, state_path)
@@ -461,6 +543,62 @@ def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | 
     return None
 
 
+def _diagnose(tokens: list[str], state: dict, is_close: bool,
+              now: datetime) -> str:
+    """Why no authorization matched — the four states, told apart.
+
+    `decide()` returning a bare "this requires explicit instruction" leaves the
+    operator unable to distinguish "I never issued BATCH for this", "it
+    expired", "it is already spent" and "the PR was never linked". Those need
+    four different actions.
+    """
+    target_info = (classify_issue_close(tokens) if is_close
+                   else classify_pr_merge(tokens))
+    repo, number = target_info if target_info else (None, None)
+    if repo is None or number is None:
+        return ("[BATCH] Could not resolve this command to a repo and number, "
+                "so no authorization could match it. Pass an explicit --repo.")
+
+    if is_close:
+        key = issue_key(repo, number)
+        if key is None:
+            # An unmapped repo has no shorthand, so no BATCH key can ever name
+            # it. Saying "no authorization exists for None -- issue `BATCH
+            # None`" sent the operator to type a literal impossibility.
+            return (f"[BATCH] {repo} has no shorthand prefix, so no BATCH key "
+                    "can refer to it. Add it to harmonic-forge's projects.toml "
+                    "and rules/lane-shorthand.md, or close by explicit "
+                    "instruction.")
+        entry = state.get(key)
+        if entry is None:
+            return (f"[BATCH] No authorization exists for {key}. Issue one with "
+                    f"a chat message containing `BATCH {key}`.")
+        if not _entry_live(entry, now):
+            return (f"[BATCH] {key} EXPIRED at {entry.get('expires_at', '?')}. "
+                    f"Re-issue `BATCH {key}`.")
+        return (f"[BATCH] {key} is live but was not authorized for a close "
+                "action. Re-issue it, or close by explicit instruction.")
+
+    # A merge carries a PR number, never an issue number, so the only way it
+    # reaches an authorization is a recorded `link-pr`. That call has no
+    # automatic caller either, which is why this is the common case.
+    live = [k for k, e in state.items() if _entry_live(e, now)
+            and any("merge" in t.get("action", "").lower()
+                    for t in e.get("targets", []))]
+    if not live:
+        return ("[BATCH] No live authorization has a merge target at all. "
+                "Issue one with a chat message containing `BATCH <KEY>`.")
+    linked = [f"{t.get('repo')}#{t.get('pr_number')}"
+              for k in live for t in state[k].get("targets", [])
+              if t.get("pr_number") is not None]
+    return (f"[BATCH] {repo}#{number} is not linked to any authorization. "
+            f"`gh pr merge <PR#>` carries no issue number, so the mapping only "
+            f"exists if `link-pr` recorded it. Live keys: {', '.join(sorted(live))}. "
+            f"Linked PRs: {', '.join(linked) or 'none'}. Run:\n"
+            f"  python3 tools/hooks/batch_auth.py link-pr <KEY> --repo {repo} "
+            f"--pr {number}")
+
+
 def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | None:
     """The sole decision for `gh issue close`/`gh pr merge`, any form. See
     module docstring. Returns `("allow", reason)`, `("ask", reason)`, or
@@ -498,13 +636,26 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
 
                 match = _match_issue_close(tokens, state) if is_close else _match_pr_merge(tokens, state)
                 reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
+                # harmonic-forge#502 AC4: a prompt that does not say WHY is
+                # indistinguishable from any other permission prompt. The
+                # operator's own words on the incident that filed this issue:
+                # "waiting for my ok to merge/close OR SOMETHING I COULDN'T
+                # TELL WHAT." These four states need four different actions,
+                # and only the diagnostic makes that self-service.
                 if match is None:
-                    return "ask", reason
+                    return "ask", reason + "\n\n" + _diagnose(tokens, state, is_close, now)
                 key, entry, target = match
                 if not _entry_live(entry, now):
-                    return "ask", reason
+                    return "ask", reason + (
+                        f"\n\n[BATCH] {key} WAS authorized but EXPIRED at "
+                        f"{entry.get('expires_at', '?')}. Re-issue BATCH {key}.")
                 if target.get("consumed") and target.get("consumed_by") != command_hash:
-                    return "ask", reason  # already spent on a different command
+                    return "ask", reason + (
+                        f"\n\n[BATCH] {key}'s "
+                        f"{'close' if is_close else 'merge'} target is already "
+                        "CONSUMED by a different command. A close is single-use "
+                        "by design; a merge allocates a new target on the next "
+                        "`link-pr`, so run that first if this is a second repo.")
                 if not target.get("consumed"):
                     target["consumed"] = True
                     target["consumed_by"] = command_hash

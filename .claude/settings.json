@@ -104,6 +104,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/block_batch_stop.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

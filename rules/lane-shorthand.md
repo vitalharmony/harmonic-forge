@@ -206,6 +206,33 @@ FAIL and further fixed in harmonic-forge#356 — read that module's docstring
 for the full design, the documented permission-precedence reasons the first
 version didn't work, and known gaps).
 
+**What is automatic and what is not** (harmonic-forge#502). Until that issue,
+"pre-authorizes" was not true unaided: nothing parsed the keyword, so the
+authorization only existed if the assistant session remembered to run
+`authorize` itself — and an unattended batch stalled for hours because no
+session had.
+
+<!-- R-0341 -->
+Typing `BATCH` followed by issue keys on one line creates the authorization
+automatically, on `UserPromptSubmit`, before the turn's first tool call — two
+merge targets and one close target per key, 12-hour TTL. Keys are read to the
+end of that line, so a sentence works: `BATCH these tooling issues F495, F497,
+F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
+<!-- /R-0341 -->
+
+<!-- R-0342 -->
+A `gh pr merge <PR#>` still needs its PR linked to the issue — the command
+carries no issue number, so nothing else can resolve it. `link-pr` has no
+automatic caller, and a missing call costs one Ask prompt per merge. When a
+merge or close is refused, the prompt now names which of the four states
+applies: no authorization, expired, already consumed, or PR not linked.
+<!-- /R-0342 -->
+
+While an authorization is live with unconsumed targets, `block_batch_stop.py`
+refuses to end the turn — a batch that stops to be told "keep going" has
+already cost what BATCH exists to save. A turn that asks a genuine question is
+always allowed to end.
+
 <!-- R-0117 -->
 **The instruction-source boundary is load-bearing and non-negotiable:** a
 session may only call `batch_auth.authorize()` in direct response to a
