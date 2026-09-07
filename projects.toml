@@ -1,0 +1,98 @@
+# The onboarded-repo manifest (harmonic-forge#498).
+#
+# One fact, one home. Bringing a repo under the 3-lane protocol used to mean
+# editing five places that each kept their own copy of the same list:
+# `gh_issue.py`'s REPO_BOARDS, `repo_hygiene.py`'s `_REPO_BOARDS` (a verbatim
+# duplicate, with a comment saying so), `rules/lane-shorthand.md`'s prefix
+# table, the sweep's default repo list, and the per-lane worktree procedure in
+# `3-lane-protocol.md`. Duplication is the only source of drift, and drift here
+# is silent: a repo missing from one copy still files issues, just onto the
+# wrong board.
+#
+# ## Fields
+#
+# repo            GitHub `owner/name`. Absent for a projected repo that does
+#                 not exist yet -- those are listed so their prefix letter is
+#                 reserved, not so they can be operated on.
+# path            Local checkout, `~`-relative. Absent when not checked out.
+# worktree_dir    Where `<name>-lane2/` and `<name>-lane3/` live. Defaults to the
+#                 checkout's PARENT, which is right for every repo except
+#                 harmonic-forge: its checkout is `~/harmonic-forge` while its
+#                 lane worktrees are in `~/Harmonic_Projects/`. That is not
+#                 derivable from the checkout path, which is exactly why it is a
+#                 manifest field -- the first version of this tool inferred it
+#                 and reported two worktrees missing that exist.
+# prefix          Single-letter lane shorthand (`H26` -> hrse#26). Must be
+#                 unique across every entry, including projected ones.
+# account         The GitHub account whose credentials reach it. NOT always
+#                 `vitalharmony` -- ke'nekted is a separate account with
+#                 separate credentials, and a vitalharmony-authed query against
+#                 it returns EMPTY rather than erroring, so treating empty as
+#                 absent is a real hazard here.
+# board_owner     Projects v2 board owner, or absent when the repo has no board.
+# board_number    Board number. cymagraph-infra and openclaw-projects
+#                 deliberately share hrse's board #1 rather than having one.
+# milestones      Whether the repo carries release milestones. `false` for
+#                 harmonic-forge is a DECISION, not a gap: its work is pulled by
+#                 several ventures and belongs to no single release. See
+#                 hrse docs/ROADMAP.md. Do not "fix" it.
+# onboarded       Whether the 3-lane apparatus is installed. A projected repo is
+#                 false; a real repo that is false is a backlog item.
+
+[[project]]
+name = "hrse"
+repo = "vitalharmony/hrse"
+path = "~/Harmonic_Projects/HRSE2"
+prefix = "H"
+account = "vitalharmony"
+board_owner = "vitalharmony"
+board_number = "1"
+milestones = true
+onboarded = true
+
+[[project]]
+name = "harmonic-forge"
+repo = "vitalharmony/harmonic-forge"
+path = "~/harmonic-forge"
+worktree_dir = "~/Harmonic_Projects"
+prefix = "F"
+account = "vitalharmony"
+board_owner = "vitalharmony"
+board_number = "3"
+milestones = false
+onboarded = true
+
+[[project]]
+name = "cymagraph-infra"
+repo = "vitalharmony/cymagraph-infra"
+path = "~/Harmonic_Projects/cymagraph-infra"
+prefix = "I"
+account = "vitalharmony"
+board_owner = "vitalharmony"
+board_number = "1"
+milestones = true
+onboarded = true
+
+[[project]]
+name = "openclaw-projects"
+repo = "vitalharmony/openclaw-projects"
+path = "~/Harmonic_Projects/openclaw-projects"
+prefix = "O"
+account = "vitalharmony"
+board_owner = "vitalharmony"
+board_number = "1"
+milestones = false
+onboarded = false
+
+[[project]]
+name = "kenekted"
+prefix = "K"
+account = "harmonicarchitect"
+milestones = false
+onboarded = false
+
+[[project]]
+name = "leasepal"
+prefix = "P"
+milestones = false
+onboarded = false

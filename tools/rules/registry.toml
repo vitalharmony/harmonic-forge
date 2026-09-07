@@ -2197,3 +2197,10 @@ anchor = "session-lifetime-restart-at-the-batch-boundary"
 statement = "A lane session is restarted at the batch boundary and never carried past its second compaction; the statusline shows compact:N so the count is visible without opening the transcript."
 text_sha = "4843f5393330aafa"
 hooks = [{ script = "tools/hooks/statusline_compaction.py", events = ["statusLine"], wired_in = "user settings" }]
+
+[[rule]]
+id = "R-0340"
+file = "3-lane-protocol.md"
+anchor = "adding-a-repo-mise-run-forge-onboard-not-this-procedure"
+statement = "A repo is brought under the 3-lane protocol by adding a projects.toml entry plus a lane-shorthand prefix row and running forge-onboard, never by performing the per-lane worktree procedure by hand."
+text_sha = "293a6a8f0d46b166"

@@ -82,6 +82,22 @@ python3 tools/memory/context_budget.py \
   ${usage_json:+--json}
 """
 
+[tasks.forge-onboard]
+description = "Bring a repo under the 3-lane protocol, or verify one already is (harmonic-forge#498). Reads projects.toml, the single manifest that gh_issue.py and repo_hygiene.py now share instead of each keeping a copy of the board map. VERIFY IS THE DEFAULT -- --apply writes. Exit 0 all green, 1 a check failed, 2 the run could not happen (bad manifest, unknown project), so a gate can tell a finding from its own misconfiguration."
+usage = '''
+flag "--project <project>" help="Manifest `name` to act on (default: every entry)."
+flag "--apply" help="Create what is missing. Without it the run only verifies."
+flag "--dry-run" help="With --apply: print what would change, change nothing."
+flag "--manifest <manifest>" help="Alternate projects.toml."
+'''
+run = """
+python3 tools/onboard/forge_onboard.py \\
+  ${usage_project:+--project "$usage_project"} \\
+  ${usage_apply:+--apply} \\
+  ${usage_dry_run:+--dry-run} \\
+  ${usage_manifest:+--manifest "$usage_manifest"}
+"""
+
 [tasks.memory-triage]
 description = "Classify every feedback memory against the rule registries and emit promotion dispositions (harmonic-forge#495). Read-only on the store, both repos and GitHub — it proposes, never edits or files. DUP/LOCAL/STATE are decided mechanically from frontmatter; FOLD rows carry RANKED rule candidates, not a verdict, because no similarity cutoff separates 'already a rule' from 'about the same subject' in a 261-rule single-protocol corpus. The judgment layer is skills/memory-triage/SKILL.md."
 usage = '''

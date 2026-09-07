@@ -467,12 +467,20 @@ def audit_unlabelled_migrations(repo: str, report: Report) -> None:
 # openclaw-projects have no board of their own -- their items sit on board #1
 # alongside hrse's. Mirrors gh_issue.py's REPO_BOARDS (harmonic-forge#107);
 # kept local rather than imported so this script stays standalone.
-_REPO_BOARDS: dict[str, tuple[str, str]] = {
-    "vitalharmony/hrse": ("vitalharmony", "1"),
-    "vitalharmony/harmonic-forge": ("vitalharmony", "3"),
-    "vitalharmony/cymagraph-infra": ("vitalharmony", "1"),
-    "vitalharmony/openclaw-projects": ("vitalharmony", "1"),
-}
+def _load_repo_boards() -> dict[str, tuple[str, str]]:
+    """From `projects.toml` (harmonic-forge#498).
+
+    Was a verbatim copy of `gh_issue.py`'s REPO_BOARDS, kept local so this
+    script stayed standalone. It still is: the manifest is stdlib-only TOML in
+    this same repo, so reading it adds no dependency and removes the drift.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+    from manifest import repo_boards  # noqa: PLC0415
+
+    return repo_boards()
+
+
+_REPO_BOARDS: dict[str, tuple[str, str]] = _load_repo_boards()
 
 # Board fields every open issue is expected to carry (hrse#966). Milestone is
 # deliberately NOT here: a repo carries release milestones only when its work
@@ -1048,9 +1056,15 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME",
-                        help="repository to audit; repeatable")
+                        help="repository to audit; repeatable. Omit BOTH --repo "
+                             "and --checkout to audit every vitalharmony repo in "
+                             "harmonic-forge's projects.toml (harmonic-forge#498).")
     parser.add_argument("--checkout", action="append", default=[], metavar="PATH",
                         help="local checkout whose worktrees to audit; repeatable")
+    parser.add_argument("--manifest-repos", action="store_true",
+                        help="also audit every vitalharmony repo in "
+                             "harmonic-forge's projects.toml (harmonic-forge#498). "
+                             "Explicit, so a --checkout-only run stays local.")
     parser.add_argument("--prune-worktrees", action="store_true",
                         help="hrse#427: remove worktrees whose branch has a merged PR, no "
                              "uncommitted changes, and no commit missing from origin/main by "
@@ -1060,8 +1074,37 @@ def main() -> int:
                         help="with --prune-worktrees: print what would be removed, remove nothing")
     args = parser.parse_args()
 
+    # harmonic-forge#498: EXPLICIT, never inferred. An earlier draft fell back
+    # to the manifest whenever `--repo` was absent, which silently turned every
+    # `--checkout`-only invocation into a live four-repo network sweep --
+    # including this module's own `test_truly_clean_run_still_prints_clean`,
+    # which hung the suite. `--repo` and `--checkout` are independent axes, and
+    # a caller asking for only a local checkout audit must keep getting only
+    # that.
+    if args.manifest_repos:
+        # The four repos were spelled out literally in hrse's mise.toml AND in
+        # .github/workflows/repo-hygiene.yml AND named in this module's docs --
+        # three copies of one list, which is what onboarding a fifth repo would
+        # have had to find. Still an error if the manifest yields nothing, so
+        # "could not read the manifest" never reads as "nothing to audit".
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+            from manifest import sweep_repos  # noqa: PLC0415
+
+            from_manifest = sweep_repos()
+        except Exception as exc:  # noqa: BLE001 - any failure here must be loud
+            parser.error(f"--manifest-repos given but the manifest is unreadable: {exc}")
+        if not from_manifest:
+            parser.error("--manifest-repos given but the manifest lists no "
+                         "vitalharmony repo")
+        args.repo = list(dict.fromkeys(args.repo + from_manifest))
+        print(f"[hygiene] --manifest-repos: auditing {len(args.repo)} repo(s) "
+              f"from projects.toml: {', '.join(args.repo)}")
+
     if not args.repo and not args.checkout:
-        parser.error("nothing to audit — pass at least one --repo or --checkout")
+        parser.error("nothing to audit — pass at least one --repo, --checkout, "
+                     "or --manifest-repos")
+
     if args.dry_run and not args.prune_worktrees:
         parser.error("--dry-run only applies to --prune-worktrees")
 

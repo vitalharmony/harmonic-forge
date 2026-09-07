@@ -130,12 +130,21 @@ def create_issue(repo: str, title: str, body: str, labels: list[str],
 #
 # cymagraph-infra has no board of its own -- its items live on board #1
 # alongside hrse's (hrse#979). openclaw-projects likewise.
-REPO_BOARDS: dict[str, tuple[str, str]] = {
-    "vitalharmony/hrse": ("vitalharmony", "1"),
-    "vitalharmony/harmonic-forge": ("vitalharmony", "3"),
-    "vitalharmony/cymagraph-infra": ("vitalharmony", "1"),
-    "vitalharmony/openclaw-projects": ("vitalharmony", "1"),
-}
+def _load_repo_boards() -> dict[str, tuple[str, str]]:
+    """From `projects.toml` (harmonic-forge#498), not a local copy.
+
+    This dict and `repo_hygiene.py`'s `_REPO_BOARDS` were verbatim duplicates
+    -- the latter's own comment said so -- so onboarding a repo meant editing
+    two files and forgetting one meant issues filed onto the wrong board,
+    silently, which is the failure harmonic-forge#107 fixed once already.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+    from manifest import repo_boards  # noqa: PLC0415
+
+    return repo_boards()
+
+
+REPO_BOARDS: dict[str, tuple[str, str]] = _load_repo_boards()
 
 
 def resolve_board_for_repo(repo: str) -> tuple[str, str]:
@@ -151,7 +160,7 @@ def resolve_board_for_repo(repo: str) -> tuple[str, str]:
         raise SystemExit(
             f"[GH] No project board mapped for {repo!r}.\n"
             f"[GH] Known repos: {', '.join(sorted(REPO_BOARDS))}.\n"
-            f"[GH] Add it to REPO_BOARDS in tools/gh/gh_issue.py, or pass "
+            f"[GH] Add it to projects.toml in harmonic-forge (NOT to gh_issue.py -- REPO_BOARDS is computed from that manifest since harmonic-forge#498), or pass "
             f"--project-owner/--project-number explicitly to override."
         ) from None
 
