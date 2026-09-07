@@ -238,7 +238,7 @@ def verify_links(project_root: Path, skill_names: list[str] | None = None) -> bo
 def print_remaining_steps(project_root: Path) -> None:
     print("\n[REMAINING STEPS]")
     print(f"  1. Confirm {project_root}/CLAUDE.md points to harmonic-forge/3-lane-protocol.md")
-    print(f"  2. Confirm {project_root}/.windsurfrules only carries project-specific overrides")
+    print(f"  2. Confirm {project_root}/.claude/rules/ only carries project-specific overrides")
     print("  3. Read harmonic-forge/3-lane-protocol.md before pulling a first ticket")
     print("  4. Re-run with --pull whenever platform rules or agents change")
 
