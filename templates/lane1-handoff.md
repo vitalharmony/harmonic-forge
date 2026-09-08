@@ -2,16 +2,15 @@
 
 ## Handoff: [Issue #N — Short Title]
 
-**Scope:** {one line — what this handoff covers, e.g. "the guard only, purge
-is a separate phase" or "full fix, single PR"}
-**Next:** {one line — what Lane 2 does with this, e.g. "Implement #N" once
-posted, or "Plan #N" for a Plan-First issue}
+**Scope:** {what this handoff covers, e.g. "guard only, purge is separate"}
+**Next:** {what Lane 2 does with this, e.g. "Implement #N" once posted}
 
 <!-- hrse#1703: `l1_post.py --kind handoff` refuses a post whose lead region
-(everything above the first `###` heading) lacks these two labelled lines —
-a reader who never expands past this point still needs to know what's in
-scope and what happens next. Keep this block short: the lead has a 1,200-byte
-cap, refused by size if exceeded. -->
+(everything above the first heading after this one) lacks these two labelled
+lines, unfilled, or over the byte cap — keep each to one line, and keep the
+placeholder braces on the SAME line as their closing brace (a wrapped
+placeholder isn't detected as one; harmonic-forge#382 already found this
+once for the other headings below). -->
 
 ### Issue
 - GitHub: {url}

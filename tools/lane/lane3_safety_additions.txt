@@ -45,3 +45,27 @@
 # is now rejected outright at Lane 3, which is the property #326's own AC4
 # depends on.
 --admin-policy
+
+# AMENDMENT 2 -- hrse#1703, 2026-09-08.  Claude gains `--append-system-prompt`
+# at every lane, Lane 3 included (see `_agent_registry.sh`'s
+# `AGENT_SYSTEM_PROMPT_FLAG` and `_cli_launch.sh` step 3b).
+#
+# Different in kind from `--admin-policy` above, worth stating plainly rather
+# than silently reusing this file's precedent: `--admin-policy` is a
+# PERMISSION boundary (it removes tool access), and its un-removability is
+# real -- #322 AC4's deny scan derives from the same registry declaration
+# that supplies it, so a passthrough attempt is denied outright.
+# `--append-system-prompt` is DIRECTIVE TEXT (a brevity nudge on posted lane
+# artifacts, hrse#1703), not a permission boundary, and it is not registry-
+# denied the same way: `registry_lane_denied_tokens` covers only
+# `AGENT_DEFAULT_FLAG`/`AGENT_LANE_POLICY`-derived tokens, so a caller-
+# supplied `--append-system-prompt` in passthrough is not stripped -- it is
+# simply a second flag. Verified live (claude 2.1.263): the CLI takes the
+# LAST `--append-system-prompt` when given two, so a passthrough one placed
+# after this launcher's own would silently win and the directive would not
+# reach the session. Accepted rather than closed here: the consequence is a
+# missed nudge, not a capability escape, and closing it is out of this
+# issue's scope (a real fix would need the launcher to detect and reject a
+# passthrough duplicate, which no other AGENT_DEFAULT_FLAG-style entry in
+# this registry does today either).
+--append-system-prompt
