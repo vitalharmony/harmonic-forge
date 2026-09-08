@@ -108,6 +108,22 @@ declare -A AGENT_DEFAULT_FLAG_VALUE=(
 # verified live 2026-08-28, both a nonexistent path and broken TOML print only a
 # stderr warning and the session starts completely unprotected. So `toml` here
 # is a launcher-enforced precondition, not a restatement of CLI behavior.
+# hrse#1703 AC6: reaches the chat surface a comment-time validator cannot
+# see, the same way AGENT_DEFAULT_FLAG already reaches `--permission-mode`.
+# Claude Code's `--append-system-prompt` is a verified, documented flag --
+# it appends to (does not replace) the base system prompt. Codex gets none,
+# same as AGENT_DEFAULT_FLAG above and for the identical reason
+# (harmonic-forge#179: flag injection broke Codex's own argument parsing).
+# Gemini also gets none here, but for a DIFFERENT reason than Codex's, worth
+# keeping distinct: no equivalent flag was verified live for this issue, not
+# a design decision that one shouldn't exist. A partial answer stated is the
+# AC's own bar -- don't let an empty string here read as "checked, N/A".
+declare -A AGENT_SYSTEM_PROMPT_FLAG=(
+  [claude]="--append-system-prompt"
+  [codex]=""
+  [gemini]=""
+)
+
 declare -A AGENT_POLICY_FLAG=(
   [claude]=""
   [codex]=""
@@ -146,6 +162,7 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_DISPLAY AGENT_VERSION_MIN AGENT_VERSION_QUALIFIED
   AGENT_ENV_PREFIX AGENT_DEFAULT_FLAG AGENT_DEFAULT_FLAG_ENV
   AGENT_DEFAULT_FLAG_VALUE AGENT_POLICY_FLAG AGENT_POLICY_CHECK
+  AGENT_SYSTEM_PROMPT_FLAG
 )
 
 _registry_die() {

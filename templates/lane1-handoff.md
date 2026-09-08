@@ -2,6 +2,17 @@
 
 ## Handoff: [Issue #N — Short Title]
 
+**Scope:** {one line — what this handoff covers, e.g. "the guard only, purge
+is a separate phase" or "full fix, single PR"}
+**Next:** {one line — what Lane 2 does with this, e.g. "Implement #N" once
+posted, or "Plan #N" for a Plan-First issue}
+
+<!-- hrse#1703: `l1_post.py --kind handoff` refuses a post whose lead region
+(everything above the first `###` heading) lacks these two labelled lines —
+a reader who never expands past this point still needs to know what's in
+scope and what happens next. Keep this block short: the lead has a 1,200-byte
+cap, refused by size if exceeded. -->
+
 ### Issue
 - GitHub: {url}
 - Labels: {labels}
