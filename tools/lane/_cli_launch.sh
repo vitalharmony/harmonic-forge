@@ -211,6 +211,20 @@ if [ -n "$_lane_default_flag" ]; then
   unset _lane_flag_given
 fi
 
+# 3b. A brevity directive for the chat surface (hrse#1703 AC6). Comment-time
+#     validation (`l1_post.py`'s lead-block/cap requirement) cannot see what a
+#     lane types before it ever reaches a `--file`; this is the injection
+#     point AGENT_DEFAULT_FLAG above already proves reaches every session of
+#     an agent that takes one. Unconditional -- unlike the default flag, this
+#     is directive content, not a mode a caller would ever want to override
+#     per-invocation, so there is no passthrough-already-given check to make.
+_lane_system_prompt_flag="$(registry_lookup AGENT_SYSTEM_PROMPT_FLAG "$_lane_agent")"
+if [ -n "$_lane_system_prompt_flag" ]; then
+  cli_args+=("$_lane_system_prompt_flag" \
+    "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.")
+fi
+unset _lane_system_prompt_flag
+
 # 4. The lane's policy file, if the registry declares one for this agent+lane.
 #
 #    hrse#362 AC5, corrected against live behavior: the Gemini CLI does NOT fail

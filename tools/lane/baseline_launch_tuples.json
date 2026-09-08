@@ -8,6 +8,8 @@
         "--why=Lane 1 Claude Code session",
         "--mode=block",
         "claude",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "--permission-mode",
         "plan"
       ],
@@ -15,7 +17,7 @@
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "1",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -31,13 +33,15 @@
         "claude",
         "--permission-mode",
         "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "*.md"
       ],
       "cwd": "<ROOT>/proj",
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "1",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -52,13 +56,15 @@
         "--mode=block",
         "claude",
         "--permission-mode",
-        "auto"
+        "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time."
       ],
       "cwd": "<ROOT>/proj",
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "1",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -74,6 +80,8 @@
         "claude",
         "--permission-mode",
         "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "-p",
         "two words here"
       ],
@@ -81,7 +89,7 @@
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "1",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -305,6 +313,8 @@
         "--why=Lane 2 (implementer) Claude Code session",
         "--mode=block",
         "claude",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "--permission-mode",
         "plan"
       ],
@@ -312,7 +322,7 @@
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "2",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -328,13 +338,15 @@
         "claude",
         "--permission-mode",
         "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "2",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -349,13 +361,15 @@
         "--mode=block",
         "claude",
         "--permission-mode",
-        "auto"
+        "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time."
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "2",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -371,6 +385,8 @@
         "claude",
         "--permission-mode",
         "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "-p",
         "two words here"
       ],
@@ -378,7 +394,7 @@
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "2",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -602,6 +618,8 @@
         "--why=Lane 3 (gate) Claude Code session",
         "--mode=block",
         "claude",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "--permission-mode",
         "plan"
       ],
@@ -609,7 +627,7 @@
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "3",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -625,13 +643,15 @@
         "claude",
         "--permission-mode",
         "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "3",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -646,13 +666,15 @@
         "--mode=block",
         "claude",
         "--permission-mode",
-        "auto"
+        "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time."
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "3",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,
@@ -668,6 +690,8 @@
         "claude",
         "--permission-mode",
         "auto",
+        "--append-system-prompt",
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.",
         "-p",
         "two words here"
       ],
@@ -675,7 +699,7 @@
       "env": {
         "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
         "LANE": "3",
-        "LANE_AGENT": null
+        "LANE_AGENT": "claude"
       },
       "launched": true,
       "returncode": 0,

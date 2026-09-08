@@ -2,6 +2,16 @@
 
 ## Handoff: [Issue #N — Short Title]
 
+**Scope:** {what this handoff covers, e.g. "guard only, purge is separate"}
+**Next:** {what Lane 2 does with this, e.g. "Implement #N" once posted}
+
+<!-- hrse#1703: `l1_post.py --kind handoff` refuses a post whose lead region
+(everything above the first heading after this one) lacks these two labelled
+lines, unfilled, or over the byte cap — keep each to one line, and keep the
+placeholder braces on the SAME line as their closing brace (a wrapped
+placeholder isn't detected as one; harmonic-forge#382 already found this
+once for the other headings below). -->
+
 ### Issue
 - GitHub: {url}
 - Labels: {labels}
