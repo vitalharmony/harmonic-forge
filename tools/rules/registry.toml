@@ -363,7 +363,7 @@ id = "R-0039"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
 statement = "Before creating any issue, run the three-test filing bar in order and stop at the first that answers."
-text_sha = "ccaaacbdd8ae9f40"
+text_sha = "74ac2b38ffa66cad"
 hooks = []
 
 [[rule]]
@@ -2278,3 +2278,31 @@ file = "3-lane-protocol.md"
 anchor = "lane2-pushes-its-own-branches"
 statement = "Lane 2 pushes its own branches and does not narrate the push; PR, merge and close remain outside its boundary."
 text_sha = "ce49e320018ac545"
+
+[[rule]]
+id = "R-0351"
+file = "rules/universal-agent.md"
+anchor = "filing-and-handoff-are-one-action"
+statement = "Filing an issue and posting its accompanying artifact are one action; a filed issue whose artifact is unwritten is not a deliverable and the session has not finished."
+text_sha = "cc96221bddaf0113"
+
+[[rule]]
+id = "R-0352"
+file = "rules/universal-agent.md"
+anchor = "un-handoffable-is-a-failed-filing-bar-test"
+statement = "Test 4 of the filing bar: if the handoff cannot be written now, the bar has not been cleared and the answer is branch 3 — fold, fix inline, or let it go."
+text_sha = "9da70a3b7e1e26aa"
+
+[[rule]]
+id = "R-0353"
+file = "rules/universal-agent.md"
+anchor = "four-exceptions-to-the-accompanying-artifact"
+statement = "Four exceptions to the accompanying artifact, each stating its reason on the issue: a parent epic, a deferred design record, an issue blocked on an unlanded prerequisite (a deferral, not a skip), and an issue scoped directly to a single implementer (scoping note, not handoff)."
+text_sha = "547588aa96b2954b"
+
+[[rule]]
+id = "R-0354"
+file = "rules/universal-agent.md"
+anchor = "why-filing-and-handoff-are-one-rule"
+statement = "The two halves are stated as one rule because separating them let the handoff half live only in private memory, unbound by any lane and undistributed by sync_rules.py."
+text_sha = "c73a67c2c61cc9f7"

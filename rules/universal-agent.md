@@ -380,14 +380,15 @@ interpolation/env injection at runtime, never a literal value written by an
 agent — full stop, regardless of which file.
 <!-- /R-0038 -->
 
-## THE FILING BAR — THREE TESTS, IN ORDER (hrse, 2026-08-14)
+## THE FILING BAR — THREE TESTS AND AN ARTIFACT, AS ONE ACTION (hrse, 2026-08-14; merged harmonic-forge#516, 2026-09-08)
 
 <!-- R-0039 -->
-**Applies before any agent, in any lane, creates a new issue.** It qualifies
-every "file it" instruction in this file, including the section immediately
-below, and supersedes any standing guidance that filing is default-on. This
-bar governs **what** is filed; the lane sections above govern **who**
-files — Lane 2 and Lane 3 surface a finding and stop, Lane 1 files.
+**Applies before any agent creates a new issue — every lane, and every session
+with no `LANE` set.** It qualifies every "file it" instruction in this file,
+including the section immediately below, and supersedes any standing guidance
+that filing is default-on. This bar governs **what** is filed; the lane
+sections above govern **who** files — Lane 2 and Lane 3 surface a finding and
+stop, Lane 1 files.
 
 Run these in order and stop at the first that answers:
 
@@ -399,6 +400,71 @@ Run these in order and stop at the first that answers:
 3. **Otherwise** — fold it into the existing issue it touches, fix it inline
    if the fix is smaller than the issue would be, or let it go.
 <!-- /R-0039 -->
+
+<!-- R-0351 -->
+**Filing an issue and posting its accompanying artifact are ONE action, not
+two steps.** A new issue is not filed until its Lane 1 handoff
+(`templates/lane1-handoff.md`) is posted on it. There is no interval during
+which a filed issue legitimately has no artifact — not "later in the session,"
+not "once the operator confirms," not "after the batch." A session that has
+filed an issue whose artifact is unwritten has not finished, and must not
+report the filing as a deliverable.
+<!-- /R-0351 -->
+
+<!-- R-0352 -->
+**Test 4, and it is the one that does the work: can you write the handoff?**
+If the affected files, the root cause, and at least one concrete test case
+cannot be stated now, **the bar has not been cleared** — the answer is branch
+3. Fold it into the issue it touches, fix it inline, or let it go.
+
+This is why the two halves are one rule. Writing the handoff is the filing
+bar's own proof of work: it is the step that discovers whether there is an
+issue here at all. Deferring it lets branch 3 be skipped silently, because
+nothing forces the author to find out the issue has no substance until a lane
+picks it up and reports BLOCKED. Real cost: `vitalharmony/hrse#1221` was filed
+with all of its evidence already in hand, left without a handoff, and Lane 2
+correctly reported BLOCKED on it.
+
+**An un-handoffable issue is a failed filing-bar test, not an obstacle to
+route around.**
+<!-- /R-0352 -->
+
+<!-- R-0353 -->
+**Four exceptions, each requiring its reason stated on the issue itself:**
+
+1. **A parent epic** — implemented through its children, not directly. Its
+   children carry handoffs; it does not.
+2. **An explicitly deferred design record** — filed to preserve a decision,
+   with a body that says not to start it.
+3. **An issue blocked on an unlanded prerequisite**, where the affected-files
+   and line citations would be written against code that is about to change.
+   This is a **deferral, not a skip** — the handoff is owed the moment the
+   prerequisite lands.
+4. **An issue the operator scopes directly to a single implementer** —
+   `universal-lane1.md`'s platform-tooling carve-out or `3-lane-protocol.md`
+   § Tooling Exception. There is no Lane 2, so a handoff addressed to nobody
+   is ceremony. The accompanying artifact is a **scoping note** instead: it
+   names the exception, checks its conditions against the actual work, and
+   states the review that happens before merge. This is narrower than a
+   handoff, not looser — a scoping note must justify why no lane is involved,
+   which a handoff never has to do.
+
+**R-0352's inversion survives every exception.** If the scoping note cannot be
+written either, the bar has not been cleared and the answer is still fold, fix
+inline, or let it go.
+<!-- /R-0353 -->
+
+<!-- R-0354 -->
+**Why this is stated as one rule rather than two adjacent ones.** It was two,
+in two files, and the handoff half was in neither — it existed only in one
+agent's private memory, so no lane was bound by it, `sync_rules.py` never
+distributed it, and `check_rule_drift.py` could not enforce it. The operator
+corrected it four times, twice in a single session, before it was written
+down. Operator, 2026-09-08: *"Too many issues get filed that are later folded
+or eliminated."* An issue folded later cost a filing, a triage, and a fold;
+requiring the artifact at filing time moves that discovery to the cheapest
+moment available — before the number exists.
+<!-- /R-0354 -->
 
 Branch 3 is the one that gets skipped, and skipping it is what produced the
 condition this rule exists to stop.
@@ -446,10 +512,12 @@ removing it.
 
 ## STANDING-RULE VIOLATIONS GET FILED, NOT FIXED, NOT JUST MENTIONED
 
-**Gated by the filing bar above — run those three tests first.** This section
-governs *how* a violation is recorded once it clears the bar, and is not
-itself a licence to file. Most standing-rule violations found in passing will
-land on branch 2 or 3.
+**Gated by the filing bar above — run all four tests first, and the fourth
+means this section's issues arrive with their accompanying artifact like any
+other.** This section governs *how* a violation is recorded once it clears the
+bar, and is not itself a licence to file. Most standing-rule violations found
+in passing will land on branch 2 or 3 — and a violation you cannot write a
+handoff for is branch 3 by R-0352, however real it is.
 
 <!-- R-0045 -->
 If Lane 2 (implementing) or Lane 3 (testing/style pass) encounters a
