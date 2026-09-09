@@ -104,6 +104,17 @@ class AnnotateTests(unittest.TestCase):
         self.assertLessEqual(len(listed), bc._MAX_KEYS + 1, listed)
         self.assertIn(f"+{len(keys) - bc._MAX_KEYS} more", out)
 
+    def test_a_normal_sized_batch_is_not_elided(self) -> None:
+        """AC7 (harmonic-forge#567): 13 live keys -- the size the operator's
+        own #504/#540/#552/#560 wrap-up batch actually reached -- must all be
+        named, not truncated. This was the concrete failure `_MAX_KEYS = 6`
+        produced before this fix."""
+        keys = [f"F{n}" for n in range(500, 513)]
+        out = self._annotate("denied.", state(*keys))
+        self.assertNotIn("more", out)
+        for key in keys:
+            self.assertIn(key, out)
+
     def test_the_acting_key_is_never_elided_away(self) -> None:
         """With more live grants than the cap, sorting alone can push the key
         actually being acted on out of the list — `H1636` behind six `F` keys.

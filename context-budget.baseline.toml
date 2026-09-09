@@ -9,15 +9,15 @@
 # `bytes` are re-measured here, not copied. An entry that does not
 # match the real delta fails the check.
 
-total_bytes = 40511
+total_bytes = 41646
 ceiling_bytes = 48000
 target_bytes = 24000
 
 [files]
-".claude/rules/lane-shorthand.md" = 16355
+".claude/rules/lane-shorthand.md" = 17292
 "CLAUDE.md" = 865
 "~/.claude/CLAUDE.md" = 6054
-"~/Harmonic_Projects/operator-memory/MEMORY.md" = 17237
+"~/Harmonic_Projects/operator-memory/MEMORY.md" = 17435
 
 [[increase]]
 date = "2026-09-09"
@@ -54,4 +54,21 @@ justification passes the anti-rubber-stamp check by construction. Whoever reads
 this next to decide whether a further increase is affordable: the headroom is
 small, and 17,237 of the total is MEMORY.md, which sits outside this repo and
 is reported but not gated here.
+"""
+
+[[increase]]
+date = "2026-09-09"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 937
+why = """
+harmonic-forge#567: `rules/lane-shorthand.md` documents this CLI surface
+(R-0353: the authoring repo is not the shipping surface), so the new `revoke`
+subcommand and the grace-window pruning it interacts with need a paragraph
+here alongside R-0341/R-0342 -- an operator reading this table to recall
+BATCH's grammar must be able to find `revoke` in the same place, not
+discover it only by reading `batch_auth.py`'s source. This file is already
+the single largest item on the always-loaded surface (see the #542 entry
+above); this addition is the documentation cost of a real new CLI verb, not
+avoidable by moving it elsewhere -- it is exactly the kind of "arrives before
+the first prompt" fact that entry argues for keeping unscoped.
 """

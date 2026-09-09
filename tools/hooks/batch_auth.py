@@ -148,6 +148,22 @@ STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 DEFAULT_TTL_HOURS = 12.0
 DEFAULT_ACTIONS = ("gh pr merge", "gh issue close")
 
+#: AC1 disposition (harmonic-forge#567): a GRACE WINDOW past expiry, not the
+#: house's usual count-based cap (`lane3_audit.py`'s `MAX_RECORDS`,
+#: `gate_ci.py`'s `CARRIER_CACHE_MAX`). A count-based cap is denominated in
+#: CALLS to authorize()/top_up() -- under a busy batch day a revoked or
+#: expired entry could be evicted within hours of being marked, which is
+#: exactly the "not an audit property" failure AC6 names. A time-based window
+#: keeps the EXPIRED diagnostic (and a revoke's marker, AC4/AC6) readable for
+#: a fixed, predictable period regardless of how many OTHER keys get
+#: authorized in the meantime -- the two are decoupled on purpose.
+#:
+#: 7 days: comfortably spans the normal "what happened to that grant" review
+#: window (the incident that filed this issue was noticed at 18 days of
+#: totally unbounded growth -- a week is a small fraction of that and still
+#: bounds the file), while ensuring the file no longer grows without limit.
+PRUNE_GRACE_HOURS = 24.0 * 7
+
 # harmonic-forge#369: the read -> live-entry-check -> consume/write sequence
 # in decide()/authorize()/link_pr() was an unlocked read-modify-write --
 # concurrent consumption could lose a flag and make a one-shot grant
@@ -273,6 +289,37 @@ def _new_target(action: str) -> dict:
     return {"action": action, "consumed": False, "consumed_by": None, "repo": None, "pr_number": None}
 
 
+def _prune(state: dict, now: datetime) -> dict:
+    """Drop entries expired more than `PRUNE_GRACE_HOURS` ago (AC1).
+
+    Called only from `authorize()`/`top_up()`, inside the `_locked_state` lock
+    they already hold -- never from `_save()`, never as a separate sweep
+    (AC2). A live entry is never a candidate: liveness is checked first and
+    unconditionally, so AC3 holds regardless of how the grace window is
+    tuned. An entry whose `expires_at` cannot be parsed is kept rather than
+    dropped -- this function fails toward retention, never toward deletion,
+    the same fail-closed posture as the rest of this module.
+    """
+    cutoff = now - timedelta(hours=PRUNE_GRACE_HOURS)
+    kept: dict = {}
+    for key, entry in state.items():
+        if _entry_live(entry, now):
+            kept[key] = entry
+            continue
+        try:
+            expires = datetime.fromisoformat(entry["expires_at"])
+            stale = expires < cutoff
+        except (KeyError, TypeError, ValueError):
+            # Unparseable, OR a timezone-naive value that parses but cannot
+            # be compared against the (aware) cutoff -- both fail toward
+            # retention, matching `_entry_live`'s posture just above.
+            kept[key] = entry
+            continue
+        if not stale:
+            kept[key] = entry
+    return kept
+
+
 def top_up(
     keys: list[str],
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
@@ -299,6 +346,7 @@ def top_up(
     with _locked_state(actual_path):
         state = _load(state_path)
         now = _now()
+        state = _prune(state, now)
         expires = (now + timedelta(hours=ttl_hours)).isoformat()
         for key in keys:
             key = key.upper()
@@ -341,6 +389,7 @@ def authorize(
     with _locked_state(actual_path):
         state = _load(state_path)
         now = _now()
+        state = _prune(state, now)
         expires = now + timedelta(hours=ttl_hours)
         for raw_key in keys:
             key = raw_key.upper()
@@ -424,12 +473,63 @@ def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None)
         _save(state, state_path)
 
 
+def revoke(keys: list[str], state_path: Path | None = None) -> list[str]:
+    """Stand down one or more keys without a hand-written file edit (AC4).
+
+    Marks every unconsumed target `consumed: True`,
+    `consumed_by: "revoked-<ISO timestamp>"` -- it never deletes the entry or
+    any target, so the state never reads as though a merge or close actually
+    happened. `decide()`'s existing "already CONSUMED" branch then fires on
+    any later attempt against a revoked target, same as a real consumption.
+
+    A no-op, not an error, on a key that does not exist (never creates one)
+    or whose targets are all already consumed (AC5) -- standing down a batch
+    that mostly landed is the normal case, not an exceptional one.
+
+    Returns the keys that were actually changed.
+    """
+    actual_path = STATE_PATH if state_path is None else state_path
+    changed: list[str] = []
+    with _locked_state(actual_path):
+        state = _load(state_path)
+        now = _now()
+        marker = f"revoked-{now.isoformat()}"
+        for raw_key in keys:
+            key = raw_key.upper()
+            entry = state.get(key)
+            if entry is None:
+                continue
+            did_change = False
+            for target in entry.get("targets", []):
+                if not target.get("consumed"):
+                    target["consumed"] = True
+                    target["consumed_by"] = marker
+                    did_change = True
+            if did_change:
+                changed.append(key)
+        if changed:
+            _save(state, state_path)
+    return changed
+
+
 def _entry_live(entry: dict, now: datetime) -> bool:
     try:
         expires = datetime.fromisoformat(entry["expires_at"])
+        return now < expires
     except (KeyError, TypeError, ValueError):
+        # harmonic-forge#567 preclose finding: a timezone-NAIVE `expires_at`
+        # (a hand-written entry, or one of the ten zero-target entries the
+        # issue's own measurement found in the live file) parses fine but
+        # raises TypeError on comparison against `now` (aware). That used to
+        # escape uncaught from `_prune()` inside `authorize()`/`top_up()`'s
+        # lock -- no other caller of this function ever reaches an
+        # uncaught exception on this shape (`decide()` wraps it in its own
+        # outer try/except; `batch_context.live_batch_keys` and
+        # `block_batch_stop.py` each put the comparison inside their own
+        # try). Moving the comparison inside this try makes `_entry_live`
+        # itself safe for every caller, present and future, rather than
+        # requiring each new one to remember to guard it separately.
         return False
-    return now < expires
 
 
 def _repo_flag(tokens: list[str]) -> str | None:
@@ -1197,6 +1297,14 @@ def _cli() -> None:
     p_link.add_argument("--repo", required=True)
     p_link.add_argument("--pr", type=int, required=True, dest="pr_number")
 
+    p_revoke = sub.add_parser(
+        "revoke",
+        help="Stand down one or more keys -- marks unconsumed targets "
+             "consumed rather than deleting the entry (harmonic-forge#567 "
+             "AC4). A no-op on an unknown or already-consumed key.",
+    )
+    p_revoke.add_argument("keys", nargs="+", help="Issue keys, e.g. H395 F334")
+
     p_check = sub.add_parser(
         "check-hooks",
         help="Verify the gate and its consumer are registered at the same scope")
@@ -1229,6 +1337,9 @@ def _cli() -> None:
     elif args.cmd == "link-pr":
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")
+    elif args.cmd == "revoke":
+        changed = [k.upper() for k in revoke(args.keys)]
+        print(f"revoked: {', '.join(changed)}" if changed else "nothing to revoke")
     elif args.cmd == "check-hooks":
         ok, message = verify_registration(
             Path(args.settings) if args.settings else None)

@@ -1323,3 +1323,186 @@ class RegistrationScopeTests(unittest.TestCase):
             self.skipTest(f"no operator settings at {settings}")
         ok, message = ba.verify_registration()
         self.assertTrue(ok, message)
+
+
+class PruneTests(StateFixture):
+    """harmonic-forge#567 AC1/AC2/AC3: `_prune` runs only from `authorize()`/
+    `top_up()`, inside their existing lock, and never removes a live entry."""
+
+    def _expire(self, key: str, hours_ago: float) -> None:
+        state = ba._load(self.state_path)
+        state[key]["expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+        ba._save(state, self.state_path)
+
+    def test_a_live_entry_survives_pruning_via_authorize(self):
+        """TC1 (partial): authorize() itself must never drop a live key."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.authorize(["F2"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        self.assertIn("F1", state)
+
+    def test_a_live_entry_survives_pruning_via_top_up(self):
+        """TC1: one live key, one expired key -- top_up() must keep the live
+        one. The expired key here is inside the grace window, so it is kept
+        too; the point under test is AC3, not the boundary."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.authorize(["F2"], state_path=self.state_path)
+        self._expire("F2", hours_ago=1)
+        ba.top_up(["F3"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        self.assertIn("F1", state)
+
+    def test_an_entry_expired_within_the_grace_window_is_kept(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._expire("F1", hours_ago=1)
+        ba.authorize(["F2"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        self.assertIn("F1", state)
+
+    def test_an_entry_expired_past_the_grace_window_is_pruned(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._expire("F1", hours_ago=ba.PRUNE_GRACE_HOURS + 1)
+        ba.authorize(["F2"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        self.assertNotIn("F1", state)
+        self.assertIn("F2", state)
+
+    def test_pruning_via_top_up_also_respects_the_grace_window(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._expire("F1", hours_ago=ba.PRUNE_GRACE_HOURS + 1)
+        ba.top_up(["F2"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        self.assertNotIn("F1", state)
+
+    def test_ac3_one_live_and_one_stale_expired_key_in_the_same_call(self):
+        """AC3, exercised as the acceptance criterion literally states it:
+        one live key and one expired key, in the SAME prune-triggering call
+        -- the live key must survive and the stale one must be dropped.
+        Preclose inspection found the other tests here each isolate the two
+        cases into separate calls, so a mutated/deleted liveness guard in
+        `_prune` would pass the whole suite undetected."""
+        ba.authorize(["F1"], state_path=self.state_path)  # will stay live
+        ba.authorize(["F2"], state_path=self.state_path)
+        self._expire("F2", hours_ago=ba.PRUNE_GRACE_HOURS + 1)  # stale
+        ba.authorize(["F3"], state_path=self.state_path)  # triggers the prune
+        state = ba._load(self.state_path)
+        self.assertIn("F1", state)
+        self.assertNotIn("F2", state)
+        self.assertIn("F3", state)
+
+    def test_a_timezone_naive_expiry_does_not_crash_authorize(self):
+        """Preclose inspection: a hand-written or legacy entry (the issue's
+        own measurement found ten zero-target entries produced by scripted
+        out-of-module writes) can carry a timezone-NAIVE `expires_at`, which
+        parses but raised TypeError comparing against `now` (aware) --
+        escaping uncaught from `_prune` inside `authorize()`'s lock, so a
+        single such entry broke every subsequent `BATCH` grant until the
+        file was hand-edited. `_entry_live` must treat this the same as any
+        other unparseable-for-comparison shape: not live, not fatal."""
+        state = ba._load(self.state_path)
+        state["F1"] = {
+            "expires_at": "2099-01-01T00:00:00",  # naive, far future
+            "targets": [],
+        }
+        ba._save(state, self.state_path)
+        # Must not raise.
+        ba.authorize(["F2"], state_path=self.state_path)
+        result = ba._load(self.state_path)
+        self.assertIn("F2", result)
+
+    def test_an_unparseable_expiry_is_kept_not_dropped(self):
+        """_prune fails toward retention, the same fail-closed posture as the
+        rest of this module -- it must never guess an entry is safe to drop."""
+        state = {"F1": {"expires_at": "not-a-date", "targets": []}}
+        pruned = ba._prune(state, datetime.now(timezone.utc))
+        self.assertIn("F1", pruned)
+
+    def test_the_expired_diagnostic_still_fires_within_the_grace_window(self):
+        """TC3: pruning must not make a recently-expired key look never
+        authorized -- the EXPIRED diagnostic is the whole reason AC1 forbids
+        zero retention."""
+        ba.authorize(["H9"], actions=["gh issue close"], ttl_hours=-1,
+                     state_path=self.state_path)
+        # authorize() prunes BEFORE writing the new entry, so an entry that
+        # expires the instant it's created (ttl_hours=-1) is never a
+        # candidate for its own creating call's prune.
+        state = ba._load(self.state_path)
+        self.assertIn("H9", state)
+        reason, message = ba.decide(
+            "gh issue close 9 --repo vitalharmony/hrse", state_path=self.state_path)
+        self.assertEqual(reason, "ask")
+        self.assertIn("EXPIRED", message)
+
+
+class RevokeTests(StateFixture):
+    """harmonic-forge#567 AC4/AC5/AC6."""
+
+    def test_revoke_marks_rather_than_deletes(self):
+        """AC4: entry present, targets marked consumed with a revocation
+        marker distinguishable from a real consumption."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        changed = ba.revoke(["F1"], state_path=self.state_path)
+        self.assertEqual(changed, ["F1"])
+        state = ba._load(self.state_path)
+        self.assertIn("F1", state)
+        for target in state["F1"]["targets"]:
+            self.assertTrue(target["consumed"])
+            self.assertTrue(target["consumed_by"].startswith("revoked-"))
+
+    def test_revoke_is_case_insensitive(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        changed = ba.revoke(["f1"], state_path=self.state_path)
+        self.assertEqual(changed, ["F1"])
+
+    def test_revoke_on_an_already_consumed_key_is_a_noop(self):
+        """AC5: standing down a batch that mostly landed is the normal case."""
+        ba.authorize(["F1"], actions=["gh issue close"], state_path=self.state_path)
+        consumed_one("gh issue close 1 --repo vitalharmony/harmonic-forge",
+                      self.state_path)
+        before = ba._load(self.state_path)
+        changed = ba.revoke(["F1"], state_path=self.state_path)
+        after = ba._load(self.state_path)
+        self.assertEqual(changed, [])
+        self.assertEqual(before, after)
+
+    def test_revoke_on_a_nonexistent_key_does_not_create_one(self):
+        """TC6."""
+        changed = ba.revoke(["F999"], state_path=self.state_path)
+        self.assertEqual(changed, [])
+        state = ba._load(self.state_path)
+        self.assertNotIn("F999", state)
+
+    def test_a_revoked_target_then_asks_on_a_linked_merge(self):
+        """TC7: a `gh pr merge` that previously matched a now-revoked key
+        must return ask -- stubbed off the network path per TC7's caveat, so
+        this is exercised through the `link_pr` mapping, not derivation."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.link_pr("F1", "vitalharmony/harmonic-forge", 42, state_path=self.state_path)
+        ba.revoke(["F1"], state_path=self.state_path)
+        reason, _ = ba.decide(
+            "gh pr merge 42 --repo vitalharmony/harmonic-forge",
+            state_path=self.state_path)
+        self.assertEqual(reason, "ask")
+
+    def test_a_revoked_markers_survives_an_unrelated_authorize(self):
+        """AC6: the marker must still be readable after a subsequent
+        unrelated write, for as long as AC1's grace window retains it."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.revoke(["F1"], state_path=self.state_path)
+        ba.authorize(["F2"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        self.assertIn("F1", state)
+        for target in state["F1"]["targets"]:
+            self.assertTrue(target["consumed_by"].startswith("revoked-"))
+
+    def test_cli_exposes_revoke(self):
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            with self.assertRaises(SystemExit):
+                with mock.patch("sys.argv", ["batch_auth.py", "--help"]):
+                    ba._cli()
+        self.assertIn("revoke", buffer.getvalue())
