@@ -1,0 +1,8 @@
+#!/bin/bash
+# See post-checkout (harmonic-forge#542). Same never-fail requirement.
+FORGE="${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"
+[ -f "$FORGE/sync_rules.py" ] || exit 0
+python3 "$FORGE/sync_rules.py" --project . >/dev/null 2>&1
+python3 "$FORGE/sync_rules.py" --verify --project . >/dev/null 2>&1 \
+  || echo "[sync_rules] platform links are incomplete or undeclared here — run: mise run hooks-install" >&2
+exit 0

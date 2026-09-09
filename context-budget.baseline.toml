@@ -9,9 +9,15 @@
 # `bytes` are re-measured here, not copied. An entry that does not
 # match the real delta fails the check.
 
-total_bytes = 23606
+total_bytes = 40511
 ceiling_bytes = 48000
 target_bytes = 24000
+
+[files]
+".claude/rules/lane-shorthand.md" = 16355
+"CLAUDE.md" = 865
+"~/.claude/CLAUDE.md" = 6054
+"~/Harmonic_Projects/operator-memory/MEMORY.md" = 17237
 
 [[increase]]
 date = "2026-09-09"
@@ -37,11 +43,15 @@ because the shorthand table it needed was not loaded. That is the cost this
 16,355 bytes buys down, and it is why path-scoping this file (option 2 in the
 ratchet's own advice) would defeat its purpose rather than economise.
 
-Total remains under the 24,000 target: the measured surface is 23,961 bytes,
-because MEMORY.md is outside this repo and not gated here.
+Cost, stated straight: the surface is now 40,511 bytes (~10,127 tokens) against
+a 24,000 target and a 48,000 ceiling. This is OVER target and under ceiling —
+roughly 7,500 bytes of headroom, not 24,000. An earlier draft of this entry
+claimed the total remained under target at 23,961 bytes; that number
+corresponded to no measurement in this file and was wrong by 16,550. It was
+caught by preclose-inspection, which also noted that the ratchet validates
+`files`, `bytes` and the PRESENCE of `why` but never its content — so a false
+justification passes the anti-rubber-stamp check by construction. Whoever reads
+this next to decide whether a further increase is affordable: the headroom is
+small, and 17,237 of the total is MEMORY.md, which sits outside this repo and
+is reported but not gated here.
 """
-
-[files]
-"CLAUDE.md" = 865
-"~/.claude/CLAUDE.md" = 6054
-"~/Harmonic_Projects/operator-memory/MEMORY.md" = 16687

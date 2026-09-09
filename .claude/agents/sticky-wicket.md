@@ -1,1 +1,0 @@
-../../agents/sticky-wicket.md

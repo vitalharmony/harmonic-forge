@@ -1,0 +1,18 @@
+#!/bin/bash
+# Link this checkout's .claude/ to the platform content in THIS repo
+# (harmonic-forge#542). The platform repo consumes its own rules, agents and
+# skills the same way every consuming repo does — five forge checkouts had none
+# of them, so every lane session ever run here ran without the rules the
+# platform ships.
+#
+# Must NEVER fail the git operation it is attached to: this hook's exit status
+# becomes `git checkout`'s.
+FORGE="${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"
+[ "$3" = "1" ] || exit 0   # file-level checkout, not a branch switch — skip
+[ -f "$FORGE/sync_rules.py" ] || exit 0
+python3 "$FORGE/sync_rules.py" --project . >/dev/null 2>&1
+# Report on --verify, not the linker's exit status: link mode returns 0 when the
+# manifest is absent (harmonic-forge#545).
+python3 "$FORGE/sync_rules.py" --verify --project . >/dev/null 2>&1 \
+  || echo "[sync_rules] platform links are incomplete or undeclared here — run: mise run hooks-install" >&2
+exit 0

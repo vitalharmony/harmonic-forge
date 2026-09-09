@@ -1,1 +1,0 @@
-../../rules/lane-shorthand.md

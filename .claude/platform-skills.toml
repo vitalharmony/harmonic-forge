@@ -6,41 +6,40 @@
 # THE DESIGN QUESTION #542 ASKED, AND ITS ANSWER
 # -----------------------------------------------
 # "Should the platform repo consume its own universal rules and agents, and if
-# so by what mechanism?" — Yes, and by TRACKED, REPO-RELATIVE symlinks, not by
-# running `sync_rules.py --project ~/harmonic-forge`.
+# so by what mechanism?" — Yes, and by the SAME mechanism as every consuming
+# repo: gitignored symlinks created by .githooks/post-checkout and post-merge,
+# with `mise run hooks-install` setting the one piece of local config a clone
+# cannot inherit.
 #
-# The sibling children (#544/#545/#546) gitignore their `.claude/` link
-# directories because the links there hold ABSOLUTE paths into one machine's
-# home directory, which break on every other clone. Inside this repo the source
-# and the link live in the same tree, so the link can be relative
-# (`../../rules/backend-python.md`) — and a relative link IS portable, which
-# makes it safe to track. Tracking it is strictly better than gitignoring it:
+# WHY NOT TRACKED RELATIVE SYMLINKS
+# ----------------------------------
+# That was the first implementation of this issue and it was wrong. The idea
+# was appealing: inside this repo the source and the link share a tree, so the
+# link can be relative (`../../rules/backend-python.md`), and a relative link
+# is portable, so it can be committed — giving all five checkouts the links
+# from git itself with no hook at all.
 #
-#   - It satisfies #542's AC2 outright. There is no absolute-path symlink for a
-#     `git add -A` to commit, because there is no absolute-path symlink.
-#   - All five forge checkouts (harmonic-forge, -lane2, -lane3, -release,
-#     -f326) get the links from git itself on checkout. No hook, no
-#     provisioning step, nothing to remember — which is the failure mode this
-#     entire epic is about.
-#   - It answers the question #542 said would settle the design ("whether
-#     .claude/ in the platform repo is generated-and-gitignored or tracked")
-#     with: tracked, because relative links make that possible here and only
-#     here.
+# It fails in a worktree, which is four of the five checkouts this issue is
+# about. `../../rules/x` resolves inside the WORKTREE, while sync_rules.py
+# anchors `expected` to PLATFORM_ROOT (the main checkout). The two differ, so:
 #
-# WHY NOT `sync_rules.py --project ~/harmonic-forge`
-# --------------------------------------------------
-# It would work and it would be wrong: `_link_dir`/`_link_skill_dir` call
-# `target.symlink_to(source)` with an absolute source, so a naive self-link
-# produces exactly the absolute-path symlinks AC2 forbids, in the one repo that
-# tracks its `.claude/`.
+#   * `--verify` against any forge worktree printed nine false [BROKEN] lines
+#     and exited 1 against a checkout whose every link was correct;
+#   * `--project` against one hit `_link_dir`'s [FIX] branch and rewrote all
+#     eight tracked links to ABSOLUTE paths, dirtying the tree — and
+#     `git add .` would then commit `/home/mmangus/...` onto main.
 #
-# Running it here anyway is HARMLESS, which is deliberate rather than lucky:
-# both linkers compare `target.resolve() == source.resolve()`, and a relative
-# link resolves to the same real path, so they report "already linked
-# correctly" and leave it alone. The tracked relative links survive anyone
-# running the linker out of habit.
+# Both were reproduced live before this rewrite, which is why the boring
+# mechanism won. Tracking `.claude/` here would also have made this the only
+# repo in the family where it is tracked, for no gain.
 #
 # SKILLS ONLY — same constraint as everywhere else. Agents are auto-discovered
 # by _universal_agent_files(); rules are hardcoded in UNIVERSAL_RULE_FILES.
+# Neither belongs in a per-project manifest; sync_rules.py rejects unknown keys
+# rather than ignoring them, so the attempt fails loudly.
+#
+# An empty list is a valid declaration and verifies green; a MISSING file does
+# not. If this repo ever consumes no platform skills, set `skills = []` rather
+# than deleting this file.
 
 skills = ["belt-and-suspenders"]
