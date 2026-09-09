@@ -3,6 +3,51 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(belt): read the tick log — no data is not a clean report (harmonic-forge#519)
+
+Two commands, per the ratified plan.
+
+DEFAULT: read-only, zero API calls (AC1). Per-repo counts with every ref
+validated against the now-documented '<repo>#<number>' format; an unparseable
+entry is its own finding rather than a silent zero, which is the failure that
+reads identically to a quiet repo. Zero-event flagging moves from a hardcoded
+n>=3 to --window, printed as an UNVALIDATED DEFAULT because the log had zero
+records when this shipped. The GraphQL-defect line now names the offending
+tick. Every finding states what to do about it, and a clean run prints two
+lines rather than none.
+
+--audit: separate, explicit, REST, never scheduled (AC5 vs AC1 are in direct
+conflict — a replay needs comment bodies the log does not store).
+
+AC3 gains its missing input: TickLog's matched/emitted/owed_found entries
+become {id, posted_at}, where posted_at is the MARKER's timestamp, not the
+tick's. Without it only detection-to-action is derivable, and belt downtime is
+invisible in its own telemetry. Missing timestamps record as null, never
+backfilled from the tick — a fabricated posted_at reads as zero latency.
+Bare-string appends still normalise to a well-formed entry.
+
+The report refuses to print zeros against an empty file. 'No log exists',
+'a log with zero ticks', and 'a healthy log with no findings' are three
+different states and are reported as three different things — the
+LANE3_ACTIVE write-only-marker defect is what happens when they collapse.
+
+Found by running it live, not by review: --audit fetched the repo's OLDEST
+100 comments (the endpoint defaults to ascending) and reported 'markers in
+window: 0' against a repo full of them. Fixed with sort=created&direction=desc;
+it now finds 71 markers on vitalharmony/hrse.
+
+Verified: 21 new tests + F518's 25 (updated for the new entry shape, not
+weakened) all pass; mutation-checked three ways — silencing malformed-ref
+findings, printing zeros for an empty log, and dropping posted_at each fail
+the tests that cover them. mise run check shows the same 4 pre-existing
+failures as clean origin/main. Live: default run against the real absent log
+reports NO DATA; a synthetic 3-tick log written by the real writer exercises
+every finding type; --audit replays 100 real comments.
+- tools/gh/belt_mechanics.py   |  66 +++++++-
+- tools/gh/belt_report.py      | 388 ++++++++++++++++++++++++++++++++++++-------
+- tools/gh/test_belt_report.py | 289 ++++++++++++++++++++++++++++++++
+- 3 files changed, 679 insertions(+), 64 deletions(-)
+
 ## feat(rules): stable rule IDs + registry for rules/*.md (harmonic-forge#447)
 
 Assigns R-NNNN IDs to 140 enforceable rules across all 8 rules/*.md files
