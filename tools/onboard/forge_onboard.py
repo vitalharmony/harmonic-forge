@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -160,8 +161,59 @@ def check_entrypoint(project: Project) -> Check:
     return Check("entrypoint", OK, ", ".join(present))
 
 
+def _hook_commands(hooks: dict) -> list[str]:
+    """Every `command` string in a settings.json hooks block, any event."""
+    found: list[str] = []
+    for matchers in hooks.values():
+        if not isinstance(matchers, list):
+            continue
+        for matcher in matchers:
+            if not isinstance(matcher, dict):
+                continue
+            for entry in matcher.get("hooks") or []:
+                if isinstance(entry, dict) and isinstance(entry.get("command"), str):
+                    found.append(entry["command"])
+    return found
+
+
+_PLATFORM_HOOK_PATH = re.compile(r'["\']?(\$\{HOME\}|~|/[^"\'\s]*?)/(harmonic-forge/[^"\'\s]+\.py)')
+
+
+def unresolvable_hook_targets(hooks: dict) -> list[str]:
+    """Platform hook scripts a settings.json names that do not exist on disk.
+
+    harmonic-forge#547's preclose-inspection: this check read only the event
+    KEY NAMES and never a `command` string, so renaming or moving a platform
+    hook script made every session in every consuming repo run a command that
+    exits 2 and produces no output. For `SessionStart` that does not block the
+    session — it just silently contributes nothing, which is indistinguishable
+    from the pre-#547 state the issue was filed about, and this tool reported
+    green throughout.
+
+    That is the reconciliation half the skills manifest has and hooks lacked.
+    The answer is NOT a `hooks` key on the skills manifest (that manifest
+    exists because gitignored symlinks cannot travel with a clone, which is not
+    hooks' problem) — it is asserting here that what settings.json names
+    actually resolves.
+    """
+    missing: list[str] = []
+    for command in _hook_commands(hooks):
+        match = _PLATFORM_HOOK_PATH.search(command)
+        if not match:
+            continue
+        candidate = Path(os.path.expandvars(os.path.expanduser(
+            f"{match.group(1)}/{match.group(2)}")))
+        if not candidate.is_file():
+            missing.append(str(candidate))
+    return sorted(set(missing))
+
+
 def check_hooks(project: Project) -> Check:
-    """Presence and shape only — reconciliation waits on harmonic-forge#324."""
+    """Presence, shape, AND that every platform script it names resolves.
+
+    Full reconciliation still waits on harmonic-forge#324; this closes the one
+    gap that made the check actively misleading rather than merely incomplete.
+    """
     if project.checkout is None:
         return Check("hooks", SKIP, "no checkout")
     settings = project.checkout / ".claude" / "settings.json"
@@ -174,8 +226,24 @@ def check_hooks(project: Project) -> Check:
     hooks = data.get("hooks")
     if not hooks:
         return Check("hooks", FAIL, "settings.json declares no hooks block")
+
     events = sorted(hooks) if isinstance(hooks, dict) else []
-    return Check("hooks", OK, f"{len(events)} event(s): {', '.join(events)}")
+    missing = unresolvable_hook_targets(hooks) if isinstance(hooks, dict) else []
+    if missing:
+        return Check("hooks", FAIL,
+                     f"{len(events)} event(s) declared, but "
+                     f"{len(missing)} named script(s) do not exist: "
+                     + ", ".join(missing))
+
+    # Declaring ONE event is not the same as being guarded. Naming the count of
+    # PreToolUse entries stops a repo with a single SessionStart line from
+    # reading identically to one carrying the full guard set — the specific
+    # regression #547 introduced in cymagraph-infra, which had no PreToolUse
+    # hooks at all and flipped from FAIL to OK the moment a settings.json
+    # existed.
+    guards = len(hooks.get("PreToolUse") or []) if isinstance(hooks, dict) else 0
+    detail = f"{len(events)} event(s): {', '.join(events)}; {guards} PreToolUse matcher(s)"
+    return Check("hooks", OK, detail)
 
 
 def check_memory(_project: Project) -> Check:
