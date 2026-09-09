@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import os
 import sys
 import tempfile
@@ -473,3 +474,84 @@ class SessionStartMatcherSemanticsTests(unittest.TestCase):
         AttributeError on this one, which escaped `main` and aborted every
         remaining project in the manifest."""
         self.assertEqual(fo.sessionstart_source_gaps({"SessionStart": ["oops"]}), [])
+
+
+class AdvanceStaleWorktreeTests(unittest.TestCase):
+    """harmonic-forge#560 preclose follow-up: nothing ever advanced a worktree.
+
+    `apply()` created missing worktrees and stopped there, so a hook fix merged
+    to `main` reached the main checkout only — and the lane launchers run in the
+    worktrees. Nine lane worktrees kept the broken matcher through the merge.
+
+    The three refusals below are each a lesson, not a precaution.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self._git("init", "-q", "-b", "main")
+        (self.repo / "f.txt").write_text("x")
+        self._git("add", "-A")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one")
+
+    def _git(self, *args, cwd=None):
+        return subprocess.run(["git", "-C", str(cwd or self.repo), *args],
+                              capture_output=True, text=True)
+
+    def _worktree(self, name):
+        path = self.root / name
+        self._git("worktree", "add", "-q", "--detach", str(path), "HEAD")
+        return path
+
+    def test_a_clean_detached_worktree_is_safe(self):
+        ok, why = fo._worktree_is_safe_to_advance(self._worktree("wt"))
+        self.assertTrue(ok, why)
+
+    def test_uncommitted_changes_refuse(self):
+        """`git checkout` carries uncommitted tracked changes ACROSS the
+        switch rather than isolating them, so advancing would not merely risk
+        someone's work — it would silently relocate it."""
+        path = self._worktree("dirty")
+        (path / "f.txt").write_text("changed")
+        ok, why = fo._worktree_is_safe_to_advance(path)
+        self.assertFalse(ok)
+        self.assertIn("uncommitted", why)
+
+    def test_a_worktree_on_a_branch_refuses(self):
+        """A worktree on a branch is a branch OWNER. Advancing it moves that
+        ref out from under whoever holds it."""
+        path = self.root / "onbranch"
+        self._git("worktree", "add", "-q", "-b", "someones-work", str(path), "HEAD")
+        ok, why = fo._worktree_is_safe_to_advance(path)
+        self.assertFalse(ok)
+        self.assertIn("not detached", why)
+
+    def test_a_live_lane3_gate_refuses(self):
+        """hrse#1757, exactly. A checkout landing on a worktree mid-gate is the
+        incident that issue was filed for — and the Lane 1 session that caused
+        it was doing precisely this: advancing lane worktrees after a merge."""
+        path = self._worktree("gating")
+        git_dir = Path(self._git("rev-parse", "--absolute-git-dir", cwd=path).stdout.strip())
+        (git_dir / "LANE3_ACTIVE").write_text(f"owner_pid={os.getpid()}\n")
+        ok, why = fo._worktree_is_safe_to_advance(path)
+        self.assertFalse(ok)
+        self.assertIn("live pid", why)
+
+    def test_a_dead_owner_does_not_block(self):
+        """The dead-owner branch is deliberate and must stay: refusing on any
+        marker at all would deadlock every worktree whose gate ended without
+        cleanup, which is the failure hrse#1757's own file documents."""
+        path = self._worktree("stalegate")
+        git_dir = Path(self._git("rev-parse", "--absolute-git-dir", cwd=path).stdout.strip())
+        (git_dir / "LANE3_ACTIVE").write_text("owner_pid=999999999\n")
+        ok, why = fo._worktree_is_safe_to_advance(path)
+        self.assertTrue(ok, why)
+
+    def test_a_malformed_marker_does_not_block(self):
+        path = self._worktree("badmarker")
+        git_dir = Path(self._git("rev-parse", "--absolute-git-dir", cwd=path).stdout.strip())
+        (git_dir / "LANE3_ACTIVE").write_text("garbage\n")
+        self.assertTrue(fo._worktree_is_safe_to_advance(path)[0])
