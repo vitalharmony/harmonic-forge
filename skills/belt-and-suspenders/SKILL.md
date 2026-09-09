@@ -138,10 +138,12 @@ issue needs nothing.** Otherwise that issue is re-offered every tick, and the
 `AskUserQuestion` becomes a nag.
 
 **After a Lane 3 PASS that Lane 1 has independently re-verified live: merge and
-close directly.** Do not present it as a decision needing approval; narrate it
-after the fact. One carve-out — an issue labeled `data-migration` cannot close
-without the migration actually running or an explicit `migration-abandoned`
-decision, and `block_data_migration_close.py` enforces that regardless of PASS.
+close directly** (R-0351, the explicit carve-out this line implements — Lane 1
+only, PASS only, independent re-verification required). Do not present it as a
+decision needing approval; narrate it after the fact. One carve-out — an issue
+labeled `data-migration` cannot close without the migration actually running or
+an explicit `migration-abandoned` decision, and `block_data_migration_close.py`
+enforces that regardless of PASS.
 
 **An agreed decision is not "pending."** It is completed-but-unexecuted, and it
 does not wait behind a newly-opened item. "1 agreed" sat unexecuted for multiple

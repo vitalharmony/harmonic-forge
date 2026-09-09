@@ -1877,16 +1877,16 @@ hooks = []
 id = "R-0223"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "Lane 1 recommends closing — never a unilateral close."
-text_sha = "d656515418fe8fa3"
+statement = "Lane 1 recommends closing — never a unilateral close, except the narrow R-0351 carve-out."
+text_sha = "fd2b24906c512833"
 hooks = []
 
 [[rule]]
 id = "R-0224"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "Closing requires the operator's explicit \"Close #N\" every time, from every lane, with no exception for confidence or a clean local test pass."
-text_sha = "f572b4a285f365ec"
+statement = "Closing requires the operator's explicit \"Close #N\" every time, from every lane, with no exception for confidence or a clean local test pass, except the one named exception: R-0351."
+text_sha = "bc2a165fc792a938"
 hooks = []
 
 [[rule]]
@@ -2278,3 +2278,11 @@ file = "3-lane-protocol.md"
 anchor = "lane2-pushes-its-own-branches"
 statement = "Lane 2 pushes its own branches and does not narrate the push; PR, merge and close remain outside its boundary."
 text_sha = "ce49e320018ac545"
+
+[[rule]]
+id = "R-0351"
+file = "rules/universal-lane1.md"
+anchor = "role-boundary-never-closes"
+statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only, may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. Named as the sole exception to R-0224 and its HRSE2 mirror R-0317."
+text_sha = "4bd130168a57e0ac"
+hooks = []

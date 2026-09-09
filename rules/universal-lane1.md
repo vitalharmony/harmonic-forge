@@ -63,6 +63,53 @@ the operator's explicit `Close H<N>` / `Close F<N>` instruction
 authorizes closure.
 <!-- /R-0091 -->
 
+<!-- R-0351 -->
+**Narrow carve-out, Lane 1 only, PASS only.** After a Lane 3 **PASS**
+verdict that Lane 1 has independently re-verified live (not merely
+accepted from the gate report), Lane 1 may merge the PR and close the
+issue directly, without a separate operator trigger for that action —
+narrating what happened after the fact rather than presenting it as a
+pending decision. Operator-authorized 2026-09-09 ("you don't need to ask
+me to merge just close. Just do it.") specifically to remove routine
+approval-asking for a mechanically clear case, not to loosen the boundary
+generally.
+
+This carve-out is narrower than R-0091's rule in every direction that
+matters:
+
+- **Lane 1 only.** Lane 2 and Lane 3 retain zero merge/close authority of
+  any kind — R-0091's "only the operator's explicit instruction" stands
+  unchanged for both, including the specific #186 incident (a Lane 2
+  self-implement-and-close) this platform hardened against.
+- **PASS only, never FAIL/partial.** A FAIL, a BLOCKED result, or a PASS
+  carrying any disclosed partial/unverified AC still routes to the
+  operator as a decision — the carve-out exists for the case with nothing
+  left to decide, not to compress judgment calls into narration.
+- **Independent re-verification is not optional.** Re-running the gate's
+  own claims live is the precondition, not a courtesy; accepting a PASS
+  on the gate's word alone does not qualify.
+- **Every other absolute stands.** A `data-migration`-labeled issue still
+  requires `migration-executed`/`migration-abandoned` (R-0169); a
+  Tooling-Exception diff still requires `preclose-inspected` before close
+  (R-0090's exceptions, hrse#1487); nothing here waives either.
+- **This is decision authority, not a bypass of the live `batch_gate.py`
+  PreToolUse hook.** `gh pr merge`/`gh issue close` still prompt for
+  approval without a live `BATCH` authorization from the operator,
+  regardless of this rule. R-0351 says Lane 1 does not need to *ask* — it
+  does not, and cannot, make the mechanical gate stop asking. Narrating
+  after the fact means: state the merge/close is happening because the
+  precondition is met, request the `BATCH` authorization the hook
+  requires to actually execute it, and proceed — not present it as an
+  open decision.
+- **This rule is explicitly named as the sole exception to
+  `3-lane-protocol.md`'s R-0224** ("closing requires the human operator's
+  explicit 'Close #N,' every time, from every lane") and to any
+  project-local mirror of that rule (e.g. HRSE2's R-0317) — see those
+  rules' own text for the cross-reference. A rule elsewhere in this corpus
+  that still reads as an absolute has not been overlooked; it names this
+  carve-out as its only exception.
+<!-- /R-0351 -->
+
 ## APQ protocol
 
 <!-- R-0092 -->

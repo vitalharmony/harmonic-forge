@@ -1118,7 +1118,7 @@ preview is not the document.
 <!-- /R-0222 -->
 <!-- R-0223 -->
    - **If confirmed clean:** Lane 1 recommends closing — never a
-     unilateral close.
+     unilateral close, **except** the narrow R-0351 carve-out below.
 <!-- /R-0223 -->
 <!-- R-0224 -->
 6. **HITL says "Close #N"** (→ Lane 1). Lane 1 posts a closing summary
@@ -1131,7 +1131,12 @@ preview is not the document.
    closed the issue itself, with no Lane 3 gate having run at all. The rule
    is: closing requires the human operator's explicit "Close #N," every
    time, from every lane, with no exception for confidence or a clean local
-   test pass.
+   test pass — **with one named exception**: `universal-lane1.md`'s R-0351,
+   a narrow, explicitly-scoped Lane-1-only, PASS-only, independently-
+   re-verified-only carve-out the operator granted directly (2026-09-09).
+   That is the only exception this rule recognizes; nothing else about
+   "confidence" or "a clean local test pass" ever substitutes for either
+   HITL's word or R-0351's exact preconditions.
 <!-- /R-0224 -->
 
 <!-- R-0225 -->
