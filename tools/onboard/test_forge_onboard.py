@@ -314,9 +314,48 @@ class HookContentTests(unittest.TestCase):
         self.script.parent.mkdir(parents=True)
         self.script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
 
-    def _hooks(self, command: str) -> dict:
-        return {"SessionStart": [{"matcher": "startup|resume",
+    def _hooks(self, command: str, matcher: str = "startup|resume|clear|fork") -> dict:
+        # Default is the FULL source set (harmonic-forge#560). This fixture used
+        # to hard-code `startup|resume`, which is the shipped defect itself —
+        # so every test built on it was asserting against a settings file that
+        # could never wake a `/clear` session.
+        return {"SessionStart": [{"matcher": matcher,
                                   "hooks": [{"type": "command", "command": command}]}]}
+
+    def test_the_shipped_startup_resume_matcher_is_reported_as_a_gap(self) -> None:
+        """harmonic-forge#560, stated as the check that would have caught it.
+
+        `clear` is a distinct SessionStart source, so `startup|resume` never
+        fired for `lane<N> /clear` — the launch the operator actually uses.
+        Nothing errored; the hook simply never ran.
+        """
+        hooks = self._hooks("python3 belt_wakeup.py", matcher="startup|resume")
+        self.assertEqual(fo.sessionstart_source_gaps(hooks), ["clear", "fork"])
+
+    def test_full_coverage_reports_no_gap(self) -> None:
+        self.assertEqual(
+            fo.sessionstart_source_gaps(self._hooks("python3 belt_wakeup.py")), [])
+
+    def test_a_repo_not_wiring_the_wakeup_at_all_is_not_a_source_gap(self) -> None:
+        """Absent is a different finding from mis-matched, and conflating them
+        would make this check fire on every repo that legitimately has no
+        wake-up hook."""
+        hooks = self._hooks("python3 something_else.py", matcher="startup")
+        self.assertEqual(fo.sessionstart_source_gaps(hooks), [])
+
+    def test_a_source_gap_fails_the_hooks_check(self) -> None:
+        """It must FAIL, not warn. A wake-up that never fires for the launch
+        path in daily use reads green while the session is unguarded."""
+        checkout = self.root / "gaprepo"
+        (checkout / ".claude").mkdir(parents=True)
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": self._hooks(
+                f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"',
+                matcher="startup|resume")}),
+            encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="g", prefix="G", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("clear", check.detail)
 
     def test_resolvable_target_reports_nothing_missing(self) -> None:
         hooks = self._hooks(f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"')

@@ -208,6 +208,37 @@ def unresolvable_hook_targets(hooks: dict) -> list[str]:
     return sorted(set(missing))
 
 
+#: `SessionStart` sources a wake-up hook must match to actually reach a lane
+#: session (harmonic-forge#560). `compact` is deliberately NOT here: it has its
+#: own entry running `compaction_marker.py`, whose `build_context()` already
+#: carries a wake-up line, so matching it in both injects twice.
+WAKEUP_SOURCES = ("startup", "resume", "clear", "fork")
+
+
+def sessionstart_source_gaps(hooks: dict) -> list[str]:
+    """Sources a `belt_wakeup.py` entry declares no coverage for.
+
+    harmonic-forge#560. `belt_wakeup.py` shipped wired as `startup|resume`, and
+    `clear` is a DISTINCT source rather than a variant of `startup` — so the
+    hook was silent for `lane<N> /clear`, which is how the operator actually
+    starts lane sessions across all three lanes. Nothing failed; it simply
+    never fired, and a fresh Lane 1 session opened by asserting it had no lane
+    while `LANE=1` sat in its environment.
+
+    Checked here, in the per-repo onboarding report, rather than only in
+    harmonic-forge's own unit tests: a repo's tests can only speak for that
+    repo, and this is precisely the partial-distribution class #540 exists for.
+    An empty list is full coverage.
+    """
+    for block in hooks.get("SessionStart") or []:
+        commands = " ".join(h.get("command", "") for h in block.get("hooks") or [])
+        if "belt_wakeup.py" not in commands:
+            continue
+        declared = set((block.get("matcher") or "").split("|"))
+        return [s for s in WAKEUP_SOURCES if s not in declared]
+    return []
+
+
 def check_hooks(project: Project) -> Check:
     """Presence, shape, AND that every platform script it names resolves.
 
@@ -241,6 +272,16 @@ def check_hooks(project: Project) -> Check:
     # regression #547 introduced in cymagraph-infra, which had no PreToolUse
     # hooks at all and flipped from FAIL to OK the moment a settings.json
     # existed.
+    # A wake-up hook that never fires for the launch path in daily use is
+    # worse than none: the report reads green and the session is unguarded.
+    gaps = sessionstart_source_gaps(hooks) if isinstance(hooks, dict) else []
+    if gaps:
+        return Check("hooks", FAIL,
+                     "belt_wakeup.py matches no SessionStart source for: "
+                     + ", ".join(gaps)
+                     + " -- a session started that way is never told its lane "
+                       "(harmonic-forge#560)")
+
     guards = len(hooks.get("PreToolUse") or []) if isinstance(hooks, dict) else 0
     detail = f"{len(events)} event(s): {', '.join(events)}; {guards} PreToolUse matcher(s)"
     return Check("hooks", OK, detail)

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Tests for the belt wake-up hook (harmonic-forge#518 AC7)."""
 
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import belt_wakeup  # noqa: E402
 from belt_wakeup import build_wakeup, handle  # noqa: E402
 
 
@@ -76,3 +81,122 @@ class TestCompactionSeamCarriesIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSessionStartSourceCoverage(unittest.TestCase):
+    """harmonic-forge#560: the hook worked and was silent for the way lane
+    sessions are actually launched.
+
+    `clear` is a distinct `SessionStart` source, not a variant of `startup`, so
+    `startup|resume` never fired for `lane2 /clear`. Asserted against the
+    settings file rather than described in prose, because a matcher string is
+    exactly the kind of thing edited by someone who does not know which of the
+    two candidate mechanisms they are working against.
+
+    **Scoped to THIS repo's own settings file, found relative to this test.**
+    The first draft walked `~/Harmonic_Projects/<repo>/.claude/settings.json`
+    for all four consuming repos — which is operator-local state, exactly the
+    class harmonic-forge#504 exists to prevent and exactly the trap that turned
+    harmonic-forge#552's CI red one issue earlier. A repo's CI can only speak
+    for that repo. AC3's cross-repo claim is carried by the four PRs, and by
+    this same test file arriving in each repo that has one.
+    """
+
+    #: `compact` is deliberately absent — it has its own entry running
+    #: `compaction_marker.py`, and matching it here would inject twice.
+    REQUIRED_SOURCES = {"startup", "resume", "clear", "fork"}
+
+    def setUp(self):
+        path = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
+        if not path.is_file():
+            self.skipTest(f"no settings at {path}")
+        self.settings = json.loads(path.read_text(encoding="utf-8"))
+
+    def _matcher_for(self, script):
+        for block in (self.settings.get("hooks") or {}).get("SessionStart") or []:
+            for hook in block.get("hooks") or []:
+                if script in hook.get("command", ""):
+                    return block.get("matcher", "")
+        return None
+
+    def test_the_wakeup_matches_clear_and_fork(self):
+        """AC1. `lane<N> /clear` is a normal launch across all three lanes, and
+        a safety mechanism a normal launch disables is not one. `fork` is here
+        for the same reason: excluding it rebuilds this bug on another path."""
+        matcher = self._matcher_for("belt_wakeup.py")
+        self.assertIsNotNone(matcher, "belt_wakeup is not wired in this repo")
+        self.assertLessEqual(self.REQUIRED_SOURCES, set(matcher.split("|")))
+
+    def test_compact_is_excluded_from_the_wakeup_matcher(self):
+        """Not an oversight. `compaction_marker.build_context()` already
+        carries a wake-up line, so matching `compact` here injects twice."""
+        matcher = self._matcher_for("belt_wakeup.py") or ""
+        self.assertNotIn("compact", matcher.split("|"))
+
+    def test_the_compaction_marker_is_wired_on_compact(self):
+        """AC4. cymagraph-infra and openclaw-projects carried a `startup|resume`
+        entry and NO `compact` entry at all, so a compacted session there got no
+        recovery injection — the same partial-distribution failure AC3 names,
+        one hook over. Both now have it."""
+        self.assertEqual(self._matcher_for("compaction_marker.py"), "compact")
+
+
+class TestFireLog(unittest.TestCase):
+    """The fire log is #560's acceptance test, made mechanical.
+
+    AC1 says "verified by asking a fresh session what told it its lane, not by
+    reading configuration". A session's self-report is the weakest evidence
+    this platform accepts, and #560 exists because one such report was wrong.
+    The log records what actually happened instead.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "fires.jsonl"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_it_records_the_sessionstart_source_not_the_lane_source(self):
+        """Two different things, and conflating them would make the log answer
+        a question nobody asked. `resolve_lane`'s source says HOW the lane was
+        determined ("env"); the payload's says which session-start event fired
+        ("clear")."""
+        belt_wakeup.record_fire({"source": "clear", "cwd": "/x"}, "2", True,
+                                path=self.path)
+        entry = json.loads(self.path.read_text().splitlines()[0])
+        self.assertEqual(entry["source"], "clear")
+        self.assertEqual(entry["lane"], "2")
+        self.assertTrue(entry["injected"])
+
+    def test_a_no_lane_session_is_recorded_as_not_injected(self):
+        """The discriminating record: fired, but injected nothing."""
+        belt_wakeup.record_fire({"source": "startup", "cwd": "/x"}, None, False,
+                                path=self.path)
+        entry = json.loads(self.path.read_text().splitlines()[0])
+        self.assertIsNone(entry["lane"])
+        self.assertFalse(entry["injected"])
+
+    def test_it_never_raises_and_reports_failure(self):
+        """A logging failure must never stop a session from starting."""
+        self.assertFalse(
+            belt_wakeup.record_fire({}, "1", True,
+                                    path=Path("/proc/nonexistent/fires.jsonl")))
+
+    def test_the_log_is_bounded(self):
+        for _ in range(belt_wakeup.FIRE_LOG_MAX + 20):
+            belt_wakeup.record_fire({"source": "startup"}, "1", True,
+                                    path=self.path)
+        self.assertLessEqual(len(self.path.read_text().splitlines()),
+                             belt_wakeup.FIRE_LOG_MAX)
+
+    def test_handle_records_a_fire_even_when_it_injects_nothing(self):
+        """Silence is the symptom under investigation, so silence must leave a
+        trace. A hook that logs only when it speaks cannot answer "did it
+        fire?" — which is #560's entire question."""
+        with mock.patch.object(belt_wakeup, "FIRE_LOG", self.path), \
+                mock.patch.dict(os.environ, {"LANE": ""}, clear=False):
+            belt_wakeup.handle({"source": "clear", "cwd": "/tmp"})
+        self.assertTrue(self.path.is_file())
+        self.assertEqual(
+            json.loads(self.path.read_text().splitlines()[0])["source"], "clear")
