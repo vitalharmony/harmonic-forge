@@ -362,8 +362,8 @@ hooks = []
 id = "R-0039"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "Before creating any issue, run the three-test filing bar in order and stop at the first that answers; at branches 1 and 2 'File it' means 'file it with its artifact,' in one action. Only 'no one could write it' fails the bar -- lacking the authority to write it does not. The operator-scoped exception needs a literal instruction naming the issue; self-declared Tooling-Exception eligibility does not reach it."
-text_sha = "b3d133f22abae98a"
+statement = "Applies to every lane AND to sessions with no LANE set. Before creating any issue, run the three-test filing bar in order and stop at the first that answers; at branches 1 and 2 'File it' means 'file it with its artifact,' in one action. An un-handoffable issue is a failed filing-bar test. Three exceptions, each stating its reason on the issue: a parent epic, an explicitly deferred design record, and an issue blocked on an unlanded prerequisite (a deferral, not a waiver -- declared per R-0352). Only 'no one could write it' fails the bar; lacking the authority does not. The operator-scoped exception needs a literal instruction naming the issue; self-declared Tooling-Exception eligibility does not reach it."
+text_sha = "9dc187fd719dac6a"
 hooks = []
 
 [[rule]]
