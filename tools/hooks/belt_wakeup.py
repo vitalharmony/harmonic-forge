@@ -33,11 +33,23 @@ WHICH SESSIONSTART SOURCES THIS MATCHES, AND WHY (harmonic-forge#560)
 mechanisms, and the next person changing this string should know which one they
 are working against:
 
-**Mechanism 1 was the live one.** `clear` is a DISTINCT `SessionStart` source,
-not a variant of `startup`, so `startup|resume` genuinely never fired for a
-session begun as `lane2 /clear` — which is how the operator actually starts lane
-sessions, across all three lanes. It was not that `/clear` discarded an
-injection that had already happened; no injection happened at all.
+**BOTH mechanisms are live, and the first draft of this note recorded only the
+first one — wrongly.** Read the CLI itself (2.1.267) rather than inferring:
+
+  * `clear` IS a distinct `SessionStart` source, so a `startup|resume` matcher
+    never fired on it. That is mechanism 1, and adding `clear` fixes it.
+  * AND `/clear` discards an injection that already happened. `clearConversation`
+    releases the deferred startup hooks, then empties the message list. So
+    `lane<N> /clear` — which is `claude /clear`, an ordinary `startup` session
+    followed by the command — DID fire at `startup` and DID have its injection
+    wiped. That is mechanism 2, and it is why the matcher change is necessary
+    rather than merely tidy: the re-fire on `clear` is the only injection that
+    survives, because `clearConversation` sets the cleared conversation's
+    messages FROM the clear-source hook results.
+
+Getting this backwards matters for the next person: "mechanism 1 only" implies
+`/clear` preserves injections, which is exactly the belief that makes dropping
+`clear` from the matcher look safe.
 
 The full source vocabulary is `startup`, `resume`, `clear`, `compact`, `fork`.
 `fork` is included here for the same reason `clear` is: it starts a session that
@@ -99,11 +111,17 @@ def build_wakeup(lane: str, source: str) -> str | None:
 #: not to trust. This log answers it mechanically instead, and it is what
 #: separates the issue's two candidate mechanisms:
 #:
-#:   * a line with `"source": "clear"` and a session that still does not know
-#:     its lane  -> the hook fires and `/clear` discards the injection
-#:     (mechanism 2); the matcher was never the problem.
-#:   * no line at all for a `/clear` start -> the hook did not fire, so the
-#:     source vocabulary is the problem (mechanism 1).
+#:   * a `clear` line AND a session that knows its lane -> working as intended.
+#:   * a `startup` line but no `clear` line for a `lane<N> /clear` launch -> the
+#:     matcher does not cover `clear`; the startup injection was wiped by
+#:     `/clear` and nothing replaced it. This is the shipped defect's signature.
+#:
+#: Note what it is NOT: "no line at all". An earlier draft of this comment said
+#: a `/clear` launch would produce no line if the matcher were wrong, which is
+#: false — `lane<N> /clear` is a `startup` session plus a command, so the
+#: startup fire always happens. An operator applying that rule to real data
+#: would have landed on neither branch and read the log as evidence against the
+#: very mechanism it was recording.
 #:
 #: Evidence only. Nothing reads this to make a decision, and a logging failure
 #: can never stop a session from starting.
@@ -123,6 +141,12 @@ def record_fire(payload: dict, lane: str | None, injected: bool,
             # the LANE was determined). Conflating the two is easy and would
             # make this log answer a different question than the one asked.
             "source": payload.get("source"),
+            # Without this a mid-session `/clear` is indistinguishable from a
+            # `/clear` LAUNCH, and two sessions in one worktree are
+            # indistinguishable from one — so the log could not answer the
+            # per-session question AC1 actually asks. `compaction_marker.py`
+            # reads the same field off the same event.
+            "session_id": payload.get("session_id"),
             "cwd": payload.get("cwd"),
             "lane": lane,
             "injected": injected,

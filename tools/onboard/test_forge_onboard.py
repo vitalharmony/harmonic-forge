@@ -428,3 +428,48 @@ class HookContentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionStartMatcherSemanticsTests(unittest.TestCase):
+    """harmonic-forge#560 preclose. A matcher is a REGEX, not a pipe list.
+
+    The first draft split on "|" and tested membership, which got the one
+    common case right and every other case wrong.
+    """
+
+    def _wired(self, *matchers):
+        return {"SessionStart": [
+            {"matcher": m, "hooks": [{"command": "python3 belt_wakeup.py"}]}
+            for m in matchers]}
+
+    def test_coverage_accumulates_across_blocks(self):
+        """Returning on the FIRST block naming the hook reported a split
+        configuration as covering only half. Not hypothetical: this same change
+        establishes the two-block shape by adding a `compact` block."""
+        self.assertEqual(
+            fo.sessionstart_source_gaps(self._wired("startup|resume", "clear|fork")),
+            [])
+
+    def test_an_omitted_matcher_matches_everything(self):
+        self.assertEqual(fo.sessionstart_source_gaps(self._wired(None)), [])
+
+    def test_a_catch_all_regex_matches_everything(self):
+        self.assertEqual(fo.sessionstart_source_gaps(self._wired(".*")), [])
+
+    def test_matching_is_unanchored_like_the_runtime(self):
+        """Claude Code dispatches with `new RegExp(m).test(source)`, which is
+        unanchored. A stricter check here would report a gap for a matcher that
+        actually fires — a check disagreeing with the thing it checks is worse
+        than no check."""
+        self.assertEqual(fo.sessionstart_source_gaps(self._wired("start|resum|clea|for")),
+                         [])
+
+    def test_an_invalid_regex_covers_nothing(self):
+        gaps = fo.sessionstart_source_gaps(self._wired("*[unclosed"))
+        self.assertEqual(gaps, list(fo.WAKEUP_SOURCES))
+
+    def test_a_malformed_sessionstart_block_does_not_raise(self):
+        """It returned a Check on every other malformed input and raised
+        AttributeError on this one, which escaped `main` and aborted every
+        remaining project in the manifest."""
+        self.assertEqual(fo.sessionstart_source_gaps({"SessionStart": ["oops"]}), [])

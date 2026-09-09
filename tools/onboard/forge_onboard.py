@@ -215,8 +215,32 @@ def unresolvable_hook_targets(hooks: dict) -> list[str]:
 WAKEUP_SOURCES = ("startup", "resume", "clear", "fork")
 
 
+def _matcher_covers(matcher: str | None, source: str) -> bool:
+    """Does this matcher match this source?
+
+    A hook `matcher` is a REGEX, not a pipe-delimited list — `startup|resume`
+    only looks like one. Splitting on "|" and testing membership got the common
+    case right and every other case wrong: `".*"`, `"clear|fork"` combined with
+    a second block, or an OMITTED matcher (which matches everything) all read
+    as covering nothing. An omitted or empty matcher is the match-all case.
+    """
+    if matcher in (None, "", "*"):
+        return True
+    try:
+        # UNANCHORED, because that is what Claude Code does: dispatch is
+        # `new RegExp(matcher).test(source)` (verified in the installed binary,
+        # 2.1.267), with an invalid pattern logged and treated as no match.
+        # `re.fullmatch` here would be stricter than the runtime and report a
+        # gap for a matcher that actually fires — a check that disagrees with
+        # the thing it checks is worse than no check.
+        return re.search(matcher, source) is not None
+    except re.error:
+        # An unparseable matcher matches nothing, which is itself the finding.
+        return False
+
+
 def sessionstart_source_gaps(hooks: dict) -> list[str]:
-    """Sources a `belt_wakeup.py` entry declares no coverage for.
+    """Sources no `belt_wakeup.py` entry covers.
 
     harmonic-forge#560. `belt_wakeup.py` shipped wired as `startup|resume`, and
     `clear` is a DISTINCT source rather than a variant of `startup` — so the
@@ -225,18 +249,74 @@ def sessionstart_source_gaps(hooks: dict) -> list[str]:
     never fired, and a fresh Lane 1 session opened by asserting it had no lane
     while `LANE=1` sat in its environment.
 
-    Checked here, in the per-repo onboarding report, rather than only in
+    Coverage is accumulated across EVERY block naming the hook, not read off
+    the first one. Returning on the first match reported a settings file that
+    splits the hook over two blocks as covering only what the first block
+    listed — and this same change establishes the two-block shape, by adding a
+    second `SessionStart` block for `compaction_marker.py` to two repos.
+
+    Checked in the per-repo onboarding report rather than only in
     harmonic-forge's own unit tests: a repo's tests can only speak for that
     repo, and this is precisely the partial-distribution class #540 exists for.
-    An empty list is full coverage.
+    An empty list is full coverage; a repo that does not wire the hook at all
+    returns an empty list too, because absent is a different finding from
+    mis-matched.
     """
+    matchers: list[str | None] = []
     for block in hooks.get("SessionStart") or []:
-        commands = " ".join(h.get("command", "") for h in block.get("hooks") or [])
-        if "belt_wakeup.py" not in commands:
+        if not isinstance(block, dict):
             continue
-        declared = set((block.get("matcher") or "").split("|"))
-        return [s for s in WAKEUP_SOURCES if s not in declared]
-    return []
+        commands = " ".join(h.get("command", "") for h in block.get("hooks") or []
+                            if isinstance(h, dict))
+        if "belt_wakeup.py" in commands:
+            matchers.append(block.get("matcher"))
+    if not matchers:
+        return []
+    return [s for s in WAKEUP_SOURCES
+            if not any(_matcher_covers(m, s) for m in matchers)]
+
+
+def stale_worktree_hook_gaps(project: Project) -> list[str]:
+    """Worktrees of this project whose OWN settings.json misses a source.
+
+    The finding that nearly shipped this issue as a no-op (preclose, #560).
+    `.claude/settings.json` is a TRACKED file, so every worktree carries its
+    own copy of it — and the lane launchers do not run in the main checkout.
+    `tools/lane/lane2` cd's into `HRSE2-lane2`, which is exactly where #560 was
+    reproduced, and which sits on a DETACHED HEAD that no merge to `main` ever
+    fast-forwards.
+
+    Measured at the time of writing: seven lane worktrees across four repos,
+    every one of them still `startup|resume`. Merging the fix would have left
+    `lane2 /clear` — the launch the issue is entirely about — exactly as broken
+    as before, while this same report printed `ok` for the one checkout nobody
+    launches from.
+    """
+    if project.checkout is None:
+        return []
+    result = subprocess.run(
+        ["git", "-C", str(project.checkout), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        return []
+    gaps = []
+    for line in result.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = Path(line.split(" ", 1)[1])
+        if path == project.checkout:
+            continue
+        settings = path / ".claude" / "settings.json"
+        if not settings.is_file():
+            continue
+        try:
+            hooks = json.loads(settings.read_text(encoding="utf-8")).get("hooks")
+        except (OSError, ValueError):
+            continue
+        if isinstance(hooks, dict) and sessionstart_source_gaps(hooks):
+            gaps.append(path.name)
+    return sorted(gaps)
 
 
 def check_hooks(project: Project) -> Check:
@@ -281,6 +361,17 @@ def check_hooks(project: Project) -> Check:
                      + ", ".join(gaps)
                      + " -- a session started that way is never told its lane "
                        "(harmonic-forge#560)")
+
+    # The main checkout being right is not the same as the launcher's checkout
+    # being right, and the launchers do not run here.
+    stale = stale_worktree_hook_gaps(project)
+    if stale:
+        return Check("hooks", FAIL,
+                     "this checkout is correct but these worktrees are not: "
+                     + ", ".join(stale)
+                     + " -- `.claude/settings.json` is tracked, so a detached "
+                       "worktree keeps its own stale copy through any merge, "
+                       "and the lane launchers run THERE (harmonic-forge#560)")
 
     guards = len(hooks.get("PreToolUse") or []) if isinstance(hooks, dict) else 0
     detail = f"{len(events)} event(s): {', '.join(events)}; {guards} PreToolUse matcher(s)"

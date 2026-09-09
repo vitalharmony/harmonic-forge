@@ -51,6 +51,19 @@ class TestBeltDoesNotAutoArm(unittest.TestCase):
 
 
 class TestNoLaneMeansNoProtocols(unittest.TestCase):
+    def setUp(self):
+        """`handle()` records every fire now, so any test calling it writes to
+        the operator's REAL log unless redirected — and that log is the artifact
+        this issue designates as its evidence. Nine fabricated records with
+        `"source": null`, shape-indistinguishable from a genuine no-lane fire,
+        were already sitting in it from gate runs before this was caught."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(belt_wakeup, "FIRE_LOG",
+                                    Path(tmp.name) / "fires.jsonl")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_unset_lane_produces_nothing(self):
         self.assertIsNone(build_wakeup("", "none"))
         self.assertIsNone(build_wakeup("unknown", "none"))
@@ -79,9 +92,6 @@ class TestCompactionSeamCarriesIt(unittest.TestCase):
         self.assertIn("not armed", text.lower())
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestSessionStartSourceCoverage(unittest.TestCase):
     """harmonic-forge#560: the hook worked and was silent for the way lane
@@ -98,8 +108,11 @@ class TestSessionStartSourceCoverage(unittest.TestCase):
     for all four consuming repos — which is operator-local state, exactly the
     class harmonic-forge#504 exists to prevent and exactly the trap that turned
     harmonic-forge#552's CI red one issue earlier. A repo's CI can only speak
-    for that repo. AC3's cross-repo claim is carried by the four PRs, and by
-    this same test file arriving in each repo that has one.
+    for that repo. AC3's cross-repo claim is NOT carried by this file — it lives only in
+    harmonic-forge, and an earlier draft of this docstring claimed it travelled
+    "to each repo that has one", which no repo does. The cross-repo guard is
+    `forge_onboard.check_hooks`, which reads every declared project's settings
+    AND every worktree's.
     """
 
     #: `compact` is deliberately absent — it has its own entry running
@@ -134,10 +147,15 @@ class TestSessionStartSourceCoverage(unittest.TestCase):
         self.assertNotIn("compact", matcher.split("|"))
 
     def test_the_compaction_marker_is_wired_on_compact(self):
-        """AC4. cymagraph-infra and openclaw-projects carried a `startup|resume`
-        entry and NO `compact` entry at all, so a compacted session there got no
-        recovery injection — the same partial-distribution failure AC3 names,
-        one hook over. Both now have it."""
+        """AC4, for THIS repo only — which is all this assertion can see.
+
+        cymagraph-infra and openclaw-projects also carried no `compact` entry
+        and both now have one, but nothing here verifies that: an earlier
+        docstring claimed it did, and deleting the new block from either repo
+        left this test green. The mechanical guard for the cross-repo half is
+        `forge_onboard.check_hooks`, which reads every declared project's
+        settings AND every worktree's. This is the local half only.
+        """
         self.assertEqual(self._matcher_for("compaction_marker.py"), "compact")
 
 
@@ -200,3 +218,12 @@ class TestFireLog(unittest.TestCase):
         self.assertTrue(self.path.is_file())
         self.assertEqual(
             json.loads(self.path.read_text().splitlines()[0])["source"], "clear")
+
+
+if __name__ == "__main__":
+    # MUST stay last. It sat mid-file, so `python3 test_belt_wakeup.py` ran only
+    # the 8 classes above it and printed OK while every harmonic-forge#560
+    # assertion below went unexecuted — including with the matcher reverted.
+    # Verifying this hook the obvious way returned a green that asserted
+    # nothing about the bug it was written for.
+    unittest.main(verbosity=2)
