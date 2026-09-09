@@ -530,6 +530,117 @@ class CrossRepoMergeArityTests(unittest.TestCase):
             ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
 
 
+class ConsumedSlotRecoveryTests(unittest.TestCase):
+    """harmonic-forge#549 — a consumed slot must not shadow a live one.
+
+    `decide()` marks a target consumed the moment it MATCHES, whether or not
+    the command it authorized actually ran. A command can match and still not
+    run: a later guard denies it, or the operator interrupts. Live incident,
+    2026-09-09 — a `gh pr merge` bundled into one Bash call with a destructive
+    `git worktree remove --force` was denied for the destructive half, after
+    this module had already consumed the linked target.
+
+    Two independent bugs then made the authorization permanently unreachable,
+    and each is covered separately below because either alone reproduces it:
+
+      * `link_pr`'s idempotency check ignored `consumed`, so every re-link
+        matched the dead slot and returned early, binding nothing.
+      * `_match_pr_merge` returned the FIRST slot matching repo+PR, also
+        ignoring `consumed`, so even a correctly-linked live slot beside it
+        was never reached.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "state.json"
+
+    def _merge_targets(self, key="F1"):
+        state = json.loads(self.tmp.read_text())
+        return [t for t in state[key]["targets"]
+                if "merge" in t["action"].lower()]
+
+    def _spend(self, repo="o/a", pr=1):
+        """Consume a linked slot the way an interrupted merge does."""
+        verdict, _ = ba.decide(f"gh pr merge {pr} --repo {repo}",
+                               state_path=self.tmp)
+        self.assertEqual(verdict, "allow")
+
+    def test_relink_after_a_consumed_slot_binds_a_fresh_one(self):
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self._spend()
+        self.assertEqual(len(self._merge_targets()), 1)
+
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        live = [t for t in self._merge_targets() if not t["consumed"]]
+        self.assertEqual(len(live), 1, "a re-link after a spent slot binds a new one")
+        self.assertEqual((live[0]["repo"], live[0]["pr_number"]), ("o/a", 1))
+
+    def test_merge_is_authorized_again_after_relinking(self):
+        """The end-to-end recovery: the merge that never ran becomes reachable."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self._spend()
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        verdict, reason = ba.decide("gh pr merge 1 --repo o/a", state_path=self.tmp)
+        self.assertEqual(verdict, "allow", reason)
+
+    def test_a_live_slot_is_not_shadowed_by_a_consumed_one(self):
+        """`_match_pr_merge` alone: two slots for one PR, the first spent."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        state = json.loads(self.tmp.read_text())
+        merges = [t for t in state["F1"]["targets"] if "merge" in t["action"].lower()]
+        merges[0].update(repo="o/a", pr_number=1, consumed=True,
+                         consumed_by="an-interrupted-attempt")
+        state["F1"]["targets"].append({"action": "gh pr merge", "consumed": False,
+                                       "consumed_by": None, "pr_number": 1,
+                                       "repo": "o/a"})
+        self.tmp.write_text(json.dumps(state))
+
+        verdict, reason = ba.decide("gh pr merge 1 --repo o/a", state_path=self.tmp)
+        self.assertEqual(verdict, "allow", reason)
+
+    def test_all_slots_consumed_still_asks(self):
+        """Not a widening. With no live slot, spent is still spent.
+
+        The probe must be a DIFFERENT command string from the one that spent
+        the slot: `decide()` deliberately re-allows a consumed target whose
+        `consumed_by` equals the current command hash, so an identical retry of
+        the very same command is idempotent rather than blocked. Asserting with
+        the same string would pass through that branch and prove nothing about
+        the consumed check.
+        """
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self._spend()
+        verdict, reason = ba.decide(
+            "gh pr merge 1 --repo o/a --squash", state_path=self.tmp)
+        self.assertEqual(verdict, "ask", reason)
+
+    def test_an_identical_retry_of_the_spending_command_is_still_idempotent(self):
+        """Guard the branch the test above sidesteps, so a fix cannot break it."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        cmd = "gh pr merge 1 --repo o/a"
+        self.assertEqual(ba.decide(cmd, state_path=self.tmp)[0], "allow")
+        self.assertEqual(ba.decide(cmd, state_path=self.tmp)[0], "allow")
+
+    def test_relink_does_not_touch_an_unrelated_key(self):
+        ba.authorize(["F1", "F2"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self._spend()
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets("F2")), 1)
+        self.assertFalse(self._merge_targets("F2")[0]["consumed"])
+
+    def test_idempotency_still_holds_for_a_live_slot(self):
+        """The narrow fix must not undo #502 AC8's idempotence."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets()), 1)
+
+
 class AskDiagnosticTests(unittest.TestCase):
     """AC4 — the four states must be tellable apart from the prompt alone.
 

@@ -215,6 +215,47 @@ def _parse_pr_merge(tokens: list[str]) -> tuple[str | None, str, str] | None:
     return (repo, number, "pr") if number else None
 
 
+def _parse_api_merge(tokens: list[str]) -> tuple[str, str, str] | None:
+    """`gh api ... -X PUT .../pulls/N/merge` -> (repo, pr_number, kind='pr').
+
+    harmonic-forge#549 AC4. This hook parsed exactly three shapes -- `gh issue
+    close`, `gh pr merge`, and `gh api PATCH ... state=closed` -- so the REST
+    merge form matched none of them and passed unexamined. `batch_auth` has
+    always handled both merge forms (`classify_pr_merge` checks
+    `API_MERGE_PATH` plus `_method_is(rest, "PUT")`), which is why BATCH
+    stopped a live `gh api -X PUT` merge on 2026-09-09 while this guard did
+    not look at it at all. Two hooks parsing the same command class to
+    different depths is the gap.
+
+    `API_MERGE_PATH` is imported from `batch_auth` rather than re-declared: a
+    second copy of the pattern is what drifts, and the two hooks disagreeing
+    about what counts as a merge is the defect being fixed.
+    """
+    if len(tokens) < 3 or tokens[1] != "api":
+        return None
+
+    from batch_auth import API_MERGE_PATH  # noqa: PLC0415
+
+    joined = tokens[2:]
+    is_put = False
+    target: tuple[str, str] | None = None
+
+    for i, token in enumerate(joined):
+        upper = token.upper()
+        if upper in ("-XPUT", "--METHOD=PUT", "-X=PUT"):
+            is_put = True
+        if token in ("-X", "--method") and i + 1 < len(joined):
+            if joined[i + 1].upper() == "PUT":
+                is_put = True
+        match = API_MERGE_PATH.search(token)
+        if match:
+            target = (match.group(1), match.group(2))
+
+    if is_put and target:
+        return (target[0], target[1], "pr")
+    return None
+
+
 def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
     """`gh api ... PATCH ... state=closed` -> (repo, issue, kind='issue')."""
     if len(tokens) < 3 or tokens[1] != "api":
@@ -270,7 +311,7 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
         if os.path.basename(tokens[0]) != "gh":
             continue
         parsed = (_parse_issue_close(tokens) or _parse_pr_merge(tokens)
-                  or _parse_api_close(tokens))
+                  or _parse_api_merge(tokens) or _parse_api_close(tokens))
         if parsed:
             targets.append(parsed)
     return targets
