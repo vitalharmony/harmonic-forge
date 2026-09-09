@@ -57,7 +57,34 @@ def _load_sync_rules():
 
 
 def report(project_root: Path, sync_rules=None) -> int:
-    """Gate exit code: 0 verified or undeclared, 1 drift, 2 could not run."""
+    """Gate exit code: 0 verified, 1 anything else. Nothing degraded is green.
+
+    An earlier version of this carved out `EXIT_CANNOT_RUN` as a loud-but-
+    non-fatal warning, reasoning that an absent manifest usually means a branch
+    forked before it landed, and "a branch cannot fix a file it does not have."
+    Preclose-inspection killed that, on two counts, and both were right:
+
+    * **The carve-out was keyed on the exit code, not the reason.**
+      `verify_project` returns `EXIT_CANNOT_RUN` for TWO states — manifest
+      absent, and manifest present but unreadable (conflict markers after a
+      rebase, an `OSError`, or the `skill = [...]` typo `load_skill_manifest`
+      exists to catch). The second is a file the branch DOES have and CAN fix,
+      and it was being told the opposite. Worse, the remedy named did not work:
+      link mode deliberately skips skills on a `ManifestError`, so
+      `mise run hooks-install` left the skill unlinked and the gate green.
+
+    * **It was unbounded.** The "short-lived old branch" rationale does not
+      constrain anything. `harmonic-forge-f326`, a long-lived worktree with no
+      `.claude/skills/` at all, passed this gate — harmonic-forge#540's exact
+      measured defect reproducing inside the check built to end it. Nothing
+      counted, aged, or escalated the condition, so "loud but non-fatal"
+      degrades to "in the scrollback" on the second occurrence.
+
+    So there is no non-green degraded state any more, which restores
+    harmonic-forge#541's own stated contract — "an absent manifest is never
+    green" — instead of quietly inverting it one layer up. The two reasons
+    still get different messages, because they need different actions.
+    """
     sync_rules = sync_rules or _load_sync_rules()
 
     if not project_root.is_dir():
@@ -65,21 +92,40 @@ def report(project_root: Path, sync_rules=None) -> int:
         return 2
 
     code = sync_rules.verify_project(project_root)
-
     if code == sync_rules.EXIT_OK:
         return 0
 
     if code == sync_rules.EXIT_CANNOT_RUN:
-        print(
-            "[platform-links] This checkout does not declare which platform "
-            "skills it consumes, so nothing could be compared. Usually a branch "
-            "forked before the manifest landed. Run `mise run hooks-install` "
-            "(once per clone) or switch to a branch carrying "
-            ".claude/platform-skills.toml. Not failing the gate — a branch "
-            "cannot fix a file it does not have.",
-            file=sys.stderr,
-        )
-        return 0
+        # Absent and malformed both land here; tell them apart by asking.
+        malformed: str | None = None
+        try:
+            sync_rules.load_skill_manifest(project_root)
+        except sync_rules.ManifestError as exc:
+            malformed = str(exc)
+
+        if malformed is not None:
+            print(
+                "[platform-links] BROKEN MANIFEST — "
+                f"{sync_rules.manifest_path(project_root)} exists and cannot be "
+                f"read: {malformed}. Nothing was compared, so this gate can say "
+                "nothing about the rules, agents or skills this checkout is "
+                "running with. `mise run hooks-install` will NOT fix it — link "
+                "mode skips skills on a manifest error by design. Repair the "
+                "file (a rebase leaving conflict markers, and a `skill =` typo "
+                "for `skills =`, are the two that happen).",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[platform-links] UNDECLARED — "
+                f"{sync_rules.manifest_path(project_root)} does not exist, so "
+                "nothing states which platform skills this checkout consumes "
+                "and nothing was compared. Usually a branch forked before the "
+                "manifest landed: rebase onto a commit that carries it, or run "
+                "`mise run hooks-install` on a fresh clone.",
+                file=sys.stderr,
+            )
+        return 1
 
     print(
         "[platform-links] DRIFT — a platform link this repo declares is missing "
