@@ -2292,4 +2292,4 @@ anchor = "role-boundary-never-closes"
 statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only, may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
 text_sha = "4d1630237163c317"
 hooks = []
-exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0317"]
+exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]

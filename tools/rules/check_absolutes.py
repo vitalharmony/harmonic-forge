@@ -55,6 +55,16 @@ _ABSOLUTE_PATTERNS = [
     re.compile(r"only\s+the\s+operator.s\s+explicit\s+.{0,40}instruction\s+authorizes\s+closure", re.IGNORECASE),
     re.compile(r"closing\s+requires\s+(the\s+human\s+operator|marc).s\s+explicit", re.IGNORECASE),
     re.compile(r"closes/merges\s+(on\s+its\s+own|without)", re.IGNORECASE),
+    # harmonic-forge#524 round 3: R-0300's phrasing ("does not push, merge, or
+    # close an issue without explicit operator instruction") matched none of
+    # the above -- caught by preclose-inspection, not this list, which is
+    # exactly the failure mode this script exists to remove. Pattern list is
+    # a maintained allowlist, not a parser; a new phrasing needs a pattern
+    # added here, same as a new registry field needs adding to
+    # check_rule_drift.py's _KNOWN_FIELDS.
+    re.compile(r"does\s+not\s+(push,?\s+)?merge,?\s+or\s+close\s+an?\s+issue\s+without", re.IGNORECASE),
+    re.compile(r"never\s+a\s+unilateral\s+close", re.IGNORECASE),
+    re.compile(r"unilateral\s+(close|merge)", re.IGNORECASE),
 ]
 
 #: Rules that legitimately restate the absolute in a scope that is still
@@ -158,13 +168,27 @@ def main() -> int:
 
     sibling = find_sibling(args.sibling)
     if sibling is None:
-        looked = str(args.sibling) if args.sibling else ", ".join(
-            str(Path.home() / r) for r in _SIBLING_CANDIDATES)
+        # harmonic-forge#524 round 3: an explicit --sibling/--sibling-root
+        # that goes stale (the registry moved or was renamed -- the reason
+        # _SIBLING_CANDIDATES exists at all) must fail loudly, not read as
+        # the routine "single-repo checkout, nothing to compare" case. Only
+        # the auto-discovery path (no --sibling given) gets the informational
+        # exit 0 that matches check_cross_registry.py's own convention.
+        if args.sibling is not None:
+            print(f"check_absolutes: --sibling {args.sibling} does not exist. "
+                  f"This is a configuration error, not a single-repo checkout -- "
+                  f"an explicit path was given and it is wrong.", file=sys.stderr)
+            return 2
+        looked = ", ".join(str(Path.home() / r) for r in _SIBLING_CANDIDATES)
         print(f"check_absolutes SKIPPED — sibling registry not found at {looked}")
         print("  (single-repo checkout; this is not a pass, nothing was compared)")
         return 0
 
     sibling_root = args.sibling_root or sibling.parent.parent.parent
+    if not sibling_root.exists():
+        print(f"check_absolutes: sibling-root {sibling_root} does not exist -- "
+              f"cross-repo spans cannot be read. Configuration error.", file=sys.stderr)
+        return 2
     failures = check(args.registry, args.root, sibling, sibling_root)
     if failures:
         print(f"check_absolutes: {len(failures)} finding(s)", file=sys.stderr)
