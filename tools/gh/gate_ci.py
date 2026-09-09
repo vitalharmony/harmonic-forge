@@ -30,10 +30,21 @@ merge has to survive.
 `testing-gate.md` could say "also look at CI" — and this repo's own repeated
 finding is that prose compliance degrades under context pressure, which is
 precisely the condition a long gate run creates. AC1 says so outright: *"a
-prose instruction alone does not satisfy this."* So the refusal lives at the
-one place a gate result becomes real, `post_lane_discussion.py --kind
-gate-result`, and a PASS that cannot show a green CI conclusion for the SHA it
-names does not get posted.
+prose instruction alone does not satisfy this."*
+
+## Keyed on the BODY, never on the author's chosen stamp
+
+The first draft fired only for `post_lane_discussion.py --kind gate-result`.
+That is the author declaring what they are posting, and preclose inspection
+found the obvious consequence: omit the flag and the check never runs, while
+`lane_state.py` still scores the comment `gate.pass` from its heading. 74 of 98
+real `Lane 3 Gate Results` comments across both repos carry no
+`kind=gate-result` footer at all, so the bypass was not a corner case — it was
+the majority path.
+
+A gate report is whatever has the `## Lane 3 Gate Results` heading, which is
+exactly how `lane_state.py` decides, and the two must not derive it from
+different text.
 
 ## What it does NOT do
 
@@ -59,15 +70,73 @@ import json
 import re
 import subprocess
 
-#: The verdict, from the gate report's own text. `lane_state.py` reads the
-#: same shorthand; this deliberately does not import it, because that module
-#: lives in HRSE2 and this check has to work for every repo.
-_VERDICT = re.compile(r"(?im)^\s*(?:\*\*)?(?:Verdict|Result)(?:\*\*)?\s*[:—-]\s*"
-                      r"(?:\*\*)?\s*(PASS|FAIL|BLOCKED)\b")
-_VERDICT_INLINE = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Gate Results\b.*?\b(PASS|FAIL|BLOCKED)\b")
+#: The gate-report heading. `lane_state.py` treats this as AUTHORITATIVE when
+#: the `kind=` footer disagrees, and it is right to: 74 of 98 real
+#: `Lane 3 Gate Results` comments across both repos carry no
+#: `kind=gate-result` footer at all. So this module keys on the heading too —
+#: keying on the author's chosen stamp meant omitting `--kind gate-result`
+#: skipped the check entirely while `lane_state.py` still scored the comment
+#: `gate.pass`. That is the exact 00:12-PASS / 00:13-CI-failure sequence this
+#: module exists to prevent, reachable by leaving a flag off.
+GATE_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Gate Results\b(?P<rest>.*)$")
 
-#: The SHA the report claims to have gated (AC2). Full-length or abbreviated to
-#: at least 7, the git minimum for an unambiguous short hash here.
+#: The verdict, and ONLY from a place a verdict may legitimately live: the
+#: heading, or the lead block above the first `###`/`<details>`.
+#:
+#: An unanchored whole-body search was wrong in both directions. A per-case
+#: line — `**Result:** FAIL on TC4's optional half only; overall PASS.` — made
+#: a PASS report read as FAIL and skip the CI check; and hrse#373's genuine
+#: FAIL report, whose per-TC lines say `**Result:** PASS`, read as PASS and
+#: would have been routed into the refusal path, which is the "worse than
+#: none" outcome this module's own docstring warns about.
+_LEAD_VERDICT = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*(?:Verdict|Result)"
+                           r"[^\S\n]*\**[^\S\n]*[:—-][^\S\n]*\**[^\S\n]*"
+                           r"(PASS|FAIL|BLOCKED)\b")
+_HEADING_VERDICT = re.compile(r"\b(PASS|FAIL|BLOCKED)\b")
+
+#: Where the lead block ends: the first section heading or collapsible.
+_LEAD_END = re.compile(r"(?im)^(?:#{3,6}[ \t]|<details)")
+
+
+def looks_like_a_gate_report(body: str) -> bool:
+    """Is this body a Lane 3 gate report, whatever it was stamped?"""
+    return GATE_HEADING.search(body) is not None
+
+
+def _lead_block(body: str) -> str:
+    """The text above the first `###` section — where the verdict may live.
+
+    Everything below is per-case detail, and a per-case `Result:` is not the
+    gate's verdict.
+    """
+    match = GATE_HEADING.search(body)
+    start = match.end() if match else 0
+    rest = body[start:]
+    end = _LEAD_END.search(rest)
+    return rest[: end.start()] if end else rest
+
+
+def verdict_of(body: str) -> str | None:
+    """PASS / FAIL / BLOCKED, or None.
+
+    Returns `"CONFLICT"` when the heading and the lead block disagree — which
+    is refused rather than resolved. A report whose own two statements of its
+    verdict differ has not stated one.
+    """
+    heading = GATE_HEADING.search(body)
+    from_heading = None
+    if heading:
+        found = _HEADING_VERDICT.search(heading.group("rest") or "")
+        from_heading = found.group(1).upper() if found else None
+
+    found = _LEAD_VERDICT.search(_lead_block(body))
+    from_lead = found.group(1).upper() if found else None
+
+    if from_heading and from_lead and from_heading != from_lead:
+        return "CONFLICT"
+    return from_heading or from_lead
+
+
 #: `\**` on BOTH sides of the colon, because Markdown bolds the label together
 #: with its colon — `**Head-SHA:** abc123`, not `**Head-SHA**: abc123`. The
 #: first draft allowed only the latter, so it read no SHA from any real report
@@ -78,24 +147,83 @@ _SHA = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*(?:Head[- ]SHA|Gated[- ]SHA|SHA)"
 
 #: Conclusions GitHub reports for a finished check run that mean "did not pass".
 _BAD = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
-#: Conclusions that are finished and fine. `neutral` and `skipped` are not
-#: failures; a skipped job is a job that correctly decided it had nothing to do.
+#: Finished and fine. `neutral` and `skipped` are not failures — a skipped job
+#: is one that correctly decided it had nothing to do, and every hrse PR has
+#: two (`build-and-push`, `open-image-bump-pr`), so treating them as red would
+#: refuse every legitimate PASS in that repo.
 _GOOD = {"success", "neutral", "skipped"}
 
 
-def verdict_of(body: str) -> str | None:
-    """PASS / FAIL / BLOCKED, or None when the body states none."""
-    match = _VERDICT.search(body) or _VERDICT_INLINE.search(body)
-    return match.group(1).upper() if match else None
+#: Real reports state the SHA in the HEADING, not as a labelled line:
+#: `## Lane 3 Gate Results — H1739 (..., at `f09eeeff`)` and `... @ `3b8c55ec``.
+#: The label-anchored regex alone read a SHA from 0 of 23 real gate comments,
+#: so a docstring claiming it "reads real reports" was simply wrong.
+_HEADING_SHA = re.compile(r"(?:\bat\b|@)[^\S\n]*`([0-9a-f]{7,40})`")
 
 
 def gated_sha(body: str) -> str | None:
-    """The head SHA the report says it gated (AC2), or None."""
+    """The head SHA the report says it gated (AC2), or None.
+
+    Checked in both the labelled-line form this issue asks for and the
+    heading form the corpus actually uses.
+    """
     match = _SHA.search(body)
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    heading = GATE_HEADING.search(body)
+    if heading:
+        found = _HEADING_SHA.search(heading.group("rest") or "")
+        if found:
+            return found.group(1)
+    return None
 
 
-def ci_conclusion(repo: str, sha: str, run=None) -> tuple[str, str]:
+def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | None:
+    """Names of the branch's REQUIRED status checks, or None if unreadable.
+
+    AC1 says "the PR's own **required** checks". The first draft said "any
+    check run ever attached to this SHA", and the difference is not academic:
+    hrse `main`'s tip carries thirty runs of a repeatedly re-dispatched
+    `render-and-deploy` dashboard workflow, one of them `cancelled`. Its only
+    required check, `verify`, is `success`. Reading every run poisoned that SHA
+    permanently for gate purposes, and the refusal's own advice — "fix the
+    failure and re-gate" — is unactionable, because you cannot un-cancel a
+    historical run of an unrelated scheduled workflow.
+
+    None means "could not establish", and the caller then falls back to
+    considering every check. That fallback is the stricter direction.
+    """
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}/protection",
+                     "--jq", ".required_status_checks.contexts"])
+    if code != 0:
+        return None
+    try:
+        contexts = json.loads(out or "null")
+    except ValueError:
+        return None
+    return set(contexts) if isinstance(contexts, list) and contexts else None
+
+
+def _latest_per_name(runs: list[dict]) -> list[dict]:
+    """One run per check name — the most recent.
+
+    `filter=latest` does NOT dedupe these: thirty same-named runs came back
+    from a single request. A historical run of a workflow that has since
+    succeeded is not evidence about this commit's health.
+    """
+    newest: dict[str, dict] = {}
+    for entry in runs:
+        name = entry.get("name") or ""
+        stamp = entry.get("completed_at") or entry.get("started_at") or ""
+        if name not in newest or stamp >= (newest[name].get("completed_at")
+                                           or newest[name].get("started_at") or ""):
+            newest[name] = entry
+    return list(newest.values())
+
+
+def ci_conclusion(repo: str, sha: str, run=None,
+                  required: set[str] | None = None) -> tuple[str, str]:
     """`(state, detail)` for a commit's checks.
 
     `state` is one of `green`, `red`, `pending`, `absent`, `unknown`.
@@ -108,16 +236,41 @@ def ci_conclusion(repo: str, sha: str, run=None) -> tuple[str, str]:
     reported done on a PR whose CI had not yet registered.
     """
     run = run or _run
-    code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/check-runs",
-                     "--jq", ".check_runs"])
+    # `--paginate`, because the default page is 30 and hrse's `main` tip
+    # already carries exactly thirty runs. The first draft's `--jq .check_runs`
+    # also discarded `total_count`, so a truncated list could not even be
+    # DETECTED — the same "a partial list read as nothing failing" error one
+    # level up.
+    #
+    # `--jq` streams one object per line here rather than emitting an array,
+    # and `--slurp` (which would wrap the pages) is rejected outright when
+    # combined with `--jq` — confirmed against gh 2.99.0:
+    # "the `--slurp` option is not supported with `--jq` or `--template`".
+    # So: line-delimited output, parsed per line.
+    code, out = run(["gh", "api", "--paginate",
+                     f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
+                     "--jq", ".check_runs[]"])
     if code != 0:
         return "unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}"
+    runs = []
     try:
-        runs = json.loads(out or "[]") or []
+        for line in (out or "").splitlines():
+            line = line.strip()
+            if line:
+                runs.append(json.loads(line))
     except ValueError:
         return "unknown", f"unparseable check-run payload for {sha[:8]}"
     if not runs:
         return "absent", f"{sha[:8]} has no check runs at all"
+
+    runs = _latest_per_name(runs)
+    if required:
+        scoped = [r for r in runs if r.get("name") in required]
+        missing = sorted(required - {r.get("name") for r in runs})
+        if missing:
+            return "absent", (f"{sha[:8]} has not run its required check(s): "
+                              + ", ".join(missing))
+        runs = scoped
 
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
     if pending:
@@ -133,6 +286,33 @@ def ci_conclusion(repo: str, sha: str, run=None) -> tuple[str, str]:
     return "green", ", ".join(sorted(f"{r['name']}:{r.get('conclusion')}" for r in runs))
 
 
+def stale_against_pr(repo: str, sha: str, run=None) -> tuple[bool, str]:
+    """Is the gated SHA behind the head of the PR it belongs to?
+
+    The SHA is self-declared, and the report is written after the gate ran. A
+    correction pushed while the report is being typed produces exactly the
+    original incident plus one push: Lane 3 truthfully gated commit A, which is
+    green; the PR now heads at B, which is red; the report names A and the
+    check reads A. `(True, ...)` means refuse.
+    """
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/pulls",
+                     "--jq", "[.[] | select(.state == \"open\") "
+                             "| {number, head: .head.sha}]"])
+    if code != 0:
+        return False, "could not resolve the SHA to a PR"
+    try:
+        pulls = json.loads(out or "[]") or []
+    except ValueError:
+        return False, "unparseable PR payload"
+    for pull in pulls:
+        head = (pull.get("head") or "")
+        if head and not head.startswith(sha) and not sha.startswith(head):
+            return True, (f"PR #{pull.get('number')} now heads at {head[:8]}, "
+                          f"not the {sha[:8]} this PASS gated")
+    return False, "SHA is current for its PR"
+
+
 def check_gate_result(repo: str, body: str, run=None) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
@@ -140,8 +320,29 @@ def check_gate_result(repo: str, body: str, run=None) -> tuple[bool, str]:
     always be publishable.
     """
     verdict = verdict_of(body)
+    if verdict == "CONFLICT":
+        return False, (
+            "[GATE] REFUSED: the heading and the lead block state DIFFERENT "
+            "verdicts. A report whose own two statements of its verdict "
+            "disagree has not stated one — say which it is.")
+    if verdict is None:
+        if looks_like_a_gate_report(body):
+            # Fail CLOSED on a gate report whose verdict cannot be read.
+            # `L3P`, `Conditional PASS — 8/9 cases`, and `✅ PASS` all satisfy
+            # `validate_lead` (which requires the LINE, never its content) and
+            # all derived to None — so each posted with the CI check silently
+            # skipped, indistinguishable from a genuine green. Two of the
+            # twenty-three real reports in the corpus also carry no verdict
+            # word in the heading, so this is the live shape, not a corner.
+            return False, (
+                "[GATE] REFUSED: this is a gate report and its verdict could "
+                "not be read. State it plainly as `**Verdict:** PASS` / `FAIL` "
+                "/ `BLOCKED`, or in the heading. A hedged or decorated verdict "
+                "is not a verdict, and silently skipping the CI check on one "
+                "is indistinguishable from passing it.")
+        return True, "not a gate report; CI check does not apply"
     if verdict != "PASS":
-        return True, f"verdict is {verdict or 'unstated'}; CI check does not apply"
+        return True, f"verdict is {verdict}; CI check does not apply"
 
     sha = gated_sha(body)
     if sha is None:
@@ -150,7 +351,16 @@ def check_gate_result(repo: str, body: str, run=None) -> tuple[bool, str]:
             "AC2). Add a line like `Head-SHA: <sha>` so a reader can tell what "
             "was actually checked rather than trusting the verdict.")
 
-    state, detail = ci_conclusion(repo, sha, run=run)
+    stale, why = stale_against_pr(repo, sha, run=run)
+    if stale:
+        return False, (
+            f"[GATE] REFUSED: the SHA this PASS names is not the current head.\n"
+            f"  {why}\n"
+            "The gate ran against code that is no longer what would merge. "
+            "Re-gate at the current head.")
+
+    state, detail = ci_conclusion(repo, sha, run=run,
+                                  required=required_checks(repo, run=run))
     if state == "green":
         return True, f"[GATE] CI green for {sha[:8]} ({detail})"
     if state == "red":

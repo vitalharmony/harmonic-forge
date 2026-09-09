@@ -307,9 +307,19 @@ observed for that SHA, so a reader can tell what was checked rather than
 trusting the verdict. Checks that have not completed — including a commit with
 **no** check runs at all — make the correct verdict `BLOCKED`, not `PASS`:
 waiting is the behaviour, not a judgment call. Enforced by
-`tools/gh/gate_ci.py`, called from `post_lane_discussion.py --kind
-gate-result`; FAIL and BLOCKED are never gated, because a check that can
-silence a failure report is worse than none.
+`tools/gh/gate_ci.py`, called from `post_lane_discussion.py` for any body that
+IS a gate report — recognised by its `## Lane 3 Gate Results` heading, exactly
+as `lane_state.py` recognises one, and NOT by the `--kind` the author passed.
+FAIL and BLOCKED are never gated, because a check that can silence a failure
+report is worse than none.
+
+**Coverage is one path of several, and saying so is part of the rule.** Lane 3
+has no raw-post restriction by design, so `gh issue comment` and
+`tools/gh/post_comment.py` remain open routes that this check does not see.
+Both most-recent real gate results went through the covered path, so the
+enforcement point is the live one — but a rule claiming universal enforcement
+it does not have is the same class of error as a gate claiming a green it did
+not read.
 <!-- /R-0354 -->
 
 ### Why this is a check and not a line of guidance

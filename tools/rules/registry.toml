@@ -2316,5 +2316,5 @@ id = "R-0354"
 file = "rules/testing-gate.md"
 anchor = "a-green-local-gate-is-necessary-and-not-sufficient"
 statement = "A Lane 3 PASS may not be posted while the PR's own required checks are failing, pending, or absent. A PASS states the head SHA it gated and the CI conclusion observed for it; incomplete checks -- including a commit with NO check runs -- make the verdict BLOCKED, not PASS. Only PASS is gated; FAIL and BLOCKED are never blocked. Measured: gate PASS at 00:12, CI failure on the same code at 00:13, main red for three hours across two merges."
-text_sha = "c31f42ef9df026f1"
+text_sha = "3510885b2026a0f4"
 hooks = ["tools/gh/gate_ci.py"]
