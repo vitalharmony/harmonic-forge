@@ -787,9 +787,10 @@ hooks = []
 id = "R-0091"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
-statement = "Lane 1 review is not Lane 3: state the evidence and hand off, never call a formal test pass, merge, or close."
-text_sha = "8bd374b200ce91e9"
+statement = "Lane 1 review is not Lane 3: state the evidence and hand off, never call a formal test pass, merge, or close. One named exception: R-0351."
+text_sha = "955823790258d550"
 hooks = []
+excepted_by = "R-0351"
 
 [[rule]]
 id = "R-0092"
@@ -982,9 +983,10 @@ hooks = []
 id = "R-0115"
 file = "rules/lane-shorthand.md"
 anchor = "close-compound-instruction"
-statement = "`close` authorizes the full PR then merge then close sequence as one action; needing a PR or merge is not itself a reason to stop and ask."
-text_sha = "7ba8d47779b0c5c4"
+statement = "`close` authorizes the full PR then merge then close sequence as one action; needing a PR or merge is not itself a reason to stop and ask. One named exception: R-0351."
+text_sha = "9c160ceee30668f0"
 hooks = []
+excepted_by = "R-0351"
 
 [[rule]]
 id = "R-0116"
@@ -1196,9 +1198,10 @@ hooks = []
 id = "R-0141"
 file = "3-lane-protocol.md"
 anchor = "Lanes are roles, not fixed tools"
-statement = "The protocol's requirements (independent-eyes gating, no lane closes/merges on its own, HITL-gate language) are tool-agnostic and apply identically regardless of which tool fills a lane."
-text_sha = "e77183c3a5a2f8e9"
+statement = "The protocol's requirements (independent-eyes gating, no lane closes/merges on its own [one named exception: R-0351], HITL-gate language) are tool-agnostic and apply identically regardless of which tool fills a lane."
+text_sha = "4a564f7f3156a79c"
 hooks = []
+excepted_by = "R-0351"
 
 [[rule]]
 id = "R-0142"
@@ -1880,6 +1883,7 @@ anchor = "HITL Gate Language"
 statement = "Lane 1 recommends closing — never a unilateral close, except the narrow R-0351 carve-out."
 text_sha = "fd2b24906c512833"
 hooks = []
+excepted_by = "R-0351"
 
 [[rule]]
 id = "R-0224"
@@ -1888,6 +1892,7 @@ anchor = "HITL Gate Language"
 statement = "Closing requires the operator's explicit \"Close #N\" every time, from every lane, with no exception for confidence or a clean local test pass, except the one named exception: R-0351."
 text_sha = "bc2a165fc792a938"
 hooks = []
+excepted_by = "R-0351"
 
 [[rule]]
 id = "R-0225"
@@ -2113,10 +2118,11 @@ hooks = []
 id = "R-0252"
 file = "3-lane-protocol.md"
 anchor = "Team Topology"
-statement = "Tool choice per lane is a per-collaborator decision; what is non-negotiable regardless of tool is the protocol itself."
-text_sha = "81adc6335a544232"
+statement = "Tool choice per lane is a per-collaborator decision; what is non-negotiable regardless of tool is the protocol itself. One named exception: R-0351."
+text_sha = "98ca05d64eef0dec"
 hooks = []
 restates = "R-0141"
+excepted_by = "R-0351"
 
 [[rule]]
 id = "R-0330"
@@ -2283,6 +2289,7 @@ text_sha = "ce49e320018ac545"
 id = "R-0351"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
-statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only, may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. Named as the sole exception to R-0224 and its HRSE2 mirror R-0317."
-text_sha = "4bd130168a57e0ac"
+statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only, may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
+text_sha = "4d1630237163c317"
 hooks = []
+exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0317"]

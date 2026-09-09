@@ -27,9 +27,10 @@ but is not fixed by name; an operator may assign a different tool to
 Lane 1 via that tool's own equivalent mechanism (see § Lane 1 below).
 Different collaborators (see Team Topology below) will likely bring their
 own tool preferences for these roles — the protocol's actual requirements
-(independent-eyes gating, no lane closes/merges on its own, HITL-gate
-language, etc.) are tool-agnostic and apply identically regardless of
-which specific tool is filling any lane on a given session.
+(independent-eyes gating, no lane closes/merges on its own [one named
+exception: R-0351], HITL-gate language, etc.) are tool-agnostic and apply
+identically regardless of which specific tool is filling any lane on a
+given session.
 <!-- /R-0141 -->
 
 ## Lane 1 — Blueprint (reference tool: Claude Code)
@@ -1622,7 +1623,8 @@ current known examples, with Gemini's qualification tracked by
 harmonic-forge#317; not an exhaustive list. What's non-negotiable
 regardless of tool choice is the protocol
 itself (see the note under the lane diagram above): independent-eyes
-gating, no lane closes/merges on its own, and — per the Lane 3 note above
-— mechanical enforcement of the never-fixes-anything rule wherever the
-chosen tool supports it, not prose alone.
+gating, no lane closes/merges on its own (one named exception: R-0351),
+and — per the Lane 3 note above — mechanical enforcement of the
+never-fixes-anything rule wherever the chosen tool supports it, not prose
+alone.
 <!-- /R-0252 -->

@@ -76,6 +76,7 @@ _ANNOTATED_GLOBS = ("rules/*.md", "3-lane-protocol.md")
 _KNOWN_FIELDS = {
     "id", "file", "anchor", "statement", "text_sha", "hooks", "restates",
     "rationale_refs", "enforcement", "folded_obligations",
+    "exception_to", "excepted_by",
 }
 
 _OPEN = re.compile(r"^\s*<!--\s*(R-\d{4})\s*-->\s*$")
@@ -250,6 +251,32 @@ def check(root: Path, registry_path: Path,
                 f"likely allocated it independently; renumber one and rerun."
             )
         seen[rule_id] = index
+
+    # exception_to/excepted_by reciprocity (harmonic-forge#524): a carve-out
+    # naming what it excepts, and the excepted rule not naming it back, is
+    # exactly the silent-drift shape this registry exists to catch — checked
+    # here for same-registry pairs only; a target id absent from THIS
+    # registry is assumed cross-repo and left to check_absolutes.py, which
+    # loads both.
+    by_id = {r["id"]: r for r in rules if r.get("id")}
+    for rule_id, rule in by_id.items():
+        for target in rule.get("exception_to", []) or []:
+            if target not in by_id:
+                continue
+            back = by_id[target].get("excepted_by")
+            if back != rule_id:
+                failures.append(
+                    f"{rule_id} declares exception_to {target!r}, but {target}'s "
+                    f"excepted_by is {back!r}, not {rule_id!r}. Reciprocity broken."
+                )
+        excepted_by = rule.get("excepted_by")
+        if excepted_by and excepted_by in by_id:
+            forward = by_id[excepted_by].get("exception_to") or []
+            if rule_id not in forward:
+                failures.append(
+                    f"{rule_id} declares excepted_by {excepted_by!r}, but {excepted_by}'s "
+                    f"exception_to does not list {rule_id!r} back. Reciprocity broken."
+                )
 
     try:
         source = collect_source_spans(root, globs)

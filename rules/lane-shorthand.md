@@ -170,6 +170,7 @@ open the PR, merge it, then close, unless something is genuinely blocking
 issue). This does not relax the "no lane closes/merges without this literal
 instruction" rule elsewhere in this doc — it resolves the opposite failure,
 treating "needs a PR/merge" as if it were itself a reason to stop and ask.
+One named exception to that rule: `universal-lane1.md`'s R-0351.
 <!-- /R-0115 -->
 
 ## `EOQ` — end of queue

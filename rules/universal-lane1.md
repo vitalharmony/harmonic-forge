@@ -60,7 +60,7 @@ Lane 1 review is not Lane 3. After independently reviewing Lane 2 work,
 state the evidence and hand off to Lane 3; do not call a formal test
 pass, merge, or close the issue. No lane closes or merges an issue: only
 the operator's explicit `Close H<N>` / `Close F<N>` instruction
-authorizes closure.
+authorizes closure. One named exception: R-0351, immediately below.
 <!-- /R-0091 -->
 
 <!-- R-0351 -->
@@ -105,9 +105,15 @@ matters:
   `3-lane-protocol.md`'s R-0224** ("closing requires the human operator's
   explicit 'Close #N,' every time, from every lane") and to any
   project-local mirror of that rule (e.g. HRSE2's R-0317) — see those
-  rules' own text for the cross-reference. A rule elsewhere in this corpus
-  that still reads as an absolute has not been overlooked; it names this
-  carve-out as its only exception.
+  rules' own text for the cross-reference.
+- **The current, authoritative list of every rule this carve-out excepts
+  is a query, not a claim in this paragraph**: `tools/rules/check_absolutes.py`
+  sweeps both this repo's and HRSE2's rule corpora for the close/merge-
+  authority phrasing and fails if any matching rule lacks a reciprocal
+  `excepted_by`/`exception_to` pair naming R-0351. Two rounds of
+  preclose-inspection on harmonic-forge#524 each missed a live site by
+  re-reading the corpus from memory; a prose sentence asserting
+  completeness here would carry the same risk a third time.
 <!-- /R-0351 -->
 
 ## APQ protocol
