@@ -73,6 +73,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -110,7 +111,8 @@ def _allow() -> None:
 
 
 
-def _batch_note(message: str, target_key: str | None = None) -> str:
+def _batch_note(message: str, target_key: str | None = None,
+                now: datetime | None = None) -> str:
     """Append the interrupted-batch line (harmonic-forge#509 AC3).
 
     Message-only. Never softens this hook's verdict — see `batch_context`'s
@@ -120,7 +122,7 @@ def _batch_note(message: str, target_key: str | None = None) -> str:
     try:
         from batch_context import annotate  # noqa: PLC0415
 
-        return annotate(message, target_key=target_key)
+        return annotate(message, target_key=target_key, now=now)
     except Exception:
         return message
 

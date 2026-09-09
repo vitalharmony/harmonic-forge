@@ -220,7 +220,17 @@ def decide(payload: dict, state: dict, now: datetime | None = None) -> tuple[str
     )
 
 
-def main() -> int:
+def main(now: datetime | None = None) -> int:
+    """`now` is injectable so a test can pin the clock (harmonic-forge#515).
+
+    Production passes nothing and `decide()` resolves the real clock, exactly
+    as before. Without this seam the only way to exercise `main()` was against
+    the wall clock, so a fixture built from an absolute `NOW` went red the
+    instant real time passed its expiry — 2026-09-07T12:00:00Z here — and
+    stayed red with no code change on either side. Same defect class as
+    harmonic-forge#500's `--today`, and the same remedy: make the clock a
+    parameter rather than an ambient fact.
+    """
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -240,7 +250,7 @@ def main() -> int:
         # than one that misses a stop. Any failure here is silent.
         return 0
     try:
-        verdict, reason = decide(payload, state)
+        verdict, reason = decide(payload, state, now=now)
     except Exception:
         return 0
     if verdict == "block":
