@@ -47,6 +47,40 @@ every finding type; --audit replays 100 real comments.
 - tools/gh/belt_report.py      | 388 ++++++++++++++++++++++++++++++++++++-------
 - tools/gh/test_belt_report.py | 289 ++++++++++++++++++++++++++++++++
 - 3 files changed, 679 insertions(+), 64 deletions(-)
+## feat(rules): filing and its artifact are one rule, and a deferral names three things (harmonic-forge#516)
+
+R-0039's branches 1 and 2 now read 'File it with its artifact.' The artifact
+requirement is deliberately NOT a fourth test: the enumeration says stop at the
+first that answers, so anything appended after branch 3 is unreachable for
+every issue that ever gets filed, and a fourth branch inside the list is worse
+— an issue answering at 1 or 2 terminates before reaching it, and the
+contradiction (test 1 says File it, a fourth test says fold it) would then live
+inside one span. Attaching the requirement to the two branches where filing
+actually happens is unreachable-proof by construction.
+
+Numbering, order and conditions are unchanged, which keeps
+skills/memory-triage/SKILL.md:110's 'the bar's test 2' cross-reference alive —
+it cites by number and would silently go stale under any renumbering.
+
+Two clarifications fold in at the same span: only 'no one could write it' fails
+the bar (lacking the authority does not — Lane 2/3 surface and stop, Lane 1
+files), and the operator-scoped exception needs a literal instruction naming
+the issue, because R-0232's self-declared Tooling-Exception eligibility would
+otherwise let an agent scope its own filing out of the requirement.
+
+New R-0352 states the deferral shape — trigger, owner (never 'someone'), and
+record — plus the part that is easy to leave implied and wrong: NOTHING watches
+for a fired trigger today. The rule says so rather than implying a sweep that
+does not exist, following R-0151's posture on prose detectors.
+
+Id verified at implementation time, not hardcoded: the plan allocated R-0351
+and F524 independently took it before either merged. --next-id returns R-0352.
+
+Verified: check_rule_drift.py clean at 275 rules, check_cross_registry.py clean
+275+77 with no overlap, tools/run_tests.py at exactly 4 pre-existing failures.
+- rules/universal-agent.md  | 54 +++++++++++++++++++++++++++++++++++++++++++----
+- tools/rules/registry.toml | 12 +++++++++--
+- 2 files changed, 60 insertions(+), 6 deletions(-)
 
 ## feat(rules): stable rule IDs + registry for rules/*.md (harmonic-forge#447)
 

@@ -392,13 +392,59 @@ files — Lane 2 and Lane 3 surface a finding and stop, Lane 1 files.
 Run these in order and stop at the first that answers:
 
 1. **Does it block or corrupt the live pipeline the current release thesis
-   names?** — File it.
-2. **Has it actually bitten three or more times?** — File it. Cite the
-   occurrences. Once or twice is a comment on the issue where it surfaced,
-   not a new number.
+   names?** — **File it with its artifact.** If the artifact cannot be
+   completed, file it anyway and state in the issue exactly what could not be
+   determined. **This branch outranks the artifact requirement** — a
+   pipeline-blocking defect is never discarded for being hard to characterise.
+2. **Has it actually bitten three or more times?** — **File it with its
+   artifact.** Cite the occurrences. If the artifact cannot be written, you
+   have not cleared this bar: go to 3. Once or twice is a comment on the issue
+   where it surfaced, not a new number.
 3. **Otherwise** — fold it into the existing issue it touches, fix it inline
    if the fix is smaller than the issue would be, or let it go.
+
+**"File it" means "file it with its artifact," in one action, at both 1 and 2.**
+A filed issue whose artifact is unwritten is not a deliverable and the session
+has not finished. **If you cannot write the artifact, that is the answer, not
+an obstacle** — at branch 2 it sends you to branch 3; at branch 1 it is
+recorded on the issue and the filing still happens.
+
+The artifact requirement is deliberately **not** a fourth test. The enumeration
+says *stop at the first that answers*, so anything appended after branch 3 is
+unreachable for every issue that ever gets filed, and a fourth branch inside
+the list is worse still — an issue answering at 1 or 2 terminates before
+reaching it, and the contradiction (test 1 says *File it*, a fourth test says
+*fold it*) would then live inside one span. Attaching the requirement to the
+two branches where filing actually happens is unreachable-proof by
+construction.
+
+**Only "no one could write it" fails this bar.** "I am not the lane that
+writes handoffs" does not — Lane 2 and Lane 3 surface a finding and stop, and
+Lane 1 files it with its artifact (R-0089, and this bar's own preamble above).
+A gate finding is never dropped for lack of authority.
+
+**The operator-scoped exception requires a literal human instruction naming the
+issue.** `3-lane-protocol.md` R-0226 condition 3 binds; **R-0232's
+self-declared Tooling-Exception eligibility does not reach this exception** —
+an agent cannot scope its own filing out of the artifact requirement.
 <!-- /R-0039 -->
+
+<!-- R-0352 -->
+**A deferral is declared on the issue at filing time**, in one comment, naming
+three things: **the trigger** (the observable event that ends the deferral),
+**the owner** (a named lane or the operator, never "someone"), and **the
+record** (the deferral comment itself, which is what a sweep can find). An
+issue carrying no such comment is not deferred; it is unfinished.
+
+**Nothing watches for a fired trigger today, and this rule says so rather than
+implying a watcher exists.** There is no scheduled sweep for deferred
+artifacts. A declared deferral is debt visible to the standing hygiene pass,
+and its *absence* is what makes an unfinished issue findable — the same posture
+`3-lane-protocol.md` R-0151 takes about prose detectors: where a specific,
+mechanically-detectable class of outstanding work exists, enforce that class
+rather than guessing at prose. A deferral comment with three named fields is
+mechanically detectable; "this issue feels incomplete" is not.
+<!-- /R-0352 -->
 
 Branch 3 is the one that gets skipped, and skipping it is what produced the
 condition this rule exists to stop.
