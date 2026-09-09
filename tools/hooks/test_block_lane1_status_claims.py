@@ -476,5 +476,136 @@ class TestBashMatcherIsWired(unittest.TestCase):
                       f"block_lane1_status_claims.py not wired for Bash in {self._OWN}")
 
 
+#: The real command text of every false positive recorded for
+#: harmonic-forge#522 — the issue body's six, plus five more this
+#: implementation session produced, one of them the probe written to verify
+#: the fix. Paired with the operands the command GENUINELY writes to, which
+#: is the whole assertion: before the correlated matcher, each of these
+#: reported a path the command only mentioned.
+_FORGE = "/home/mmangus/harmonic-forge"
+_HRSE = "/home/mmangus/Harmonic_Projects/HRSE2"
+F522_FALSE_POSITIVES = [
+    ("heredoc body + script argument",
+     f"cat > /tmp/f.md <<'EOF'\nbody\nEOF\n"
+     f"python3 {_HRSE}/scripts/l1_post.py --file /tmp/f.md",
+     [("redirect", "/tmp/f.md")]),
+    ("a path named in heredoc PROSE",
+     "cat > /tmp/f.md <<'EOF'\nsee rules/testing-gate.md\nEOF\n"
+     "python3 x.py --file /tmp/f.md",
+     [("redirect", "/tmp/f.md")]),
+    ("output discarded to /dev/null",
+     f"python3 {_FORGE}/tools/memory/context_budget.py >/dev/null 2>&1",
+     []),
+    ("a path that is only a grep operand",
+     f"grep -rn context_budget {_FORGE}/mise.toml && "
+     f"python3 {_FORGE}/tools/memory/context_budget.py > /tmp/cb.txt",
+     [("redirect", "/tmp/cb.txt")]),
+    ("a path inside a markdown table cell",
+     "cat > /tmp/f.md <<'EOF'\n| skills/ | x |\nEOF\npython3 x.py",
+     [("redirect", "/tmp/f.md")]),
+    ("a directory passed to sys.path.insert",
+     f"cd /tmp/s && cat > repro.py <<'PYEOF'\nimport sys\n"
+     f"sys.path.insert(0, '{_FORGE}/tools/hooks')\nPYEOF\npython3 repro.py",
+     []),
+    ("a bare `git -C` fetch loop over two checkouts",
+     f'for r in {_HRSE} {_FORGE}; do git -C "$r" fetch origin --quiet; done',
+     []),
+    ("`python3 -c` that only prints",
+     'cd /tmp/hrse2-1715-impl && python3 -c "print(1)"',
+     []),
+    ("the probe written to verify THIS fix",
+     'cd /tmp/forge-522-impl && python3 - <<PY\nimport sys\n'
+     'sys.path.insert(0, "tools/hooks")\nPY',
+     []),
+]
+
+
+class TestF522RealCommandShapes(unittest.TestCase):
+    """harmonic-forge#522, AC1 — the real command text, verbatim.
+
+    Deliberately at the matcher seam rather than through `decision()`: these
+    commands name real paths on the operator's machine, and running them
+    through the git-state predicates would make the assertion depend on which
+    branch `~/harmonic-forge` happens to have checked out. What the issue
+    actually claims is falsifiable without any of that — the matcher reported
+    operands the command never writes to.
+
+    Two of the eleven recorded occurrences are NOT here: the `sed -i` and
+    `cat >>` shapes inside a `/tmp/<repo>-<issue>-impl` worktree. Those carry a
+    genuine relative write target and were misjudged by `cd`-tracking, not by
+    this matcher — harmonic-forge#529, filed separately and explicitly out of
+    scope here. Asserting them allowed would be asserting a fix this change
+    does not make.
+    """
+
+    def test_operands_are_exactly_what_the_command_writes(self):
+        for name, command, expected in F522_FALSE_POSITIVES:
+            with self.subTest(shape=name):
+                self.assertEqual(m.interpreter_write_pairs(command), expected)
+
+    def test_no_operand_lands_in_a_protected_checkout(self):
+        """The property the individual expectations above are instances of."""
+        for name, command, _expected in F522_FALSE_POSITIVES:
+            with self.subTest(shape=name):
+                leaked = [op for _c, op in m.interpreter_write_pairs(command)
+                          if "harmonic-forge" in op or "Harmonic_Projects" in op]
+                self.assertEqual(leaked, [])
+
+
+class TestF522OperandIsNamed(_BashWriteSurface):
+    """AC3 — a denial names the operand the command genuinely writes to, and
+    names the construct that writes it."""
+
+    def test_denial_names_the_matched_operand_and_construct(self):
+        for body, label in (
+            (f"open('{self.protected}','w').write('x')", "`open("),
+            (f"Path('{self.protected}').write_text('x')", "write_text"),
+            (f"os.replace('/tmp/a', '{self.protected}')", "os.replace"),
+        ):
+            with self.subTest(body=body):
+                result = m.decision(f'python3 -c "{body}"', self.lane2)
+                reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn(str(self.protected), reason)
+                self.assertIn(label, reason)
+                self.assertNotIn("an interpreter one-liner", reason)
+
+
+class TestF522BranchAdvice(unittest.TestCase):
+    """AC-scope item 4 — `Branch first` only when branching is the fix.
+
+    Two of the recorded occurrences told a Lane 2 session sitting in its own
+    correctly-scoped impl worktree to branch. There was nothing to branch: the
+    session was already where it belonged, and the write reached into a
+    different checkout entirely.
+    """
+
+    def setUp(self) -> None:
+        import subprocess
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        self.here = base / "impl"
+        self.other = base / "other"
+        for root in (self.here, self.other):
+            root.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+        self.target = self.other / "tracked.md"
+        self.target.write_text("x\n")
+
+    def test_same_checkout_still_says_branch_first(self):
+        advice = m.branch_advice(str(self.here / "f.md"), self.here)
+        self.assertIn("Branch first", advice)
+
+    def test_reaching_into_another_checkout_does_not_say_branch(self):
+        advice = m.branch_advice(str(self.target), self.here)
+        self.assertNotIn("Branch first", advice)
+        self.assertIn(str(self.here), advice)
+        self.assertIn(str(self.other), advice)
+
+    def test_unresolvable_path_falls_back_to_branch_first(self):
+        """Fails open in the same direction as every other guard here."""
+        self.assertIn("Branch first", m.branch_advice("\0bad", self.here))
+
+
 if __name__ == "__main__":
     unittest.main()

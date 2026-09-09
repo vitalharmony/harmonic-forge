@@ -138,22 +138,12 @@ GLUED_REDIRECT = re.compile(r"^(?P<pre>[^>\s]*)>{1,2}(?P<target>[^>\s]+)$")
 INTERPRETERS = {"python", "python3", "node", "nodejs", "ruby", "perl",
                 "bash", "sh", "zsh"}
 
-#: A write verb inside interpreter text. Deliberately a fixed list rather than
-#: anything general: see the module docstring's note on what this cannot see.
-#: The `>` alternative requires a path-shaped operand so that an ordinary
-#: numeric comparison (`if len(x) > 3`) inside a READ script is not a write.
-INTERPRETER_WRITE_VERB = re.compile(
-    r"""open\s*\([^)]*['"][rbt]*[wax+][^'"]*['"]"""
-    r"""|write_text\s*\(|write_bytes\s*\(|writelines\s*\("""
-    r"""|os\.replace\s*\(|os\.rename\s*\("""
-    r"""|shutil\.(?:copy\w*|move)\s*\("""
-    r"""|>>?\s*['"]?(?:~|\.{0,2}/)"""
-)
-
-#: Path-shaped runs in raw command text — anything containing a `/`. Coarse on
-#: purpose: every candidate is then handed to the SAME predicates that govern
-#: the `Edit`/`Write` surface, which is what decides whether it is protected.
-PATH_CANDIDATE = re.compile(r"[~\w.\-/]*/[~\w.\-/]*")
+#: `INTERPRETER_WRITE_VERB` and `PATH_CANDIDATE` lived here until
+#: harmonic-forge#522. They were an uncorrelated pair — "some write verb
+#: anywhere" AND "every path-shaped run anywhere" — and their replacement,
+#: `INTERPRETER_WRITE_PAIR`, matches a construct together with its own operand.
+#: Do not reintroduce a bare path-harvesting regex here: harvesting paths that
+#: no write construct names is the entire defect that issue records.
 
 #: Size-shaped operands (`truncate -s 0`), never paths.
 SIZE_OPERAND = re.compile(r"^[+\-<>/%]?\d+[KMGTPkmgtp]?[Bb]?$")
@@ -540,7 +530,7 @@ def bash_write_targets(segment: list[str]) -> list[str]:
     Statically-decidable shapes only — redirects, `tee`, `sed -i`,
     `cp`/`mv`/`install` destinations, `truncate`, `dd of=`. Interpreter
     one-liners carry no shell-visible write construct and are handled
-    separately by `interpreter_write_paths` (harmonic-forge#458).
+    separately by `interpreter_write_targets` (harmonic-forge#458).
     """
     targets: list[str] = []
     index = 0
@@ -584,14 +574,21 @@ def bash_write_targets(segment: list[str]) -> list[str]:
     return [t for t in targets if not ignorable_write_target(t)]
 
 
-def interpreter_write_paths(segment: list[str], command: str) -> list[str]:
-    """Path candidates from an interpreter invocation that also writes.
+def interpreter_write_targets(
+    segment: list[str], command: str
+) -> list[tuple[str, str]]:
+    """`(construct, operand)` pairs from an interpreter invocation that writes.
 
-    BOTH signals are required — a protected path AND a write verb in the same
-    command text. Neither alone is enough, and that is the whole design: the
-    survey that established which hooks carry which matcher (this issue's own
-    judgment call 2) was a `python3` heredoc that READ every protected settings
-    file, and a path-mention-only rule would have denied the investigation.
+    BOTH signals are required — a write construct AND its own operand, matched
+    as one pattern. The previous shape required them only to be CO-PRESENT
+    anywhere in the command text, and that is the whole of harmonic-forge#522:
+    every path-shaped run in the raw text was returned as a write target, so a
+    heredoc body's prose path, a `grep` operand, and the interpreter's own
+    script argument were all reported as things the command wrote to. Ten live
+    false positives, none of them a parser bug.
+
+    Correlating does not weaken the guard: a write's target is adjacent to its
+    verb by construction — that adjacency is what makes it a write.
 
     Scans the RAW command rather than the parsed segment because
     `command_segments` masks heredoc bodies — `python3 <<'PY' ... PY` is
@@ -607,10 +604,74 @@ def interpreter_write_paths(segment: list[str], command: str) -> list[str]:
     tokens = strip_invocation_prefix(segment)
     if not tokens or Path(tokens[0]).name not in INTERPRETERS:
         return []
-    if not INTERPRETER_WRITE_VERB.search(command):
-        return []
-    return [c for c in PATH_CANDIDATE.findall(command)
-            if c and "/" in c and not ignorable_write_target(c)]
+    return interpreter_write_pairs(command)
+
+
+#: A write construct AND the operand it writes to, as ONE pattern.
+#:
+#: harmonic-forge#522: the previous rule asked two uncorrelated questions —
+#: "is there a write verb anywhere in this command" and "what paths appear
+#: anywhere in this command" — and returned the cross product. So every path
+#: in the raw text became a write target as soon as any write verb appeared
+#: anywhere: the interpreter's own script argument, a `grep` operand, a path
+#: mentioned in passing inside a heredoc body. Ten documented false positives,
+#: every one on read-only work, including two whose cited "write target" was a
+#: `/tmp` impl worktree the command never touched.
+#:
+#: **The raw-text scan is deliberately kept.** Restricting to parsed segments
+#: was the issue's own scope item 1, and it would delete this rule's reason for
+#: existing: `command_segments` masks heredoc bodies, so
+#: `python3 <<'PY' ... open('<tracked>','w') ... PY` — the harmonic-forge#446
+#: shape this was built for — has its target visible only in raw text. Lane 1
+#: ratified the correlated reading over item 1's literal wording for exactly
+#: that reason.
+#:
+#: Correlation is a change of shape, not of strength. Every genuine write has
+#: its operand adjacent to its verb, because that adjacency is what makes it a
+#: write; nothing real is lost, and everything invented disappears.
+#: Every alternative names BOTH its construct and its operand, and the operand
+#: group is what the denial reports. An earlier revision let the construct
+#: groups fall through to "first non-empty group", which returned the whole
+#: matched expression as the operand — a denial reading
+#: `Path('mise.toml').write_text(` rather than `mise.toml`, which is AC3's own
+#: defect in a new place.
+INTERPRETER_WRITE_PAIR = re.compile(
+    r"""(?P<open>open\s*\(\s*['"](?P<open_op>[^'"]+)['"]\s*,\s*['"][rbt]*[wax+][^'"]*['"])"""
+    r"""|(?P<pathwrite>Path\s*\(\s*['"](?P<pathwrite_op>[^'"]+)['"]\s*\)\s*\."""
+    r"""\s*write_(?:text|bytes)\s*\()"""
+    r"""|(?P<writelines>['"](?P<writelines_op>[^'"]+)['"][^\n]{0,40}\.writelines\s*\()"""
+    r"""|(?P<move>(?:os\.(?:replace|rename)|shutil\.(?:copy\w*|move))"""
+    r"""\s*\([^,)]*,\s*['"](?P<move_op>[^'"]+)['"]\s*\))"""
+    r"""|(?P<redirect>>>?\s*['"]?(?P<redirect_op>(?:~|\.{0,2}/)[\w.\-/]*))"""
+)
+
+#: Construct name -> the group holding its operand.
+_WRITE_OPERAND_GROUP = {
+    "open": "open_op",
+    "pathwrite": "pathwrite_op",
+    "writelines": "writelines_op",
+    "move": "move_op",
+    "redirect": "redirect_op",
+}
+
+
+def interpreter_write_pairs(command: str) -> list[tuple[str, str]]:
+    """`(construct, operand)` for every write whose target is identifiable.
+
+    The operand is what the denial message must name (AC3) — citing the first
+    path candidate instead is how the old rule produced messages naming files
+    the command never wrote to.
+    """
+    pairs: list[tuple[str, str]] = []
+    for match in INTERPRETER_WRITE_PAIR.finditer(command):
+        for construct, operand_group in _WRITE_OPERAND_GROUP.items():
+            if match.group(construct) is None:
+                continue
+            operand = match.group(operand_group)
+            if operand and not ignorable_write_target(operand):
+                pairs.append((construct, operand))
+            break
+    return pairs
 
 
 #: Upper bound on paths examined per segment. `write_on_main_branch` shells out
@@ -620,7 +681,70 @@ def interpreter_write_paths(segment: list[str], command: str) -> list[str]:
 MAX_WRITE_TARGETS = 20
 
 
-def protected_write_denial(targets: list[str], cwd: Path, construct: str) -> dict | None:
+#: Human-readable name for each correlated write construct, so the denial
+#: message says HOW the command writes, not just that something somewhere in it
+#: looked like a write (harmonic-forge#522 AC3). The old generic phrasing --
+#: "an interpreter one-liner" -- was accurate about the segment and silent
+#: about the operand, which is exactly what made a false positive unreadable:
+#: nothing in the message let a reader check the claim.
+CONSTRUCT_LABELS = {
+    "open": "an `open(..., 'w')` call",
+    "pathwrite": "a `Path(...).write_text()`/`.write_bytes()` call",
+    "writelines": "a `.writelines()` call",
+    "move": "an `os.replace`/`os.rename`/`shutil` move",
+    "redirect": "a shell redirect (`>`/`>>`)",
+}
+
+
+def _worktree_root(path: Path) -> str | None:
+    """Top-level directory of the git worktree containing `path`, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    if result.returncode:
+        return None
+    return result.stdout.strip() or None
+
+
+def branch_advice(target: str, cwd: Path) -> str:
+    """The followable half of a `write_on_main_branch` denial (harmonic-forge#522).
+
+    `Branch first: git checkout -b <name>` is only actionable when the write is
+    into the checkout the session is actually sitting in -- then branching that
+    checkout is precisely the fix. When the target lives in a DIFFERENT worktree
+    that happens to have `main` checked out (the shape that bit: a Lane 2
+    session correctly scoped to its own `/tmp/<repo>-<issue>-impl` worktree,
+    reaching out to a path in the shared main checkout), branching does nothing
+    -- the session is already on the branch it should be on, and the fix is to
+    write inside its own worktree instead. Telling it to branch sent it looking
+    for a problem that was not there.
+    """
+    try:
+        raw = Path(target).expanduser()
+        if not raw.is_absolute():
+            raw = cwd / raw
+        target_dir = Path(os.path.normpath(raw)).parent
+    except (OSError, ValueError, RuntimeError):
+        return "Branch first: `git checkout -b <name>`."
+    target_root = _worktree_root(target_dir)
+    session_root = _worktree_root(cwd)
+    if target_root and session_root and target_root != session_root:
+        return (
+            f"Branching will not help: this session is in {session_root!r}, "
+            f"which is not the checkout being written to. The write reaches "
+            f"OUT to {target_root!r}, a separate checkout that has `main` "
+            "checked out. Write inside this session's own worktree instead."
+        )
+    return "Branch first: `git checkout -b <name>`."
+
+
+def protected_write_denial(
+    pairs: list[tuple[str, str]], cwd: Path
+) -> dict | None:
     """The `Edit`/`Write` predicates, reached from the `Bash` surface.
 
     ALL THREE of them, which the plan for this issue got wrong: it named
@@ -639,12 +763,12 @@ def protected_write_denial(targets: list[str], cwd: Path, construct: str) -> dic
     only one was wired to them.
     """
     seen: set[str] = set()
-    deduped: list[str] = []
-    for target in targets:
+    deduped: list[tuple[str, str]] = []
+    for construct, target in pairs:
         if target not in seen:
             seen.add(target)
-            deduped.append(target)
-    for target in deduped[:MAX_WRITE_TARGETS]:
+            deduped.append((construct, target))
+    for construct, target in deduped[:MAX_WRITE_TARGETS]:
         if lane2_write_in_main_checkout(target, cwd):
             return denial(
                 f"Blocked: this session was launched as Lane 2 (LANE=2) and "
@@ -669,8 +793,8 @@ def protected_write_denial(targets: list[str], cwd: Path, construct: str) -> dic
             return denial(
                 f"Blocked: {target!r} is a tracked file in a checkout that has "
                 f"`main` checked out, and this command writes to it via "
-                f"{construct} (harmonic-forge#384/#458). Branch first: "
-                "`git checkout -b <name>` — a shell write is the same "
+                f"{construct} (harmonic-forge#384/#458). "
+                f"{branch_advice(target, cwd)} A shell write is the same "
                 "violation as an `Edit`, and creating files and branching "
                 "afterward is the same violation again. This check applies "
                 "regardless of LANE, including a Lane 1 session with no LANE "
@@ -711,12 +835,15 @@ def decision(command: object, cwd: Path) -> dict:
         # `python3 -c "open(<protected>,'w')"` walked straight past a guard
         # that denies the identical write through `Edit`.
         write_denial = protected_write_denial(
-            bash_write_targets(segment), effective_cwd, "a shell write construct")
+            [("a shell write construct", target)
+             for target in bash_write_targets(segment)],
+            effective_cwd)
         if write_denial is not None:
             return write_denial
         write_denial = protected_write_denial(
-            interpreter_write_paths(segment, command), effective_cwd,
-            "an interpreter one-liner")
+            [(CONSTRUCT_LABELS.get(construct, "an interpreter one-liner"), target)
+             for construct, target in interpreter_write_targets(segment, command)],
+            effective_cwd)
         if write_denial is not None:
             return write_denial
         if os.environ.get("LANE") == "3":
