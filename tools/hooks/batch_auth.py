@@ -361,9 +361,25 @@ def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None)
         if not merges:
             raise ValueError(f"{key!r} was not authorized for a merge action -- authorize it with --action 'gh pr merge' first")
 
-        # Already linked to THIS pr? Idempotent, so a re-run is free.
+        # Already linked to THIS pr on a slot that can still be USED?
+        # Idempotent, so a re-run is free.
+        #
+        # `not consumed` is load-bearing and was missing (harmonic-forge#549).
+        # `decide()` marks a target consumed the moment it matches, whether or
+        # not the command it authorized actually ran -- and a command can match
+        # and still not run, because a later guard denies it or the operator
+        # interrupts. Live incident, 2026-09-09: a `gh pr merge` bundled into
+        # one Bash call with a destructive `git worktree remove --force` was
+        # denied for the destructive half, after this module had already
+        # consumed the linked target. Without the `not consumed` test below,
+        # every re-link then matched that dead slot and returned early, so the
+        # PR could never be linked again and the merge asked forever. Skipping
+        # a consumed slot is not a widening: the merge it authorized provably
+        # did not happen, and the operator's grant is per-key, not per-attempt.
         for target in merges:
-            if target.get("repo") == repo and target.get("pr_number") == pr_number:
+            if (not target.get("consumed")
+                    and target.get("repo") == repo
+                    and target.get("pr_number") == pr_number):
                 return
 
         # An unlinked, unconsumed slot takes it.
@@ -534,13 +550,29 @@ def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | 
     repo, number = target_info
     if repo is None or number is None:
         return None
+    # Prefer an UNCONSUMED slot; fall back to a consumed one only so
+    # `_diagnose` can still say "already spent" when that is the whole truth.
+    #
+    # Returning the first match regardless of `consumed` was a defect
+    # (harmonic-forge#549): a key holding two merge grants, the first spent and
+    # the second live and linked to this very PR, resolved to the spent one and
+    # asked. `decide()` marks a target consumed the moment it matches, whether
+    # or not the command ran -- so a merge denied by a later guard, or
+    # interrupted, permanently poisoned the first slot and every retry matched
+    # the corpse instead of the live grant beside it. This is the same
+    # ignoring-of-`consumed` fixed in `link_pr` above; the two together made a
+    # linked, authorized, unexpired merge unreachable.
+    fallback: tuple[str, dict, dict] | None = None
     for key, entry in state.items():
         for target in entry.get("targets", []):
             if "merge" not in target.get("action", "").lower():
                 continue
             if target.get("repo") == repo and target.get("pr_number") == number:
-                return key, entry, target
-    return None
+                if not target.get("consumed"):
+                    return key, entry, target
+                if fallback is None:
+                    fallback = (key, entry, target)
+    return fallback
 
 
 def _diagnose(tokens: list[str], state: dict, is_close: bool,

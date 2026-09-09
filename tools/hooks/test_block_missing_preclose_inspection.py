@@ -353,5 +353,61 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(seen["cwd"], "/some/where")
 
 
+class ApiMergeFormTests(unittest.TestCase):
+    """harmonic-forge#549 AC4 — the REST merge form is gated too.
+
+    This hook parsed three shapes: `gh issue close`, `gh pr merge`, and
+    `gh api PATCH ... state=closed`. `gh api -X PUT .../pulls/N/merge` matched
+    none of them and passed unexamined, so a Tooling-Exception issue without
+    `preclose-inspected` could be merged through the REST form with nothing
+    objecting. `batch_auth.classify_pr_merge` has always handled both forms,
+    which is why BATCH stopped a live PUT merge on 2026-09-09 while this guard
+    did not look at it — two hooks parsing one command class to different
+    depths.
+    """
+
+    def test_put_merge_is_recognized(self):
+        self.assertEqual(
+            hook.find_gated_targets(
+                "gh api -X PUT repos/o/r/pulls/7/merge -f merge_method=squash"),
+            [("o/r", "7", "pr")])
+
+    def test_method_long_flag_is_recognized(self):
+        self.assertEqual(
+            hook.find_gated_targets("gh api --method PUT repos/o/r/pulls/7/merge"),
+            [("o/r", "7", "pr")])
+
+    def test_attached_flag_form_is_recognized(self):
+        self.assertEqual(
+            hook.find_gated_targets("gh api -XPUT repos/o/r/pulls/8/merge"),
+            [("o/r", "8", "pr")])
+
+    def test_a_non_put_request_to_the_merge_path_is_not_a_merge(self):
+        """GET .../merge asks whether a PR is merged; it changes nothing."""
+        self.assertEqual(
+            hook.find_gated_targets("gh api -X GET repos/o/r/pulls/7/merge"), [])
+
+    def test_put_elsewhere_is_not_a_merge(self):
+        self.assertEqual(
+            hook.find_gated_targets("gh api -X PUT repos/o/r/pulls/7"), [])
+
+    def test_cli_and_rest_forms_agree(self):
+        """The whole point: both spellings of one action reach one verdict."""
+        cli = hook.find_gated_targets("gh pr merge 7 --repo o/r --squash")
+        rest = hook.find_gated_targets("gh api -X PUT repos/o/r/pulls/7/merge")
+        self.assertEqual(cli, rest)
+
+    def test_the_pattern_is_batch_auths_not_a_second_copy(self):
+        """A second copy of the regex is what drifts, so assert the identity."""
+        import batch_auth
+
+        self.assertIsNotNone(
+            batch_auth.API_MERGE_PATH.search("repos/o/r/pulls/7/merge"))
+        self.assertEqual(
+            batch_auth.classify_pr_merge(
+                ["gh", "api", "-X", "PUT", "repos/o/r/pulls/7/merge"]),
+            ("o/r", 7))
+
+
 if __name__ == "__main__":
     unittest.main()
