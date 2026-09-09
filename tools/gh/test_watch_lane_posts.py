@@ -129,24 +129,37 @@ class DiscoverQueueTests(unittest.TestCase):
 
     def _mock_gh(self, search_results: dict, comments: dict):
         """`search_results`: {kind: [issue numbers]}. `comments`: {issue:
-        [comment bodies, in order]}."""
+        [comment bodies, in order]}.
+
+        harmonic-forge#518: every call now goes through
+        `belt_mechanics.gh_as`, so the argv shape is
+        `["gh-as", <account>, "gh", ...]` and the search half is REST
+        (`search/issues`, returning `{"items": [...]}`) rather than the
+        GraphQL-backed `gh search issues`. The behaviour asserted below is
+        unchanged — only the call these tests intercept moved.
+        """
         def run(argv, **kwargs):
-            if argv[:3] == ["gh", "search", "issues"]:
-                # argv: gh search issues --repo R --state open "<marker text>" --json number
-                marker = argv[argv.index("--repo") + 4]
-                kind = marker.rsplit("kind=", 1)[-1]
+            self.assertEqual(argv[0], "gh-as",
+                             f"every call must be account-scoped: {argv}")
+            gh_argv = argv[3:]  # strip ["gh-as", <account>, "gh"]
+            if gh_argv[:4] == ["api", "-X", "GET", "search/issues"]:
+                # -f q=repo:R state:open <marker text>
+                query = gh_argv[gh_argv.index("-f") + 1]
+                kind = query.rsplit("kind=", 1)[-1]
                 numbers = search_results.get(kind, [])
-                return _fake_completed(json.dumps([{"number": n} for n in numbers]))
-            if argv[:2] == ["gh", "api"]:
-                # argv: gh api repos/R/issues/N/comments
-                issue = int(argv[2].rsplit("/", 2)[-2])
+                return _fake_completed(
+                    json.dumps({"items": [{"number": n} for n in numbers]})
+                )
+            if gh_argv[:1] == ["api"]:
+                # api repos/R/issues/N/comments
+                issue = int(gh_argv[1].rsplit("/", 2)[-2])
                 bodies = comments.get(issue, [])
                 return _fake_completed(json.dumps([{"body": b} for b in bodies]))
             raise AssertionError(f"unexpected gh call: {argv}")
         return run
 
     def test_issue_with_matching_marker_as_latest_comment_is_queued(self):
-        with patch("watch_lane_posts.subprocess.run",
+        with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
                       search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
                       comments={1530: [self._l1("handoff"), self._l1("ready-for-l3")]},
@@ -156,7 +169,7 @@ class DiscoverQueueTests(unittest.TestCase):
     def test_issue_superseded_by_a_later_comment_is_not_queued(self):
         """The self-clearing property: once Lane 3 (or anyone) posts after
         the marker, the issue drops out with no separate bookkeeping."""
-        with patch("watch_lane_posts.subprocess.run",
+        with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
                       search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
                       comments={1530: [self._l1("ready-for-l3"),
@@ -165,7 +178,7 @@ class DiscoverQueueTests(unittest.TestCase):
             self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {})
 
     def test_no_search_hits_yields_empty_queue(self):
-        with patch("watch_lane_posts.subprocess.run",
+        with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(search_results={}, comments={})):
             self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {})
 
@@ -174,7 +187,7 @@ class DiscoverQueueTests(unittest.TestCase):
         the kind. An issue matching two searches (e.g. it once carried an
         `ae` marker, later superseded by `ready-for-l3`) must appear once,
         with whichever kind is actually latest."""
-        with patch("watch_lane_posts.subprocess.run",
+        with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
                       search_results={"ready-for-l3": [1530], "ae": [1530], "sweep": []},
                       comments={1530: [self._l1("ae"), self._l1("ready-for-l3")]},
@@ -185,7 +198,7 @@ class DiscoverQueueTests(unittest.TestCase):
     def test_two_real_currently_queued_issues_hrse1058_and_1531(self):
         """Live shape observed 2026-09-03: two separate issues, each with
         its own ready-for-l3 comment, no cross-contamination."""
-        with patch("watch_lane_posts.subprocess.run",
+        with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
                       search_results={"ready-for-l3": [1058, 1531], "ae": [], "sweep": []},
                       comments={

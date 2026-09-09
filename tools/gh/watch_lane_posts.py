@@ -104,6 +104,29 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from belt_mechanics import (  # noqa: E402
+    CallCounter,
+    IdentityMismatch,
+    assert_identity,
+    gh_as,
+)
+
+#: harmonic-forge#518 AC4. Every GitHub call in this file routes through
+#: `gh-as <account>`, never bare `gh`. Bare `gh` resolves against whatever the
+#: global config points at, so a `vitalharmony`-scoped session polling a
+#: `harmonicarchitect` repo 404s or returns empty — and an empty monitor result
+#: is indistinguishable from "no new work." Silence is the one signal this
+#: protocol cannot interpret, so the account is explicit.
+#:
+#: Module-level because the call sites are leaf helpers reached from several
+#: paths; threading it through every signature would be a larger diff than the
+#: change warrants and would not make it more explicit.
+_ACCOUNT = "vitalharmony"
+_COUNTER = CallCounter()
 
 _L1_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;\s*kind=([\w-]+)")
 _L2_HEADING_RE = re.compile(r"^##\s+L2[A-Z]\b")
@@ -186,16 +209,17 @@ def discover_from_worktree(worktree: str) -> tuple[str, int] | None:
 
 
 def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
-    result = subprocess.run(
-        ["gh", "api", f"repos/{repo}/issues/{issue}/comments?since={since}"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"[watch_lane_posts] gh api failed for #{issue}: "
-              f"{result.stderr.strip()}", file=sys.stderr)
+    try:
+        raw = gh_as(
+            _ACCOUNT,
+            ["api", f"repos/{repo}/issues/{issue}/comments?since={since}"],
+            counter=_COUNTER,
+        )
+    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
+        print(f"[watch_lane_posts] gh api failed for #{issue}: {exc}", file=sys.stderr)
         return []
     try:
-        return json.loads(result.stdout)
+        return json.loads(raw)
     except json.JSONDecodeError:
         return []
 
@@ -218,30 +242,40 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
     """Open issues whose comment history contains `marker_text` SOMEWHERE --
     a coarse, cheap pre-filter. `discover_queue` re-checks each one to see
     if that marker is still the LATEST classified comment."""
-    result = subprocess.run(
-        ["gh", "search", "issues", "--repo", repo, "--state", "open",
-         marker_text, "--json", "number"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"[watch_lane_posts] gh search failed: {result.stderr.strip()}",
-              file=sys.stderr)
+    # harmonic-forge#518 AC16. This was `gh search issues`, which is
+    # GraphQL-backed — on a polling path, against a 5,000/hour complexity-priced
+    # quota shared with every concurrent lane. `search/issues` is the REST
+    # equivalent and returns the identical result set (verified live: both forms
+    # returned [1271, 1705] for `ready-for-l3` on vitalharmony/hrse).
+    #
+    # The search API carries its own rate limit (30/min authenticated), separate
+    # from both core REST and GraphQL, so this does not contend with either.
+    try:
+        raw = gh_as(
+            _ACCOUNT,
+            ["api", "-X", "GET", "search/issues",
+             "-f", f"q=repo:{repo} state:open {marker_text}"],
+            counter=_COUNTER,
+        )
+    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
+        print(f"[watch_lane_posts] search failed: {exc}", file=sys.stderr)
         return set()
     try:
-        return {row["number"] for row in json.loads(result.stdout)}
-    except json.JSONDecodeError:
+        return {row["number"] for row in json.loads(raw).get("items", [])}
+    except (json.JSONDecodeError, AttributeError):
         return set()
 
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict]:
-    result = subprocess.run(
-        ["gh", "api", f"repos/{repo}/issues/{issue}/comments"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
+    try:
+        raw = gh_as(
+            _ACCOUNT, ["api", f"repos/{repo}/issues/{issue}/comments"],
+            counter=_COUNTER,
+        )
+    except Exception:  # noqa: BLE001 — same treatment as the other fetch paths
         return []
     try:
-        return json.loads(result.stdout)
+        return json.loads(raw)
     except json.JSONDecodeError:
         return []
 
@@ -270,6 +304,7 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
 
 
 def main() -> int:
+    global _ACCOUNT
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--worktrees", nargs="+", default=[],
@@ -289,7 +324,19 @@ def main() -> int:
                              "and/or l3 (repeatable). Not required when only --queue-for "
                              "is used -- queue entry/exit is its own event.")
     parser.add_argument("--interval", type=int, default=30, help="poll interval, seconds")
+    parser.add_argument("--account", default=_ACCOUNT,
+                        help="gh-as account slot every call is scoped to "
+                             f"(default: {_ACCOUNT}). Its identity is asserted "
+                             "before polling: a slot authenticating as someone "
+                             "else refuses loudly rather than returning empty, "
+                             "because empty reads as 'no new work'.")
     args = parser.parse_args()
+
+    _ACCOUNT = args.account
+    try:
+        assert_identity(_ACCOUNT)
+    except IdentityMismatch as exc:
+        parser.error(str(exc))
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")

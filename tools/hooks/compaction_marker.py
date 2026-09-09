@@ -571,7 +571,13 @@ def build_context(compacted_at: str, lane: str, cwd: str) -> str:
         f"This session was compacted at {compacted_at}. You are LANE={lane} in {cwd}.\n"
         f"Your CLAUDE.md and .claude/rules/ directives were re-loaded automatically. "
         f"Your protocol corpus was NOT — re-read:\n{paths}\n"
-        f"Your task state is also gone — re-read the issue thread before acting."
+        f"Your task state is also gone — re-read the issue thread before acting.\n"
+        # harmonic-forge#518 AC7: the wake-up fires at SessionStart *and again*
+        # after a compaction. `belt_wakeup.py` covers the first; a compacted
+        # session never sees it, because this hook is what runs on that matcher.
+        # One line rather than the full wake-up — the situational payload above
+        # is the point here, and the belt is a capability reminder on top of it.
+        f"The belt and suspenders are not armed — `/belt-and-suspenders` arms them."
     )
 
 
