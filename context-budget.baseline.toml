@@ -13,6 +13,34 @@ total_bytes = 23606
 ceiling_bytes = 48000
 target_bytes = 24000
 
+[[increase]]
+date = "2026-09-09"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 16355
+why = """
+harmonic-forge#542: this repo now consumes its own universal rules, so a lane
+session started here loads what a lane session in a consuming project loads.
+Until now it loaded none of them — five forge checkouts had no .claude/rules/,
+.claude/agents/ or .claude/skills/ at all, so every lane session ever run in
+the platform repo ran without the rules the platform ships.
+
+Only this one file lands on the always-loaded surface. backend-python.md and
+frontend-typescript.md declare `paths:` frontmatter and fire only when a
+matching file is open, so they cost nothing here. lane-shorthand.md is
+deliberately unscoped — its own comment in sync_rules.py explains why: shorthand
+arrives in the operator's first message, before any file is open, and a table a
+session has to choose to go read is a table it will guess instead.
+
+Guessing it is not hypothetical. This session opened by inventing `Blueprint #N`
+as its own Lane 1 trigger — the Codex-role phrase from a file it had read —
+because the shorthand table it needed was not loaded. That is the cost this
+16,355 bytes buys down, and it is why path-scoping this file (option 2 in the
+ratchet's own advice) would defeat its purpose rather than economise.
+
+Total remains under the 24,000 target: the measured surface is 23,961 bytes,
+because MEMORY.md is outside this repo and not gated here.
+"""
+
 [files]
 "CLAUDE.md" = 865
 "~/.claude/CLAUDE.md" = 6054

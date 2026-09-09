@@ -1,0 +1,46 @@
+# Platform skills harmonic-forge consumes FROM ITSELF (harmonic-forge#542).
+#
+# Read by sync_rules.py in both link and verify mode, exactly as in a consuming
+# repo. The platform repo is not exempt from the mechanism it ships.
+#
+# THE DESIGN QUESTION #542 ASKED, AND ITS ANSWER
+# -----------------------------------------------
+# "Should the platform repo consume its own universal rules and agents, and if
+# so by what mechanism?" — Yes, and by TRACKED, REPO-RELATIVE symlinks, not by
+# running `sync_rules.py --project ~/harmonic-forge`.
+#
+# The sibling children (#544/#545/#546) gitignore their `.claude/` link
+# directories because the links there hold ABSOLUTE paths into one machine's
+# home directory, which break on every other clone. Inside this repo the source
+# and the link live in the same tree, so the link can be relative
+# (`../../rules/backend-python.md`) — and a relative link IS portable, which
+# makes it safe to track. Tracking it is strictly better than gitignoring it:
+#
+#   - It satisfies #542's AC2 outright. There is no absolute-path symlink for a
+#     `git add -A` to commit, because there is no absolute-path symlink.
+#   - All five forge checkouts (harmonic-forge, -lane2, -lane3, -release,
+#     -f326) get the links from git itself on checkout. No hook, no
+#     provisioning step, nothing to remember — which is the failure mode this
+#     entire epic is about.
+#   - It answers the question #542 said would settle the design ("whether
+#     .claude/ in the platform repo is generated-and-gitignored or tracked")
+#     with: tracked, because relative links make that possible here and only
+#     here.
+#
+# WHY NOT `sync_rules.py --project ~/harmonic-forge`
+# --------------------------------------------------
+# It would work and it would be wrong: `_link_dir`/`_link_skill_dir` call
+# `target.symlink_to(source)` with an absolute source, so a naive self-link
+# produces exactly the absolute-path symlinks AC2 forbids, in the one repo that
+# tracks its `.claude/`.
+#
+# Running it here anyway is HARMLESS, which is deliberate rather than lucky:
+# both linkers compare `target.resolve() == source.resolve()`, and a relative
+# link resolves to the same real path, so they report "already linked
+# correctly" and leave it alone. The tracked relative links survive anyone
+# running the linker out of habit.
+#
+# SKILLS ONLY — same constraint as everywhere else. Agents are auto-discovered
+# by _universal_agent_files(); rules are hardcoded in UNIVERSAL_RULE_FILES.
+
+skills = ["belt-and-suspenders"]

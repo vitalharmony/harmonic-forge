@@ -1,0 +1,1 @@
+../../rules/frontend-typescript.md
