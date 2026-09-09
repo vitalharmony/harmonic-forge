@@ -100,6 +100,87 @@ class AuthorizeTests(StateFixture):
         self.assertIsNone(close_target["pr_number"])
 
 
+class TopUpCliTests(StateFixture):
+    """harmonic-forge#549 AC6 — `top_up` is reachable, and it is the safe default.
+
+    Third instance of this epic's own class, in the same module: the safe
+    function was written and tested by its callers, and `batch_auth.py --help`
+    listed only `{authorize, link-pr}`. So "add an issue to a running batch" —
+    the ordinary operator need — had a correct implementation and no way to
+    invoke it, and the workaround was `authorize <new keys only>` plus the
+    operator remembering never to re-list a live key. A destructive default
+    with a memorised guard rail is the shape this epic exists to remove.
+    """
+
+    def _targets(self, key="F1"):
+        return ba._load(self.state_path)[key]["targets"]
+
+    def test_top_up_on_a_live_key_preserves_consumption_and_links(self):
+        """The AC's named assertion, and exactly what `authorize` destroys."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.link_pr("F1", "o/a", 7, state_path=self.state_path)
+        state = ba._load(self.state_path)
+        target = next(t for t in state["F1"]["targets"] if "merge" in t["action"])
+        target.update(consumed=True, consumed_by="some-hash")
+        ba._save(state, self.state_path)
+
+        ba.top_up(["F1"], state_path=self.state_path)
+
+        after = next(t for t in self._targets() if "merge" in t["action"])
+        self.assertTrue(after["consumed"], "top_up must not un-consume")
+        self.assertEqual(after["consumed_by"], "some-hash")
+        self.assertEqual(after["repo"], "o/a")
+        self.assertEqual(after["pr_number"], 7)
+
+    def test_authorize_by_contrast_destroys_both(self):
+        """States the difference the AC exists to protect, so it cannot rot."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.link_pr("F1", "o/a", 7, state_path=self.state_path)
+        state = ba._load(self.state_path)
+        target = next(t for t in state["F1"]["targets"] if "merge" in t["action"])
+        target.update(consumed=True, consumed_by="h", repo="o/a", pr_number=7)
+        ba._save(state, self.state_path)
+
+        ba.authorize(["F1"], state_path=self.state_path)
+
+        after = next(t for t in self._targets() if "merge" in t["action"])
+        self.assertFalse(after["consumed"])
+        self.assertIsNone(after["pr_number"])
+
+    def test_top_up_returns_only_the_newly_authorized_keys(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        fresh = ba.top_up(["F1", "F2"], state_path=self.state_path)
+        self.assertEqual([k.upper() for k in fresh], ["F2"])
+
+    def test_top_up_extends_a_live_expiry(self):
+        ba.authorize(["F1"], ttl_hours=1.0, state_path=self.state_path)
+        before = ba._load(self.state_path)["F1"]["expires_at"]
+        ba.top_up(["F1"], ttl_hours=12.0, state_path=self.state_path)
+        after = ba._load(self.state_path)["F1"]["expires_at"]
+        self.assertGreater(after, before)
+
+    def test_top_up_authorizes_an_expired_key_fresh(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        state["F1"]["expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        ba._save(state, self.state_path)
+        fresh = ba.top_up(["F1"], state_path=self.state_path)
+        self.assertEqual([k.upper() for k in fresh], ["F1"])
+
+    def test_cli_exposes_top_up(self):
+        """The defect itself: the subcommand was absent from --help."""
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            with self.assertRaises(SystemExit):
+                with mock.patch("sys.argv", ["batch_auth.py", "--help"]):
+                    ba._cli()
+        self.assertIn("top-up", buffer.getvalue())
+
+
 class ClassifyTests(unittest.TestCase):
     """classify_issue_close / classify_pr_merge recognize the command class
     independent of any authorization state -- these are what makes decide()
