@@ -458,6 +458,74 @@ def _run(cmd: list[str]) -> tuple[int, str]:
     return result.returncode, (result.stderr or result.stdout).strip()
 
 
+def _worktree_is_safe_to_advance(path: Path) -> tuple[bool, str]:
+    """Clean, detached, and not holding a live Lane 3 gate.
+
+    Every one of these three is a lesson rather than a precaution:
+
+      * **clean** — a worktree with uncommitted work is somebody's work in
+        progress, and `git checkout` carries uncommitted tracked changes ACROSS
+        the switch rather than isolating them.
+      * **detached** — a worktree on a branch is a branch owner; advancing it
+        would move that ref out from under whoever holds it.
+      * **no live gate** — hrse#1757. A checkout landing on a worktree mid-gate
+        is exactly the incident that issue was filed for, and the Lane 1 session
+        that caused it was doing precisely this: advancing lane worktrees after
+        a merge. A dead owner is a stale marker and does not block; a LIVE one
+        does, absolutely.
+    """
+    status = _run(["git", "-C", str(path), "status", "--porcelain"])
+    if status[0] != 0:
+        return False, "could not read status"
+    if status[1].strip():
+        return False, "uncommitted changes"
+    head = _run(["git", "-C", str(path), "symbolic-ref", "-q", "HEAD"])
+    if head[0] == 0:
+        return False, f"on a branch ({head[1].strip()}), not detached"
+    git_dir = _run(["git", "-C", str(path), "rev-parse", "--absolute-git-dir"])
+    if git_dir[0] == 0:
+        marker = Path(git_dir[1].strip()) / "LANE3_ACTIVE"
+        if marker.is_file():
+            owner = None
+            for line in marker.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("owner_pid="):
+                    owner = line.split("=", 1)[1].strip()
+            if owner and owner.isdigit() and Path(f"/proc/{owner}").exists():
+                return False, f"LANE3_ACTIVE held by live pid {owner}"
+    return True, "clean, detached, no live gate"
+
+
+def advance_stale_worktrees(project: Project,
+                            dry_run: bool = False) -> list[Check]:
+    """Fast-forward worktrees whose own settings.json is stale.
+
+    harmonic-forge#560 preclose. `.claude/settings.json` is TRACKED, so every
+    worktree carries its own copy, and the lane launchers run in the worktrees
+    rather than the main checkout. `apply()` creates a missing worktree and
+    NOTHING in this platform ever advanced an existing one — so a hook fix
+    merged to `main` reached the one checkout nobody launches from, and the
+    nine lane worktrees kept the broken matcher indefinitely.
+
+    That is not a #560-specific problem. Any tracked configuration a merge
+    changes has the same shape; #560 is just where it became visible.
+    """
+    done: list[Check] = []
+    for name in stale_worktree_hook_gaps(project):
+        path = project.checkout.parent / name if project.checkout else Path(name)
+        safe, why = _worktree_is_safe_to_advance(path)
+        if not safe:
+            done.append(Check(f"worktree {name}", FAIL, f"stale, NOT advanced: {why}"))
+            continue
+        if dry_run:
+            done.append(Check(f"worktree {name}", OK, "would advance to origin/main"))
+            continue
+        code, err = _run(["git", "-C", str(path), "checkout", "-q", "--detach",
+                          "origin/main"])
+        done.append(Check(f"worktree {name}", OK if code == 0 else FAIL,
+                          "advanced to origin/main" if code == 0 else err))
+    return done
+
+
 def apply(project: Project, dry_run: bool = False) -> list[Check]:
     """Create what is missing. Idempotent: a second run changes nothing."""
     done: list[Check] = []
@@ -478,6 +546,10 @@ def apply(project: Project, dry_run: bool = False) -> list[Check]:
                           "--detach", str(path), "origin/main"])
         done.append(Check(f"worktree {path.name}", OK if code == 0 else FAIL,
                           "created" if code == 0 else err))
+
+    # A worktree that EXISTS but carries stale tracked config is invisible to
+    # the loop above, which only ever creates missing ones.
+    done.extend(advance_stale_worktrees(project, dry_run=dry_run))
 
     source = platform_source()
     if source.resolve() != _THIS_CHECKOUT.resolve():
