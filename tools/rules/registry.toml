@@ -2281,9 +2281,10 @@ hooks = [{ script = "tools/hooks/deny_bare_cd.py", events = ["PreToolUse:Bash"],
 [[rule]]
 id = "R-0350"
 file = "3-lane-protocol.md"
-anchor = "lane2-pushes-its-own-branches"
-statement = "Lane 2 pushes its own branches and does not narrate the push; PR, merge and close remain outside its boundary."
-text_sha = "ce49e320018ac545"
+anchor = "lane2-never-pushes"
+statement = "Lane 2 never pushes: it stops at a committed branch in its own worktree and reports its name and SHA; push, PR, merge and close are all categorically Lane 1's."
+text_sha = "97b5919c7002837a"
+hooks = [{ script = "block_lane2_status_claims.py", events = ["PreToolUse:Bash"], wired_in = ".claude/settings.json, .codex/hooks.json" }]
 
 [[rule]]
 id = "R-0351"

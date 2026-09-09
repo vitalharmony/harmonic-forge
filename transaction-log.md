@@ -81,6 +81,31 @@ Verified: check_rule_drift.py clean at 275 rules, check_cross_registry.py clean
 - rules/universal-agent.md  | 54 +++++++++++++++++++++++++++++++++++++++++++----
 - tools/rules/registry.toml | 12 +++++++++--
 - 2 files changed, 60 insertions(+), 6 deletions(-)
+## fix(rules): R-0350 said Lane 2 pushes; the hook denies it — correct the outlier
+
+3-lane-protocol.md's R-0350 read "Lane 2 pushes its own branches and does
+not narrate the push." That contradicted three things that agree with each
+other: tools/hooks/block_lane2_status_claims.py (harmonic-forge#398), which
+denies git push / gh pr create for LANE=2; R-0003 ("Push to the remote only
+when the human operator explicitly asks"); and HRSE2's own
+.claude/rules/hrse2-extended/lane-protocol.md.
+
+Found live 2026-09-08: a Lane 2 session followed this file, attempted to
+push a finished branch, and got the hook's denial.
+
+R-0350 now states the prohibition, names the hook and its wrapper coverage,
+and records the old wording so it is not restored as a fix. The registry row
+gains the hooks entry it never had — it recorded this rule as unenforced
+while its enforcing hook existed.
+
+Verified: check_rule_drift.py and check_cross_registry.py clean (273 + 77
+ids); test_rule_registry.py 33 passed, test_cross_registry.py 15 passed;
+mutation-checked (reverting text_sha to the old value fails the drift gate
+naming R-0350). mise run check shows the same 4 pre-existing failures on
+pristine main as on this branch — none introduced here.
+- 3-lane-protocol.md        | 23 +++++++++++++++++++++--
+- tools/rules/registry.toml |  7 ++++---
+- 2 files changed, 25 insertions(+), 5 deletions(-)
 
 ## feat(rules): stable rule IDs + registry for rules/*.md (harmonic-forge#447)
 
