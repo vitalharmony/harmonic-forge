@@ -362,8 +362,8 @@ hooks = []
 id = "R-0039"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "Before creating any issue, run the three-test filing bar in order and stop at the first that answers."
-text_sha = "ccaaacbdd8ae9f40"
+statement = "Applies to every lane AND to sessions with no LANE set. Before creating any issue, run the three-test filing bar in order and stop at the first that answers; at branches 1 and 2 'File it' means 'file it with its artifact,' in one action. An un-handoffable issue is a failed filing-bar test. Three exceptions, each stating its reason on the issue: a parent epic, an explicitly deferred design record, and an issue blocked on an unlanded prerequisite (a deferral, not a waiver -- declared per R-0352). Only 'no one could write it' fails the bar; lacking the authority does not. The operator-scoped exception needs a literal instruction naming the issue; self-declared Tooling-Exception eligibility does not reach it."
+text_sha = "9dc187fd719dac6a"
 hooks = []
 
 [[rule]]
@@ -2293,3 +2293,11 @@ statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-r
 text_sha = "4d1630237163c317"
 hooks = []
 exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
+
+[[rule]]
+id = "R-0352"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "A deferral is declared on the issue at filing time, in one comment naming the trigger, the owner (a named lane or the operator, never 'someone'), and the record. An issue with no such comment is not deferred, it is unfinished. Nothing watches for a fired trigger today -- a declared deferral is debt visible to the standing hygiene pass, and the rule states that rather than implying a sweep that does not exist."
+text_sha = "426eff48acc424e0"
+hooks = []

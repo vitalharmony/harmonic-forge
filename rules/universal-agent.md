@@ -383,22 +383,103 @@ agent — full stop, regardless of which file.
 ## THE FILING BAR — THREE TESTS, IN ORDER (hrse, 2026-08-14)
 
 <!-- R-0039 -->
-**Applies before any agent, in any lane, creates a new issue.** It qualifies
-every "file it" instruction in this file, including the section immediately
-below, and supersedes any standing guidance that filing is default-on. This
-bar governs **what** is filed; the lane sections above govern **who**
-files — Lane 2 and Lane 3 surface a finding and stop, Lane 1 files.
+**Applies before anything creates a new issue: every lane, and every session
+with no `LANE` set at all.** The previous wording was *"any agent, in any
+lane,"* which a session that is in no lane can read itself out of — and the
+sessions most likely to file without an artifact are exactly the ones running
+outside a lane, because nothing else about their setup is enforcing lane
+discipline either. No-lane is not an exemption; it is the case this bar was
+most often skipped in.
+
+It qualifies every "file it" instruction in this file, including the section
+immediately below, and supersedes any standing guidance that filing is
+default-on. This bar governs **what** is filed; the lane sections above govern
+**who** files — Lane 2 and Lane 3 surface a finding and stop, Lane 1 files.
 
 Run these in order and stop at the first that answers:
 
 1. **Does it block or corrupt the live pipeline the current release thesis
-   names?** — File it.
-2. **Has it actually bitten three or more times?** — File it. Cite the
-   occurrences. Once or twice is a comment on the issue where it surfaced,
-   not a new number.
+   names?** — **File it with its artifact.** If the artifact cannot be
+   completed, file it anyway and state in the issue exactly what could not be
+   determined. **This branch outranks the artifact requirement** — a
+   pipeline-blocking defect is never discarded for being hard to characterise.
+2. **Has it actually bitten three or more times?** — **File it with its
+   artifact.** Cite the occurrences. If the artifact cannot be written, you
+   have not cleared this bar: go to 3. Once or twice is a comment on the issue
+   where it surfaced, not a new number.
 3. **Otherwise** — fold it into the existing issue it touches, fix it inline
    if the fix is smaller than the issue would be, or let it go.
+
+**"File it" means "file it with its artifact," in one action, at both 1 and 2.**
+A filed issue whose artifact is unwritten is not a deliverable and the session
+has not finished. **If you cannot write the artifact, that is the answer, not
+an obstacle** — at branch 2 it sends you to branch 3; at branch 1 it is
+recorded on the issue and the filing still happens.
+
+### An un-handoffable issue is a failed filing-bar test
+
+That sentence is the reason the two halves are one rule rather than two
+adjacent ones. Being unable to write the handoff is not a scheduling problem
+to work around later — it is the bar telling you the thing is not understood
+well enough to be an issue yet. The three tests ask whether this is worth
+filing; the artifact is how you find out whether you actually know what it is.
+An issue nobody can characterise well enough to hand off is the issue that
+later gets folded or closed unactioned, which is the failure the bar was
+measured against in the first place.
+
+**Three exceptions, and each states its reason on the issue.** An exception
+claimed but not written down is indistinguishable from an artifact nobody got
+around to:
+
+1. **A parent epic**, implemented through its children rather than directly.
+   The children carry the artifacts; the epic states that it is one.
+2. **An explicitly deferred design record** — an issue filed to hold a decision
+   that has not been made yet. It says so, and says what would settle it.
+3. **An issue blocked on an unlanded prerequisite**, where the artifact's
+   file and line citations would be written against code that is about to
+   change. This one is a **deferral, not a waiver**: the handoff is owed as
+   soon as the prerequisite lands, and the deferral is declared per R-0352
+   below — trigger, owner, record.
+
+No other exception exists. In particular, "I am not the lane that writes
+handoffs" is not one — see below.
+
+The artifact requirement is deliberately **not** a fourth test. The enumeration
+says *stop at the first that answers*, so anything appended after branch 3 is
+unreachable for every issue that ever gets filed, and a fourth branch inside
+the list is worse still — an issue answering at 1 or 2 terminates before
+reaching it, and the contradiction (test 1 says *File it*, a fourth test says
+*fold it*) would then live inside one span. Attaching the requirement to the
+two branches where filing actually happens is unreachable-proof by
+construction.
+
+**Only "no one could write it" fails this bar.** "I am not the lane that
+writes handoffs" does not — Lane 2 and Lane 3 surface a finding and stop, and
+Lane 1 files it with its artifact (R-0089, and this bar's own preamble above).
+A gate finding is never dropped for lack of authority.
+
+**The operator-scoped exception requires a literal human instruction naming the
+issue.** `3-lane-protocol.md` R-0226 condition 3 binds; **R-0232's
+self-declared Tooling-Exception eligibility does not reach this exception** —
+an agent cannot scope its own filing out of the artifact requirement.
 <!-- /R-0039 -->
+
+<!-- R-0352 -->
+**A deferral is declared on the issue at filing time**, in one comment, naming
+three things: **the trigger** (the observable event that ends the deferral),
+**the owner** (a named lane or the operator, never "someone"), and **the
+record** (the deferral comment itself, which is what a sweep can find). An
+issue carrying no such comment is not deferred; it is unfinished.
+
+**Nothing watches for a fired trigger today, and this rule says so rather than
+implying a watcher exists.** There is no scheduled sweep for deferred
+artifacts. A declared deferral is debt visible to the standing hygiene pass,
+and its *absence* is what makes an unfinished issue findable — the same posture
+`3-lane-protocol.md` R-0151 takes about prose detectors: where a specific,
+mechanically-detectable class of outstanding work exists, enforce that class
+rather than guessing at prose. A deferral comment with three named fields is
+mechanically detectable; "this issue feels incomplete" is not.
+<!-- /R-0352 -->
 
 Branch 3 is the one that gets skipped, and skipping it is what produced the
 condition this rule exists to stop.
