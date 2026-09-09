@@ -607,5 +607,153 @@ class TestF522BranchAdvice(unittest.TestCase):
         self.assertIn("Branch first", m.branch_advice("\0bad", self.here))
 
 
+class TestF529DirectoryChangeRecognition(unittest.TestCase):
+    """harmonic-forge#529 — which directory changes the guard can see.
+
+    Pure parsing; no git, no filesystem. The five shapes below were measured
+    live as false negatives: each changes directory and the old check saw none
+    of them, so a relative write target afterwards resolved against the
+    session's own worktree and passed.
+    """
+
+    def test_pushd_is_a_directory_change(self):
+        self.assertEqual(m.directory_change(["pushd", "/tmp/x"]), ("/tmp/x", True))
+
+    def test_flags_do_not_hide_the_change(self):
+        """`cd -P <dir>` made the segment three tokens; the old check required
+        exactly two and dropped the whole change. It failed in the dangerous
+        direction — a flag made the guard blind while the command still ran."""
+        for flag in ("-P", "-L", "-e", "-@"):
+            with self.subTest(flag=flag):
+                self.assertEqual(m.directory_change(["cd", flag, "/tmp/x"]),
+                                 ("/tmp/x", True))
+
+    def test_compound_keywords_do_not_hide_the_change(self):
+        """A loop body arrives as `['do', 'cd', ...]` — the verb is not
+        token 0."""
+        self.assertEqual(m.directory_change(["do", "cd", "/tmp/x"]),
+                         ("/tmp/x", True))
+
+    def test_dynamic_targets_are_unresolvable_not_absent(self):
+        for token in ("$D", '"$d"', "`pwd`"):
+            with self.subTest(token=token):
+                self.assertEqual(m.directory_change(["cd", token]), (None, False))
+
+    def test_bare_forms_are_unresolvable(self):
+        """Bare `cd` goes to $HOME and bare `pushd` swaps the stack. Both are
+        real changes to a directory this guard cannot name."""
+        self.assertEqual(m.directory_change(["cd"]), (None, False))
+        self.assertEqual(m.directory_change(["pushd"]), (None, False))
+
+    def test_non_directory_commands_are_not_changes(self):
+        self.assertIsNone(m.directory_change(["cat", "x"]))
+        self.assertIsNone(m.directory_change([]))
+
+    def test_nested_shell_script_is_extracted_and_reparsed(self):
+        segment = ["bash", "-c", "cd /tmp/x && cat > y.txt"]
+        script = m.nested_shell_script(segment)
+        self.assertEqual(script, "cd /tmp/x && cat > y.txt")
+        self.assertIn("y.txt", m.nested_shell_write_targets(script))
+
+    def test_a_plain_command_is_not_a_nested_shell(self):
+        self.assertIsNone(m.nested_shell_script(["cat", "x"]))
+        self.assertIsNone(m.nested_shell_script(["bash", "script.sh"]))
+
+
+class TestF529UnresolvedCwdFailsLoud(_BashWriteSurface):
+    """harmonic-forge#529, ratified — fail loud, not open.
+
+    When the guard cannot follow a directory change, a relative write target
+    lands somewhere unknown. Resolving it against a directory the command has
+    already left is a guess, and the guess permits the write.
+    """
+
+    def test_relative_write_after_a_variable_cd_is_denied(self):
+        self.assertTrue(self.denied('D=/tmp/x; cd "$D" && cat > out.txt'))
+
+    def test_relative_write_in_a_loop_body_is_denied(self):
+        self.assertTrue(self.denied(
+            'for d in /tmp/a /tmp/b; do cd "$d" && cat > out.txt; done'))
+
+    def test_relative_write_inside_a_nested_shell_cd_is_denied(self):
+        """The nested script is ONE token to the outer pass, so its redirect is
+        never a separate token and nothing was there to check."""
+        self.assertTrue(self.denied('bash -c "cd /tmp/x && cat > out.txt"'))
+
+    def test_absolute_targets_survive_an_unresolved_change(self):
+        """The required negative. An unresolved directory says nothing about a
+        path that does not depend on cwd — denying these would break every
+        `> /tmp/...` inside a sweep loop."""
+        self.assertFalse(self.denied(
+            'for d in /tmp/a /tmp/b; do cd "$d" && echo x > /tmp/out.txt; done'))
+        self.assertFalse(self.denied('for d in /tmp/a; do cd "$d" && ls > /dev/null; done'))
+
+    def test_reads_after_an_unresolved_change_are_unaffected(self):
+        self.assertFalse(self.denied('D=/tmp/x; cd "$D" && grep -rn foo .'))
+
+    def test_a_resolvable_change_is_followed_not_denied(self):
+        """`pushd` and `cd -P` are now followed, so they resolve normally
+        rather than tripping the unresolved rule."""
+        self.assertFalse(self.denied("pushd /tmp/x && cat > out.txt"))
+        self.assertFalse(self.denied("cd -P /tmp/x && cat > out.txt"))
+
+
+class TestF529ImplWorktreeIsNotTheMainCheckout(unittest.TestCase):
+    """harmonic-forge#529 AC5 — the live blocker.
+
+    `resolve_main_checkout_root` stripped a `-lane<N>` suffix and returned the
+    basename otherwise, so a `/tmp/<repo>-<issue>-impl` worktree was reported
+    as its own main checkout and every Lane 2 shell write inside the very
+    worktree the protocol requires was denied.
+    """
+
+    def setUp(self) -> None:
+        import os
+        import subprocess
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        self.main = base / "proj"
+        self.main.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True)
+        (self.main / "tracked.md").write_text("x\n")
+        subprocess.run(["git", "-C", str(self.main), "add", "tracked.md"], check=True)
+        subprocess.run(["git", "-C", str(self.main), "-c", "user.email=t@t",
+                        "-c", "user.name=t", "commit", "-qm", "seed"], check=True)
+        self.impl = base / "proj-42-impl"
+        subprocess.run(["git", "-C", str(self.main), "worktree", "add", "-q",
+                        "-b", "work", str(self.impl)], check=True)
+        patcher = unittest.mock.patch.dict(os.environ, {"LANE": "2"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_impl_worktree_is_not_reported_as_the_main_checkout(self):
+        roots = m.protected_checkout_roots(self.impl)
+        self.assertEqual(roots, [self.main])
+        self.assertNotIn(self.impl, roots)
+
+    def test_a_write_inside_the_impl_worktree_is_allowed(self):
+        self.assertFalse(m.lane2_write_in_main_checkout("tracked.md", self.impl))
+        self.assertFalse(m.lane2_write_in_main_checkout(
+            str(self.impl / "tracked.md"), self.impl))
+
+    def test_a_write_reaching_into_the_main_checkout_is_still_denied(self):
+        self.assertTrue(m.lane2_write_in_main_checkout(
+            str(self.main / "tracked.md"), self.impl))
+
+    def test_the_main_checkout_protects_itself(self):
+        self.assertEqual(m.protected_checkout_roots(self.main), [self.main])
+
+    def test_the_lane_suffix_convention_still_protects_a_sibling_clone(self):
+        """Not redundant with the git-derived root: a lane worktree set up as
+        an independent clone has its own `.git`, so git reports it as its own
+        main tree and only the naming convention links the two."""
+        import subprocess
+        sibling = self.main.parent / "proj-lane2"
+        sibling.mkdir()
+        subprocess.run(["git", "init", "-q", str(sibling)], check=True)
+        self.assertIn(self.main, m.protected_checkout_roots(sibling))
+
+
 if __name__ == "__main__":
     unittest.main()
