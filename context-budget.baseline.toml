@@ -9,11 +9,49 @@
 # `bytes` are re-measured here, not copied. An entry that does not
 # match the real delta fails the check.
 
-total_bytes = 23606
+total_bytes = 40511
 ceiling_bytes = 48000
 target_bytes = 24000
 
 [files]
+".claude/rules/lane-shorthand.md" = 16355
 "CLAUDE.md" = 865
 "~/.claude/CLAUDE.md" = 6054
-"~/Harmonic_Projects/operator-memory/MEMORY.md" = 16687
+"~/Harmonic_Projects/operator-memory/MEMORY.md" = 17237
+
+[[increase]]
+date = "2026-09-09"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 16355
+why = """
+harmonic-forge#542: this repo now consumes its own universal rules, so a lane
+session started here loads what a lane session in a consuming project loads.
+Until now it loaded none of them — five forge checkouts had no .claude/rules/,
+.claude/agents/ or .claude/skills/ at all, so every lane session ever run in
+the platform repo ran without the rules the platform ships.
+
+Only this one file lands on the always-loaded surface. backend-python.md and
+frontend-typescript.md declare `paths:` frontmatter and fire only when a
+matching file is open, so they cost nothing here. lane-shorthand.md is
+deliberately unscoped — its own comment in sync_rules.py explains why: shorthand
+arrives in the operator's first message, before any file is open, and a table a
+session has to choose to go read is a table it will guess instead.
+
+Guessing it is not hypothetical. This session opened by inventing `Blueprint #N`
+as its own Lane 1 trigger — the Codex-role phrase from a file it had read —
+because the shorthand table it needed was not loaded. That is the cost this
+16,355 bytes buys down, and it is why path-scoping this file (option 2 in the
+ratchet's own advice) would defeat its purpose rather than economise.
+
+Cost, stated straight: the surface is now 40,511 bytes (~10,127 tokens) against
+a 24,000 target and a 48,000 ceiling. This is OVER target and under ceiling —
+roughly 7,500 bytes of headroom, not 24,000. An earlier draft of this entry
+claimed the total remained under target at 23,961 bytes; that number
+corresponded to no measurement in this file and was wrong by 16,550. It was
+caught by preclose-inspection, which also noted that the ratchet validates
+`files`, `bytes` and the PRESENCE of `why` but never its content — so a false
+justification passes the anti-rubber-stamp check by construction. Whoever reads
+this next to decide whether a further increase is affordable: the headroom is
+small, and 17,237 of the total is MEMORY.md, which sits outside this repo and
+is reported but not gated here.
+"""

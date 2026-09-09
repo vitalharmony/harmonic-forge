@@ -366,3 +366,27 @@ else
   exit 1
 fi
 '''
+
+[tasks.hooks-install]
+description = "Point git at .githooks/ so this repo's own .claude/ links are created automatically on checkout and merge (harmonic-forge#542). Run once per CLONE — core.hooksPath is per-repository LOCAL config that no tracked file can set and no clone inherits. The platform repo consumes its own rules, agents and skills exactly as a consuming repo does; five forge checkouts had none of them. Idempotent."
+run = """
+set -e
+git config core.hooksPath .githooks
+echo "[hooks] core.hooksPath = $(git config --get core.hooksPath)"
+# Branch-independent guard (harmonic-forge#546): the .claude/*/.gitignore files
+# are tracked, so they vanish on any older commit while the links persist on
+# disk, re-arming `git add -A`. .git/info/exclude is local, shared by every
+# worktree, and independent of the checked-out commit.
+add_exclude() {
+  local common; common="$(git rev-parse --git-common-dir)"
+  local f="$common/info/exclude"
+  mkdir -p "$(dirname "$f")"; touch "$f"
+  for p in ".claude/rules/" ".claude/agents/" ".claude/skills/"; do
+    grep -qxF "$p" "$f" || printf '%s\n' "$p" >> "$f"
+  done
+  echo "[hooks] .git/info/exclude covers .claude/{rules,agents,skills}/"
+}
+add_exclude
+python3 ./sync_rules.py --project . || true
+python3 ./sync_rules.py --verify --project .
+"""

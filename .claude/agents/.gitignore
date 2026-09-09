@@ -1,0 +1,12 @@
+*
+!.gitignore
+
+# Platform content symlinked from this repo's own agents/ directory
+# (harmonic-forge#542). Ignored rather than tracked: a relative link resolves
+# inside whichever WORKTREE holds it, while sync_rules.py anchors its expected
+# target to PLATFORM_ROOT, so a tracked relative link makes --verify report
+# nine false [BROKEN] lines in each of the four forge worktrees and makes
+# --project relink them to absolute paths. Measured, not assumed.
+#
+# The links are created by .githooks/post-checkout / post-merge, exactly as in
+# every consuming repo. The platform is not exempt from its own mechanism.

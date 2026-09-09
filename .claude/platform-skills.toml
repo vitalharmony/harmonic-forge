@@ -1,0 +1,45 @@
+# Platform skills harmonic-forge consumes FROM ITSELF (harmonic-forge#542).
+#
+# Read by sync_rules.py in both link and verify mode, exactly as in a consuming
+# repo. The platform repo is not exempt from the mechanism it ships.
+#
+# THE DESIGN QUESTION #542 ASKED, AND ITS ANSWER
+# -----------------------------------------------
+# "Should the platform repo consume its own universal rules and agents, and if
+# so by what mechanism?" — Yes, and by the SAME mechanism as every consuming
+# repo: gitignored symlinks created by .githooks/post-checkout and post-merge,
+# with `mise run hooks-install` setting the one piece of local config a clone
+# cannot inherit.
+#
+# WHY NOT TRACKED RELATIVE SYMLINKS
+# ----------------------------------
+# That was the first implementation of this issue and it was wrong. The idea
+# was appealing: inside this repo the source and the link share a tree, so the
+# link can be relative (`../../rules/backend-python.md`), and a relative link
+# is portable, so it can be committed — giving all five checkouts the links
+# from git itself with no hook at all.
+#
+# It fails in a worktree, which is four of the five checkouts this issue is
+# about. `../../rules/x` resolves inside the WORKTREE, while sync_rules.py
+# anchors `expected` to PLATFORM_ROOT (the main checkout). The two differ, so:
+#
+#   * `--verify` against any forge worktree printed nine false [BROKEN] lines
+#     and exited 1 against a checkout whose every link was correct;
+#   * `--project` against one hit `_link_dir`'s [FIX] branch and rewrote all
+#     eight tracked links to ABSOLUTE paths, dirtying the tree — and
+#     `git add .` would then commit `/home/mmangus/...` onto main.
+#
+# Both were reproduced live before this rewrite, which is why the boring
+# mechanism won. Tracking `.claude/` here would also have made this the only
+# repo in the family where it is tracked, for no gain.
+#
+# SKILLS ONLY — same constraint as everywhere else. Agents are auto-discovered
+# by _universal_agent_files(); rules are hardcoded in UNIVERSAL_RULE_FILES.
+# Neither belongs in a per-project manifest; sync_rules.py rejects unknown keys
+# rather than ignoring them, so the attempt fails loudly.
+#
+# An empty list is a valid declaration and verifies green; a MISSING file does
+# not. If this repo ever consumes no platform skills, set `skills = []` rather
+# than deleting this file.
+
+skills = ["belt-and-suspenders"]
