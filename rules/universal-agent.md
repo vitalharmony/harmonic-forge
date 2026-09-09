@@ -481,6 +481,26 @@ rather than guessing at prose. A deferral comment with three named fields is
 mechanically detectable; "this issue feels incomplete" is not.
 <!-- /R-0352 -->
 
+<!-- R-0353 -->
+**An issue that adds platform content carries its DISTRIBUTION step in its own
+acceptance criteria. The authoring repo is not the shipping surface.** Adding a
+skill, agent, rule, or hook to `harmonic-forge` ships it nowhere by itself.
+Every consuming repo needs a distribution step — a manifest entry, a
+`settings.json` block, a `sync_rules.py` link — and if no AC names one, the
+work is complete in the repo that wrote it and absent everywhere it is used.
+"Merged" then reads as "delivered" and nothing reports otherwise.
+
+Not hypothetical; measured three times over. `belt-and-suspenders` shipped
+complete, tested, and invocable in **zero of nine** consuming checkouts
+(harmonic-forge#540). Universal rules and agents reached none of the five
+platform checkouts, so every lane session ever run in the platform repo ran
+without the rules the platform ships (#542). `belt_wakeup.py` was wired in one
+repo and absent from the other three, so a session with `LANE=1` set in its
+environment opened by announcing it had no lane (#547). Each was a capability
+built correctly and delivered nowhere, and in each the authoring repo looked
+right the whole time.
+<!-- /R-0353 -->
+
 Branch 3 is the one that gets skipped, and skipping it is what produced the
 condition this rule exists to stop.
 

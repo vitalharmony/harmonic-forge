@@ -2302,3 +2302,11 @@ anchor = "the-filing-bar"
 statement = "A deferral is declared on the issue at filing time, in one comment naming the trigger, the owner (a named lane or the operator, never 'someone'), and the record. An issue with no such comment is not deferred, it is unfinished. Nothing watches for a fired trigger today -- a declared deferral is debt visible to the standing hygiene pass, and the rule states that rather than implying a sweep that does not exist."
 text_sha = "426eff48acc424e0"
 hooks = []
+
+[[rule]]
+id = "R-0353"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "An issue that adds platform content (skill, agent, rule, hook) carries its DISTRIBUTION step in its own acceptance criteria -- the authoring repo is not the shipping surface. Measured three times: belt-and-suspenders invocable in zero of nine checkouts (#540), universal rules reaching none of the five platform checkouts (#542), belt_wakeup.py wired in one repo of four (#547)."
+text_sha = "fc72a8baa66099de"
+hooks = []
