@@ -39,6 +39,11 @@ echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
 # exists yet)" while 336 passing tests sat in the repo unrun. Running them
 # here means `mise run check` means what a reader assumes it means.
 python3 tools/run_tests.py
+# harmonic-forge#543: report platform-link drift from the gate rather than
+# from a lane launcher. Fails on DRIFT (a declared link missing or pointing
+# outside the platform); reports loudly without failing when the checkout
+# simply has no manifest yet, which is usually an older branch.
+python3 tools/onboard/platform_link_report.py --project .
 # harmonic-forge#454: cross-registry ID collision sweep. Prints SKIPPED (not
 # "clean") in a single-repo checkout, so a no-op is distinguishable from a
 # pass. NOTE: forge CI does not run this — harmonic-forge is public and hrse
