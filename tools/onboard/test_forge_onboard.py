@@ -314,9 +314,48 @@ class HookContentTests(unittest.TestCase):
         self.script.parent.mkdir(parents=True)
         self.script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
 
-    def _hooks(self, command: str) -> dict:
-        return {"SessionStart": [{"matcher": "startup|resume",
+    def _hooks(self, command: str, matcher: str = "startup|resume|clear|fork") -> dict:
+        # Default is the FULL source set (harmonic-forge#560). This fixture used
+        # to hard-code `startup|resume`, which is the shipped defect itself —
+        # so every test built on it was asserting against a settings file that
+        # could never wake a `/clear` session.
+        return {"SessionStart": [{"matcher": matcher,
                                   "hooks": [{"type": "command", "command": command}]}]}
+
+    def test_the_shipped_startup_resume_matcher_is_reported_as_a_gap(self) -> None:
+        """harmonic-forge#560, stated as the check that would have caught it.
+
+        `clear` is a distinct SessionStart source, so `startup|resume` never
+        fired for `lane<N> /clear` — the launch the operator actually uses.
+        Nothing errored; the hook simply never ran.
+        """
+        hooks = self._hooks("python3 belt_wakeup.py", matcher="startup|resume")
+        self.assertEqual(fo.sessionstart_source_gaps(hooks), ["clear", "fork"])
+
+    def test_full_coverage_reports_no_gap(self) -> None:
+        self.assertEqual(
+            fo.sessionstart_source_gaps(self._hooks("python3 belt_wakeup.py")), [])
+
+    def test_a_repo_not_wiring_the_wakeup_at_all_is_not_a_source_gap(self) -> None:
+        """Absent is a different finding from mis-matched, and conflating them
+        would make this check fire on every repo that legitimately has no
+        wake-up hook."""
+        hooks = self._hooks("python3 something_else.py", matcher="startup")
+        self.assertEqual(fo.sessionstart_source_gaps(hooks), [])
+
+    def test_a_source_gap_fails_the_hooks_check(self) -> None:
+        """It must FAIL, not warn. A wake-up that never fires for the launch
+        path in daily use reads green while the session is unguarded."""
+        checkout = self.root / "gaprepo"
+        (checkout / ".claude").mkdir(parents=True)
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": self._hooks(
+                f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"',
+                matcher="startup|resume")}),
+            encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="g", prefix="G", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("clear", check.detail)
 
     def test_resolvable_target_reports_nothing_missing(self) -> None:
         hooks = self._hooks(f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"')
@@ -389,3 +428,48 @@ class HookContentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionStartMatcherSemanticsTests(unittest.TestCase):
+    """harmonic-forge#560 preclose. A matcher is a REGEX, not a pipe list.
+
+    The first draft split on "|" and tested membership, which got the one
+    common case right and every other case wrong.
+    """
+
+    def _wired(self, *matchers):
+        return {"SessionStart": [
+            {"matcher": m, "hooks": [{"command": "python3 belt_wakeup.py"}]}
+            for m in matchers]}
+
+    def test_coverage_accumulates_across_blocks(self):
+        """Returning on the FIRST block naming the hook reported a split
+        configuration as covering only half. Not hypothetical: this same change
+        establishes the two-block shape by adding a `compact` block."""
+        self.assertEqual(
+            fo.sessionstart_source_gaps(self._wired("startup|resume", "clear|fork")),
+            [])
+
+    def test_an_omitted_matcher_matches_everything(self):
+        self.assertEqual(fo.sessionstart_source_gaps(self._wired(None)), [])
+
+    def test_a_catch_all_regex_matches_everything(self):
+        self.assertEqual(fo.sessionstart_source_gaps(self._wired(".*")), [])
+
+    def test_matching_is_unanchored_like_the_runtime(self):
+        """Claude Code dispatches with `new RegExp(m).test(source)`, which is
+        unanchored. A stricter check here would report a gap for a matcher that
+        actually fires — a check disagreeing with the thing it checks is worse
+        than no check."""
+        self.assertEqual(fo.sessionstart_source_gaps(self._wired("start|resum|clea|for")),
+                         [])
+
+    def test_an_invalid_regex_covers_nothing(self):
+        gaps = fo.sessionstart_source_gaps(self._wired("*[unclosed"))
+        self.assertEqual(gaps, list(fo.WAKEUP_SOURCES))
+
+    def test_a_malformed_sessionstart_block_does_not_raise(self):
+        """It returned a Check on every other malformed input and raised
+        AttributeError on this one, which escaped `main` and aborted every
+        remaining project in the manifest."""
+        self.assertEqual(fo.sessionstart_source_gaps({"SessionStart": ["oops"]}), [])
