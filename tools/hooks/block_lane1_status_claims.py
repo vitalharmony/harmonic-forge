@@ -122,6 +122,38 @@ EDIT_WRITE_TOOLS = {"Edit", "Write"}
 LANE_WORKTREE_SUFFIX = re.compile(r"^(.+)-lane\d+$")
 TESTPLAN_ROOT = (Path.home() / "Harmonic_Projects" / "testplan").resolve()
 
+#: Shell builtins that change the working directory. `cd` was the only one
+#: recognized until harmonic-forge#529; `pushd` changes directory identically
+#: and was invisible, so a relative write target after one resolved against the
+#: session's own worktree and passed the guard.
+DIR_CHANGE_VERBS = {"cd", "pushd"}
+
+#: Flags `cd`/`pushd` accept before their operand. Their absence from the old
+#: match is why `cd -P <dir>` was ignored entirely: the segment is three tokens,
+#: the check required exactly two, and the whole directory change was dropped.
+#: That failed in the dangerous direction -- adding a flag made the guard blind
+#: while the command still ran.
+DIR_CHANGE_FLAGS = {"-L", "-P", "-e", "-@"}
+
+#: A token carrying a value no static read can know. `cd "$D"` and a loop's
+#: `cd "$d"` are the shapes measured live on harmonic-forge#529.
+DYNAMIC_TOKEN = re.compile(r"[$`]")
+
+#: Shell keywords that can precede a command inside a compound statement.
+#: `command_segments` keeps them attached, so a loop body's directory change
+#: arrives as `['do', 'cd', '$d']` — the verb is not token 0, and the whole
+#: change was missed (harmonic-forge#529, measured live).
+COMPOUND_KEYWORDS = {"do", "then", "else", "elif", "{", "(", "!"}
+
+#: Shells that take a script as a `-c` argument. The outer parse never enters
+#: that string, so a directory change inside it is unobservable.
+NESTED_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+
+#: A directory-change verb at the start of a nested `-c` script or after a
+#: command separator inside it.
+NESTED_DIR_CHANGE = re.compile(
+    r"(?:^|[;&|(]\s*)(?:" + "|".join(sorted(DIR_CHANGE_VERBS)) + r")\s")
+
 # --- Bash-surface write detection (harmonic-forge#458) ----------------------
 #: A standalone redirect operator: `>`, `>>`, `2>`, `&>`. The target is the
 #: NEXT token. `shell_parse.command_segments` does not treat `>` as
@@ -154,17 +186,71 @@ def resolve_main_checkout_root(cwd: Path) -> Path | None:
     derivation harmonic-forge's lane1/lane2/lane3 launcher scripts use: find
     the enclosing git worktree, strip a trailing -lane<N> suffix from its
     basename. Returns None if cwd isn't inside a git repo (fails open — this
-    is a non-adversarial guard, not a hard security boundary)."""
-    result = subprocess.run(
+    is a non-adversarial guard, not a hard security boundary).
+
+    Kept as the single-root accessor; `protected_checkout_roots` below is the
+    full answer and the one the predicates use (harmonic-forge#529)."""
+    roots = protected_checkout_roots(cwd)
+    return roots[0] if roots else None
+
+
+def protected_checkout_roots(cwd: Path) -> list[Path]:
+    """Every checkout root a Lane 2 session must not write into, from cwd.
+
+    Three signals, in this order, because no single one is right on its own
+    (harmonic-forge#529, AC5):
+
+    1. **`--git-common-dir`'s parent, when cwd is a LINKED worktree.** This is
+       the shared main working tree by construction, and it is the signal the
+       old derivation lacked. Stripping a `-lane<N>` suffix was the only rule,
+       so a `/tmp/<repo>-<issue>-impl` worktree — the working directory the
+       protocol REQUIRES a Lane 2 session to use — matched nothing, kept its
+       own basename, and was returned as its own main checkout. Every shell
+       write a Lane 2 session made inside its own impl worktree was then denied
+       as "writes into the main checkout." Measured live 2026-09-09 on
+       `/tmp/hrse2-1730-impl`; also the true cause of two occurrences this
+       issue's original plan misattributed to `cd`-tracking.
+
+    2. **The `-lane<N>` sibling, when the basename carries that suffix.** Not
+       redundant with (1): a lane worktree set up as an independent clone
+       rather than `git worktree add` has its own `.git`, so git reports it as
+       its own main tree and only the naming convention connects it to the
+       checkout it shadows. Dropping this would silently stop protecting that
+       arrangement.
+
+    3. **cwd's own toplevel, when neither of the above produced anything.**
+       That is the main checkout itself, or an unrelated repo — both protected,
+       exactly as before.
+
+    A disposable `-impl` worktree reaches (1) and stops, so it is never in the
+    list. That is the whole of AC5."""
+    toplevel_result = subprocess.run(
         ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
         text=True, capture_output=True, check=False,
     )
-    if result.returncode:
-        return None
-    root = Path(result.stdout.strip())
-    match = LANE_WORKTREE_SUFFIX.match(root.name)
-    base_name = match.group(1) if match else root.name
-    return (root.parent / base_name).resolve()
+    if toplevel_result.returncode:
+        return []
+    toplevel = Path(toplevel_result.stdout.strip()).resolve()
+    roots: list[Path] = []
+    common = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute",
+         "--git-common-dir"],
+        text=True, capture_output=True, check=False,
+    )
+    if not common.returncode:
+        common_dir = Path(common.stdout.strip())
+        if common_dir.name == ".git":
+            shared = common_dir.parent.resolve()
+            if shared != toplevel:
+                roots.append(shared)
+    match = LANE_WORKTREE_SUFFIX.match(toplevel.name)
+    if match:
+        sibling = (toplevel.parent / match.group(1)).resolve()
+        if sibling not in roots:
+            roots.append(sibling)
+    if not roots:
+        roots.append(toplevel)
+    return roots
 
 
 def repo_from_cwd(cwd: Path) -> str | None:
@@ -375,8 +461,8 @@ def lane2_write_in_main_checkout(file_path: str, cwd: Path) -> bool:
         return False
     if not file_path:
         return False
-    main_checkout_root = resolve_main_checkout_root(cwd)
-    if main_checkout_root is None:
+    main_checkout_roots = protected_checkout_roots(cwd)
+    if not main_checkout_roots:
         return False
     try:
         raw = Path(file_path).expanduser()
@@ -386,12 +472,13 @@ def lane2_write_in_main_checkout(file_path: str, cwd: Path) -> bool:
         resolved = raw.resolve()
     except (OSError, ValueError, RuntimeError):
         return False
-    for candidate in (lexical, resolved):
-        try:
-            candidate.relative_to(main_checkout_root)
-            return True
-        except ValueError:
-            continue
+    for main_checkout_root in main_checkout_roots:
+        for candidate in (lexical, resolved):
+            try:
+                candidate.relative_to(main_checkout_root)
+                return True
+            except ValueError:
+                continue
     return False
 
 
@@ -803,6 +890,91 @@ def protected_write_denial(
     return None
 
 
+def directory_change(segment: list[str]) -> tuple[str | None, bool] | None:
+    """`(target, resolvable)` when `segment` changes directory, else None.
+
+    `resolvable` is False when the change is real but its destination cannot be
+    known statically — a bare `cd` (to `$HOME`), a bare `pushd` (a stack swap),
+    or any operand carrying `$`/backtick. The caller must not silently keep
+    using the old cwd in that case: a relative write target resolved against a
+    directory the command has already left is a guess, and the guess fails
+    open (harmonic-forge#529).
+    """
+    index = 0
+    while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
+        index += 1
+    tokens = segment[index:]
+    if not tokens or tokens[0] not in DIR_CHANGE_VERBS:
+        return None
+    operands = [token for token in tokens[1:] if token not in DIR_CHANGE_FLAGS]
+    if not operands:
+        return (None, False)
+    target = operands[0]
+    if DYNAMIC_TOKEN.search(target):
+        return (None, False)
+    return (target, True)
+
+
+def nested_shell_script(segment: list[str]) -> str | None:
+    """The script text of a `<shell> -c '<script>'` invocation, else None."""
+    tokens = strip_invocation_prefix(segment)
+    if len(tokens) < 3 or Path(tokens[0]).name not in NESTED_SHELLS:
+        return None
+    if "-c" not in tokens[1:]:
+        return None
+    return " ".join(tokens[2:])
+
+
+def nested_shell_write_targets(script: str) -> list[str]:
+    """Write targets inside a nested `-c` script.
+
+    They are invisible to the outer pass: the whole script arrives as ONE
+    token, so no redirect operator is ever a separate token and
+    `bash_write_targets` sees nothing to check. Re-parsing the script is what
+    makes its writes reachable at all — without this the nested shape is not
+    denied by the unresolved-cwd rule, because there is no target to deny.
+    """
+    try:
+        return [target
+                for segment in command_segments(script)
+                for target in bash_write_targets(segment)]
+    except (AttributeError, TypeError, ValueError):
+        return []
+
+
+def unresolved_cwd_denial(targets: list[str]) -> dict | None:
+    """Deny a RELATIVE write target after a directory change we could not follow.
+
+    Fail loud, not open (harmonic-forge#529, ratified). The alternative is to
+    resolve the path against a directory the command is no longer in, which
+    silently permits a write into a checkout on `main` — the failure this issue
+    was filed for, and the one nothing surfaces afterwards.
+
+    Absolute targets are deliberately untouched: they do not depend on cwd, so
+    an unresolved directory change tells us nothing about them, and denying
+    them would break every `> /tmp/...` inside a loop.
+    """
+    for target in targets:
+        if ignorable_write_target(target):
+            continue
+        try:
+            if Path(target).expanduser().is_absolute():
+                continue
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return denial(
+            f"Blocked: this command changes directory to somewhere this guard "
+            f"cannot resolve statically (a variable, a bare `cd`/`pushd`, or a "
+            f"nested `bash -c`), and then writes to the RELATIVE path "
+            f"{target!r} (harmonic-forge#529). Where that lands depends on the "
+            "unresolved directory, so the guard cannot tell whether it is a "
+            "protected checkout — and guessing would fail open. Pass an "
+            "absolute path for the write target and it will be checked "
+            "normally."
+        )
+    return None
+
+
 def denial(message: str) -> dict:
     return {
         "hookSpecificOutput": {
@@ -825,24 +997,47 @@ def decision(command: object, cwd: Path) -> dict:
     # process's — hooks run as subprocesses, and nothing guarantees the
     # two match (this is exactly why the payload carries a cwd field).
     effective_cwd = cwd
+    # harmonic-forge#529: sticky once set. A command that has changed directory
+    # to somewhere unknown does not come back to a known one just because a
+    # later segment looks ordinary.
+    cwd_unresolved = False
     for segment in segments:
-        if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
-            effective_cwd = target if target.is_absolute() else effective_cwd / target
+        change = directory_change(segment)
+        if change is not None:
+            target, resolvable = change
+            if not resolvable or target is None:
+                cwd_unresolved = True
+                continue
+            expanded = Path(target).expanduser()
+            effective_cwd = (expanded if expanded.is_absolute()
+                             else effective_cwd / expanded)
             continue
+        nested = nested_shell_script(segment)
+        if nested is not None and NESTED_DIR_CHANGE.search(nested):
+            cwd_unresolved = True
+            nested_denial = unresolved_cwd_denial(
+                nested_shell_write_targets(nested))
+            if nested_denial is not None:
+                return nested_denial
         # harmonic-forge#458: the path predicates below govern the Edit/Write
         # surface and, until now, nothing else — so `echo x > <protected>` and
         # `python3 -c "open(<protected>,'w')"` walked straight past a guard
         # that denies the identical write through `Edit`.
+        shell_targets = bash_write_targets(segment)
+        interpreter_pairs = interpreter_write_targets(segment, command)
+        if cwd_unresolved:
+            unresolved = unresolved_cwd_denial(
+                shell_targets + [target for _c, target in interpreter_pairs])
+            if unresolved is not None:
+                return unresolved
         write_denial = protected_write_denial(
-            [("a shell write construct", target)
-             for target in bash_write_targets(segment)],
+            [("a shell write construct", target) for target in shell_targets],
             effective_cwd)
         if write_denial is not None:
             return write_denial
         write_denial = protected_write_denial(
             [(CONSTRUCT_LABELS.get(construct, "an interpreter one-liner"), target)
-             for construct, target in interpreter_write_targets(segment, command)],
+             for construct, target in interpreter_pairs],
             effective_cwd)
         if write_denial is not None:
             return write_denial
