@@ -27,9 +27,10 @@ but is not fixed by name; an operator may assign a different tool to
 Lane 1 via that tool's own equivalent mechanism (see § Lane 1 below).
 Different collaborators (see Team Topology below) will likely bring their
 own tool preferences for these roles — the protocol's actual requirements
-(independent-eyes gating, no lane closes/merges on its own, HITL-gate
-language, etc.) are tool-agnostic and apply identically regardless of
-which specific tool is filling any lane on a given session.
+(independent-eyes gating, no lane closes/merges on its own [one named
+exception: R-0351], HITL-gate language, etc.) are tool-agnostic and apply
+identically regardless of which specific tool is filling any lane on a
+given session.
 <!-- /R-0141 -->
 
 ## Lane 1 — Blueprint (reference tool: Claude Code)
@@ -1118,7 +1119,7 @@ preview is not the document.
 <!-- /R-0222 -->
 <!-- R-0223 -->
    - **If confirmed clean:** Lane 1 recommends closing — never a
-     unilateral close.
+     unilateral close, **except** the narrow R-0351 carve-out below.
 <!-- /R-0223 -->
 <!-- R-0224 -->
 6. **HITL says "Close #N"** (→ Lane 1). Lane 1 posts a closing summary
@@ -1131,7 +1132,12 @@ preview is not the document.
    closed the issue itself, with no Lane 3 gate having run at all. The rule
    is: closing requires the human operator's explicit "Close #N," every
    time, from every lane, with no exception for confidence or a clean local
-   test pass.
+   test pass — **with one named exception**: `universal-lane1.md`'s R-0351,
+   a narrow, explicitly-scoped Lane-1-only, PASS-only, independently-
+   re-verified-only carve-out the operator granted directly (2026-09-09).
+   That is the only exception this rule recognizes; nothing else about
+   "confidence" or "a clean local test pass" ever substitutes for either
+   HITL's word or R-0351's exact preconditions.
 <!-- /R-0224 -->
 
 <!-- R-0225 -->
@@ -1617,7 +1623,8 @@ current known examples, with Gemini's qualification tracked by
 harmonic-forge#317; not an exhaustive list. What's non-negotiable
 regardless of tool choice is the protocol
 itself (see the note under the lane diagram above): independent-eyes
-gating, no lane closes/merges on its own, and — per the Lane 3 note above
-— mechanical enforcement of the never-fixes-anything rule wherever the
-chosen tool supports it, not prose alone.
+gating, no lane closes/merges on its own (one named exception: R-0351),
+and — per the Lane 3 note above — mechanical enforcement of the
+never-fixes-anything rule wherever the chosen tool supports it, not prose
+alone.
 <!-- /R-0252 -->

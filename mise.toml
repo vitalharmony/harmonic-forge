@@ -64,6 +64,22 @@ rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --
 test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under --gate (got $rc)"; exit 1; }
 """
 
+[tasks.rules-check]
+description = "Rule-registry drift check for this repo's own corpus (harmonic-forge#447/#524). hrse's mise.toml already wraps the same three scripts against its own file set; this task gives harmonic-forge the identical wrapper rather than requiring the three scripts be invoked by hand here."
+run = """
+python3 tools/rules/check_rule_drift.py \
+  --root . --registry tools/rules/registry.toml \
+  --glob 'rules/*.md' --glob '3-lane-protocol.md'
+
+# harmonic-forge#454: cross-registry ID collision sweep. Prints SKIPPED (not
+# "clean") in a single-repo checkout.
+python3 tools/rules/check_cross_registry.py
+
+# harmonic-forge#524: completeness sweep for the "no lane closes/merges on
+# its own" rule family across both corpora.
+python3 tools/rules/check_absolutes.py --root . --registry tools/rules/registry.toml
+"""
+
 [tasks.batch-preflight]
 description = "Report what will halt a BATCH before it starts (harmonic-forge#509). Reports, never auto-satisfies: running preclose-inspection is Lane 1 work with its own findings, not a checkbox. Exit 0 nothing known will halt, 1 a precondition is unmet, 2 the run could not happen -- three-valued so a caller can tell a finding from its own misconfiguration."
 usage = '''
