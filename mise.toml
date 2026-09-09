@@ -62,7 +62,30 @@ python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate -
 # non-zero exit aborts the task before the assertion can read it.
 rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --gate --today 2026-09-06 >/dev/null || rc=$?
 test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under --gate (got $rc)"; exit 1; }
+# harmonic-forge#521: the always-loaded context surface, ratcheted. `--gate` is
+# armed HERE and deliberately not in hrse's `check` yet — hrse is 77,123 B
+# against a 48,000 B ceiling, so arming it there before hrse#1730's trim lands
+# would break every hrse commit against an issue that has not merged. Local
+# only, never CI: the runner cannot see `~/.claude/CLAUDE.md` or the shared
+# memory index, so it would measure a smaller surface and pass on a number
+# nothing pays.
+python3 tools/memory/context_budget_ratchet.py --repo . --gate
 """
+
+[tasks.context-budget-ratchet]
+description = "Asymmetric ratchet over the always-loaded context surface (harmonic-forge#521). A decrease never needs acknowledgement; an increase needs an [[increase]] entry in context-budget.baseline.toml whose files/bytes are re-measured against this tool's own output, so a copied or unread entry fails. Wired into `mise run check` with --gate. Local only — the CI runner cannot see ~/.claude/CLAUDE.md or the shared memory index, so a CI run would measure a smaller surface and pass on a number nothing pays."
+usage = '''
+flag "--repo <repo>" help="Repo to measure (default: cwd)."
+flag "--update" help="Rewrite the baseline to the current measurement, preserving [[increase]] history."
+flag "--coverage" help="Report every onboarded repo, naming unmeasured ones rather than omitting them."
+flag "--gate" help="Exit 1 on failure. Without it the run is report-only and exits 0."
+'''
+run = """
+python3 tools/memory/context_budget_ratchet.py \\
+  ${usage_repo:+--repo "$usage_repo"} \\
+  ${usage_update:+--update} \\
+  ${usage_coverage:+--coverage} \\
+  ${usage_gate:+--gate}"""
 
 [tasks.rules-check]
 description = "Rule-registry drift check for this repo's own corpus (harmonic-forge#447/#524). hrse's mise.toml already wraps the same three scripts against its own file set; this task gives harmonic-forge the identical wrapper rather than requiring the three scripts be invoked by hand here."

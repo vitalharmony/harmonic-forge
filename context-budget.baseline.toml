@@ -1,0 +1,19 @@
+# Always-loaded context surface, locked in (harmonic-forge#521).
+#
+# Regenerate with:
+#   python3 ~/harmonic-forge/tools/memory/context_budget_ratchet.py \
+#     --repo . --update
+#
+# A DECREASE needs no acknowledgement — re-run --update and commit.
+# An INCREASE needs an [[increase]] entry below whose `files` and
+# `bytes` are re-measured here, not copied. An entry that does not
+# match the real delta fails the check.
+
+total_bytes = 23606
+ceiling_bytes = 48000
+target_bytes = 24000
+
+[files]
+"CLAUDE.md" = 865
+"~/.claude/CLAUDE.md" = 6054
+"~/Harmonic_Projects/operator-memory/MEMORY.md" = 16687
