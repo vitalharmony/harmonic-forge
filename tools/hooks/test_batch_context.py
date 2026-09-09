@@ -277,7 +277,11 @@ class AC3WiringTests(unittest.TestCase):
         st = state("F509") if live else {}
         with mock.patch("batch_auth._load", return_value=st), \
                 mock.patch("batch_auth.STATE_PATH", Path("/x")):
-            return module._batch_note("DENIED: the original reason.")
+            # harmonic-forge#515: PIN THE CLOCK. `state()` builds entries as
+            # `NOW + hours`; `_batch_note` used to drop the clock on the floor
+            # and let `annotate()` resolve the real one, so "is a batch live"
+            # silently meant "is it still 2026-09-07" — false since that day.
+            return module._batch_note("DENIED: the original reason.", now=NOW)
 
     def test_every_wired_hook_annotates_when_a_batch_is_live(self) -> None:
         for hook in self.HOOKS:

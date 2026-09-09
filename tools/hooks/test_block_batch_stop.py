@@ -253,7 +253,12 @@ class ProductionEntryPointTests(unittest.TestCase):
                 mock.patch.object(sys, "stdout", out), \
                 mock.patch("batch_auth._load", return_value=state), \
                 mock.patch("batch_auth.STATE_PATH", Path("/x")):
-            self.assertEqual(bbs.main(), 0)
+            # harmonic-forge#515: PIN THE CLOCK. The fixtures are built as
+            # `NOW + hours`, and `main()` used to resolve the clock itself, so
+            # these assertions silently became "is the wall clock still before
+            # 2026-09-07T12:00Z" — false since that instant, permanently, with
+            # no code change on either side.
+            self.assertEqual(bbs.main(now=NOW), 0)
         return out.getvalue()
 
     def _transcript(self, text: str) -> str:
