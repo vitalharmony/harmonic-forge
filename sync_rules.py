@@ -9,18 +9,43 @@ reads the current platform content rather than a stale copy.
 Usage:
     python3 ~/harmonic-forge/sync_rules.py --project /path/to/project
     python3 ~/harmonic-forge/sync_rules.py --project /path/to/project --skill _stub
+    python3 ~/harmonic-forge/sync_rules.py --verify --project /path/to/project
     python3 ~/harmonic-forge/sync_rules.py --pull
+
+The symlinks this writes are gitignored in every consuming repo, so they travel
+with no branch, clone, or worktree. That is deliberate -- machine-specific
+absolute paths must not be committed -- but it means the linked state is not
+recoverable from the repo, and for a long time nothing recorded what SHOULD be
+linked either. `--verify`, and the per-project manifest it reads, are that
+record (harmonic-forge#540/#541).
 """
 
 import argparse
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 PLATFORM_ROOT = Path(__file__).resolve().parent
 RULES_DIR = PLATFORM_ROOT / "rules"
 AGENTS_DIR = PLATFORM_ROOT / "agents"
 SKILLS_DIR = PLATFORM_ROOT / "skills"
+
+# Three-valued, matching this repo's own established idiom (`forge-onboard`,
+# `batch-preflight`): 0 all green, 1 a check failed, 2 the run could not
+# happen. A caller can then tell a finding from a misconfiguration, which a
+# bare 0/1 cannot express.
+EXIT_OK = 0
+EXIT_DRIFT = 1
+EXIT_CANNOT_RUN = 2
+
+# Where a consuming repo declares the platform skills it consumes. Tracked in
+# the CONSUMING repo -- deliberately not in this repo's projects.toml -- so the
+# declaration survives a clone, a branch, and a new worktree. That is precisely
+# the property the gitignored symlink lacks, and its absence is the whole of
+# harmonic-forge#540.
+SKILLS_MANIFEST_RELPATH = Path(".claude") / "platform-skills.toml"
+_MANIFEST_KNOWN_KEYS = {"skills"}
 
 # Rule files that are universal across every project's stack.
 UNIVERSAL_RULE_FILES = [
@@ -56,6 +81,57 @@ def _universal_agent_files() -> list[str]:
     if not AGENTS_DIR.is_dir():
         return []
     return sorted(p.name for p in AGENTS_DIR.glob("*.md"))
+
+
+class ManifestError(RuntimeError):
+    """The consuming repo's skills manifest exists but cannot be trusted."""
+
+
+def manifest_path(project_root: Path) -> Path:
+    return project_root / SKILLS_MANIFEST_RELPATH
+
+
+def load_skill_manifest(project_root: Path) -> list[str] | None:
+    """Platform skills the consuming repo declares, or None when it declares none.
+
+    **None is not an empty list, and the distinction is the entire point.**
+    `UNIVERSAL_SKILL_DIRS = []` made "nothing declared" indistinguishable from
+    "nothing expected," so every unlinked checkout verified clean -- the defect
+    harmonic-forge#540 measured across nine checkouts. A caller that collapses
+    these two states reinstates it exactly, so this returns a sentinel the type
+    checker forces the caller to handle rather than a falsy list it can ignore.
+
+    Raises rather than falling back on a malformed manifest, following
+    `tools/onboard/manifest.py` and `tools/rules/check_rule_drift.py`'s
+    `load_band()`: a loader that swallowed a parse error would report the same
+    green as a correctly-linked repo, which is the failure being fixed.
+    """
+    target = manifest_path(project_root)
+    try:
+        raw = tomllib.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ManifestError(f"cannot read {target}: {exc}") from exc
+
+    # A typo in a manifest is the silent drift this file exists to end:
+    # `skill = [...]` would parse, load, and declare nothing, with no complaint.
+    unknown = set(raw) - _MANIFEST_KNOWN_KEYS
+    if unknown:
+        raise ManifestError(
+            f"{target}: unknown key(s): {', '.join(sorted(unknown))}")
+
+    skills = raw.get("skills")
+    if skills is None:
+        raise ManifestError(f"{target}: declares no `skills` key")
+    if not isinstance(skills, list) or not all(isinstance(s, str) for s in skills):
+        raise ManifestError(f"{target}: `skills` must be a list of strings")
+
+    dupes = sorted({s for s in skills if skills.count(s) > 1})
+    if dupes:
+        raise ManifestError(f"{target}: `skills` repeats {', '.join(dupes)}")
+
+    return skills
 
 
 def pull_platform() -> bool:
@@ -235,6 +311,50 @@ def verify_links(project_root: Path, skill_names: list[str] | None = None) -> bo
     return rules_ok and agents_ok and skills_ok
 
 
+def verify_project(project_root: Path, extra_skills: list[str] | None = None) -> int:
+    """Read the declaration, compare the links against it, report. Mutates nothing.
+
+    Note the asymmetry with `link_project`: this never calls `mkdir`, so
+    verifying a checkout that has no `.claude/` at all reports it rather than
+    quietly creating one. Four of the nine checkouts harmonic-forge#540
+    measured were in exactly that state.
+    """
+    try:
+        declared = load_skill_manifest(project_root)
+    except ManifestError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    if declared is None:
+        print(
+            f"[UNDECLARED] {manifest_path(project_root)} does not exist — "
+            "nothing states which platform skills this repo consumes.",
+            file=sys.stderr,
+        )
+        print(
+            "  This is not a pass, and nothing was compared: an undeclared "
+            "repo and a correctly-linked one are indistinguishable without it "
+            "(harmonic-forge#540).",
+            file=sys.stderr,
+        )
+        return EXIT_CANNOT_RUN
+
+    # An explicit `skills = []` IS a declaration and verifies green. That is the
+    # whole difference between a repo that has decided it consumes no platform
+    # skills and one that has never been asked.
+    skill_names = sorted(set(declared) | set(extra_skills or []))
+    if not verify_links(project_root, skill_names):
+        print(
+            f"[DRIFT] {project_root} does not match its platform declaration.",
+            file=sys.stderr,
+        )
+        return EXIT_DRIFT
+
+    summary = ", ".join(skill_names) if skill_names else "no skills declared"
+    print(f"[OK] {project_root} matches its platform declaration ({summary}).")
+    return EXIT_OK
+
+
 def print_remaining_steps(project_root: Path) -> None:
     print("\n[REMAINING STEPS]")
     print(f"  1. Confirm {project_root}/CLAUDE.md points to harmonic-forge/3-lane-protocol.md")
@@ -243,11 +363,23 @@ def print_remaining_steps(project_root: Path) -> None:
     print("  4. Re-run with --pull whenever platform rules or agents change")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # argv is injectable so the CLI surface itself is testable -- `--verify`
+    # existing in --help is one of harmonic-forge#541's acceptance criteria,
+    # and the defect it fixes (verify_links reachable only as a side effect of
+    # --project) is invisible to any test that calls the functions directly.
     parser = argparse.ArgumentParser(description="harmonic-forge sync bootstrapper")
     parser.add_argument("--project", type=str, help="Path to the project root to link")
     parser.add_argument(
         "--pull", action="store_true", help="Pull latest platform rules via git"
+    )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Report platform-link drift against the consuming repo's "
+             f"{SKILLS_MANIFEST_RELPATH} and exit non-zero on a finding. Links "
+             "and mutates nothing. Exit 0 verified, 1 drift, 2 the run could "
+             "not happen (no manifest, malformed manifest, bad path) — an "
+             "absent manifest is never green.",
     )
     parser.add_argument(
         "--skill", action="append", default=[],
@@ -255,40 +387,67 @@ def main() -> int:
              "UNIVERSAL_SKILL_DIRS is empty by default — a skill's description "
              "is surfaced and directly invocable the moment it's linked, unlike "
              "an inert-until-activated vertical, so nothing is distributed for "
-             "free just by existing in harmonic-forge/skills/.",
+             "free just by existing in harmonic-forge/skills/. Prefer declaring "
+             f"the skill in the project's {SKILLS_MANIFEST_RELPATH}, which "
+             "travels with a clone; this flag does not.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.verify and not args.project:
+        print("[ERROR] --verify needs --project <path>.", file=sys.stderr)
+        return EXIT_CANNOT_RUN
 
     if not args.project and not args.pull:
         parser.print_help()
-        return 1
+        return EXIT_CANNOT_RUN
 
     if args.pull:
         if not pull_platform():
-            return 1
+            return EXIT_CANNOT_RUN
         if not args.project:
-            return 0
+            return EXIT_OK
 
     if args.project:
         project_root = Path(args.project).resolve()
         if not project_root.is_dir():
             print(f"[ERROR] Not a directory: {project_root}", file=sys.stderr)
-            return 1
+            return EXIT_CANNOT_RUN
 
-        skill_names = UNIVERSAL_SKILL_DIRS + args.skill
+        if args.verify:
+            return verify_project(project_root, args.skill)
+
+        try:
+            declared = load_skill_manifest(project_root)
+        except ManifestError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+
+        if declared is None:
+            print(
+                f"[UNDECLARED] no {SKILLS_MANIFEST_RELPATH} in {project_root} — "
+                "linking only what --skill names on this invocation. A flag "
+                "someone has to remember is what left belt-and-suspenders "
+                "inert in nine checkouts; declare the manifest so the opt-in "
+                "survives a clone (harmonic-forge#540).",
+                file=sys.stderr,
+            )
+
+        skill_names = sorted(
+            set(UNIVERSAL_SKILL_DIRS) | set(declared or []) | set(args.skill)
+        )
 
         if not link_project(project_root, skill_names):
-            return 1
+            return EXIT_DRIFT
 
         if not verify_links(project_root, skill_names):
             print("[ERROR] Symlink verification failed.", file=sys.stderr)
-            return 1
+            return EXIT_DRIFT
 
         summary = "rules and agents" if not skill_names else f"rules, agents, and skills ({', '.join(skill_names)})"
         print(f"\n[OK] {project_root} is linked to harmonic-forge {summary}.")
         print_remaining_steps(project_root)
 
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
