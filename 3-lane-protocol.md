@@ -121,8 +121,27 @@ summarizes.*
 ## Lane 2 — Muscle (qualified agents: see ADR-007 § 8)
 
 <!-- R-0350 -->
-Lane 2 pushes its own branches and does not narrate the push. PR, merge and
-close remain outside its boundary.
+**Lane 2 never pushes.** It stops at a committed branch in its own worktree
+and reports that branch's name and SHA in its completion comment; push, PR,
+merge and close are all categorically Lane 1's, including for a branch Lane
+2 authored itself.
+
+This is enforced, not merely stated:
+`tools/hooks/block_lane2_status_claims.py` (harmonic-forge#398, wired at
+`PreToolUse:Bash` in `.claude/settings.json` and `.codex/hooks.json`) denies
+`git push` and `gh pr create` for any `LANE=2` session, along with the
+sanctioned-wrapper forms a session would otherwise reach for — `gh-as
+<account> gh pr create …`, `mise (run|r)? commit --push`, `mise (run|r)?
+restart --push`, and `git -C <dir> push`.
+
+**This rule previously said the opposite** — *"Lane 2 pushes its own
+branches and does not narrate the push"* — which contradicted the hook
+above, R-0003 (*"Push to the remote only when the human operator explicitly
+asks"*), and HRSE2's own `.claude/rules/hrse2-extended/lane-protocol.md`.
+A Lane 2 session followed this file, attempted the push, and got the hook's
+denial instead (2026-09-08). Three independent statements agreed with each
+other and this one did not, so this one was the outlier. Recorded rather
+than silently corrected, so the old wording is not restored as a fix.
 <!-- /R-0350 -->
 
 *Devin Local was this section's original reference implementation — retired
