@@ -15,6 +15,7 @@ import io
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -83,7 +84,7 @@ class ReportTests(unittest.TestCase):
             reporter.report(self.project, sync_rules=sync_rules)
         self.assertIn("_stub", err.getvalue())
 
-    def test_undeclared_fails_the_gate(self) -> None:
+    def test_undeclared_fails_when_the_repo_never_adopted(self) -> None:
         """No degraded state is green — #541's contract, one layer up.
 
         An earlier version returned 0 here on the reasoning that "a branch
@@ -96,6 +97,46 @@ class ReportTests(unittest.TestCase):
         code, err = self._run()
         self.assertEqual(code, 1)
         self.assertIn("UNDECLARED", err)
+
+    def test_behind_does_not_fail_when_the_default_branch_has_a_manifest(self) -> None:
+        """The bounded carve-out — a checkout that is merely older.
+
+        A Lane 3 gate checkout is parked on the commit under test by design, so
+        it cannot rebase, and failing it here reports a problem unrelated to the
+        code being gated. Bounded by asking the DEFAULT BRANCH, so it is
+        self-limiting and never covers a repo that simply never adopted.
+        """
+        self._link_rules_and_agents()
+        with mock.patch.object(reporter, "_default_branch_has_manifest",
+                               return_value=True):
+            code, err = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("BEHIND", err)
+
+    def test_behind_still_fails_if_rules_or_agents_are_broken(self) -> None:
+        """The BEHIND message claims rules and agents were verified. Earn it."""
+        self._link_rules_and_agents()
+        (self.claude / "rules" / sync_rules.UNIVERSAL_RULE_FILES[0]).unlink()
+        with mock.patch.object(reporter, "_default_branch_has_manifest",
+                               return_value=True):
+            code, _ = self._run()
+        self.assertEqual(code, 1)
+
+    def test_broken_manifest_is_fatal_even_when_behind(self) -> None:
+        """BEHIND is for an ABSENT manifest, never an unreadable one."""
+        target = sync_rules.manifest_path(self.project)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("skills = [oops\n", encoding="utf-8")
+        self._link_rules_and_agents()
+        with mock.patch.object(reporter, "_default_branch_has_manifest",
+                               return_value=True):
+            code, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertIn("BROKEN MANIFEST", err)
+
+    def test_default_branch_probe_fails_closed(self) -> None:
+        """No remote, no upstream, git error -> 'has not adopted'."""
+        self.assertFalse(reporter._default_branch_has_manifest(self.project))
 
     def test_undeclared_is_never_silent(self) -> None:
         self._link_rules_and_agents()
