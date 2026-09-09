@@ -291,5 +291,101 @@ class ApplyTests(Base):
         self.assertEqual([c.status for c in checks], [fo.SKIP])
 
 
+class HookContentTests(unittest.TestCase):
+    """harmonic-forge#547 preclose findings 2 and 3.
+
+    `check_hooks` read only the event KEY NAMES and never a `command` string,
+    which produced two failures with one root cause:
+
+      * renaming or moving a platform hook script made every session in every
+        consuming repo run a command that exits 2 and emits nothing — for
+        `SessionStart` that is silent, indistinguishable from the pre-#547
+        state the issue was filed about — while this tool reported green;
+      * creating a `settings.json` containing a single `SessionStart` entry
+        flipped a repo from FAIL to OK while it still carried zero PreToolUse
+        guards, extinguishing a real guard-absence signal.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.script = self.root / "harmonic-forge" / "tools" / "hooks" / "belt_wakeup.py"
+        self.script.parent.mkdir(parents=True)
+        self.script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    def _hooks(self, command: str) -> dict:
+        return {"SessionStart": [{"matcher": "startup|resume",
+                                  "hooks": [{"type": "command", "command": command}]}]}
+
+    def test_resolvable_target_reports_nothing_missing(self) -> None:
+        hooks = self._hooks(f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"')
+        self.assertEqual(fo.unresolvable_hook_targets(hooks), [])
+
+    def test_renamed_script_is_reported(self) -> None:
+        """The exact scenario: rename the script, every repo silently no-ops."""
+        hooks = self._hooks(
+            f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup_RENAMED.py"')
+        missing = fo.unresolvable_hook_targets(hooks)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("belt_wakeup_RENAMED.py", missing[0])
+
+    def test_home_expansion_is_handled(self) -> None:
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            hooks = self._hooks(
+                'python3 "${HOME}/harmonic-forge/tools/hooks/belt_wakeup.py"')
+            self.assertEqual(fo.unresolvable_hook_targets(hooks), [])
+            gone = self._hooks(
+                'python3 "${HOME}/harmonic-forge/tools/hooks/nope.py"')
+            self.assertEqual(len(fo.unresolvable_hook_targets(gone)), 1)
+
+    def test_non_platform_commands_are_not_inspected(self) -> None:
+        """A project's own hook is not this tool's business."""
+        hooks = self._hooks("python3 ./scripts/my_own_hook.py")
+        self.assertEqual(fo.unresolvable_hook_targets(hooks), [])
+
+    def test_every_event_is_scanned_not_just_the_first(self) -> None:
+        hooks = self._hooks(f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"')
+        hooks["PreToolUse"] = [{"matcher": "Bash", "hooks": [
+            {"type": "command",
+             "command": f'python3 "{self.root}/harmonic-forge/tools/hooks/absent.py"'}]}]
+        missing = fo.unresolvable_hook_targets(hooks)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("absent.py", missing[0])
+
+    def test_malformed_hook_entries_do_not_crash(self) -> None:
+        for hooks in ({"SessionStart": "not-a-list"},
+                      {"SessionStart": [None]},
+                      {"SessionStart": [{"hooks": None}]},
+                      {"SessionStart": [{"hooks": [{"command": 3}]}]}):
+            with self.subTest(hooks=hooks):
+                self.assertEqual(fo.unresolvable_hook_targets(hooks), [])
+
+    def test_guard_count_distinguishes_a_lone_sessionstart(self) -> None:
+        """Finding 3: one event must not read the same as a full guard set."""
+        checkout = self.root / "repo"
+        (checkout / ".claude").mkdir(parents=True)
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": self._hooks(
+                f'python3 "{self.root}/harmonic-forge/tools/hooks/belt_wakeup.py"')}),
+            encoding="utf-8")
+        project = mf.Project(name="x", prefix="X", path=str(checkout))
+        check = fo.check_hooks(project)
+        self.assertEqual(check.status, fo.OK)
+        self.assertIn("0 PreToolUse matcher(s)", check.detail)
+
+    def test_unresolvable_target_fails_the_check(self) -> None:
+        checkout = self.root / "repo2"
+        (checkout / ".claude").mkdir(parents=True)
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": self._hooks(
+                f'python3 "{self.root}/harmonic-forge/tools/hooks/gone.py"')}),
+            encoding="utf-8")
+        project = mf.Project(name="y", prefix="Y", path=str(checkout))
+        check = fo.check_hooks(project)
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("gone.py", check.detail)
+
+
 if __name__ == "__main__":
     unittest.main()
