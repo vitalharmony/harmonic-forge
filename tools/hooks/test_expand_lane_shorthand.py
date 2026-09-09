@@ -647,9 +647,16 @@ class BatchWiringTests(unittest.TestCase):
         with mock.patch.object(ba, "STATE_PATH", tmp):
             m.authorize_batch("BATCH F495", state_path=tmp)
             ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
+            close_cmd = "gh issue close 495 --repo vitalharmony/harmonic-forge"
+            self.assertEqual(ba.decide(close_cmd, state_path=tmp)[0], "allow")
+            # `decide()` is read-only as of harmonic-forge#552 AC1 — it no
+            # longer consumes, so spending the slot now takes an explicit
+            # `consume()`, the way `batch_consume.py` does on PostToolUse.
+            # What this test is actually about is unchanged: a re-mention must
+            # EXTEND, never reset, whatever has already been spent.
             self.assertEqual(
-                ba.decide("gh issue close 495 --repo vitalharmony/harmonic-forge",
-                          state_path=tmp)[0], "allow")
+                ba.consume(close_cmd, state_path=tmp,
+                           landed=lambda *a, **k: True), ["F495"])
             receipt = m.authorize_batch("BATCH F495", state_path=tmp)
         self.assertIn("extended", receipt)
         state = json.loads(tmp.read_text())

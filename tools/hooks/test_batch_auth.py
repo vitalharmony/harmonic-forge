@@ -27,12 +27,37 @@ sys.path.insert(0, str(HOOK_DIR))
 import batch_auth as ba  # noqa: E402
 
 
+def consume_ok(command, state_path):
+    """Consume as `batch_consume.py` does after a command actually ran.
+
+    `landed` is injected: hrse tests must not reach the network, and the
+    point under test is the bookkeeping, not the GitHub query.
+    """
+    return ba.consume(command, state_path=state_path, landed=lambda *a, **k: True)
+
+
+def consumed_one(command, state_path):
+    """`consume_ok` for the single-action case: assert exactly one key, return it."""
+    keys = consume_ok(command, state_path)
+    assert len(keys) <= 1, f"expected at most one key, got {keys}"
+    return keys[0] if keys else None
+
+
 class StateFixture(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.state_path = Path(self.tmpdir.name) / "batch-authorized.json"
+        # AC5 derivation shells out to `gh` on the no-link path, which most of
+        # this suite now reaches. Stub it to "unreadable" by default: a unit
+        # suite that makes network calls is slow, flaky, and — worse — would
+        # pass or fail on the state of live PRs. Tests that exercise derivation
+        # set `self.carriers` explicitly.
+        self.carriers = None
+        self._real_carriers = ba._pr_carriers
+        ba._pr_carriers = lambda repo, number: self.carriers
 
     def tearDown(self):
+        ba._pr_carriers = self._real_carriers
         self.tmpdir.cleanup()
 
 
@@ -386,7 +411,12 @@ class ConsumptionTests(StateFixture):
         self.assertEqual(second[0], "allow")
 
     def test_a_different_command_after_consumption_asks(self):
-        ba.decide(self.command, state_path=self.state_path)
+        """harmonic-forge#552: decide() no longer consumes, so the slot is
+        spent by consume() -- the PostToolUse half -- and only then does a
+        DIFFERENT command find nothing left."""
+        self.assertEqual(ba.decide(self.command, state_path=self.state_path)[0],
+                         "allow")
+        consume_ok(self.command, self.state_path)
         other_command = self.command.replace("state=closed", "state=closed ")
         result = ba.decide(other_command, state_path=self.state_path)
         self.assertEqual(result[0], "ask")
@@ -394,7 +424,7 @@ class ConsumptionTests(StateFixture):
     def test_consumed_flag_is_set_on_the_close_target_only(self):
         """Consuming the close target must not mark the merge target
         consumed -- they are independent (harmonic-forge#356 gap 2)."""
-        ba.decide(self.command, state_path=self.state_path)
+        consume_ok(self.command, self.state_path)
         state = ba._load(self.state_path)
         close_target = next(t for t in state["H395"]["targets"] if t["action"] == "gh issue close")
         merge_target = next(t for t in state["H395"]["targets"] if t["action"] == "gh pr merge")
@@ -483,7 +513,19 @@ class LockingTests(StateFixture):
     the fail-closed-on-contention behavior and the race it closes are
     asserted directly, not just the mechanism's presence."""
 
-    def test_stale_lock_makes_decide_ask_promptly_not_hang(self):
+    def test_a_held_lock_does_not_affect_decide_at_all(self):
+        """`decide()` is read-only (AC1), so it takes no lock and a held one is
+        none of its business.
+
+        This replaces a test asserting the opposite — that a held lock made
+        `decide()` ask. That WAS the contract while `decide()` wrote. Once AC5
+        put a `gh` call on the decision path, keeping the lock meant one
+        session's ~0.7s network round trip blew another session's 0.4s budget
+        and produced an unexplained prompt on a fully valid grant: the exact
+        symptom #552 exists to remove, reintroduced by its own fix. `_save` is
+        a temp-file + atomic `os.replace`, so a lockless read sees the state
+        before or after a write, never during.
+        """
         ba.authorize(["H600"], ["gh issue close"], state_path=self.state_path)
         lock_path = self.state_path.with_name(self.state_path.name + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -500,16 +542,21 @@ class LockingTests(StateFixture):
             fcntl.flock(holder_fd, fcntl.LOCK_UN)
             os.close(holder_fd)
 
-        self.assertEqual(result[0], "ask")
-        self.assertIn("lock", result[1].lower())
-        self.assertLess(elapsed, 1.0, "decide() must fail closed promptly, never hang")
+        self.assertEqual(result[0], "allow",
+                         "a lock held by another session must not turn a live "
+                         "authorization into a prompt")
+        self.assertLess(elapsed, 1.0, "decide() must never wait on the lock")
 
-    def test_two_commands_racing_for_one_target_do_not_both_allow(self):
-        """The exact hazard this issue was filed for: an unlocked
-        read-modify-write could let two racing commands both observe
-        'not yet consumed' and both write, granting more than the one
-        intended one-shot use. Forces the race deterministically by
-        gating the in-lock write on a second thread actually starting."""
+    def test_two_commands_racing_to_consume_one_target_do_not_both_win(self):
+        """The same hazard this issue was filed for, moved with the write.
+
+        harmonic-forge#552 made `decide()` read-only, so the read-modify-write
+        that could double-spend a one-shot grant now lives in `consume()`. The
+        property is unchanged and so is the method: gate the in-lock write on a
+        second thread actually starting, so the race is forced rather than
+        hoped for. Two DIFFERENT command strings target the same slot —
+        identical strings are deliberately idempotent and would prove nothing.
+        """
         ba.authorize(["H500"], ["gh issue close"], state_path=self.state_path)
         base_cmd = "gh api repos/vitalharmony/hrse/issues/500 -X PATCH -f state=closed"
         cmd_a, cmd_b = base_cmd, base_cmd + " "  # distinct hashes, same target
@@ -523,14 +570,17 @@ class LockingTests(StateFixture):
             release_save.wait(timeout=2)
             real_save(state, state_path)
 
-        results: dict[str, tuple] = {}
+        results: dict[str, object] = {}
+        landed = lambda *a, **k: True  # noqa: E731
 
         def run_a():
             with mock.patch.object(ba, "_save", gated_save):
-                results["a"] = ba.decide(cmd_a, state_path=self.state_path)
+                results["a"] = ba.consume(cmd_a, state_path=self.state_path,
+                                          landed=landed)
 
         def run_b():
-            results["b"] = ba.decide(cmd_b, state_path=self.state_path)
+            results["b"] = ba.consume(cmd_b, state_path=self.state_path,
+                                      landed=landed)
 
         thread_a = threading.Thread(target=run_a)
         thread_a.start()
@@ -543,10 +593,17 @@ class LockingTests(StateFixture):
         thread_a.join(timeout=2)
         thread_b.join(timeout=2)
 
+        winners = [k for k, v in results.items() if v]
         self.assertEqual(
-            sorted(r[0] for r in results.values()), ["allow", "ask"],
+            len(winners), 1,
             f"exactly one racing command may consume the one-shot target: {results}",
         )
+
+        state = ba._load(self.state_path)
+        close_targets = [t for t in state["H500"]["targets"]
+                         if "close" in t["action"].lower()]
+        self.assertEqual([t["consumed"] for t in close_targets], [True],
+                         "the one-shot close target is consumed exactly once")
 
 
 if __name__ == "__main__":
@@ -611,24 +668,101 @@ class CrossRepoMergeArityTests(unittest.TestCase):
             ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
 
 
-class ConsumedSlotRecoveryTests(unittest.TestCase):
-    """harmonic-forge#549 — a consumed slot must not shadow a live one.
+class NoExecutionPathTests(StateFixture):
+    """harmonic-forge#552's named regression: three ways a command matches and
+    never runs, each asserting the slot is **NOT** consumed.
 
-    `decide()` marks a target consumed the moment it MATCHES, whether or not
-    the command it authorized actually ran. A command can match and still not
-    run: a later guard denies it, or the operator interrupts. Live incident,
-    2026-09-09 — a `gh pr merge` bundled into one Bash call with a destructive
-    `git worktree remove --force` was denied for the destructive half, after
-    this module had already consumed the linked target.
+    None of these was expressible against the old design, which is why #552 is
+    a design fix rather than a patch: `decide()` wrote the state itself, so any
+    test of "matched but did not run" would have had to assert that a
+    PreToolUse function had not done the thing it unconditionally did.
 
-    Two independent bugs then made the authorization permanently unreachable,
-    and each is covered separately below because either alone reproduces it:
+    Measured cost of the old behaviour, 2026-09-09: F544 held FOUR consumed
+    merge targets, every one pointing at PR 1753, which was still unmerged.
+    Four match events, zero executions.
+    """
 
-      * `link_pr`'s idempotency check ignored `consumed`, so every re-link
-        matched the dead slot and returned early, binding nothing.
-      * `_match_pr_merge` returned the FIRST slot matching repo+PR, also
-        ignoring `consumed`, so even a correctly-linked live slot beside it
-        was never reached.
+    def setUp(self):
+        super().setUp()
+        ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
+        self.command = "gh pr merge 1202 --repo vitalharmony/hrse --squash"
+
+    def _merge_target(self):
+        state = ba._load(self.state_path)
+        return next(t for t in state["H395"]["targets"]
+                    if t["action"] == "gh pr merge")
+
+    def test_denied_by_a_sibling_hook_does_not_consume(self):
+        """PreToolUse hooks compose under strongest-decision-wins, so another
+        hook's `deny` lands AFTER this one has already returned allow. The
+        command never runs; nothing may have been spent."""
+        self.assertEqual(ba.decide(self.command, state_path=self.state_path)[0],
+                         "allow")
+        # A sibling hook denies. `consume()` is never reached, because
+        # PostToolUse does not fire for a command that did not execute.
+        self.assertFalse(self._merge_target()["consumed"])
+        self.assertEqual(
+            ba.decide(self.command, state_path=self.state_path)[0], "allow",
+            "the grant must survive a denial by another hook")
+
+    def test_declined_at_the_prompt_does_not_consume(self):
+        """The operator says no. Same shape: allow was returned, nothing ran.
+
+        This is the path that made every retry start worse off than the last —
+        six prompts, six spent slots, zero merges."""
+        for _ in range(3):
+            self.assertEqual(
+                ba.decide(self.command, state_path=self.state_path)[0], "allow")
+            self.assertFalse(self._merge_target()["consumed"])
+
+    def test_a_merge_that_ran_and_failed_does_not_consume(self):
+        """PostToolUse DOES fire here, so this is the path `consume()` itself
+        must get right: it confirms the PR actually merged before marking.
+        Consuming unconditionally on PostToolUse would just move the
+        over-count rather than fix it."""
+        ba.decide(self.command, state_path=self.state_path)
+        # `gh pr merge` exited non-zero (not mergeable, conflict, network).
+        self.assertEqual(ba.consume(self.command, state_path=self.state_path,
+                                    landed=lambda *a, **k: False), [])
+        self.assertFalse(self._merge_target()["consumed"])
+        self.assertEqual(
+            ba.decide(self.command, state_path=self.state_path)[0], "allow",
+            "a failed merge must leave the grant usable")
+
+    def test_an_unresolvable_outcome_does_not_consume(self):
+        """`action_landed` returns None when it cannot establish the answer.
+
+        An unconsumed live grant costs one extra prompt; a wrongly-consumed one
+        costs a stuck batch. The asymmetry decides the default."""
+        ba.decide(self.command, state_path=self.state_path)
+        self.assertEqual(ba.consume(self.command, state_path=self.state_path,
+                                    landed=lambda *a, **k: None), [])
+        self.assertFalse(self._merge_target()["consumed"])
+
+    def test_a_merge_that_actually_landed_does_consume(self):
+        """The positive case, so the four above cannot pass by never consuming."""
+        ba.decide(self.command, state_path=self.state_path)
+        self.assertEqual(
+            ba.consume(self.command, state_path=self.state_path,
+                       landed=lambda *a, **k: True), ["H395"])
+        self.assertTrue(self._merge_target()["consumed"])
+
+
+class AllocationKeyedOnRepoAndPrTests(unittest.TestCase):
+    """harmonic-forge#552 AC4 — at most one merge target per (repo, pr_number).
+
+    This class replaces #549's `ConsumedSlotRecoveryTests`, which was written
+    against a design where a slot could be consumed WITHOUT the merge having
+    happened. #552 removes that state at the root, so "recover from a poisoned
+    slot" is no longer a thing to test — and the workaround it needed (skipping
+    consumed slots when re-linking) is now actively harmful, because `consumed`
+    truthfully means the merge landed and skipping it allocates a duplicate.
+
+    Allocation itself stays. #502 AC8 added it because a cross-repo issue needs
+    one merge target per repo and the repo count is not knowable when the
+    operator types BATCH. What changed is the trigger: a NEW pair allocates, a
+    REPEAT of a known pair reuses, regardless of `consumed`.
     """
 
     def setUp(self):
@@ -639,87 +773,71 @@ class ConsumedSlotRecoveryTests(unittest.TestCase):
         return [t for t in state[key]["targets"]
                 if "merge" in t["action"].lower()]
 
-    def _spend(self, repo="o/a", pr=1):
-        """Consume a linked slot the way an interrupted merge does."""
-        verdict, _ = ba.decide(f"gh pr merge {pr} --repo {repo}",
-                               state_path=self.tmp)
-        self.assertEqual(verdict, "allow")
-
-    def test_relink_after_a_consumed_slot_binds_a_fresh_one(self):
+    def test_relinking_a_merged_pr_does_not_allocate_a_duplicate(self):
+        """AC4's named regression, and why the #549 clause had to go with it."""
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        self._spend()
-        self.assertEqual(len(self._merge_targets()), 1)
+        consume_ok("gh pr merge 1 --repo o/a", self.tmp)
+        self.assertTrue(self._merge_targets()[0]["consumed"])
 
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        live = [t for t in self._merge_targets() if not t["consumed"]]
-        self.assertEqual(len(live), 1, "a re-link after a spent slot binds a new one")
-        self.assertEqual((live[0]["repo"], live[0]["pr_number"]), ("o/a", 1))
+        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets()), 1,
+                         "a known (repo, pr) pair must reuse, never allocate")
 
-    def test_merge_is_authorized_again_after_relinking(self):
-        """The end-to-end recovery: the merge that never ran becomes reachable."""
+    def test_a_new_repo_pr_pair_still_allocates(self):
+        """#502 AC8's cross-repo reason is sound and is preserved."""
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
-        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        self._spend()
-        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        verdict, reason = ba.decide("gh pr merge 1 --repo o/a", state_path=self.tmp)
-        self.assertEqual(verdict, "allow", reason)
+        for repo, pr in (("o/a", 1), ("o/b", 2), ("o/c", 3)):
+            ba.link_pr("F1", repo, pr, state_path=self.tmp)
+        self.assertEqual(len(self._merge_targets()), 3)
+
+    def test_never_two_live_targets_for_one_pair(self):
+        """The tell F544 showed: four targets, all for PR 1753."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
+        for _ in range(5):
+            ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
+        pairs = [(t["repo"], t["pr_number"]) for t in self._merge_targets()]
+        self.assertEqual(len(pairs), len(set(pairs)))
 
     def test_a_live_slot_is_not_shadowed_by_a_consumed_one(self):
-        """`_match_pr_merge` alone: two slots for one PR, the first spent."""
+        """_match_pr_merge prefers an unconsumed target for the same pair."""
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         state = json.loads(self.tmp.read_text())
         merges = [t for t in state["F1"]["targets"] if "merge" in t["action"].lower()]
         merges[0].update(repo="o/a", pr_number=1, consumed=True,
-                         consumed_by="an-interrupted-attempt")
+                         consumed_by="an-earlier-merge")
         state["F1"]["targets"].append({"action": "gh pr merge", "consumed": False,
                                        "consumed_by": None, "pr_number": 1,
                                        "repo": "o/a"})
         self.tmp.write_text(json.dumps(state))
-
         verdict, reason = ba.decide("gh pr merge 1 --repo o/a", state_path=self.tmp)
         self.assertEqual(verdict, "allow", reason)
 
-    def test_all_slots_consumed_still_asks(self):
-        """Not a widening. With no live slot, spent is still spent.
-
-        The probe must be a DIFFERENT command string from the one that spent
-        the slot: `decide()` deliberately re-allows a consumed target whose
-        `consumed_by` equals the current command hash, so an identical retry of
-        the very same command is idempotent rather than blocked. Asserting with
-        the same string would pass through that branch and prove nothing about
-        the consumed check.
-        """
+    def test_all_slots_consumed_asks(self):
+        """Not a widening: spent is still spent for a different command."""
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        self._spend()
-        verdict, reason = ba.decide(
-            "gh pr merge 1 --repo o/a --squash", state_path=self.tmp)
+        consume_ok("gh pr merge 1 --repo o/a", self.tmp)
+        verdict, reason = ba.decide("gh pr merge 1 --repo o/a --squash",
+                                    state_path=self.tmp)
         self.assertEqual(verdict, "ask", reason)
 
-    def test_an_identical_retry_of_the_spending_command_is_still_idempotent(self):
-        """Guard the branch the test above sidesteps, so a fix cannot break it."""
+    def test_an_identical_retry_is_still_idempotent(self):
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
         cmd = "gh pr merge 1 --repo o/a"
         self.assertEqual(ba.decide(cmd, state_path=self.tmp)[0], "allow")
+        consume_ok(cmd, self.tmp)
         self.assertEqual(ba.decide(cmd, state_path=self.tmp)[0], "allow")
 
     def test_relink_does_not_touch_an_unrelated_key(self):
         ba.authorize(["F1", "F2"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        self._spend()
+        consume_ok("gh pr merge 1 --repo o/a", self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
         self.assertEqual(len(self._merge_targets("F2")), 1)
         self.assertFalse(self._merge_targets("F2")[0]["consumed"])
-
-    def test_idempotency_still_holds_for_a_live_slot(self):
-        """The narrow fix must not undo #502 AC8's idempotence."""
-        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
-        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        self.assertEqual(len(self._merge_targets()), 1)
 
 
 class AskDiagnosticTests(unittest.TestCase):
@@ -760,6 +878,7 @@ class AskDiagnosticTests(unittest.TestCase):
         ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
         self.assertEqual(ba.decide("gh pr merge 42 --repo vitalharmony/hrse",
                                 state_path=self.tmp)[0], "allow")
+        consume_ok("gh pr merge 42 --repo vitalharmony/hrse", self.tmp)
         reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash")
         self.assertIn("CONSUMED", reason)
 
@@ -779,7 +898,7 @@ class AskDiagnosticTests(unittest.TestCase):
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
         seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse"))
         ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
-        ba.decide("gh pr merge 42 --repo vitalharmony/hrse", state_path=self.tmp)
+        consume_ok("gh pr merge 42 --repo vitalharmony/hrse", self.tmp)
         seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash"))
         ba.authorize(["H8"], actions=["gh issue close"], ttl_hours=-1,
                   state_path=self.tmp)
@@ -793,3 +912,414 @@ class TtlTests(unittest.TestCase):
         is running while nobody is watching; the operator stepped away 'a few
         hours' and even a correct authorization would have expired mid-run."""
         self.assertGreaterEqual(ba.DEFAULT_TTL_HOURS, 8.0)
+
+
+class DerivationTests(StateFixture):
+    """AC5 (harmonic-forge#552, carried from #549): resolve a PR to its issue
+    from the head branch and title when no `link_pr` record exists.
+
+    Every fail-closed direction gets its own test, because the one way this
+    feature could do harm is by widening authorization rather than by failing
+    to help.
+    """
+
+    def setUp(self):
+        super().setUp()
+        ba.authorize(["F552"], state_path=self.state_path)
+        self.command = ("gh pr merge 561 --repo vitalharmony/harmonic-forge "
+                        "--squash")
+
+    def decide(self):
+        return ba.decide(self.command, state_path=self.state_path)
+
+    def test_branch_and_title_agreeing_resolves_without_link_pr(self):
+        self.carriers = ("l1/f552-consumption-correctness",
+                         "fix(batch): consumption correctness (harmonic-forge#552)")
+        self.assertEqual(self.decide()[0], "allow")
+
+    def test_branch_alone_is_enough(self):
+        """`feat/1754-...` — no prefix letter, so the PR's own repo supplies it."""
+        ba.authorize(["H1754"], state_path=self.state_path)
+        self.carriers = ("feat/1754-prompt-cache-parity", "no issue reference here")
+        self.assertEqual(
+            ba.decide("gh pr merge 1758 --repo vitalharmony/hrse --squash",
+                      state_path=self.state_path)[0], "allow")
+
+    def test_a_cross_repo_title_reference_wins_over_the_prs_own_repo(self):
+        """An hrse PR whose title names `(harmonic-forge#552)` derives F552.
+
+        Real shape: hrse#1752's title is `... (harmonic-forge#521) (#1752)`.
+        Reading the number without its slug would have produced H552 — an
+        authorization for a different issue in a different repo.
+        """
+        self.carriers = ("l2/f552-hrse-wiring",
+                         "feat(batch): hrse wiring (harmonic-forge#552)")
+        self.assertEqual(
+            ba.decide("gh pr merge 1799 --repo vitalharmony/hrse --squash",
+                      state_path=self.state_path)[0], "allow")
+
+    def test_neither_carrier_parses_asks(self):
+        self.carriers = ("scratch", "a title with no issue reference")
+        self.assertEqual(self.decide()[0], "ask")
+
+    def test_the_pr_could_not_be_read_asks(self):
+        self.carriers = None
+        self.assertEqual(self.decide()[0], "ask")
+
+    def test_carriers_disagreeing_asks(self):
+        """Disagreement is not a tie to be broken — it is evidence that at
+        least one reading is wrong, and picking either would be a guess."""
+        self.carriers = ("l1/f552-consumption-correctness",
+                         "fix(batch): something else (harmonic-forge#549)")
+        self.assertEqual(self.decide()[0], "ask")
+
+    def test_a_derived_key_with_no_authorization_asks(self):
+        """Derivation resolves the mapping; it does not create the grant."""
+        self.carriers = ("l1/f999-never-authorized",
+                         "chore: unrelated (harmonic-forge#999)")
+        self.assertEqual(self.decide()[0], "ask")
+
+    def test_a_derived_key_whose_grant_expired_asks(self):
+        state = ba._load(self.state_path)
+        state["F552"]["expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        ba._save(state, self.state_path)
+        self.carriers = ("l1/f552-consumption-correctness",
+                         "fix(batch): consumption correctness (harmonic-forge#552)")
+        self.assertEqual(self.decide()[0], "ask")
+
+    def test_an_unknown_prefix_letter_does_not_fall_back_to_the_prs_repo(self):
+        """`z552` names no repo this module knows. Falling back to the PR's own
+        repo would be the single way derivation could widen authorization."""
+        self.carriers = ("l1/z552-unknown-prefix", "chore: unknown prefix")
+        self.assertEqual(self.decide()[0], "ask")
+
+    def test_the_prs_own_number_is_not_a_candidate(self):
+        """`gh` appends `(#561)` to a squashed title. A PR is not an
+        authorization for itself, and leaving it in would make every squashed
+        title disagree with its own branch."""
+        self.carriers = ("l1/f552-consumption-correctness",
+                         "fix(batch): consumption correctness "
+                         "(harmonic-forge#552) (#561)")
+        self.assertEqual(self.decide()[0], "allow")
+
+    def test_a_lane_segment_is_not_read_as_an_issue_number(self):
+        """`l1/` and `l2/` prefix nearly every branch here. Reading `l1` as
+        issue 1 would attach a grant to whatever `H1`/`F1` happened to hold."""
+        self.assertEqual(
+            ba._BRANCH_ISSUE.findall("l1/f552-consumption-correctness"),
+            [("f", "552")])
+
+    def test_link_pr_still_overrides_derivation(self):
+        """AC5: `link_pr` remains the explicit record. A PR linked to one key
+        must not be re-resolved to another by its branch name."""
+        ba.authorize(["F549"], state_path=self.state_path)
+        ba.link_pr("F549", "vitalharmony/harmonic-forge", 561,
+                   state_path=self.state_path)
+        self.carriers = ("l1/f552-consumption-correctness",
+                         "fix(batch): consumption correctness (harmonic-forge#552)")
+        self.assertEqual(self.decide()[0], "allow")
+        consume_ok(self.command, self.state_path)
+        state = ba._load(self.state_path)
+        self.assertTrue(any(t.get("consumed") for t in state["F549"]["targets"]))
+        self.assertFalse(any(t.get("consumed") for t in state["F552"]["targets"]))
+
+    def test_a_derived_merge_is_consumable_and_records_the_mapping(self):
+        """The slot carries no `pr_number` on this path. Reading it from the
+        slot rather than the command would have left every derived merge
+        permanently unconsumed."""
+        self.carriers = ("l1/f552-consumption-correctness",
+                         "fix(batch): consumption correctness (harmonic-forge#552)")
+        self.assertEqual(consume_ok(self.command, self.state_path), ["F552"])
+        merge = next(t for t in ba._load(self.state_path)["F552"]["targets"]
+                     if t["action"] == "gh pr merge")
+        self.assertTrue(merge["consumed"])
+        self.assertEqual((merge["repo"], merge["pr_number"]),
+                         ("vitalharmony/harmonic-forge", 561))
+
+
+class CarrierCacheTests(unittest.TestCase):
+    """The derivation lookup runs inside a PreToolUse hook, so it is cached.
+
+    Every hook invocation is its own process, which is why the cache is on
+    disk: an in-process one would never record a hit. These tests drive the
+    REAL `_pr_carriers` (the StateFixture stub is deliberately not used) with
+    `subprocess.run` faked, so what is under test is the caching, not `gh`.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.cache_path = Path(self.tmpdir.name) / "pr-carriers.json"
+        self.calls = []
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _run(self, returncode=0, stdout="l1/f552-x\nfix: x (harmonic-forge#552)\n"):
+        def fake(args, **kwargs):
+            self.calls.append(args)
+            return type("R", (), {"returncode": returncode, "stdout": stdout})()
+        return fake
+
+    def test_a_second_lookup_does_not_re_hit_github(self):
+        with mock.patch.object(ba.subprocess, "run", self._run()):
+            first = ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                                    cache_path=self.cache_path)
+            second = ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                                     cache_path=self.cache_path)
+        self.assertEqual(first, ("l1/f552-x", "fix: x (harmonic-forge#552)"))
+        self.assertEqual(second, first)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_the_lookup_is_rest_not_graphql(self):
+        """R-0083: `gh api repos/.../pulls/N` is REST. `gh pr view` answers the
+        same question through GraphQL and is deliberately not used."""
+        with mock.patch.object(ba.subprocess, "run", self._run()):
+            ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                            cache_path=self.cache_path)
+        self.assertEqual(self.calls[0][:3], ["gh", "api",
+                                             "repos/vitalharmony/harmonic-forge/pulls/561"])
+
+    def test_a_different_pr_is_a_separate_entry(self):
+        with mock.patch.object(ba.subprocess, "run", self._run()):
+            ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                            cache_path=self.cache_path)
+            ba._pr_carriers("vitalharmony/harmonic-forge", 562,
+                            cache_path=self.cache_path)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_stale_entry_is_re_fetched(self):
+        with mock.patch.object(ba.subprocess, "run", self._run()):
+            ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                            cache_path=self.cache_path)
+            cache = json.loads(self.cache_path.read_text())
+            cache["vitalharmony/harmonic-forge#561"]["at"] = (
+                time.time() - ba.CARRIER_CACHE_TTL_SECONDS - 1)
+            self.cache_path.write_text(json.dumps(cache))
+            ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                            cache_path=self.cache_path)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_failed_lookup_is_not_cached(self):
+        """Caching "unreadable" would turn one transient network failure into
+        six hours of prompts."""
+        with mock.patch.object(ba.subprocess, "run", self._run(returncode=1)):
+            self.assertIsNone(ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                                              cache_path=self.cache_path))
+        self.assertFalse(self.cache_path.exists())
+
+    def test_a_corrupt_cache_file_is_survived_not_raised(self):
+        self.cache_path.write_text("{not json")
+        with mock.patch.object(ba.subprocess, "run", self._run()):
+            self.assertIsNotNone(ba._pr_carriers("vitalharmony/harmonic-forge", 561,
+                                                 cache_path=self.cache_path))
+
+    def test_the_cache_is_bounded(self):
+        with mock.patch.object(ba.subprocess, "run", self._run()):
+            for n in range(ba.CARRIER_CACHE_MAX + 25):
+                ba._pr_carriers("vitalharmony/harmonic-forge", n,
+                                cache_path=self.cache_path)
+        self.assertLessEqual(len(json.loads(self.cache_path.read_text())),
+                             ba.CARRIER_CACHE_MAX)
+
+    def test_the_cache_path_follows_a_patched_state_path(self):
+        """A path bound at import time would silently write the real cache
+        from inside a test — the trap `_load`'s docstring names."""
+        original = ba.STATE_PATH
+        try:
+            ba.STATE_PATH = Path(self.tmpdir.name) / "state.json"
+            with mock.patch.object(ba.subprocess, "run", self._run()):
+                ba._pr_carriers("vitalharmony/harmonic-forge", 561)
+            self.assertTrue((Path(self.tmpdir.name) / ba.CARRIER_CACHE_NAME).exists())
+        finally:
+            ba.STATE_PATH = original
+
+
+class PrecloseRegressionTests(StateFixture):
+    """The defects the harmonic-forge#552 preclose panel found, each with the
+    test whose absence let 90 green tests miss it.
+
+    Every one of these was invisible to the suite as it stood: the panel's own
+    finding, repeatedly, was not "this code is wrong" but "no test could tell."
+    """
+
+    def test_every_authorized_segment_of_a_bundled_command_is_consumed(self):
+        """`merge A && merge B` is the normal shape of a BATCH run.
+
+        `consume()` returned on the first success, so B landed while its slot
+        still said the merge had never happened — a live grant any later
+        command could spend, and (because `block_batch_stop.py` keys on the
+        close target) a wedge on every turn-end for the rest of the 12h TTL.
+        """
+        ba.authorize(["F273", "F274"], state_path=self.state_path)
+        ba.link_pr("F273", "vitalharmony/harmonic-forge", 273,
+                   state_path=self.state_path)
+        ba.link_pr("F274", "vitalharmony/harmonic-forge", 274,
+                   state_path=self.state_path)
+        command = ("gh pr merge 273 --repo vitalharmony/harmonic-forge --squash "
+                   "&& gh pr merge 274 --repo vitalharmony/harmonic-forge --squash")
+        self.assertEqual(sorted(consume_ok(command, self.state_path)),
+                         ["F273", "F274"])
+        state = ba._load(self.state_path)
+        for key in ("F273", "F274"):
+            merge = next(s for s in state[key]["targets"]
+                         if s["action"] == "gh pr merge")
+            self.assertTrue(merge["consumed"], f"{key} merged but not consumed")
+
+    def test_a_merge_and_a_close_in_one_call_consume_both_targets(self):
+        ba.authorize(["F552"], state_path=self.state_path)
+        ba.link_pr("F552", "vitalharmony/harmonic-forge", 561,
+                   state_path=self.state_path)
+        command = ("gh pr merge 561 --repo vitalharmony/harmonic-forge --squash "
+                   "&& gh issue close 552 --repo vitalharmony/harmonic-forge")
+        self.assertEqual(consume_ok(command, self.state_path), ["F552", "F552"])
+        state = ba._load(self.state_path)
+        self.assertTrue(all(s["consumed"] for s in state["F552"]["targets"]))
+
+    def test_consume_takes_no_lock_for_an_unrelated_command(self):
+        """`consume()` runs on EVERY Bash tool call. Taking the exclusive lock
+        before classifying made every `ls` a contender for the 0.4s budget the
+        real merges share."""
+        lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            start = time.monotonic()
+            self.assertEqual(consume_ok("ls -la", self.state_path), [])
+            self.assertLess(time.monotonic() - start, 0.2)
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+
+    def test_the_carrier_lookup_asks_for_the_field_rest_actually_returns(self):
+        """`.headRefName` is the GraphQL / `gh pr view --json` spelling. Against
+        this REST endpoint it resolves to null, and because the title still
+        occupied line 2 the function returned `("", title)` rather than failing
+        — so derivation was silently TITLE-ONLY and the carriers-disagree guard
+        could never fire live. 90 tests were green over it, because the one test
+        touching the real function asserted only `argv[:3]`.
+        """
+        calls = []
+
+        def fake(args, **kwargs):
+            calls.append(args)
+            return type("R", (), {"returncode": 0, "stdout": "b\nt\n"})()
+
+        # `self._real_carriers`, not `ba._pr_carriers` — StateFixture stubs the
+        # latter, and driving the stub is exactly how the wrong field name
+        # stayed invisible.
+        with mock.patch.object(ba.subprocess, "run", fake):
+            self._real_carriers("vitalharmony/hrse", 1753,
+                                cache_path=self.state_path.with_name("c.json"))
+        self.assertIn("--jq", calls[0])
+        jq = calls[0][calls[0].index("--jq") + 1]
+        self.assertIn(".head.ref", jq)
+        self.assertNotIn("headRefName", jq)
+
+    def test_a_title_that_merely_cites_an_issue_does_not_fulfil_it(self):
+        """`fix(hooks): supersedes #549` on a branch with no number derived
+        F549 and merged an unauthorized PR against F549's grant."""
+        ba.authorize(["F549"], state_path=self.state_path)
+        self.carriers = ("fix/batch-auth", "fix(hooks): supersedes #549")
+        self.assertEqual(
+            ba.decide("gh pr merge 900 --repo vitalharmony/harmonic-forge --squash",
+                      state_path=self.state_path)[0], "ask")
+
+    def test_the_documented_trailing_parenthetical_still_resolves(self):
+        """The positive control: tightening the regex must not break the shape
+        every PR in this house actually uses."""
+        ba.authorize(["F544"], state_path=self.state_path)
+        self.carriers = ("l1/f544-platform-skills-manifest",
+                         "feat(platform): declare the platform skills HRSE2 "
+                         "consumes, in a tracked manifest (harmonic-forge#544)")
+        self.assertEqual(
+            ba.decide("gh pr merge 1753 --repo vitalharmony/hrse --squash",
+                      state_path=self.state_path)[0], "allow")
+
+    def test_derivation_never_crosses_the_account_boundary(self):
+        """REPO_PREFIXES is a credential-isolation boundary, not a shorthand
+        table. A PR in an unmapped repo on another account, branch
+        `l2/h395-port`, derived H395 and merged with no prompt."""
+        ba.authorize(["H395"], state_path=self.state_path)
+        self.carriers = ("l2/h395-port", "chore: port the fix (hrse#395)")
+        self.assertEqual(
+            ba.decide("gh pr merge 7 --repo kenekted/mve --squash",
+                      state_path=self.state_path)[0], "ask")
+
+    def test_a_corrected_title_takes_effect_within_the_cache_ttl(self):
+        """Editing the title is the only remedy an author has when their PR
+        derives to the wrong issue. A 6h TTL ignored the correction for 6h."""
+        self.assertLessEqual(ba.CARRIER_CACHE_TTL_SECONDS, 900)
+
+
+class RegistrationScopeTests(unittest.TestCase):
+    """The gate and its consumer must share a scope (harmonic-forge#552
+    preclose, refuters A/B/C — all three found it independently).
+
+    `batch_gate.py` is registered in the USER settings, so `decide()` runs in
+    every project. Registering the consumer per-project meant cymagraph-infra
+    and openclaw-projects — both BATCH-eligible — gated but never consumed.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "settings.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _write(self, pre, post):
+        self.path.write_text(json.dumps({"hooks": {
+            "PreToolUse": [{"matcher": "Bash", "hooks":
+                            [{"command": f"python3 {c}"} for c in pre]}],
+            "PostToolUse": [{"matcher": "Bash", "hooks":
+                             [{"command": f"python3 {c}"} for c in post]}],
+        }}))
+
+    def test_both_registered_is_ok(self):
+        self._write(["batch_gate.py"], ["batch_consume.py"])
+        self.assertTrue(ba.verify_registration(self.path)[0])
+
+    def test_neither_registered_is_ok(self):
+        self._write(["other.py"], ["other.py"])
+        self.assertTrue(ba.verify_registration(self.path)[0])
+
+    def test_a_gate_with_no_consumer_is_drift(self):
+        """The shipped state before this fix. A merge is allowed and never
+        marked spent, so a single-use close target becomes multi-use."""
+        self._write(["batch_gate.py"], ["other.py"])
+        ok, message = ba.verify_registration(self.path)
+        self.assertFalse(ok)
+        self.assertIn("batch_consume.py", message)
+
+    def test_a_consumer_with_no_gate_is_drift(self):
+        self._write(["other.py"], ["batch_consume.py"])
+        ok, message = ba.verify_registration(self.path)
+        self.assertFalse(ok)
+        self.assertIn("batch_gate.py", message)
+
+    def test_an_unreadable_settings_file_is_drift_not_a_pass(self):
+        ok, _ = ba.verify_registration(self.path / "nope.json")
+        self.assertFalse(ok)
+
+    def test_the_live_user_settings_are_consistent(self):
+        """The distribution step itself, asserted rather than described
+        (R-0353: the authoring repo is not the shipping surface).
+
+        SKIPPED where the operator's settings file does not exist, which on a
+        CI runner is always. Written without that guard first, and CI caught it
+        red — a new instance of exactly the class harmonic-forge#504 exists to
+        prevent: a test that reads operator-local state, passes on the
+        operator's machine, and cannot pass anywhere else. #504's own body
+        names `~/.claude/settings.json` as the file that did it last time.
+
+        The assertion is still worth making where it CAN be made: this is a
+        machine-configuration property, not a property of the repo, so absence
+        of the file is "not applicable", not "broken".
+        """
+        settings = Path.home() / ".claude" / "settings.json"
+        if not settings.is_file():
+            self.skipTest(f"no operator settings at {settings}")
+        ok, message = ba.verify_registration()
+        self.assertTrue(ok, message)

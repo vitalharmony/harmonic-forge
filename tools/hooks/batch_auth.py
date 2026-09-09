@@ -86,10 +86,18 @@ hook denies writing a `Closes #N` autoclose keyword into a PR body
 specifically to keep issue closure an explicit human action, so GitHub's own
 `closingIssuesReferences` linkage is never populated here either. The only
 place this mapping is ever known is the agent that opens the PR --
-`link_pr()` is that explicit record. Until it is called for a given
-authorized issue, `gh pr merge` against that issue's PR does not match, and
-`decide()` returns `("ask", ...)`. Deliberate fail-closed default: a missed
-`link_pr()` call means one more Ask prompt, never a wrongly-granted merge.
+`link_pr()` is that explicit record, and stays the authoritative override.
+
+**Derivation is the fallback, not a replacement** (AC5, harmonic-forge#552,
+carried from #549). When no `link_pr` record names the PR, `decide()` reads the
+two carriers this house's PRs always populate -- the head branch
+(`l1/h1757-...`, `feat/1754-...`) and the title's `(repo#N)` suffix -- and uses
+the issue they agree on. It resolves a mapping that already exists; it never
+invents a grant. Three fail-closed directions are explicit and tested:
+unparseable carriers, carriers that disagree, and a derived key with no live
+authorization all return `("ask", ...)`. A missed `link_pr()` call now usually
+costs nothing, and in every case it can still only cost one Ask prompt --
+never a wrongly-granted merge.
 
 ## `authorize()` and the command it authorizes must be in SEPARATE tool calls
 
@@ -116,6 +124,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -364,21 +373,25 @@ def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None)
         # Already linked to THIS pr on a slot that can still be USED?
         # Idempotent, so a re-run is free.
         #
-        # `not consumed` is load-bearing and was missing (harmonic-forge#549).
-        # `decide()` marks a target consumed the moment it matches, whether or
-        # not the command it authorized actually ran -- and a command can match
-        # and still not run, because a later guard denies it or the operator
-        # interrupts. Live incident, 2026-09-09: a `gh pr merge` bundled into
-        # one Bash call with a destructive `git worktree remove --force` was
-        # denied for the destructive half, after this module had already
-        # consumed the linked target. Without the `not consumed` test below,
-        # every re-link then matched that dead slot and returned early, so the
-        # PR could never be linked again and the merge asked forever. Skipping
-        # a consumed slot is not a widening: the merge it authorized provably
-        # did not happen, and the operator's grant is per-key, not per-attempt.
+        # AC4 (harmonic-forge#552): keyed on (repo, pr_number), REGARDLESS of
+        # `consumed`. At most one merge target per distinct pair, ever.
+        #
+        # The `not target.get("consumed")` clause that stood here was added by
+        # harmonic-forge#549 to route around dead slots — slots marked consumed
+        # by a merge that never ran. Now that consumption is truthful (it
+        # happens in batch_consume.py, only after the action is confirmed to
+        # have landed), `consumed` means the merge HAPPENED, and skipping such
+        # a slot would make re-linking an already-merged PR allocate a
+        # duplicate. #552 requires this clause removed in the same change that
+        # fixes consumption — not before, not after.
+        #
+        # Allocation itself stays: #502 AC8's cross-repo reason is sound, and a
+        # NEW (repo, pr_number) pair still allocates. What was wrong was the
+        # trigger, not the mechanism — with untruthful consumption every dead
+        # slot looked like "no slot available", which is how F544 reached four
+        # targets for one PR. Two live targets for one pair is the tell.
         for target in merges:
-            if (not target.get("consumed")
-                    and target.get("repo") == repo
+            if (target.get("repo") == repo
                     and target.get("pr_number") == pr_number):
                 return
 
@@ -543,6 +556,210 @@ def _match_issue_close(tokens: list[str], state: dict) -> tuple[str, dict, dict]
     return key, entry, target
 
 
+#: A branch segment carrying an issue number: an optional shorthand prefix
+#: letter, then the number. `l1/h1757-gate-attribution` -> ("h", "1757");
+#: `feat/1754-prompt-cache-parity` -> ("", "1754"). Two digits minimum, so the
+#: lane segment in `l1/...` is not itself read as issue 1.
+_BRANCH_ISSUE = re.compile(r"(?:^|[/_-])([A-Za-z]?)(\d{2,})(?=$|[/_-])")
+
+#: A title reference, and ONLY in its documented trailing-parenthetical shape:
+#: `(harmonic-forge#552)`, `(hrse#1754)`, `(#552)`, `(harmonic-forge#516 AC6)`.
+#:
+#: Unanchored `#N` anywhere in the title is NOT accepted, because a title that
+#: merely cites an issue does not fulfil it. `fix(hooks): supersedes #549` on a
+#: branch carrying no number derived F549 and merged an unauthorized PR against
+#: F549's grant with no prompt — two wrong outcomes from one input, since F549's
+#: real PR then correctly-but-wrongly asked "already CONSUMED".
+_TITLE_ISSUE = re.compile(r"\((?:([A-Za-z][A-Za-z0-9-]*)#|#)(\d+)[^)]*\)")
+
+_SLUG_TO_REPO = {repo.split("/")[-1]: repo for repo in REPO_PREFIXES}
+_PREFIX_TO_REPO = {prefix.upper(): repo for repo, prefix in REPO_PREFIXES.items()}
+
+
+def _carrier_key(prefix: str, number: str, pr_repo: str) -> str | None:
+    """One carrier's `(prefix, number)` -> a BATCH key, or None if unresolvable.
+
+    An unrecognised prefix or slug yields None rather than falling back to the
+    PR's own repo. Guessing here would be the one way derivation could widen
+    authorization, which AC5 forbids outright.
+    """
+    if not prefix:
+        return issue_key(pr_repo, number)
+    repo = _PREFIX_TO_REPO.get(prefix.upper()) or _SLUG_TO_REPO.get(prefix.lower())
+    return issue_key(repo, number) if repo else None
+
+
+#: Derived carriers are cached on disk, not in memory: every hook invocation is
+#: a fresh process, so an in-process cache would never see a second hit. A PR's
+#: head branch and title do not change in the window between opening it and
+#: merging it, and the failure mode of a stale entry is bounded — it can only
+#: name an issue, and a wrong issue still has to hold a live grant whose merge
+#: target the operator authorized.
+#: Resolved at CALL time, never bound at import. A module-level
+#: `STATE_PATH.parent / ...` constant would freeze the value the moment this
+#: module is first imported, so a test patching `batch_auth.STATE_PATH` would
+#: silently keep writing the real cache — the same trap `_load`'s docstring
+#: names, in a second place.
+CARRIER_CACHE_NAME = "pr-carriers.json"
+#: Ten minutes, not hours. The cache exists to absorb a retry burst — the
+#: operator merging, being prompted, and merging again — which happens inside
+#: one minute. A long TTL buys nothing more and costs correctness: the head
+#: branch cannot change, but the TITLE can, and editing it is the only remedy
+#: available to an author who sees their PR derive to the wrong issue. A 6h
+#: window meant a corrected title was ignored for 6h.
+CARRIER_CACHE_TTL_SECONDS = 600
+#: Bounded so the file cannot grow without limit; the interesting entries are
+#: always the recent ones.
+CARRIER_CACHE_MAX = 200
+
+
+def _carrier_cache_read(key: str, path: Path) -> tuple[str, str] | None:
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+        entry = cache[key]
+        if time.time() - float(entry["at"]) > CARRIER_CACHE_TTL_SECONDS:
+            return None
+        return entry["branch"], entry["title"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _carrier_cache_write(key: str, value: tuple[str, str], path: Path) -> None:
+    """Best-effort. A cache that can fail a merge is worse than no cache."""
+    try:
+        try:
+            cache = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(cache, dict):
+                cache = {}
+        except (OSError, ValueError):
+            cache = {}
+        cache[key] = {"at": time.time(), "branch": value[0], "title": value[1]}
+        if len(cache) > CARRIER_CACHE_MAX:
+            newest = sorted(cache.items(),
+                            key=lambda kv: kv[1].get("at", 0), reverse=True)
+            cache = dict(newest[:CARRIER_CACHE_MAX])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _pr_carriers(repo: str, pr_number: int,
+                 cache_path: Path | None = None) -> tuple[str, str] | None:
+    """`(head branch, title)` for a PR, or None if it cannot be read.
+
+    REST, not GraphQL — `gh api repos/{owner}/{repo}/pulls/{n}` is the REST
+    endpoint the house policy prefers (R-0083); the GraphQL-backed `gh pr view`
+    would answer the same question and is deliberately not used.
+
+    Cached, because this runs inside a `PreToolUse` hook: without it, an
+    operator who retries a merge three times pays three round trips before
+    three prompts. A miss is one REST call on a path whose alternative is
+    stopping for a human.
+    """
+    path = cache_path or (STATE_PATH.parent / CARRIER_CACHE_NAME)
+    key = f"{repo}#{pr_number}"
+    cached = _carrier_cache_read(key, path)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}",
+             # `.head.ref`, NOT `.headRefName`. The latter is the GraphQL /
+             # `gh pr view --json` spelling; against this REST endpoint it
+             # resolves to null, which returned ("", title) rather than an
+             # error. Derivation was silently TITLE-ONLY, and the
+             # carriers-disagree guard below could never fire. Caught by
+             # preclose inspection on this very diff; the test that "covered"
+             # it asserted only the first three argv entries and stubbed the
+             # rest, so the wrong field name was invisible to 90 green tests.
+             "--jq", ".head.ref, .title"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.splitlines()
+    if len(lines) < 2:
+        return None
+    value = (lines[0].strip(), lines[1].strip())
+    _carrier_cache_write(key, value, path)
+    return value
+
+
+def derive_issue_key(pr_repo: str, pr_number: int, state: dict) -> str | None:
+    """Which BATCH key does this PR fulfil, when no `link_pr` record says?
+
+    AC5 (harmonic-forge#552, carried from #549's AC1/AC2). The PR number is not
+    knowable when the operator types BATCH, so `link_pr` is the explicit
+    mapping — but forgetting it costs a prompt on an authorization that
+    genuinely exists. Both of this house's PR carriers name the issue: the head
+    branch (`l1/h1757-...`, `feat/1754-...`) and the title's `(repo#N)` suffix.
+
+    **Fail-closed in three named ways, each of which returns None and therefore
+    asks.** Derivation may only stop discarding a mapping already present; it
+    may never widen authorization:
+
+      * neither carrier yields a parseable, resolvable issue number;
+      * the two carriers yield DIFFERENT keys — disagreement is not a tie to be
+        broken, it is evidence that at least one reading is wrong;
+      * the derived key has no authorization entry at all (checked by the
+        caller, which then falls through to `_diagnose`).
+
+    The PR's own number is discarded as a candidate: `gh` appends `(#1752)` to
+    a squashed title, and a PR is not an authorization for itself.
+
+    One `gh api` call, on the path that would otherwise have stopped for a
+    human anyway — the latency objection that keeps `action_landed` out of
+    `decide()` does not apply to a branch whose alternative is a prompt.
+    """
+    carriers = _pr_carriers(pr_repo, pr_number)
+    if carriers is None:
+        return None
+    branch, title = carriers
+
+    keys: set[str] = set()
+    for prefix, number in _BRANCH_ISSUE.findall(branch or ""):
+        key = _carrier_key(prefix, number, pr_repo)
+        if key:
+            keys.add(key)
+    for slug, number in _TITLE_ISSUE.findall(title or ""):
+        key = _carrier_key(slug, number, pr_repo)
+        if key:
+            keys.add(key)
+
+    keys.discard(issue_key(pr_repo, pr_number) or "")
+    return keys.pop() if len(keys) == 1 else None
+
+
+def _derived_merge_match(repo: str, number: int,
+                         state: dict) -> tuple[str, dict, dict] | None:
+    """A live, unconsumed merge target on the key this PR derives to."""
+    # REPO_PREFIXES is the account boundary, not merely a shorthand table:
+    # credential isolation across engagements is a standing rule, and the close
+    # path already refuses an unmapped repo (`_match_issue_close` returns None
+    # when `issue_key` does). Without this, a PR in an unmapped repo on another
+    # account (branch `l2/h395-port`) derived H395 and merged with no prompt.
+    if repo not in REPO_PREFIXES:
+        return None
+    key = derive_issue_key(repo, number, state)
+    if key is None:
+        return None
+    entry = state.get(key)
+    if entry is None:
+        return None
+    for target in entry.get("targets", []):
+        if "merge" not in target.get("action", "").lower():
+            continue
+        if target.get("consumed"):
+            continue
+        if target.get("pr_number") not in (None, number):
+            continue
+        return key, entry, target
+    return None
+
+
 def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
     target_info = classify_pr_merge(tokens)
     if target_info is None:
@@ -572,7 +789,11 @@ def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | 
                     return key, entry, target
                 if fallback is None:
                     fallback = (key, entry, target)
-    return fallback
+    if fallback is not None:
+        return fallback
+    # AC5: no `link_pr` record names this PR. Derive the mapping from the head
+    # branch and title rather than discarding an authorization that exists.
+    return _derived_merge_match(repo, number, state)
 
 
 def _diagnose(tokens: list[str], state: dict, is_close: bool,
@@ -648,65 +869,293 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             "than silently allowing a possible issue-close or PR-merge."
         )
 
-    actual_path = STATE_PATH if state_path is None else state_path
+    # NO LOCK. AC1 made `decide()` read-only, and `_save` is a temp-file +
+    # atomic `os.replace`, so a lockless read can never observe a partial
+    # write — it sees the state either before or after, never during.
+    #
+    # Holding it was actively harmful once AC5 landed: derivation shells out to
+    # `gh`, `_locked_state`'s own contract forbids holding the lock across a
+    # subprocess, and the lock budget is 0.4s against a measured ~0.7s API
+    # call. A concurrent session's fully-authorized merge got
+    # "could not acquire the lock -- failing closed" — an unexplained operator
+    # prompt on a valid grant, which is the exact symptom #552 exists to end.
     try:
-        with _locked_state(actual_path):
-            state = _load(state_path)
-            now = _now()
-            command_hash = _command_hash(command)
-            covered = False
-            allow_reason: str | None = None
+        state = _load(state_path)
+        now = _now()
+        command_hash = _command_hash(command)
+        covered = False
+        allow_reason: str | None = None
 
-            for tokens in segments:
-                if _protected_graphql(tokens):
-                    return "ask", "GraphQL mutation is protected; use the reviewed CLI or REST authorization path."
-                is_close = classify_issue_close(tokens) is not None
-                is_merge = (not is_close) and classify_pr_merge(tokens) is not None
-                if not is_close and not is_merge:
-                    continue
-                covered = True
+        for tokens in segments:
+            if _protected_graphql(tokens):
+                return "ask", "GraphQL mutation is protected; use the reviewed CLI or REST authorization path."
+            is_close = classify_issue_close(tokens) is not None
+            is_merge = (not is_close) and classify_pr_merge(tokens) is not None
+            if not is_close and not is_merge:
+                continue
+            covered = True
 
-                match = _match_issue_close(tokens, state) if is_close else _match_pr_merge(tokens, state)
-                reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
-                # harmonic-forge#502 AC4: a prompt that does not say WHY is
-                # indistinguishable from any other permission prompt. The
-                # operator's own words on the incident that filed this issue:
-                # "waiting for my ok to merge/close OR SOMETHING I COULDN'T
-                # TELL WHAT." These four states need four different actions,
-                # and only the diagnostic makes that self-service.
-                if match is None:
-                    return "ask", reason + "\n\n" + _diagnose(tokens, state, is_close, now)
-                key, entry, target = match
-                if not _entry_live(entry, now):
-                    return "ask", reason + (
-                        f"\n\n[BATCH] {key} WAS authorized but EXPIRED at "
-                        f"{entry.get('expires_at', '?')}. Re-issue BATCH {key}.")
-                if target.get("consumed") and target.get("consumed_by") != command_hash:
-                    return "ask", reason + (
-                        f"\n\n[BATCH] {key}'s "
-                        f"{'close' if is_close else 'merge'} target is already "
-                        "CONSUMED by a different command. A close is single-use "
-                        "by design; a merge allocates a new target on the next "
-                        "`link-pr`, so run that first if this is a second repo.")
-                if not target.get("consumed"):
-                    target["consumed"] = True
-                    target["consumed_by"] = command_hash
-                    _save(state, state_path)
-                allow_reason = f"BATCH-authorized ({key})"
+            match = _match_issue_close(tokens, state) if is_close else _match_pr_merge(tokens, state)
+            reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
+            # harmonic-forge#502 AC4: a prompt that does not say WHY is
+            # indistinguishable from any other permission prompt. The
+            # operator's own words on the incident that filed this issue:
+            # "waiting for my ok to merge/close OR SOMETHING I COULDN'T
+            # TELL WHAT." These four states need four different actions,
+            # and only the diagnostic makes that self-service.
+            if match is None:
+                return "ask", reason + "\n\n" + _diagnose(tokens, state, is_close, now)
+            key, entry, target = match
+            if not _entry_live(entry, now):
+                return "ask", reason + (
+                    f"\n\n[BATCH] {key} WAS authorized but EXPIRED at "
+                    f"{entry.get('expires_at', '?')}. Re-issue BATCH {key}.")
+            if target.get("consumed") and target.get("consumed_by") != command_hash:
+                return "ask", reason + (
+                    f"\n\n[BATCH] {key}'s "
+                    f"{'close' if is_close else 'merge'} target is already "
+                    "CONSUMED by a different command. A close is single-use "
+                    "by design; a merge allocates a new target on the next "
+                    "`link-pr`, so run that first if this is a second repo.")
+            # AC1 (harmonic-forge#552): decide() is READ-ONLY. It used to
+            # set consumed/consumed_by and _save() here, which is the root
+            # cause of the incident that filed #552. A PreToolUse hook
+            # cannot know whether the command will run: Claude Code
+            # composes PreToolUse hooks under strongest-decision-wins, so
+            # another hook's `deny` lands AFTER this write, and an operator
+            # decline or a failed merge never reaches execution either.
+            # Three live paths consumed a slot with no action taken, and
+            # F544 reached FOUR consumed merge targets all pointing at the
+            # still-unmerged PR 1753 — four matches, zero executions.
+            #
+            # Consumption now happens in batch_consume.py on PostToolUse,
+            # which fires only after the tool ran, and only once the merge
+            # or close is confirmed to have actually landed (AC3).
+            allow_reason = f"BATCH-authorized ({key})"
 
-            if not covered:
-                return None
-            return "allow", allow_reason
-    except StateLockTimeout:
-        return "ask", (
-            "Could not acquire the authorization state lock promptly -- "
-            "failing closed rather than risking a lost concurrent-consumption race."
-        )
+        if not covered:
+            return None
+        return "allow", allow_reason
     except Exception:
         return "ask", (
             "Internal error classifying this command -- failing closed "
             "rather than silently allowing a possible issue-close or PR-merge."
         )
+
+
+def action_landed(kind: str, repo: str, number: str | int) -> bool | None:
+    """Did the merge/close this command was authorized for ACTUALLY happen?
+
+    AC3 (harmonic-forge#552). `PostToolUse` fires on failure too — a merge that
+    exits "not mergeable: the base branch policy prohibits the merge" reaches
+    this code path exactly as a successful one does. Consuming unconditionally
+    there would just move the over-count from PreToolUse to PostToolUse rather
+    than fixing it. Two of the three no-execution paths (`deny` from a sibling
+    hook, operator decline) never reach PostToolUse at all; this check is what
+    covers the third.
+
+    Cheap here, and only here: one API call after the fact, where the same call
+    inside the PreToolUse path would have put network latency in front of every
+    merge and close the operator issues. REST (`gh api repos/.../pulls/N`), per
+    R-0083 — `gh pr view --json merged` is GraphQL-backed.
+
+    **Deliberately NOT cached**, unlike `_pr_carriers`. That one reads two
+    fields that do not change between opening a PR and merging it; this one
+    asks the single question whose answer flips at exactly the moment being
+    tested. A cached "not merged yet" would leave a landed merge unconsumed,
+    and a cached "merged" is the wrong-consumption defect this issue exists to
+    remove.
+
+    Returns None when the answer cannot be established, and the caller then
+    declines to consume — an unconsumed live grant costs one extra prompt,
+    a wrongly-consumed one costs a stuck batch.
+    """
+    endpoint = (f"repos/{repo}/pulls/{number}" if kind == "merge"
+                else f"repos/{repo}/issues/{number}")
+    field = ".merged" if kind == "merge" else '.state == "closed"'
+    result = subprocess.run(
+        ["gh", "api", endpoint, "--jq", field],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        return None
+    answer = result.stdout.strip().lower()
+    if answer in ("true", "false"):
+        return answer == "true"
+    return None
+
+
+def _relocate_target(entry: dict, is_close: bool, repo: str,
+                     number) -> dict | None:
+    """Re-find, in a freshly-loaded entry, the slot a pre-lock match resolved.
+
+    The match is made OUTSIDE the lock (it can shell out to `gh`), so the dict
+    it returns belongs to a state snapshot that may be stale by the time the
+    write lock is held. Writing through that stale dict would silently drop a
+    concurrent session's change. This finds the slot again in the current
+    state, and only ever returns an UNCONSUMED one — so a slot another process
+    consumed in between is never overwritten.
+    """
+    want = "close" if is_close else "merge"
+    slots = [s for s in entry.get("targets", [])
+             if want in s.get("action", "").lower()]
+    if not is_close:
+        for slot in slots:
+            if (slot.get("repo") == repo and slot.get("pr_number") == number
+                    and not slot.get("consumed")):
+                return slot
+    return next((s for s in slots if not s.get("consumed")), None)
+
+
+def consume(command: str, state_path: Path | None = None,
+            landed=None) -> list[str]:
+    """Mark the targets `command` was authorized against as consumed, after it ran.
+
+    AC2 (harmonic-forge#552). This is the write half that `decide()` used to
+    perform at PreToolUse time. It runs from `batch_consume.py` on
+    `PostToolUse`, which fires only once the tool has actually executed.
+
+    `consumed_by` keeps its existing meaning — the same `_command_hash` of the
+    same command text — so `decide()`'s deliberate re-allow of an identical
+    retry is unaffected.
+
+    Returns the list of keys consumed, which is **not** always at most one.
+    `gh pr merge A && gh pr merge B` is the normal shape of a BATCH run, and
+    the incident itself involved a bundled call: an earlier draft of this
+    function returned on the first success, so the second merge landed while
+    its slot still said the merge had never happened — leaving a live grant any
+    later command could spend, and (because `block_batch_stop.py` keys on the
+    close target) wedging every turn-end in the repo for the rest of the TTL.
+
+    Never raises into the hook: a failure to record consumption must not break
+    the session, and the cost of missing one is a single extra prompt.
+    """
+    landed = landed or action_landed
+    actual_path = STATE_PATH if state_path is None else state_path
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return []
+
+    # Classify BEFORE touching the state file or the lock. This runs on EVERY
+    # Bash tool call in the session, and virtually none of them are a merge or
+    # a close; taking an exclusive lock on all of them made every unrelated
+    # command a contender for a 0.4s budget shared with the real ones.
+    work: list[tuple[list[str], bool, tuple]] = []
+    for raw in segments:
+        tokens = strip_invocation_prefix(raw)
+        close_info = classify_issue_close(tokens)
+        if close_info is not None:
+            work.append((tokens, True, close_info))
+            continue
+        merge_info = classify_pr_merge(tokens)
+        if merge_info is not None:
+            work.append((tokens, False, merge_info))
+    if not work:
+        return []
+
+    command_hash = _command_hash(command)
+    consumed: list[str] = []
+
+    for tokens, is_close, info in work:
+        repo, number = info
+        if not repo or not number:
+            continue
+        try:
+            # Match, derive and confirm-landed all happen OUTSIDE the lock.
+            # `_locked_state`'s own contract forbids holding it across a
+            # subprocess, and both AC5 derivation and `action_landed` shell out
+            # to `gh` — measured ~0.7s against a 0.4s lock budget, which turned
+            # one session's network call into another session's spurious prompt
+            # on a valid grant.
+            state = _load(state_path)
+            now = _now()
+            match = (_match_issue_close(tokens, state) if is_close
+                     else _match_pr_merge(tokens, state))
+            if match is None:
+                continue
+            key, entry, target = match
+            if not _entry_live(entry, now) or target.get("consumed"):
+                continue
+
+            # Confirm the PR/issue the COMMAND names, not the one the slot
+            # records. They agree whenever `link_pr` ran; on the AC5 derivation
+            # path the slot carries no `pr_number` yet, and reading it from the
+            # slot would silently skip consumption for exactly the merges
+            # derivation just made possible.
+            if landed("close" if is_close else "merge", repo, number) is not True:
+                # Ran and did not land, or could not be established. Leave the
+                # grant live — this is the whole point of the issue.
+                continue
+
+            # Only now, and only for the write.
+            with _locked_state(actual_path):
+                fresh = _load(state_path)
+                fresh_entry = fresh.get(key)
+                if fresh_entry is None or not _entry_live(fresh_entry, _now()):
+                    continue
+                slot = _relocate_target(fresh_entry, is_close, repo, number)
+                if slot is None:
+                    continue
+                slot["consumed"] = True
+                slot["consumed_by"] = command_hash
+                if not is_close and slot.get("pr_number") is None:
+                    # Persist what derivation worked out, so the mapping is on
+                    # the record the operator reads rather than only in a
+                    # decision that has already been made.
+                    slot["repo"], slot["pr_number"] = repo, number
+                _save(fresh, state_path)
+                consumed.append(key)
+        except Exception:
+            continue
+    return consumed
+
+
+GATE_HOOK = "batch_gate.py"
+CONSUME_HOOK = "batch_consume.py"
+
+
+def _registered_hooks(settings: dict, event: str, needle: str) -> bool:
+    for block in (settings.get("hooks") or {}).get(event) or []:
+        for hook in block.get("hooks") or []:
+            if needle in (hook.get("command") or ""):
+                return True
+    return False
+
+
+def verify_registration(settings_path: Path | None = None) -> tuple[bool, str]:
+    """Are the gate and its consumer registered at the SAME scope?
+
+    Found by preclose inspection on harmonic-forge#552, and the sharpest
+    finding of the three panels. `batch_gate.py` is registered in the USER
+    settings, so `decide()` runs in every project. The consumer was registered
+    in two projects' settings. In `cymagraph-infra` and `openclaw-projects` —
+    both in `REPO_PREFIXES`, both BATCH-eligible — the gate therefore allowed
+    and nothing ever consumed: a single-use close target silently became
+    multi-use for the full 12h TTL, and `block_batch_stop.py` (which keys on
+    that target) would wedge every turn-end until it expired.
+
+    Before AC1 this could not happen, because the write lived in the
+    globally-registered half. Splitting Pre from Post split the SCOPE too, and
+    a prose note saying "remember to register both" is precisely the thing that
+    drifts — hence a check rather than a sentence.
+    """
+    path = settings_path or (Path.home() / ".claude" / "settings.json")
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, f"could not read {path}"
+    gate = _registered_hooks(settings, "PreToolUse", GATE_HOOK)
+    consume_hook = _registered_hooks(settings, "PostToolUse", CONSUME_HOOK)
+    if gate and consume_hook:
+        return True, f"{path}: gate and consumer both registered"
+    if not gate and not consume_hook:
+        return True, f"{path}: neither registered (consistent)"
+    missing = CONSUME_HOOK if gate else GATE_HOOK
+    return False, (
+        f"{path}: {GATE_HOOK if gate else CONSUME_HOOK} is registered here but "
+        f"{missing} is NOT. The gate and its consumer must share a scope — a "
+        f"gate without a consumer allows merges that are never marked spent.")
 
 
 def _cli() -> None:
@@ -739,11 +1188,19 @@ def _cli() -> None:
              f"Default (if omitted): both {DEFAULT_ACTIONS!r}.",
     )
     p_top.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
+    p_consume = sub.add_parser(
+        "consume", help="Mark the target a command authorized as consumed, after it ran")
+    p_consume.add_argument("--command", required=True)
 
     p_link = sub.add_parser("link-pr", help="Record the PR that fulfils an authorized issue's merge target")
     p_link.add_argument("key")
     p_link.add_argument("--repo", required=True)
     p_link.add_argument("--pr", type=int, required=True, dest="pr_number")
+
+    p_check = sub.add_parser(
+        "check-hooks",
+        help="Verify the gate and its consumer are registered at the same scope")
+    p_check.add_argument("--settings", default=None)
 
     args = parser.parse_args()
     if args.cmd == "authorize":
@@ -766,9 +1223,17 @@ def _cli() -> None:
             print(f"extended (targets and links untouched): {', '.join(extended)}")
         if not fresh and not extended:
             print("nothing to do")
+    elif args.cmd == "consume":
+        consumed = consume(args.command)
+        print(f"consumed {consumed}" if consumed else "nothing to consume")
     elif args.cmd == "link-pr":
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")
+    elif args.cmd == "check-hooks":
+        ok, message = verify_registration(
+            Path(args.settings) if args.settings else None)
+        print(("[OK] " if ok else "[DRIFT] ") + message)
+        raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":
