@@ -184,8 +184,16 @@ def _link_dir(source_dir: Path, target_dir: Path, filenames: list[str], label: s
     return ok
 
 
-def _verify_dir(target_dir: Path, filenames: list[str]) -> bool:
-    """Confirms every expected symlink in target_dir resolves to a real file."""
+def _verify_dir(source_dir: Path, target_dir: Path, filenames: list[str]) -> bool:
+    """Confirms every expected symlink in target_dir resolves to THIS platform's file.
+
+    Identity, not plausibility. This used to assert only `is_symlink()` and
+    `resolve().exists()`, so a rules dir linked to a stale harmonic-forge
+    worktree, an old clone, or a hand-rolled copy verified green -- reachable
+    today, because `forge_onboard.py` runs this script from `platform_source()`,
+    which need not be this checkout. `_verify_skill_dir` has always performed
+    the identity check; rules and agents were the two link classes without it.
+    """
     all_good = True
     for filename in filenames:
         target = target_dir / filename
@@ -193,7 +201,16 @@ def _verify_dir(target_dir: Path, filenames: list[str]) -> bool:
             print(f"[BROKEN] {target} is not a symlink.", file=sys.stderr)
             all_good = False
             continue
-        if not target.resolve().exists():
+        resolved = target.resolve()
+        expected = (source_dir / filename).resolve()
+        if resolved != expected:
+            print(
+                f"[BROKEN] {target} resolves to {resolved}, expected {expected}.",
+                file=sys.stderr,
+            )
+            all_good = False
+            continue
+        if not resolved.exists():
             print(f"[BROKEN] {target} points to a missing file.", file=sys.stderr)
             all_good = False
     return all_good
@@ -290,6 +307,36 @@ def _verify_skill_dir(target_dir: Path, skill_names: list[str]) -> bool:
     return all_good
 
 
+def undeclared_platform_skills(target_dir: Path, declared: list[str]) -> list[str]:
+    """Platform skill links present in the project but absent from its declaration.
+
+    `_verify_skill_dir` iterates the DECLARED names, so it can only ever see a
+    declaration with no link. The opposite -- a link with no declaration -- is
+    equally a mismatch and the more dangerous one: removing a skill from the
+    manifest is how an operator revokes it, and without this check every
+    session in that repo keeps loading it while --verify reports green. The
+    same "absence is invisible" shape as harmonic-forge#540, pointing the other
+    way.
+
+    Only symlinks resolving INTO this platform's own skills dir count. A
+    project-owned symlink is not ours to have an opinion about (live precedent,
+    named in _link_skill_dir: .claude/skills/ai-review-queue-synthesis points at
+    Google Drive), and neither is a real directory the project checked in.
+    """
+    if not target_dir.is_dir():
+        return []
+    platform_skills_root = SKILLS_DIR.resolve()
+    known = set(declared)
+    found = []
+    for entry in target_dir.iterdir():
+        if entry.name in known or not entry.is_symlink():
+            continue
+        resolved = entry.resolve()
+        if resolved == platform_skills_root or platform_skills_root in resolved.parents:
+            found.append(entry.name)
+    return sorted(found)
+
+
 def link_project(project_root: Path, skill_names: list[str] | None = None) -> bool:
     """Symlinks project .claude/rules/, .claude/agents/, and .claude/skills/
     (opted-in only) to platform sources."""
@@ -305,10 +352,38 @@ def link_project(project_root: Path, skill_names: list[str] | None = None) -> bo
 def verify_links(project_root: Path, skill_names: list[str] | None = None) -> bool:
     """Confirms every expected rule, agent, and (opted-in) skill symlink
     resolves to the platform source."""
-    rules_ok = _verify_dir(project_root / ".claude" / "rules", UNIVERSAL_RULE_FILES)
-    agents_ok = _verify_dir(project_root / ".claude" / "agents", _universal_agent_files())
+    rules_ok = _verify_dir(
+        RULES_DIR, project_root / ".claude" / "rules", UNIVERSAL_RULE_FILES)
+    agents_ok = _verify_dir(
+        AGENTS_DIR, project_root / ".claude" / "agents", _universal_agent_files())
     skills_ok = _verify_skill_dir(project_root / ".claude" / "skills", skill_names or [])
     return rules_ok and agents_ok and skills_ok
+
+
+def expected_skill_names(declared: list[str] | None,
+                         extra: list[str] | None = None) -> list[str]:
+    """The one expression link mode and verify mode must agree on.
+
+    Written independently in two places they drift, and the drift is silent:
+    link mode unioned in UNIVERSAL_SKILL_DIRS and verify mode did not, so the
+    moment that list gains its first real entry -- which its own comment
+    announces as imminent (harmonic-forge#207's impl-worktree) -- a checkout
+    missing the universal skill would have verified green. That is #540's
+    measured state reappearing behind the check built to catch it.
+    """
+    return sorted(set(UNIVERSAL_SKILL_DIRS) | set(declared or []) | set(extra or []))
+
+
+def unknown_declared_skills(skill_names: list[str]) -> list[str]:
+    """Declared names this platform has no skill for.
+
+    Reported separately because the fault is the manifest, not the checkout.
+    Without this, a platform-side rename turns every consuming repo red with
+    "<path> is not a symlink" -- a message that points the operator at the
+    consuming checkout and at a fix that cannot work, since the linker refuses
+    to create the link either.
+    """
+    return sorted(name for name in skill_names if not (SKILLS_DIR / name).is_dir())
 
 
 def verify_project(project_root: Path, extra_skills: list[str] | None = None) -> int:
@@ -342,8 +417,35 @@ def verify_project(project_root: Path, extra_skills: list[str] | None = None) ->
     # An explicit `skills = []` IS a declaration and verifies green. That is the
     # whole difference between a repo that has decided it consumes no platform
     # skills and one that has never been asked.
-    skill_names = sorted(set(declared) | set(extra_skills or []))
-    if not verify_links(project_root, skill_names):
+    skill_names = expected_skill_names(declared, extra_skills)
+
+    unknown = unknown_declared_skills(skill_names)
+    if unknown:
+        for name in unknown:
+            print(
+                f"[BROKEN] manifest declares {name!r}, which this platform does "
+                f"not have ({SKILLS_DIR / name} is not a directory). The fault "
+                "is the declaration, not the checkout.",
+                file=sys.stderr,
+            )
+
+    linked_ok = verify_links(project_root, [n for n in skill_names if n not in unknown])
+
+    # A link with no declaration is as much a mismatch as a declaration with no
+    # link, and it is the more dangerous direction: removing a name from the
+    # manifest is how a skill is revoked, and the link keeps it invocable in
+    # every session while nothing reports it.
+    undeclared = undeclared_platform_skills(
+        project_root / ".claude" / "skills", skill_names)
+    for name in undeclared:
+        print(
+            f"[UNDECLARED-LINK] {project_root / '.claude' / 'skills' / name} is a "
+            "platform skill this repo has not declared. It loads in every "
+            "session here regardless.",
+            file=sys.stderr,
+        )
+
+    if unknown or undeclared or not linked_ok:
         print(
             f"[DRIFT] {project_root} does not match its platform declaration.",
             file=sys.stderr,
@@ -416,13 +518,30 @@ def main(argv: list[str] | None = None) -> int:
         if args.verify:
             return verify_project(project_root, args.skill)
 
+        # A broken skills manifest must NOT cost this checkout its rules and
+        # agents. Hoisting this above link_project and returning made a defect
+        # in a skills-only file suppress the universal-rules layer no manifest
+        # governs: a conflict marker left in .claude/platform-skills.toml after
+        # a rebase would hand a freshly-provisioned Lane 2 worktree an empty
+        # .claude/rules/, and HRSE2's post-checkout hook discards output while
+        # .claude/rules/.gitignore keeps the absence out of git status. Silent
+        # non-enforcement of every path-scoped rule. Fail closed on skills, open
+        # on rules -- and still exit non-zero so nothing reads it as success.
+        declared: list[str] | None = None
+        manifest_error: ManifestError | None = None
         try:
             declared = load_skill_manifest(project_root)
         except ManifestError as exc:
+            manifest_error = exc
             print(f"[ERROR] {exc}", file=sys.stderr)
-            return EXIT_CANNOT_RUN
+            print(
+                "  Linking rules and agents anyway; only the manifest's skills "
+                "are skipped. A broken skills declaration must not cost a "
+                "checkout its rules.",
+                file=sys.stderr,
+            )
 
-        if declared is None:
+        if manifest_error is None and declared is None:
             print(
                 f"[UNDECLARED] no {SKILLS_MANIFEST_RELPATH} in {project_root} — "
                 "linking only what --skill names on this invocation. A flag "
@@ -432,9 +551,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-        skill_names = sorted(
-            set(UNIVERSAL_SKILL_DIRS) | set(declared or []) | set(args.skill)
-        )
+        skill_names = expected_skill_names(declared, args.skill)
 
         if not link_project(project_root, skill_names):
             return EXIT_DRIFT
@@ -446,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
         summary = "rules and agents" if not skill_names else f"rules, agents, and skills ({', '.join(skill_names)})"
         print(f"\n[OK] {project_root} is linked to harmonic-forge {summary}.")
         print_remaining_steps(project_root)
+
+        # The links are in place, so this is not EXIT_DRIFT -- but the manifest
+        # could not be read, so it is not success either.
+        if manifest_error is not None:
+            return EXIT_CANNOT_RUN
 
     return EXIT_OK
 

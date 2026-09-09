@@ -138,9 +138,22 @@ class VerifyProjectTests(unittest.TestCase):
         )
 
     def test_absent_manifest_is_distinct_from_drift(self) -> None:
-        """Undeclared and broken are different states with different exit codes."""
-        self.assertNotEqual(sync_rules.EXIT_CANNOT_RUN, sync_rules.EXIT_DRIFT)
-        self.assertNotEqual(sync_rules.EXIT_CANNOT_RUN, sync_rules.EXIT_OK)
+        """Undeclared and broken are different STATES, not just different ints.
+
+        This asserted only that three constants differ, calling nothing — it
+        would have passed against an implementation that returned EXIT_OK for
+        the absent case, the exact regression it is named for. Compare the two
+        situations through the function instead.
+        """
+        self._link_rules_and_agents()
+        absent = sync_rules.verify_project(self.project)
+
+        self._declare(["_stub"])  # declared, but the link is missing
+        drift = sync_rules.verify_project(self.project)
+
+        self.assertEqual(absent, sync_rules.EXIT_CANNOT_RUN)
+        self.assertEqual(drift, sync_rules.EXIT_DRIFT)
+        self.assertNotEqual(absent, drift)
 
     def test_declared_and_linked_verifies(self) -> None:
         self._declare(["_stub"])
@@ -189,14 +202,126 @@ class VerifyProjectTests(unittest.TestCase):
     def test_verify_creates_nothing(self) -> None:
         """AC1's 'without linking or mutating anything'.
 
-        `link_project` calls mkdir(parents=True); the verify path must not, or
-        a checkout with no .claude/ at all would be silently given one — four of
-        #540's nine were in exactly that state.
+        The project MUST declare a manifest here. Without one, verify_project
+        returns EXIT_CANNOT_RUN before reaching verify_links, so this passed
+        while asserting nothing about the code it names — add a
+        mkdir(parents=True) to _verify_dir, the copy-paste that is live in both
+        _link_dir and _link_skill_dir, and the earlier version stayed green.
         """
+        self._declare(["_stub"])
+        manifest = sync_rules.manifest_path(self.project)
+        before = {
+            p: p.stat().st_mtime_ns
+            for p in self.project.rglob("*")
+        }
+        self.assertEqual(sync_rules.verify_project(self.project), sync_rules.EXIT_DRIFT)
+        after = {p: p.stat().st_mtime_ns for p in self.project.rglob("*")}
+        self.assertEqual(after, before)
+        # The three dirs link mode would have created.
+        self.assertFalse((self.claude / "rules").exists())
+        self.assertFalse((self.claude / "agents").exists())
+        self.assertFalse((self.claude / "skills").exists())
+        self.assertTrue(manifest.exists())
+
+    def test_verify_creates_nothing_when_undeclared(self) -> None:
         before = sorted(p.name for p in self.project.iterdir())
         sync_rules.verify_project(self.project)
         self.assertEqual(sorted(p.name for p in self.project.iterdir()), before)
         self.assertFalse(self.claude.exists())
+
+    def test_rule_link_to_a_foreign_source_reports_drift(self) -> None:
+        """Identity, not plausibility — for rules, not only for skills.
+
+        A rules dir linked at a stale forge worktree or an old clone resolves
+        and exists, so the pre-fix `_verify_dir` called it green. Reachable
+        today: forge_onboard.py runs this script from platform_source(), which
+        need not be this checkout.
+        """
+        self._declare([])
+        self._link_rules_and_agents()
+        decoy_root = self.project / "decoy-platform"
+        decoy_root.mkdir()
+        name = sync_rules.UNIVERSAL_RULE_FILES[0]
+        (decoy_root / name).write_text("stale copy\n", encoding="utf-8")
+        target = self.claude / "rules" / name
+        target.unlink()
+        target.symlink_to(decoy_root / name)
+        self.assertEqual(sync_rules.verify_project(self.project), sync_rules.EXIT_DRIFT)
+
+    def test_agent_link_to_a_foreign_source_reports_drift(self) -> None:
+        agents = sync_rules._universal_agent_files()
+        if not agents:
+            self.skipTest("platform declares no agents")
+        self._declare([])
+        self._link_rules_and_agents()
+        decoy_root = self.project / "decoy-agents"
+        decoy_root.mkdir()
+        (decoy_root / agents[0]).write_text("stale copy\n", encoding="utf-8")
+        target = self.claude / "agents" / agents[0]
+        target.unlink()
+        target.symlink_to(decoy_root / agents[0])
+        self.assertEqual(sync_rules.verify_project(self.project), sync_rules.EXIT_DRIFT)
+
+    def test_linked_but_undeclared_platform_skill_reports_drift(self) -> None:
+        """Revoking a skill by removing it from the manifest must be visible.
+
+        The link keeps it invocable in every session in the repo; verify
+        reported OK. #540's blindness, pointing the other way.
+        """
+        self._declare([])
+        self._link_rules_and_agents()
+        self._link_skill("_stub")
+        self.assertEqual(sync_rules.verify_project(self.project), sync_rules.EXIT_DRIFT)
+
+    def test_project_owned_symlink_is_not_flagged_as_undeclared(self) -> None:
+        """A project's own symlink out of .claude/skills/ is not ours to judge.
+
+        Live precedent named in _link_skill_dir: ai-review-queue-synthesis
+        points at Google Drive.
+        """
+        self._declare([])
+        self._link_rules_and_agents()
+        foreign = self.project / "project-owned-skill"
+        foreign.mkdir()
+        (foreign / "SKILL.md").write_text("project's own\n", encoding="utf-8")
+        target = self.claude / "skills" / "project-owned-skill"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(foreign, target_is_directory=True)
+        self.assertEqual(sync_rules.verify_project(self.project), sync_rules.EXIT_OK)
+
+    def test_declared_skill_absent_from_the_platform_names_the_manifest(self) -> None:
+        """The fault is the declaration; the message must not blame the checkout."""
+        self._declare(["belt-and-suspender"])  # typo / platform-side rename
+        self._link_rules_and_agents()
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = sync_rules.verify_project(self.project)
+        self.assertEqual(code, sync_rules.EXIT_DRIFT)
+        self.assertIn("this platform does not have", err.getvalue())
+        self.assertIn("the declaration, not the checkout", err.getvalue())
+
+    def test_expected_skill_set_is_shared_by_link_and_verify(self) -> None:
+        """Both modes must read UNIVERSAL_SKILL_DIRS the same way.
+
+        They were two independently-written expressions that agreed only while
+        UNIVERSAL_SKILL_DIRS was empty — and its own comment announces the
+        first real entry as imminent. With one, the old verify would have
+        called a checkout missing the universal skill green.
+        """
+        original = sync_rules.UNIVERSAL_SKILL_DIRS
+        try:
+            sync_rules.UNIVERSAL_SKILL_DIRS = ["_stub"]
+            self._declare([])
+            self._link_rules_and_agents()
+            self.assertEqual(
+                sync_rules.verify_project(self.project), sync_rules.EXIT_DRIFT
+            )
+            self.assertEqual(sync_rules.expected_skill_names([]), ["_stub"])
+        finally:
+            sync_rules.UNIVERSAL_SKILL_DIRS = original
 
 
 class CliSurfaceTests(unittest.TestCase):
@@ -237,6 +362,44 @@ class CliSurfaceTests(unittest.TestCase):
         code = sync_rules.main(["--verify", "--project", str(self.project)])
         self.assertEqual(code, sync_rules.EXIT_CANNOT_RUN)
         self.assertFalse((self.project / ".claude").exists())
+
+    def test_broken_manifest_still_links_rules_and_agents(self) -> None:
+        """The manifest is skills-only; a defect in it must not suppress rules.
+
+        Concrete scenario: a rebase leaves conflict markers in
+        .claude/platform-skills.toml (a tracked one-line list several lane
+        branches edit — exactly the shape that conflicts). HRSE2's
+        post-checkout hook fires on `git worktree add`, discards this script's
+        output, and .claude/rules/.gitignore's `*` keeps the absence out of
+        `git status`. The Lane 2 session then runs with the path-scoped and
+        universal rules simply not present, and nothing says so.
+        """
+        manifest = sync_rules.manifest_path(self.project)
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            '<<<<<<< HEAD\nskills = ["_stub"]\n=======\nskills = []\n>>>>>>> main\n',
+            encoding="utf-8",
+        )
+        code = sync_rules.main(["--project", str(self.project)])
+
+        # Non-zero, because the manifest genuinely could not be read...
+        self.assertEqual(code, sync_rules.EXIT_CANNOT_RUN)
+        # ...but the rules and agents are linked regardless.
+        for name in sync_rules.UNIVERSAL_RULE_FILES:
+            link = self.project / ".claude" / "rules" / name
+            self.assertTrue(link.is_symlink(), f"{name} not linked")
+            self.assertEqual(link.resolve(), (sync_rules.RULES_DIR / name).resolve())
+        for name in sync_rules._universal_agent_files():
+            self.assertTrue((self.project / ".claude" / "agents" / name).is_symlink())
+
+    def test_broken_manifest_still_honors_explicit_skill_flag(self) -> None:
+        manifest = sync_rules.manifest_path(self.project)
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("skills = [oops\n", encoding="utf-8")
+        code = sync_rules.main(
+            ["--project", str(self.project), "--skill", "_stub"])
+        self.assertEqual(code, sync_rules.EXIT_CANNOT_RUN)
+        self.assertTrue((self.project / ".claude" / "skills" / "_stub").is_symlink())
 
     def test_no_arguments_cannot_run(self) -> None:
         import contextlib
