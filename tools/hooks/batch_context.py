@@ -39,7 +39,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 #: Cap on how many keys are named before the list is elided. A batch of five is
 #: typical; a message listing forty would bury the denial it is annotating.
-_MAX_KEYS = 6
+#: Raised from 6 to 25 (harmonic-forge#567 AC7) -- 6 hid the key the operator
+#: actually cared about as soon as a batch ran ~13 keys concurrently, which is
+#: "normal operation" for this house, not an edge case. 25 comfortably covers
+#: any batch this project has run and still elides a truly unusual spike;
+#: `batch_auth.py`'s `PRUNE_GRACE_HOURS` bounds the state file's total size
+#: but not how many entries are LIVE at once, so this cap is still doing real
+#: work rather than being made moot by that change.
+_MAX_KEYS = 25
 
 
 def live_batch_keys(now: datetime | None = None) -> list[str]:

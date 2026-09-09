@@ -229,6 +229,20 @@ merge or close is refused, the prompt now names which of the four states
 applies: no authorization, expired, already consumed, or PR not linked.
 <!-- /R-0342 -->
 
+**Standing a grant down, and how the state file's own size is bounded**
+(harmonic-forge#567). `python3 tools/hooks/batch_auth.py revoke <KEY> [<KEY>
+...]` marks every unconsumed target on the named key(s) `consumed`, with
+`consumed_by: "revoked-<ISO timestamp>"` — it never deletes the entry, so the
+`EXPIRED`/consumed-state diagnostics stay truthful rather than reading as
+though nothing was ever authorized. It is a no-op, not an error, on a key
+that does not exist or whose targets are already all consumed — standing
+down a batch that mostly landed is the normal case. `authorize()` and
+`top_up()` each prune entries expired more than `PRUNE_GRACE_HOURS` (7 days)
+ago, on every call, inside the same lock — never as a separate sweep, and
+never touching a still-live entry — so the state file no longer grows
+without bound the way it did before this issue (60 keys / 47 expired / 18
+days of unpruned history at filing time).
+
 While an authorization is live with unconsumed targets, `block_batch_stop.py`
 refuses to end the turn — a batch that stops to be told "keep going" has
 already cost what BATCH exists to save. A turn that asks a genuine question is
