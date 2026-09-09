@@ -83,19 +83,52 @@ class ReportTests(unittest.TestCase):
             reporter.report(self.project, sync_rules=sync_rules)
         self.assertIn("_stub", err.getvalue())
 
-    def test_undeclared_reports_loudly_but_does_not_fail(self) -> None:
-        """A branch cannot fix a file it does not have."""
+    def test_undeclared_fails_the_gate(self) -> None:
+        """No degraded state is green — #541's contract, one layer up.
+
+        An earlier version returned 0 here on the reasoning that "a branch
+        cannot fix a file it does not have." Preclose-inspection showed the
+        carve-out was unbounded: harmonic-forge-f326, a long-lived worktree
+        with no .claude/skills/ at all, passed the gate — #540's exact defect
+        inside the check built to end it.
+        """
         self._link_rules_and_agents()
         code, err = self._run()
-        self.assertEqual(code, 0)
-        self.assertIn("does not declare", err)
-        self.assertIn("hooks-install", err)
+        self.assertEqual(code, 1)
+        self.assertIn("UNDECLARED", err)
 
     def test_undeclared_is_never_silent(self) -> None:
-        """Non-fatal is not the same as unreported — #540's whole defect."""
         self._link_rules_and_agents()
         _, err = self._run()
         self.assertTrue(err.strip(), "undeclared must say something")
+
+    def test_malformed_manifest_is_told_apart_from_an_absent_one(self) -> None:
+        """verify_project returns EXIT_CANNOT_RUN for BOTH states.
+
+        Keying the message on the exit code told the operator a file they had
+        was one they lacked, and named a remedy that provably does not work.
+        """
+        target = sync_rules.manifest_path(self.project)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            '<<<<<<< HEAD\nskills = ["_stub"]\n=======\nskills = []\n>>>>>>> main\n',
+            encoding="utf-8")
+        self._link_rules_and_agents()
+        code, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertIn("BROKEN MANIFEST", err)
+        self.assertNotIn("UNDECLARED", err)
+
+    def test_malformed_manifest_does_not_name_a_remedy_that_cannot_work(self) -> None:
+        """link mode skips skills on a ManifestError, so hooks-install is not the fix."""
+        target = sync_rules.manifest_path(self.project)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('skill = ["_stub"]\n', encoding="utf-8")  # the typo
+        self._link_rules_and_agents()
+        code, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertIn("BROKEN MANIFEST", err)
+        self.assertIn("will NOT fix it", err)
 
     def test_missing_rule_link_is_drift(self) -> None:
         self._declare([])
