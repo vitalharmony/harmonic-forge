@@ -172,6 +172,21 @@ def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def in_repo(key: str) -> bool:
+    """True when a baseline key names a file inside the repo being measured.
+
+    Reuses the distinction `_relative_key` already writes: anything under the
+    repo gets a repo-relative key, anything outside gets a `~`-relative one (or
+    an absolute path when even that fails). No re-resolution needed, and none
+    wanted — the key records where the file was when the baseline was taken.
+
+    This is what the gate narrows to (harmonic-forge#538). Out-of-repo files
+    stay measured, stay in the total, and stay in the printed breakdown; they
+    simply cannot fail a commit in a repo that does not contain them.
+    """
+    return not (key.startswith("~") or key.startswith("/"))
+
+
 def compare(baseline: dict, current: dict[str, int]) -> tuple[dict[str, int], dict[str, int], int]:
     """`(grew, shrank, net_delta)` — per-file deltas plus the total change."""
     previous: dict[str, int] = dict(baseline.get("files", {}))
@@ -283,18 +298,40 @@ def check(repo: Path) -> tuple[int, str]:
     grew, shrank, net = compare(baseline, current)
     headline = (f"context budget: {total} bytes (~{total // BYTES_PER_TOKEN} "
                 f"tokens), target {TARGET_BYTES}, ceiling {CEILING_BYTES}")
-    if net <= 0:
+
+    # harmonic-forge#538: the GATE narrows to files the repo controls; the
+    # REPORT does not. 29% of HRSE2's baselined surface is `~/.claude/CLAUDE.md`
+    # and the shared memory index, and a memory write is a standing directive
+    # every session follows — so gating on those turned a routine, instructed
+    # action into a red build plus a bookkeeping commit in an unrelated repo.
+    # A gate that a session breaks by doing as it is told gets commented out,
+    # and then the ratchet protects nothing.
+    gated_grew = {key: delta for key, delta in grew.items() if in_repo(key)}
+    gated_net = (sum(gated_grew.values())
+                 + sum(delta for key, delta in shrank.items() if in_repo(key)))
+    outside_grew = {key: delta for key, delta in grew.items() if not in_repo(key)}
+    outside_note = ""
+    if outside_grew:
+        named = ", ".join(f"{key} +{outside_grew[key]}"
+                          for key in sorted(outside_grew))
+        outside_note = (
+            f"\n  outside this repo, reported and NOT gated: {named}."
+            f"\n  Nothing a commit here can be accountable for — re-baseline "
+            f"with `--update` when convenient (harmonic-forge#538).")
+
+    if gated_net <= 0:
         note = ""
-        if shrank:
-            note = (f"\n  surface shrank by {-net} bytes — no acknowledgement "
-                    f"needed. Run `--update` to lock it in.")
-        return 0, headline + note
-    failures = validate_increase(baseline, grew, net)
+        if any(in_repo(key) for key in shrank):
+            note = (f"\n  in-repo surface shrank by {-gated_net} bytes — no "
+                    f"acknowledgement needed. Run `--update` to lock it in.")
+        return 0, headline + note + outside_note
+    failures = validate_increase(baseline, gated_grew, gated_net)
     if failures:
-        return 1, failure_message(repo, total, grew, net, failures)
+        return 1, (failure_message(repo, total, gated_grew, gated_net, failures)
+                   + outside_note)
     latest = (baseline.get("increase") or [])[-1]
-    return 0, (headline + f"\n  grew by {net} bytes, acknowledged "
-               f"{latest.get('date')}: {latest.get('why')}")
+    return 0, (headline + f"\n  grew by {gated_net} bytes, acknowledged "
+               f"{latest.get('date')}: {latest.get('why')}" + outside_note)
 
 
 def update(repo: Path) -> str:
