@@ -295,3 +295,84 @@ for the UI-only variant.
      misconfiguration before concluding a worktree backend is down.
      (Still live in HRSE2 as of 2026-08-12: `frontend/.env.example` pins
      port 8002.)
+
+## A green local gate is necessary and NOT sufficient — CI is the second required signal (harmonic-forge#504)
+
+<!-- R-0354 -->
+**A Lane 3 PASS may not be posted while the PR's own required checks are
+failing, pending, or absent.** The local gate and CI are two signals and the
+merge has to survive both; only CI runs in the environment the merge actually
+lands in. A PASS must state the head SHA it gated and the CI conclusion
+observed for that SHA, so a reader can tell what was checked rather than
+trusting the verdict. Checks that have not completed — including a commit with
+**no** check runs at all — make the correct verdict `BLOCKED`, not `PASS`:
+waiting is the behaviour, not a judgment call. Enforced by
+`tools/gh/gate_ci.py`, called from `post_lane_discussion.py` for any body that
+IS a gate report — recognised by its `## Lane 3 Gate Results` heading, exactly
+as `lane_state.py` recognises one, and NOT by the `--kind` the author passed.
+FAIL and BLOCKED are never gated, because a check that can silence a failure
+report is worse than none.
+
+**Coverage is one path of several, and saying so is part of the rule.** Lane 3
+has no raw-post restriction by design, so `gh issue comment` and
+`tools/gh/post_comment.py` remain open routes that this check does not see.
+Both most-recent real gate results went through the covered path, so the
+enforcement point is the live one — but a rule claiming universal enforcement
+it does not have is the same class of error as a gate claiming a green it did
+not read.
+<!-- /R-0354 -->
+
+### Why this is a check and not a line of guidance
+
+2026-09-07, measured: a gate returned **PASS at 00:12**, CI reported
+**failure at 00:13 on the same code**, and `main` stayed red for three hours
+across two merges with no lane noticing.
+
+The three failures read the operator's live `~/.claude/settings.json`. On this
+machine the key exists and the assertions hold; on a runner it does not and
+they fail. **Lane 3 runs on the operator's machine**, so the gate is
+*structurally* incapable of catching that class — and that class is exactly
+what gets written when the feature under test IS operator-local state, as it
+was. Lane 3 executed its spec correctly and the spec passed. The gate's
+environment is simply not the environment the merge has to survive.
+
+So this rule could not be a sentence saying "also look at CI." This repo's own
+repeated finding is that prose compliance degrades under context pressure, and
+a long gate run is that pressure. #504's AC1 says it outright: *a prose
+instruction alone does not satisfy this.*
+
+### The general shape, so it is recognisable elsewhere
+
+**A verification asserts against an endpoint, and the endpoint that matters is
+the last one, not the first one convenient to read.**
+
+An independent witness, one week and one domain away: a QA brief describing an
+AI-generated suite passing 14 of 14 while the application charged the wrong
+amount, because the prompt asserted what the screen *displayed* and never what
+was *charged*. The fix was one line — *follow the money all the way through.*
+Structurally identical to `00:12 PASS -> 00:13 CI failure`: the gate asserted
+the first green thing it could read.
+
+The corollary that catches the next instance: **"no signal yet" is not "no
+problem."** An empty check list is not a green one. That mistake was made
+again while implementing this very issue — a wait-loop tested "every check has
+completed", an empty list satisfied it vacuously, and it reported done on a PR
+whose CI had not yet registered.
+
+### AC6, answered rather than assumed: does a green PR check guarantee a green `main`?
+
+**No, and the rule above is deliberately scoped to the PR's checks anyway.**
+
+A PR's checks run against a *merge preview* — the head merged into the base at
+that moment. Two things break the guarantee: the base can move between the
+check and the merge (semantic conflict, where both sides are individually green
+and their combination is not), and a squash merge produces a commit that no CI
+run has ever seen.
+
+That is a real gap and it is NOT closed here, because closing it means gating
+on a signal that does not exist until after the merge — which cannot be a
+precondition of merging. What closes it is noticing afterward, which is a
+different mechanism (watching `main`'s own CI and reacting), and a different
+issue. Recorded here so the next reader knows the scope is a choice rather than
+an oversight: this rule removes the case that actually bit, where the PR's own
+checks were red and nothing looked.
