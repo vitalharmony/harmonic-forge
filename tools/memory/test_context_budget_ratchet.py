@@ -232,6 +232,109 @@ class TestBaselineRoundTrip(_Repo):
             m.check(self.repo)
 
 
+class TestGateNarrowsToWhatTheRepoControls(_Repo):
+    """harmonic-forge#538 — out-of-repo growth is reported, never gated.
+
+    29% of HRSE2's baselined surface is `~/.claude/CLAUDE.md` and the shared
+    memory index. Writing a memory is a standing directive every session
+    follows, so gating on those turned a routine, instructed action into a red
+    build plus a bookkeeping commit in an unrelated repo — and a gate that a
+    session breaks by doing as it is told gets commented out, after which the
+    ratchet protects nothing.
+    """
+
+    def set_mixed(self, in_repo_bytes: int, outside_bytes: int) -> None:
+        """One file inside the repo, one outside, measured together."""
+        self._rows = [
+            ("unscoped rule", self.repo / "CLAUDE.md", in_repo_bytes),
+            ("memory index", Path.home() / "memstore" / "MEMORY.md", outside_bytes),
+        ]
+
+    BASE = ('total_bytes = 1900\n[files]\n'
+            '"CLAUDE.md" = 900\n"~/memstore/MEMORY.md" = 1000\n')
+
+    def test_out_of_repo_growth_alone_does_not_gate(self):
+        """The exact scenario found live post-merge on harmonic-forge#521."""
+        self.set_mixed(in_repo_bytes=900, outside_bytes=1100)
+        self.write_baseline(self.BASE)
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+
+    def test_out_of_repo_growth_is_still_reported(self):
+        """Reported, not gated — the distinction is the whole fix. Silently
+        ignoring it would hide hrse#1730's finding that a third of the surface
+        is not the repo's to trim."""
+        self.set_mixed(in_repo_bytes=900, outside_bytes=1100)
+        self.write_baseline(self.BASE)
+        _code, report = m.check(self.repo)
+        self.assertIn("~/memstore/MEMORY.md +100", report)
+        self.assertIn("NOT gated", report)
+        self.assertIn("2000 bytes", report,
+                      "the printed total must still include the grown file")
+
+    def test_in_repo_growth_still_gates(self):
+        """The regression guard. This fix must narrow the gate, never disable
+        it — an over-broad version would pass everything and read as green."""
+        self.set_mixed(in_repo_bytes=1200, outside_bytes=1000)
+        self.write_baseline(self.BASE)
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 1)
+        self.assertIn("CLAUDE.md", report)
+
+    def test_in_repo_growth_gates_even_when_out_of_repo_shrank(self):
+        """A shrinking memory index must not bankroll in-repo growth: the
+        totals would net out and the gate would silently stop firing."""
+        self.set_mixed(in_repo_bytes=1200, outside_bytes=200)
+        self.write_baseline(self.BASE)
+        code, _report = m.check(self.repo)
+        self.assertEqual(code, 1)
+
+    def test_both_growing_gates_on_the_in_repo_part_only(self):
+        self.set_mixed(in_repo_bytes=1200, outside_bytes=1100)
+        self.write_baseline(self.BASE)
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 1)
+        self.assertIn("+   300  CLAUDE.md", report)
+        self.assertIn("NOT gated", report)
+
+    def test_an_increase_entry_covers_only_the_in_repo_delta(self):
+        """AC2 — the acknowledgement mechanism is unaffected for in-repo
+        growth, and it is re-measured against the GATED delta, so an author
+        does not have to account for bytes outside their repo."""
+        self.set_mixed(in_repo_bytes=1200, outside_bytes=1100)
+        self.write_baseline(
+            self.BASE + '\n[[increase]]\ndate = "2026-09-09"\n'
+                        'files = ["CLAUDE.md"]\nbytes = 300\n'
+                        'why = "a real reason"\n')
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+        self.assertIn("acknowledged", report)
+
+    def test_in_repo_shrink_with_out_of_repo_growth_passes_quietly(self):
+        self.set_mixed(in_repo_bytes=500, outside_bytes=1100)
+        self.write_baseline(self.BASE)
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0)
+        self.assertIn("in-repo surface shrank", report)
+
+
+class TestInRepoPredicate(unittest.TestCase):
+    """The gate's scope reads the baseline key's own shape — the same
+    distinction `_relative_key` writes — rather than re-resolving paths."""
+
+    def test_repo_relative_keys_are_in_repo(self):
+        for key in ("CLAUDE.md", ".claude/rules/planning.md"):
+            with self.subTest(key=key):
+                self.assertTrue(m.in_repo(key))
+
+    def test_home_and_absolute_keys_are_not(self):
+        for key in ("~/.claude/CLAUDE.md",
+                    "~/Harmonic_Projects/operator-memory/MEMORY.md",
+                    "/etc/somewhere/else.md"):
+            with self.subTest(key=key):
+                self.assertFalse(m.in_repo(key))
+
+
 class TestKeysForFilesOutsideTheRepo(unittest.TestCase):
     """Two measured files live outside the repo — the operator's global
     CLAUDE.md and the shared memory index. A repo-relative-only key would
