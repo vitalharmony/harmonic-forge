@@ -318,6 +318,36 @@ class SeenSet:
         return n
 
 
+#: The element format for `matched`/`emitted`/`owed_found` in a tick record.
+#: `ref` is `"<repo>#<number>"` — `"hrse#1725"`, `"harmonic-forge#518"` — and
+#: the repo half is what the reader groups per-repo counts by.
+#:
+#: This convention was previously implicit: `belt_report.py` split on `"#"`
+#: and nothing said so anywhere a writer would look, so a lane logging a bare
+#: issue number would have produced per-repo counts of zero — indistinguishable
+#: from a quiet repo, which is the exact "manufactures false confidence"
+#: failure this telemetry exists to catch (harmonic-forge#519). Stated here,
+#: validated by the reader, and a malformed ref is reported rather than dropped.
+REF_FORMAT = "<repo>#<number>"
+
+
+def _entry(ref: Any, posted_at: Optional[str] = None) -> dict[str, Any]:
+    """Normalise one `matched`/`emitted`/`owed_found` element to its record shape.
+
+    Accepts a bare ref string (legacy callers, and the shape a hand-written
+    record may carry) or an already-built dict, and always returns
+    `{"id": ..., "posted_at": ...}`. A missing timestamp is recorded as `None`
+    rather than filled in with the tick's time — a fabricated `posted_at`
+    would make detection-to-action read as zero, which is worse than absent.
+    """
+    if isinstance(ref, dict):
+        out = {"id": str(ref.get("id", "")), "posted_at": ref.get("posted_at")}
+        if posted_at is not None:
+            out["posted_at"] = posted_at
+        return out
+    return {"id": str(ref), "posted_at": posted_at}
+
+
 @dataclass
 class TickLog:
     """One JSONL record per tick, written even on a quiet tick (AC17).
@@ -335,10 +365,10 @@ class TickLog:
     trigger: str
     counter: CallCounter = field(default_factory=CallCounter)
     repos_polled: list[dict[str, Any]] = field(default_factory=list)
-    matched: list[str] = field(default_factory=list)
-    emitted: list[str] = field(default_factory=list)
+    matched: list[Any] = field(default_factory=list)
+    emitted: list[Any] = field(default_factory=list)
     suppressed_as_primed: list[str] = field(default_factory=list)
-    owed_found: list[str] = field(default_factory=list)
+    owed_found: list[Any] = field(default_factory=list)
     lock: str = "acquired"
     actions_taken: list[str] = field(default_factory=list)
     started: float = field(default_factory=time.time)
@@ -351,6 +381,25 @@ class TickLog:
             row["error"] = error[:200]
         self.repos_polled.append(row)
 
+    def record_match(self, ref: str, posted_at: Optional[str] = None) -> None:
+        """Record a marker this tick matched, with the marker's OWN timestamp.
+
+        `posted_at` is the comment's `created_at`, not the tick's `ts`
+        (harmonic-forge#519). Without it the log can only yield
+        detection-to-action; the interval between a marker being posted and a
+        belt noticing it is exactly the outage the telemetry exists to expose,
+        and a tick timestamp cannot see it.
+        """
+        self.matched.append(_entry(ref, posted_at))
+
+    def record_emit(self, ref: str, posted_at: Optional[str] = None) -> None:
+        """Record a marker this tick emitted. Same shape as `record_match`."""
+        self.emitted.append(_entry(ref, posted_at))
+
+    def record_owed(self, ref: str, posted_at: Optional[str] = None) -> None:
+        """Record an unanswered item the own-output predicate found."""
+        self.owed_found.append(_entry(ref, posted_at))
+
     def write(self) -> dict[str, Any]:
         record = {
             "ts": datetime.now(timezone.utc).strftime(_ISO),
@@ -360,10 +409,15 @@ class TickLog:
             "repos_polled": self.repos_polled,
             "calls_rest": self.counter.calls_rest,
             "calls_graphql": self.counter.calls_graphql,
-            "matched": self.matched,
-            "emitted": self.emitted,
+            # Normalised at write time, not at append time: a caller that does
+            # `log.matched.append("hrse#1725")` still produces a well-formed
+            # record rather than a silently different one. Under-recording
+            # (`posted_at: null`) is visible to the reader; a bare string mixed
+            # in among dicts is the kind of thing that reads as zero.
+            "matched": [_entry(e) for e in self.matched],
+            "emitted": [_entry(e) for e in self.emitted],
             "suppressed_as_primed": self.suppressed_as_primed,
-            "owed_found": self.owed_found,
+            "owed_found": [_entry(e) for e in self.owed_found],
             "lock": self.lock,
             "actions_taken": self.actions_taken,
         }
