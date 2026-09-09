@@ -1305,6 +1305,21 @@ class RegistrationScopeTests(unittest.TestCase):
 
     def test_the_live_user_settings_are_consistent(self):
         """The distribution step itself, asserted rather than described
-        (R-0353: the authoring repo is not the shipping surface)."""
+        (R-0353: the authoring repo is not the shipping surface).
+
+        SKIPPED where the operator's settings file does not exist, which on a
+        CI runner is always. Written without that guard first, and CI caught it
+        red — a new instance of exactly the class harmonic-forge#504 exists to
+        prevent: a test that reads operator-local state, passes on the
+        operator's machine, and cannot pass anywhere else. #504's own body
+        names `~/.claude/settings.json` as the file that did it last time.
+
+        The assertion is still worth making where it CAN be made: this is a
+        machine-configuration property, not a property of the repo, so absence
+        of the file is "not applicable", not "broken".
+        """
+        settings = Path.home() / ".claude" / "settings.json"
+        if not settings.is_file():
+            self.skipTest(f"no operator settings at {settings}")
         ok, message = ba.verify_registration()
         self.assertTrue(ok, message)
