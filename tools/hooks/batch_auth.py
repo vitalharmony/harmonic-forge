@@ -724,6 +724,22 @@ def _cli() -> None:
     )
     p_auth.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
 
+    p_top = sub.add_parser(
+        "top-up",
+        help="ADD TO OR EXTEND a running batch — the safe default. Extends a "
+             "live key's expiry and leaves its targets untouched; authorizes "
+             "a new or expired key normally. Use this, not `authorize`, when "
+             "the operator adds an issue to a batch already in flight.",
+    )
+    p_top.add_argument("keys", nargs="+", help="Issue keys, e.g. H395 F334")
+    p_top.add_argument(
+        "--action", dest="actions", action="append",
+        help="Applies only to keys that are newly authorized; a live key's "
+             "targets are never rewritten. Repeatable. "
+             f"Default (if omitted): both {DEFAULT_ACTIONS!r}.",
+    )
+    p_top.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
+
     p_link = sub.add_parser("link-pr", help="Record the PR that fulfils an authorized issue's merge target")
     p_link.add_argument("key")
     p_link.add_argument("--repo", required=True)
@@ -734,6 +750,22 @@ def _cli() -> None:
         actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
         authorize(args.keys, actions, args.ttl_hours)
         print(f"authorized {', '.join(k.upper() for k in args.keys)} for {actions!r}")
+    elif args.cmd == "top-up":
+        actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
+        requested = [k.upper() for k in args.keys]
+        fresh = [k.upper() for k in top_up(args.keys, actions, args.ttl_hours)]
+        extended = [k for k in requested if k not in fresh]
+        # Say WHICH is which. top_up() returns the newly-authorized keys
+        # precisely so the caller can distinguish them, and reporting one
+        # undifferentiated "done" would hide the only fact that matters here:
+        # an extended key kept its consumption and its PR links, a fresh one
+        # never had any.
+        if fresh:
+            print(f"newly authorized: {', '.join(fresh)} for {actions!r}")
+        if extended:
+            print(f"extended (targets and links untouched): {', '.join(extended)}")
+        if not fresh and not extended:
+            print("nothing to do")
     elif args.cmd == "link-pr":
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")
