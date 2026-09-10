@@ -386,6 +386,63 @@ _BATCH_KEY_RE = re.compile(r"\b([A-Za-z]\d{1,6})\b")
 _QUOTE_PREFIX_RE = re.compile(r"^[ \t]*(?:>|\d+\.\s+[\"\u201c]|[-*]\s+[\"\u201c])")
 
 
+def _provenance_refusal(prompt: str, line_index: int) -> str | None:
+    """Why this prompt may not mint a grant, or None. Never raises.
+
+    Split into `batch_provenance.py` (harmonic-forge#589) rather than added
+    here: this file is the *parser*, and the trust boundary deserves to be a
+    named unit a future caller can import instead of re-deriving.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from batch_provenance import refusal_reason  # noqa: PLC0415
+
+        return refusal_reason(prompt, line_index)
+    except Exception:  # noqa: BLE001
+        # Fail CLOSED: the one direction that cannot be wrong here. A grant
+        # this hook cannot vouch for is not made -- the operator re-sends the
+        # message and loses a few seconds; the alternative is minting merge
+        # and close authority from text nobody typed.
+        return ("its provenance could not be checked (harmonic-forge#589's "
+                "guard failed to load)")
+
+
+def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:
+    """The first BATCH line's index and keys, BEFORE any provenance test.
+
+    Private on purpose. `batch_keys()` is the public answer and is gated; a
+    caller that wants the raw parse has to say so, and the only one that does
+    is `authorize_batch()`, which needs the keys in order to name them in its
+    refusal.
+    """
+    try:
+        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
+
+        valid = {p.upper() for p in REPO_PREFIXES.values()}
+    except Exception:
+        valid = set()
+
+    fenced = False
+    for index, line in enumerate(prompt.splitlines()):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or _QUOTE_PREFIX_RE.match(line):
+            continue
+        match = _BATCH_RE.match(line)
+        if not match:
+            continue
+        keys = [k.upper() for k in _BATCH_KEY_RE.findall(line[match.end():])]
+        # Only letters that are real repo prefixes. `BATCH F495 before Q4`
+        # otherwise wrote a `Q4` grant no command could ever consume, which
+        # then sat pending for 12h.
+        if valid:
+            keys = [k for k in keys if k[0] in valid]
+        if keys:
+            return index, list(dict.fromkeys(keys))
+    return None
+
+
 def batch_keys(prompt: str) -> list[str]:
     """Issue keys a BATCH message authorizes, in order, deduplicated.
 
@@ -403,33 +460,20 @@ def batch_keys(prompt: str) -> list[str]:
     Bounded to the line so a later paragraph mentioning an unrelated issue is
     not swept in. Uppercase `BATCH` is required, so prose about batching
     authorizes nothing.
+
+    **Empty for a prompt the operator did not type** (harmonic-forge#589) --
+    a subagent report, a slash-command envelope, a peer session's message, or
+    a proposal line carrying its emitter's own "not an authorization"
+    disclaimer. The gate lives here, in the one function that turns text into
+    keys, so a future second caller inherits it instead of re-deriving it.
     """
-    try:
-        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
-
-        valid = {p.upper() for p in REPO_PREFIXES.values()}
-    except Exception:
-        valid = set()
-
-    fenced = False
-    for line in prompt.splitlines():
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced or _QUOTE_PREFIX_RE.match(line):
-            continue
-        match = _BATCH_RE.match(line)
-        if not match:
-            continue
-        keys = [k.upper() for k in _BATCH_KEY_RE.findall(line[match.end():])]
-        # Only letters that are real repo prefixes. `BATCH F495 before Q4`
-        # otherwise wrote a `Q4` grant no command could ever consume, which
-        # then sat pending for 12h.
-        if valid:
-            keys = [k for k in keys if k[0] in valid]
-        if keys:
-            return list(dict.fromkeys(keys))
-    return []
+    scan = _scan_batch(prompt)
+    if scan is None:
+        return []
+    line_index, keys = scan
+    if _provenance_refusal(prompt, line_index) is not None:
+        return []
+    return keys
 
 
 def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
@@ -456,10 +500,23 @@ def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
     Returns a one-line receipt for `additionalContext`, or "" when the prompt
     is not a BATCH message. **Never raises** -- this runs on every prompt, and
     a failure here must never cost the operator their message.
+
+    A BATCH line the operator did not type is refused OUT LOUD, not dropped
+    silently (harmonic-forge#589). Silence is how the incident that produced
+    that issue stayed invisible for a full turn: the receipt is the only thing
+    in this path anyone reads. A refusal that says which keys it declined and
+    why is also what makes the next occurrence a report rather than a
+    discovery.
     """
-    keys = batch_keys(prompt)
-    if not keys:
+    scan = _scan_batch(prompt)
+    if scan is None:
         return ""
+    line_index, keys = scan
+    refusal = _provenance_refusal(prompt, line_index)
+    if refusal is not None:
+        return (f"BATCH REFUSED for {', '.join(keys)}: {refusal}. Nothing was "
+                "authorized and every merge and close still prompts. If you "
+                "meant to authorize these, send BATCH in your own message.")
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from batch_auth import DEFAULT_TTL_HOURS, top_up  # noqa: PLC0415

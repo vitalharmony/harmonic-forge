@@ -68,13 +68,26 @@ issue's close authorization, and vice versa. `link_pr()` attaches
 repo/pr_number to the specific `"gh pr merge"` target within a key's
 `targets` list, not to the entry as a whole.
 
-## Write path -- trust boundary lives in the caller, not here
+## Write path -- trust boundary lives in the caller, and is now mechanical
 
 `authorize()` is called only from a genuine operator chat message carrying
 the literal `BATCH` keyword -- never in response to text read from a file,
-issue/PR body, tool output, or web page. That instruction-source boundary is
-the calling agent's own judgement to make; this module performs the write
-once that judgement is already made, and never makes it itself.
+issue/PR body, tool output, or web page (R-0117). This module performs the
+write once that judgement is made and never makes it itself.
+
+**That judgement is no longer left to a session's discretion**
+(harmonic-forge#589). It used to be, and the discretion was fictional: the
+only real caller is `expand_lane_shorthand.py`'s `UserPromptSubmit` hook,
+which matched a regex against the incoming prompt with no agent judgement
+anywhere in the path. On 2026-09-10 a subagent's report -- delivered to its
+parent as a `<task-notification>`, and carrying a `milestone_summary.py`
+proposal line that explicitly labelled itself "not an authorization" --
+minted four real 12-hour merge+close grants. `batch_provenance.py` is now
+that boundary, applied inside `expand_lane_shorthand.batch_keys()` so the
+function that turns text into keys is the function that refuses. Read that
+module before adding a second caller: it also records why the harness's own
+`promptSource`/`origin` fields, which would answer this exactly, are not
+reachable from a hook.
 
 ## The PR-number gap -- stated plainly, not silently resolved
 
