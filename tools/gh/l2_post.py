@@ -249,10 +249,21 @@ def post(repo: str, issue: int, body: str) -> dict:
     return {"comment_id": comment_id, "body_sha256": _sha(body), "url": posted.get("html_url")}
 
 
-#: Kinds a standing lock does not block. `blocked` always could; `finding`
-#: joins it (harmonic-forge#571 AC4) -- a finding is a report, not the
-#: ordinary status composition the lock exists to gate.
-LOCK_EXEMPT_KINDS = ("blocked", "finding")
+#: Kinds a standing lock does not block. `blocked` always could.
+#:
+#: `finding` joined it in harmonic-forge#571 AC4 on the reasoning that it's
+#: a report, not the ordinary status composition the lock exists to gate --
+#: but that conflated "this kind doesn't require a lead" (why `finding` is
+#: absent from `LEAD_REQUIRED_KINDS`) with "this kind should also bypass
+#: the lock," which are not the same property. A locked issue's `finding`
+#: post can still carry a caller-supplied `--status`/`--next` lead that
+#: reads exactly like a gate outcome, with nothing in the lock/lead/lane-
+#: state chain positioned to catch it (harmonic-forge#580 AC2, live
+#: reproduction in the issue body). Removed here: a finding is a defect
+#: report and never asserts completion, so requiring the lock be resolved
+#: first costs nothing a finding needs -- `blocked` remains the sanctioned
+#: way to report while locked, unchanged (AC5).
+LOCK_EXEMPT_KINDS = ("blocked",)
 
 
 def lock_blocks(kind: str, issue: int) -> bool:
@@ -318,11 +329,18 @@ def main() -> int:
 
     # args.action == "post"
     if lock_blocks(args.kind, args.issue):
+        # harmonic-forge#580 preclose finding: this string used to
+        # hand-enumerate LOCK_EXEMPT_KINDS ("post --kind blocked or --kind
+        # finding instead") and drifted the moment `finding` was removed
+        # from that tuple (AC2) -- the refusal named an escape hatch that
+        # no longer existed, on the one path whose entire job is to tell a
+        # blocked Lane 2 session what to do instead. Built from the tuple
+        # directly so it cannot drift again.
+        alternatives = " or ".join(f"--kind {kind}" for kind in LOCK_EXEMPT_KINDS)
         print(
             f"issue {args.issue} is locked ({lock_path(args.issue)}) by a failed "
             "underlying command -- run `l2_post.py resolve-lock` with a real, "
-            "fetchable resolution comment first, or post --kind blocked or "
-            "--kind finding instead.",
+            f"fetchable resolution comment first, or post {alternatives} instead.",
             file=sys.stderr,
         )
         return 2

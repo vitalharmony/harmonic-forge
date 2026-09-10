@@ -219,7 +219,14 @@ class TestFindingKind(unittest.TestCase):
         not be forced through the completion/blocked lead-block gate."""
         lp.validate_lead("finding", {})  # must not raise
 
-    def test_finding_bypasses_the_issue_lock_like_blocked_does(self):
+    def test_finding_is_blocked_by_a_standing_lock_unlike_blocked(self):
+        """harmonic-forge#580 AC2: `finding` was removed from
+        `LOCK_EXEMPT_KINDS` -- a finding is a defect report, not a status
+        claim, but nothing in the lock/lead/lane-state chain gated the
+        caller-supplied `--status`/`--next` lead it could still render
+        while exempt, so a locked issue could report "gate green" via
+        `--kind finding`. `blocked` is unaffected (AC5) -- it remains the
+        sanctioned way to report while locked."""
         tmp = tempfile.TemporaryDirectory()
         try:
             subprocess.run(["git", "init", "-q"], cwd=tmp.name, check=True)
@@ -229,10 +236,48 @@ class TestFindingKind(unittest.TestCase):
             try:
                 rr.write_lock(9200, rr.receipt_dir(9200) / "x.json", 1)
                 self.assertTrue(rr.is_locked(9200))
-                self.assertFalse(lp.lock_blocks("finding", 9200))
+                self.assertTrue(lp.lock_blocks("finding", 9200))
                 self.assertFalse(lp.lock_blocks("blocked", 9200))
                 self.assertTrue(lp.lock_blocks("completion", 9200))
                 self.assertTrue(lp.lock_blocks("plan", 9200))
+            finally:
+                os.chdir(cwd)
+        finally:
+            tmp.cleanup()
+
+    def test_lock_refusal_message_names_only_currently_exempt_kinds(self):
+        """harmonic-forge#580 preclose finding: `main()`'s lock-refusal
+        message used to hand-enumerate `LOCK_EXEMPT_KINDS` as free text
+        ("post --kind blocked or --kind finding instead") and drifted the
+        moment `finding` left that tuple -- refusing a locked `--kind
+        completion` post told the caller to try `--kind finding` instead,
+        which the very same refusal now also blocks. Build the message
+        from `LOCK_EXEMPT_KINDS` and assert it live via `main()` itself,
+        not just `lock_blocks()`, so a future hand-written string can't
+        silently drift again."""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=tmp.name, check=True)
+            import os
+            cwd = Path.cwd()
+            os.chdir(tmp.name)
+            try:
+                rr.write_lock(9200, rr.receipt_dir(9200) / "x.json", 1)
+                narrative = Path(tmp.name) / "narrative.md"
+                narrative.write_text("n")
+                argv = ["l2_post.py", "post", "--kind", "completion",
+                       "--repo", "vitalharmony/harmonic-forge", "--issue", "9200",
+                       "--narrative-file", str(narrative),
+                       "--status", "s", "--change", "c", "--next", "n"]
+                buf = __import__("io").StringIO()
+                with unittest.mock.patch.object(sys, "argv", argv):
+                    with __import__("contextlib").redirect_stderr(buf):
+                        rc = lp.main()
+                self.assertEqual(rc, 2)
+                message = buf.getvalue()
+                self.assertIn("--kind blocked", message)
+                self.assertNotIn("finding", message,
+                                 "the refusal must not name a kind the lock also blocks")
             finally:
                 os.chdir(cwd)
         finally:

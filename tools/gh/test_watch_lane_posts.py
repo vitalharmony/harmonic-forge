@@ -338,6 +338,65 @@ class DiscoverQueueTests(unittest.TestCase):
             queue = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {1725: "ae-and-sweep"})
 
+    def test_l2_finding_after_ready_for_l3_does_not_drop_the_issue(self):
+        """harmonic-forge#580 AC1 -- live reproduction: a `## L2 Finding`
+        comment posted after `ready-for-l3` must not change the issue's
+        Lane 3 queue membership. Before the fix, the finding became
+        `last_kind`, failed the `last_kind[0] == 'l1'` check, and silently
+        dropped a genuinely queued issue out of the belt."""
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
+                      comments={571: [
+                          self._l1("ready-for-l3"),
+                          "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
+                      ]},
+                  )):
+            queue = discover_queue("vitalharmony/hrse", "l3")
+            self.assertEqual(queue, {571: "ready-for-l3"})
+
+    def test_l2_finding_does_not_resurrect_a_superseded_issue(self):
+        """The finding-skip must not go too far the other direction: an
+        issue genuinely superseded by a real status transition (not a
+        finding) must still drop, finding present or not. Uses an `l3`-
+        classified superseding comment, which never reaches the `l2`-only
+        skip predicate at all -- a coarser check than the one below."""
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
+                      comments={571: [
+                          self._l1("ready-for-l3"),
+                          "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
+                          "## Lane 3 Gate Results — PASS",
+                      ]},
+                  )):
+            queue = discover_queue("vitalharmony/hrse", "l3")
+            self.assertEqual(queue, {})
+
+    def test_a_real_l2_status_transition_still_supersedes_after_a_finding(self):
+        """harmonic-forge#580 preclose finding: the previous test's
+        superseding comment was `l3`-classified, which never reaches the
+        `l2`-only skip predicate (`classified[0] == "l2" and
+        _L2_FINDING_RE.match(...)`) at all -- so it could not distinguish
+        the correct fix from an over-broad one that skips EVERY `l2`
+        heading (including real `L2P`/`L2D`/`L2B` transitions), not just
+        `L2 Finding`. This uses a genuine `## L2D` status comment (no
+        finding at all) as the superseding event: it must still end
+        `discover_queue`'s "last classified" walk and drop the issue out
+        of Lane 2's own queue. Reproduced live: mutating the skip predicate
+        from `_L2_FINDING_RE` to the broader `_L2_HEADING_RE` makes this
+        test fail while leaving every other test in this file green."""
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"handoff": [571], "rework": []},
+                      comments={571: [
+                          self._l1("handoff"),
+                          "## L2D — receipt-backed status (harmonic-forge#371)",
+                      ]},
+                  )):
+            queue = discover_queue("vitalharmony/hrse", "l2")
+            self.assertEqual(queue, {})
+
 
 class L1SweepTests(unittest.TestCase):
     """harmonic-forge#570 AC1/AC8 -- Lane 1's repo-wide newest-marker sweep,

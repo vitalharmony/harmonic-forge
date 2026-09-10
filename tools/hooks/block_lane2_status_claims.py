@@ -142,9 +142,9 @@ def raw_post_denial(command: str, cwd: Path) -> str | None:
             return (
                 "raw GitHub issue posting bypasses Lane 2's receipt-backed "
                 "status wrapper (harmonic-forge#371). Use `python3 "
-                "tools/gh/l2_post.py post --kind plan|completion|blocked ...` "
-                "(or the sanctioned `mise run l2-post` task) so the status is "
-                "composed from verified receipts and self-checked by "
+                "tools/gh/l2_post.py post --kind plan|completion|blocked|finding "
+                "...` (or the sanctioned `mise run l2-post` task) so the status "
+                "is composed from verified receipts and self-checked by "
                 "post/fetch/diff, not asserted."
             )
         if _is_issue_filing_command(segment):
