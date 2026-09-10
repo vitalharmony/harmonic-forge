@@ -3,6 +3,115 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): key dedup state per belt, prime per target, test the loop (harmonic-forge#599)
+
+Preclose returned five findings. The first would have made the whole change
+worse than not doing it.
+
+**1. Every concurrently-armed belt shared one watermark file.** The key was
+per-target but had no lane or process component, and SKILL.md prescribes Lane 1
+(`--watch l2 --watch l3`) and Lane 2 (`--queue-for l2 --watch l1`) running at
+once over the same `--all-worktrees` enumeration. So: Lane 1's belt dies at
+10:00, Lane 2 keeps advancing the shared file every 90s, Lane 1 re-arms at
+12:00 and reads 11:59 -- and every marker posted in those two hours is never
+fetched, in that session or any later one. That is the exact loss AC2 exists to
+close, reintroduced one axis over, and it is the argument `Watermarks`' own
+docstring makes about accounts vs repos. State is now keyed by belt identity
+(watch-set plus `--queue-for`); verified two belts no longer see each other's
+mark.
+
+**2. Every behavior AC1/AC3/AC4/AC6 name was untested.** Six mutations of the
+loop -- including advance-on-failure, the exact regression AC6 names -- left the
+suite green, because the loop lived inside `while True:` with no seam and the
+tests were written against the extractable helpers while the class docstring
+claimed the loop-level property. `comment_watch_cycle()` is extracted and
+driven directly by 9 new tests. All six mutations now fail:
+
+    M1 advance-on-failure    -> 2 failure(s)
+    M2 no-overlap            -> 1 failure(s)
+    M3 no-seen-check         -> 1 failure(s)
+    M4 priming-always        -> 1 failure(s)
+    M5 priming-never         -> 3 failure(s)
+    M6 no-seen-add           -> 2 failure(s)
+
+**3. A fetch failure during priming inverted priming.** `priming` was one
+scalar cleared once per cycle, so a target whose first fetch failed never got a
+priming pass -- and then replayed its entire overlap window as new, looking
+exactly like a burst of real handoffs. Priming is now per target.
+
+**4. Priming could silently swallow live work.** Adding the 15-minute overlap
+made the priming window reach backwards into real posts, and the old message
+was a bare count. It now NAMES every suppressed marker and states the recovery
+path, because the seen-set entry is permanent and deleting the watermark does
+not undo it.
+
+**5. An unreadable watermark failed open silently.** Empty and unparseable both
+returned `None`, which the caller turns into "read from now - K" -- collapsing
+an hours-old window to minutes via the "I cannot decide" path, with no output.
+Still `None`, since inventing a watermark would be worse; no longer silent.
+
+1992 -> 2001 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/belt_mechanics.py        |  18 ++++
+- tools/gh/test_watch_lane_posts.py | 115 +++++++++++++++++++++++++-
+- tools/gh/watch_lane_posts.py      | 169 +++++++++++++++++++++++++-------------
+- 3 files changed, 245 insertions(+), 57 deletions(-)
+
+## fix(belt): implement the dedup mechanic SKILL.md declares mandatory (harmonic-forge#599)
+
+`SKILL.md:172-182` states dedup as one mechanic with three parts -- watermark,
+overlap, seen-set -- and ends "Do not simplify it back." The comment-watch path
+had none of them. It imported four names from `belt_mechanics` and used
+`Watermarks`, `SeenSet` and `query_since` nowhere.
+
+What ran instead: one in-memory `since`, advanced unconditionally at the bottom
+of every cycle, after a fetch that swallowed every exception to `[]`. So a rate
+limit or a 502 on any issue produced "no comments", the loop advanced past that
+window anyway, and those comments were never fetched again. The stderr line was
+the only trace, and stderr is not what the Monitor reads. This is the failure
+that lost hrse#1725's spec, in the file documenting the fix as mandatory.
+
+Scope narrowed by the out-of-family review before implementing: the `--queue-for
+l1` sweep ALREADY had a success-gated per-repo watermark (#579). This brings the
+comment-watch path up to that, and adds what neither path had.
+
+- **Watermark, per TARGET.** `_fetch_comments` returns `None` on failure
+  (distinct from `[]`), and the watermark is held rather than advanced, so the
+  next cycle re-reads the window. Per target rather than per repo because two
+  issues in one repo fail independently -- the argument `Watermarks`' own
+  docstring makes one level up about accounts vs repos.
+- **Persistent**, in `~/.claude/state/belt/`, alongside `batch_auth`'s state.
+  The in-memory `since` reset to `now` on every restart, silently skipping
+  everything posted while the belt was down -- which is exactly when a handoff
+  is most likely to be missed.
+- **Overlap.** `query_since(watermark, K)` reads from `min(watermark, now - K)`,
+  K=15m, a deliberate over-cover of every prescribed interval (60s/90s/300s/600s).
+- **Seen-set**, which is what makes overlap affordable -- re-reading the seam
+  re-delivers comments, and without it every one would be re-announced. Primed
+  on a genuinely first arm so arming does not replay history as new, and only
+  then: if state exists the belt has run before, and priming would suppress
+  real posts made while it was down.
+
+Verified live -- failure holds the mark, next query re-reads the seam:
+
+    watermark after success: 2026-09-10 12:00:00+00:00
+    fetch on failure    : None (None => hold the watermark)
+    watermark unchanged : True
+    next query starts at: 2026-09-10 11:50:00+00:00 (overlap K=15m)
+
+AC5 (`TickLog` written by the belt) is deliberately not in this change -- the
+issue marks it separable and the watermark half is the half losing work.
+
+1976 -> 1985 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 70 +++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 94 +++++++++++++++++++++++++++++++++++++--
+- 2 files changed, 160 insertions(+), 4 deletions(-)
+
 ## fix(belt): state what each mechanism actually does, verified by executing them (harmonic-forge#607)
 
 Preclose returned five findings. The first two say my fix replaced a false

@@ -2,6 +2,7 @@
 """Unit tests for watch_lane_posts.py (harmonic-forge#442) -- pure parsing
 logic only, no live gh/API calls. Fixtures are real comment bodies from
 hrse#1530 (trimmed), not invented shapes."""
+import datetime as dt
 import io
 import json
 import re
@@ -13,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import watch_lane_posts
+from belt_mechanics import SeenSet, Watermarks, query_since
 from watch_lane_posts import (
     QUEUE_KINDS,
     _BRANCH_ISSUE_RE,
@@ -1468,6 +1470,187 @@ class SearchCandidatesFailsClosedTests(unittest.TestCase):
             queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
         self.assertFalse(fetch_ok)
         self.assertEqual(queued, {})
+
+
+class CommentWatchCycleTests(unittest.TestCase):
+    """harmonic-forge#599 preclose finding: every behavior AC1/AC3/AC4/AC6 name
+    lived inside `while True:` with no seam, so six mutations of it -- including
+    advance-on-failure, the exact regression AC6 names -- left the suite green.
+    These drive `comment_watch_cycle` directly."""
+
+    NOW = "2026-09-10T12:00:00Z"
+    HANDOFF = ("## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.wm = Watermarks(root / "wm")
+        self.seen = SeenSet(root / "seen.tsv")
+        self.primed = set()
+        self.target = [("vitalharmony/hrse", 1530)]
+        self.key = watch_lane_posts._wm_key("vitalharmony/hrse", 1530)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _cycle(self, comments, now=None):
+        with patch("watch_lane_posts._fetch_comments", return_value=comments):
+            return watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, now or self.NOW,
+                self.wm, self.seen, self.primed)
+
+    def test_a_failed_fetch_does_not_advance_the_watermark(self):
+        """AC1/AC6, and mutation M1 -- the exact regression this issue is about."""
+        self.wm.advance("vitalharmony", self.key,
+                        watch_lane_posts._parse_iso("2026-09-10T10:00:00Z"))
+        before = self.wm.get("vitalharmony", self.key)
+        self._cycle(None)
+        self.assertEqual(self.wm.get("vitalharmony", self.key), before,
+                         "a failed fetch must hold the watermark")
+
+    def test_a_successful_fetch_advances_the_watermark(self):
+        self._cycle([])
+        self.assertEqual(self.wm.get("vitalharmony", self.key),
+                         watch_lane_posts._parse_iso(self.NOW))
+
+    def test_the_missed_window_is_re_read_next_cycle(self):
+        """AC6's second half: after a failure, the next query still starts from
+        the held watermark, so the comment that was missed is fetched again."""
+        self.wm.advance("vitalharmony", self.key,
+                        watch_lane_posts._parse_iso("2026-09-10T10:00:00Z"))
+        self._cycle(None)
+        seen_since = {}
+        def capture(repo, issue, since):
+            seen_since["since"] = since
+            return []
+        with patch("watch_lane_posts._fetch_comments", side_effect=capture):
+            watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed)
+        self.assertLessEqual(seen_since["since"], "2026-09-10T10:00:00Z",
+                             "the re-read must cover the window the failure missed")
+
+    def test_the_query_applies_overlap(self):
+        """AC3, mutation M2."""
+        self.wm.advance("vitalharmony", self.key,
+                        watch_lane_posts._parse_iso("2026-09-10T11:59:00Z"))
+        got = {}
+        def capture(repo, issue, since):
+            got["since"] = since
+            return []
+        with patch("watch_lane_posts._fetch_comments", side_effect=capture):
+            watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed)
+        self.assertLess(got["since"], "2026-09-10T11:59:00Z",
+                        "the query must start before the watermark (overlap)")
+
+    def test_first_cycle_primes_and_does_not_announce(self):
+        """AC4, mutation M5."""
+        lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
+        self.assertEqual(lines, [])
+        self.assertEqual(self.seen.status("1"), SeenSet.PRIMED)
+
+    def test_second_cycle_announces(self):
+        """Mutation M4 -- priming must not be permanent."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])
+        lines = self._cycle([{"id": "2", "body": self.HANDOFF}])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("vitalharmony/hrse#1530", lines[0])
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_an_already_seen_comment_is_not_re_announced(self):
+        """Mutations M3/M6 -- what makes overlap affordable."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])
+        self._cycle([{"id": "2", "body": self.HANDOFF}])
+        again = self._cycle([{"id": "2", "body": self.HANDOFF}])
+        self.assertEqual(again, [], "overlap re-delivers; the seen-set dedups")
+
+    def test_priming_is_per_target_so_a_failed_first_fetch_still_primes(self):
+        """Preclose finding: a scalar `priming` cleared once per cycle meant a
+        target whose first fetch failed never primed, then replayed its whole
+        overlap window as new -- priming inverted into what it prevents."""
+        self._cycle(None)                       # cycle 1 fails for this target
+        self.assertNotIn("vitalharmony/hrse#1530", self.primed)
+        lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
+        self.assertEqual(lines, [], "the first SUCCESSFUL cycle must still prime")
+
+    def test_what_priming_suppressed_is_named_not_counted(self):
+        """The overlap window reaches backwards into live work, so priming can
+        swallow a handoff posted moments before arming. A count cannot tell the
+        operator that happened."""
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self._cycle([{"id": "1", "body": self.HANDOFF}])
+        out = err.getvalue()
+        self.assertIn("SUPPRESSED", out)
+        self.assertIn("vitalharmony/hrse#1530", out)
+        self.assertIn("delete", out, "the operator needs the recovery path")
+
+
+class BeltDedupMechanicTests(unittest.TestCase):
+    """harmonic-forge#599. `SKILL.md` declares dedup as one mechanic with three
+    parts -- watermark, overlap, seen-set -- and says "Do not simplify it back."
+    The comment-watch path had none of them: one in-memory `since`, advanced
+    unconditionally after a fetch that swallowed failures to `[]`."""
+
+    def test_fetch_comments_returns_none_on_failure_not_empty(self):
+        """`[]` means zero comments; failure must be distinguishable, or the
+        caller cannot know whether to hold its watermark."""
+        with patch("watch_lane_posts.gh_as", side_effect=RuntimeError("rate limit")):
+            self.assertIsNone(watch_lane_posts._fetch_comments("r", 1, "s"))
+
+    def test_fetch_comments_returns_none_on_unparseable_body(self):
+        with patch("watch_lane_posts.gh_as", return_value="not json"):
+            self.assertIsNone(watch_lane_posts._fetch_comments("r", 1, "s"))
+
+    def test_a_genuinely_empty_result_is_still_a_list(self):
+        with patch("watch_lane_posts.gh_as", return_value="[]"):
+            self.assertEqual(watch_lane_posts._fetch_comments("r", 1, "s"), [])
+
+    def test_overlap_reads_from_before_the_watermark(self):
+        """AC3. `query_since` returns `min(watermark, now - K)`, so the seam
+        between cycles is re-read rather than assumed."""
+        now = watch_lane_posts._parse_iso("2026-09-10T12:00:00Z")
+        mark = watch_lane_posts._parse_iso("2026-09-10T11:59:00Z")
+        self.assertLess(query_since(mark, watch_lane_posts._OVERLAP_MINUTES, now),
+                        mark, "the query must start BEFORE the watermark")
+
+    def test_overlap_never_skips_a_stalled_target(self):
+        """A watermark older than the overlap floor wins, so a target unread
+        for an hour is re-read from where it stopped, not from now-K."""
+        now = watch_lane_posts._parse_iso("2026-09-10T12:00:00Z")
+        stale = watch_lane_posts._parse_iso("2026-09-10T11:00:00Z")
+        self.assertEqual(
+            query_since(stale, watch_lane_posts._OVERLAP_MINUTES, now), stale)
+
+    def test_watermark_key_survives_a_slash_in_the_repo_name(self):
+        """`Watermarks` builds a filename from this key."""
+        key = watch_lane_posts._wm_key("vitalharmony/hrse", 1530)
+        self.assertNotIn("/", key)
+        self.assertIn("1530", key)
+
+    def test_watermark_is_per_target_not_per_repo(self):
+        """Two issues in one repo fail independently; a shared marker would let
+        one issue's failure advance past another's unread window -- the same
+        argument `Watermarks` makes one level up about accounts vs repos."""
+        self.assertNotEqual(watch_lane_posts._wm_key("o/r", 1),
+                            watch_lane_posts._wm_key("o/r", 2))
+
+    def test_seen_set_distinguishes_primed_from_emitted(self):
+        """AC4. A bare-id file could not say afterwards whether a comment was
+        reported or suppressed at arm."""
+        with tempfile.TemporaryDirectory() as tmp:
+            s = SeenSet(Path(tmp) / "seen.tsv")
+            s.prime(["1", "2"])
+            s.add("3", SeenSet.EMITTED)
+            self.assertEqual(s.status("1"), SeenSet.PRIMED)
+            self.assertEqual(s.status("3"), SeenSet.EMITTED)
+
+    def test_the_belt_imports_the_mechanics_the_skill_declares_mandatory(self):
+        """The finding itself: the module imported four names from
+        `belt_mechanics` and used none of `Watermarks`, `SeenSet` or
+        `query_since`, under documentation asserting all three are required."""
+        for name in ("Watermarks", "SeenSet", "query_since"):
+            self.assertTrue(hasattr(watch_lane_posts, name),
+                            f"{name} is declared mandatory and is not imported")
 
 
 class QueueKeyIsRepoQualifiedTests(unittest.TestCase):

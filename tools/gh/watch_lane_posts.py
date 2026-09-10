@@ -132,8 +132,11 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 from belt_mechanics import (  # noqa: E402
     CallCounter,
     IdentityMismatch,
+    SeenSet,
+    Watermarks,
     assert_identity,
     gh_as,
+    query_since,
 )
 
 #: harmonic-forge#518 AC4. Every GitHub call in this file routes through
@@ -247,6 +250,34 @@ QUEUE_KINDS = {
 }
 
 
+#: Overlap `K`, in minutes. `query_since` reads from `min(watermark, now - K)`,
+#: so the seam between cycles is re-read rather than assumed. 15 is a
+#: deliberate over-cover of every prescribed interval (60s Lane 3, 90s Lane 2,
+#: 300s Lane 1, 600s the sweep): the cost of re-reading is a larger response
+#: the seen-set immediately dedups, and the cost of under-covering is a lost
+#: comment. `SKILL.md` lists K as a parameter to tune from the first week's
+#: tick log (harmonic-forge#599 AC3) -- it is named here so tuning it is an
+#: edit to one constant with its rationale attached.
+_OVERLAP_MINUTES = 15
+
+#: Belt state, alongside `batch_auth`'s `~/.claude/state/batch-authorized.json`.
+#: PERSISTENT, unlike the in-memory `since` this replaces: a restart previously
+#: reset the window to `now`, silently skipping everything posted while the
+#: belt was down -- which is exactly when a handoff is most likely to be missed.
+_BELT_STATE = Path.home() / ".claude" / "state" / "belt"
+
+
+def _wm_key(repo: str, issue: int) -> str:
+    """Watermark key for one target. `/` is a path separator and `Watermarks`
+    builds a filename from this, so it must not survive."""
+    return f"{repo.replace('/', '__')}__{issue}"
+
+
+def _parse_iso(stamp: str) -> dt.datetime:
+    return dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=dt.timezone.utc)
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -342,7 +373,7 @@ def _report_resolutions(
     return resolutions
 
 
-def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
+def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
     try:
         raw = gh_as(
             _ACCOUNT,
@@ -351,11 +382,11 @@ def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
         )
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
         print(f"[watch_lane_posts] gh api failed for #{issue}: {exc}", file=sys.stderr)
-        return []
+        return None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return []
+        return None
 
 
 #: Triple-backtick fenced code blocks, DOTALL so a multi-line fence is one
@@ -1087,6 +1118,89 @@ def drop_closed_targets(
     return kept
 
 
+def comment_watch_cycle(
+    targets: list[tuple[str, int]],
+    watch: set[str],
+    now: str,
+    watermarks: "Watermarks",
+    seen: "SeenSet",
+    primed_targets: set[str],
+) -> list[str]:
+    """One comment-watch poll over `targets`, returning the lines to announce.
+
+    Extracted from `main()`'s loop by harmonic-forge#599's preclose finding:
+    every behavior AC1/AC3/AC4/AC6 name lived inside `while True:` with no seam
+    to drive one cycle, so six separate mutations of it -- including
+    advance-on-failure, the exact regression AC6 names -- left the suite green.
+    Logic that cannot be called cannot be tested.
+
+    Three properties this holds:
+
+    - **The watermark advances only on that target's own success.** A `None`
+      fetch is a failure, not an empty result, and the next cycle re-reads.
+    - **Priming is PER TARGET.** A scalar cleared once per cycle meant a target
+      whose first fetch failed never got a priming pass, and then replayed its
+      whole overlap window as new on the next cycle -- priming inverted into the
+      thing it prevents.
+    - **What priming suppressed is named, not counted.** The overlap window
+      reaches 15 minutes backwards, so priming can now swallow a handoff posted
+      moments before arming. A count cannot tell the operator that happened;
+      the refs can, and the entry is permanent.
+    """
+    lines: list[str] = []
+    account = _ACCOUNT or "vitalharmony"
+    for repo, issue in targets:
+        target = f"{repo}#{issue}"
+        mark = watermarks.get(account, _wm_key(repo, issue))
+        comments = _fetch_comments(
+            repo, issue,
+            query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"))
+        if comments is None:
+            print(f"[watch_lane_posts] {target}: comment fetch failed -- "
+                  "watermark held, window will be re-read", file=sys.stderr)
+            continue
+        priming = target not in primed_targets
+        suppressed: list[str] = []
+        for comment in comments:
+            classified = _classify(comment.get("body", ""))
+            if classified is None:
+                continue
+            lane, detail = classified
+            if lane not in watch:
+                continue
+            cid = str(comment.get("id", ""))
+            if cid and cid in seen:
+                continue
+            if priming:
+                if cid:
+                    seen.add(cid, SeenSet.PRIMED)
+                suppressed.append(f"{target} {lane} — {detail}")
+                continue
+            if cid:
+                seen.add(cid, SeenSet.EMITTED)
+            lines.append(f"{repo}#{issue} {lane} — {detail}")
+        if priming:
+            primed_targets.add(target)
+            if suppressed:
+                # Named, not counted (harmonic-forge#599 preclose finding): the
+                # overlap window reaches backwards into live work, so this list
+                # can contain a handoff posted minutes before arming. The
+                # seen-set entry is permanent and deleting the watermark does
+                # not undo it, so this print is the only record the operator
+                # gets.
+                print(f"[watch_lane_posts] {target}: primed (SUPPRESSED, not "
+                      f"announced) {len(suppressed)} marker(s) already on the "
+                      "thread at arm time:", file=sys.stderr)
+                for line in suppressed:
+                    print(f"[watch_lane_posts]     {line}", file=sys.stderr)
+                print(f"[watch_lane_posts]   if one of those is live work, it "
+                      f"will NOT be re-announced -- delete {seen.path} to "
+                      "replay.", file=sys.stderr)
+        watermarks.advance(account, _wm_key(repo, issue), _parse_iso(now))
+    return lines
+
+
 def queue_cycle(
     repos: list[str],
     lane: str,
@@ -1286,6 +1400,34 @@ def main() -> int:
     _report_resolutions(drop_closed_targets(
         [(path, *resolve_worktree(path)) for path in args.worktrees]))
 
+    # Keyed by BELT IDENTITY, not just by target (harmonic-forge#599 preclose
+    # finding). Lane 1 (`--watch l2 --watch l3`) and Lane 2 (`--watch l1`) are
+    # prescribed to run simultaneously and both enumerate the same worktrees, so
+    # a shared file meant Lane 2's successful cycle advanced past the window
+    # Lane 1 was down for -- and Lane 1 never read it, in that session or any
+    # later one. `Watermarks`' own docstring makes this argument one level up
+    # about accounts vs repos; the process axis was the one left unkeyed.
+    belt_id = "-".join(sorted(watch)) or "none"
+    if args.queue_for:
+        belt_id += f"+q{args.queue_for}"
+    watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
+    seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
+    #: Targets this belt has already primed. PER TARGET, not one scalar for the
+    #: run: a target whose first fetch failed never got a priming pass, then
+    #: replayed its whole overlap window as new -- priming inverted into the
+    #: thing it exists to prevent.
+    primed_targets: set[str] = set()
+    # A target already in the seen-set was primed by an earlier session, so it
+    # must not be primed again -- re-priming would suppress live work.
+    if seen._state:
+        print(f"[watch_lane_posts] resuming: {len(seen._state)} comment(s) "
+              f"already recorded in {seen.path.name}", file=sys.stderr)
+    else:
+        print("[watch_lane_posts] first arm for this belt: each target's "
+              "opening cycle PRIMES (records without announcing) so arming does "
+              "not replay history. Suppressed markers are listed per target.",
+              file=sys.stderr)
+
     last_discovered: set[tuple[str, int]] = set()
     last_queue: dict[tuple[str, int], str] = {}
     #: harmonic-forge#583 AC4. Keyed by worktree path (not `(repo, issue)`
@@ -1360,16 +1502,17 @@ def main() -> int:
                 sys.stdout.flush()
             last_queue = queue
 
-        for repo, issue in discovered | static_pairs:
-            for comment in _fetch_comments(repo, issue, since):
-                classified = _classify(comment.get("body", ""))
-                if classified is None:
-                    continue
-                lane, detail = classified
-                if lane not in watch:
-                    continue
-                print(f"{repo}#{issue} {lane} — {detail}")
-                sys.stdout.flush()
+        # harmonic-forge#599. `SKILL.md` declares dedup as one mechanic with
+        # three parts and says "Do not simplify it back"; this path had none of
+        # them -- one in-memory `since`, advanced unconditionally after a fetch
+        # that swallowed failures to `[]`. A rate limit therefore lost that
+        # window permanently and silently, which is the failure the mechanic
+        # exists to prevent, in the file that documents it as mandatory.
+        #
+        for line in comment_watch_cycle(sorted(discovered | static_pairs), watch,
+                                        now, watermarks, seen, primed_targets):
+            print(line)
+            sys.stdout.flush()
         since = now
 
         #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
