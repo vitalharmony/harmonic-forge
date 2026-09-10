@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -237,15 +238,32 @@ class Watermarks:
         return self.root / f"{account}__{repo}.watermark"
 
     def get(self, account: str, repo: str) -> Optional[datetime]:
+        """The stored watermark, or `None` if there is not one to trust.
+
+        An UNREADABLE file is reported, not silently treated as absent
+        (harmonic-forge#599 preclose finding). Both cases return `None`, and
+        the caller turns `None` into "read from `now - K`" -- so a torn or
+        empty file silently collapses a hours-old window to minutes, which is
+        the largest possible loss produced by the "I cannot decide" path. The
+        value is still `None`, because inventing a watermark would be worse;
+        what changes is that it stops being silent.
+        """
         path = self._path(account, repo)
         if not path.exists():
             return None
         raw = path.read_text(encoding="utf-8").strip()
         if not raw:
+            print(f"[belt_mechanics] watermark {path.name} is EMPTY -- treating "
+                  "as absent, so this target re-reads from the overlap floor "
+                  "only. A window older than that is not recovered.",
+                  file=sys.stderr)
             return None
         try:
             return datetime.strptime(raw, _ISO).replace(tzinfo=timezone.utc)
         except ValueError:
+            print(f"[belt_mechanics] watermark {path.name} is UNPARSEABLE "
+                  f"({raw[:40]!r}) -- treating as absent; a window older than "
+                  "the overlap floor is not recovered.", file=sys.stderr)
             return None
 
     def advance(self, account: str, repo: str, when: datetime) -> None:

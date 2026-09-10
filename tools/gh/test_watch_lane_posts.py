@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import watch_lane_posts
-from belt_mechanics import SeenSet, query_since
+from belt_mechanics import SeenSet, Watermarks, query_since
 from watch_lane_posts import (
     QUEUE_KINDS,
     _BRANCH_ISSUE_RE,
@@ -1470,6 +1470,119 @@ class SearchCandidatesFailsClosedTests(unittest.TestCase):
             queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
         self.assertFalse(fetch_ok)
         self.assertEqual(queued, {})
+
+
+class CommentWatchCycleTests(unittest.TestCase):
+    """harmonic-forge#599 preclose finding: every behavior AC1/AC3/AC4/AC6 name
+    lived inside `while True:` with no seam, so six mutations of it -- including
+    advance-on-failure, the exact regression AC6 names -- left the suite green.
+    These drive `comment_watch_cycle` directly."""
+
+    NOW = "2026-09-10T12:00:00Z"
+    HANDOFF = ("## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.wm = Watermarks(root / "wm")
+        self.seen = SeenSet(root / "seen.tsv")
+        self.primed = set()
+        self.target = [("vitalharmony/hrse", 1530)]
+        self.key = watch_lane_posts._wm_key("vitalharmony/hrse", 1530)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _cycle(self, comments, now=None):
+        with patch("watch_lane_posts._fetch_comments", return_value=comments):
+            return watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, now or self.NOW,
+                self.wm, self.seen, self.primed)
+
+    def test_a_failed_fetch_does_not_advance_the_watermark(self):
+        """AC1/AC6, and mutation M1 -- the exact regression this issue is about."""
+        self.wm.advance("vitalharmony", self.key,
+                        watch_lane_posts._parse_iso("2026-09-10T10:00:00Z"))
+        before = self.wm.get("vitalharmony", self.key)
+        self._cycle(None)
+        self.assertEqual(self.wm.get("vitalharmony", self.key), before,
+                         "a failed fetch must hold the watermark")
+
+    def test_a_successful_fetch_advances_the_watermark(self):
+        self._cycle([])
+        self.assertEqual(self.wm.get("vitalharmony", self.key),
+                         watch_lane_posts._parse_iso(self.NOW))
+
+    def test_the_missed_window_is_re_read_next_cycle(self):
+        """AC6's second half: after a failure, the next query still starts from
+        the held watermark, so the comment that was missed is fetched again."""
+        self.wm.advance("vitalharmony", self.key,
+                        watch_lane_posts._parse_iso("2026-09-10T10:00:00Z"))
+        self._cycle(None)
+        seen_since = {}
+        def capture(repo, issue, since):
+            seen_since["since"] = since
+            return []
+        with patch("watch_lane_posts._fetch_comments", side_effect=capture):
+            watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed)
+        self.assertLessEqual(seen_since["since"], "2026-09-10T10:00:00Z",
+                             "the re-read must cover the window the failure missed")
+
+    def test_the_query_applies_overlap(self):
+        """AC3, mutation M2."""
+        self.wm.advance("vitalharmony", self.key,
+                        watch_lane_posts._parse_iso("2026-09-10T11:59:00Z"))
+        got = {}
+        def capture(repo, issue, since):
+            got["since"] = since
+            return []
+        with patch("watch_lane_posts._fetch_comments", side_effect=capture):
+            watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed)
+        self.assertLess(got["since"], "2026-09-10T11:59:00Z",
+                        "the query must start before the watermark (overlap)")
+
+    def test_first_cycle_primes_and_does_not_announce(self):
+        """AC4, mutation M5."""
+        lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
+        self.assertEqual(lines, [])
+        self.assertEqual(self.seen.status("1"), SeenSet.PRIMED)
+
+    def test_second_cycle_announces(self):
+        """Mutation M4 -- priming must not be permanent."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])
+        lines = self._cycle([{"id": "2", "body": self.HANDOFF}])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("vitalharmony/hrse#1530", lines[0])
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_an_already_seen_comment_is_not_re_announced(self):
+        """Mutations M3/M6 -- what makes overlap affordable."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])
+        self._cycle([{"id": "2", "body": self.HANDOFF}])
+        again = self._cycle([{"id": "2", "body": self.HANDOFF}])
+        self.assertEqual(again, [], "overlap re-delivers; the seen-set dedups")
+
+    def test_priming_is_per_target_so_a_failed_first_fetch_still_primes(self):
+        """Preclose finding: a scalar `priming` cleared once per cycle meant a
+        target whose first fetch failed never primed, then replayed its whole
+        overlap window as new -- priming inverted into what it prevents."""
+        self._cycle(None)                       # cycle 1 fails for this target
+        self.assertNotIn("vitalharmony/hrse#1530", self.primed)
+        lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
+        self.assertEqual(lines, [], "the first SUCCESSFUL cycle must still prime")
+
+    def test_what_priming_suppressed_is_named_not_counted(self):
+        """The overlap window reaches backwards into live work, so priming can
+        swallow a handoff posted moments before arming. A count cannot tell the
+        operator that happened."""
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self._cycle([{"id": "1", "body": self.HANDOFF}])
+        out = err.getvalue()
+        self.assertIn("SUPPRESSED", out)
+        self.assertIn("vitalharmony/hrse#1530", out)
+        self.assertIn("delete", out, "the operator needs the recovery path")
 
 
 class BeltDedupMechanicTests(unittest.TestCase):

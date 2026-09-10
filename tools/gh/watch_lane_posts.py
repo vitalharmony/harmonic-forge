@@ -1118,6 +1118,89 @@ def drop_closed_targets(
     return kept
 
 
+def comment_watch_cycle(
+    targets: list[tuple[str, int]],
+    watch: set[str],
+    now: str,
+    watermarks: "Watermarks",
+    seen: "SeenSet",
+    primed_targets: set[str],
+) -> list[str]:
+    """One comment-watch poll over `targets`, returning the lines to announce.
+
+    Extracted from `main()`'s loop by harmonic-forge#599's preclose finding:
+    every behavior AC1/AC3/AC4/AC6 name lived inside `while True:` with no seam
+    to drive one cycle, so six separate mutations of it -- including
+    advance-on-failure, the exact regression AC6 names -- left the suite green.
+    Logic that cannot be called cannot be tested.
+
+    Three properties this holds:
+
+    - **The watermark advances only on that target's own success.** A `None`
+      fetch is a failure, not an empty result, and the next cycle re-reads.
+    - **Priming is PER TARGET.** A scalar cleared once per cycle meant a target
+      whose first fetch failed never got a priming pass, and then replayed its
+      whole overlap window as new on the next cycle -- priming inverted into the
+      thing it prevents.
+    - **What priming suppressed is named, not counted.** The overlap window
+      reaches 15 minutes backwards, so priming can now swallow a handoff posted
+      moments before arming. A count cannot tell the operator that happened;
+      the refs can, and the entry is permanent.
+    """
+    lines: list[str] = []
+    account = _ACCOUNT or "vitalharmony"
+    for repo, issue in targets:
+        target = f"{repo}#{issue}"
+        mark = watermarks.get(account, _wm_key(repo, issue))
+        comments = _fetch_comments(
+            repo, issue,
+            query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"))
+        if comments is None:
+            print(f"[watch_lane_posts] {target}: comment fetch failed -- "
+                  "watermark held, window will be re-read", file=sys.stderr)
+            continue
+        priming = target not in primed_targets
+        suppressed: list[str] = []
+        for comment in comments:
+            classified = _classify(comment.get("body", ""))
+            if classified is None:
+                continue
+            lane, detail = classified
+            if lane not in watch:
+                continue
+            cid = str(comment.get("id", ""))
+            if cid and cid in seen:
+                continue
+            if priming:
+                if cid:
+                    seen.add(cid, SeenSet.PRIMED)
+                suppressed.append(f"{target} {lane} — {detail}")
+                continue
+            if cid:
+                seen.add(cid, SeenSet.EMITTED)
+            lines.append(f"{repo}#{issue} {lane} — {detail}")
+        if priming:
+            primed_targets.add(target)
+            if suppressed:
+                # Named, not counted (harmonic-forge#599 preclose finding): the
+                # overlap window reaches backwards into live work, so this list
+                # can contain a handoff posted minutes before arming. The
+                # seen-set entry is permanent and deleting the watermark does
+                # not undo it, so this print is the only record the operator
+                # gets.
+                print(f"[watch_lane_posts] {target}: primed (SUPPRESSED, not "
+                      f"announced) {len(suppressed)} marker(s) already on the "
+                      "thread at arm time:", file=sys.stderr)
+                for line in suppressed:
+                    print(f"[watch_lane_posts]     {line}", file=sys.stderr)
+                print(f"[watch_lane_posts]   if one of those is live work, it "
+                      f"will NOT be re-announced -- delete {seen.path} to "
+                      "replay.", file=sys.stderr)
+        watermarks.advance(account, _wm_key(repo, issue), _parse_iso(now))
+    return lines
+
+
 def queue_cycle(
     repos: list[str],
     lane: str,
@@ -1317,18 +1400,32 @@ def main() -> int:
     _report_resolutions(drop_closed_targets(
         [(path, *resolve_worktree(path)) for path in args.worktrees]))
 
-    watermarks = Watermarks(_BELT_STATE / "watermarks")
-    seen = SeenSet(_BELT_STATE / f"seen-{'-'.join(sorted(watch)) or 'none'}.tsv")
-    #: harmonic-forge#599 AC4 / the design note: "Prime a seen-set before the
-    #: first poll so arming the monitor does not replay every historical post
-    #: as new." Only on a genuinely FIRST arm -- if state exists the belt has
-    #: run before and the persisted watermarks already bound the window, so
-    #: priming then would suppress real posts made while it was down.
-    priming = not seen.path.exists() or not seen._state
-    if priming:
-        print("[watch_lane_posts] first arm: the opening cycle PRIMES the "
-              "seen-set (records without announcing) so arming does not replay "
-              "history. Real posts are announced from the second cycle on.",
+    # Keyed by BELT IDENTITY, not just by target (harmonic-forge#599 preclose
+    # finding). Lane 1 (`--watch l2 --watch l3`) and Lane 2 (`--watch l1`) are
+    # prescribed to run simultaneously and both enumerate the same worktrees, so
+    # a shared file meant Lane 2's successful cycle advanced past the window
+    # Lane 1 was down for -- and Lane 1 never read it, in that session or any
+    # later one. `Watermarks`' own docstring makes this argument one level up
+    # about accounts vs repos; the process axis was the one left unkeyed.
+    belt_id = "-".join(sorted(watch)) or "none"
+    if args.queue_for:
+        belt_id += f"+q{args.queue_for}"
+    watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
+    seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
+    #: Targets this belt has already primed. PER TARGET, not one scalar for the
+    #: run: a target whose first fetch failed never got a priming pass, then
+    #: replayed its whole overlap window as new -- priming inverted into the
+    #: thing it exists to prevent.
+    primed_targets: set[str] = set()
+    # A target already in the seen-set was primed by an earlier session, so it
+    # must not be primed again -- re-priming would suppress live work.
+    if seen._state:
+        print(f"[watch_lane_posts] resuming: {len(seen._state)} comment(s) "
+              f"already recorded in {seen.path.name}", file=sys.stderr)
+    else:
+        print("[watch_lane_posts] first arm for this belt: each target's "
+              "opening cycle PRIMES (records without announcing) so arming does "
+              "not replay history. Suppressed markers are listed per target.",
               file=sys.stderr)
 
     last_discovered: set[tuple[str, int]] = set()
@@ -1412,50 +1509,10 @@ def main() -> int:
         # window permanently and silently, which is the failure the mechanic
         # exists to prevent, in the file that documents it as mandatory.
         #
-        # Per TARGET, not per repo: two issues in one repo fail independently,
-        # and a shared marker would let one issue's failure advance past
-        # another's unread window -- `Watermarks`' own docstring makes exactly
-        # this argument one level up, about accounts vs repos.
-        for repo, issue in discovered | static_pairs:
-            target = f"{repo}#{issue}"
-            mark = watermarks.get(_ACCOUNT or "vitalharmony", _wm_key(repo, issue))
-            comments = _fetch_comments(
-                repo, issue,
-                query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"))
-            if comments is None:
-                # Do NOT advance: the next cycle re-reads this window.
-                print(f"[watch_lane_posts] {target}: comment fetch failed -- "
-                      "watermark held, window will be re-read", file=sys.stderr)
-                continue
-            for comment in comments:
-                classified = _classify(comment.get("body", ""))
-                if classified is None:
-                    continue
-                lane, detail = classified
-                if lane not in watch:
-                    continue
-                # The seen-set is what makes overlap affordable: re-reading the
-                # seam re-delivers comments, and without this every one of them
-                # would be re-announced every cycle.
-                cid = str(comment.get("id", ""))
-                if cid and cid in seen:
-                    continue
-                if priming:
-                    if cid:
-                        seen.add(cid, SeenSet.PRIMED)
-                    continue
-                if cid:
-                    seen.add(cid, SeenSet.EMITTED)
-                print(f"{repo}#{issue} {lane} — {detail}")
-                sys.stdout.flush()
-            watermarks.advance(_ACCOUNT or "vitalharmony", _wm_key(repo, issue),
-                               _parse_iso(now))
-        if priming:
-            primed = sum(1 for s in seen._state.values() if s == SeenSet.PRIMED)
-            print(f"[watch_lane_posts] primed {primed} historical comment(s); "
-                  "announcing from here", file=sys.stderr)
-            priming = False
+        for line in comment_watch_cycle(sorted(discovered | static_pairs), watch,
+                                        now, watermarks, seen, primed_targets):
+            print(line)
+            sys.stdout.flush()
         since = now
 
         #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
