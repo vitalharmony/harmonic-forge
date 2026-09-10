@@ -18,7 +18,11 @@ real heading was `## Lane 3 Test Spec`, not `## L3S`). So detection here
 is two different mechanisms depending on which lane posted:
 
 - Lane 1 -> the `<!-- l1-post v1; kind=X -->` marker (reliable, exact).
-- Lane 2 -> first line matches `^## L2[A-Z]` (`L2P`/`L2D`/`L2B` observed).
+- Lane 2 -> first line matches `^## L2[A-Z]` (`L2P`/`L2D`/`L2B` observed) or
+  `^## L2 Finding` (harmonic-forge#571's `--kind finding` -- deliberately
+  spelled with a space so it is never mistaken for an `L2P`/`L2D`/`L2B`
+  status transition by this classifier or by HRSE2's `lane_state.py`, while
+  still being visible to this belt as an `l2` event).
 - Lane 3 -> first line matches `^## L3\\b` or `^## Lane 3\\b` (heuristic --
   no fixed vocabulary confirmed; widen this pattern if a real Lane 3
   heading is seen that doesn't match).
@@ -130,7 +134,11 @@ _ACCOUNT = "vitalharmony"
 _COUNTER = CallCounter()
 
 _L1_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;\s*kind=([\w-]+)")
-_L2_HEADING_RE = re.compile(r"^##\s+L2[A-Z]\b")
+#: `L2[A-Z]` catches the status-transition headings (`L2P`/`L2D`/`L2B`).
+#: `L2 Finding` (harmonic-forge#571) is a distinct alternative, not a widened
+#: character class, precisely so it stays visible to this belt without ever
+#: being confused for a status transition by anything reading `L2[A-Z]`.
+_L2_HEADING_RE = re.compile(r"^##\s+(?:L2[A-Z]\b|L2 Finding\b)")
 _L3_HEADING_RE = re.compile(r"^##\s+(L3\b|Lane 3\b)")
 
 #: A run of 2-6 digits, optionally prefixed with one repo-selecting letter,

@@ -56,6 +56,59 @@ class TestReceiptRunner(unittest.TestCase):
         self.assertTrue(rr.is_locked(9004))
         self.assertFalse(rr.is_locked(9005))
 
+    @staticmethod
+    def _print_exact(text: str) -> list[str]:
+        """A command that writes exactly `text` to stdout, byte for byte --
+        `python3 -c` with a `repr()`-embedded literal, not a shell printf
+        (whose own backslash handling would mangle the very escape bytes
+        this test needs to be real)."""
+        return ["python3", "-c", f"import sys; sys.stdout.write({text!r})"]
+
+    def test_ansi_color_stripped_from_preview_real_vite_fragment(self):
+        """harmonic-forge#571 AC1/AC2 -- a real captured fragment (the exact
+        shape that broke l2_post.py's self-check live), not a synthetic
+        string that happens to dodge the case."""
+        raw = ("\x1b[33m[INEFFECTIVE_DYNAMIC_IMPORT]\x1b[39m /src/app.ts is "
+               "dynamically imported but also statically imported\n")
+        exit_code = rr.run_command(9007, self._print_exact(raw))
+        self.assertEqual(exit_code, 0)
+        receipts = list(rr.receipt_dir(9007).glob("*-command.json"))
+        body = json.loads(receipts[0].read_text())
+        self.assertNotIn("\x1b", body["stdout_preview"])
+        self.assertIn("[INEFFECTIVE_DYNAMIC_IMPORT]", body["stdout_preview"])
+
+    def test_digest_is_computed_over_raw_unstripped_output(self):
+        """The digest proves exactly what ran, byte for byte -- stripping it
+        would make the digest prove something other than the real output."""
+        raw = "\x1b[33mcolored\x1b[39m"
+        exit_code = rr.run_command(9008, self._print_exact(raw))
+        self.assertEqual(exit_code, 0)
+        receipts = list(rr.receipt_dir(9008).glob("*-command.json"))
+        body = json.loads(receipts[0].read_text())
+        self.assertEqual(body["stdout_sha256"], rr._digest(raw.encode()))
+
+    def test_strip_ansi_leaves_plain_text_untouched(self):
+        self.assertEqual(rr.strip_ansi("plain text, no escapes"), "plain text, no escapes")
+
+    def test_strip_ansi_removes_sgr_reset_too(self):
+        self.assertEqual(rr.strip_ansi("\x1b[0m\x1b[1;32mgreen\x1b[0m"), "green")
+
+    def test_strip_ansi_removes_osc_hyperlink_bel_terminated(self):
+        """harmonic-forge#571 preclose finding: OSC (colour is not the only
+        VT100 sequence a terminal-aware CLI emits)."""
+        text = "\x1b]8;;https://example.com\x07click here\x1b]8;;\x07"
+        self.assertEqual(rr.strip_ansi(text), "click here")
+
+    def test_strip_ansi_removes_osc_title_st_terminated(self):
+        text = "\x1b]0;My Title\x1b\\done"
+        self.assertEqual(rr.strip_ansi(text), "done")
+
+    def test_strip_ansi_removes_charset_select(self):
+        self.assertEqual(rr.strip_ansi("\x1b(Bplain"), "plain")
+
+    def test_strip_ansi_removes_cursor_save_restore(self):
+        self.assertEqual(rr.strip_ansi("a\x1b7b\x1b8c"), "abc")
+
     def test_receipt_dir_lives_inside_git_dir_not_worktree(self):
         directory = rr.receipt_dir(9006).resolve()
         git_dir = Path(subprocess.run(

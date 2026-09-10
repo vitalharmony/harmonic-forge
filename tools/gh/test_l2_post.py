@@ -78,6 +78,180 @@ class TestPostSelfCheck(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 lp.post("o/r", 1, "hello")
 
+    def test_ansi_only_mismatch_names_itself_a_transit_mangled_escape(self):
+        """harmonic-forge#571 AC3. The real live shape: a vite-reporter
+        fragment survives round-trip except for its ANSI escape, and the
+        failure must say so -- not send the reader toward the disproven
+        "GitHub strips characters" hypothesis."""
+        sent = "narrative with \x1b[33m[INEFFECTIVE_DYNAMIC_IMPORT]\x1b[39m color"
+        # Same visible content, differently-coded escapes -- stripped, both
+        # read identically; only the raw escape bytes were mangled in transit.
+        landed = "narrative with \x1b[1;33m[INEFFECTIVE_DYNAMIC_IMPORT]\x1b[0m color"
+        self.assertEqual(rr.strip_ansi(sent), rr.strip_ansi(landed))
+        self.assertNotEqual(sent, landed)
+        posted = {"id": 558, "html_url": "https://example/558"}
+        with unittest.mock.patch.object(lp, "_gh_api") as fake:
+            fake.side_effect = [
+                _fake_run(0, stdout=json.dumps(posted)),
+                _fake_run(0, stdout=json.dumps({"body": landed})),
+            ]
+            with self.assertRaises(SystemExit) as ctx:
+                lp.post("o/r", 1, sent)
+        message = str(ctx.exception)
+        self.assertIn("transit-mangled escape", message)
+        self.assertNotIn("GitHub strips characters", message)
+
+    def test_the_real_reported_shape_json_textual_escape_vs_raw_byte(self):
+        """harmonic-forge#571 preclose finding: the live incident's SENT side
+        never carries a raw ESC byte at all -- `compose_body`'s
+        `json.dumps(ensure_ascii=True)` writes an embedded control byte as
+        its 6-character textual escape (backslash, u, 0, 0, 1, b). Only the
+        LANDED side (after transit-mangling) carries a real byte. A bare
+        `strip_ansi(a) == strip_ansi(b)` comparison never equates these two
+        representations; `_normalize_for_diagnosis` must."""
+        receipts = [{"stdout_preview": "warn: \x1b[33mcolor\x1b[39m"}]
+        sent = lp.compose_body("completion", receipts, "n",
+                               {"Status": "s", "Change": "c", "Next": "n"})
+        self.assertNotIn("\x1b", sent)  # json.dumps escaped it textually
+        self.assertIn("u001b", sent.replace("\\", ""))  # the textual escape is present
+        # Simulate transit mangling turning the textual escape into a real
+        # control byte on the landed side, content otherwise identical.
+        landed = sent.replace("\\u001b", "\x1b")
+        self.assertNotEqual(sent, landed)
+        self.assertEqual(rr.strip_ansi(sent), sent)  # nothing to strip on sent
+        self.assertNotEqual(rr.strip_ansi(sent), rr.strip_ansi(landed))  # bare strip_ansi misses it
+        self.assertEqual(lp._normalize_for_diagnosis(sent), lp._normalize_for_diagnosis(landed))
+        posted = {"id": 561, "html_url": "https://example/561"}
+        with unittest.mock.patch.object(lp, "_gh_api") as fake:
+            fake.side_effect = [
+                _fake_run(0, stdout=json.dumps(posted)),
+                _fake_run(0, stdout=json.dumps({"body": landed})),
+            ]
+            with self.assertRaises(SystemExit) as ctx:
+                lp.post("o/r", 1, sent)
+        message = str(ctx.exception)
+        self.assertIn("transit-mangled escape", message)
+        self.assertNotIn("GitHub strips characters", message)
+
+    def test_a_real_content_difference_is_not_misdiagnosed_as_ansi(self):
+        """The AC3 distinction must cut both ways: a genuine content
+        mismatch (no ANSI involved at all) must not be reported as a
+        transit artifact."""
+        posted = {"id": 559, "html_url": "https://example/559"}
+        with unittest.mock.patch.object(lp, "_gh_api") as fake:
+            fake.side_effect = [
+                _fake_run(0, stdout=json.dumps(posted)),
+                _fake_run(0, stdout=json.dumps({"body": "something else entirely"})),
+            ]
+            with self.assertRaises(SystemExit) as ctx:
+                lp.post("o/r", 1, "hello")
+        message = str(ctx.exception)
+        self.assertNotIn("transit-mangled escape", message)
+        self.assertIn("not an ANSI-escape artifact", message)
+
+    def test_a_real_captured_vite_fragment_round_trips_after_receipt_runner_strips_it(self):
+        """harmonic-forge#571 AC2. Regression using a real captured
+        fragment (not a synthetic string that happens to dodge the case):
+        once `receipt_runner.write_receipt`'s preview has gone through
+        `strip_ansi`, composing and posting it must round-trip
+        byte-identically even though the raw captured text carried color."""
+        raw_vite_output = (
+            "vite v5.4.0 building for production...\n"
+            "\x1b[33m[INEFFECTIVE_DYNAMIC_IMPORT]\x1b[39m /src/app.ts is "
+            "dynamically imported but also statically imported\n"
+            "\x1b[32m✓ built in 842ms\x1b[39m\n"
+        )
+        stripped_preview = rr.strip_ansi(raw_vite_output)
+        self.assertNotIn("\x1b", stripped_preview)
+        receipts = [{"argv": ["npm", "run", "build"], "exit_code": 0,
+                    "stdout_preview": stripped_preview}]
+        body = lp.compose_body("completion", receipts, "build succeeded",
+                               {"Status": "done", "Change": "built", "Next": "none"})
+        self.assertNotIn("\x1b", body)
+        posted = {"id": 560, "html_url": "https://example/560"}
+        with unittest.mock.patch.object(lp, "_gh_api") as fake:
+            fake.side_effect = [
+                _fake_run(0, stdout=json.dumps(posted)),
+                _fake_run(0, stdout=json.dumps({"body": body})),
+            ]
+            result = lp.post("o/r", 1, body)  # must not raise
+        self.assertEqual(result["comment_id"], 560)
+
+
+class TestFindingKind(unittest.TestCase):
+    """harmonic-forge#571 AC4/AC5 -- a durable, attributed way for Lane 2 to
+    post a defect note, distinct from a status transition."""
+
+    def test_finding_heading_does_not_match_the_l2_status_pattern(self):
+        """`watch_lane_posts.py`'s `_L2_HEADING_RE` and HRSE2's
+        `lane_state.py`'s `_LANE_TOKEN` both key on `^##\\s+L2[A-Z]\\b` --
+        `L2F` would satisfy that (F is an allowed status code), so the
+        heading must not take that shape."""
+        body = lp.compose_body("finding", [], "diagnosed a defect")
+        heading = body.splitlines()[0]
+        self.assertNotRegex(heading, r"^##\s+L2[A-Z]\b")
+        self.assertIn("L2 Finding", heading)
+
+    def test_finding_heading_is_visible_to_the_belt_classifier(self):
+        """harmonic-forge#571 preclose finding: AC5 requires NOT being read
+        as a status transition, not invisibility. Without belt visibility a
+        finding is still an operator-relay-only artifact -- the exact defect
+        AC4 exists to close. `watch_lane_posts._classify` must still tag it
+        as an `l2` event."""
+        import watch_lane_posts as wlp
+        body = lp.compose_body("finding", [], "diagnosed a defect")
+        classified = wlp._classify(body)
+        self.assertIsNotNone(classified)
+        self.assertEqual(classified[0], "l2")
+
+    def test_narrative_ansi_is_stripped_by_compose_body(self):
+        """harmonic-forge#571 preclose finding: the narrative is free text,
+        embedded unescaped (not through json.dumps like the receipts JSON)
+        -- the likeliest place a `--kind finding` post carries colour, since
+        a finding often quotes the failing command's own output."""
+        narrative = "I found: \x1b[33m[INEFFECTIVE_DYNAMIC_IMPORT]\x1b[39m in the build log"
+        body = lp.compose_body("finding", [], narrative)
+        self.assertNotIn("\x1b", body)
+        self.assertIn("[INEFFECTIVE_DYNAMIC_IMPORT]", body)
+
+    def test_finding_is_not_required_to_carry_a_lead_block(self):
+        """AC5: a finding is a report, not a status transition -- it must
+        not be forced through the completion/blocked lead-block gate."""
+        lp.validate_lead("finding", {})  # must not raise
+
+    def test_finding_bypasses_the_issue_lock_like_blocked_does(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=tmp.name, check=True)
+            import os
+            cwd = Path.cwd()
+            os.chdir(tmp.name)
+            try:
+                rr.write_lock(9200, rr.receipt_dir(9200) / "x.json", 1)
+                self.assertTrue(rr.is_locked(9200))
+                self.assertFalse(lp.lock_blocks("finding", 9200))
+                self.assertFalse(lp.lock_blocks("blocked", 9200))
+                self.assertTrue(lp.lock_blocks("completion", 9200))
+                self.assertTrue(lp.lock_blocks("plan", 9200))
+            finally:
+                os.chdir(cwd)
+        finally:
+            tmp.cleanup()
+
+    def test_unlocked_issue_never_blocks_any_kind(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=tmp.name, check=True)
+            import os
+            cwd = Path.cwd()
+            os.chdir(tmp.name)
+            try:
+                self.assertFalse(lp.lock_blocks("completion", 9201))
+            finally:
+                os.chdir(cwd)
+        finally:
+            tmp.cleanup()
+
 
 class TestResolveLock(unittest.TestCase):
     def setUp(self):
