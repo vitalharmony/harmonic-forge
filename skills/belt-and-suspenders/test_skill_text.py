@@ -145,5 +145,51 @@ class TestNoBareGh(unittest.TestCase):
         self.assertNotIn("gh auth switch", SKILL.read_text(encoding="utf-8"))
 
 
+class TestRunnableBeltCommandPerLane(unittest.TestCase):
+    """harmonic-forge#570 AC1/AC2/AC7 -- a literal, runnable, unambiguous-path
+    command per lane, not a description of one."""
+
+    def test_every_path_reference_is_unambiguous(self):
+        """A bare `tools/gh/...` reads as skill-relative from this file's
+        real location two directories below the repo root, and resolves to
+        nothing there -- every mention must be absolute or explicitly
+        repo-root-relative, INCLUDING inside fenced code blocks (a runnable
+        command is exactly where AC2's own regression would land -- a
+        backtick-only scan misses every command in a ``` fence)."""
+        text = SKILL.read_text(encoding="utf-8")
+        for i, line in enumerate(text.splitlines(), 1):
+            idx = line.find("tools/gh/")
+            while idx != -1:
+                prefix = line[:idx]
+                if not (prefix.endswith("~/harmonic-forge/") or prefix.endswith("harmonic-forge/")):
+                    self.fail(f"line {i}: ambiguous 'tools/gh/' reference: {line!r}")
+                idx = line.find("tools/gh/", idx + 1)
+
+    def test_lane_1_command_uses_queue_for_l1(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("watch_lane_posts.py \\\n      --queue-for l1", text)
+
+    def test_lane_2_command_covers_detached_head_via_queue_for_l2(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("--queue-for l2", text)
+
+    def test_lane_3_command_matches_the_issues_own_prescription(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("--queue-for l3 --repo vitalharmony/hrse --watch l1 --interval 60", text)
+
+    def test_states_the_belt_is_watch_lane_posts_and_rebuilding_is_the_defect(self):
+        text = _norm(SKILL.read_text(encoding="utf-8"))
+        self.assertIn("`watch_lane_posts.py` already is the belt", text)
+        self.assertIn("that re-derivation is the defect", text)
+
+    def test_names_cron_and_hand_written_poller_as_neither_mechanism(self):
+        text = _norm(SKILL.read_text(encoding="utf-8"))
+        self.assertIn("`croncreate` and a hand-written poller script are neither", text)
+
+    def test_states_the_zero_resolved_reporting_guarantee(self):
+        text = _norm(SKILL.read_text(encoding="utf-8"))
+        self.assertIn("never silently, when zero resolved", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

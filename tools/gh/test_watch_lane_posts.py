@@ -9,7 +9,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from watch_lane_posts import _BRANCH_ISSUE_RE, _classify, discover_from_worktree, discover_queue
+from watch_lane_posts import (
+    _BRANCH_ISSUE_RE,
+    _classify,
+    discover_from_worktree,
+    discover_l1_sweep,
+    discover_queue,
+    list_open_issues,
+    report_resolution,
+    resolve_worktree,
+)
 
 
 class ClassifyTests(unittest.TestCase):
@@ -112,6 +121,92 @@ class DiscoverFromWorktreeTests(unittest.TestCase):
         self.assertIsNone(discover_from_worktree(tmp))
 
 
+class ResolveWorktreeReasonTests(unittest.TestCase):
+    """harmonic-forge#570 AC6 -- an unresolved worktree carries a reason,
+    not just a `None`, so a lane between issues (detached HEAD, its normal
+    resting state per hrse#570's own cross-lane evidence) is not silently
+    read as 'nothing to watch'."""
+
+    def _repo(self, remote_url: str, branch: str | None = None) -> str:
+        tmp = tempfile.mkdtemp()
+        args = ["git", "init", "-q"]
+        if branch:
+            args += ["-b", branch]
+        args.append(tmp)
+        subprocess.run(args, check=True)
+        subprocess.run(["git", "-C", tmp, "remote", "add", "origin", remote_url], check=True)
+        subprocess.run(["git", "-C", tmp, "commit", "-q", "--allow-empty", "-m", "x"],
+                       check=True, env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                                        "PATH": __import__("os").environ.get("PATH", "")})
+        return tmp
+
+    def test_resolved_pair_reports_resolved(self):
+        repo = self._repo("https://github.com/vitalharmony/hrse.git",
+                          "fix/1498-workflow-secrets-context")
+        pair, reason = resolve_worktree(repo)
+        self.assertEqual(pair, ("vitalharmony/hrse", 1498))
+        self.assertEqual(reason, "resolved")
+
+    def test_detached_head_names_the_reason(self):
+        repo = self._repo("https://github.com/vitalharmony/hrse.git", branch="main")
+        subprocess.run(["git", "-C", repo, "checkout", "-q", "--detach"], check=True)
+        pair, reason = resolve_worktree(repo)
+        self.assertIsNone(pair)
+        self.assertIn("detached HEAD", reason)
+
+    def test_branch_with_no_issue_number_names_the_reason(self):
+        repo = self._repo("https://github.com/vitalharmony/hrse.git",
+                          "docs/priorities-reconcile-sep3")
+        pair, reason = resolve_worktree(repo)
+        self.assertIsNone(pair)
+        self.assertIn("names no issue number", reason)
+
+    def test_non_git_path_names_the_reason(self):
+        tmp = tempfile.mkdtemp()
+        pair, reason = resolve_worktree(tmp)
+        self.assertIsNone(pair)
+        self.assertIn("not a git worktree", reason)
+
+
+class ReportResolutionTests(unittest.TestCase):
+    """`report_resolution` is the fail-loud surface AC6 asks for -- asserted
+    against its actual stderr output, not just the return value."""
+
+    def _detached(self) -> str:
+        tmp = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", "-b", "main", tmp], check=True)
+        subprocess.run(["git", "-C", tmp, "remote", "add", "origin",
+                       "https://github.com/vitalharmony/hrse.git"], check=True)
+        subprocess.run(["git", "-C", tmp, "commit", "-q", "--allow-empty", "-m", "x"],
+                       check=True, env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                                        "PATH": __import__("os").environ.get("PATH", "")})
+        subprocess.run(["git", "-C", tmp, "checkout", "-q", "--detach"], check=True)
+        return tmp
+
+    def test_zero_resolved_is_stated_loudly(self):
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            resolutions = report_resolution([self._detached()])
+        self.assertEqual(len(resolutions), 1)
+        self.assertIsNone(resolutions[0][1])
+        out = buf.getvalue()
+        self.assertIn("0/1 resolved", out)
+        self.assertIn("ZERO of 1 --worktrees target(s) resolved", out)
+
+    def test_empty_worktree_list_prints_nothing(self):
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            resolutions = report_resolution([])
+        self.assertEqual(resolutions, [])
+        self.assertEqual(buf.getvalue(), "")
+
+
 def _fake_completed(stdout, returncode=0):
     result = subprocess.CompletedProcess(args=[], returncode=returncode)
     result.stdout = stdout
@@ -150,9 +245,17 @@ class DiscoverQueueTests(unittest.TestCase):
                 return _fake_completed(
                     json.dumps({"items": [{"number": n} for n in numbers]})
                 )
-            if gh_argv[:1] == ["api"]:
-                # api repos/R/issues/N/comments
-                issue = int(gh_argv[1].rsplit("/", 2)[-2])
+            if "api" in gh_argv:
+                # harmonic-forge#570 preclose finding: the comments fetch
+                # must be an explicit GET and must paginate -- assert both
+                # rather than just tolerating whichever shape shows up, so a
+                # regression back to an implicit POST or a single page fails
+                # this test instead of silently passing.
+                self.assertIn("-X", gh_argv, f"comments fetch must be explicit GET: {gh_argv}")
+                self.assertEqual(gh_argv[gh_argv.index("-X") + 1], "GET")
+                self.assertIn("--paginate", gh_argv, f"comments fetch must paginate: {gh_argv}")
+                path = next(a for a in gh_argv if a.startswith("repos/") and "/comments" in a)
+                issue = int(path.rsplit("/", 2)[-2])
                 bodies = comments.get(issue, [])
                 return _fake_completed(json.dumps([{"body": b} for b in bodies]))
             raise AssertionError(f"unexpected gh call: {argv}")
@@ -210,6 +313,88 @@ class DiscoverQueueTests(unittest.TestCase):
                   )):
             queue = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {1058: "ready-for-l3", 1531: "ready-for-l3"})
+
+
+class L1SweepTests(unittest.TestCase):
+    """harmonic-forge#570 AC1/AC8 -- Lane 1's repo-wide newest-marker sweep,
+    given a runnable form. Every `gh` call mocked, no network."""
+
+    def _mock_gh(self, open_issues: list[int], comments: dict):
+        def run(argv, **kwargs):
+            self.assertEqual(argv[0], "gh-as")
+            gh_argv = argv[3:]
+            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
+                # harmonic-forge#570 preclose finding: `gh api` promotes a
+                # call with `-f` params to POST unless told otherwise, and a
+                # POST here is issue *creation* -- assert the explicit GET
+                # so a regression back to an implicit POST fails this test
+                # rather than silently returning nothing in production.
+                self.assertIn("-X", gh_argv, f"issues list must be explicit GET: {gh_argv}")
+                self.assertEqual(gh_argv[gh_argv.index("-X") + 1], "GET")
+                return _fake_completed("\n".join(str(n) for n in open_issues))
+            if "api" in gh_argv:
+                path = next(a for a in gh_argv if a.startswith("repos/") and "/comments" in a)
+                issue = int(path.rsplit("/", 2)[-2])
+                bodies = comments.get(issue, [])
+                return _fake_completed(json.dumps([{"body": b} for b in bodies]))
+            raise AssertionError(f"unexpected gh call: {argv}")
+        return run
+
+    def test_list_open_issues_parses_numbers(self):
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh([12, 34, 56], {})):
+            self.assertEqual(list_open_issues("vitalharmony/hrse"), [12, 34, 56])
+
+    def test_list_open_issues_passes_since_as_query_param(self):
+        captured = []
+
+        def run(argv, **kwargs):
+            captured.append(argv[3:])
+            return _fake_completed("")
+        with patch("belt_mechanics.subprocess.run", side_effect=run):
+            list_open_issues("vitalharmony/hrse", since="2026-09-01T00:00:00Z")
+        self.assertIn("-f", captured[0])
+        self.assertIn("since=2026-09-01T00:00:00Z", captured[0])
+
+    def test_l1_sweep_still_checks_a_stale_already_queued_issue(self):
+        """harmonic-forge#570 preclose finding: `since` must not drop an
+        issue that stopped receiving updates but was never resolved -- it
+        must stay in the candidate set via `extra_issues`."""
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(
+                      [],  # nothing NEW since the watermark
+                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
+                  )):
+            queue = discover_l1_sweep("vitalharmony/hrse", since="2026-09-01T00:00:00Z",
+                                      extra_issues=[1530])
+            self.assertEqual(list(queue), [1530])
+
+    def test_issue_whose_newest_comment_is_lane2_needs_l1(self):
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(
+                      [1530],
+                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
+                  )):
+            queue = discover_l1_sweep("vitalharmony/hrse")
+            self.assertEqual(list(queue), [1530])
+            lane, detail = queue[1530]
+            self.assertEqual(lane, "l2")
+
+    def test_issue_whose_newest_comment_is_lane1s_own_is_not_queued(self):
+        body = "## Some post\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh([1530], {1530: [body]})):
+            self.assertEqual(discover_l1_sweep("vitalharmony/hrse"), {})
+
+    def test_issue_with_no_classified_comment_carries_no_ball(self):
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh([1530], {1530: ["just chat, no heading"]})):
+            self.assertEqual(discover_l1_sweep("vitalharmony/hrse"), {})
+
+    def test_issue_with_zero_comments_carries_no_ball(self):
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh([1530], {})):
+            self.assertEqual(discover_l1_sweep("vitalharmony/hrse"), {})
 
 
 if __name__ == "__main__":
