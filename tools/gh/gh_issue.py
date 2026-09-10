@@ -91,6 +91,46 @@ def fetch_milestones(repo: str) -> dict[str, int]:
     return milestones
 
 
+#: `tooling-exception` says Lane 1 may execute an issue alone. `tooling` is what
+#: keeps Lane 2 from picking it up. They are two halves of one decision and were
+#: applied by hand, so they drifted -- 11 issues carried the exception without
+#: the label (harmonic-forge#616). Operator: "this is crucial for avoiding
+#: overlap." Same shape as #590/#594/#605: a rule that exists and is not reached
+#: at the point of use.
+_IMPLIED_LABELS = {"tooling-exception": "tooling"}
+
+
+def normalise_labels(labels: list[str]) -> list[str]:
+    """Add every label another label implies, transitively.
+
+    Additive only: this never removes or rewrites what the caller asked for,
+    and a label already present is not duplicated.
+
+    **Transitive, not one hop** (harmonic-forge#616 preclose finding). The first
+    version iterated the caller's list, so a label added by an implication was
+    never itself consulted -- with a chained table `{"a": "b", "b": "c"}`,
+    `["a"]` yielded `["a", "b"]` and silently dropped `c`. That would have made
+    AC4's promise false: the next editor adds a row, does the data-only change
+    the table advertises, and gets a partially-applied result with nothing to
+    surface it. A worklist fixes it, and the `seen` guard means a cyclic table
+    terminates rather than hanging the filing tool.
+    """
+    out = list(labels)
+    pending = list(labels)
+    seen: set[str] = set()
+    while pending:
+        label = pending.pop(0)
+        if label in seen:
+            continue
+        seen.add(label)
+        implied = _IMPLIED_LABELS.get(label)
+        if implied:
+            if implied not in out:
+                out.append(implied)
+            pending.append(implied)
+    return out
+
+
 def create_issue(repo: str, title: str, body: str, labels: list[str],
                  milestone_number: int | None = None) -> str | None:
     create_cmd = [
@@ -535,7 +575,8 @@ def main() -> int:
 
     print(f"[GH] Creating issue in {args.repo}")
 
-    labels = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()]
+    labels = normalise_labels(
+        [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()])
     issue_url = create_issue(args.repo, args.title, body, labels, milestone_number)
     if issue_url is None:
         return 1

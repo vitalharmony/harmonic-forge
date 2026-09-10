@@ -3,6 +3,97 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(gh): test the wiring, make the implication transitive (harmonic-forge#616)
+
+Preclose returned two findings, and the first is this issue's own shape turned
+back on the fix.
+
+**1. The one line that reaches the helper had no coverage.** Reverting the CLI
+call site to its pre-diff form -- leaving `normalise_labels` defined and unused
+-- left all 67 tests green. Every new test called the helper directly; none
+drove `main()` and inspected what reached `create_issue`. So the fix for "a
+control exists and is not reached at the point of use" shipped with exactly
+that defect in its own test suite. The file already had the harness pattern
+(`TestThemeVentureCliWiring` does it for a different flag); I did not use it.
+
+**2. The implication was single-pass, so AC4 was false as written.** The loop
+iterated the caller's list, not the accumulator, so a label added by an
+implication was never itself consulted: with a chained table
+`{"a": "b", "b": "c"}`, `["a"]` yielded `["a", "b"]` and silently dropped `c`.
+AC4 promises "a second implication is a data change" -- the next editor adds a
+row, does the data-only change the table advertises, and gets a partially
+applied result with nothing to surface it. Now a worklist, with a `seen` guard
+so a cyclic table terminates rather than hanging the filing tool.
+
+Both mutations now fail, along with emptying the table:
+
+    revert the call site (the untested wiring)   -> 6 failure(s)
+    back to single-pass (non-transitive)         -> 9 failure(s)
+    empty the table                              -> 9 failure(s)
+
+Also confirmed by the inspection, and worth recording because I did not check
+it before filing: `main()` is the only issue-creation path -- both repos'
+wrappers and the golden-path template all shell out to this script, nothing
+imports `create_issue` as a library -- and a missing `tooling` label does NOT
+fail the filing. The REST create endpoint auto-creates it, so the observable
+effect in cymagraph-infra and openclaw-projects is a new grey undescribed label
+rather than a broken file. That was the risk worth being wrong about.
+
+2038 -> 2042 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/gh_issue.py      | 31 ++++++++++++++++++++++++-------
+- tools/gh/test_gh_issue.py | 45 +++++++++++++++++++++++++++++++++++++++++++++
+- 2 files changed, 69 insertions(+), 7 deletions(-)
+
+## fix(gh): tooling-exception implies tooling at filing time (harmonic-forge#616)
+
+`tooling-exception` says Lane 1 may execute an issue alone. `tooling` is what
+keeps Lane 2 from picking it up. Two halves of one decision, applied by hand,
+and they drifted.
+
+Operator: "you need to make sure all of your issues are marked as tooling so L2
+doesn't try to pick it up... this is crucial for avoiding overlap."
+
+Eleven issues carried the exception without the label, every one filed by Lane 1
+this session. `gh_issue.py` had ZERO knowledge of `tooling-exception` -- grep
+returned nothing -- so the pairing lived entirely in whoever was filing
+remembering it. The operator had already corrected this once earlier in the same
+session, on a different pair of issues, and it did not stick because nothing
+enforced it.
+
+Why it is not cosmetic: two lanes on one issue means two writers in one
+worktree, which `lane-protocol.md` forbids and nothing detects (tracked as
+harmonic-forge#600 AC7-9, surfaced when Lane 2 halted on hrse#1774 believing
+exactly that had happened).
+
+Fourth instance this session of one shape -- a control that exists, is correct,
+and is not reached at the point of use (#590 the sweep, #594 the roots, #605
+the prefix map, now this). Three of the four were fixed by deriving rather than
+restating; this one by implying rather than remembering.
+
+- `normalise_labels()` applies `_IMPLIED_LABELS` at filing. Additive only: it
+  never removes, rewrites or reorders what the caller asked for, and does not
+  duplicate a label already present.
+- One row in the table, deliberately. A general label-inference engine would be
+  inventing a problem; a table with one row is honest about having one rule.
+- Five tests. Verified live on this issue's own filing:
+  `616 [bug,tooling,tooling-exception]` from `--labels "bug,tooling-exception"`.
+- The eleven existing issues were backfilled by hand.
+
+Not in scope, stated rather than assumed: nothing AUDITS existing issues for the
+pairing. `repo_hygiene.py` is where that belongs if the backfill is ever needed
+again.
+
+2033 -> 2038 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/gh_issue.py      | 26 +++++++++++++++++++++++++-
+- tools/gh/test_gh_issue.py | 30 ++++++++++++++++++++++++++++++
+- 2 files changed, 55 insertions(+), 1 deletion(-)
+
 ## fix(belt): key dedup state per belt, prime per target, test the loop (harmonic-forge#599)
 
 Preclose returned five findings. The first would have made the whole change
