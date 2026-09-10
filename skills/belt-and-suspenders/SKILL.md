@@ -224,9 +224,12 @@ lock (Lane 1's belt does not mutate a shared worktree).
 
 ## Role: Lane 2
 
-Fires on `handoff`, `rework`, `discussion`. Silent on `ready-for-l3`, `ae`,
+Fires on `handoff`, `rework`. Silent on `ready-for-l3`, `ae`,
 `sweep`, `ae-and-sweep`, `spec`, `gate-result` — that is the Lane 1 ↔ Lane 3
-channel.
+channel. (`discussion` was removed from `QUEUE_KINDS["l2"]` in
+harmonic-forge#570 — R-0337/`lane-shorthand.md` measured 63 issues on
+`vitalharmony/hrse` whose newest marker after `l2.done` was a `discussion`,
+none of them actionable — so it fires on neither belt now.)
 
 **A `plan-first=true` handoff must render as PLAN-FIRST in the event line.**
 Implementing one is a protocol violation and the event line is the last place to
