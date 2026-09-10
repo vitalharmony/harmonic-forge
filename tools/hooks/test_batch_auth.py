@@ -241,6 +241,30 @@ class ClassifyTests(unittest.TestCase):
                 self.assertIsNone(ba.classify_issue_close(tokens))
                 self.assertIsNone(ba.classify_pr_merge(tokens))
 
+    def test_issue_close_via_gh_as_wrapper_is_classified(self):
+        """harmonic-forge#578: the house-mandated `gh-as <account>` wrapper
+        must not hide `gh issue close` from classification -- this is what
+        let F570/F571 merge/close with no live BATCH grant."""
+        tokens = "gh-as vitalharmony gh issue close 395 --repo vitalharmony/hrse".split()
+        self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"))
+
+    def test_pr_merge_via_gh_as_wrapper_is_classified(self):
+        tokens = "gh-as vitalharmony gh pr merge 993 --repo vitalharmony/hrse --squash".split()
+        self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
+
+    def test_issue_close_via_gha_wrapper_is_classified(self):
+        """harmonic-forge#578 preclose finding: `gha` (the sibling
+        account-scoping wrapper `reference_two_account_routing` also
+        mandates, `~/.local/bin/gha`) never places a literal `gh` token
+        after the account -- `gha vh issue close ...` passes `issue close
+        ...` straight through. Must classify identically to `gh-as`."""
+        tokens = "gha vh issue close 395 --repo vitalharmony/hrse".split()
+        self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"))
+
+    def test_pr_merge_via_gha_wrapper_is_classified(self):
+        tokens = "gha vitalharmony pr merge 993 --repo vitalharmony/hrse --squash".split()
+        self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
+
 
 class DecideAllowTests(StateFixture):
     def test_issue_close_allowed_under_live_authorization(self):
@@ -306,6 +330,63 @@ class DecideAskTests(StateFixture):
         )
         self.assertEqual(result[0], "ask")
         self.assertIn("stacked child", result[1])
+
+    def test_gh_as_wrapped_issue_close_with_no_authorization_asks(self):
+        """harmonic-forge#578 reproduction: previously this returned None
+        (silent allow) because strip_invocation_prefix() didn't recognize
+        `gh-as <account>`, so classify_issue_close() never saw the
+        underlying `gh` invocation at all."""
+        result = ba.decide(
+            "gh-as vitalharmony gh issue close 999999 --repo vitalharmony/harmonic-forge",
+            state_path=self.state_path,
+        )
+        self.assertEqual(result[0], "ask")
+
+    def test_gh_as_wrapped_pr_merge_with_no_authorization_asks(self):
+        result = ba.decide(
+            "gh-as vitalharmony gh pr merge 993 --repo vitalharmony/hrse --squash",
+            state_path=self.state_path,
+        )
+        self.assertEqual(result[0], "ask")
+
+    def test_gh_as_wrapped_issue_close_allowed_under_live_authorization(self):
+        """Same wrapper, this time matching the bare form's `allow` result
+        once a real BATCH grant exists (AC2/AC4: no change to decide()'s
+        fail-toward-ask direction or existing BATCH semantics)."""
+        ba.authorize(["H395"], state_path=self.state_path)
+        result = ba.decide(
+            "gh-as vitalharmony gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
+            state_path=self.state_path,
+        )
+        self.assertEqual(result[0], "allow")
+        self.assertIn("H395", result[1])
+
+    def test_gha_wrapped_issue_close_with_no_authorization_asks(self):
+        """harmonic-forge#578 preclose finding reproduction: `gha vh issue
+        close ...` previously returned None (silent allow) — the identical
+        incident shape this issue exists to close, and `gha` is
+        independently mandated by the same memory as `gh-as`."""
+        result = ba.decide(
+            "gha vh issue close 999999 --repo vitalharmony/harmonic-forge",
+            state_path=self.state_path,
+        )
+        self.assertEqual(result[0], "ask")
+
+    def test_gha_wrapped_pr_merge_with_no_authorization_asks(self):
+        result = ba.decide(
+            "gha vitalharmony pr merge 993 --repo vitalharmony/hrse --squash",
+            state_path=self.state_path,
+        )
+        self.assertEqual(result[0], "ask")
+
+    def test_gha_wrapped_issue_close_allowed_under_live_authorization(self):
+        ba.authorize(["H395"], state_path=self.state_path)
+        result = ba.decide(
+            "gha vh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
+            state_path=self.state_path,
+        )
+        self.assertEqual(result[0], "allow")
+        self.assertIn("H395", result[1])
 
     def test_unresolvable_repo_asks_rather_than_silently_allowing(self):
         ba.authorize(["H395"], state_path=self.state_path)
