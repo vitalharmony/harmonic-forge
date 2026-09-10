@@ -101,16 +101,33 @@ _IMPLIED_LABELS = {"tooling-exception": "tooling"}
 
 
 def normalise_labels(labels: list[str]) -> list[str]:
-    """Add any label another label implies, preserving order and uniqueness.
+    """Add every label another label implies, transitively.
 
-    Additive only: this never removes or rewrites what the caller asked for.
-    A label the caller already passed is not duplicated.
+    Additive only: this never removes or rewrites what the caller asked for,
+    and a label already present is not duplicated.
+
+    **Transitive, not one hop** (harmonic-forge#616 preclose finding). The first
+    version iterated the caller's list, so a label added by an implication was
+    never itself consulted -- with a chained table `{"a": "b", "b": "c"}`,
+    `["a"]` yielded `["a", "b"]` and silently dropped `c`. That would have made
+    AC4's promise false: the next editor adds a row, does the data-only change
+    the table advertises, and gets a partially-applied result with nothing to
+    surface it. A worklist fixes it, and the `seen` guard means a cyclic table
+    terminates rather than hanging the filing tool.
     """
     out = list(labels)
-    for label in labels:
+    pending = list(labels)
+    seen: set[str] = set()
+    while pending:
+        label = pending.pop(0)
+        if label in seen:
+            continue
+        seen.add(label)
         implied = _IMPLIED_LABELS.get(label)
-        if implied and implied not in out:
-            out.append(implied)
+        if implied:
+            if implied not in out:
+                out.append(implied)
+            pending.append(implied)
     return out
 
 

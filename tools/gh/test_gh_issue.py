@@ -824,3 +824,48 @@ class ToolingExceptionImpliesToolingTests(unittest.TestCase):
         """The implied label is appended, so an existing order is not shuffled."""
         got = gh_issue.normalise_labels(["tooling-exception", "bug"])
         self.assertEqual(got[:2], ["tooling-exception", "bug"])
+
+    def test_the_implication_is_transitive(self):
+        """harmonic-forge#616 preclose finding. The first version iterated the
+        CALLER's list, so a label added by an implication was never consulted
+        and a chained row silently dropped -- making AC4's "a second implication
+        is a data change" false."""
+        with patch.dict(gh_issue._IMPLIED_LABELS, {"tooling": "infrastructure"}):
+            self.assertEqual(gh_issue.normalise_labels(["tooling-exception"]),
+                             ["tooling-exception", "tooling", "infrastructure"])
+
+    def test_a_cyclic_table_terminates(self):
+        """A cycle must not hang the filing tool."""
+        with patch.dict(gh_issue._IMPLIED_LABELS, {"tooling": "tooling-exception"}):
+            got = gh_issue.normalise_labels(["tooling-exception"])
+        self.assertEqual(sorted(got), ["tooling", "tooling-exception"])
+
+
+class TestToolingImplicationCliWiring(unittest.TestCase):
+    """harmonic-forge#616 preclose finding: the ONE LINE that reaches the helper
+    had no coverage. Reverting the call site to its pre-diff form left all 67
+    tests green -- the same shape as the issue itself, a control that exists,
+    is correct, and is not reached at the point of use.
+
+    Mirrors `TestThemeVentureCliWiring`, which does this for a different flag."""
+
+    def test_tooling_exception_reaches_create_issue_as_tooling(self):
+        with patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse",
+                                        "--title", "t", "--labels", "bug,tooling-exception"]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.add_to_board", return_value=True):
+            gh_issue.main()
+        labels = created.call_args[0][3]
+        self.assertIn("tooling", labels,
+                      f"the CLI must apply the implication, got {labels!r}")
+        self.assertIn("tooling-exception", labels)
+
+    def test_a_plain_filing_is_unchanged_through_the_cli(self):
+        with patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse",
+                                        "--title", "t", "--labels", "feature"]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.add_to_board", return_value=True):
+            gh_issue.main()
+        self.assertEqual(created.call_args[0][3], ["feature"])

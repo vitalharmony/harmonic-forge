@@ -3,6 +3,50 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(gh): test the wiring, make the implication transitive (harmonic-forge#616)
+
+Preclose returned two findings, and the first is this issue's own shape turned
+back on the fix.
+
+**1. The one line that reaches the helper had no coverage.** Reverting the CLI
+call site to its pre-diff form -- leaving `normalise_labels` defined and unused
+-- left all 67 tests green. Every new test called the helper directly; none
+drove `main()` and inspected what reached `create_issue`. So the fix for "a
+control exists and is not reached at the point of use" shipped with exactly
+that defect in its own test suite. The file already had the harness pattern
+(`TestThemeVentureCliWiring` does it for a different flag); I did not use it.
+
+**2. The implication was single-pass, so AC4 was false as written.** The loop
+iterated the caller's list, not the accumulator, so a label added by an
+implication was never itself consulted: with a chained table
+`{"a": "b", "b": "c"}`, `["a"]` yielded `["a", "b"]` and silently dropped `c`.
+AC4 promises "a second implication is a data change" -- the next editor adds a
+row, does the data-only change the table advertises, and gets a partially
+applied result with nothing to surface it. Now a worklist, with a `seen` guard
+so a cyclic table terminates rather than hanging the filing tool.
+
+Both mutations now fail, along with emptying the table:
+
+    revert the call site (the untested wiring)   -> 6 failure(s)
+    back to single-pass (non-transitive)         -> 9 failure(s)
+    empty the table                              -> 9 failure(s)
+
+Also confirmed by the inspection, and worth recording because I did not check
+it before filing: `main()` is the only issue-creation path -- both repos'
+wrappers and the golden-path template all shell out to this script, nothing
+imports `create_issue` as a library -- and a missing `tooling` label does NOT
+fail the filing. The REST create endpoint auto-creates it, so the observable
+effect in cymagraph-infra and openclaw-projects is a new grey undescribed label
+rather than a broken file. That was the risk worth being wrong about.
+
+2038 -> 2042 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/gh_issue.py      | 31 ++++++++++++++++++++++++-------
+- tools/gh/test_gh_issue.py | 45 +++++++++++++++++++++++++++++++++++++++++++++
+- 2 files changed, 69 insertions(+), 7 deletions(-)
+
 ## fix(gh): tooling-exception implies tooling at filing time (harmonic-forge#616)
 
 `tooling-exception` says Lane 1 may execute an issue alone. `tooling` is what
