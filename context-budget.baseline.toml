@@ -97,3 +97,26 @@ harmonic-forge#569 nor harmonic-forge#582 touch this file in this repo --
 this entry exists purely to reconcile #583's gap so the gate reflects
 committed reality.
 """
+
+[[increase]]
+date = "2026-09-10"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 3413
+why = """
+harmonic-forge#569 (#592) inverted R-0116's default -- queueing is now what an
+unmarked mid-turn message means, with `NOW` registered separately as R-0355's
+interrupt marker, Esc's abandon-and-restart semantics stated alongside it so
+the two are not read as interchangeable, and the three always-immediate
+carve-outs enumerated. That merge did not record its growth, which left main
+failing its own ratchet and un-committable; recorded here from
+harmonic-forge#596 rather than left to block the next commit too. Second time
+in two days (see the #588 entry above) that a merge landed always-loaded growth
+the ratchet never saw -- the guard runs in `mise run check`, so a merge that
+skips it defers the failure onto whoever commits next.
+
+This is the always-loaded surface's largest item and this is a real increase,
+not avoidable by moving it: a mid-turn message's default meaning has to be
+known BEFORE the first prompt, which is hrse#1730's own criterion for staying
+unscoped. It cannot be a doc a session reads once the situation arises -- by
+then the session has already interrupted or queued.
+"""

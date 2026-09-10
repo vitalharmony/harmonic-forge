@@ -3,6 +3,154 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): restore Lane 2 queue discovery; derive the repo set from the manifest (harmonic-forge#596)
+
+Preclose on PR #597 returned four findings, and the strategy review returned a
+fifth that supersedes how I fixed the repo set. All addressed.
+
+**1. Lane 2 lost inbound queue discovery — the belt's whole job for that lane.**
+I deleted the `--queue-for l2` fallback while making Lane 2 worktrees-first.
+But Lane 2's inbound handoff has NO worktree by construction: Lane 2 creates
+`/tmp/<repo>-<issue>-impl` only AFTER picking an issue up, so every inbound
+handoff is in the no-worktree state and a worktrees-only belt sees none of
+them. `QUEUE_KINDS["l2"]` became reachable from no prescribed command. Lane 1's
+belt can be worktrees-only because other lanes' worktrees ARE what Lane 1 needs
+to see; that asymmetry is load-bearing and I carried it across without checking.
+Lane 2 now arms both halves in one command.
+
+**2. One repo's fetch failure retracted the other's queued issues.** A search
+rate-limit trip returned `set()`, indistinguishable from "nothing queued", so
+every issue that repo had queued printed `left-queue-for-l3` on stdout -- which
+the lane reads as "the ball moved on". `discover_queue` now returns
+`(queued, fetch_ok)` like `discover_l1_sweep`, a failed repo carries its
+previous queue forward untouched, and only repos that actually reported can
+produce a retraction. The first-poll line counts repos that REPORTED, not argv.
+
+**3. Nothing tested the runtime.** Eight mutations of the queue loop -- including
+`repos[:1]` and reverting the repo-qualified key -- left the suite green,
+because no test calls `main()`. Extracted `queue_cycle()` so the behavior is
+callable, and tested it.
+
+**4. `--help` still prescribed the command this issue opened on**, and
+documented a combination the parser now rejects.
+
+**5. The repo set is derived from `projects.toml`, not listed and not from
+`gh repo list`.** My four-repo list violated R-0122 outright, and a test pinned
+it. `gh repo list` was the second attempt and still wrong: it needs a
+convention to find checkouts, and the convention `<dir>/<repo name>` silently
+dropped hrse, whose checkout is `HRSE2`. The manifest already carries repo,
+path, worktree_dir and account -- it exists because "duplication is the only
+source of drift, and drift here is silent" -- and onboarding (R-0340) is what
+brings a repo under the belt. No API call, no second list, no convention.
+
+The guards are inverted to match: they now assert DERIVATION and fail on any
+hardcoded repo or path, per lane and for the suspenders' sweep.
+
+Suite 1929 -> 1960, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py |  16 +-
+- tools/gh/test_watch_lane_posts.py             | 147 ++++++-------
+- tools/gh/watch_lane_posts.py                  | 283 +++++++++++++++++++++-----
+- 4 files changed, 347 insertions(+), 162 deletions(-)
+
+## fix(belt): all four active repos, not two (harmonic-forge#596)
+
+Operator caught this mid-flight: the belt spans hrse and harmonic-forge, and
+there are FOUR active vitalharmony repos. `cymagraph-infra` and
+`openclaw-projects` each have live `-lane2` and `-lane3` checkouts with this
+skill linked and declared -- verified `[OK]` against their platform
+declarations, all six. So the skill was loaded into those lanes and telling
+them to watch repos that are not theirs.
+
+Same defect as #594's half-belt and #596's hrse-only sweep, one scope wider.
+Naming two repos instead of one fixed the instance and not the class.
+
+- Every lane command and the suspenders' sweep now name all four.
+- The guard asserts the repo SET, not merely "more than one" -- adding or
+  retiring a repo now fails the suite until the commands are updated. That is
+  the standing cost of #594's decision to name roots rather than infer them,
+  and making the cost loud is the whole point: a visibly outdated list beats a
+  silently narrowed belt.
+- A separate guard covers the suspenders' sweep, which sits outside any lane
+  bullet and which the per-lane guard therefore never reached -- the same
+  "control not reached at the point of use" shape as the last three.
+- `test_lane1_belt_names_two_distinct_repo_roots` asserted exactly two roots
+  and is superseded; it now checks only distinctness, with arity owned by the
+  four-repo guard. Two tests asserting the same property with different
+  answers is how the next one goes stale.
+
+Verified live from $HOME:
+
+  root /home/mmangus/Harmonic_Projects/HRSE2: 17 worktree(s)
+  root /home/mmangus/harmonic-forge: 11 worktree(s)
+  root /home/mmangus/Harmonic_Projects/cymagraph-infra: 3 worktree(s)
+  root /home/mmangus/Harmonic_Projects/openclaw-projects: 4 worktree(s)
+  --all-worktrees enumerated 35 live worktree(s)
+
+Suite 1960 -> 1961, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md | 25 +++++++++++------
+- tools/gh/test_watch_lane_posts.py   | 56 +++++++++++++++++++++++++++----------
+- 2 files changed, 58 insertions(+), 23 deletions(-)
+
+## fix(belt): finish the job — Lane 2 and Lane 3 belts, both repos, every lane (harmonic-forge#596)
+
+#590 fixed Lane 1's pull source. #594 fixed Lane 1's cwd dependence. Both left
+Lanes 2 and 3 carrying the same two defects, so the skill was correct for one
+lane out of three. This finishes it.
+
+- **Lane 2's belt is worktrees-first.** Naming the shared `HRSE2-lane2`
+  checkout resolved 0/1 live: between issues it sits on a detached HEAD, and
+  during an issue `lane-protocol.md` requires Lane 2 to work in
+  `/tmp/<repo>-<issue>-impl` and forbids the shared checkout -- so the one path
+  a static list could name was the one path Lane 2 may not work in. Now 7/28.
+
+- **`--repo` is repeatable, and `--queue-for` scans every repo given.** Lane 3
+  and the suspenders' Lane 1 sweep were hrse-only while 43 tooling-exception
+  issues sit on harmonic-forge with live lane checkouts for it. The two-repo L1
+  sweep immediately surfaced `harmonic-forge#62`, which the old command could
+  not see.
+
+- **The queue is keyed `(repo, issue)`, never a bare number.** hrse#570 and
+  harmonic-forge#570 both exist; a shared int key let one evict the other.
+  `l1_since` is per-repo for the same reason.
+
+- **Poll first, sleep after.** The loop slept before its first poll, so a belt
+  printed nothing for a whole interval -- ten minutes of silence for the
+  documented 600s suspenders sweep, which is meant to be run and read. "A
+  monitor that never printed a status line is not proof it is watching
+  anything" is this protocol's own rule; making the operator wait an interval
+  to learn otherwise is that same failure, deferred.
+
+- **Guards are per lane now.** #594's preclose finding was a Lane 1 guard that
+  passed on the command it forbids; Lanes 2 and 3 had no guard at all, which is
+  how this shipped. Every lane's command is now asserted to span both repos, to
+  be a single unwrapped copy-pasteable line, and to name no static worktree.
+
+Also unblocks main, second time in two days: #569 (#592) added 3413 bytes to
+`.claude/rules/lane-shorthand.md` without recording them, leaving the ratchet
+failing and the repo un-committable. Recorded from here rather than left to
+block whoever committed next.
+
+Verified live, all three lanes, run verbatim from $HOME:
+  Lane 1  27 worktrees / 2 roots, 8 closed-issue ghosts dropped
+  Lane 2  0/1 -> 7/28 resolved
+  Lane 3  queue-for-l3: 0 issue(s) queued now across 2 repo(s)
+  L1 sweep 8 issue(s) queued across 2 repo(s), incl. harmonic-forge#62
+
+Suite 1955 -> 1960, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py | 18 +++++--
+- tools/gh/test_watch_lane_posts.py             | 70 ++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py                  | 78 ++++++++++++++++-----------
+- 5 files changed, 174 insertions(+), 54 deletions(-)
+
 ## fix(belt): make the Lane 1 doc guard reject a flag where a repo root belongs (harmonic-forge#594)
 
 Preclose inspection on PR #595 returned one finding, and it was the worst kind:

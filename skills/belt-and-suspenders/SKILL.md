@@ -49,7 +49,7 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees ~/Harmonic_Projects/HRSE2 ~/harmonic-forge --watch l2 --watch l3 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --watch l2 --watch l3 --interval 300
   ```
 
   **Arm it verbatim, from wherever the session already is** — no `cd` first.
@@ -66,28 +66,32 @@ mid-issue is not the command to arm:
   rather than the work in hand, and it collapses two deliberately independent
   mechanisms into one, which is what this protocol's name is about.
 
-- **Lane 2** — self-discovers from its own worktree when it is genuinely on an
-  issue's branch:
+- **Lane 2** — **both halves, in one command.** Naming the shared
+  `HRSE2-lane2` checkout does not work: between issues it sits on a detached
+  HEAD (`0/1 resolved`), and *during* an issue Lane 2 is required to work in
+  `/tmp/<repo>-<issue>-impl`, never the shared checkout — so the one path a
+  static list can name is the one path Lane 2 may not work in.
+
+  But worktrees-**only** is just as wrong, and less obviously so: **Lane 2's
+  inbound work has no worktree by construction.** Lane 2 creates
+  `/tmp/<repo>-<issue>-impl` *after* it picks an issue up, so a fresh handoff
+  is always in the no-worktree state — a worktrees-only belt would never see
+  one, which is the belt's entire job for this lane (harmonic-forge#596).
+  Lane 1's belt can be worktrees-only because other lanes' worktrees *are*
+  what Lane 1 needs to see; that asymmetry is load-bearing and does not
+  transfer.
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
-      --worktrees ~/Harmonic_Projects/HRSE2-lane2 \
-      --watch l1 --interval 90
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 90
   ```
 
-  and falls back to `--queue-for l2` when it is between issues on a detached
-  HEAD, rather than guessing an issue number:
+  `--all-worktrees` follows Lane 2's own in-flight work; `--queue-for l2`
+  catches inbound `handoff` and `rework` on issues no worktree exists for yet.
+
+- **Lane 3** — no worktree of its own; queue-discover:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
-      --queue-for l2 --repo vitalharmony/hrse --watch l1 --interval 90
-  ```
-
-- **Lane 3** — no worktree of its own either; queue-discover repo-wide:
-
-  ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
-      --queue-for l3 --repo vitalharmony/hrse --watch l1 --interval 60
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 60
   ```
 
 **A monitor that never printed a status line is not proof it is watching
@@ -98,10 +102,35 @@ never silently, when zero resolved. `--all-worktrees` adds a line per repo
 root, because a root that contributes nothing (not a repo, or the *same* repo
 as another root) is otherwise invisible inside an aggregate count, and a belt
 covering one repo instead of two looks identical to one covering both
-(harmonic-forge#590). For `--queue-for` — the Lane 3 command above, and the
+(harmonic-forge#590). Lane 2's belt is worktrees-first too, so that guarantee
+covers it as well. For `--queue-for` — the Lane 3 command above, and the
 suspenders' Lane 1 sweep below — it reports the queued count once at the first
-poll, even when that count is zero. A genuinely quiet repo and a dead process
-must never look the same on the log.
+poll, even when that count is zero, and names how many repos it scanned. A
+genuinely quiet repo and a dead process must never look the same on the log.
+
+**The repo set is derived, never listed** — `--account-repos vitalharmony`
+resolves through `projects.toml`, the onboarded-repo manifest, per **R-0122**
+and this protocol's own design note: *"so a new repo is picked up automatically
+and an archived one drops out."* Onboarding a repo (R-0340) is what brings it
+under the belt; there is no second list to remember. The manifest also carries
+each repo's checkout path, which a convention like `<dir>/<repo name>` cannot:
+hrse's checkout is `HRSE2`, and harmonic-forge's is `~/harmonic-forge` while its
+lane worktrees live in `~/Harmonic_Projects/`.
+
+This is the correction to a first attempt that hardcoded four repos and wrote a
+test asserting that list (harmonic-forge#596). Naming them fixed the instance —
+the belt did cover four repos — and left the class: *"which repos?"* stayed a
+question someone had to keep answering correctly forever, and the test made the
+wrong answer permanent. A belt scanning a subset is a partial belt, and it looks
+exactly like a whole one.
+
+`--account-repos` is **not** the CWD inference #594 removed. That inferred the
+repo set from where the command happened to run, which is why it silently
+narrowed. This reads it from a declared manifest, and **fails hard** if the
+manifest cannot be read or declares nothing for the account — an empty repo set
+reads as "no work anywhere", the one reading this protocol exists to refuse. A
+declared checkout that is not present is reported and skipped, not fatal: not
+everything is cloned.
 
 **A worktree is evidence work was started, not that it is live.** Abandoned
 `/tmp/<repo>-<issue>-impl` checkouts are never pruned, and their branches read
@@ -191,7 +220,7 @@ idempotent check runs every tick regardless of what any other check found. Lane
    the belt itself:
 
    ```
-   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l1 --repo vitalharmony/hrse --interval 600
+   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l1 --account-repos vitalharmony --interval 600
    ```
 
 3. **What have I never answered** — count *my own* posted markers per issue.
