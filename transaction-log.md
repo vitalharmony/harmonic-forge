@@ -44,6 +44,62 @@ Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - rules/universal-agent.md  | 34 ++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml | 16 ++++++++++++++++
 - 2 files changed, 50 insertions(+)
+## fix(belt): wire the plan guard, bind --sweep-for, correct the stale help (harmonic-forge#618)
+
+Preclose returned six findings across the pair. The first is the worst kind.
+
+**1. `reject_plan_as_discussion()` was defined and NEVER CALLED.** The whole
+load-bearing AC was dead code: `mise run lane-comment` with a `## Plan` body
+still posted `kind=discussion`, byte-identical to the four measured stalls. My
+edit that added the call site aborted before writing and I did not re-check.
+Wired into `validate_kind` now, with a test that drives the CLI path.
+
+**2. The guard keyed on one heading nothing mandates.** `## Plan` matched;
+`## L2S` -- the heading `l2_post.py` actually stamps -- did not. Keying on one
+spelling moves the bypass rather than closing it. Both now match, and
+`KIND_HEADING["plan"]` uses the same pattern so the cross-check agrees.
+
+**3. The remediation named a command that does not exist.** `mise run l2-post`
+is not in HRSE2's task table at all, and harmonic-forge's version has no
+`--file` and hardcodes its own repo, so it cannot post to an hrse issue. A
+Lane 2 session would have been blocked with no working alternative -- worse
+than the drift. `plan` is now a real kind on `lane-comment`, which is the only
+tool that can post there, and the message names it.
+
+**4. `--queue-for`'s own --help still said `l1` is the unbounded sweep.** After
+the split that is false in both halves, and it is the first thing an operator
+reads. Someone reading it and then seeing `--queue-for l1` in the Lane 1 belt
+command would conclude the belt arms the sweep -- i.e. read the shipped command
+as #590's regression and "fix" it.
+
+**5. `test_suspenders_still_carry_the_repo_wide_sweep` passed on prose.** The
+new sentence "It is a *different flag* from `--queue-for l1`" satisfied its
+substring check, so deleting the armed command left it green. Now asserts an
+actual command line.
+
+**6. Nothing bound `--sweep-for` to the sweep path.** Dropping `sweep=` at
+`main()`'s call site routed the suspenders to the BOUNDED queue -- covering the
+same narrow set as the belt while printing `sweep-for-l1` -- and the suite
+stayed green. Two tests: one that `queue_cycle` respects the parameter, and one
+that `main()` actually passes it. The second is the one that matters; the first
+version of this fix had only the equivalent of the first, which is the same
+untested-wiring shape as #616 and as finding 1 above.
+
+All six mutations now fail:
+
+    drop sweep= at the call site           -> 1 failure(s)
+    QUEUE_POSTERS back to hardcoded l1     -> 1 failure(s)
+    add discussion to l1 kinds             -> 2 failure(s)
+    delete the armed sweep command         -> 2 failure(s)
+
+2054 -> 2056 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 70 +++++++++++++++++++++++++++++++++++++--
+- tools/gh/watch_lane_posts.py      | 12 ++++---
+- 2 files changed, 74 insertions(+), 8 deletions(-)
+
 ## fix(belt): give Lane 1 a bounded inbound queue; split the sweep's flag (harmonic-forge#618)
 
 Four Lane 2 plans -- hrse#1383, #1662, #1663, #1771 -- sat unactioned until

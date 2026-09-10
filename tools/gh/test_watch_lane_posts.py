@@ -1136,9 +1136,16 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
         text = _SKILL_MD.read_text(encoding="utf-8")
         suspenders = text.split("## The suspenders", 1)
         self.assertEqual(len(suspenders), 2, "suspenders section not found")
-        self.assertIn("--queue-for l1", suspenders[1],
-                      "the repo-wide sweep must be armed somewhere; the "
-                      "suspenders' pull loop is where harmonic-forge#590 put it")
+        # An ARMED command line, not prose mentioning the flag. harmonic-
+        # forge#618 added the sentence "It is a *different flag* from
+        # `--queue-for l1`" to this section, which satisfied the old substring
+        # check -- so deleting the actual command left this green.
+        armed = [line for line in suspenders[1].splitlines()
+                 if "watch_lane_posts.py" in line and "--sweep-for l1" in line]
+        self.assertTrue(armed,
+                        "the repo-wide sweep must be ARMED here, as a command; "
+                        "harmonic-forge#590 put it in the suspenders and #618 "
+                        "gave it its own flag")
 
     def test_discover_l1_sweep_is_kept_not_deleted(self):
         """AC2: demoted, not removed -- it is still the suspenders' backstop."""
@@ -1657,6 +1664,63 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
             with self.subTest(lane=lane):
                 self.assertIn(lane, watch_lane_posts.QUEUE_KINDS)
                 self.assertIn(lane, watch_lane_posts.QUEUE_POSTERS)
+
+    def test_sweep_true_reaches_the_unbounded_sweep(self):
+        """harmonic-forge#618 preclose finding: dropping `sweep=` at the call
+        site made `--sweep-for l1` route to the BOUNDED queue, so the suspenders
+        silently covered the same narrow set as the belt -- and the whole suite
+        stayed green. This is the mutation the flag exists to prevent."""
+        with patch("watch_lane_posts.l1_sweep_cycle",
+                   return_value=({1: ("l2", "x")}, "2026-09-10T12:00:00Z")) as sweep, \
+             patch("watch_lane_posts.discover_queue",
+                   return_value=({}, True)) as bounded:
+            watch_lane_posts.queue_cycle(["o/r"], "l1", {}, {},
+                                         "2026-09-10T12:00:00Z", sweep=True)
+        sweep.assert_called_once()
+        bounded.assert_not_called()
+
+    def test_sweep_false_reaches_the_bounded_queue(self):
+        with patch("watch_lane_posts.l1_sweep_cycle") as sweep, \
+             patch("watch_lane_posts.discover_queue",
+                   return_value=({}, True)) as bounded:
+            watch_lane_posts.queue_cycle(["o/r"], "l1", {}, {},
+                                         "2026-09-10T12:00:00Z")
+        bounded.assert_called_once()
+        sweep.assert_not_called()
+
+    def test_main_passes_sweep_true_for_the_sweep_flag(self):
+        """The WIRING, not just the parameter. harmonic-forge#618 preclose
+        finding, and the same shape as #616's: dropping `sweep=` at `main()`'s
+        call site left the whole suite green, because the tests above drive
+        `queue_cycle` directly and never exercise the one line that reaches it."""
+        seen = {}
+        def capture(*a, **kw):
+            seen["sweep"] = kw.get("sweep", False)
+            raise KeyboardInterrupt          # one cycle, then stop
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l1",
+                                        "--repo", "o/r", "--interval", "0"]), \
+             patch("watch_lane_posts.assert_identity"), \
+             patch("watch_lane_posts.queue_cycle", side_effect=capture), \
+             patch("watch_lane_posts.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                watch_lane_posts.main()
+        self.assertTrue(seen["sweep"],
+                        "--sweep-for must reach queue_cycle as sweep=True, or the "
+                        "suspenders silently run the bounded queue")
+
+    def test_main_passes_sweep_false_for_the_queue_flag(self):
+        seen = {}
+        def capture(*a, **kw):
+            seen["sweep"] = kw.get("sweep", False)
+            raise KeyboardInterrupt
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--queue-for", "l1",
+                                        "--repo", "o/r", "--interval", "0"]), \
+             patch("watch_lane_posts.assert_identity"), \
+             patch("watch_lane_posts.queue_cycle", side_effect=capture), \
+             patch("watch_lane_posts.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                watch_lane_posts.main()
+        self.assertFalse(seen["sweep"])
 
     def test_arming_both_the_belt_and_the_sweep_is_refused(self):
         """Collapsing two deliberately independent mechanisms into one process

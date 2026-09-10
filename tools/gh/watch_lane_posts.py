@@ -1362,12 +1362,14 @@ def main() -> int:
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
                              "re-derived) -- for watching an issue with no worktree")
-    parser.add_argument("--queue-for", choices=sorted({"l1", *QUEUE_KINDS}), default=None,
+    parser.add_argument("--queue-for", choices=sorted(QUEUE_KINDS), default=None,
                         help="repo-wide: find ANY open issue currently queued to this lane "
-                             "(paired with --repo), no worktree or issue number needed. "
-                             "'l1' is Lane 1's newest-marker sweep (discover_l1_sweep) -- "
-                             "every open issue whose newest comment isn't Lane 1's own -- "
-                             "and is not a `QUEUE_KINDS` lookup like l2/l3.")
+                             "(paired with --repo/--account-repos), no worktree or issue "
+                             "number needed. BOUNDED for every lane, including l1 since "
+                             "harmonic-forge#618: an issue queues only when its newest "
+                             "classified comment is of a kind in QUEUE_KINDS[lane] AND was "
+                             "posted by a lane in QUEUE_POSTERS[lane]. The unbounded "
+                             "newest-marker sweep is a DIFFERENT flag, --sweep-for.")
     parser.add_argument("--watch", action="append", default=[],
                         choices=["l1", "l2", "l3"],
                         help="lane whose posts to surface on watched issues -- l1, l2, "
