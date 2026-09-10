@@ -128,8 +128,10 @@ def create_issue(repo: str, title: str, body: str, labels: list[str],
 # repo would quietly inherit some other project's board. Adding a repo here is
 # a one-line change and a deliberate act.
 #
-# cymagraph-infra has no board of its own -- its items live on board #1
-# alongside hrse's (hrse#979). openclaw-projects likewise.
+# A board is per VENTURE, not per repo: cymagraph-infra's items live on board #1
+# alongside hrse's (hrse#979) because those repos ship one CymaGraph release.
+# openclaw-projects has its own #4 (harmonic-forge#605) -- it is its own
+# venture, feeding the products while belonging to none.
 def _load_repo_boards() -> dict[str, tuple[str, str]]:
     """From `projects.toml` (harmonic-forge#498), not a local copy.
 

@@ -3,6 +3,100 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(manifest): derive the prefix map, spread the OpenClaw venture, clear board 1 (harmonic-forge#605)
+
+Preclose returned four findings. My "the belt went 3 repos -> 4 with no code
+change" claim was true for the repo-search half and wrong for the worktree half.
+
+1. **The belt could not resolve an openclaw branch.** `_BRANCH_ISSUE_RE`'s
+   prefix class read `[hHfFiI]`, so `l2/o12-fix` or `__gate__/o12-tc1` -- the
+   exact branch shapes used live -- matched nothing and the belt never watched
+   openclaw-projects#12. `_PREFIX_REPO` had no `o` either.
+
+   Fixed by DERIVING both from projects.toml rather than adding a fourth `O` to
+   a fourth hardcoded list. There were three independent copies of this map --
+   `_PREFIX_REPO`, that regex class, and `batch_auth.REPO_PREFIXES` -- with no
+   test tying any of them together. New `manifest.prefix_repos()` is the single
+   source; all three now read it, and four tests assert they cannot disagree.
+   `batch_auth` keeps a last-known fallback if the manifest is unreadable: it
+   runs as a PreToolUse hook on every matching command, and denying every BATCH
+   on a bad read would turn a gate into an outage.
+
+2. **`OpenClaw` existed on board #4 only.** `gh_issue.py --venture` has no
+   `choices` list and validates live against whichever board the repo maps to,
+   so `--venture OpenClaw` on a forge or hrse issue created the issue, boarded
+   it, wrote Status/Tier/Theme, then failed on Venture and exited 1 -- leaving a
+   live issue with Venture unset, which `repo_hygiene.audit_unboarded` reports
+   as drift. Not hypothetical: #605 itself sits on board 3 with Venture null.
+   Added to boards 1 and 3.
+
+3. **openclaw-projects#4 was stranded on board 1.** After the flip, both audits
+   resolve openclaw to board 4 and fetch only that, so nothing would ever have
+   seen it again -- and board 1 is CymaGraph's release view, which is the whole
+   reason for the split. Found by paginating all 984 items; removed, 984 -> 983.
+
+4. **The new CLAUDE.md asserted projects.toml is "the only place" the prefix is
+   declared.** It is neither the only nor the canonical place: `lane-shorthand.md`
+   is canonical and the manifest is CHECKED against it. Corrected.
+
+Also corrected, comment-only: three modules still stated openclaw shares board
+#1 (`repo_hygiene.py`, `gh_issue.py`, `manifest.py`), and HRSE2's
+`docs/BOARD-FIELDS.md` still enumerated four ventures.
+
+1968 -> 1972 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/watch_lane_posts.py      | 23 +++++++++++---------
+- tools/hooks/batch_auth.py         | 45 +++++++++++++++++++++++++++++---------
+- tools/onboard/manifest.py         | 30 +++++++++++++++++++++----
+- 6 files changed, 129 insertions(+), 29 deletions(-)
+
+## feat(manifest): onboard openclaw-projects onto its own board (harmonic-forge#605)
+
+openclaw-projects had a live checkout, both lane worktrees, linked directives,
+hooks and a reserved prefix -- but `onboarded = false`, so every manifest
+consumer excluded it. Surfaced by #596: the belt derives its repo set from this
+manifest and reported 3 non-archived repos, not 4, leaving all three armed
+lanes blind to that repo. The manifest was working correctly; it was reporting
+a repo nobody had onboarded.
+
+It also needed its own board. It was pointed at board 1 (CymaGraph Backlog)
+while carrying `milestones = false` -- the only repo with that combination, and
+the mismatch that surfaced the real question, since board 1 is CymaGraph's
+release view and openclaw ships in no CymaGraph release. Operator, 2026-09-10:
+"openclaw 'feeds' the others because I prototype things there but it isn't part
+of the cymagraph product nor will it be for kenekted or leasepal."
+
+So openclaw is its own venture, and the board model is confirmed as PER VENTURE,
+not per repo -- which is also why cymagraph-infra legitimately shares hrse's
+board 1: those two repos ship one CymaGraph release together.
+
+- New board vitalharmony #4 "openclaw Backlog", with Status/Tier/Theme/Venture/
+  Sequence matching board 3's schema. Venture gains an OpenClaw option.
+- `board_number` 1 -> 4, `onboarded` false -> true.
+- The manifest header's board rule is corrected: it asserted openclaw
+  "deliberately shares hrse's board #1", now the opposite of true.
+- Two live-value guards updated. `test_gh_issue.TestRepoBoardMap` and
+  `test_manifest.LiveManifestTests` pin the board map so a change cannot
+  silently misroute issues (the failure #107 fixed once already). They fired
+  correctly; the expectation moved with a recorded reason. A third test's
+  docstring cited openclaw as the live `onboarded = false` example and now
+  points at its own fixture.
+
+forge-onboard: 6 projects, 0 failing checks. The belt went 3 repos -> 4 with no
+code change, which is the point of deriving from the manifest rather than
+listing.
+
+`mise run check` exit 0, 1968 tests.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- projects.toml                  | 18 ++++++++++++++----
+- tools/gh/test_gh_issue.py      |  7 ++++++-
+- tools/onboard/test_manifest.py | 14 ++++++++++----
+- 3 files changed, 30 insertions(+), 9 deletions(-)
+
 ## fix(belt): paginate the candidate search; make the #602 test actually bite
 
 Preclose on PR #603 returned two findings. Both fixed.

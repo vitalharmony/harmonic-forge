@@ -463,9 +463,11 @@ def audit_unlabelled_migrations(repo: str, report: Report) -> None:
             ))
 
 
-# hrse#979: which board a repo's issues live on. cymagraph-infra and
-# openclaw-projects have no board of their own -- their items sit on board #1
-# alongside hrse's. Mirrors gh_issue.py's REPO_BOARDS (harmonic-forge#107);
+# hrse#979: which board a repo's issues live on. A board is per VENTURE, not
+# per repo -- cymagraph-infra's items sit on board #1 alongside hrse's because
+# those two repos ship one CymaGraph release together. openclaw-projects moved
+# OFF #1 to its own #4 (harmonic-forge#605): it feeds the products and belongs
+# to none of them. Mirrors gh_issue.py's REPO_BOARDS (harmonic-forge#107);
 # kept local rather than imported so this script stays standalone.
 def _load_repo_boards() -> dict[str, tuple[str, str]]:
     """From `projects.toml` (harmonic-forge#498).
