@@ -128,13 +128,17 @@ Lane 3's own spec/AE fetch". Headings are a cross-check: where a footer's
 mandated heading is missing, the transition is still derived but marked
 `validated=False`, so the disagreement is **reported, not silently resolved.**
 
-Two artifacts are the exception, and the exception is a known gap rather than
-a design: the **Lane 3 Test Spec** and the **Lane 3 Gate Results** have no
-emitter — `l1_post.py --kind` is `handoff|ready-for-l3|sweep|ae|ae-and-sweep|rework`
-and `l2_post.py` covers only `L2P`/`L2D`/`L2B` — so they carry no footer at
-all. They are read from their headings with `provenance="heading:..."`, which
-keeps the model honest about what it knows. The two artifacts that decide
-whether a gate passed are exactly the two with no machine-readable authority.
+`l2_post.py` now covers `L2S`/`L2D`/`L2B`/the `finding` kind, and every kind
+it posts carries the same footer, `posted-by=LANE2` included (harmonic-forge
+#583) — this paragraph previously said `l2_post.py` covered only
+`L2P`/`L2D`/`L2B` with no footer at all, which stopped being true the moment
+#583 landed and was corrected here rather than left for the next reader to
+trust and build heading-only detection against, again.
+
+The Lane 3 Test Spec and Lane 3 Gate Results are unaffected by #583 (a
+different tool, out of that issue's scope) and are not re-verified by this
+edit — treat their footer status here as unconfirmed rather than assume it
+tracks this paragraph's l2_post.py correction.
 <!-- /R-0333 -->
 
 <!-- R-0334 -->

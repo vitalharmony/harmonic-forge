@@ -14,6 +14,7 @@ from watch_lane_posts import (
     QUEUE_KINDS,
     _BRANCH_ISSUE_RE,
     _classify,
+    branch_ahead_lines,
     branch_ahead_without_completion,
     discover_from_worktree,
     discover_l1_sweep,
@@ -539,6 +540,122 @@ class BranchAheadWithoutCompletionTests(unittest.TestCase):
         with patch("watch_lane_posts._run_git", return_value=None):
             self.assertIsNone(
                 branch_ahead_without_completion("/wt", "o/r", 1))
+
+    def test_failed_comment_fetch_reports_nothing_not_a_false_positive(self):
+        """harmonic-forge#583 preclose finding: `_fetch_all_comments`
+        returns `None` (not `[]`) on a failed fetch. Silently treating that
+        as "no completion" would turn "I could not check" into a false
+        positive claim that a real completion doesn't exist -- worse than
+        staying silent for one cycle, since the next successful poll
+        re-checks from scratch."""
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            self.assertIsNone(
+                branch_ahead_without_completion("/wt", "o/r", 1))
+
+    def test_finding_after_completion_does_not_reassert_the_gap(self):
+        """harmonic-forge#583 preclose finding: a `finding` (harmonic-
+        forge#571 -- a defect report, never a status transition) posted
+        after a real completion must not un-classify it. `_is_l2_finding`
+        already protects `discover_queue` from exactly this; it must
+        protect this function's own "latest l2 event" walk too."""
+        import l2_post as lp
+        completion_body = lp.compose_body("completion", [], "clean", lead={
+            "Status": "done", "Change": "x", "Next": "ready for review"})
+        finding_body = lp.compose_body("finding", [], "an unrelated defect note")
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments",
+                  return_value=[{"body": completion_body}, {"body": finding_body}]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            self.assertIsNone(
+                branch_ahead_without_completion("/wt", "o/r", 1))
+
+
+class BranchAheadLinesTests(unittest.TestCase):
+    """harmonic-forge#583 preclose finding: `branch_ahead_lines` (the
+    factored-out per-cycle wiring `main()` calls) must be reachable with NO
+    `--watch` argument at all -- it takes no `watch` parameter by design,
+    which is the direct proof that the belt-and-suspenders `--worktrees
+    ... --watch l1` command (the one real Lane 2 belt invocation) actually
+    reaches this feature."""
+
+    def test_reports_and_updates_state_with_no_watch_concept_involved(self):
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            resolutions = [("/wt", ("o/r", 1), "resolved")]
+            last_ahead: dict[str, str | None] = {}
+            lines = branch_ahead_lines(resolutions, last_ahead)
+            self.assertEqual(len(lines), 1)
+            self.assertIn("no completion posted", lines[0])
+            self.assertEqual(last_ahead["/wt"], lines[0])
+
+    def test_unresolved_worktree_is_dropped_from_state_and_silent(self):
+        last_ahead = {"/wt": "a stale prior report"}
+        lines = branch_ahead_lines([("/wt", None, "detached HEAD")], last_ahead)
+        self.assertEqual(lines, [])
+        self.assertNotIn("/wt", last_ahead)
+
+    def test_unchanged_report_is_not_reprinted(self):
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            resolutions = [("/wt", ("o/r", 1), "resolved")]
+            last_ahead: dict[str, str | None] = {}
+            first = branch_ahead_lines(resolutions, last_ahead)
+            second = branch_ahead_lines(resolutions, last_ahead)
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+
+
+class ClassifyFencedBlockTests(unittest.TestCase):
+    """harmonic-forge#583 preclose finding / this file's own R-0334
+    (`rules/lane-shorthand.md`): a marker quoted as evidence inside a
+    fenced code block must never be read as a real transition -- now
+    load-bearing for LANE attribution, not just `kind`, since `posted-by`
+    controls which lane a comment is credited to."""
+
+    def test_marker_quoted_inside_a_fence_is_not_read_as_a_real_transition(self):
+        body = (
+            "Reviewing the belt's own docstring, which quotes its marker "
+            "shape as an example:\n\n"
+            "```\n"
+            "<!-- l1-post v1; kind=completion; posted-by=LANE2 -->\n"
+            "```\n\n"
+            "No real transition happened here."
+        )
+        self.assertIsNone(_classify(body))
+
+    def test_a_real_marker_outside_any_fence_still_classifies(self):
+        body = ("## L2D — receipt-backed status (harmonic-forge#371)\n\ntext\n\n"
+                "<!-- l1-post v1; kind=completion; posted-by=LANE2 -->")
+        self.assertEqual(_classify(body), ("l2", "completion"))
+
+    def test_quoted_marker_in_a_fence_does_not_silence_ac4s_gap_detector(self):
+        """The concrete failure mode: a Lane 1 review comment pasting Lane
+        2's completion footer as evidence must not make
+        `branch_ahead_without_completion` believe a completion exists."""
+        quoting_body = {"body": (
+            "Evidence review:\n\n```\n"
+            "<!-- l1-post v1; kind=completion; posted-by=LANE2 -->\n```\n"
+        )}
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[quoting_body]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            report = branch_ahead_without_completion("/wt", "o/r", 1)
+            self.assertIsNotNone(report)
+            self.assertIn("no completion posted", report)
 
 
 class L1SweepTests(unittest.TestCase):

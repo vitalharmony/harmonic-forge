@@ -331,6 +331,25 @@ def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
         return []
 
 
+#: Triple-backtick fenced code blocks, DOTALL so a multi-line fence is one
+#: match. harmonic-forge#583 preclose finding / this file's own R-0334
+#: (`rules/lane-shorthand.md`): "a marker quoted as evidence never counts as
+#: a transition. Fenced blocks are stripped before any marker is read." --
+#: this file never actually did that stripping; it only mattered for `kind=`
+#: before `posted-by` became lane-determining, but a quoted footer NOW
+#: silently reassigns which lane the whole comment is attributed to (a Lane
+#: 1 comment pasting a Lane 2 completion footer as evidence would otherwise
+#: classify as a real Lane 2 completion). No poster's own tooling
+#: (`l1_post.py`, `l2_post.py`) ever emits its real marker inside a fence,
+#: so stripping fenced content before the marker search cannot hide a
+#: genuine one -- only a quoted one.
+_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _strip_fenced_blocks(body: str) -> str:
+    return _FENCED_BLOCK_RE.sub("", body)
+
+
 def _classify(body: str) -> tuple[str, str] | None:
     """Returns `(lane, detail)` -- `detail` is the `kind=` value when a
     marker is present, or the matched heading text for a markerless l2/l3
@@ -343,8 +362,15 @@ def _classify(body: str) -> tuple[str, str] | None:
     keeps every marker minted before this landed reading as `l1`, unchanged.
     The heading-match fallback below exists ONLY for the historical corpus
     posted before this landed (AC5) -- keep it; a comment already posted
-    does not retroactively gain a marker."""
-    marker_match = _MARKER_RE.search(body)
+    does not retroactively gain a marker.
+
+    The marker search runs against the body with fenced code blocks
+    stripped (`_strip_fenced_blocks`, R-0334) -- a marker quoted as
+    evidence inside a fence must never be read as a real transition. The
+    heading check below intentionally still uses the RAW body's first
+    line: a heading is only ever meaningful as literally the first line of
+    a real post, and no legitimate heading is fenced."""
+    marker_match = _MARKER_RE.search(_strip_fenced_blocks(body))
     if marker_match:
         marker = marker_match.group(0)
         kind_match = _KIND_RE.search(marker)
@@ -624,7 +650,24 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
     Silently reports nothing (rather than raising) when `origin/main` can't
     be resolved at all -- an unfetched or non-standard remote is a worktree
     configuration question this function has no business surfacing as a
-    lane-completion finding."""
+    lane-completion finding.
+
+    A FAILED comment fetch (`_fetch_all_comments` returning `None` --
+    quota exhaustion, a transient 5xx) is also reported as `None`
+    (harmonic-forge#583 preclose finding), never as "no completion posted":
+    unlike `discover_queue`, where a failed fetch degrading to "no new
+    classified comments this cycle" is a harmless no-op, HERE it would
+    turn "I could not check" into a false positive assertion that a real
+    completion doesn't exist. Silence for one cycle (the next successful
+    poll re-checks from scratch) is the correct failure mode, not a
+    confident wrong answer.
+
+    A `finding` posted after the real completion must not un-classify it
+    either (same #580 invariant `_is_l2_finding` protects in
+    `discover_queue`, applied here too) -- a finding is a defect report,
+    not a status transition, and must never overwrite the LATEST
+    non-finding `l2` event when this function decides whether a completion
+    already exists."""
     base = _run_git(worktree, "merge-base", "HEAD", "origin/main")
     if not base:
         return None
@@ -634,10 +677,13 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
     count = int(count_text)
     if count == 0:
         return None
+    comments = _fetch_all_comments(repo, issue)
+    if comments is None:
+        return None
     last_l2: tuple[str, str] | None = None
-    for comment in _fetch_all_comments(repo, issue) or ():
+    for comment in comments:
         classified = _classify(comment.get("body", ""))
-        if classified is not None and classified[0] == "l2":
+        if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
             last_l2 = classified
     if last_l2 is not None and _is_l2_completion(*last_l2):
         return None
@@ -645,6 +691,37 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
     plural = "" if count == 1 else "s"
     return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
             f"origin/main with no completion posted")
+
+
+def branch_ahead_lines(
+    resolutions: list[tuple[str, tuple[str, int] | None, str]],
+    last_ahead: dict[str, str | None],
+) -> list[str]:
+    """One poll cycle's worth of AC4 output lines, factored out of `main()`
+    (harmonic-forge#583 preclose finding) so this is directly unit-testable
+    rather than only reachable through argv -- the exact factoring
+    `l1_sweep_cycle` below already uses for the same reason.
+
+    Takes EVERY resolved worktree unconditionally, with no dependence on
+    `--watch` -- the preclose finding this exists to fix was a `"l2" in
+    watch` gate that made the feature unreachable under every belt command
+    `skills/belt-and-suspenders/SKILL.md` prescribes, because the lane that
+    owns a worktree (Lane 2) is, by definition, watching OTHER lanes'
+    posts (`--watch l1`), never its own. `last_ahead` is mutated in place
+    (`main()`'s own state dict) so a worktree that stops resolving forgets
+    its prior report rather than repeating it forever."""
+    lines: list[str] = []
+    for path, pair, _reason in resolutions:
+        if pair is None:
+            last_ahead.pop(path, None)
+            continue
+        repo, issue = pair
+        report = branch_ahead_without_completion(path, repo, issue)
+        if report != last_ahead.get(path):
+            if report:
+                lines.append(report)
+            last_ahead[path] = report
+    return lines
 
 
 def l1_sweep_cycle(
@@ -805,21 +882,19 @@ def main() -> int:
                 sys.stdout.flush()
         since = now
 
-        #: harmonic-forge#583 AC4 -- only meaningful for a lane watching its
-        #: own worktrees for `l2` completion signal; `--queue-for`-only runs
-        #: (Lane 3's belt, e.g.) have no worktree of their own to check.
-        if "l2" in watch:
-            for path, pair, _reason in resolutions:
-                if pair is None:
-                    last_ahead.pop(path, None)
-                    continue
-                repo, issue = pair
-                report = branch_ahead_without_completion(path, repo, issue)
-                if report != last_ahead.get(path):
-                    if report:
-                        print(report)
-                        sys.stdout.flush()
-                    last_ahead[path] = report
+        #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
+        #: in watch`, which reads as "surface *other* lanes' Lane 2 posts to
+        #: me" -- the lane that actually owns a worktree and could be the
+        #: one silently ahead of `origin/main` (Lane 2, per its own
+        #: `belt-and-suspenders` command, `--worktrees ... --watch l1`) by
+        #: definition never passes `--watch l2` for itself. `branch_ahead_
+        #: lines` runs for every resolved worktree unconditionally --
+        #: `--queue-for`-only runs (Lane 1/3's belts) simply have no
+        #: `--worktrees` at all, so `resolutions` is empty for them and this
+        #: is a no-op there, exactly as intended.
+        for line in branch_ahead_lines(resolutions, last_ahead):
+            print(line)
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":
