@@ -136,11 +136,31 @@ from belt_mechanics import (  # noqa: E402
 _ACCOUNT = "vitalharmony"
 _COUNTER = CallCounter()
 
-_L1_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;\s*kind=([\w-]+)")
-#: `L2[A-Z]` catches the status-transition headings (`L2P`/`L2D`/`L2B`).
+#: The full marker text, not just its `kind=` field (harmonic-forge#583) --
+#: `posted-by` has to be extracted from the SAME matched span, the same way
+#: `fetch_lane1_context.py`'s `is_lane1_comment` already scopes its field
+#: regexes to one matched marker rather than `.search()`-ing the whole body
+#: (harmonic-forge#269): scoping only the kind lookup and leaving
+#: `posted-by` unscoped would reopen exactly that hole one field over.
+_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;.*?-->", re.DOTALL)
+_KIND_RE = re.compile(r"kind=([\w-]+)")
+_POSTED_BY_RE = re.compile(r"posted-by=([\w-]+)")
+#: harmonic-forge#583 AC1/AC2. `l2_post.py` now stamps this same marker on
+#: every kind it posts -- so the marker's mere presence no longer implies
+#: Lane 1 the way it safely could before. `posted-by`, when present, says
+#: which lane actually posted; ABSENT is the backward-compatibility case
+#: (every marker minted before this landed, Lane 1's entire historical
+#: corpus, carries no `posted-by` at all) and an unrecognized value both
+#: default to `l1` -- do not raise or treat either as unclassifiable, that
+#: default IS the contract that keeps the pre-#583 corpus reading the same.
+_POSTED_BY_LANE = {"LANE2": "l2", "LANE3": "l3"}
+#: `L2[A-Z]` catches the status-transition headings (`L2S`/`L2D`/`L2B`).
 #: `L2 Finding` (harmonic-forge#571) is a distinct alternative, not a widened
 #: character class, precisely so it stays visible to this belt without ever
 #: being confused for a status transition by anything reading `L2[A-Z]`.
+#: Still matches a legacy `## L2P` comment from before the harmonic-forge#583
+#: rename (AC8) -- `L2[A-Z]` never depended on which letter, and no
+#: historical body is rewritten.
 _L2_HEADING_RE = re.compile(r"^##\s+(?:L2[A-Z]\b|L2 Finding\b)")
 _L3_HEADING_RE = re.compile(r"^##\s+(L3\b|Lane 3\b)")
 #: The `L2 Finding` heading specifically, as opposed to a real `L2[A-Z]`
@@ -152,6 +172,29 @@ _L3_HEADING_RE = re.compile(r"^##\s+(L3\b|Lane 3\b)")
 #: handoff, and posting one must never silently drop an issue out of
 #: whichever lane's queue it already sat in.
 _L2_FINDING_RE = re.compile(r"^##\s+L2 Finding\b")
+#: The `## L2D` heading, for the same markerless-fallback reason as
+#: `_L2_FINDING_RE` above -- harmonic-forge#583 AC4's belt-completion signal
+#: needs to recognize a completion whether it classified via the marker
+#: (`detail == "completion"`) or, for a comment posted before #583 landed,
+#: via this heading fallback.
+_L2_COMPLETION_RE = re.compile(r"^##\s+L2D\b")
+
+
+def _is_l2_finding(lane: str, detail: str) -> bool:
+    """True when a `_classify` result represents an `l2` `finding` --
+    either the harmonic-forge#583 marker path (`detail == "finding"`) or the
+    pre-#583 / markerless heading-fallback path (`detail` is the literal
+    `## L2 Finding ...` headline). Both must be recognized: `l2_post.py`
+    stamps a marker on every kind now (#583 AC1), so a finding posted today
+    classifies via the marker branch, while the historical corpus and any
+    hand-typed post still fall back to the heading (AC5)."""
+    return lane == "l2" and (detail == "finding" or _L2_FINDING_RE.match(detail) is not None)
+
+
+def _is_l2_completion(lane: str, detail: str) -> bool:
+    """The `completion`-kind analogue of `_is_l2_finding` above, for
+    harmonic-forge#583 AC4's branch-ahead-without-completion check."""
+    return lane == "l2" and (detail == "completion" or _L2_COMPLETION_RE.match(detail) is not None)
 
 #: A run of 2-6 digits, optionally prefixed with one repo-selecting letter,
 #: bounded by `/`, `-`, or the string's start/end -- e.g. `h1530` in
@@ -288,12 +331,54 @@ def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
         return []
 
 
+#: Triple-backtick fenced code blocks, DOTALL so a multi-line fence is one
+#: match. harmonic-forge#583 preclose finding / this file's own R-0334
+#: (`rules/lane-shorthand.md`): "a marker quoted as evidence never counts as
+#: a transition. Fenced blocks are stripped before any marker is read." --
+#: this file never actually did that stripping; it only mattered for `kind=`
+#: before `posted-by` became lane-determining, but a quoted footer NOW
+#: silently reassigns which lane the whole comment is attributed to (a Lane
+#: 1 comment pasting a Lane 2 completion footer as evidence would otherwise
+#: classify as a real Lane 2 completion). No poster's own tooling
+#: (`l1_post.py`, `l2_post.py`) ever emits its real marker inside a fence,
+#: so stripping fenced content before the marker search cannot hide a
+#: genuine one -- only a quoted one.
+_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _strip_fenced_blocks(body: str) -> str:
+    return _FENCED_BLOCK_RE.sub("", body)
+
+
 def _classify(body: str) -> tuple[str, str] | None:
-    """Returns `(lane, detail)` -- `detail` is the `kind=` value for l1-post,
-    or the matched heading text for l2/l3 -- or `None` if unclassifiable."""
-    marker = _L1_MARKER_RE.search(body)
-    if marker:
-        return "l1", marker.group(1)
+    """Returns `(lane, detail)` -- `detail` is the `kind=` value when a
+    marker is present, or the matched heading text for a markerless l2/l3
+    post -- or `None` if unclassifiable.
+
+    The marker is checked before the heading (harmonic-forge#583): every
+    lane's posting tool stamps one now, so it is the reliable, exact signal
+    whenever present, and `posted-by` (when present) says which lane
+    actually posted -- see `_POSTED_BY_LANE` above for the default that
+    keeps every marker minted before this landed reading as `l1`, unchanged.
+    The heading-match fallback below exists ONLY for the historical corpus
+    posted before this landed (AC5) -- keep it; a comment already posted
+    does not retroactively gain a marker.
+
+    The marker search runs against the body with fenced code blocks
+    stripped (`_strip_fenced_blocks`, R-0334) -- a marker quoted as
+    evidence inside a fence must never be read as a real transition. The
+    heading check below intentionally still uses the RAW body's first
+    line: a heading is only ever meaningful as literally the first line of
+    a real post, and no legitimate heading is fenced."""
+    marker_match = _MARKER_RE.search(_strip_fenced_blocks(body))
+    if marker_match:
+        marker = marker_match.group(0)
+        kind_match = _KIND_RE.search(marker)
+        if kind_match:
+            kind = kind_match.group(1)
+            posted_by_match = _POSTED_BY_RE.search(marker)
+            posted_by = posted_by_match.group(1) if posted_by_match else None
+            return _POSTED_BY_LANE.get(posted_by, "l1"), kind
     headline = body.strip().split("\n", 1)[0]
     if _L2_HEADING_RE.match(headline):
         return "l2", headline
@@ -539,13 +624,104 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
             # empty result always has -- not a regression, just no longer
             # a `TypeError` from iterating `None`.
             classified = _classify(comment.get("body", ""))
-            if classified is not None and not (
-                classified[0] == "l2" and _L2_FINDING_RE.match(classified[1])
-            ):
+            if classified is not None and not _is_l2_finding(*classified):
                 last_kind = classified
         if last_kind and last_kind[0] == "l1" and last_kind[1] in kinds:
             queued[issue] = last_kind[1]
     return queued
+
+
+def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str | None:
+    """harmonic-forge#583 AC4. A report string when `worktree`'s current
+    branch carries commits ahead of `origin/main` that no completion post
+    has announced on `(repo, issue)` -- the exact failure this issue names
+    three times in one day (hrse#586, hrse#1675, hrse#1676): a branch
+    finishes and the issue thread never says so, and only a human noticing
+    reconciles the two. Returns `None` when there's nothing ahead to report,
+    or when the LATEST `l2`-classified comment on the issue already is a
+    completion (in sync) -- silence there is the correct, steady state, not
+    a gap (contrast with this module's "empty reads as no new work"
+    principle: this function's `None` is a real, checked negative, not an
+    unattempted check).
+
+    `origin/main` specifically, not a bare `main` -- a worktree's local
+    `main` ref can itself be stale; comparing against the remote-tracking
+    ref is what "ahead of the branch a merge would land on" actually means.
+    Silently reports nothing (rather than raising) when `origin/main` can't
+    be resolved at all -- an unfetched or non-standard remote is a worktree
+    configuration question this function has no business surfacing as a
+    lane-completion finding.
+
+    A FAILED comment fetch (`_fetch_all_comments` returning `None` --
+    quota exhaustion, a transient 5xx) is also reported as `None`
+    (harmonic-forge#583 preclose finding), never as "no completion posted":
+    unlike `discover_queue`, where a failed fetch degrading to "no new
+    classified comments this cycle" is a harmless no-op, HERE it would
+    turn "I could not check" into a false positive assertion that a real
+    completion doesn't exist. Silence for one cycle (the next successful
+    poll re-checks from scratch) is the correct failure mode, not a
+    confident wrong answer.
+
+    A `finding` posted after the real completion must not un-classify it
+    either (same #580 invariant `_is_l2_finding` protects in
+    `discover_queue`, applied here too) -- a finding is a defect report,
+    not a status transition, and must never overwrite the LATEST
+    non-finding `l2` event when this function decides whether a completion
+    already exists."""
+    base = _run_git(worktree, "merge-base", "HEAD", "origin/main")
+    if not base:
+        return None
+    count_text = _run_git(worktree, "rev-list", "--count", f"{base}..HEAD")
+    if not count_text or not count_text.isdigit():
+        return None
+    count = int(count_text)
+    if count == 0:
+        return None
+    comments = _fetch_all_comments(repo, issue)
+    if comments is None:
+        return None
+    last_l2: tuple[str, str] | None = None
+    for comment in comments:
+        classified = _classify(comment.get("body", ""))
+        if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
+            last_l2 = classified
+    if last_l2 is not None and _is_l2_completion(*last_l2):
+        return None
+    branch = _worktree_branch(worktree) or "?"
+    plural = "" if count == 1 else "s"
+    return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
+            f"origin/main with no completion posted")
+
+
+def branch_ahead_lines(
+    resolutions: list[tuple[str, tuple[str, int] | None, str]],
+    last_ahead: dict[str, str | None],
+) -> list[str]:
+    """One poll cycle's worth of AC4 output lines, factored out of `main()`
+    (harmonic-forge#583 preclose finding) so this is directly unit-testable
+    rather than only reachable through argv -- the exact factoring
+    `l1_sweep_cycle` below already uses for the same reason.
+
+    Takes EVERY resolved worktree unconditionally, with no dependence on
+    `--watch` -- the preclose finding this exists to fix was a `"l2" in
+    watch` gate that made the feature unreachable under every belt command
+    `skills/belt-and-suspenders/SKILL.md` prescribes, because the lane that
+    owns a worktree (Lane 2) is, by definition, watching OTHER lanes'
+    posts (`--watch l1`), never its own. `last_ahead` is mutated in place
+    (`main()`'s own state dict) so a worktree that stops resolving forgets
+    its prior report rather than repeating it forever."""
+    lines: list[str] = []
+    for path, pair, _reason in resolutions:
+        if pair is None:
+            last_ahead.pop(path, None)
+            continue
+        repo, issue = pair
+        report = branch_ahead_without_completion(path, repo, issue)
+        if report != last_ahead.get(path):
+            if report:
+                lines.append(report)
+            last_ahead[path] = report
+    return lines
 
 
 def l1_sweep_cycle(
@@ -628,6 +804,13 @@ def main() -> int:
 
     last_discovered: set[tuple[str, int]] = set()
     last_queue: dict[int, str] = {}
+    #: harmonic-forge#583 AC4. Keyed by worktree path (not `(repo, issue)`
+    #: -- a worktree checks out a new branch/issue over its lifetime, and
+    #: the report must clear the moment it does, not linger keyed to an
+    #: issue nobody is on anymore). `None` is a real, checked "nothing to
+    #: report" value, not "not yet checked" -- see `report != last_ahead.get`
+    #: below, which only reprints on an actual state CHANGE.
+    last_ahead: dict[str, str | None] = {}
     #: harmonic-forge#570 preclose finding: an unbounded full-repo comment
     #: scan every cycle (155 open issues on vitalharmony/hrse today) burns
     #: quota fast enough to exhaust it, and quota exhaustion is swallowed
@@ -698,6 +881,20 @@ def main() -> int:
                 print(f"{repo}#{issue} {lane} — {detail}")
                 sys.stdout.flush()
         since = now
+
+        #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
+        #: in watch`, which reads as "surface *other* lanes' Lane 2 posts to
+        #: me" -- the lane that actually owns a worktree and could be the
+        #: one silently ahead of `origin/main` (Lane 2, per its own
+        #: `belt-and-suspenders` command, `--worktrees ... --watch l1`) by
+        #: definition never passes `--watch l2` for itself. `branch_ahead_
+        #: lines` runs for every resolved worktree unconditionally --
+        #: `--queue-for`-only runs (Lane 1/3's belts) simply have no
+        #: `--worktrees` at all, so `resolutions` is empty for them and this
+        #: is a no-op there, exactly as intended.
+        for line in branch_ahead_lines(resolutions, last_ahead):
+            print(line)
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":

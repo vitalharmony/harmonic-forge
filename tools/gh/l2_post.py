@@ -2,7 +2,7 @@
 """Receipt-backed Lane 2 status posting, with mandatory post/fetch/diff
 self-check (harmonic-forge#371).
 
-Composes an L2P/L2D/L2B status comment from the caller's own recorded
+Composes an L2S/L2D/L2B status comment from the caller's own recorded
 receipts (see receipt_runner.py) plus a clearly separated narrative
 section -- never blends the two. The factual scaffold ("comment N exists
 with this body hash", "the wrapped command exited 0/N") comes only from
@@ -124,13 +124,22 @@ LEAD_REQUIRED_KINDS = ("completion", "blocked")
 #:
 #: The heading below (`## L2 Finding`, with a space) is chosen specifically
 #: so it does NOT match `^##\s+L2[A-Z]\b` -- the pattern `watch_lane_posts.py`
-#: and HRSE2's `lane_state.py` both use to read `L2P`/`L2D`/`L2B` as status
+#: and HRSE2's `lane_state.py` both use to read `L2S`/`L2D`/`L2B` as status
 #: transitions. A finding must never be read as one (AC5): `lane_state.py`'s
 #: `_LANE_TOKEN` regex is `^##\s+L(?P<lane>[123])(?P<code>[PDSFB])\b`, and
 #: `L2F` would satisfy it (F is in the allowed code set) -- so `L2F` was
 #: rejected as a heading precisely because it looks safe and is not.
+#:
+#: `plan`'s heading is `## L2S`, not `## L2P` (harmonic-forge#583 AC6/AC9):
+#: `L2P` was retired in favor of `L2S` (`rules/lane-shorthand.md`'s "Retired"
+#: section, operator, 2026-08-16 -- "not kept as an alias: two tokens for one
+#: state is the ambiguity this consolidation removes") three weeks before
+#: this tool was found still minting it. `L2S`/`L2D`/`L<N>B` are the only
+#: live tokens that table names; a hand-written string here cannot silently
+#: reintroduce a retired one without a matching change to this map, which
+#: `test_l2p_is_never_minted_again` below guards directly.
 _HEADINGS = {
-    "plan": "## L2P — receipt-backed status (harmonic-forge#371)",
+    "plan": "## L2S — receipt-backed status (harmonic-forge#371)",
     "completion": "## L2D — receipt-backed status (harmonic-forge#371)",
     "blocked": "## L2B — receipt-backed status (harmonic-forge#371)",
     "finding": "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
@@ -195,7 +204,7 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
        outcome, which is the defect this issue names. Nothing is deleted and
        nothing moves to a second comment (AC2).
 
-    The `## L2P|L2D|L2B` heading stays at the top level, outside `<details>`:
+    The `## L2S|L2D|L2B` heading stays at the top level, outside `<details>`:
     `lane_state.py` reads it, and hrse#1590 made position load-bearing.
     `kind=finding`'s `## L2 Finding` heading is deliberately shaped to NOT be
     read the same way -- see `_HEADINGS` (harmonic-forge#571 AC5).
@@ -210,6 +219,16 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
     finding) -- `reject_reserved_marker` runs on the fully assembled body
     before it is returned, so the guard applies uniformly to narrative, lead
     fields, and the receipts JSON alike.
+
+    Every kind also gets the same `<!-- l1-post v1; kind=X; posted-by=LANE2
+    -->` machine-readable footer Lane 1's own posting tool stamps
+    (harmonic-forge#583 AC1) -- appended AFTER `reject_reserved_marker`
+    checks the caller-supplied content, never before, so this trusted
+    footer is never mistaken for the very injection it guards against.
+    `watch_lane_posts._classify` (harmonic-forge#583 AC2) reads the
+    `posted-by` field to tell a Lane 2 marker from a Lane 1 one; the
+    heading stays too, as the fallback for every comment posted before this
+    landed (AC5) -- markerless bodies are never backfilled.
     """
     narrative = strip_ansi(narrative)
     fenced = json.dumps(receipts, indent=2, sort_keys=True)
@@ -223,7 +242,7 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
         f"</details>\n"
     )
     reject_reserved_marker(body)
-    return body
+    return body + f"\n<!-- l1-post v1; kind={kind}; posted-by=LANE2 -->\n"
 
 
 def validate_lead(kind: str, lead: dict[str, str]) -> None:
@@ -337,7 +356,7 @@ def main() -> int:
                         required=True,
                         help="'finding' (harmonic-forge#571) posts a durable, attributed "
                              "defect note -- a report, not a status transition; it never "
-                             "reads as L2P/L2D/L2B to lane_state.py or the belt.")
+                             "reads as L2S/L2D/L2B to lane_state.py or the belt.")
     post_p.add_argument("--repo", required=True)
     post_p.add_argument("--issue", type=int, required=True)
     post_p.add_argument("--receipts", nargs="*", default=[])

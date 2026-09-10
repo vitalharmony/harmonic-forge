@@ -2152,8 +2152,8 @@ hooks = []
 id = "R-0333"
 file = "rules/lane-shorthand.md"
 anchor = "derived-lane-states"
-statement = "Lane-state authority is the l1-post kind= footer, never a heading; headings are a cross-check whose disagreement is reported as validated=False, and the Lane 3 Test Spec and Gate Results are heading-provenance only because no emitter stamps them."
-text_sha = "d25a1aa4d3b99555"
+statement = "Lane-state authority is the l1-post kind= footer, never a heading; headings are a cross-check whose disagreement is reported as validated=False. l2_post.py now stamps that footer on every kind (harmonic-forge#583); the Lane 3 Test Spec/Gate Results footer status is unconfirmed by that change."
+text_sha = "225bb72cb9361929"
 hooks = []
 
 [[rule]]
