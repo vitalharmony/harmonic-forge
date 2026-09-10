@@ -144,6 +144,42 @@ def lead_block(lead: dict[str, str]) -> str:
     return "\n".join(lines) + "\n\n" if lines else ""
 
 
+#: harmonic-forge#580 preclose finding: `watch_lane_posts._classify` searches
+#: the WHOLE comment body for this literal marker syntax before it ever looks
+#: at the heading line -- it has to, since a real Lane 1 marker can trail
+#: after arbitrary prose. `l1_post.py` already refuses to let a caller forge
+#: this text into a body it composes (`reject_reserved_marker`,
+#: `fetch_lane1_context.py:43`); `l2_post.py` had no equivalent, and a
+#: `--kind finding` narrative is the single most likely body in the system to
+#: quote this exact syntax verbatim -- a finding routinely pastes the failing
+#: command's own output, and this module's own source narrates the very
+#: marker text `discover_queue` reads. Reproduced live: a finding whose
+#: narrative merely discusses `<!-- l1-post v1; kind=handoff -->` is
+#: classified `('l1', 'handoff')` by `_classify`, which both drops the
+#: issue's real queue membership (AC1) and manufactures a false Lane 2
+#: `handoff` queue hit via `_search_candidates`'s literal-substring search.
+_RESERVED_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;")
+
+
+def reject_reserved_marker(body: str) -> None:
+    """Refuse to compose a body containing literal reserved marker syntax --
+    see `_RESERVED_MARKER_RE` above for why this must be structural, not
+    advisory, and checked against the FULLY ASSEMBLED body (narrative, lead
+    fields, and the receipts JSON block can each carry it) rather than any
+    one field in isolation."""
+    if _RESERVED_MARKER_RE.search(body):
+        raise SystemExit(
+            "refusing to post: the composed body contains literal "
+            "'<!-- l1-post v1;' marker syntax. watch_lane_posts.py's "
+            "classifier treats this text as a real lane marker anywhere it "
+            "appears in a comment body, not only in a trailing footer -- "
+            "quoting or discussing the marker's own syntax verbatim (e.g. "
+            "pasting a failing command's output that names it) silently "
+            "impersonates a Lane 1 post. Break the string across a code "
+            "span (e.g. `<!--` + ` l1-post`) or paraphrase instead."
+        )
+
+
 def compose_body(kind: str, receipts: list[dict], narrative: str,
                  lead: dict[str, str] | None = None) -> str:
     """Outcome first, evidence collapsed (harmonic-forge#472).
@@ -168,11 +204,17 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
     call (harmonic-forge#571 preclose finding) -- it is free text embedded
     unescaped, unlike the receipts JSON, so it is the one part of the body a
     caller could still leak colour through if only the call site stripped it.
+
+    A caller physically cannot compose a body carrying literal reserved
+    marker syntax through this function either (harmonic-forge#580 preclose
+    finding) -- `reject_reserved_marker` runs on the fully assembled body
+    before it is returned, so the guard applies uniformly to narrative, lead
+    fields, and the receipts JSON alike.
     """
     narrative = strip_ansi(narrative)
     fenced = json.dumps(receipts, indent=2, sort_keys=True)
     count = len(receipts)
-    return (
+    body = (
         f"{_HEADINGS[kind]}\n\n"
         f"{lead_block(lead or {})}"
         f"### Narrative\n{narrative}\n\n"
@@ -180,6 +222,8 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
         f"```json\n{fenced}\n```\n\n"
         f"</details>\n"
     )
+    reject_reserved_marker(body)
+    return body
 
 
 def validate_lead(kind: str, lead: dict[str, str]) -> None:
