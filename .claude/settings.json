@@ -45,6 +45,10 @@
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_raw_board_scan.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/enforce_gate_ci_on_raw_post.py\""
           }
         ]
       },
