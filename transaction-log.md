@@ -3,6 +3,58 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): restore Lane 2 queue discovery; derive the repo set from the manifest (harmonic-forge#596)
+
+Preclose on PR #597 returned four findings, and the strategy review returned a
+fifth that supersedes how I fixed the repo set. All addressed.
+
+**1. Lane 2 lost inbound queue discovery — the belt's whole job for that lane.**
+I deleted the `--queue-for l2` fallback while making Lane 2 worktrees-first.
+But Lane 2's inbound handoff has NO worktree by construction: Lane 2 creates
+`/tmp/<repo>-<issue>-impl` only AFTER picking an issue up, so every inbound
+handoff is in the no-worktree state and a worktrees-only belt sees none of
+them. `QUEUE_KINDS["l2"]` became reachable from no prescribed command. Lane 1's
+belt can be worktrees-only because other lanes' worktrees ARE what Lane 1 needs
+to see; that asymmetry is load-bearing and I carried it across without checking.
+Lane 2 now arms both halves in one command.
+
+**2. One repo's fetch failure retracted the other's queued issues.** A search
+rate-limit trip returned `set()`, indistinguishable from "nothing queued", so
+every issue that repo had queued printed `left-queue-for-l3` on stdout -- which
+the lane reads as "the ball moved on". `discover_queue` now returns
+`(queued, fetch_ok)` like `discover_l1_sweep`, a failed repo carries its
+previous queue forward untouched, and only repos that actually reported can
+produce a retraction. The first-poll line counts repos that REPORTED, not argv.
+
+**3. Nothing tested the runtime.** Eight mutations of the queue loop -- including
+`repos[:1]` and reverting the repo-qualified key -- left the suite green,
+because no test calls `main()`. Extracted `queue_cycle()` so the behavior is
+callable, and tested it.
+
+**4. `--help` still prescribed the command this issue opened on**, and
+documented a combination the parser now rejects.
+
+**5. The repo set is derived from `projects.toml`, not listed and not from
+`gh repo list`.** My four-repo list violated R-0122 outright, and a test pinned
+it. `gh repo list` was the second attempt and still wrong: it needs a
+convention to find checkouts, and the convention `<dir>/<repo name>` silently
+dropped hrse, whose checkout is `HRSE2`. The manifest already carries repo,
+path, worktree_dir and account -- it exists because "duplication is the only
+source of drift, and drift here is silent" -- and onboarding (R-0340) is what
+brings a repo under the belt. No API call, no second list, no convention.
+
+The guards are inverted to match: they now assert DERIVATION and fail on any
+hardcoded repo or path, per lane and for the suspenders' sweep.
+
+Suite 1929 -> 1960, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py |  16 +-
+- tools/gh/test_watch_lane_posts.py             | 147 ++++++-------
+- tools/gh/watch_lane_posts.py                  | 283 +++++++++++++++++++++-----
+- 4 files changed, 347 insertions(+), 162 deletions(-)
+
 ## fix(belt): all four active repos, not two (harmonic-forge#596)
 
 Operator caught this mid-flight: the belt spans hrse and harmonic-forge, and

@@ -190,14 +190,18 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         lane2 = text.split("- **Lane 2**", 1)[1].split("- **Lane 3**", 1)[0]
         self.assertIn("--all-worktrees", lane2)
         self.assertNotIn("--worktrees ~/", lane2)
+        # And queue discovery, which worktrees-only silently removed: Lane 2's
+        # inbound handoff has no worktree by construction (#596 preclose).
+        self.assertIn("--queue-for l2", lane2)
 
-    def test_lane_3_belt_scans_both_repos(self):
-        """harmonic-forge#596: a belt scanning one repo is a half-belt and
-        looks exactly like a whole one."""
+    def test_lane_3_belt_derives_its_repo_set(self):
+        """harmonic-forge#596: a belt scanning a subset is a partial belt and
+        looks exactly like a whole one -- and per R-0122 the set is derived
+        from the manifest, not listed here."""
         text = SKILL.read_text(encoding="utf-8")
         lane3 = text.split("- **Lane 3**", 1)[1].split("**A monitor that never", 1)[0]
-        self.assertIn("--repo vitalharmony/hrse", lane3)
-        self.assertIn("--repo vitalharmony/harmonic-forge", lane3)
+        self.assertIn("--account-repos", lane3)
+        self.assertNotIn("--repo vitalharmony/", lane3)
 
     def test_states_the_belt_is_watch_lane_posts_and_rebuilding_is_the_defect(self):
         text = _norm(SKILL.read_text(encoding="utf-8"))

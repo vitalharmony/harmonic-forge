@@ -81,26 +81,34 @@ separate "I'm done" bookkeeping required anywhere.
 Usage
 -----
     # The Lane 3 case: find whatever is queued to me, repo-wide, no
-    # worktree and no issue number needed:
-    python3 watch_lane_posts.py --queue-for l3 --repo vitalharmony/hrse \\
-        --interval 30
+    # worktree and no issue number needed. The repo set is DERIVED, not
+    # listed (R-0122) -- a new repo is picked up automatically, an archived
+    # one drops out:
+    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
+        --watch l1 --interval 60
 
-    # Self-discovering from a worktree (the Lane 2 case): watch whatever
-    # issue THIS worktree's current branch is on, re-derived every cycle.
-    # Run from inside the worktree, or pass its path explicitly:
-    python3 watch_lane_posts.py --worktrees . --watch l1 --interval 30
-    python3 watch_lane_posts.py --worktrees ~/Harmonic_Projects/HRSE2-lane2 \\
-        ~/Harmonic_Projects/HRSE2-lane3 --watch l2 --watch l3
+    # The Lane 2 case: BOTH halves. --all-worktrees follows Lane 2 into its
+    # per-issue /tmp/<repo>-<issue>-impl checkout; --queue-for l2 catches an
+    # inbound handoff on an issue no worktree exists for yet, which is every
+    # inbound handoff (harmonic-forge#596). Worktrees-only misses all of them:
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
+        --queue-for l2 --watch l1 --interval 90
 
     # Manual override, when there is no worktree to read (or watching an
-    # issue this session isn't actually checked out on):
+    # issue this session isn't actually checked out on). A single --repo:
     python3 watch_lane_posts.py --repo vitalharmony/hrse --issues 1530 \\
         --watch l2 --watch l3 --interval 30
 
-`--queue-for`, `--worktrees`, and `--repo`/`--issues` may all be combined;
-the watched set is their union, re-derived every cycle for `--queue-for`
-and `--worktrees` alike. Exits only on error or Ctrl-C; runs until stopped
-otherwise.
+`--queue-for`, `--worktrees`/`--all-worktrees`, and `--repo`/`--issues` may
+be combined; the watched set is their union, re-derived every cycle. The one
+rejected combination is `--issues` with more than one repo -- an issue number
+means nothing without exactly one repo to resolve it against. Exits only on
+error or Ctrl-C; runs until stopped otherwise.
+
+DO NOT paste a `--worktrees <static path>` command for a lane's belt. A
+hardcoded worktree list goes stale the moment an ephemeral checkout appears
+(harmonic-forge#590), and for Lane 2 the shared checkout it would name is the
+one path Lane 2 is forbidden to work in.
 """
 from __future__ import annotations
 
@@ -115,6 +123,9 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
+import manifest as onboard_manifest  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
     CallCounter,
@@ -419,7 +430,7 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
         )
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
         print(f"[watch_lane_posts] search failed: {exc}", file=sys.stderr)
-        return set()
+        raise SearchUnavailable(str(exc)) from exc
     try:
         return {row["number"] for row in json.loads(raw).get("items", [])}
     except (json.JSONDecodeError, AttributeError):
@@ -602,7 +613,7 @@ def discover_l1_sweep(
     return queued, fetch_ok
 
 
-def discover_queue(repo: str, lane: str) -> dict[int, str]:
+def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
     LATEST classified comment on that issue. Self-clearing: once anything
@@ -620,7 +631,13 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
     kinds = QUEUE_KINDS[lane]
     candidates: set[int] = set()
     for kind in kinds:
-        candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}")
+        try:
+            candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}")
+        except SearchUnavailable:
+            # `fetch_ok=False`, mirroring `discover_l1_sweep` (harmonic-
+            # forge#579 AC1). The caller must NOT diff this repo's queue
+            # against the previous cycle on a False -- see `queue_cycle`.
+            return {}, False
 
     queued: dict[int, str] = {}
     for issue in candidates:
@@ -639,7 +656,7 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
                 last_kind = classified
         if last_kind and last_kind[0] == "l1" and last_kind[1] in kinds:
             queued[issue] = last_kind[1]
-    return queued
+    return queued, True
 
 
 def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str | None:
@@ -756,6 +773,87 @@ def l1_sweep_cycle(
     previous = {issue: tuple(marker.split(":", 1)) for issue, marker in last_queue.items()}
     l1_queue, fetch_ok = discover_l1_sweep(repo, since=l1_since, extra_issues=previous)
     return l1_queue, (now if fetch_ok else l1_since)
+
+
+def manifest_repos(account: str) -> list[str]:
+    """Every onboarded repo on `account`, from `projects.toml`.
+
+    R-0122 requires the repo set to be DERIVED, not hand-maintained, and
+    `projects.toml` is where this platform already derives it -- the manifest's
+    own header says it exists because "duplication is the only source of drift,
+    and drift here is silent: a repo missing from one copy still files issues,
+    just onto the wrong board." harmonic-forge#596 first hardcoded four repos,
+    then reached for `gh repo list`; the manifest is better than both. It costs
+    no API call, it carries the checkout path, and it is the file a repo is
+    onboarded through (R-0340), so a new repo is under the belt the moment it
+    is onboarded rather than whenever someone remembers this list.
+
+    `account` matters: ke'nekted is a separate account with separate
+    credentials, and a vitalharmony-authed query against it returns EMPTY
+    rather than erroring -- so filtering by account here is what keeps an
+    unreachable repo from reading as a quiet one.
+    """
+    return sorted(p.repo for p in _manifest_projects(account) if p.repo)
+
+
+def manifest_worktree_roots(account: str) -> list[str]:
+    """Each onboarded repo's local checkout, from `projects.toml`.
+
+    Uses the manifest's `checkout` rather than `<dir>/<repo name>`: HRSE2's
+    directory is `HRSE2` while its manifest name is `hrse`, and harmonic-forge's
+    checkout is `~/harmonic-forge` while its lane worktrees live in
+    `~/Harmonic_Projects/`. A convention-based lookup gets both wrong -- it was
+    tried in this issue and silently dropped hrse, the busiest repo of the four,
+    reporting only `no checkout at ~/Harmonic_Projects/hrse`.
+
+    A declared checkout that is not present is reported and skipped, not fatal:
+    not everything is cloned, and the manifest deliberately keeps such a row
+    rather than dropping it, "which would make a missing checkout
+    indistinguishable from a repo nobody onboarded."
+    """
+    roots: list[str] = []
+    for project in _manifest_projects(account):
+        checkout = project.checkout
+        if checkout is None:
+            continue
+        if (checkout / ".git").exists():
+            roots.append(str(checkout))
+        else:
+            print(f"[watch_lane_posts]   {project.repo or project.name}: declared "
+                  f"checkout {checkout} is not present -- skipped", file=sys.stderr)
+    return roots
+
+
+def _manifest_projects(account: str) -> list:
+    try:
+        projects = onboard_manifest.load()
+    except Exception as exc:  # noqa: BLE001 — surfaced, never swallowed
+        raise AccountReposUnavailable(
+            f"could not read projects.toml: {exc}. Refusing to arm a belt on an "
+            "unknown repo set -- an empty one reads as 'no work anywhere'.") from exc
+    selected = [p for p in projects
+                if p.onboarded and p.repo and (p.account or "vitalharmony") == account]
+    if not selected:
+        raise AccountReposUnavailable(
+            f"projects.toml declares no onboarded repos for account {account!r} -- "
+            "refusing to arm a belt that would watch nothing.")
+    return selected
+
+
+class SearchUnavailable(Exception):
+    """A `search/issues` call failed (harmonic-forge#596 preclose finding).
+
+    Raised rather than swallowed into an empty result. An empty candidate set
+    and a failed search are the same value but opposite meanings: the first
+    says "nothing is queued", the second says "I do not know". Treating them
+    alike made one repo's rate-limit trip print `left-queue-for-l3` for every
+    issue the OTHER repo had legitimately queued -- a retraction the lane reads
+    as "the ball moved on"."""
+
+
+class AccountReposUnavailable(Exception):
+    """`gh repo list` failed or returned nothing usable (harmonic-forge#596).
+    Fatal at arm time: a belt on an unknown repo set is worse than none."""
 
 
 class RootNotARepo(Exception):
@@ -901,6 +999,80 @@ def drop_closed_targets(
     return kept
 
 
+def queue_cycle(
+    repos: list[str],
+    lane: str,
+    last_queue: dict[tuple[str, int], str],
+    l1_since: dict[str, str | None],
+    now: str,
+) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
+    """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
+
+    Extracted from `main()`'s loop by harmonic-forge#596's preclose finding.
+    Every runtime behavior below was previously reachable only through the
+    `while True:` loop, which no test calls -- so eight separate mutations of
+    it (including reverting the repo-qualified key, and scanning only
+    `repos[:1]`) left the suite fully green. Logic that cannot be called
+    cannot be tested, and a guard suite that reads only doc text is not a
+    substitute.
+
+    Three properties this function exists to hold:
+
+    - **Keys are `(repo, issue)`.** hrse#570 and harmonic-forge#570 both
+      exist; a bare `int` key lets one evict the other.
+    - **A repo whose fetch failed is not diffed.** `discover_queue` and
+      `l1_sweep_cycle` both distinguish "nothing queued" from "I do not
+      know", and only the first may produce `left-queue-for-*`. Retracting a
+      queued issue because a search hit a rate limit tells the lane the ball
+      moved on when it did not.
+    - **`l1_since` advances per repo, and only on success** -- a watermark
+      moved past a failed cycle silently narrows the next one.
+    """
+    queue: dict[tuple[str, int], str] = {}
+    ok_repos: set[str] = set()
+    for repo in repos:
+        prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
+        if lane == "l1":
+            l1_queue, since = l1_sweep_cycle(repo, l1_since.get(repo), prior, now)
+            # `l1_sweep_cycle` encodes fetch_ok by whether it advanced the
+            # watermark to `now` -- it returns the OLD `since` unchanged on a
+            # failed fetch, precisely so the next cycle re-covers the window.
+            fetch_ok = since == now
+            l1_since[repo] = since
+            found = {issue: f"{lane_}:{detail}"
+                     for issue, (lane_, detail) in l1_queue.items()}
+        else:
+            raw, fetch_ok = discover_queue(repo, lane)
+            found = dict(raw)
+        if not fetch_ok:
+            # Carry this repo's previous queue forward untouched, and keep it
+            # OUT of `ok_repos` so the retraction pass below cannot see it.
+            print(f"[watch_lane_posts]   {repo}: fetch failed -- carrying "
+                  f"{len(prior)} previously-queued issue(s) forward, not retracting",
+                  file=sys.stderr)
+            for issue, marker in prior.items():
+                queue[(repo, issue)] = marker
+            continue
+        ok_repos.add(repo)
+        print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
+        for issue, marker in found.items():
+            queue[(repo, issue)] = marker
+
+    lines: list[str] = []
+    for (repo, issue), marker in queue.items():
+        if last_queue.get((repo, issue)) == marker:
+            continue
+        if lane == "l1":
+            last_lane, _, detail = marker.partition(":")
+            lines.append(f"{repo}#{issue} needs-l1 last={last_lane} — {detail}")
+        else:
+            lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
+    for repo, issue in set(last_queue) - set(queue):
+        if repo in ok_repos:
+            lines.append(f"{repo}#{issue} left-queue-for-{lane}")
+    return queue, lines, ok_repos
+
+
 def main() -> int:
     global _ACCOUNT
     parser = argparse.ArgumentParser(description=__doc__,
@@ -921,6 +1093,16 @@ def main() -> int:
                              "hrse and harmonic-forge, and naming them makes the command "
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
+    parser.add_argument("--account-repos", metavar="ACCOUNT",
+                        help="derive the repo set from projects.toml, the onboarded-repo "
+                             "manifest, for ACCOUNT -- R-0122 and this protocol's design "
+                             "note both "
+                             "require the set to be DERIVED, not hand-maintained, so a "
+                             "new repo is covered with no edit and an archived one drops "
+                             "out. Feeds --queue-for (as repos) and --all-worktrees (as "
+                             "roots, via each repo's checkout under --checkout-dir). "
+                             "Fails hard if the list cannot be fetched: an empty repo set "
+                             "reads as 'no work anywhere'.")
     parser.add_argument("--repo", action="append", metavar="OWNER/REPO",
                         help="owner/repo for a manual --issues override, or the repo(s) "
                              "--queue-for scans. Repeatable: a lane carries work in hrse "
@@ -957,8 +1139,8 @@ def main() -> int:
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")
-    if args.queue_for and not args.repo:
-        parser.error("--queue-for requires --repo")
+    if args.queue_for and not (args.repo or args.account_repos):
+        parser.error("--queue-for requires --repo or --account-repos")
     # Union, not replacement: an explicitly named --worktrees path stays
     # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
     # roots are named to --all-worktrees, so --worktrees has one job again.
@@ -968,9 +1150,20 @@ def main() -> int:
     def current_worktrees() -> list[str]:
         if repo_roots is None:
             return explicit_worktrees
+        # Re-read every cycle (harmonic-forge#590): `repo_roots` is stable, but
+        # the worktrees inside each root are not.
         print("[watch_lane_posts] --all-worktrees enumerating:", file=sys.stderr)
         return sorted(set(explicit_worktrees) | set(enumerate_repo_roots(repo_roots)))
 
+    if repo_roots is not None and args.account_repos:
+        # --account-repos supplies the roots so --all-worktrees needs no paths:
+        # the repo set is derived once, and each repo's local checkout is found
+        # by convention under --checkout-dir (harmonic-forge#596).
+        try:
+            repo_roots = list(repo_roots) + manifest_worktree_roots(
+                args.account_repos)
+        except AccountReposUnavailable as exc:
+            parser.error(str(exc))
     if repo_roots is not None:
         try:
             args.worktrees = current_worktrees()
@@ -985,7 +1178,15 @@ def main() -> int:
         parser.error("--watch is required unless --queue-for is given")
 
     watch = set(args.watch)
-    repos: list[str] = args.repo or []
+    repos: list[str] = list(args.repo or [])
+    if args.account_repos:
+        try:
+            derived = manifest_repos(args.account_repos)
+        except AccountReposUnavailable as exc:
+            parser.error(str(exc))
+        print(f"[watch_lane_posts] --account-repos {args.account_repos}: "
+              f"{len(derived)} non-archived repo(s)", file=sys.stderr)
+        repos = sorted(set(repos) | set(derived))
     if len(repos) > 1 and args.issues:
         parser.error("--issues takes a single --repo: an issue number means nothing "
                      "without exactly one repo to resolve it against")
@@ -1054,36 +1255,20 @@ def main() -> int:
             last_discovered = discovered
 
         if args.queue_for:
-            # Keyed `(repo, issue)`, never a bare issue number: hrse#570 and
-            # harmonic-forge#570 both exist, and a shared `int` key would let
-            # one silently evict the other from the queue (harmonic-forge#596).
-            queue: dict[tuple[str, int], str] = {}
-            for repo in repos:
-                prior = {issue: last_queue[(r, issue)]
-                         for (r, issue) in last_queue if r == repo}
-                if args.queue_for == "l1":
-                    l1_queue, l1_since[repo] = l1_sweep_cycle(
-                        repo, l1_since.get(repo), prior, now)
-                    for issue, (lane, detail) in l1_queue.items():
-                        queue[(repo, issue)] = f"{lane}:{detail}"
-                else:
-                    for issue, kind in discover_queue(repo, args.queue_for).items():
-                        queue[(repo, issue)] = kind
+            print(f"[watch_lane_posts] queue-for-{args.queue_for} scanning "
+                  f"{len(repos)} repo(s):", file=sys.stderr)
+            queue, lines, ok_repos = queue_cycle(
+                repos, args.queue_for, last_queue, l1_since, now)
             if first_queue_report:
+                # Reports repos that ACTUALLY REPORTED, not len(argv). A run
+                # where every search failed used to print a line byte-identical
+                # to two genuinely quiet repos (harmonic-forge#596 preclose).
                 print(f"[watch_lane_posts] queue-for-{args.queue_for}: {len(queue)} "
-                      f"issue(s) queued now across {len(repos)} repo(s)", file=sys.stderr)
+                      f"issue(s) queued now across {len(ok_repos)}/{len(repos)} "
+                      f"repo(s) that reported", file=sys.stderr)
                 first_queue_report = False
-            for (repo, issue), marker in queue.items():
-                if last_queue.get((repo, issue)) == marker:
-                    continue
-                if args.queue_for == "l1":
-                    lane, _, detail = marker.partition(":")
-                    print(f"{repo}#{issue} needs-l1 last={lane} — {detail}")
-                else:
-                    print(f"{repo}#{issue} queued-for-{args.queue_for} kind={marker}")
-                sys.stdout.flush()
-            for repo, issue in set(last_queue) - set(queue):
-                print(f"{repo}#{issue} left-queue-for-{args.queue_for}")
+            for line in lines:
+                print(line)
                 sys.stdout.flush()
             last_queue = queue
 

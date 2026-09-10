@@ -346,7 +346,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
                       comments={1530: [self._l1("handoff"), self._l1("ready-for-l3")]},
                   )):
-            self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {1530: "ready-for-l3"})
+            self.assertEqual(discover_queue("vitalharmony/hrse", "l3")[0], {1530: "ready-for-l3"})
 
     def test_issue_superseded_by_a_later_comment_is_not_queued(self):
         """The self-clearing property: once Lane 3 (or anyone) posts after
@@ -357,12 +357,12 @@ class DiscoverQueueTests(unittest.TestCase):
                       comments={1530: [self._l1("ready-for-l3"),
                                        "## Lane 3 Gate Results — PASS"]},
                   )):
-            self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {})
+            self.assertEqual(discover_queue("vitalharmony/hrse", "l3")[0], {})
 
     def test_no_search_hits_yields_empty_queue(self):
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(search_results={}, comments={})):
-            self.assertEqual(discover_queue("vitalharmony/hrse", "l3"), {})
+            self.assertEqual(discover_queue("vitalharmony/hrse", "l3")[0], {})
 
     def test_issue_found_by_two_kind_searches_is_deduplicated(self):
         """A search hit is only a candidate; the real classification decides
@@ -374,7 +374,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       search_results={"ready-for-l3": [1530], "ae": [1530], "sweep": []},
                       comments={1530: [self._l1("ae"), self._l1("ready-for-l3")]},
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {1530: "ready-for-l3"})
 
     def test_two_real_currently_queued_issues_hrse1058_and_1531(self):
@@ -390,7 +390,7 @@ class DiscoverQueueTests(unittest.TestCase):
                                  self._l1("ready-for-l3")],
                       },
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {1058: "ready-for-l3", 1531: "ready-for-l3"})
 
     def test_ae_and_sweep_marker_is_queued_for_l3(self):
@@ -406,7 +406,7 @@ class DiscoverQueueTests(unittest.TestCase):
                                        "ae-and-sweep": [1725]},
                       comments={1725: [self._l1("ae-and-sweep")]},
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {1725: "ae-and-sweep"})
 
     def test_l2_finding_after_ready_for_l3_does_not_drop_the_issue(self):
@@ -423,7 +423,7 @@ class DiscoverQueueTests(unittest.TestCase):
                           "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
                       ]},
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {571: "ready-for-l3"})
 
     def test_l2_finding_does_not_resurrect_a_superseded_issue(self):
@@ -441,7 +441,7 @@ class DiscoverQueueTests(unittest.TestCase):
                           "## Lane 3 Gate Results — PASS",
                       ]},
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {})
 
     def test_a_real_l2_status_transition_still_supersedes_after_a_finding(self):
@@ -465,7 +465,7 @@ class DiscoverQueueTests(unittest.TestCase):
                           "## L2D — receipt-backed status (harmonic-forge#371)",
                       ]},
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l2")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l2")
             self.assertEqual(queue, {})
 
     def test_a_real_marker_carrying_finding_still_does_not_drop_the_issue(self):
@@ -484,7 +484,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
                       comments={571: [self._l1("ready-for-l3"), finding_body]},
                   )):
-            queue = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
             self.assertEqual(queue, {571: "ready-for-l3"})
 
 
@@ -1010,33 +1010,6 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
         self.assertIsNotNone(match, "the Lane 1 belt must arm --all-worktrees")
         return match.group(1).split()
 
-    def test_lane1_repo_roots_are_distinct(self):
-        """harmonic-forge#594: roots are named to --all-worktrees, so the
-        command is correct from any directory. HOW MANY roots is asserted by
-        `EveryLaneBeltSpansBothReposTests._REPOS`, against the live repo set --
-        this one only rejects a duplicate, which contributes nothing and is
-        reported but not fatal at runtime."""
-        roots = self._lane1_repo_roots()
-        self.assertGreater(len(roots), 1,
-                           f"zero roots is the CWD-dependent form #594 removed; "
-                           f"one root is a partial belt. Got {roots!r}")
-        self.assertEqual(len(roots), len(set(roots)), f"duplicate root in {roots!r}")
-
-    def test_lane1_repo_roots_are_paths_not_flags(self):
-        """The regression this guards against is a prose edit, so the guard
-        must reject a flag sitting where a path belongs -- the shipped `\S+`
-        did not, and the mutant passed all 96 tests."""
-        for root in self._lane1_repo_roots():
-            self.assertFalse(root.startswith("-"), f"{root!r} is a flag, not a repo root")
-            self.assertIn("/", root, f"{root!r} does not look like a path")
-
-    def test_lane1_repo_roots_name_both_repos_the_belt_must_span(self):
-        """Two distinct paths is not enough: they must be hrse and harmonic-
-        forge, the two repos Lane 1 actually carries work in."""
-        roots = " ".join(self._lane1_repo_roots()).lower()
-        self.assertIn("hrse", roots)
-        self.assertIn("harmonic-forge", roots)
-
     def test_lane1_belt_does_not_seed_roots_through_worktrees(self):
         """AC3: --worktrees names worktrees to watch, nothing else."""
         self.assertNotIn("--worktrees", self._lane1_belt_command())
@@ -1223,23 +1196,17 @@ class BeltNeverSilentDocTests(unittest.TestCase):
         self.assertIn("Lane 1's belt", para.group(0))
 
 
-class EveryLaneBeltSpansBothReposTests(unittest.TestCase):
-    """harmonic-forge#596. #590 and #594 fixed Lane 1 and left Lanes 2 and 3
-    carrying the same two defects, which is why these are asserted per lane
-    rather than once: a guard written for one lane proves nothing about the
-    other two, and that is exactly how this shipped."""
+class EveryLaneBeltDerivesItsRepoSetTests(unittest.TestCase):
+    """harmonic-forge#596. Asserted PER LANE because #590/#594 fixed Lane 1 and
+    left Lanes 2 and 3 carrying the same defects -- a guard written for one lane
+    proves nothing about the other two, which is how that shipped.
+
+    The property is DERIVATION, not a list. An earlier cut of this issue named
+    four repos in the commands and pinned them with a test; that fixed the
+    instance and made the wrong answer permanent, against R-0122's standing
+    requirement that the repo set be derived. The manifest is the source."""
 
     _LANES = ("Lane 1", "Lane 2", "Lane 3")
-
-    #: Every active vitalharmony repo with live `-lane2`/`-lane3` checkouts and
-    #: this skill linked into them (harmonic-forge#596). Naming roots explicitly
-    #: is #594's deliberate trade -- inference made the belt silently narrow --
-    #: and the standing cost is that this list must be updated when a repo is
-    #: added or retired. Asserting it here is what makes that cost LOUD: the
-    #: suite fails until the commands are updated, instead of a lane quietly
-    #: watching a subset. Verified live: all 4 have their own lane checkouts,
-    #: each `[OK]` against its platform declaration.
-    _REPOS = ("hrse", "harmonic-forge", "cymagraph-infra", "openclaw-projects")
 
     def _lane_block(self, lane: str) -> str:
         text = _SKILL_MD.read_text(encoding="utf-8")
@@ -1250,55 +1217,63 @@ class EveryLaneBeltSpansBothReposTests(unittest.TestCase):
                 return after[1].split(terminator, 1)[0]
         return after[1]
 
-    def _command(self, lane: str) -> str:
-        fence = re.search(r"```\n(.*?)```", self._lane_block(lane), re.DOTALL)
-        self.assertIsNotNone(fence, f"{lane} has no command fence")
-        return fence.group(1)
+    def _commands(self, lane: str) -> list[str]:
+        return re.findall(r"```\n(.*?)```", self._lane_block(lane), re.DOTALL)
 
-    def test_every_lane_command_spans_every_active_repo(self):
+    def test_every_lane_derives_its_repo_set_from_the_manifest(self):
         for lane in self._LANES:
             with self.subTest(lane=lane):
-                cmd = self._command(lane)
-                if "--all-worktrees" in cmd:
-                    roots = re.search(r"--all-worktrees((?:\s+(?!-)\S+)*)", cmd)
-                    named = roots.group(1).split()
-                    self.assertEqual(len(named), len(self._REPOS), f"{lane}: {named!r}")
-                    joined = " ".join(named).lower()
-                    for repo in self._REPOS:
-                        # HRSE2 is hrse's checkout name -- match the repo's
-                        # distinguishing stem, not the owner/name form.
-                        self.assertIn(repo.replace("hrse", "hrse"), joined,
-                                      f"{lane} does not cover {repo}: {named!r}")
-                else:
-                    repos = re.findall(r"--repo\s+(\S+)", cmd)
-                    for repo in self._REPOS:
-                        self.assertIn(f"vitalharmony/{repo}", repos,
-                                      f"{lane} does not cover {repo}: {repos!r}")
+                joined = " ".join(self._commands(lane))
+                self.assertIn("--account-repos", joined,
+                              f"{lane} must derive its repo set (R-0122), not list it")
 
-    def test_the_suspenders_sweep_spans_every_active_repo(self):
-        """The Lane 1 backstop is a --queue-for command outside any lane
-        bullet, so the per-lane guard above does not reach it."""
-        text = _SKILL_MD.read_text(encoding="utf-8")
-        sweep = re.search(r"(watch_lane_posts\.py --queue-for l1[^\n]*)",
-                          text.split("## The suspenders", 1)[1])
-        self.assertIsNotNone(sweep, "the suspenders' Lane 1 sweep command was not found")
-        repos = re.findall(r"--repo\s+(\S+)", sweep.group(1))
-        for repo in self._REPOS:
-            self.assertIn(f"vitalharmony/{repo}", repos, f"sweep misses {repo}: {repos!r}")
+    def test_no_lane_command_hardcodes_a_repo(self):
+        """The failure this replaces: naming repos fixed the instance and left
+        'which repos?' a question someone answers correctly forever."""
+        for lane in self._LANES:
+            with self.subTest(lane=lane):
+                joined = " ".join(self._commands(lane))
+                self.assertNotIn("--repo vitalharmony/", joined)
+                for hardcoded in ("~/Harmonic_Projects/HRSE2", "~/harmonic-forge ",
+                                  "cymagraph-infra", "openclaw-projects"):
+                    self.assertNotIn(hardcoded, joined,
+                                     f"{lane} hardcodes {hardcoded!r}")
+
+    def test_lane_2_keeps_queue_discovery_as_well_as_worktrees(self):
+        """#596 preclose finding 1. Lane 2's inbound handoff has NO worktree --
+        Lane 2 creates it only after picking the issue up -- so worktrees-only
+        made every inbound handoff invisible, which is the belt's whole job for
+        this lane. Lane 1's belt can be worktrees-only; that asymmetry is
+        load-bearing and does not transfer."""
+        joined = " ".join(self._commands("Lane 2"))
+        self.assertIn("--all-worktrees", joined)
+        self.assertIn("--queue-for l2", joined)
 
     def test_every_lane_command_is_a_single_unwrapped_line(self):
         """A backslash-continued command is not copy-pasteable, and these are
         armed verbatim by the skill."""
         for lane in self._LANES:
             with self.subTest(lane=lane):
-                self.assertNotIn("\\\n", self._command(lane))
+                for cmd in self._commands(lane):
+                    self.assertNotIn("\\\n", cmd)
 
     def test_no_lane_command_names_a_static_worktree_path(self):
         """A hardcoded worktree list is what #590 removed; it goes stale the
         moment an ephemeral /tmp checkout appears, and silently."""
         for lane in self._LANES:
             with self.subTest(lane=lane):
-                self.assertNotIn("--worktrees ", self._command(lane))
+                for cmd in self._commands(lane):
+                    self.assertNotIn("--worktrees ", cmd)
+
+    def test_the_suspenders_sweep_derives_its_repo_set_too(self):
+        """The Lane 1 backstop is a --queue-for command outside any lane
+        bullet, so the per-lane guard above never reaches it."""
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        sweep = re.search(r"(watch_lane_posts\.py --queue-for l1[^\n]*)",
+                          text.split("## The suspenders", 1)[1])
+        self.assertIsNotNone(sweep, "the suspenders' Lane 1 sweep command was not found")
+        self.assertIn("--account-repos", sweep.group(1))
+        self.assertNotIn("--repo vitalharmony/", sweep.group(1))
 
 
 class QueueKeyIsRepoQualifiedTests(unittest.TestCase):
