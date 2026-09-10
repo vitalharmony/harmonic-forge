@@ -999,16 +999,42 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
                          "(harmonic-forge#590); arming it as the belt is the "
                          "regression this issue fixed")
 
-    def test_lane1_belt_names_both_repo_roots_to_all_worktrees(self):
+    #: Tokens after `--all-worktrees` that are repo roots: anything up to the
+    #: next flag. `\S+` is NOT enough and was the shipped defect (#594 preclose
+    #: finding) -- it matches `--watch` and `l2`, so the bare CWD-dependent
+    #: form this test exists to forbid satisfied a two-group match and passed.
+    _ROOTS_RE = re.compile(r"--all-worktrees((?:\s+(?!-)\S+)*)")
+
+    def _lane1_repo_roots(self) -> list[str]:
+        match = self._ROOTS_RE.search(self._lane1_belt_command())
+        self.assertIsNotNone(match, "the Lane 1 belt must arm --all-worktrees")
+        return match.group(1).split()
+
+    def test_lane1_belt_names_two_distinct_repo_roots(self):
         """`git worktree list` sees one repo; Lane 1 spans two. harmonic-
         forge#594: the roots are named to --all-worktrees, so the command is
         correct from any directory."""
-        cmd = self._lane1_belt_command()
-        roots = re.search(r"--all-worktrees\s+(\S+)\s+(\S+)", cmd)
-        self.assertIsNotNone(
-            roots, "--all-worktrees must name two repo roots; inferring one "
-                   "from CWD is the cwd dependence #594 removed")
-        self.assertNotEqual(roots.group(1), roots.group(2))
+        roots = self._lane1_repo_roots()
+        self.assertEqual(len(roots), 2,
+                         f"--all-worktrees must name exactly two repo roots, got "
+                         f"{roots!r}. Zero roots is the CWD-dependent form #594 "
+                         f"removed; one root is a half-belt.")
+        self.assertNotEqual(roots[0], roots[1])
+
+    def test_lane1_repo_roots_are_paths_not_flags(self):
+        """The regression this guards against is a prose edit, so the guard
+        must reject a flag sitting where a path belongs -- the shipped `\S+`
+        did not, and the mutant passed all 96 tests."""
+        for root in self._lane1_repo_roots():
+            self.assertFalse(root.startswith("-"), f"{root!r} is a flag, not a repo root")
+            self.assertIn("/", root, f"{root!r} does not look like a path")
+
+    def test_lane1_repo_roots_name_both_repos_the_belt_must_span(self):
+        """Two distinct paths is not enough: they must be hrse and harmonic-
+        forge, the two repos Lane 1 actually carries work in."""
+        roots = " ".join(self._lane1_repo_roots()).lower()
+        self.assertIn("hrse", roots)
+        self.assertIn("harmonic-forge", roots)
 
     def test_lane1_belt_does_not_seed_roots_through_worktrees(self):
         """AC3: --worktrees names worktrees to watch, nothing else."""

@@ -3,6 +3,47 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): make the Lane 1 doc guard reject a flag where a repo root belongs (harmonic-forge#594)
+
+Preclose inspection on PR #595 returned one finding, and it was the worst kind:
+the guard test that exists to stop a prose edit re-arming a half-belt passed on
+the exact command it forbids.
+
+`re.search(r"--all-worktrees\\s+(\\S+)\\s+(\\S+)", cmd)` -- `\S+` matches flags.
+Reverting SKILL.md to the pre-#594 CWD-dependent form bound group(1)="--watch"
+and group(2)="l2", which are unequal, so the assertion held and all 96 tests
+passed. Reproduced before fixing; the half-belt mutant (one root) passed too.
+
+- The roots are now parsed as "every token up to the next flag", and asserted
+  to be exactly two, distinct, path-shaped, and to name hrse and harmonic-forge
+  specifically. Both mutants now fail; verified by re-applying each.
+
+The finding also named the condition that let a vacuous assertion survive
+review, and that is fixed here too:
+
+- `skills/belt-and-suspenders/test_skill_text.py` -- the doc guard for this
+  very protocol -- had been RED since #590 merged, asserting a Lane 1 command
+  that #590 deliberately removed. Nobody noticed because nothing ran it:
+  `tools/run_tests.py`'s TEST_DIRS could not reach outside `tools/`.
+- TEST_DIRS now takes paths that do, and collects it. 1936 -> 1955 tests, 55 ->
+  56 files.
+- Its stale assertion is replaced by the property that is actually true after
+  #590: Lane 1's belt is worktrees-first, and the repo-wide sweep survives in
+  the suspenders.
+
+Six guards across both suites now fail on the original #590 regression, where
+before this commit the one that mattered passed on it.
+
+This is the same root cause the last three of these have shared: a control
+exists, is correct, and is not reached at the point of use.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py | 16 +++++++++--
+- tools/gh/test_watch_lane_posts.py             | 40 ++++++++++++++++++++++-----
+- tools/run_tests.py                            | 10 ++++++-
+- 3 files changed, 56 insertions(+), 10 deletions(-)
+
 ## fix(belt): name the repo roots, so /belt-and-suspenders arms correctly anywhere (harmonic-forge#594)
 
 #590 made Lane 1's belt worktrees-first but left it only correct from one

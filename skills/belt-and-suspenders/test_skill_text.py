@@ -165,9 +165,21 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
                     self.fail(f"line {i}: ambiguous 'tools/gh/' reference: {line!r}")
                 idx = line.find("tools/gh/", idx + 1)
 
-    def test_lane_1_command_uses_queue_for_l1(self):
+    def test_lane_1_belt_is_worktrees_first_not_a_repo_wide_sweep(self):
+        """harmonic-forge#590 inverted this: the repo-wide `--queue-for l1`
+        sweep is the SUSPENDERS' backstop, and arming it as Lane 1's belt was
+        the regression. This test used to assert the opposite -- it has been
+        red since #590 merged, which is exactly how a vacuous guard in the
+        sibling suite survived review (#594 preclose finding)."""
         text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("watch_lane_posts.py \\\n      --queue-for l1", text)
+        lane1 = text.split("- **Lane 1**", 1)[1].split("- **Lane 2**", 1)[0]
+        self.assertIn("--all-worktrees", lane1)
+        self.assertNotIn("--queue-for l1", lane1)
+
+    def test_the_repo_wide_sweep_survives_in_the_suspenders(self):
+        """Demoted, not deleted -- and armed there as a literal command."""
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("--queue-for l1", text.split("## The suspenders", 1)[1])
 
     def test_lane_2_command_covers_detached_head_via_queue_for_l2(self):
         text = SKILL.read_text(encoding="utf-8")

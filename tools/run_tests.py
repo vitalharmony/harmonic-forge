@@ -36,7 +36,15 @@ ROOT = Path(__file__).resolve().parent
 # `narrative_budget_check.py` failure class this repo has already deleted a
 # tool over — passing locally is not passing. Adding a new leaf directory
 # under `tools/` means adding it here too; nothing else discovers it.
-TEST_DIRS = ["gh", "hooks", "lane", "memory", "onboard", "rules"]
+#
+# harmonic-forge#594 preclose finding: entries may reach outside `tools/`.
+# `skills/belt-and-suspenders/test_skill_text.py` guards the belt protocol's
+# own doc and had been RED since #590 merged, unnoticed, because nothing ran
+# it -- which is the condition under which a vacuous assertion in the sibling
+# `tools/gh` suite survived review. A doc guard nobody runs is the same
+# failure class this comment already describes one level up.
+TEST_DIRS = ["gh", "hooks", "lane", "memory", "onboard", "rules",
+             "../skills/belt-and-suspenders"]
 PATTERN = "test_*.py"
 
 
