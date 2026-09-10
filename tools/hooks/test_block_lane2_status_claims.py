@@ -59,6 +59,20 @@ class TestLane2RawPostDenial(unittest.TestCase):
         result = m.decision("gh issue edit 371 --body updated", self.cwd)
         self.assertTrue(_is_denied(result))
 
+    def test_raw_post_denial_message_enumerates_finding(self):
+        """harmonic-forge#580 AC3: the denial's suggested `l2_post.py`
+        invocation must enumerate `finding` alongside `plan|completion|
+        blocked` -- it predated `finding` (harmonic-forge#571) and was
+        never updated, so a Lane 2 session looking for the sanctioned way
+        to surface a defect was told the kind it needs does not exist."""
+        result = m.decision(
+            'gh api --method POST repos/vitalharmony/harmonic-forge/issues/371/comments -f body=hi',
+            self.cwd,
+        )
+        self.assertTrue(_is_denied(result))
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("finding", reason)
+
     def test_mise_gh_new_issue_denied_under_lane2(self):
         """harmonic-forge#388: the sanctioned Lane 1 filing path was the
         actual hole -- `gh issue create` alone let this through undetected."""

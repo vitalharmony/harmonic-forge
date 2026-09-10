@@ -143,6 +143,15 @@ _L1_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;\s*kind=([\w-]+)")
 #: being confused for a status transition by anything reading `L2[A-Z]`.
 _L2_HEADING_RE = re.compile(r"^##\s+(?:L2[A-Z]\b|L2 Finding\b)")
 _L3_HEADING_RE = re.compile(r"^##\s+(L3\b|Lane 3\b)")
+#: The `L2 Finding` heading specifically, as opposed to a real `L2[A-Z]`
+#: status transition -- both are matched by `_L2_HEADING_RE` above (a
+#: finding must be visible to `_classify` at all, harmonic-forge#571 AC4),
+#: but `discover_queue`'s "last classified comment wins" walk (harmonic-
+#: forge#580 AC1) must not let a finding overwrite queue membership the way
+#: a real status transition does: a finding is a defect report, not a lane
+#: handoff, and posting one must never silently drop an issue out of
+#: whichever lane's queue it already sat in.
+_L2_FINDING_RE = re.compile(r"^##\s+L2 Finding\b")
 
 #: A run of 2-6 digits, optionally prefixed with one repo-selecting letter,
 #: bounded by `/`, `-`, or the string's start/end -- e.g. `h1530` in
@@ -502,7 +511,16 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
     LATEST classified comment on that issue. Self-clearing: once anything
     is posted after that marker, the issue drops out on its own, so there
-    is no separate "done" bookkeeping anywhere."""
+    is no separate "done" bookkeeping anywhere.
+
+    A `## L2 Finding` comment is deliberately skipped when updating
+    `last_kind` (harmonic-forge#580 AC1): it is visible to `_classify` (so
+    a human or a different consumer of raw comments can see it), but it
+    must not itself change ANY lane's queue membership. Before this fix, a
+    finding posted after a `ready-for-l3` marker made `last_kind` become
+    `('l2', ...)`, which failed the `last_kind[0] == 'l1'` check below and
+    silently dropped a genuinely queued issue out of Lane 3's belt -- the
+    exact live reproduction the issue's own AC1 names."""
     kinds = QUEUE_KINDS[lane]
     candidates: set[int] = set()
     for kind in kinds:
@@ -521,7 +539,9 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
             # empty result always has -- not a regression, just no longer
             # a `TypeError` from iterating `None`.
             classified = _classify(comment.get("body", ""))
-            if classified is not None:
+            if classified is not None and not (
+                classified[0] == "l2" and _L2_FINDING_RE.match(classified[1])
+            ):
                 last_kind = classified
         if last_kind and last_kind[0] == "l1" and last_kind[1] in kinds:
             queued[issue] = last_kind[1]
