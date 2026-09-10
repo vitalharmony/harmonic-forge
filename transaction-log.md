@@ -3,6 +3,59 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): implement the dedup mechanic SKILL.md declares mandatory (harmonic-forge#599)
+
+`SKILL.md:172-182` states dedup as one mechanic with three parts -- watermark,
+overlap, seen-set -- and ends "Do not simplify it back." The comment-watch path
+had none of them. It imported four names from `belt_mechanics` and used
+`Watermarks`, `SeenSet` and `query_since` nowhere.
+
+What ran instead: one in-memory `since`, advanced unconditionally at the bottom
+of every cycle, after a fetch that swallowed every exception to `[]`. So a rate
+limit or a 502 on any issue produced "no comments", the loop advanced past that
+window anyway, and those comments were never fetched again. The stderr line was
+the only trace, and stderr is not what the Monitor reads. This is the failure
+that lost hrse#1725's spec, in the file documenting the fix as mandatory.
+
+Scope narrowed by the out-of-family review before implementing: the `--queue-for
+l1` sweep ALREADY had a success-gated per-repo watermark (#579). This brings the
+comment-watch path up to that, and adds what neither path had.
+
+- **Watermark, per TARGET.** `_fetch_comments` returns `None` on failure
+  (distinct from `[]`), and the watermark is held rather than advanced, so the
+  next cycle re-reads the window. Per target rather than per repo because two
+  issues in one repo fail independently -- the argument `Watermarks`' own
+  docstring makes one level up about accounts vs repos.
+- **Persistent**, in `~/.claude/state/belt/`, alongside `batch_auth`'s state.
+  The in-memory `since` reset to `now` on every restart, silently skipping
+  everything posted while the belt was down -- which is exactly when a handoff
+  is most likely to be missed.
+- **Overlap.** `query_since(watermark, K)` reads from `min(watermark, now - K)`,
+  K=15m, a deliberate over-cover of every prescribed interval (60s/90s/300s/600s).
+- **Seen-set**, which is what makes overlap affordable -- re-reading the seam
+  re-delivers comments, and without it every one would be re-announced. Primed
+  on a genuinely first arm so arming does not replay history as new, and only
+  then: if state exists the belt has run before, and priming would suppress
+  real posts made while it was down.
+
+Verified live -- failure holds the mark, next query re-reads the seam:
+
+    watermark after success: 2026-09-10 12:00:00+00:00
+    fetch on failure    : None (None => hold the watermark)
+    watermark unchanged : True
+    next query starts at: 2026-09-10 11:50:00+00:00 (overlap K=15m)
+
+AC5 (`TickLog` written by the belt) is deliberately not in this change -- the
+issue marks it separable and the watermark half is the half losing work.
+
+1976 -> 1985 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 70 +++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 94 +++++++++++++++++++++++++++++++++++++--
+- 2 files changed, 160 insertions(+), 4 deletions(-)
+
 ## fix(belt): state what each mechanism actually does, verified by executing them (harmonic-forge#607)
 
 Preclose returned five findings. The first two say my fix replaced a false

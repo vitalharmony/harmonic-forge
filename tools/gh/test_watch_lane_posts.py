@@ -2,6 +2,7 @@
 """Unit tests for watch_lane_posts.py (harmonic-forge#442) -- pure parsing
 logic only, no live gh/API calls. Fixtures are real comment bodies from
 hrse#1530 (trimmed), not invented shapes."""
+import datetime as dt
 import io
 import json
 import re
@@ -13,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import watch_lane_posts
+from belt_mechanics import SeenSet, query_since
 from watch_lane_posts import (
     QUEUE_KINDS,
     _BRANCH_ISSUE_RE,
@@ -1468,6 +1470,74 @@ class SearchCandidatesFailsClosedTests(unittest.TestCase):
             queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
         self.assertFalse(fetch_ok)
         self.assertEqual(queued, {})
+
+
+class BeltDedupMechanicTests(unittest.TestCase):
+    """harmonic-forge#599. `SKILL.md` declares dedup as one mechanic with three
+    parts -- watermark, overlap, seen-set -- and says "Do not simplify it back."
+    The comment-watch path had none of them: one in-memory `since`, advanced
+    unconditionally after a fetch that swallowed failures to `[]`."""
+
+    def test_fetch_comments_returns_none_on_failure_not_empty(self):
+        """`[]` means zero comments; failure must be distinguishable, or the
+        caller cannot know whether to hold its watermark."""
+        with patch("watch_lane_posts.gh_as", side_effect=RuntimeError("rate limit")):
+            self.assertIsNone(watch_lane_posts._fetch_comments("r", 1, "s"))
+
+    def test_fetch_comments_returns_none_on_unparseable_body(self):
+        with patch("watch_lane_posts.gh_as", return_value="not json"):
+            self.assertIsNone(watch_lane_posts._fetch_comments("r", 1, "s"))
+
+    def test_a_genuinely_empty_result_is_still_a_list(self):
+        with patch("watch_lane_posts.gh_as", return_value="[]"):
+            self.assertEqual(watch_lane_posts._fetch_comments("r", 1, "s"), [])
+
+    def test_overlap_reads_from_before_the_watermark(self):
+        """AC3. `query_since` returns `min(watermark, now - K)`, so the seam
+        between cycles is re-read rather than assumed."""
+        now = watch_lane_posts._parse_iso("2026-09-10T12:00:00Z")
+        mark = watch_lane_posts._parse_iso("2026-09-10T11:59:00Z")
+        self.assertLess(query_since(mark, watch_lane_posts._OVERLAP_MINUTES, now),
+                        mark, "the query must start BEFORE the watermark")
+
+    def test_overlap_never_skips_a_stalled_target(self):
+        """A watermark older than the overlap floor wins, so a target unread
+        for an hour is re-read from where it stopped, not from now-K."""
+        now = watch_lane_posts._parse_iso("2026-09-10T12:00:00Z")
+        stale = watch_lane_posts._parse_iso("2026-09-10T11:00:00Z")
+        self.assertEqual(
+            query_since(stale, watch_lane_posts._OVERLAP_MINUTES, now), stale)
+
+    def test_watermark_key_survives_a_slash_in_the_repo_name(self):
+        """`Watermarks` builds a filename from this key."""
+        key = watch_lane_posts._wm_key("vitalharmony/hrse", 1530)
+        self.assertNotIn("/", key)
+        self.assertIn("1530", key)
+
+    def test_watermark_is_per_target_not_per_repo(self):
+        """Two issues in one repo fail independently; a shared marker would let
+        one issue's failure advance past another's unread window -- the same
+        argument `Watermarks` makes one level up about accounts vs repos."""
+        self.assertNotEqual(watch_lane_posts._wm_key("o/r", 1),
+                            watch_lane_posts._wm_key("o/r", 2))
+
+    def test_seen_set_distinguishes_primed_from_emitted(self):
+        """AC4. A bare-id file could not say afterwards whether a comment was
+        reported or suppressed at arm."""
+        with tempfile.TemporaryDirectory() as tmp:
+            s = SeenSet(Path(tmp) / "seen.tsv")
+            s.prime(["1", "2"])
+            s.add("3", SeenSet.EMITTED)
+            self.assertEqual(s.status("1"), SeenSet.PRIMED)
+            self.assertEqual(s.status("3"), SeenSet.EMITTED)
+
+    def test_the_belt_imports_the_mechanics_the_skill_declares_mandatory(self):
+        """The finding itself: the module imported four names from
+        `belt_mechanics` and used none of `Watermarks`, `SeenSet` or
+        `query_since`, under documentation asserting all three are required."""
+        for name in ("Watermarks", "SeenSet", "query_since"):
+            self.assertTrue(hasattr(watch_lane_posts, name),
+                            f"{name} is declared mandatory and is not imported")
 
 
 class QueueKeyIsRepoQualifiedTests(unittest.TestCase):

@@ -132,8 +132,11 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 from belt_mechanics import (  # noqa: E402
     CallCounter,
     IdentityMismatch,
+    SeenSet,
+    Watermarks,
     assert_identity,
     gh_as,
+    query_since,
 )
 
 #: harmonic-forge#518 AC4. Every GitHub call in this file routes through
@@ -247,6 +250,34 @@ QUEUE_KINDS = {
 }
 
 
+#: Overlap `K`, in minutes. `query_since` reads from `min(watermark, now - K)`,
+#: so the seam between cycles is re-read rather than assumed. 15 is a
+#: deliberate over-cover of every prescribed interval (60s Lane 3, 90s Lane 2,
+#: 300s Lane 1, 600s the sweep): the cost of re-reading is a larger response
+#: the seen-set immediately dedups, and the cost of under-covering is a lost
+#: comment. `SKILL.md` lists K as a parameter to tune from the first week's
+#: tick log (harmonic-forge#599 AC3) -- it is named here so tuning it is an
+#: edit to one constant with its rationale attached.
+_OVERLAP_MINUTES = 15
+
+#: Belt state, alongside `batch_auth`'s `~/.claude/state/batch-authorized.json`.
+#: PERSISTENT, unlike the in-memory `since` this replaces: a restart previously
+#: reset the window to `now`, silently skipping everything posted while the
+#: belt was down -- which is exactly when a handoff is most likely to be missed.
+_BELT_STATE = Path.home() / ".claude" / "state" / "belt"
+
+
+def _wm_key(repo: str, issue: int) -> str:
+    """Watermark key for one target. `/` is a path separator and `Watermarks`
+    builds a filename from this, so it must not survive."""
+    return f"{repo.replace('/', '__')}__{issue}"
+
+
+def _parse_iso(stamp: str) -> dt.datetime:
+    return dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=dt.timezone.utc)
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -342,7 +373,7 @@ def _report_resolutions(
     return resolutions
 
 
-def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
+def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
     try:
         raw = gh_as(
             _ACCOUNT,
@@ -351,11 +382,11 @@ def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
         )
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
         print(f"[watch_lane_posts] gh api failed for #{issue}: {exc}", file=sys.stderr)
-        return []
+        return None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return []
+        return None
 
 
 #: Triple-backtick fenced code blocks, DOTALL so a multi-line fence is one
@@ -1286,6 +1317,20 @@ def main() -> int:
     _report_resolutions(drop_closed_targets(
         [(path, *resolve_worktree(path)) for path in args.worktrees]))
 
+    watermarks = Watermarks(_BELT_STATE / "watermarks")
+    seen = SeenSet(_BELT_STATE / f"seen-{'-'.join(sorted(watch)) or 'none'}.tsv")
+    #: harmonic-forge#599 AC4 / the design note: "Prime a seen-set before the
+    #: first poll so arming the monitor does not replay every historical post
+    #: as new." Only on a genuinely FIRST arm -- if state exists the belt has
+    #: run before and the persisted watermarks already bound the window, so
+    #: priming then would suppress real posts made while it was down.
+    priming = not seen.path.exists() or not seen._state
+    if priming:
+        print("[watch_lane_posts] first arm: the opening cycle PRIMES the "
+              "seen-set (records without announcing) so arming does not replay "
+              "history. Real posts are announced from the second cycle on.",
+              file=sys.stderr)
+
     last_discovered: set[tuple[str, int]] = set()
     last_queue: dict[tuple[str, int], str] = {}
     #: harmonic-forge#583 AC4. Keyed by worktree path (not `(repo, issue)`
@@ -1360,16 +1405,57 @@ def main() -> int:
                 sys.stdout.flush()
             last_queue = queue
 
+        # harmonic-forge#599. `SKILL.md` declares dedup as one mechanic with
+        # three parts and says "Do not simplify it back"; this path had none of
+        # them -- one in-memory `since`, advanced unconditionally after a fetch
+        # that swallowed failures to `[]`. A rate limit therefore lost that
+        # window permanently and silently, which is the failure the mechanic
+        # exists to prevent, in the file that documents it as mandatory.
+        #
+        # Per TARGET, not per repo: two issues in one repo fail independently,
+        # and a shared marker would let one issue's failure advance past
+        # another's unread window -- `Watermarks`' own docstring makes exactly
+        # this argument one level up, about accounts vs repos.
         for repo, issue in discovered | static_pairs:
-            for comment in _fetch_comments(repo, issue, since):
+            target = f"{repo}#{issue}"
+            mark = watermarks.get(_ACCOUNT or "vitalharmony", _wm_key(repo, issue))
+            comments = _fetch_comments(
+                repo, issue,
+                query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"))
+            if comments is None:
+                # Do NOT advance: the next cycle re-reads this window.
+                print(f"[watch_lane_posts] {target}: comment fetch failed -- "
+                      "watermark held, window will be re-read", file=sys.stderr)
+                continue
+            for comment in comments:
                 classified = _classify(comment.get("body", ""))
                 if classified is None:
                     continue
                 lane, detail = classified
                 if lane not in watch:
                     continue
+                # The seen-set is what makes overlap affordable: re-reading the
+                # seam re-delivers comments, and without this every one of them
+                # would be re-announced every cycle.
+                cid = str(comment.get("id", ""))
+                if cid and cid in seen:
+                    continue
+                if priming:
+                    if cid:
+                        seen.add(cid, SeenSet.PRIMED)
+                    continue
+                if cid:
+                    seen.add(cid, SeenSet.EMITTED)
                 print(f"{repo}#{issue} {lane} — {detail}")
                 sys.stdout.flush()
+            watermarks.advance(_ACCOUNT or "vitalharmony", _wm_key(repo, issue),
+                               _parse_iso(now))
+        if priming:
+            primed = sum(1 for s in seen._state.values() if s == SeenSet.PRIMED)
+            print(f"[watch_lane_posts] primed {primed} historical comment(s); "
+                  "announcing from here", file=sys.stderr)
+            priming = False
         since = now
 
         #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
