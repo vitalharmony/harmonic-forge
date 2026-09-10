@@ -1296,6 +1296,38 @@ def verify_registration(settings_path: Path | None = None) -> tuple[bool, str]:
         f"gate without a consumer allows merges that are never marked spent.")
 
 
+def _require_tty(cmd: str) -> None:
+    """Refuse a minting CLI subcommand when stdin is not a real terminal
+    (harmonic-forge#589, part b).
+
+    `CLAUDE_CODE_ENTRYPOINT` (`batch_provenance.py`) is session-scoped by
+    construction -- it cannot distinguish a scheduled `/loop`/ScheduleWakeup
+    delivery from a typed one *within* an already-interactive session, which
+    is exactly the residual gap that check cannot close. `os.isatty(0)` is a
+    different, narrower signal: an operator's own terminal has a TTY on fd 0;
+    a subprocess an agent's Bash tool launches does not, regardless of what
+    the session's entrypoint reports as a whole.
+
+    Not a cryptographic proof -- an agent could allocate a pty via
+    `script`/`pty.spawn` -- but it removes the entire text-parsing attack
+    surface for the common case, independent of which hook fired or what
+    session state looks like. This is the path operator habit should move
+    to; `expand_lane_shorthand.py`'s prompt-triggered mint stays live as a
+    secondary, entrypoint-gated path (defense in depth), not replaced by
+    this.
+    """
+    if not os.isatty(0):
+        print(
+            f"[BATCH] refusing `{cmd}`: stdin is not a TTY. This subcommand "
+            "mints a live authorization and must be run by the operator "
+            "directly in their own terminal, never through an agent's tool "
+            "call. If this is an agent-driven session, the operator should "
+            "type `BATCH <KEY>` in chat instead.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
 def _cli() -> None:
     import argparse
 
@@ -1350,10 +1382,17 @@ def _cli() -> None:
 
     args = parser.parse_args()
     if args.cmd == "authorize":
+        _require_tty("authorize")
         actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
         authorize(args.keys, actions, args.ttl_hours)
         print(f"authorized {', '.join(k.upper() for k in args.keys)} for {actions!r}")
     elif args.cmd == "top-up":
+        # top-up() mints exactly like authorize() for any key with no live
+        # entry (module docstring, harmonic-forge#356) -- leaving this
+        # subcommand ungated would be a one-flag bypass of the gate just
+        # added above, since an agent could reach the same fresh-mint code
+        # path by typing `top-up` instead of `authorize`.
+        _require_tty("top-up")
         actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
         requested = [k.upper() for k in args.keys]
         fresh = [k.upper() for k in top_up(args.keys, actions, args.ttl_hours)]
