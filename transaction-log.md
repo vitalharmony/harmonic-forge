@@ -3,6 +3,52 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): drop closed-issue worktrees, re-enumerate per cycle, report per root (harmonic-forge#590)
+
+Preclose inspection on PR #591 returned four findings. All four fixed here.
+
+1. **Closed issues were offered as live work.** Nothing prunes a
+   `/tmp/<repo>-<issue>-impl` checkout, and its branch reads as ahead of
+   origin/main forever once main takes the work as a squash merge. Making the
+   belt worktrees-first therefore traded "every open issue in the repo" for
+   "every stale checkout on the box" -- smaller, same permissive direction.
+   `drop_closed_targets` demotes those to unresolved and names them; verified
+   live, 8 ghosts dropped (hf#565/566/567/568, hrse#568/586/1675/1764), 11 real
+   targets left. The verdict is cached, so this is one API call per ghost per
+   session, not per cycle; a reopened issue comes back via the suspenders'
+   sweep, which is what that backstop is for.
+
+2. **The worktree set was frozen at arm time.** Enumeration sat in argument
+   post-processing, before the poll loop, so a worktree Lane 2 creates during a
+   session was invisible for the session's whole life -- and with the repo-wide
+   sweep no longer on the belt, nothing else would have caught it. It now
+   re-enumerates every cycle, as every other discovery step in that loop
+   already did. The old docstring claimed arm-time reading "cannot go stale";
+   true between sessions, false within one, and AC4's hazard is within one.
+
+3. **A repo root contributing nothing was silent.** Running the prescribed
+   command from `~/harmonic-forge` resolved both roots to the same repository
+   and dropped all of HRSE2, while the aggregate count still read healthy.
+   Roots are now keyed by `--git-common-dir` and reported individually; a
+   duplicate root and a non-repo root are each named.
+
+4. **SKILL.md's never-silent guarantee pointed at a deleted branch.** It
+   attributed Lane 1's belt to `--queue-for`, which it no longer uses.
+
+`report_resolution` is split so the poll cycle reports the same filtered list
+it acts on, and #583's comment justifying an unconditional `branch_ahead_lines`
+("Lane 1's belt has no --worktrees, so this is a no-op there") is corrected --
+that premise is exactly what #590 inverted.
+
+11 further tests; suite 1918 -> 1929, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md |  23 +++--
+- tools/gh/test_watch_lane_posts.py   | 112 +++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py        | 172 ++++++++++++++++++++++++++++++------
+- 3 files changed, 276 insertions(+), 31 deletions(-)
+
 ## fix(belt): Lane 1's belt watches the worktrees, not a repo-wide scan (harmonic-forge#590)
 
 The original design puts the repo-wide newest-marker sweep in the SUSPENDERS,

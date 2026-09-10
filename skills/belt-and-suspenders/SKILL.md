@@ -91,12 +91,23 @@ mid-issue is not the command to arm:
   ```
 
 **A monitor that never printed a status line is not proof it is watching
-anything.** For `--worktrees`, the script reports its resolved target set at
-startup and on every change — how many resolved, which did not and why — and
-says so explicitly, never silently, when zero resolved. For `--queue-for`
-(every Lane 1 and Lane 3 command above), it reports the queued count once at
-the first poll, even when that count is zero — a genuinely quiet repo and a
-dead process must never look the same on the log.
+anything.** For `--worktrees` — which now includes **Lane 1's belt**, since it
+is worktrees-first — the script reports its resolved target set at startup and
+on every change: how many resolved, which did not and why, and explicitly,
+never silently, when zero resolved. `--all-worktrees` adds a line per repo
+root, because a root that contributes nothing (not a repo, or the *same* repo
+as another root) is otherwise invisible inside an aggregate count, and a belt
+covering one repo instead of two looks identical to one covering both
+(harmonic-forge#590). For `--queue-for` — the Lane 3 command above, and the
+suspenders' Lane 1 sweep below — it reports the queued count once at the first
+poll, even when that count is zero. A genuinely quiet repo and a dead process
+must never look the same on the log.
+
+**A worktree is evidence work was started, not that it is live.** Abandoned
+`/tmp/<repo>-<issue>-impl` checkouts are never pruned, and their branches read
+as ahead of `origin/main` forever once main takes the work as a squash merge.
+Targets whose issue is closed are therefore dropped and named as dropped —
+without that, worktrees-first fails permissively in its own smaller way.
 
 ## Refuse before arming anything
 

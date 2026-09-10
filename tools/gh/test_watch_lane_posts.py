@@ -2,6 +2,7 @@
 """Unit tests for watch_lane_posts.py (harmonic-forge#442) -- pure parsing
 logic only, no live gh/API calls. Fixtures are real comment bodies from
 hrse#1530 (trimmed), not invented shapes."""
+import io
 import json
 import re
 import subprocess
@@ -10,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import watch_lane_posts
 from watch_lane_posts import (
     QUEUE_KINDS,
     _BRANCH_ISSUE_RE,
@@ -19,6 +21,8 @@ from watch_lane_posts import (
     discover_from_worktree,
     discover_l1_sweep,
     discover_queue,
+    drop_closed_targets,
+    enumerate_repo_roots,
     enumerate_worktrees,
     l1_sweep_cycle,
     list_open_issues,
@@ -1015,6 +1019,114 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
         """AC2: demoted, not removed -- it is still the suspenders' backstop."""
         self.assertTrue(callable(discover_l1_sweep))
         self.assertIn("discover_l1_sweep", _SKILL_MD.read_text(encoding="utf-8"))
+
+
+class DropClosedTargetsTests(unittest.TestCase):
+    """harmonic-forge#590 preclose finding 1: an abandoned `/tmp/*-impl`
+    checkout for a merged issue reads as "1 commit ahead with no completion
+    posted" forever, because main took the work as a squash merge."""
+
+    def setUp(self):
+        watch_lane_posts._CLOSED_SEEN.clear()
+
+    def _rows(self):
+        return [("/tmp/hf-568-impl", ("vitalharmony/harmonic-forge", 568), "resolved"),
+                ("/tmp/hrse2-1780-impl", ("vitalharmony/hrse", 1780), "resolved"),
+                ("/home/u/HRSE2-lane3", None, "detached HEAD with no branch name")]
+
+    def test_closed_issue_target_is_demoted_and_named(self):
+        with patch("watch_lane_posts._issue_is_open",
+                   side_effect=lambda repo, issue: issue != 568):
+            kept = drop_closed_targets(self._rows())
+        by_path = {path: (pair, reason) for path, pair, reason in kept}
+        self.assertIsNone(by_path["/tmp/hf-568-impl"][0])
+        self.assertIn("closed", by_path["/tmp/hf-568-impl"][1])
+        self.assertIn("abandoned worktree", by_path["/tmp/hf-568-impl"][1])
+
+    def test_open_issue_target_survives_untouched(self):
+        with patch("watch_lane_posts._issue_is_open", return_value=True):
+            kept = drop_closed_targets(self._rows())
+        self.assertEqual(kept, self._rows())
+
+    def test_already_unresolved_row_is_passed_through_not_re_asked(self):
+        with patch("watch_lane_posts._issue_is_open", return_value=True) as is_open:
+            drop_closed_targets([("/home/u/HRSE2-lane3", None, "detached HEAD")])
+        is_open.assert_not_called()
+
+    def test_closed_verdict_is_cached_so_the_belt_does_not_re_ask_every_cycle(self):
+        rows = [("/tmp/hf-568-impl", ("vitalharmony/harmonic-forge", 568), "resolved")]
+        with patch("watch_lane_posts._issue_is_open", return_value=False) as is_open:
+            drop_closed_targets(rows)
+            drop_closed_targets(rows)
+            drop_closed_targets(rows)
+        self.assertEqual(is_open.call_count, 1)
+
+
+class EnumerateRepoRootsTests(unittest.TestCase):
+    """harmonic-forge#590 preclose finding 3: two roots that are the same
+    repository, or a root that is in no repository, silently contribute
+    nothing while the aggregate count still reads healthy."""
+
+    def test_two_distinct_repos_are_unioned(self):
+        with patch("watch_lane_posts._git_common_dir",
+                   side_effect=["/a/.git", "/b/.git"]), \
+             patch("watch_lane_posts.enumerate_worktrees",
+                   side_effect=[["/a", "/tmp/a-1-impl"], ["/b"]]):
+            self.assertEqual(enumerate_repo_roots(["/b"]),
+                             ["/a", "/b", "/tmp/a-1-impl"])
+
+    def test_same_repo_named_twice_is_reported_not_silently_deduped(self):
+        with patch("watch_lane_posts._git_common_dir", return_value="/a/.git"), \
+             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(enumerate_repo_roots(["/a-sibling"]), ["/a"])
+        self.assertIn("same repository", err.getvalue())
+
+    def test_same_repo_is_enumerated_once_not_twice(self):
+        with patch("watch_lane_posts._git_common_dir", return_value="/a/.git"), \
+             patch("watch_lane_posts.enumerate_worktrees",
+                   return_value=["/a"]) as enum:
+            enumerate_repo_roots(["/a-sibling"])
+        self.assertEqual(enum.call_count, 1)
+
+    def test_non_repo_root_is_named_loudly(self):
+        with patch("watch_lane_posts._git_common_dir",
+                   side_effect=["/a/.git", None]), \
+             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            enumerate_repo_roots(["/not/a/repo"])
+        self.assertIn("NOT A GIT REPO", err.getvalue())
+
+    def test_each_root_reports_its_own_contribution(self):
+        """An aggregate count cannot show that one root added zero."""
+        with patch("watch_lane_posts._git_common_dir",
+                   side_effect=["/a/.git", "/b/.git"]), \
+             patch("watch_lane_posts.enumerate_worktrees",
+                   side_effect=[["/a", "/tmp/a-1-impl"], []]), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            enumerate_repo_roots(["/b"])
+        self.assertIn("root CWD: 2 worktree(s)", err.getvalue())
+        self.assertIn("root /b: 0 worktree(s)", err.getvalue())
+
+
+class BeltNeverSilentDocTests(unittest.TestCase):
+    """harmonic-forge#590 preclose finding 4: the never-silent guarantee
+    attributed Lane 1's belt to `--queue-for`, a branch it no longer enters."""
+
+    def test_guarantee_does_not_claim_lane1_uses_queue_for_above(self):
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        para = re.search(r"\*\*A monitor that never printed.*?\n\n",
+                         text, re.DOTALL)
+        self.assertIsNotNone(para, "the never-silent guarantee paragraph was not found")
+        self.assertNotIn("every Lane 1 and Lane 3 command above", para.group(0),
+                         "Lane 1's belt is worktrees-first and never enters the "
+                         "--queue-for branch this sentence points at")
+
+    def test_guarantee_covers_lane1s_belt_under_worktrees(self):
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        para = re.search(r"\*\*A monitor that never printed.*?\n\n",
+                         text, re.DOTALL)
+        self.assertIn("Lane 1's belt", para.group(0))
 
 
 if __name__ == "__main__":
