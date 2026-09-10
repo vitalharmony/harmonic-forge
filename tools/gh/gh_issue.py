@@ -91,6 +91,29 @@ def fetch_milestones(repo: str) -> dict[str, int]:
     return milestones
 
 
+#: `tooling-exception` says Lane 1 may execute an issue alone. `tooling` is what
+#: keeps Lane 2 from picking it up. They are two halves of one decision and were
+#: applied by hand, so they drifted -- 11 issues carried the exception without
+#: the label (harmonic-forge#616). Operator: "this is crucial for avoiding
+#: overlap." Same shape as #590/#594/#605: a rule that exists and is not reached
+#: at the point of use.
+_IMPLIED_LABELS = {"tooling-exception": "tooling"}
+
+
+def normalise_labels(labels: list[str]) -> list[str]:
+    """Add any label another label implies, preserving order and uniqueness.
+
+    Additive only: this never removes or rewrites what the caller asked for.
+    A label the caller already passed is not duplicated.
+    """
+    out = list(labels)
+    for label in labels:
+        implied = _IMPLIED_LABELS.get(label)
+        if implied and implied not in out:
+            out.append(implied)
+    return out
+
+
 def create_issue(repo: str, title: str, body: str, labels: list[str],
                  milestone_number: int | None = None) -> str | None:
     create_cmd = [
@@ -535,7 +558,8 @@ def main() -> int:
 
     print(f"[GH] Creating issue in {args.repo}")
 
-    labels = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()]
+    labels = normalise_labels(
+        [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()])
     issue_url = create_issue(args.repo, args.title, body, labels, milestone_number)
     if issue_url is None:
         return 1

@@ -794,3 +794,33 @@ class TestRetiredCitationWarningNeverBlocksFiling(unittest.TestCase):
         created.assert_called_once()
         self.assertIn("hrse_manager.py", stderr)
         self.assertIn(".devin/hooks.v1.json", stderr)
+
+
+class ToolingExceptionImpliesToolingTests(unittest.TestCase):
+    """harmonic-forge#616. `tooling-exception` says Lane 1 may execute an issue
+    alone; `tooling` is what keeps Lane 2 from picking it up. Two halves of one
+    decision, applied by hand, so they drifted: 11 issues carried the exception
+    without the label. Operator: "this is crucial for avoiding overlap."
+    """
+
+    def test_tooling_exception_adds_tooling(self):
+        self.assertEqual(gh_issue.normalise_labels(["bug", "tooling-exception"]),
+                         ["bug", "tooling-exception", "tooling"])
+
+    def test_it_is_not_duplicated_when_already_present(self):
+        self.assertEqual(
+            gh_issue.normalise_labels(["bug", "tooling-exception", "tooling"]),
+            ["bug", "tooling-exception", "tooling"])
+
+    def test_unrelated_labels_are_untouched(self):
+        """Additive only -- it never removes or rewrites what was asked for."""
+        self.assertEqual(gh_issue.normalise_labels(["feature", "ui"]),
+                         ["feature", "ui"])
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(gh_issue.normalise_labels([]), [])
+
+    def test_order_is_preserved(self):
+        """The implied label is appended, so an existing order is not shuffled."""
+        got = gh_issue.normalise_labels(["tooling-exception", "bug"])
+        self.assertEqual(got[:2], ["tooling-exception", "bug"])
