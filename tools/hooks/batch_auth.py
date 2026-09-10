@@ -68,13 +68,26 @@ issue's close authorization, and vice versa. `link_pr()` attaches
 repo/pr_number to the specific `"gh pr merge"` target within a key's
 `targets` list, not to the entry as a whole.
 
-## Write path -- trust boundary lives in the caller, not here
+## Write path -- trust boundary lives in the caller, and is now mechanical
 
 `authorize()` is called only from a genuine operator chat message carrying
 the literal `BATCH` keyword -- never in response to text read from a file,
-issue/PR body, tool output, or web page. That instruction-source boundary is
-the calling agent's own judgement to make; this module performs the write
-once that judgement is already made, and never makes it itself.
+issue/PR body, tool output, or web page (R-0117). This module performs the
+write once that judgement is made and never makes it itself.
+
+**That judgement is no longer left to a session's discretion**
+(harmonic-forge#589). It used to be, and the discretion was fictional: the
+only real caller is `expand_lane_shorthand.py`'s `UserPromptSubmit` hook,
+which matched a regex against the incoming prompt with no agent judgement
+anywhere in the path. On 2026-09-10 a subagent's report -- delivered to its
+parent as a `<task-notification>`, and carrying a `milestone_summary.py`
+proposal line that explicitly labelled itself "not an authorization" --
+minted four real 12-hour merge+close grants. `batch_provenance.py` is now
+that boundary, applied inside `expand_lane_shorthand.batch_keys()` so the
+function that turns text into keys is the function that refuses. Read that
+module before adding a second caller: it also records why the harness's own
+`promptSource`/`origin` fields, which would answer this exactly, are not
+reachable from a hook.
 
 ## The PR-number gap -- stated plainly, not silently resolved
 
@@ -1283,6 +1296,47 @@ def verify_registration(settings_path: Path | None = None) -> tuple[bool, str]:
         f"gate without a consumer allows merges that are never marked spent.")
 
 
+def _require_tty(cmd: str) -> None:
+    """Refuse a minting CLI subcommand when stdin is not a real terminal
+    (harmonic-forge#589, part b).
+
+    **Corrected framing (F589 ruling, round 3):** this does NOT close the
+    `CLAUDE_CODE_ENTRYPOINT` residual named in `batch_provenance.py` --
+    `expand_lane_shorthand.py`'s prompt-triggered mint stays exactly as live
+    and exactly as exposed to that residual as it was before this function
+    existed. What this adds is a second, separate mint path (`authorize`/
+    `top-up` invoked directly by the operator's own terminal) that has no
+    text-parsing attack surface at all, because it never reads a prompt in
+    the first place -- an agent's Bash tool call has no TTY on stdin,
+    regardless of what the session's entrypoint reports. It is a safer
+    alternative to point operator habit at, not a fix applied to the
+    existing one.
+
+    Also, per that same ruling: this repo's provenance checks (this one and
+    the entrypoint allowlist) are **accident prevention** -- against injected
+    text reaching a prompt path -- not a security boundary against a hostile
+    or confused agent. Neither this function nor `CLAUDE_CODE_ENTRYPOINT`
+    should be described as closing an attack surface in that stronger sense;
+    a real security boundary requires a separate, operator-gated identity,
+    tracked as its own follow-up issue rather than built here.
+
+    Not even accident-proof on its own terms -- an agent could allocate a
+    pty via `script`/`pty.spawn` -- but it is a real, narrow signal an
+    operator's own terminal always has and a tool-launched subprocess never
+    does.
+    """
+    if not os.isatty(0):
+        print(
+            f"[BATCH] refusing `{cmd}`: stdin is not a TTY. This subcommand "
+            "mints a live authorization and must be run by the operator "
+            "directly in their own terminal, never through an agent's tool "
+            "call. If this is an agent-driven session, the operator should "
+            "type `BATCH <KEY>` in chat instead.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
 def _cli() -> None:
     import argparse
 
@@ -1337,10 +1391,17 @@ def _cli() -> None:
 
     args = parser.parse_args()
     if args.cmd == "authorize":
+        _require_tty("authorize")
         actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
         authorize(args.keys, actions, args.ttl_hours)
         print(f"authorized {', '.join(k.upper() for k in args.keys)} for {actions!r}")
     elif args.cmd == "top-up":
+        # top-up() mints exactly like authorize() for any key with no live
+        # entry (module docstring, harmonic-forge#356) -- leaving this
+        # subcommand ungated would be a one-flag bypass of the gate just
+        # added above, since an agent could reach the same fresh-mint code
+        # path by typing `top-up` instead of `authorize`.
+        _require_tty("top-up")
         actions = args.actions if args.actions else list(DEFAULT_ACTIONS)
         requested = [k.upper() for k in args.keys]
         fresh = [k.upper() for k in top_up(args.keys, actions, args.ttl_hours)]

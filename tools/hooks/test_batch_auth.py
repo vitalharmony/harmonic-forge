@@ -1587,3 +1587,104 @@ class RevokeTests(StateFixture):
                 with mock.patch("sys.argv", ["batch_auth.py", "--help"]):
                     ba._cli()
         self.assertIn("revoke", buffer.getvalue())
+
+
+class TtyGateCliTests(StateFixture):
+    """harmonic-forge#589, part (b) -- `authorize`/`top-up`'s CLI dispatch
+    refuses to run unless stdin is a real TTY. An agent's Bash tool call has
+    no TTY on stdin regardless of what `CLAUDE_CODE_ENTRYPOINT` reports for
+    the session.
+
+    **Corrected framing (F589 ruling, round 3):** this is a second, separate
+    mint path with no text-parsing surface at all -- it does NOT close the
+    entrypoint allowlist's own residual gap on `expand_lane_shorthand.py`'s
+    prompt-triggered mint, which stays exactly as live and exactly as
+    exposed as before. Both provenance checks in this module are accident
+    prevention against injected text reaching a prompt path, not a security
+    boundary against a hostile or confused agent -- that requires a separate,
+    operator-gated identity, tracked as its own follow-up rather than
+    fabricated out of either of these checks.
+
+    `ba.STATE_PATH` is patched (not just `state_path=`) because `_cli()`'s
+    dispatch to `authorize()`/`top_up()` passes no `state_path` at all -- it
+    always writes through the module-global default. Leaving it unpatched
+    would make a refused-mint test pass by accident and a genuinely-minted
+    one write to the operator's real state file.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._real_state_path = ba.STATE_PATH
+        ba.STATE_PATH = self.state_path
+
+    def tearDown(self):
+        ba.STATE_PATH = self._real_state_path
+        super().tearDown()
+
+    def _run_cli(self, argv, isatty):
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("sys.argv", ["batch_auth.py", *argv]), \
+             mock.patch("os.isatty", return_value=isatty), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as ctx:
+                ba._cli()
+        return ctx.exception.code, out.getvalue(), err.getvalue()
+
+    def test_authorize_without_a_tty_is_refused_and_mints_nothing(self):
+        code, out, err = self._run_cli(["authorize", "F999"], isatty=False)
+        self.assertEqual(code, 1)
+        self.assertIn("not a TTY", err)
+        self.assertNotIn("F999", ba._load(self.state_path))
+
+    def test_authorize_with_a_real_tty_proceeds_normally(self):
+        with mock.patch("sys.argv", ["batch_auth.py", "authorize", "F999"]), \
+             mock.patch("os.isatty", return_value=True):
+            ba._cli()  # exits normally (argparse success path, no SystemExit)
+        self.assertIn("F999", ba._load(self.state_path))
+
+    def test_top_up_without_a_tty_is_refused_and_mints_nothing(self):
+        """top_up() mints identically to authorize() for a key with no live
+        entry -- an ungated `top-up` would be a one-flag bypass of the gate
+        just added to `authorize`."""
+        code, out, err = self._run_cli(["top-up", "F999"], isatty=False)
+        self.assertEqual(code, 1)
+        self.assertIn("not a TTY", err)
+        self.assertNotIn("F999", ba._load(self.state_path))
+
+    def test_top_up_without_a_tty_is_refused_even_when_extending_a_live_key(self):
+        """The gate fires before top_up() can even check whether the key is
+        already live -- refusal must not depend on what the state file
+        currently holds."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        before = ba._load(self.state_path)["F1"]["expires_at"]
+        code, out, err = self._run_cli(["top-up", "F1"], isatty=False)
+        self.assertEqual(code, 1)
+        after = ba._load(self.state_path)["F1"]["expires_at"]
+        self.assertEqual(before, after, "a refused top-up must not extend anything")
+
+    def test_top_up_with_a_real_tty_proceeds_normally(self):
+        with mock.patch("sys.argv", ["batch_auth.py", "top-up", "F999"]), \
+             mock.patch("os.isatty", return_value=True):
+            ba._cli()
+        self.assertIn("F999", ba._load(self.state_path))
+
+    def test_revoke_is_not_gated(self):
+        """revoke() never mints -- it only marks existing targets consumed --
+        so it must remain usable without a TTY (an agent standing down a
+        batch on the operator's explicit instruction is the normal case)."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        with mock.patch("sys.argv", ["batch_auth.py", "revoke", "F1"]), \
+             mock.patch("os.isatty", return_value=False):
+            ba._cli()  # must not raise SystemExit(1) from the TTY gate
+        state = ba._load(self.state_path)
+        self.assertTrue(all(t["consumed"] for t in state["F1"]["targets"]))
+
+    def test_authorize_refusal_message_names_the_chat_alternative(self):
+        """The operator's own complaint on the incident that filed the
+        parent issue was not knowing what to do next -- the refusal must
+        say what path IS available for an agent-driven session."""
+        _, _, err = self._run_cli(["authorize", "F999"], isatty=False)
+        self.assertIn("BATCH", err)
