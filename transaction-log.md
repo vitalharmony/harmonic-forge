@@ -3,6 +3,48 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): name the repo roots, so /belt-and-suspenders arms correctly anywhere (harmonic-forge#594)
+
+#590 made Lane 1's belt worktrees-first but left it only correct from one
+directory: `--all-worktrees` enumerated the repo containing CWD, and the second
+repo was seeded by overloading `--worktrees`. A skill cannot arm a command
+whose correctness depends on where the session happens to be sitting -- and
+`--worktrees` doing two jobs, distinguished only by prose, is the shape defects
+grow in.
+
+- `--all-worktrees` now takes the repo roots as its own arguments. With none,
+  it keeps its #590 meaning (the repo containing CWD). Named roots do not also
+  enumerate CWD, which is what makes the result cwd-independent.
+- `--worktrees` has one job again: naming individual worktrees to watch.
+- Repo identity resolves symlinks, so `~/harmonic-forge` and
+  `~/Harmonic_Projects/harmonic-forge` collapse to one repo and the duplicate
+  is reported rather than silently dropped.
+- A NAMED root that is not a repo raises rather than warns. An asserted root
+  contributing nothing is a typo, and arming a narrower belt than was asked for
+  is the one thing this protocol exists to refuse. A bare CWD that is not a
+  repo still only warns -- nobody asserted it was one -- and names the fix.
+- A root that vanishes mid-session shouts and keeps the previous set. A dead
+  belt is worse than a stale one, and the typo case is already caught at arm
+  time by `parser.error`.
+- SKILL.md's Lane 1 command is one line, armed verbatim, with no `cd` first and
+  no caveat -- because there is nothing left to warn about.
+
+Proof, run from `/tmp` rather than either checkout:
+
+  [watch_lane_posts]   root /home/mmangus/Harmonic_Projects/HRSE2: 15 worktree(s)
+  [watch_lane_posts]   root /home/mmangus/harmonic-forge: 11 worktree(s)
+  [watch_lane_posts] worktree targets: 10/26 resolved
+
+7 further tests (1929 -> 1936), including one asserting the doc carries no
+"run it from the HRSE2 checkout" caveat and one covering symlinked roots.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md |  14 ++--
+- tools/gh/test_watch_lane_posts.py   | 109 +++++++++++++++++++++++++------
+- tools/gh/watch_lane_posts.py        | 125 +++++++++++++++++++++++-------------
+- 3 files changed, 176 insertions(+), 72 deletions(-)
+
 ## fix(belt): drop closed-issue worktrees, re-enumerate per cycle, report per root (harmonic-forge#590)
 
 Preclose inspection on PR #591 returned four findings. All four fixed here.

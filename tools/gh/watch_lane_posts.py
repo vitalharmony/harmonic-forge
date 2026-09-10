@@ -758,6 +758,11 @@ def l1_sweep_cycle(
     return l1_queue, (now if fetch_ok else l1_since)
 
 
+class RootNotARepo(Exception):
+    """A path named to `--all-worktrees` is not a git repository
+    (harmonic-forge#594). Raised, not warned: a named root is an assertion."""
+
+
 def enumerate_worktrees(cwd: str | None = None) -> list[str]:
     """Every live worktree of the repo containing `cwd`, via `git worktree list`.
 
@@ -798,41 +803,58 @@ def _git_common_dir(cwd: str | None = None) -> str | None:
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return None
-    return out.strip() or None
+    common = out.strip()
+    if not common:
+        return None
+    # harmonic-forge#594: `~/harmonic-forge` is a symlink to
+    # `~/Harmonic_Projects/harmonic-forge`. Two spellings of one repository must
+    # collapse to one identity, or the duplicate-root report never fires for the
+    # spelling pair most likely to be typed.
+    return str(Path(common).resolve())
 
 
-def enumerate_repo_roots(explicit: list[str]) -> list[str]:
-    """Union of every live worktree across CWD's repo and each repo named by
-    `explicit`, deduplicated by *repository*, reporting per root.
+def enumerate_repo_roots(roots: list[str]) -> list[str]:
+    """Union of every live worktree across each repo in `roots`, deduplicated
+    by *repository*, reporting per root. `[]` means the repo containing CWD.
 
-    Two failures this exists to make loud (harmonic-forge#590 preclose
-    finding). Both previously read as a healthy belt:
+    Roots are NAMED, not inferred from the worktrees being watched
+    (harmonic-forge#594). `git worktree list` only ever sees one repository, so
+    a belt that must span hrse and harmonic-forge has to be told both -- and
+    inferring the second from CWD made the command correct only when launched
+    from the right directory, which is not a property a skill can arm.
 
-    - **Two roots, one repo.** `git worktree list` only ever sees one
-      repository, so the Lane 1 command names a sibling checkout to span
-      hrse and harmonic-forge. Run that same command from the sibling and
-      both roots resolve to the same repo -- the other repo vanishes
-      entirely while the aggregate count still looks plausible. Roots are
-      therefore keyed by `--git-common-dir`, and a duplicate is named.
-    - **A root that contributes nothing.** A path that is not in a repo at
-      all (or a CWD that is not) silently adds zero. Aggregated across
-      roots that is invisible, so each root's own contribution is printed.
+    Three failures this makes loud. Each previously read as a healthy belt:
+
+    - **Two roots, one repo.** Keyed by `--git-common-dir` with symlinks
+      resolved, so `~/harmonic-forge` and `~/Harmonic_Projects/harmonic-forge`
+      collapse to one identity and the duplicate is named.
+    - **A named root that is not a repo** raises `RootNotARepo`. An explicitly
+      named root contributing nothing is a typo, and arming a narrower belt
+      than was asked for is the failure mode this whole protocol exists to
+      refuse. (An unnamed CWD that is not a repo is only a warning -- nobody
+      asserted it was one.)
+    - **A root that contributes zero worktrees.** Invisible inside an aggregate
+      count, so each root's own contribution is printed.
     """
     seen: dict[str, str] = {}          # common dir -> the root that claimed it
     discovered: set[str] = set()
-    for root in [None, *explicit]:
+    for root in (roots or [None]):
         label = root or "CWD"
         common = _git_common_dir(root)
         if common is None:
-            print(f"[watch_lane_posts]   root {label}: NOT A GIT REPO -- contributes "
-                  "nothing. If this is the root you meant, the belt is watching "
-                  "less than you think.", file=sys.stderr)
-            continue
+            if root is None:
+                print("[watch_lane_posts]   root CWD: not a git repo -- contributes "
+                      "nothing. Name the repo roots explicitly: "
+                      "--all-worktrees <path> [<path> ...]", file=sys.stderr)
+                continue
+            raise RootNotARepo(
+                f"--all-worktrees {root}: not a git repository. A named root that "
+                "contributes nothing arms a narrower belt than you asked for, so "
+                "this refuses rather than warns.")
         if common in seen:
             print(f"[watch_lane_posts]   root {label}: same repository as "
-                  f"{seen[common]} -- contributes nothing new. --all-worktrees spans "
-                  "repos only if the roots are DIFFERENT repos; run it from the other "
-                  "one's checkout, or name that one instead.", file=sys.stderr)
+                  f"{seen[common]} -- contributes nothing new. Name a root in each "
+                  "DIFFERENT repo the belt should span.", file=sys.stderr)
             continue
         seen[common] = label
         paths = enumerate_worktrees(root)
@@ -887,14 +909,18 @@ def main() -> int:
                         help="worktree path(s) -- (repo, issue) re-derived from each one's "
                              "CURRENT branch every poll cycle, so this follows a lane across "
                              "issues with zero reconfiguration")
-    parser.add_argument("--all-worktrees", action="store_true",
-                        help="enumerate every live worktree of the repo containing CWD via "
-                             "`git worktree list` and watch all of them -- harmonic-forge#590. "
-                             "A hardcoded --worktrees list goes stale the moment an ephemeral "
-                             "/tmp/<repo>-<issue>-impl worktree is created or removed, and a "
-                             "narrowed belt is silent, not loud. Combines with --worktrees: "
-                             "each named path also contributes ITS repo's worktrees, which is "
-                             "how one belt spans hrse and harmonic-forge at once.")
+    parser.add_argument("--all-worktrees", nargs="*", metavar="REPO_ROOT",
+                        default=None,
+                        help="enumerate every live worktree of each named repo via `git "
+                             "worktree list` and watch all of them -- harmonic-forge#590. "
+                             "A hardcoded --worktrees list goes stale the moment an "
+                             "ephemeral /tmp/<repo>-<issue>-impl worktree is created or "
+                             "removed, and a narrowed belt is silent, not loud. `git "
+                             "worktree list` sees ONE repository, so name a path in each "
+                             "repo the belt should span -- that is what lets one belt cover "
+                             "hrse and harmonic-forge, and naming them makes the command "
+                             "correct from any directory (harmonic-forge#594). With no "
+                             "paths, enumerates the repo containing CWD.")
     parser.add_argument("--repo", help="owner/repo for a manual --issues override")
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
@@ -929,20 +955,23 @@ def main() -> int:
         parser.error("--issues requires --repo")
     if args.queue_for and not args.repo:
         parser.error("--queue-for requires --repo")
-    # Union, not replacement: an explicitly named worktree stays watched, and
-    # each named path ALSO contributes its own repo's set, which is how one
-    # belt spans hrse and harmonic-forge at once.
+    # Union, not replacement: an explicitly named --worktrees path stays
+    # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
+    # roots are named to --all-worktrees, so --worktrees has one job again.
     explicit_worktrees = list(args.worktrees)
+    repo_roots = args.all_worktrees          # None = flag absent; [] = bare flag
 
     def current_worktrees() -> list[str]:
-        if not args.all_worktrees:
+        if repo_roots is None:
             return explicit_worktrees
         print("[watch_lane_posts] --all-worktrees enumerating:", file=sys.stderr)
-        return sorted(set(explicit_worktrees) | set(
-            enumerate_repo_roots(explicit_worktrees)))
+        return sorted(set(explicit_worktrees) | set(enumerate_repo_roots(repo_roots)))
 
-    if args.all_worktrees:
-        args.worktrees = current_worktrees()
+    if repo_roots is not None:
+        try:
+            args.worktrees = current_worktrees()
+        except RootNotARepo as exc:
+            parser.error(str(exc))
         print(f"[watch_lane_posts] --all-worktrees enumerated "
               f"{len(args.worktrees)} live worktree(s)", file=sys.stderr)
     if not args.worktrees and not args.issues and not args.queue_for:
@@ -993,7 +1022,15 @@ def main() -> int:
         # for the whole session, and Lane 2 creates worktrees during it
         # (harmonic-forge#590 preclose finding). Every other discovery step in
         # this loop is already re-derived; this one now is too.
-        args.worktrees = current_worktrees()
+        try:
+            args.worktrees = current_worktrees()
+        except RootNotARepo as exc:
+            # A root that vanished mid-session (deleted, unmounted) is a reason
+            # to shout and keep watching the set we had -- not to die. A dead
+            # belt is the one failure this protocol cannot tolerate, and
+            # `parser.error` at arm time already caught the typo case.
+            print(f"[watch_lane_posts] {exc} -- keeping the previous worktree set",
+                  file=sys.stderr)
         resolutions = drop_closed_targets(
             [(path, *resolve_worktree(path)) for path in args.worktrees])
         discovered = {pair for _, pair, _ in resolutions if pair is not None}
