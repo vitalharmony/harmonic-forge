@@ -22,6 +22,7 @@ from watch_lane_posts import (
     discover_l1_sweep,
     discover_queue,
     drop_closed_targets,
+    RootNotARepo,
     enumerate_repo_roots,
     enumerate_worktrees,
     l1_sweep_cycle,
@@ -998,12 +999,53 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
                          "(harmonic-forge#590); arming it as the belt is the "
                          "regression this issue fixed")
 
-    def test_lane1_belt_names_a_second_repo_root(self):
-        """`git worktree list` sees one repo; Lane 1 spans two. The command
-        must therefore name the sibling checkout alongside --all-worktrees."""
-        self.assertIn("--worktrees", self._lane1_belt_command(),
-                      "the Lane 1 belt must seed a second repo root, or it "
-                      "silently watches only the repo it was launched from")
+    #: Tokens after `--all-worktrees` that are repo roots: anything up to the
+    #: next flag. `\S+` is NOT enough and was the shipped defect (#594 preclose
+    #: finding) -- it matches `--watch` and `l2`, so the bare CWD-dependent
+    #: form this test exists to forbid satisfied a two-group match and passed.
+    _ROOTS_RE = re.compile(r"--all-worktrees((?:\s+(?!-)\S+)*)")
+
+    def _lane1_repo_roots(self) -> list[str]:
+        match = self._ROOTS_RE.search(self._lane1_belt_command())
+        self.assertIsNotNone(match, "the Lane 1 belt must arm --all-worktrees")
+        return match.group(1).split()
+
+    def test_lane1_belt_names_two_distinct_repo_roots(self):
+        """`git worktree list` sees one repo; Lane 1 spans two. harmonic-
+        forge#594: the roots are named to --all-worktrees, so the command is
+        correct from any directory."""
+        roots = self._lane1_repo_roots()
+        self.assertEqual(len(roots), 2,
+                         f"--all-worktrees must name exactly two repo roots, got "
+                         f"{roots!r}. Zero roots is the CWD-dependent form #594 "
+                         f"removed; one root is a half-belt.")
+        self.assertNotEqual(roots[0], roots[1])
+
+    def test_lane1_repo_roots_are_paths_not_flags(self):
+        """The regression this guards against is a prose edit, so the guard
+        must reject a flag sitting where a path belongs -- the shipped `\S+`
+        did not, and the mutant passed all 96 tests."""
+        for root in self._lane1_repo_roots():
+            self.assertFalse(root.startswith("-"), f"{root!r} is a flag, not a repo root")
+            self.assertIn("/", root, f"{root!r} does not look like a path")
+
+    def test_lane1_repo_roots_name_both_repos_the_belt_must_span(self):
+        """Two distinct paths is not enough: they must be hrse and harmonic-
+        forge, the two repos Lane 1 actually carries work in."""
+        roots = " ".join(self._lane1_repo_roots()).lower()
+        self.assertIn("hrse", roots)
+        self.assertIn("harmonic-forge", roots)
+
+    def test_lane1_belt_does_not_seed_roots_through_worktrees(self):
+        """AC3: --worktrees names worktrees to watch, nothing else."""
+        self.assertNotIn("--worktrees", self._lane1_belt_command())
+
+    def test_lane1_belt_carries_no_run_it_from_here_caveat(self):
+        """AC1: a command that needs a caveat is not a command a skill can
+        arm. If there is nothing to warn about, there is no warning."""
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        lane1 = text.split("- **Lane 1**", 1)[1].split("- **Lane 2**", 1)[0]
+        self.assertNotIn("Run it from the HRSE2 checkout", lane1)
 
     def test_suspenders_still_carry_the_repo_wide_sweep(self):
         """AC2: demoted to the pull loop, not deleted -- and reachable there,
@@ -1063,39 +1105,70 @@ class DropClosedTargetsTests(unittest.TestCase):
 
 
 class EnumerateRepoRootsTests(unittest.TestCase):
-    """harmonic-forge#590 preclose finding 3: two roots that are the same
-    repository, or a root that is in no repository, silently contribute
-    nothing while the aggregate count still reads healthy."""
+    """harmonic-forge#590 preclose finding 3 and harmonic-forge#594: roots are
+    NAMED, a root contributing nothing is never silent, and two spellings of
+    one repository collapse to one identity."""
 
     def test_two_distinct_repos_are_unioned(self):
         with patch("watch_lane_posts._git_common_dir",
                    side_effect=["/a/.git", "/b/.git"]), \
              patch("watch_lane_posts.enumerate_worktrees",
                    side_effect=[["/a", "/tmp/a-1-impl"], ["/b"]]):
-            self.assertEqual(enumerate_repo_roots(["/b"]),
+            self.assertEqual(enumerate_repo_roots(["/a", "/b"]),
                              ["/a", "/b", "/tmp/a-1-impl"])
 
-    def test_same_repo_named_twice_is_reported_not_silently_deduped(self):
-        with patch("watch_lane_posts._git_common_dir", return_value="/a/.git"), \
-             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]), \
+    def test_no_roots_means_the_repo_containing_cwd(self):
+        """The bare flag keeps its #590 meaning."""
+        with patch("watch_lane_posts._git_common_dir",
+                   return_value="/a/.git") as common, \
+             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]):
+            self.assertEqual(enumerate_repo_roots([]), ["/a"])
+        common.assert_called_once_with(None)
+
+    def test_named_roots_do_not_also_enumerate_cwd(self):
+        """AC1: the result must not depend on where the command was run."""
+        with patch("watch_lane_posts._git_common_dir",
+                   return_value="/a/.git") as common, \
+             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]):
+            enumerate_repo_roots(["/a"])
+        self.assertEqual([c.args[0] for c in common.call_args_list], ["/a"],
+                         "CWD must not be enumerated when roots are named -- "
+                         "that is the cwd dependence #594 removes")
+
+    def test_two_spellings_of_one_repo_collapse_and_are_reported(self):
+        """AC4: `~/harmonic-forge` is a symlink to the real checkout."""
+        with patch("watch_lane_posts._git_common_dir", return_value="/real/.git"), \
+             patch("watch_lane_posts.enumerate_worktrees", return_value=["/real"]), \
              patch("sys.stderr", new_callable=io.StringIO) as err:
-            self.assertEqual(enumerate_repo_roots(["/a-sibling"]), ["/a"])
+            self.assertEqual(
+                enumerate_repo_roots(["/home/u/hf", "/home/u/Projects/hf"]), ["/real"])
         self.assertIn("same repository", err.getvalue())
 
     def test_same_repo_is_enumerated_once_not_twice(self):
         with patch("watch_lane_posts._git_common_dir", return_value="/a/.git"), \
              patch("watch_lane_posts.enumerate_worktrees",
                    return_value=["/a"]) as enum:
-            enumerate_repo_roots(["/a-sibling"])
+            enumerate_repo_roots(["/a", "/a-sibling"])
         self.assertEqual(enum.call_count, 1)
 
-    def test_non_repo_root_is_named_loudly(self):
+    def test_named_root_that_is_not_a_repo_raises(self):
+        """AC5: an asserted root contributing nothing is a typo, and arming a
+        narrower belt than was asked for is what this protocol refuses."""
         with patch("watch_lane_posts._git_common_dir",
                    side_effect=["/a/.git", None]), \
-             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]), \
+             patch("watch_lane_posts.enumerate_worktrees", return_value=["/a"]):
+            with self.assertRaises(RootNotARepo) as caught:
+                enumerate_repo_roots(["/a", "/not/a/repo"])
+        self.assertIn("/not/a/repo", str(caught.exception))
+
+    def test_cwd_that_is_not_a_repo_only_warns(self):
+        """Nobody asserted CWD was a repo, so it is not a typo -- warn, and
+        say what to do instead."""
+        with patch("watch_lane_posts._git_common_dir", return_value=None), \
              patch("sys.stderr", new_callable=io.StringIO) as err:
-            enumerate_repo_roots(["/not/a/repo"])
-        self.assertIn("NOT A GIT REPO", err.getvalue())
+            self.assertEqual(enumerate_repo_roots([]), [])
+        self.assertIn("not a git repo", err.getvalue())
+        self.assertIn("--all-worktrees <path>", err.getvalue())
 
     def test_each_root_reports_its_own_contribution(self):
         """An aggregate count cannot show that one root added zero."""
@@ -1104,9 +1177,29 @@ class EnumerateRepoRootsTests(unittest.TestCase):
              patch("watch_lane_posts.enumerate_worktrees",
                    side_effect=[["/a", "/tmp/a-1-impl"], []]), \
              patch("sys.stderr", new_callable=io.StringIO) as err:
-            enumerate_repo_roots(["/b"])
-        self.assertIn("root CWD: 2 worktree(s)", err.getvalue())
+            enumerate_repo_roots(["/a", "/b"])
+        self.assertIn("root /a: 2 worktree(s)", err.getvalue())
         self.assertIn("root /b: 0 worktree(s)", err.getvalue())
+
+
+class GitCommonDirTests(unittest.TestCase):
+    """AC4: repo identity must survive a symlinked path."""
+
+    def test_symlinked_repo_resolves_to_the_real_common_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            (real / ".git").mkdir(parents=True)
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            completed = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=f"{link}/.git\n", stderr="")
+            with patch("watch_lane_posts.subprocess.run", return_value=completed):
+                self.assertEqual(watch_lane_posts._git_common_dir(str(link)),
+                                 str(real / ".git"))
+
+    def test_not_a_repo_is_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(watch_lane_posts._git_common_dir(tmp))
 
 
 class BeltNeverSilentDocTests(unittest.TestCase):

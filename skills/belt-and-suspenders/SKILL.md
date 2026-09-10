@@ -49,15 +49,15 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
-      --all-worktrees --worktrees ~/harmonic-forge \
-      --watch l2 --watch l3 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees ~/Harmonic_Projects/HRSE2 ~/harmonic-forge --watch l2 --watch l3 --interval 300
   ```
 
-  Run it from the HRSE2 checkout. `git worktree list` only ever sees one
-  repository, so naming `~/harmonic-forge` alongside `--all-worktrees` is what
-  makes the belt span both repos — each named path contributes its own repo's
-  worktrees, not just itself.
+  **Arm it verbatim, from wherever the session already is** — no `cd` first.
+  `git worktree list` only ever sees one repository, so the roots the belt
+  should span are named to `--all-worktrees` rather than inferred from the
+  working directory (harmonic-forge#594). A named root that is not a repo is a
+  hard error, not a warning: a root you asserted and that contributes nothing
+  would arm a narrower belt than you asked for.
 
   **GitHub enriches; it does not discover.** The repo-wide sweep
   (`discover_l1_sweep`) is the *suspenders'* backstop, not the belt's pull
