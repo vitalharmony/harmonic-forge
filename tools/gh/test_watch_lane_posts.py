@@ -14,6 +14,7 @@ from watch_lane_posts import (
     QUEUE_KINDS,
     _BRANCH_ISSUE_RE,
     _classify,
+    branch_ahead_without_completion,
     discover_from_worktree,
     discover_l1_sweep,
     discover_queue,
@@ -59,6 +60,69 @@ class ClassifyTests(unittest.TestCase):
 
     def test_unrelated_heading_is_unclassified(self):
         self.assertIsNone(_classify("## Some other heading entirely\n\ntext"))
+
+    def test_l2_marker_reads_as_l2_not_l1(self):
+        """harmonic-forge#583 AC2: once `l2_post.py` stamps the same
+        `l1-post` marker Lane 1 uses, the marker's mere presence must no
+        longer imply Lane 1 -- `posted-by=LANE2` has to route this to `l2`,
+        or a real Lane 2 post silently reads as a Lane 1 one."""
+        body = ("## L2D — receipt-backed status (harmonic-forge#371)\n\ntext\n\n"
+                "<!-- l1-post v1; kind=completion; posted-by=LANE2 -->")
+        self.assertEqual(_classify(body), ("l2", "completion"))
+
+    def test_l3_marker_reads_as_l3(self):
+        body = ("## Lane 3 Gate Results\n\ntext\n\n"
+                "<!-- l1-post v1; kind=gate-result; posted-by=LANE3 -->")
+        self.assertEqual(_classify(body), ("l3", "gate-result"))
+
+    def test_marker_with_no_posted_by_still_defaults_to_l1(self):
+        """Backward compatibility (AC5): every marker minted before
+        harmonic-forge#583 carries no `posted-by` at all -- this is Lane
+        1's entire historical corpus, and it must keep reading as `l1`."""
+        body = "note\n\n<!-- l1-post v1; kind=discussion -->"
+        self.assertEqual(_classify(body), ("l1", "discussion"))
+
+    def test_corpus_l1_post_via_composed_l2_body_reads_as_l2(self):
+        """harmonic-forge#583 AC3: feed a REAL `l2_post.py`-composed body
+        (not a synthetic string that avoids the awkward cases) through
+        `_classify` and assert lane=`l2` for every kind."""
+        import l2_post as lp
+        for kind in ("plan", "completion", "blocked", "finding"):
+            body = lp.compose_body(kind, [], "a real narrative")
+            lane, detail = _classify(body)
+            self.assertEqual(lane, "l2", f"kind={kind}")
+            self.assertEqual(detail, kind)
+
+    def test_corpus_hrse1676_l2p_heading_still_reads_as_l2(self):
+        """harmonic-forge#583 AC3/AC8, real corpus example named in the
+        issue: hrse#1676's actual `## L2P` comment, posted before
+        `l2_post.py` stamped a marker at all. Must still classify as `l2`
+        -- the heading fallback, not a marker -- and this test asserts it
+        rather than assuming the earlier `test_l2_plan_heading` covers the
+        AC (that test predates #583 and was not written against this AC)."""
+        body = "## L2P — receipt-backed status (harmonic-forge#371)\n\nplan narrative"
+        self.assertEqual(_classify(body)[0], "l2")
+
+    def test_corpus_hrse1754_lane2_completion_prose_heading(self):
+        """harmonic-forge#583 AC3, the second real corpus example named in
+        the issue: hrse#1754's `## Lane 2 completion:` comment did not match
+        `_L2_HEADING_RE` at all (a prose heading, not a short code) and was
+        "surfaced only because it happened to carry an l1-post marker from
+        a different path, and the watcher labelled it l1" -- the exact
+        misclassification this issue's AC2 exists to fix by making the
+        marker's `posted-by` field authoritative over a blind kind=X ->
+        lane=l1 assumption. A body carrying that heading AND a genuine
+        `posted-by=LANE2` marker must classify as `l2`, not `l1`."""
+        body = ("## Lane 2 completion: hrse#1754\n\ntext\n\n"
+                "<!-- l1-post v1; kind=completion; posted-by=LANE2 -->")
+        self.assertEqual(_classify(body), ("l2", "completion"))
+        # And the same heading with NO marker at all (a hand-typed post
+        # bypassing l2_post.py entirely) is still unclassified by heading
+        # alone -- this module doesn't attempt prose-heading matching, and
+        # #583 does not claim to fix that half; only the marker-carrying
+        # case (the one that actually happened) is in scope here.
+        headless = "## Lane 2 completion: hrse#1754\n\ntext, no marker at all"
+        self.assertIsNone(_classify(headless))
 
 
 class BranchIssueRegexTests(unittest.TestCase):
@@ -396,6 +460,85 @@ class DiscoverQueueTests(unittest.TestCase):
                   )):
             queue = discover_queue("vitalharmony/hrse", "l2")
             self.assertEqual(queue, {})
+
+    def test_a_real_marker_carrying_finding_still_does_not_drop_the_issue(self):
+        """harmonic-forge#583 AC1 regression: `l2_post.py` now stamps a
+        marker on `finding` too (previously it fell back to the heading
+        exclusively), so `_classify` returns `("l2", "finding")` for it
+        instead of `("l2", "## L2 Finding — ...")`. The finding-skip
+        predicate (`_is_l2_finding`) must recognize BOTH shapes -- this
+        uses a real `l2_post.compose_body("finding", ...)` output, not a
+        hand-typed heading, so a regression that only widened the heading
+        regex and forgot the marker-kind branch would be caught here."""
+        import l2_post as lp
+        finding_body = lp.compose_body("finding", [], "diagnosed a defect")
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(
+                      search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
+                      comments={571: [self._l1("ready-for-l3"), finding_body]},
+                  )):
+            queue = discover_queue("vitalharmony/hrse", "l3")
+            self.assertEqual(queue, {571: "ready-for-l3"})
+
+
+class BranchAheadWithoutCompletionTests(unittest.TestCase):
+    """harmonic-forge#583 AC4. `_run_git` and `_fetch_all_comments` are the
+    only I/O boundaries -- mocked directly rather than through a real repo,
+    matching this file's existing convention (`DiscoverQueueTests` mocks at
+    the `subprocess.run` layer for the same reason)."""
+
+    def test_no_commits_ahead_reports_nothing(self):
+        with patch("watch_lane_posts._run_git",
+                  side_effect=lambda wt, *a: {"merge-base": "abc",
+                                              "rev-list": "0"}[a[0]]), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self.assertIsNone(
+                branch_ahead_without_completion("/wt", "o/r", 1))
+
+    def test_ahead_with_no_completion_posted_reports(self):
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            report = branch_ahead_without_completion("/wt", "o/r", 1)
+            self.assertIsNotNone(report)
+            self.assertIn("o/r#1", report)
+            self.assertIn("3 commit", report)
+            self.assertIn("no completion posted", report)
+
+    def test_ahead_but_completion_already_posted_reports_nothing(self):
+        """The steady, correct state: a completion was posted and the
+        branch is ahead because of it -- not a gap."""
+        import l2_post as lp
+        completion_body = lp.compose_body("completion", [], "clean", lead={
+            "Status": "done", "Change": "x", "Next": "ready for review"})
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments",
+                  return_value=[{"body": completion_body}]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            self.assertIsNone(
+                branch_ahead_without_completion("/wt", "o/r", 1))
+
+    def test_ahead_but_completion_posted_via_legacy_heading_reports_nothing(self):
+        """AC5: a completion posted before harmonic-forge#583 landed (no
+        marker, heading only) must be recognized too."""
+        with patch("watch_lane_posts._run_git") as run_git, \
+             patch("watch_lane_posts._fetch_all_comments",
+                  return_value=[{"body": "## L2D — receipt-backed status "
+                                          "(harmonic-forge#371)\n\ntext"}]):
+            run_git.side_effect = lambda wt, *a: (
+                "abc" if a[0] == "merge-base" else
+                "3" if a[0] == "rev-list" else "fix/1-x")
+            self.assertIsNone(
+                branch_ahead_without_completion("/wt", "o/r", 1))
+
+    def test_no_origin_main_reports_nothing_rather_than_raising(self):
+        with patch("watch_lane_posts._run_git", return_value=None):
+            self.assertIsNone(
+                branch_ahead_without_completion("/wt", "o/r", 1))
 
 
 class L1SweepTests(unittest.TestCase):

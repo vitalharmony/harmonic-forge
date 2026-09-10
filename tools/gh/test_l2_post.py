@@ -22,7 +22,7 @@ def _fake_run(returncode=0, stdout="", stderr=""):
 
 class TestComposeBody(unittest.TestCase):
     def test_labels_map_correctly(self):
-        for kind, label in (("plan", "L2P"), ("completion", "L2D"), ("blocked", "L2B")):
+        for kind, label in (("plan", "L2S"), ("completion", "L2D"), ("blocked", "L2B")):
             body = lp.compose_body(kind, [], "narrative text")
             self.assertIn(label, body)
             self.assertIn("narrative text", body)
@@ -33,6 +33,25 @@ class TestComposeBody(unittest.TestCase):
         body = lp.compose_body("completion", receipts, "n")
         self.assertIn('"echo"', body)
         self.assertIn('"exit_code": 0', body)
+
+    def test_every_kind_carries_the_l1_post_marker_with_posted_by_lane2(self):
+        """harmonic-forge#583 AC1: `l2_post.py` stamps the same
+        machine-readable footer Lane 1/Lane 3 already use, on every kind it
+        supports -- not just `finding` (which #571 already needed visible
+        to the belt)."""
+        for kind in ("plan", "completion", "blocked", "finding"):
+            body = lp.compose_body(kind, [], "text")
+            self.assertIn(f"<!-- l1-post v1; kind={kind}; posted-by=LANE2 -->", body)
+
+    def test_l2p_is_never_minted_again(self):
+        """harmonic-forge#583 AC6/AC9: `L2P` was retired in favor of `L2S`
+        three weeks before this tool was found still minting it
+        (`rules/lane-shorthand.md`'s "Retired" section). A test over the
+        heading map itself, not just prose, so a future hand-edit can't
+        silently reintroduce it."""
+        for heading in lp._HEADINGS.values():
+            self.assertNotIn("L2P", heading)
+        self.assertIn("L2S", lp._HEADINGS["plan"])
 
 
 class TestPostSelfCheck(unittest.TestCase):

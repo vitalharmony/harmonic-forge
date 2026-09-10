@@ -59,6 +59,19 @@ Note `L2S` carries **no** "plan-first only" scoping — `L3S` never had any, and
 the two are now the same form. It applies wherever Lane 2 produces a spec for
 review.
 
+### `L2B` is the one real blocked-token shape for Lane 2 — not `L2F`
+
+Confirmed live, harmonic-forge#583: `tools/gh/l2_post.py`'s own heading map
+has only ever minted `L2B` (never `L2F`) for `--kind blocked`, and it is
+exactly this table's `L<N>B` row above, applied to lane 2. `L2F` is not a
+token this table defines anywhere. It appears only in a consuming project's
+own copy of the lane-status-shorthand table (HRSE2's
+`.claude/rules/hrse2-extended/lane-protocol.md`, a different repo) — a stray
+that table should correct to `L2B` to match this one, since this file is the
+declared authority and a consuming project's copy is not supposed to diverge
+from it. Not corrected here: fixing another repo's file is out of this
+issue's own declared scope (`harmonic-forge/tools/gh/` only).
+
 ## Derived lane states — `lane_state.py`'s vocabulary
 
 Not operator shorthand. These are the states HRSE2's
