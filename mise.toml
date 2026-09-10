@@ -261,7 +261,7 @@ run = "python3 tools/gh/receipt_runner.py --issue \"$usage_issue\" -- $usage_com
 [tasks.l2-post]
 description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py."
 usage = '''
-flag "--kind <kind>" help="plan | completion | blocked" required=#true
+flag "--kind <kind>" help="plan | completion | blocked | finding (harmonic-forge#571: a durable, attributed defect note -- a report, not a status transition)" required=#true
 flag "--issue <issue>" help="Issue number" required=#true
 flag "--narrative-file <file>" help="Path to a file containing the narrative section" required=#true
 flag "--receipts <receipts>" help="Space-separated receipt JSON paths" var=#true

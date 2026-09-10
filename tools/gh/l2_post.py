@@ -21,16 +21,52 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from receipt_runner import clear_lock, is_locked, lock_path, write_receipt  # noqa: E402
+from receipt_runner import clear_lock, is_locked, lock_path, strip_ansi, write_receipt  # noqa: E402
 
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+#: JSON's textual escape for a C0 control code -- a backslash, the letter
+#: u, then four hex digits -- is the shape json.dumps(..., ensure_ascii=True)
+#: (the default, used by compose_body for the receipts block) emits for an
+#: embedded control byte: a raw ESC (0x1b) is written out as that six-
+#: character textual escape, not as a real control byte. harmonic-forge#571
+#: preclose finding: comparing only raw ESC bytes between sent and landed
+#: missed this shape entirely, because a receipts-derived body never
+#: contains a raw control byte in the first place -- it contains this
+#: textual escape of one instead. Diagnosis-only: this collapses either
+#: representation to nothing so the AC3 check recognizes both, and is never
+#: applied to what is actually posted.
+_JSON_CONTROL_ESCAPE_RE = re.compile(r"\\u(00[01][0-9a-fA-F])")
+
+
+def _normalize_for_diagnosis(text: str) -> str:
+    """Collapse every representation of a control-character escape this
+    module has seen in the wild -- a raw control byte, and the JSON-textual
+    6-character escape of one -- to the SAME representation (a real byte)
+    before stripping, so the AC3 self-check comparison recognizes a
+    transit-mangled escape regardless of which shape survived on which
+    side.
+
+    Decoding first, rather than just deleting the textual escape marker, is
+    load-bearing: the textual form only replaces the control byte itself,
+    leaving any parameter/final bytes that followed it (the `[33m` of a
+    `ESC[33m` CSI sequence) as plain text. Deleting just the marker and
+    leaving those bytes in place does not agree with what `strip_ansi`
+    removes on the raw-byte side, which takes the whole CSI sequence --
+    comparing the two would misreport a genuine transit-mangled-escape match
+    as a real content difference.
+    """
+    decoded = _JSON_CONTROL_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+    return strip_ansi(decoded)
 
 
 def _gh_api(*args: str) -> subprocess.CompletedProcess[str]:
@@ -79,6 +115,27 @@ LEAD_LABELS = ("Status", "Change", "Next")
 #: whether to read further, which is the operator's actual complaint.
 LEAD_REQUIRED_KINDS = ("completion", "blocked")
 
+#: `kind=finding` (harmonic-forge#571 AC4) -- Lane 2's sanctioned way to post
+#: a durable, attributed defect note without a mismatched kind and without
+#: the operator as courier. It is deliberately excluded from
+#: `LEAD_REQUIRED_KINDS`: a finding is a report, not a status transition
+#: (AC5), so it carries no "what happens next" the way a completion or a
+#: blocker does.
+#:
+#: The heading below (`## L2 Finding`, with a space) is chosen specifically
+#: so it does NOT match `^##\s+L2[A-Z]\b` -- the pattern `watch_lane_posts.py`
+#: and HRSE2's `lane_state.py` both use to read `L2P`/`L2D`/`L2B` as status
+#: transitions. A finding must never be read as one (AC5): `lane_state.py`'s
+#: `_LANE_TOKEN` regex is `^##\s+L(?P<lane>[123])(?P<code>[PDSFB])\b`, and
+#: `L2F` would satisfy it (F is in the allowed code set) -- so `L2F` was
+#: rejected as a heading precisely because it looks safe and is not.
+_HEADINGS = {
+    "plan": "## L2P — receipt-backed status (harmonic-forge#371)",
+    "completion": "## L2D — receipt-backed status (harmonic-forge#371)",
+    "blocked": "## L2B — receipt-backed status (harmonic-forge#371)",
+    "finding": "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
+}
+
 
 def lead_block(lead: dict[str, str]) -> str:
     """The visible three lines. Empty string when nothing was supplied."""
@@ -104,12 +161,19 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
 
     The `## L2P|L2D|L2B` heading stays at the top level, outside `<details>`:
     `lane_state.py` reads it, and hrse#1590 made position load-bearing.
+    `kind=finding`'s `## L2 Finding` heading is deliberately shaped to NOT be
+    read the same way -- see `_HEADINGS` (harmonic-forge#571 AC5).
+
+    `narrative` is ANSI-stripped here too, not only by `main()` before the
+    call (harmonic-forge#571 preclose finding) -- it is free text embedded
+    unescaped, unlike the receipts JSON, so it is the one part of the body a
+    caller could still leak colour through if only the call site stripped it.
     """
-    label = {"plan": "L2P", "completion": "L2D", "blocked": "L2B"}[kind]
+    narrative = strip_ansi(narrative)
     fenced = json.dumps(receipts, indent=2, sort_keys=True)
     count = len(receipts)
     return (
-        f"## {label} — receipt-backed status (harmonic-forge#371)\n\n"
+        f"{_HEADINGS[kind]}\n\n"
         f"{lead_block(lead or {})}"
         f"### Narrative\n{narrative}\n\n"
         f"<details><summary>Verified receipts — {count}</summary>\n\n"
@@ -147,12 +211,55 @@ def post(repo: str, issue: int, body: str) -> dict:
         )
     refetched_body = json.loads(refetch.stdout).get("body", "")
     if _sha(refetched_body) != _sha(body):
+        # harmonic-forge#571 AC3. A hash mismatch has two distinct causes, and
+        # conflating them sent Lane 2 down a wrong hypothesis (GitHub strips
+        # control characters) that took real diagnosis time to disprove. If
+        # the bodies agree once escape artifacts are normalized on both
+        # sides, the divergence is a transit-mangled escape, not a real
+        # content difference -- and receipt_runner.py's AC1 fix (stripping at
+        # capture) should already prevent it, so seeing this means an escape
+        # reached this body some other way and is worth investigating rather
+        # than retried blindly.
+        #
+        # `_normalize_for_diagnosis`, not bare `strip_ansi`, because the two
+        # sides of a receipts-derived mismatch do not carry the same
+        # representation of the escape: `compose_body`'s
+        # `json.dumps(ensure_ascii=True)` turns an embedded control byte
+        # into its 6-character textual form on the SENT side (there is no
+        # raw ESC byte to strip there), while transit-mangling can produce a
+        # real control byte on the LANDED side. Comparing only raw bytes
+        # (bare `strip_ansi`) never sees these as equal, which is precisely
+        # the gap a preclose review found live.
+        if _normalize_for_diagnosis(refetched_body) == _normalize_for_diagnosis(body):
+            raise SystemExit(
+                f"post/fetch/diff self-check failed: comment {comment_id} body "
+                "differs ONLY in ANSI escape sequences (a transit-mangled "
+                "escape) -- not a real content difference, and NOT GitHub "
+                "stripping characters (that hypothesis is wrong, see "
+                "harmonic-forge#571). receipt_runner.py strips ANSI from "
+                "previews at capture; an escape reaching this body some other "
+                "way is a defect worth investigating, not something to retry "
+                "blindly."
+            )
         raise SystemExit(
             f"post/fetch/diff self-check failed: comment {comment_id} body hash "
-            "mismatch -- what landed does not match what was sent. Refusing to "
-            "report success."
+            "mismatch -- what landed does not match what was sent, and it is "
+            "not an ANSI-escape artifact. Refusing to report success."
         )
     return {"comment_id": comment_id, "body_sha256": _sha(body), "url": posted.get("html_url")}
+
+
+#: Kinds a standing lock does not block. `blocked` always could; `finding`
+#: joins it (harmonic-forge#571 AC4) -- a finding is a report, not the
+#: ordinary status composition the lock exists to gate.
+LOCK_EXEMPT_KINDS = ("blocked", "finding")
+
+
+def lock_blocks(kind: str, issue: int) -> bool:
+    """Whether posting `kind` for `issue` must be refused because of a
+    standing failure lock. Factored out of `main` so the exemption is
+    directly testable rather than only reachable through argv."""
+    return is_locked(issue) and kind not in LOCK_EXEMPT_KINDS
 
 
 def resolve_lock(repo: str, issue: int, resolution_comment: int) -> None:
@@ -171,7 +278,11 @@ def main() -> int:
     sub = parser.add_subparsers(dest="action", required=True)
 
     post_p = sub.add_parser("post", help="compose and post a receipt-backed status")
-    post_p.add_argument("--kind", choices=("plan", "completion", "blocked"), required=True)
+    post_p.add_argument("--kind", choices=("plan", "completion", "blocked", "finding"),
+                        required=True,
+                        help="'finding' (harmonic-forge#571) posts a durable, attributed "
+                             "defect note -- a report, not a status transition; it never "
+                             "reads as L2P/L2D/L2B to lane_state.py or the belt.")
     post_p.add_argument("--repo", required=True)
     post_p.add_argument("--issue", type=int, required=True)
     post_p.add_argument("--receipts", nargs="*", default=[])
@@ -206,16 +317,23 @@ def main() -> int:
         return 0
 
     # args.action == "post"
-    if is_locked(args.issue) and args.kind != "blocked":
+    if lock_blocks(args.kind, args.issue):
         print(
             f"issue {args.issue} is locked ({lock_path(args.issue)}) by a failed "
             "underlying command -- run `l2_post.py resolve-lock` with a real, "
-            "fetchable resolution comment first, or post --kind blocked instead.",
+            "fetchable resolution comment first, or post --kind blocked or "
+            "--kind finding instead.",
             file=sys.stderr,
         )
         return 2
 
     receipts = load_receipts(args.receipts)
+    # harmonic-forge#571 preclose finding: the narrative is free text a
+    # caller writes directly and is embedded into the body unescaped (not
+    # through json.dumps) -- the single most likely place to carry colour
+    # under a `--kind finding` post, since a finding's whole point is often
+    # to paste the failing command's own output. `compose_body` strips it;
+    # read raw here and let that be the one place responsible for it.
     narrative = args.narrative_file.read_text()
     lead = {"Status": args.status, "Change": args.change, "Next": args.next_action}
     validate_lead(args.kind, lead)
