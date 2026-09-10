@@ -3,6 +3,60 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): finish the job — Lane 2 and Lane 3 belts, both repos, every lane (harmonic-forge#596)
+
+#590 fixed Lane 1's pull source. #594 fixed Lane 1's cwd dependence. Both left
+Lanes 2 and 3 carrying the same two defects, so the skill was correct for one
+lane out of three. This finishes it.
+
+- **Lane 2's belt is worktrees-first.** Naming the shared `HRSE2-lane2`
+  checkout resolved 0/1 live: between issues it sits on a detached HEAD, and
+  during an issue `lane-protocol.md` requires Lane 2 to work in
+  `/tmp/<repo>-<issue>-impl` and forbids the shared checkout -- so the one path
+  a static list could name was the one path Lane 2 may not work in. Now 7/28.
+
+- **`--repo` is repeatable, and `--queue-for` scans every repo given.** Lane 3
+  and the suspenders' Lane 1 sweep were hrse-only while 43 tooling-exception
+  issues sit on harmonic-forge with live lane checkouts for it. The two-repo L1
+  sweep immediately surfaced `harmonic-forge#62`, which the old command could
+  not see.
+
+- **The queue is keyed `(repo, issue)`, never a bare number.** hrse#570 and
+  harmonic-forge#570 both exist; a shared int key let one evict the other.
+  `l1_since` is per-repo for the same reason.
+
+- **Poll first, sleep after.** The loop slept before its first poll, so a belt
+  printed nothing for a whole interval -- ten minutes of silence for the
+  documented 600s suspenders sweep, which is meant to be run and read. "A
+  monitor that never printed a status line is not proof it is watching
+  anything" is this protocol's own rule; making the operator wait an interval
+  to learn otherwise is that same failure, deferred.
+
+- **Guards are per lane now.** #594's preclose finding was a Lane 1 guard that
+  passed on the command it forbids; Lanes 2 and 3 had no guard at all, which is
+  how this shipped. Every lane's command is now asserted to span both repos, to
+  be a single unwrapped copy-pasteable line, and to name no static worktree.
+
+Also unblocks main, second time in two days: #569 (#592) added 3413 bytes to
+`.claude/rules/lane-shorthand.md` without recording them, leaving the ratchet
+failing and the repo un-committable. Recorded from here rather than left to
+block whoever committed next.
+
+Verified live, all three lanes, run verbatim from $HOME:
+  Lane 1  27 worktrees / 2 roots, 8 closed-issue ghosts dropped
+  Lane 2  0/1 -> 7/28 resolved
+  Lane 3  queue-for-l3: 0 issue(s) queued now across 2 repo(s)
+  L1 sweep 8 issue(s) queued across 2 repo(s), incl. harmonic-forge#62
+
+Suite 1955 -> 1960, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py | 18 +++++--
+- tools/gh/test_watch_lane_posts.py             | 70 ++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py                  | 78 ++++++++++++++++-----------
+- 5 files changed, 174 insertions(+), 54 deletions(-)
+
 ## fix(belt): make the Lane 1 doc guard reject a flag where a repo root belongs (harmonic-forge#594)
 
 Preclose inspection on PR #595 returned one finding, and it was the worst kind:

@@ -181,13 +181,23 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("--queue-for l1", text.split("## The suspenders", 1)[1])
 
-    def test_lane_2_command_covers_detached_head_via_queue_for_l2(self):
+    def test_lane_2_belt_is_worktrees_first(self):
+        """harmonic-forge#596: naming the shared lane-2 checkout resolved 0/1 in
+        the detached-HEAD resting state, and Lane 2 is required to work in
+        `/tmp/<repo>-<issue>-impl` anyway -- the one path a static list can
+        name is the one path it may not work in."""
         text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("--queue-for l2", text)
+        lane2 = text.split("- **Lane 2**", 1)[1].split("- **Lane 3**", 1)[0]
+        self.assertIn("--all-worktrees", lane2)
+        self.assertNotIn("--worktrees ~/", lane2)
 
-    def test_lane_3_command_matches_the_issues_own_prescription(self):
+    def test_lane_3_belt_scans_both_repos(self):
+        """harmonic-forge#596: a belt scanning one repo is a half-belt and
+        looks exactly like a whole one."""
         text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("--queue-for l3 --repo vitalharmony/hrse --watch l1 --interval 60", text)
+        lane3 = text.split("- **Lane 3**", 1)[1].split("**A monitor that never", 1)[0]
+        self.assertIn("--repo vitalharmony/hrse", lane3)
+        self.assertIn("--repo vitalharmony/harmonic-forge", lane3)
 
     def test_states_the_belt_is_watch_lane_posts_and_rebuilding_is_the_defect(self):
         text = _norm(SKILL.read_text(encoding="utf-8"))

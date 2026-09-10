@@ -1222,5 +1222,75 @@ class BeltNeverSilentDocTests(unittest.TestCase):
         self.assertIn("Lane 1's belt", para.group(0))
 
 
+class EveryLaneBeltSpansBothReposTests(unittest.TestCase):
+    """harmonic-forge#596. #590 and #594 fixed Lane 1 and left Lanes 2 and 3
+    carrying the same two defects, which is why these are asserted per lane
+    rather than once: a guard written for one lane proves nothing about the
+    other two, and that is exactly how this shipped."""
+
+    _LANES = ("Lane 1", "Lane 2", "Lane 3")
+
+    def _lane_block(self, lane: str) -> str:
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        after = text.split(f"- **{lane}**", 1)
+        self.assertEqual(len(after), 2, f"{lane}'s section was not found")
+        for terminator in ("- **Lane 2**", "- **Lane 3**", "**A monitor that never"):
+            if terminator in after[1]:
+                return after[1].split(terminator, 1)[0]
+        return after[1]
+
+    def _command(self, lane: str) -> str:
+        fence = re.search(r"```\n(.*?)```", self._lane_block(lane), re.DOTALL)
+        self.assertIsNotNone(fence, f"{lane} has no command fence")
+        return fence.group(1)
+
+    def test_every_lane_command_spans_both_repos(self):
+        for lane in self._LANES:
+            with self.subTest(lane=lane):
+                cmd = self._command(lane)
+                if "--all-worktrees" in cmd:
+                    roots = re.search(r"--all-worktrees((?:\s+(?!-)\S+)*)", cmd)
+                    named = roots.group(1).split()
+                    self.assertEqual(len(named), 2, f"{lane}: {named!r}")
+                    joined = " ".join(named).lower()
+                    self.assertIn("hrse", joined)
+                    self.assertIn("harmonic-forge", joined)
+                else:
+                    repos = re.findall(r"--repo\s+(\S+)", cmd)
+                    self.assertIn("vitalharmony/hrse", repos, f"{lane}: {repos!r}")
+                    self.assertIn("vitalharmony/harmonic-forge", repos, f"{lane}: {repos!r}")
+
+    def test_every_lane_command_is_a_single_unwrapped_line(self):
+        """A backslash-continued command is not copy-pasteable, and these are
+        armed verbatim by the skill."""
+        for lane in self._LANES:
+            with self.subTest(lane=lane):
+                self.assertNotIn("\\\n", self._command(lane))
+
+    def test_no_lane_command_names_a_static_worktree_path(self):
+        """A hardcoded worktree list is what #590 removed; it goes stale the
+        moment an ephemeral /tmp checkout appears, and silently."""
+        for lane in self._LANES:
+            with self.subTest(lane=lane):
+                self.assertNotIn("--worktrees ", self._command(lane))
+
+
+class QueueKeyIsRepoQualifiedTests(unittest.TestCase):
+    """harmonic-forge#596 AC2: hrse#570 and harmonic-forge#570 both exist. A
+    queue keyed on the bare issue number lets one evict the other."""
+
+    def test_two_repos_same_issue_number_both_survive(self):
+        with patch("watch_lane_posts.discover_queue",
+                   side_effect=[{570: "handoff"}, {570: "handoff"}]):
+            queue = {}
+            for repo in ("vitalharmony/hrse", "vitalharmony/harmonic-forge"):
+                for issue, kind in watch_lane_posts.discover_queue(repo, "l3").items():
+                    queue[(repo, issue)] = kind
+        self.assertEqual(len(queue), 2)
+        self.assertEqual(sorted(queue),
+                         [("vitalharmony/harmonic-forge", 570),
+                          ("vitalharmony/hrse", 570)])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -921,7 +921,11 @@ def main() -> int:
                              "hrse and harmonic-forge, and naming them makes the command "
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
-    parser.add_argument("--repo", help="owner/repo for a manual --issues override")
+    parser.add_argument("--repo", action="append", metavar="OWNER/REPO",
+                        help="owner/repo for a manual --issues override, or the repo(s) "
+                             "--queue-for scans. Repeatable: a lane carries work in hrse "
+                             "AND harmonic-forge, and a belt that scans one of them is a "
+                             "half-belt (harmonic-forge#596).")
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
                              "re-derived) -- for watching an issue with no worktree")
@@ -981,7 +985,11 @@ def main() -> int:
         parser.error("--watch is required unless --queue-for is given")
 
     watch = set(args.watch)
-    static_pairs = {(args.repo, n) for n in args.issues} if args.repo else set()
+    repos: list[str] = args.repo or []
+    if len(repos) > 1 and args.issues:
+        parser.error("--issues takes a single --repo: an issue number means nothing "
+                     "without exactly one repo to resolve it against")
+    static_pairs = {(repos[0], n) for n in args.issues} if repos else set()
     since = _now()
     print(f"[watch_lane_posts] worktrees={args.worktrees or None} "
           f"static={sorted(static_pairs) or None} queue_for={args.queue_for or None} "
@@ -990,7 +998,7 @@ def main() -> int:
         [(path, *resolve_worktree(path)) for path in args.worktrees]))
 
     last_discovered: set[tuple[str, int]] = set()
-    last_queue: dict[int, str] = {}
+    last_queue: dict[tuple[str, int], str] = {}
     #: harmonic-forge#583 AC4. Keyed by worktree path (not `(repo, issue)`
     #: -- a worktree checks out a new branch/issue over its lifetime, and
     #: the report must clear the moment it does, not linger keyed to an
@@ -1007,15 +1015,20 @@ def main() -> int:
     #: are always re-checked regardless (see `discover_l1_sweep`'s
     #: `extra_issues`), so an already-queued issue is never dropped just
     #: because it went quiet.
-    l1_since: str | None = None
+    l1_since: dict[str, str | None] = {}
     #: A queue-for mode reports its queued count once at the first
     #: evaluation, even if it is zero -- silence and "confirmed watching
     #: nothing" must not look the same (harmonic-forge#570 preclose finding:
     #: AC6's guarantee was implemented for --worktrees only, and both
     #: prescribed Lane 1 and Lane 3 commands pass no --worktrees).
     first_queue_report = True
+    # Poll FIRST, sleep after (harmonic-forge#596). Sleeping first meant a belt
+    # printed nothing until one whole interval had elapsed -- ten minutes of
+    # silence for the suspenders' 600s sweep, which is documented as a one-shot
+    # backstop you run and read. "A monitor that never printed a status line is
+    # not proof it is watching anything" is this protocol's own rule; making the
+    # operator wait an interval to find out is the same failure, deferred.
     while True:
-        time.sleep(args.interval)
         now = _now()
 
         # Re-enumerated every cycle, not frozen at arm time: a Monitor lives
@@ -1040,34 +1053,37 @@ def main() -> int:
             _report_resolutions(resolutions)
             last_discovered = discovered
 
-        if args.queue_for == "l1":
-            l1_queue, l1_since = l1_sweep_cycle(args.repo, l1_since, last_queue, now)
-            queue = {issue: f"{lane}:{detail}" for issue, (lane, detail) in l1_queue.items()}
+        if args.queue_for:
+            # Keyed `(repo, issue)`, never a bare issue number: hrse#570 and
+            # harmonic-forge#570 both exist, and a shared `int` key would let
+            # one silently evict the other from the queue (harmonic-forge#596).
+            queue: dict[tuple[str, int], str] = {}
+            for repo in repos:
+                prior = {issue: last_queue[(r, issue)]
+                         for (r, issue) in last_queue if r == repo}
+                if args.queue_for == "l1":
+                    l1_queue, l1_since[repo] = l1_sweep_cycle(
+                        repo, l1_since.get(repo), prior, now)
+                    for issue, (lane, detail) in l1_queue.items():
+                        queue[(repo, issue)] = f"{lane}:{detail}"
+                else:
+                    for issue, kind in discover_queue(repo, args.queue_for).items():
+                        queue[(repo, issue)] = kind
             if first_queue_report:
-                print(f"[watch_lane_posts] queue-for-l1: {len(queue)} issue(s) queued now",
-                      file=sys.stderr)
+                print(f"[watch_lane_posts] queue-for-{args.queue_for}: {len(queue)} "
+                      f"issue(s) queued now across {len(repos)} repo(s)", file=sys.stderr)
                 first_queue_report = False
-            for issue, marker in queue.items():
-                if last_queue.get(issue) != marker:
-                    lane, detail = l1_queue[issue]
-                    print(f"{args.repo}#{issue} needs-l1 last={lane} — {detail}")
-                    sys.stdout.flush()
-            for issue in set(last_queue) - set(queue):
-                print(f"{args.repo}#{issue} left-queue-for-l1")
+            for (repo, issue), marker in queue.items():
+                if last_queue.get((repo, issue)) == marker:
+                    continue
+                if args.queue_for == "l1":
+                    lane, _, detail = marker.partition(":")
+                    print(f"{repo}#{issue} needs-l1 last={lane} — {detail}")
+                else:
+                    print(f"{repo}#{issue} queued-for-{args.queue_for} kind={marker}")
                 sys.stdout.flush()
-            last_queue = queue
-        elif args.queue_for:
-            queue = discover_queue(args.repo, args.queue_for)
-            if first_queue_report:
-                print(f"[watch_lane_posts] queue-for-{args.queue_for}: "
-                      f"{len(queue)} issue(s) queued now", file=sys.stderr)
-                first_queue_report = False
-            for issue, kind in queue.items():
-                if last_queue.get(issue) != kind:
-                    print(f"{args.repo}#{issue} queued-for-{args.queue_for} kind={kind}")
-                    sys.stdout.flush()
-            for issue in set(last_queue) - set(queue):
-                print(f"{args.repo}#{issue} left-queue-for-{args.queue_for}")
+            for repo, issue in set(last_queue) - set(queue):
+                print(f"{repo}#{issue} left-queue-for-{args.queue_for}")
                 sys.stdout.flush()
             last_queue = queue
 
@@ -1100,6 +1116,8 @@ def main() -> int:
         for line in branch_ahead_lines(resolutions, last_ahead):
             print(line)
             sys.stdout.flush()
+
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":
