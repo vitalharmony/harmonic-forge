@@ -299,7 +299,18 @@ def report_resolution(worktrees: list[str]) -> list[tuple[str, tuple[str, int] |
     """Print, to stderr, how many of `worktrees` resolved and why any did
     not -- harmonic-forge#570 AC6. Zero resolved out of a non-empty list is
     called out explicitly rather than left to read as "nothing to do"."""
-    resolutions = [(path, *resolve_worktree(path)) for path in worktrees]
+    return _report_resolutions([(path, *resolve_worktree(path)) for path in worktrees])
+
+
+def _report_resolutions(
+    resolutions: list[tuple[str, tuple[str, int] | None, str]],
+) -> list[tuple[str, tuple[str, int] | None, str]]:
+    """`report_resolution`'s reporting half, over resolutions already computed.
+
+    Split out by harmonic-forge#590 so the poll cycle can report the SAME list
+    it acts on -- it filters closed issues out via `drop_closed_targets`, and a
+    reporter that re-resolved from paths would print a target the belt is not
+    actually watching."""
     if not resolutions:
         return resolutions
     resolved = sum(1 for _, pair, _ in resolutions if pair is not None)
@@ -747,6 +758,127 @@ def l1_sweep_cycle(
     return l1_queue, (now if fetch_ok else l1_since)
 
 
+def enumerate_worktrees(cwd: str | None = None) -> list[str]:
+    """Every live worktree of the repo containing `cwd`, via `git worktree list`.
+
+    harmonic-forge#590: Lane 1's belt is worktrees-first, and the set of
+    worktrees is not static -- `/tmp/<repo>-<issue>-impl` checkouts appear and
+    vanish per issue. A hardcoded `--worktrees` list therefore narrows the belt
+    silently, which is the failure mode this protocol exists to avoid.
+
+    Enumeration is re-run every poll cycle, not once at arm time (#590 preclose
+    finding): a list read at arm time cannot go stale *between sessions*, which
+    is what a hardcoded list gets wrong, but it goes stale *within* one the
+    moment Lane 2 creates a worktree -- and the belt would then be blind to that
+    issue for the session's whole life, with no line saying so.
+
+    Returns [] and stays quiet on failure -- `enumerate_repo_roots` is the layer
+    that reports a root contributing nothing, because only it knows how many
+    other roots there were.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=cwd, capture_output=True, text=True, check=True, timeout=15,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return []
+    return [line.split(" ", 1)[1].strip()
+            for line in out.splitlines() if line.startswith("worktree ")]
+
+
+def _git_common_dir(cwd: str | None = None) -> str | None:
+    """The absolute `.git` common dir of the repo containing `cwd` -- the
+    identity of a *repository*, shared by all of its worktrees. `None` if
+    `cwd` is not inside a repo."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=cwd, capture_output=True, text=True, check=True, timeout=15,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return out.strip() or None
+
+
+def enumerate_repo_roots(explicit: list[str]) -> list[str]:
+    """Union of every live worktree across CWD's repo and each repo named by
+    `explicit`, deduplicated by *repository*, reporting per root.
+
+    Two failures this exists to make loud (harmonic-forge#590 preclose
+    finding). Both previously read as a healthy belt:
+
+    - **Two roots, one repo.** `git worktree list` only ever sees one
+      repository, so the Lane 1 command names a sibling checkout to span
+      hrse and harmonic-forge. Run that same command from the sibling and
+      both roots resolve to the same repo -- the other repo vanishes
+      entirely while the aggregate count still looks plausible. Roots are
+      therefore keyed by `--git-common-dir`, and a duplicate is named.
+    - **A root that contributes nothing.** A path that is not in a repo at
+      all (or a CWD that is not) silently adds zero. Aggregated across
+      roots that is invisible, so each root's own contribution is printed.
+    """
+    seen: dict[str, str] = {}          # common dir -> the root that claimed it
+    discovered: set[str] = set()
+    for root in [None, *explicit]:
+        label = root or "CWD"
+        common = _git_common_dir(root)
+        if common is None:
+            print(f"[watch_lane_posts]   root {label}: NOT A GIT REPO -- contributes "
+                  "nothing. If this is the root you meant, the belt is watching "
+                  "less than you think.", file=sys.stderr)
+            continue
+        if common in seen:
+            print(f"[watch_lane_posts]   root {label}: same repository as "
+                  f"{seen[common]} -- contributes nothing new. --all-worktrees spans "
+                  "repos only if the roots are DIFFERENT repos; run it from the other "
+                  "one's checkout, or name that one instead.", file=sys.stderr)
+            continue
+        seen[common] = label
+        paths = enumerate_worktrees(root)
+        print(f"[watch_lane_posts]   root {label}: {len(paths)} worktree(s)",
+              file=sys.stderr)
+        discovered.update(paths)
+    return sorted(discovered)
+
+
+#: Session cache of issues seen closed, keyed `(repo, issue)`. A closed issue's
+#: abandoned `/tmp/<repo>-<issue>-impl` checkout lingers indefinitely -- nothing
+#: prunes it -- and its branch reads as "ahead of origin/main" forever, because
+#: main took the work as a squash merge. Without this the belt offers six such
+#: ghosts on this machine right now (harmonic-forge#590 preclose finding).
+#: Cached because re-asking every cycle for a state that essentially never goes
+#: back is pure quota; an issue reopened mid-session is picked up by the
+#: suspenders' repo-wide sweep, which is exactly the backstop it exists to be.
+_CLOSED_SEEN: set[tuple[str, int]] = set()
+
+
+def drop_closed_targets(
+    resolutions: list[tuple[str, tuple[str, int] | None, str]],
+) -> list[tuple[str, tuple[str, int] | None, str]]:
+    """Demote any resolution whose issue is closed to unresolved, naming it.
+
+    A worktree is evidence that work *was* started, not that it is live. The
+    belt is worktrees-first precisely to bound itself to work that exists;
+    an abandoned checkout for a merged issue is not that, and offering it
+    fails AC1 in the permissive direction -- the same direction, if not the
+    same scale, as the repo-wide scan #590 removed.
+    """
+    kept: list[tuple[str, tuple[str, int] | None, str]] = []
+    for path, pair, reason in resolutions:
+        if pair is None:
+            kept.append((path, pair, reason))
+            continue
+        repo, issue = pair
+        if pair in _CLOSED_SEEN or not _issue_is_open(repo, issue):
+            _CLOSED_SEEN.add(pair)
+            kept.append((path, None,
+                         f"{repo}#{issue} is closed -- abandoned worktree, not live work"))
+            continue
+        kept.append((path, pair, reason))
+    return kept
+
+
 def main() -> int:
     global _ACCOUNT
     parser = argparse.ArgumentParser(description=__doc__,
@@ -755,6 +887,14 @@ def main() -> int:
                         help="worktree path(s) -- (repo, issue) re-derived from each one's "
                              "CURRENT branch every poll cycle, so this follows a lane across "
                              "issues with zero reconfiguration")
+    parser.add_argument("--all-worktrees", action="store_true",
+                        help="enumerate every live worktree of the repo containing CWD via "
+                             "`git worktree list` and watch all of them -- harmonic-forge#590. "
+                             "A hardcoded --worktrees list goes stale the moment an ephemeral "
+                             "/tmp/<repo>-<issue>-impl worktree is created or removed, and a "
+                             "narrowed belt is silent, not loud. Combines with --worktrees: "
+                             "each named path also contributes ITS repo's worktrees, which is "
+                             "how one belt spans hrse and harmonic-forge at once.")
     parser.add_argument("--repo", help="owner/repo for a manual --issues override")
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
@@ -789,8 +929,25 @@ def main() -> int:
         parser.error("--issues requires --repo")
     if args.queue_for and not args.repo:
         parser.error("--queue-for requires --repo")
+    # Union, not replacement: an explicitly named worktree stays watched, and
+    # each named path ALSO contributes its own repo's set, which is how one
+    # belt spans hrse and harmonic-forge at once.
+    explicit_worktrees = list(args.worktrees)
+
+    def current_worktrees() -> list[str]:
+        if not args.all_worktrees:
+            return explicit_worktrees
+        print("[watch_lane_posts] --all-worktrees enumerating:", file=sys.stderr)
+        return sorted(set(explicit_worktrees) | set(
+            enumerate_repo_roots(explicit_worktrees)))
+
+    if args.all_worktrees:
+        args.worktrees = current_worktrees()
+        print(f"[watch_lane_posts] --all-worktrees enumerated "
+              f"{len(args.worktrees)} live worktree(s)", file=sys.stderr)
     if not args.worktrees and not args.issues and not args.queue_for:
-        parser.error("give at least one of --worktrees, --repo/--issues, or --queue-for")
+        parser.error("give at least one of --worktrees, --repo/--issues, "
+                     "--all-worktrees, or --queue-for")
     if not args.watch and not args.queue_for:
         parser.error("--watch is required unless --queue-for is given")
 
@@ -800,7 +957,8 @@ def main() -> int:
     print(f"[watch_lane_posts] worktrees={args.worktrees or None} "
           f"static={sorted(static_pairs) or None} queue_for={args.queue_for or None} "
           f"lanes={sorted(watch) or None} every {args.interval}s", file=sys.stderr)
-    report_resolution(args.worktrees)
+    _report_resolutions(drop_closed_targets(
+        [(path, *resolve_worktree(path)) for path in args.worktrees]))
 
     last_discovered: set[tuple[str, int]] = set()
     last_queue: dict[int, str] = {}
@@ -831,12 +989,18 @@ def main() -> int:
         time.sleep(args.interval)
         now = _now()
 
-        resolutions = [(path, *resolve_worktree(path)) for path in args.worktrees]
+        # Re-enumerated every cycle, not frozen at arm time: a Monitor lives
+        # for the whole session, and Lane 2 creates worktrees during it
+        # (harmonic-forge#590 preclose finding). Every other discovery step in
+        # this loop is already re-derived; this one now is too.
+        args.worktrees = current_worktrees()
+        resolutions = drop_closed_targets(
+            [(path, *resolve_worktree(path)) for path in args.worktrees])
         discovered = {pair for _, pair, _ in resolutions if pair is not None}
         if discovered != last_discovered:
             print(f"[watch_lane_posts] now watching {sorted(discovered | static_pairs)}",
                   file=sys.stderr)
-            report_resolution(args.worktrees)
+            _report_resolutions(resolutions)
             last_discovered = discovered
 
         if args.queue_for == "l1":
@@ -888,10 +1052,14 @@ def main() -> int:
         #: one silently ahead of `origin/main` (Lane 2, per its own
         #: `belt-and-suspenders` command, `--worktrees ... --watch l1`) by
         #: definition never passes `--watch l2` for itself. `branch_ahead_
-        #: lines` runs for every resolved worktree unconditionally --
-        #: `--queue-for`-only runs (Lane 1/3's belts) simply have no
-        #: `--worktrees` at all, so `resolutions` is empty for them and this
-        #: is a no-op there, exactly as intended.
+        #: lines` runs for every resolved worktree unconditionally.
+        #: harmonic-forge#590 amends the second half of this note: it used to
+        #: say Lane 1's belt has no `--worktrees` and so this is a no-op
+        #: there. Lane 1's belt is now worktrees-first, so it is NOT a no-op,
+        #: and the abandoned checkouts of closed issues would report as
+        #: permanently "ahead" (main squash-merged their work). That is why
+        #: `resolutions` is filtered through `drop_closed_targets` above --
+        #: the filter, not an empty list, is what keeps this honest now.
         for line in branch_ahead_lines(resolutions, last_ahead):
             print(line)
             sys.stdout.flush()

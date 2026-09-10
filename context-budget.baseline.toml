@@ -59,8 +59,14 @@ is reported but not gated here.
 [[increase]]
 date = "2026-09-09"
 files = [".claude/rules/lane-shorthand.md"]
-bytes = 937
+bytes = 942
 why = """
+Recorded as 937 by #567 and re-measured at 942 here: #588 added 5 further bytes
+to the same file without recording them, which left main failing its own ratchet
+and therefore un-committable. Corrected to the measured net rather than adding a
+second entry -- the tool measures per file, so two entries for one file cannot
+both be right.
+
 harmonic-forge#567: `rules/lane-shorthand.md` documents this CLI surface
 (R-0353: the authoring repo is not the shipping surface), so the new `revoke`
 subcommand and the grace-window pruning it interacts with need a paragraph
