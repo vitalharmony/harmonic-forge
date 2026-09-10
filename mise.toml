@@ -258,6 +258,26 @@ arg "command" var=#true help="the command to run, after a literal '--'"
 '''
 run = "python3 tools/gh/receipt_runner.py --issue \"$usage_issue\" -- $usage_command"
 
+[tasks.l1-post]
+description = "Post a Lane 1 protocol artifact (handoff/ready-for-l3/sweep/ae/rework) for an issue in THIS repo whose attested --sha also lives in THIS repo's own git history (harmonic-forge#568 AC3). Delegates to HRSE2's scripts/l1_post.py -- the platform's one implementation (AC4); this task does not redeclare its flag surface (which is large, validated, and owned entirely by that script) to avoid the two-copies drift AC4 forbids -- pass l1_post.py's own flags verbatim after the task name, e.g. `mise run l1-post -- --repo vitalharmony/harmonic-forge --issue 568 --kind handoff --sha <sha> --branch main --file body.md --plan-first false`. Correct BECAUSE this task runs from harmonic-forge's own checkout: l1_post.py resolves --sha/--branch against the invoking process's cwd, independent of --repo (see that script's `_source_repo_is_hrse` docstring) -- exactly the contract a forge issue attesting a forge commit needs, with zero change to the script's resolution logic. For a handoff on a forge issue attesting an HRSE2 commit, use HRSE2's own `mise run l1-post` from that checkout instead -- this task does not attempt cross-repo attestation, only the two repos this issue's own AC1/AC3 scope covers. Requires ~/Harmonic_Projects/HRSE2 checked out at that path."
+usage = '''
+arg "args" var=#true help="scripts/l1_post.py's own flags verbatim, e.g. --repo vitalharmony/harmonic-forge --issue 123 --kind handoff --sha <sha> --branch main --file body.md --plan-first false"
+'''
+run = """
+# harmonic-forge#568 preclose finding: mise single-quotes each multi-word
+# `var=#true` value inside $usage_args (e.g. --ack-overlap 'a reason with
+# spaces'), but an UNQUOTED expansion re-splits it on whitespace and leaves
+# the literal quote characters behind -- reproduced live:
+#   ['--ack-overlap', "'a", 'reason', 'with', "spaces'", ...]
+# `eval` re-joins its own already-split arguments with spaces and re-parses
+# the result as a shell command line, which correctly restores mise's
+# quoting (batch-preflight's own comment above names the identical mise
+# behaviour for a different task). Live-verified against a value containing
+# spaces: eval yields ['--ack-overlap', 'a reason with spaces'], not the
+# mangled form.
+eval python3 "${HOME}/Harmonic_Projects/HRSE2/scripts/l1_post.py" $usage_args
+"""
+
 [tasks.l2-post]
 description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py."
 usage = '''
@@ -381,3 +401,4 @@ echo "[hooks] core.hooksPath = $(git config --get core.hooksPath)"
 python3 ./sync_rules.py --project . || true
 python3 ./sync_rules.py --verify --project .
 """
+
