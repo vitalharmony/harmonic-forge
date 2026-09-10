@@ -204,6 +204,36 @@ class TestFindingKind(unittest.TestCase):
         self.assertIsNotNone(classified)
         self.assertEqual(classified[0], "l2")
 
+    def test_compose_body_refuses_a_narrative_quoting_the_reserved_marker(self):
+        """harmonic-forge#580 preclose finding: a finding whose narrative
+        quotes the literal `<!-- l1-post v1; kind=... -->` marker syntax
+        (verbatim, as this module's own docstring does) is exactly the body
+        `watch_lane_posts._classify` misreads as a real Lane 1 marker --
+        live reproduction: it drops the issue's real queue membership AND
+        manufactures a false Lane 2 `handoff` queue hit via the
+        literal-substring candidate search. `compose_body` must refuse
+        rather than silently compose a body that impersonates Lane 1."""
+        narrative = ("discover_queue reads <!-- l1-post v1; kind=handoff --> "
+                     "and treats it as the queue kind.")
+        with self.assertRaises(SystemExit):
+            lp.compose_body("finding", [], narrative)
+
+    def test_compose_body_refuses_the_marker_in_a_lead_field_too(self):
+        """The guard checks the fully-assembled body, not just the
+        narrative -- a `--status`/`--next` lead field is just as capable of
+        carrying the reserved marker text."""
+        with self.assertRaises(SystemExit):
+            lp.compose_body("completion", [], "clean", lead={
+                "Status": "gate green", "Change": "x",
+                "Next": "see <!-- l1-post v1; kind=ready-for-l3 -->",
+            })
+
+    def test_compose_body_allows_ordinary_finding_text(self):
+        """The guard must not be so broad it refuses ordinary findings --
+        only the literal reserved marker syntax is disallowed."""
+        body = lp.compose_body("finding", [], "a plain defect report, no markers")
+        self.assertIn("plain defect report", body)
+
     def test_narrative_ansi_is_stripped_by_compose_body(self):
         """harmonic-forge#571 preclose finding: the narrative is free text,
         embedded unescaped (not through json.dumps like the receipts JSON)
