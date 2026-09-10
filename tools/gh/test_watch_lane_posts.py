@@ -321,9 +321,16 @@ class DiscoverQueueTests(unittest.TestCase):
                 query = gh_argv[gh_argv.index("-f") + 1]
                 kind = query.rsplit("kind=", 1)[-1]
                 numbers = search_results.get(kind, [])
-                return _fake_completed(
-                    json.dumps({"items": [{"number": n} for n in numbers]})
-                )
+                # harmonic-forge#602: the search paginates and reduces with
+                # `--jq`, so the body is one issue number per line across
+                # pages -- NOT a single `{"items": [...]}` object, which
+                # `--paginate` would emit once per page and `json.loads`
+                # would silently read only the first of.
+                self.assertIn("--paginate", gh_argv,
+                              "the candidate search must paginate: unpaginated "
+                              "it caps at 30 items with no error")
+                self.assertIn("per_page=100", gh_argv)
+                return _fake_completed("".join(f"{n}\n" for n in numbers))
             if "api" in gh_argv:
                 # harmonic-forge#570 preclose finding: the comments fetch
                 # must be an explicit GET and must paginate -- assert both
@@ -1303,14 +1310,76 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         self.assertEqual(queued, {})
 
     def test_queue_cycle_does_not_retract_on_an_issue_level_failure(self):
-        """The end-to-end property: the previously-queued issue survives."""
+        """The end-to-end property, with `discover_queue` NOT mocked.
+
+        harmonic-forge#602 preclose finding: the first version of this test
+        patched `discover_queue` -- the unit under change -- so it passed with
+        the entire fix reverted. It verified `queue_cycle`'s carry-forward
+        against a value the test itself supplied. Patching one level lower, at
+        `_fetch_all_comments`, is what connects the two halves."""
         last = {("vitalharmony/hrse", 1530): "ready-for-l3"}
-        with patch("watch_lane_posts.discover_queue", return_value=({}, False)):
+        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
             queue, lines, ok = watch_lane_posts.queue_cycle(
                 ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z")
         self.assertEqual(queue, last, "the prior queue must carry forward")
         self.assertEqual(ok, set(), "a failed repo must not be counted as reporting")
-        self.assertFalse([l for l in lines if "left-queue" in l])
+        self.assertFalse([line for line in lines if "left-queue" in line],
+                         f"a transient failure must not retract: {lines!r}")
+
+    def test_a_still_queued_issue_is_not_retracted_and_a_gone_one_is(self):
+        """The fix must not buy safety by never retracting anything."""
+        last = {("vitalharmony/hrse", 1530): "ready-for-l3",
+                ("vitalharmony/hrse", 1600): "ready-for-l3"}
+        body = ("body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->")
+        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
+             patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": body}]):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z")
+        self.assertEqual(ok, {"vitalharmony/hrse"})
+        self.assertIn(("vitalharmony/hrse", 1530), queue)
+        self.assertNotIn(("vitalharmony/hrse", 1600), queue)
+        self.assertIn("vitalharmony/hrse#1600 left-queue-for-l3", lines)
+
+
+class SearchCandidatesFailsClosedTests(unittest.TestCase):
+    """harmonic-forge#602 preclose finding 2. `_search_candidates` was the one
+    of this module's three fetches that did not paginate: unpaginated,
+    `search/issues` caps at 30 items with no error and
+    `incomplete_results=false`. Measured live: `state:closed lane` on hrse ->
+    total_count 1193, items 30. The l2 handoff search stood at 22, eight short
+    of silently truncating -- and a truncated candidate set reads as 'that
+    issue is no longer queued'."""
+
+    def test_the_search_is_paginated(self):
+        completed = "1530\n1600\n"
+        with patch("watch_lane_posts.gh_as", return_value=completed) as gh:
+            watch_lane_posts._search_candidates("vitalharmony/hrse", "kind=handoff")
+        argv = gh.call_args.args[1]
+        self.assertIn("--paginate", argv)
+        self.assertIn("per_page=100", argv)
+
+    def test_incomplete_results_fails_closed(self):
+        """A timed-out search is a partial answer presented as a complete one."""
+        with patch("watch_lane_posts.gh_as", return_value="INCOMPLETE\n1530\n"):
+            with self.assertRaises(watch_lane_posts.SearchUnavailable):
+                watch_lane_posts._search_candidates("vitalharmony/hrse", "kind=handoff")
+
+    def test_unparseable_body_fails_closed(self):
+        """"I do not know" must not read as "nothing is queued"."""
+        with patch("watch_lane_posts.gh_as", return_value="not-a-number\n"):
+            with self.assertRaises(watch_lane_posts.SearchUnavailable):
+                watch_lane_posts._search_candidates("vitalharmony/hrse", "kind=handoff")
+
+    def test_search_unavailable_propagates_as_fetch_ok_false(self):
+        """The `SearchUnavailable` branch of `discover_queue` had no test at
+        all -- flipping it to `return {}, True` left all 105 tests green."""
+        with patch("watch_lane_posts._search_candidates",
+                   side_effect=watch_lane_posts.SearchUnavailable("rate limit")):
+            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
+        self.assertFalse(fetch_ok)
+        self.assertEqual(queued, {})
 
 
 class QueueKeyIsRepoQualifiedTests(unittest.TestCase):

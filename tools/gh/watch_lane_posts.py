@@ -421,20 +421,54 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
     #
     # The search API carries its own rate limit (30/min authenticated), separate
     # from both core REST and GraphQL, so this does not contend with either.
+    # `--paginate -f per_page=100` (harmonic-forge#602 preclose finding):
+    # unpaginated, search/issues returns at most 30 items regardless of
+    # `total_count`, with no error and `incomplete_results=false`. Measured
+    # live: `q=repo:vitalharmony/hrse state:closed lane` -> total_count 1193,
+    # items 30. The `l2` handoff search matches every open issue that ever
+    # received a Lane 1 handoff -- a set that only grows -- and stood at 22 on
+    # hrse when this was found, eight short of silently truncating. A queued
+    # issue outside the first page is absent from `candidates`, absent from
+    # `queued`, and reported as success, which is precisely the false
+    # retraction this issue exists to remove. The two siblings here
+    # (`_fetch_all_comments`, `list_open_issues`) already paginate; this was
+    # the one that did not.
+    #
+    # `--jq` emits one number per line ACROSS pages, which is what makes
+    # `--paginate` usable here at all: it returns one JSON object per page,
+    # so a single `json.loads` of the raw body would parse only the first.
+    # `INCOMPLETE` is emitted ahead of the numbers when GitHub reports the
+    # search timed out -- an incomplete result set is a partial answer
+    # presented as a complete one, so it fails closed rather than under-
+    # reporting candidates.
     try:
         raw = gh_as(
             _ACCOUNT,
             ["api", "-X", "GET", "search/issues",
-             "-f", f"q=repo:{repo} state:open {marker_text}"],
+             "-f", f"q=repo:{repo} state:open {marker_text}",
+             "--paginate", "-f", "per_page=100",
+             "--jq", 'if .incomplete_results then "INCOMPLETE" else empty end,'
+                     " (.items[].number)"],
             counter=_COUNTER,
         )
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
         print(f"[watch_lane_posts] search failed: {exc}", file=sys.stderr)
         raise SearchUnavailable(str(exc)) from exc
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if "INCOMPLETE" in lines:
+        print(f"[watch_lane_posts] search returned incomplete_results for {repo} "
+              f"({marker_text}) -- treating as unavailable rather than partial",
+              file=sys.stderr)
+        raise SearchUnavailable(f"incomplete_results for {repo}")
     try:
-        return {row["number"] for row in json.loads(raw).get("items", [])}
-    except (json.JSONDecodeError, AttributeError):
-        return set()
+        return {int(line) for line in lines}
+    except (ValueError, TypeError) as exc:
+        # An unparseable body is "I do not know", not "nothing is queued".
+        # Returning set() here made a malformed response indistinguishable
+        # from a quiet repo, which `queue_cycle` then retracts against.
+        print(f"[watch_lane_posts] search returned an unparseable body for "
+              f"{repo}: {exc}", file=sys.stderr)
+        raise SearchUnavailable(f"unparseable search body for {repo}") from exc
 
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:

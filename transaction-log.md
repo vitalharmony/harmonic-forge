@@ -3,6 +3,48 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): paginate the candidate search; make the #602 test actually bite
+
+Preclose on PR #603 returned two findings. Both fixed.
+
+**1. `_search_candidates` was the one fetch in this module that did not
+paginate.** Unpaginated, `search/issues` returns at most 30 items regardless
+of `total_count`, with no error and `incomplete_results=false`. Measured live:
+`q=repo:vitalharmony/hrse state:closed lane` -> total_count 1193, items 30.
+The l2 handoff search matches every open issue that ever received a Lane 1
+handoff -- a set that only grows -- and stood at 22 on hrse when this was
+found. Eight short. Past 30, a queued issue falls outside the first page, is
+absent from `candidates`, absent from `queued`, and reported as SUCCESS --
+which is precisely the false retraction this issue exists to remove, arriving
+by a different route. Best-match ordering would have made it flap rather than
+fail cleanly.
+
+`--paginate -f per_page=100` with a `--jq` reduction to one number per line;
+`--paginate` emits one JSON object per page, so the previous single
+`json.loads` would have read only the first page anyway. `incomplete_results`
+now fails closed rather than silently under-reporting, and an unparseable body
+raises instead of returning `set()` -- "I do not know" is not "nothing is
+queued".
+
+**2. The AC3 "end to end" test passed with the entire fix reverted.** It
+patched `discover_queue` -- the unit under change -- so it verified
+`queue_cycle`'s carry-forward against a value the test itself supplied.
+Rewritten to patch `_fetch_all_comments` one level lower and call
+`queue_cycle` unmocked. Mutation-verified: reverting the fix now fails it.
+
+Added alongside: a test that a genuinely-gone issue IS still retracted, so the
+fix cannot buy safety by never retracting anything; and coverage of the
+`SearchUnavailable` branch, which had none -- flipping it to `return {}, True`
+previously left the whole suite green.
+
+1963 -> 1968 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 81 ++++++++++++++++++++++++++++++++++++---
+- tools/gh/watch_lane_posts.py      | 42 ++++++++++++++++++--
+- 2 files changed, 113 insertions(+), 10 deletions(-)
+
 ## fix(belt): fail closed when a per-issue comment fetch fails (harmonic-forge#602)
 
 `discover_queue` turned a failed per-issue comment fetch into an empty
