@@ -49,8 +49,21 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --watch l2 --watch l3 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l1 --watch l2 --watch l3 --interval 300
   ```
+
+  **Both halves, for the same reason Lane 2 needs both.** `--all-worktrees`
+  follows work already in flight. `--queue-for l1` catches a **Lane 2 plan
+  awaiting PROCEED** — and a Plan-First issue has *no worktree*, because the
+  branch is created in response to Lane 1's approval. Four plans stalled
+  exactly there (harmonic-forge#618): posted, correct, and structurally
+  invisible to a worktrees-only belt until Lane 2 asked why they were being
+  ignored.
+
+  **A lane's inbound work has no worktree, because the worktree is created in
+  response to it.** That is the general property, seen three times now — Lane
+  2's handoff (#596), Lane 1's plan (#618). Lane 3 never showed the symptom
+  only because its inbound was queue-discovered from the start.
 
   **Arm it verbatim, from wherever the session already is** — no `cd` first.
   `git worktree list` only ever sees one repository, so the roots the belt
@@ -220,7 +233,7 @@ idempotent check runs every tick regardless of what any other check found. Lane
    the belt itself:
 
    ```
-   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l1 --account-repos vitalharmony --interval 600
+   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --sweep-for l1 --account-repos vitalharmony --interval 600
    ```
 
 3. **What have I never answered** — count *my own* posted markers per issue.
@@ -266,7 +279,11 @@ posted. Two hours, a one-line thread, while the lane carried it forward as done.
 discovery to work that exists. GitHub is then read to enrich an issue a worktree
 has already named — it is not the place candidates come from.
 
-**Suspenders backstop: a repo-wide newest-marker sweep** (`discover_l1_sweep`).
+**Suspenders backstop: a repo-wide newest-marker sweep** (`discover_l1_sweep`,
+armed with `--sweep-for l1`). It is a *different flag* from `--queue-for l1`
+since harmonic-forge#618: `--queue-for` now means the same bounded thing for
+every lane, and the unbounded sweep has its own name. Arming the sweep as a
+belt is #590's regression, and the two are refused in one process.
 This runs on the *pull loop*, not the monitor, and exists for exactly what the
 belt structurally cannot see: handoffs that predate it, anything its filter
 misses, and issues whose state changed with no new comment. Promoting it to the

@@ -44,6 +44,68 @@ Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - rules/universal-agent.md  | 34 ++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml | 16 ++++++++++++++++
 - 2 files changed, 50 insertions(+)
+## fix(belt): give Lane 1 a bounded inbound queue; split the sweep's flag (harmonic-forge#618)
+
+Four Lane 2 plans -- hrse#1383, #1662, #1663, #1771 -- sat unactioned until
+Lane 2 asked Lane 1 why it kept ignoring them. Three causes, and I only filed
+the third.
+
+**Measured before implementing**, which changed the fix:
+
+    hrse#1383, comment before Lane 1's reply:
+      ## Plan — H1383  ||  discussion / LANE2
+
+1. **The plans were posted as `kind=discussion`.** `l2_post.py --kind plan`
+   exists and stamps `## L2S` plus `kind=plan`; these went through
+   `lane-comment`, which defaults to `discussion`. `post_lane_discussion.py`
+   now REFUSES a body headed `## Plan` with `kind=discussion` and names the
+   right emitter -- refuse, not restamp, because rewriting the kind changes
+   what the thread records about who declared what. Same defect
+   harmonic-forge#473 fixed for Lane 3's artifacts in this very script: "there
+   was never a missing emitter, only a missing argument."
+
+2. **`discussion` is deliberately un-queueable** -- removed from
+   `QUEUE_KINDS["l2"]` on 63 measured issues, none actionable. So a plan
+   wearing that kind is invisible to every bounded queue, correctly. AC1 as I
+   filed it would not have worked.
+
+3. **Lane 1's belt is worktrees-first and a Plan-First issue has no worktree**
+   until Lane 1 approves the plan. `QUEUE_KINDS["l1"] = ("plan",)`, and Lane
+   1's belt now arms both halves as Lane 2's has since #596.
+
+**`QUEUE_KINDS["l1"]` alone changed nothing.** `discover_queue` hardcoded
+`last_kind[0] == "l1"` -- correct for lanes 2 and 3, which receive work handed
+DOWN, and structurally wrong for Lane 1, whose inbound is handed UP by Lane 2.
+A `kind=plan` marker is `posted-by=LANE2`, so the check rejected it and the
+queue stayed empty. Caught by running it, not by reading it. `QUEUE_POSTERS`
+makes the direction explicit per lane.
+
+**`--sweep-for l1` is split off `--queue-for l1`.** `--queue-for l1` used to
+route to the unbounded repo-wide sweep, so it meant something categorically
+different from `--queue-for l2` -- an inconsistency that was itself a trap, and
+the reason Lane 1 could not simply copy Lane 2's fix. `--queue-for` now means
+one thing for every lane; the sweep has its own name and stays in the
+suspenders; arming both in one process is refused (#590).
+
+Verified end to end:
+
+    newest = kind=plan (LANE2)   -> {1383: 'plan'}
+    plan then L1 answered        -> {}   (self-clearing)
+    plan posted as discussion    -> {}   (why the four stalled)
+    l2 handoff still works       -> {1383: 'handoff'}
+
+Third instance of one property, now stated in SKILL.md rather than fixed a
+third time per lane: A LANE'S INBOUND WORK HAS NO WORKTREE, because the
+worktree is created in response to it.
+
+2045 -> 2054 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py |  7 ++-
+- tools/gh/test_watch_lane_posts.py             | 91 ++++++++++++++++++++++++++-
+- tools/gh/watch_lane_posts.py                  | 80 +++++++++++++++++++----
+- 4 files changed, 182 insertions(+), 19 deletions(-)
 
 ## fix(gh): test the wiring, make the implication transitive (harmonic-forge#616)
 

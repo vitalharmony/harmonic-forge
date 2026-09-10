@@ -1091,10 +1091,22 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
         self.assertIn("--all-worktrees", self._lane1_belt_command())
 
     def test_lane1_belt_does_not_arm_the_repo_wide_sweep(self):
-        self.assertNotIn("--queue-for l1", self._lane1_belt_command(),
+        """#590's property, restated for #618's flag split.
+
+        The forbidden thing is the UNBOUNDED sweep (`--sweep-for l1`), not
+        `--queue-for l1` -- which since #618 means the same bounded thing for
+        Lane 1 that it always meant for Lane 2 and Lane 3, and which Lane 1's
+        belt now legitimately arms to see a plan awaiting PROCEED."""
+        self.assertNotIn("--sweep-for", self._lane1_belt_command(),
                          "the repo-wide sweep is the suspenders' backstop "
                          "(harmonic-forge#590); arming it as the belt is the "
-                         "regression this issue fixed")
+                         "regression that issue fixed")
+
+    def test_lane1_belt_arms_its_bounded_inbound_queue(self):
+        """#618. A Plan-First issue has no worktree until Lane 1 approves the
+        plan, so a worktrees-only belt cannot see the most time-sensitive thing
+        Lane 1 owes. Four plans stalled exactly there."""
+        self.assertIn("--queue-for l1", self._lane1_belt_command())
 
     #: Tokens after `--all-worktrees` that are repo roots: anything up to the
     #: next flag. `\S+` is NOT enough and was the shipped defect (#594 preclose
@@ -1366,7 +1378,7 @@ class EveryLaneBeltDerivesItsRepoSetTests(unittest.TestCase):
         """The Lane 1 backstop is a --queue-for command outside any lane
         bullet, so the per-lane guard above never reaches it."""
         text = _SKILL_MD.read_text(encoding="utf-8")
-        sweep = re.search(r"(watch_lane_posts\.py --queue-for l1[^\n]*)",
+        sweep = re.search(r"(watch_lane_posts\.py --sweep-for l1[^\n]*)",
                           text.split("## The suspenders", 1)[1])
         self.assertIsNotNone(sweep, "the suspenders' Lane 1 sweep command was not found")
         self.assertIn("--account-repos", sweep.group(1))
@@ -1583,6 +1595,79 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("SUPPRESSED", out)
         self.assertIn("vitalharmony/hrse#1530", out)
         self.assertIn("delete", out, "the operator needs the recovery path")
+
+
+class Lane1InboundQueueTests(unittest.TestCase):
+    """harmonic-forge#618. Lane 1's inbound is handed UP by Lane 2, which is the
+    reverse of every other lane's, and the code hardcoded the downward
+    direction."""
+
+    PLAN = "## Plan — H1383\n\n<!-- l1-post v1; kind=plan; posted-by=LANE2 -->"
+    L1 = "## L1 review\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+    DISC = "## Plan — H1\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->"
+    HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
+
+    def _queue(self, bodies, lane="l1"):
+        with patch("watch_lane_posts._search_candidates", return_value={1383}), \
+             patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": b} for b in bodies]):
+            return discover_queue("vitalharmony/hrse", lane)[0]
+
+    def test_a_lane2_plan_queues_to_lane1(self):
+        self.assertEqual(self._queue([self.PLAN]), {1383: "plan"})
+
+    def test_it_clears_once_lane1_answers(self):
+        """Self-clearing, the same way every other lane's queue is."""
+        self.assertEqual(self._queue([self.PLAN, self.L1]), {})
+
+    def test_a_plan_posted_as_discussion_does_not_queue(self):
+        """Why the four stalled. `discussion` is deliberately not queue-eligible
+        (63 issues measured, none actionable), which is why harmonic-forge#618's
+        real fix is the guard that makes a plan carry `kind=plan` at the source."""
+        self.assertEqual(self._queue([self.DISC]), {})
+
+    def test_posters_are_directional(self):
+        """The hardcoded `last_kind[0] == "l1"` is correct for lanes 2 and 3 --
+        Lane 1 hands work DOWN -- and structurally wrong for Lane 1. Adding
+        QUEUE_KINDS["l1"] alone changed nothing; this is what made it work."""
+        self.assertEqual(watch_lane_posts.QUEUE_POSTERS["l1"], ("l2", "l3"))
+        self.assertEqual(watch_lane_posts.QUEUE_POSTERS["l2"], ("l1",))
+
+    def test_lane1_never_queues_its_own_marker(self):
+        """"Already acted" is still expressed by Lane 1's own marker being
+        newest -- it must not queue work to itself."""
+        self.assertNotIn("l1", watch_lane_posts.QUEUE_POSTERS["l1"])
+
+    def test_lane2_and_lane3_are_unchanged(self):
+        self.assertEqual(self._queue([self.HANDOFF], "l2"), {1383: "handoff"})
+
+    def test_discussion_is_not_a_lane1_queue_kind(self):
+        """Adding it would reintroduce the 63-issue noise on the lane with the
+        least capacity to absorb it."""
+        self.assertNotIn("discussion", watch_lane_posts.QUEUE_KINDS["l1"])
+
+
+class SweepFlagIsSeparateTests(unittest.TestCase):
+    """harmonic-forge#618. `--queue-for l1` used to route to the UNBOUNDED
+    repo-wide sweep, so it meant something categorically different from
+    `--queue-for l2` -- an inconsistency that was itself a trap."""
+
+    def test_queue_for_means_the_same_thing_for_every_lane(self):
+        for lane in ("l1", "l2", "l3"):
+            with self.subTest(lane=lane):
+                self.assertIn(lane, watch_lane_posts.QUEUE_KINDS)
+                self.assertIn(lane, watch_lane_posts.QUEUE_POSTERS)
+
+    def test_arming_both_the_belt_and_the_sweep_is_refused(self):
+        """Collapsing two deliberately independent mechanisms into one process
+        is harmonic-forge#590's regression."""
+        proc = subprocess.run(
+            [sys.executable, str(Path(watch_lane_posts.__file__)),
+             "--queue-for", "l1", "--sweep-for", "l1",
+             "--repo", "vitalharmony/hrse", "--watch", "l2"],
+            capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("belt and the suspenders", proc.stderr)
 
 
 class BeltDedupMechanicTests(unittest.TestCase):

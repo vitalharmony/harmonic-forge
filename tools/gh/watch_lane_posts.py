@@ -247,6 +247,42 @@ _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git
 QUEUE_KINDS = {
     "l3": ("ready-for-l3", "ae", "sweep", "ae-and-sweep"),
     "l2": ("handoff", "rework"),
+    # harmonic-forge#618. Lane 1's belt is worktrees-first (#590), and a
+    # Plan-First issue HAS NO WORKTREE until Lane 1 approves the plan -- the
+    # branch is created in response to the approval. So the single most
+    # time-sensitive thing Lane 1 owes was structurally invisible to it: four
+    # plans (hrse#1383/#1662/#1663/#1771) sat unactioned until Lane 2 asked why
+    # they were being ignored.
+    #
+    # This is the third instance of one property: A LANE'S INBOUND WORK HAS NO
+    # WORKTREE, because the worktree is created in response to it. Lane 2's
+    # handoff (#596), Lane 1's plan (here). Lane 3 never showed the symptom
+    # because its inbound was queue-discovered from the start.
+    #
+    # `plan` ONLY, deliberately. Not `discussion` -- that was removed from
+    # `l2`'s kinds on a measurement of 63 issues whose newest marker was a
+    # discussion, none actionable, and adding it here would reintroduce that
+    # noise on the lane with the least capacity to absorb it. The four stalled
+    # plans were posted as `discussion`; harmonic-forge#618's guard in
+    # `post_lane_discussion.py` is what makes `plan` the marker they carry.
+    "l1": ("plan",),
+}
+
+#: WHO must have posted the marker for it to queue work TO a lane.
+#:
+#: harmonic-forge#618. This was hardcoded as `last_kind[0] == "l1"`, which is
+#: correct for Lane 2 and Lane 3 -- Lane 1 hands work down -- and structurally
+#: wrong for Lane 1, whose inbound is handed UP by Lane 2. Adding
+#: `QUEUE_KINDS["l1"]` alone changed nothing: a `kind=plan` marker is
+#: `posted-by=LANE2`, so the hardcoded check rejected it and the queue stayed
+#: empty. Caught by running it rather than by reading it.
+#:
+#: Lane 1 accepts from l2 and l3 but never from itself -- "already acted" is
+#: still expressed by Lane 1's own marker being newest.
+QUEUE_POSTERS: dict[str, tuple[str, ...]] = {
+    "l3": ("l1",),
+    "l2": ("l1",),
+    "l1": ("l2", "l3"),
 }
 
 
@@ -736,6 +772,7 @@ def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
     silently dropped a genuinely queued issue out of Lane 3's belt -- the
     exact live reproduction the issue's own AC1 names."""
     kinds = QUEUE_KINDS[lane]
+    posters = QUEUE_POSTERS[lane]
     candidates: set[int] = set()
     for kind in kinds:
         try:
@@ -773,7 +810,7 @@ def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
             classified = _classify(comment.get("body", ""))
             if classified is not None and not _is_l2_finding(*classified):
                 last_kind = classified
-        if last_kind and last_kind[0] == "l1" and last_kind[1] in kinds:
+        if last_kind and last_kind[0] in posters and last_kind[1] in kinds:
             queued[issue] = last_kind[1]
     return queued, True
 
@@ -1207,6 +1244,7 @@ def queue_cycle(
     last_queue: dict[tuple[str, int], str],
     l1_since: dict[str, str | None],
     now: str,
+    sweep: bool = False,
 ) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
     """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
 
@@ -1234,7 +1272,7 @@ def queue_cycle(
     ok_repos: set[str] = set()
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
-        if lane == "l1":
+        if sweep:
             l1_queue, since = l1_sweep_cycle(repo, l1_since.get(repo), prior, now)
             # `l1_sweep_cycle` encodes fetch_ok by whether it advanced the
             # watermark to `now` -- it returns the OLD `since` unchanged on a
@@ -1243,9 +1281,11 @@ def queue_cycle(
             l1_since[repo] = since
             found = {issue: f"{lane_}:{detail}"
                      for issue, (lane_, detail) in l1_queue.items()}
+            lane_label = "l1-sweep"
         else:
             raw, fetch_ok = discover_queue(repo, lane)
             found = dict(raw)
+            lane_label = lane
         if not fetch_ok:
             # Carry this repo's previous queue forward untouched, and keep it
             # OUT of `ok_repos` so the retraction pass below cannot see it.
@@ -1264,7 +1304,7 @@ def queue_cycle(
     for (repo, issue), marker in queue.items():
         if last_queue.get((repo, issue)) == marker:
             continue
-        if lane == "l1":
+        if sweep:
             last_lane, _, detail = marker.partition(":")
             lines.append(f"{repo}#{issue} needs-l1 last={last_lane} — {detail}")
         else:
@@ -1295,6 +1335,15 @@ def main() -> int:
                              "hrse and harmonic-forge, and naming them makes the command "
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
+    parser.add_argument("--sweep-for", choices=("l1",), metavar="LANE",
+                        help="the SUSPENDERS' repo-wide newest-marker backstop "
+                             "(`discover_l1_sweep`): every open issue whose newest "
+                             "classified comment is not this lane's own. Unbounded by "
+                             "design -- it is what the belt structurally cannot see. "
+                             "harmonic-forge#618 split this off `--queue-for l1`, which "
+                             "now means the same bounded thing for Lane 1 that it "
+                             "already meant for Lane 2 and Lane 3. Arming THIS as a belt "
+                             "is harmonic-forge#590's regression.")
     parser.add_argument("--account-repos", metavar="ACCOUNT",
                         help="derive the repo set from projects.toml, the onboarded-repo "
                              "manifest, for ACCOUNT -- R-0122 and this protocol's design "
@@ -1341,8 +1390,12 @@ def main() -> int:
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")
-    if args.queue_for and not (args.repo or args.account_repos):
-        parser.error("--queue-for requires --repo or --account-repos")
+    if (args.queue_for or args.sweep_for) and not (args.repo or args.account_repos):
+        parser.error("--queue-for/--sweep-for requires --repo or --account-repos")
+    if args.queue_for and args.sweep_for:
+        parser.error("--queue-for and --sweep-for are the belt and the suspenders "
+                     "respectively; arming both in one process collapses two "
+                     "deliberately independent mechanisms (harmonic-forge#590)")
     # Union, not replacement: an explicitly named --worktrees path stays
     # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
     # roots are named to --all-worktrees, so --worktrees has one job again.
@@ -1373,10 +1426,10 @@ def main() -> int:
             parser.error(str(exc))
         print(f"[watch_lane_posts] --all-worktrees enumerated "
               f"{len(args.worktrees)} live worktree(s)", file=sys.stderr)
-    if not args.worktrees and not args.issues and not args.queue_for:
+    if not args.worktrees and not args.issues and not (args.queue_for or args.sweep_for):
         parser.error("give at least one of --worktrees, --repo/--issues, "
                      "--all-worktrees, or --queue-for")
-    if not args.watch and not args.queue_for:
+    if not args.watch and not (args.queue_for or args.sweep_for):
         parser.error("--watch is required unless --queue-for is given")
 
     watch = set(args.watch)
@@ -1410,6 +1463,8 @@ def main() -> int:
     belt_id = "-".join(sorted(watch)) or "none"
     if args.queue_for:
         belt_id += f"+q{args.queue_for}"
+    if args.sweep_for:
+        belt_id += f"+s{args.sweep_for}"
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
     #: Targets this belt has already primed. PER TARGET, not one scalar for the
@@ -1484,16 +1539,19 @@ def main() -> int:
             _report_resolutions(resolutions)
             last_discovered = discovered
 
-        if args.queue_for:
-            print(f"[watch_lane_posts] queue-for-{args.queue_for} scanning "
+        mode = args.queue_for or args.sweep_for
+        if mode:
+            label = "sweep-for" if args.sweep_for else "queue-for"
+            print(f"[watch_lane_posts] {label}-{mode} scanning "
                   f"{len(repos)} repo(s):", file=sys.stderr)
             queue, lines, ok_repos = queue_cycle(
-                repos, args.queue_for, last_queue, l1_since, now)
+                repos, mode, last_queue, l1_since, now,
+                sweep=bool(args.sweep_for))
             if first_queue_report:
                 # Reports repos that ACTUALLY REPORTED, not len(argv). A run
                 # where every search failed used to print a line byte-identical
                 # to two genuinely quiet repos (harmonic-forge#596 preclose).
-                print(f"[watch_lane_posts] queue-for-{args.queue_for}: {len(queue)} "
+                print(f"[watch_lane_posts] {label}-{mode}: {len(queue)} "
                       f"issue(s) queued now across {len(ok_repos)}/{len(repos)} "
                       f"repo(s) that reported", file=sys.stderr)
                 first_queue_report = False

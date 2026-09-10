@@ -174,7 +174,10 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
         lane1 = text.split("- **Lane 1**", 1)[1].split("- **Lane 2**", 1)[0]
         self.assertIn("--all-worktrees", lane1)
-        self.assertNotIn("--queue-for l1", lane1)
+        # #618 split the flags: the forbidden thing is the UNBOUNDED sweep.
+        # `--queue-for l1` is Lane 1's bounded inbound queue and belongs here.
+        self.assertNotIn("--sweep-for", lane1)
+        self.assertIn("--queue-for l1", lane1)
 
     #: The block harmonic-forge#607 rewrote. Scoped, not a whole-file search:
     #: the first version of these guards passed with two of the three filter
@@ -238,7 +241,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
     def test_the_repo_wide_sweep_survives_in_the_suspenders(self):
         """Demoted, not deleted -- and armed there as a literal command."""
         text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("--queue-for l1", text.split("## The suspenders", 1)[1])
+        self.assertIn("--sweep-for l1", text.split("## The suspenders", 1)[1])
 
     def test_lane_2_belt_is_worktrees_first(self):
         """harmonic-forge#596: naming the shared lane-2 checkout resolved 0/1 in
