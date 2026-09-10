@@ -43,6 +43,25 @@ def consumed_one(command, state_path):
     return keys[0] if keys else None
 
 
+# F611: link_pr() now refuses when stdin is not a real TTY, same as
+# authorize()/top_up() (harmonic-forge#589). A test runner's own stdin is
+# not a TTY either, so every pre-existing direct `ba.link_pr(...)` call in
+# this file -- simulating the operator's own already-authorized action, not
+# an agent bypassing the gate -- needs isatty to read True by default.
+# `TtyGateCliTests` exercises the gate itself and applies its own per-call
+# `mock.patch("os.isatty", ...)`, which takes precedence over this module
+# default for the duration of that `with` block.
+_isatty_patcher = mock.patch("os.isatty", return_value=True)
+
+
+def setUpModule():
+    _isatty_patcher.start()
+
+
+def tearDownModule():
+    _isatty_patcher.stop()
+
+
 class StateFixture(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -947,12 +966,16 @@ class AskDiagnosticTests(unittest.TestCase):
         reason = self._reason("gh issue close 9 --repo vitalharmony/hrse")
         self.assertIn("EXPIRED", reason)
 
-    def test_an_unlinked_pr_names_link_pr_and_the_command_to_run(self):
+    def test_an_unlinked_pr_names_link_pr_and_tells_the_session_not_to_run_it(self):
+        """F611: link-pr is TTY-gated, same as authorize/top-up. The
+        diagnostic must not hand a session a runnable command -- that was
+        the confused-deputy remediation loop the finding named."""
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
         reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
         self.assertIn("not linked", reason)
         self.assertIn("link-pr", reason)
-        self.assertIn("--pr 42", reason)
+        self.assertIn("ask the operator", reason.lower())
+        self.assertNotIn("--pr 42", reason)
 
     def test_a_consumed_target_says_consumed_not_missing(self):
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
@@ -1688,3 +1711,27 @@ class TtyGateCliTests(StateFixture):
         say what path IS available for an agent-driven session."""
         _, _, err = self._run_cli(["authorize", "F999"], isatty=False)
         self.assertIn("BATCH", err)
+
+    def test_link_pr_without_a_tty_is_refused_and_binds_nothing(self):
+        """F611: link_pr() binds a live grant to an arbitrary (repo,
+        pr_number) pair with no relation check between the two -- the
+        tool's own _diagnose() text used to instruct a session to run this
+        exact command. Gated identically to authorize/top-up."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.state_path)
+        code, out, err = self._run_cli(
+            ["link-pr", "F1", "--repo", "o/a", "--pr", "9"], isatty=False)
+        self.assertEqual(code, 1)
+        self.assertIn("not a TTY", err)
+        target = ba._load(self.state_path)["F1"]["targets"][0]
+        self.assertIsNone(target["pr_number"])
+        self.assertIsNone(target["repo"])
+
+    def test_link_pr_with_a_real_tty_proceeds_normally(self):
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.state_path)
+        with mock.patch("sys.argv",
+                         ["batch_auth.py", "link-pr", "F1", "--repo", "o/a", "--pr", "9"]), \
+             mock.patch("os.isatty", return_value=True):
+            ba._cli()
+        target = ba._load(self.state_path)["F1"]["targets"][0]
+        self.assertEqual(target["pr_number"], 9)
+        self.assertEqual(target["repo"], "o/a")

@@ -444,7 +444,16 @@ def authorize(
 def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None) -> None:
     """Record which PR fulfils a BATCH-authorized issue's merge target, once
     opened. See the module docstring's PR-number-gap section for why this
-    call is the only place this mapping can ever be recorded."""
+    call is the only place this mapping can ever be recorded.
+
+    F611 preclose finding: the TTY refusal used to live only in `_cli()`'s
+    `link-pr` dispatch, so a direct `import batch_auth; batch_auth.link_pr(...)`
+    Bash call -- no CLI, no pty -- reached this function ungated and minted
+    the exact binding the gate exists to refuse. The check now lives here,
+    matching `expand_lane_shorthand.py`'s own precedent: the function that
+    performs the mint is the function that refuses, not one of its callers.
+    """
+    _require_tty("link_pr")
     actual_path = STATE_PATH if state_path is None else state_path
     with _locked_state(actual_path):
         state = _load(state_path)
@@ -985,9 +994,10 @@ def _diagnose(tokens: list[str], state: dict, is_close: bool,
     return (f"[BATCH] {repo}#{number} is not linked to any authorization. "
             f"`gh pr merge <PR#>` carries no issue number, so the mapping only "
             f"exists if `link-pr` recorded it. Live keys: {', '.join(sorted(live))}. "
-            f"Linked PRs: {', '.join(linked) or 'none'}. Run:\n"
-            f"  python3 tools/hooks/batch_auth.py link-pr <KEY> --repo {repo} "
-            f"--pr {number}")
+            f"Linked PRs: {', '.join(linked) or 'none'}. "
+            f"Ask the operator to run `link-pr` themselves in their own terminal "
+            f"(F611: it requires a real TTY, same as authorize/top-up) -- "
+            f"this is not a command for this session to run.")
 
 
 def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | None:
@@ -1054,7 +1064,8 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
                     f"{'close' if is_close else 'merge'} target is already "
                     "CONSUMED by a different command. A close is single-use "
                     "by design; a merge allocates a new target on the next "
-                    "`link-pr`, so run that first if this is a second repo.")
+                    "`link-pr` -- ask the operator to run that themselves "
+                    "if this is a second repo (F611: TTY-gated).")
             # AC1 (harmonic-forge#552): decide() is READ-ONLY. It used to
             # set consumed/consumed_by and _save() here, which is the root
             # cause of the incident that filed #552. A PreToolUse hook
@@ -1421,6 +1432,11 @@ def _cli() -> None:
         consumed = consume(args.command)
         print(f"consumed {consumed}" if consumed else "nothing to consume")
     elif args.cmd == "link-pr":
+        # F611 (corrected): the gate lives inside link_pr() itself now, not
+        # here -- a direct `import batch_auth; batch_auth.link_pr(...)` call
+        # bypassed a CLI-only check entirely (confirmed live in preclose
+        # review). No gate needed at this dispatch site; link_pr() refuses on
+        # its own regardless of call path.
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")
     elif args.cmd == "revoke":

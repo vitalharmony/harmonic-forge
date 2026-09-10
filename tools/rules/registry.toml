@@ -2326,3 +2326,19 @@ anchor = "now-interrupt"
 statement = "NOW interrupts: abandon or suspend current work and act on the NOW instruction instead of queueing it. NOW is not Esc -- Esc kills the turn (abandon-and-restart), NOW suspends it non-destructively. The same one-line honesty requirement as R-0116 applies: a session says which it chose at the moment it decides."
 text_sha = "37e7ca5cc8332a64"
 hooks = []
+
+[[rule]]
+id = "R-0356"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "A lane's report carries only what the operator must decide or must know to advance the issue: bottom line, outcome, then the operator's own actions. Never paste a raw INPUT -- a subagent's return, an issue body, a full comment thread, a gate log, a test transcript, a file you read. Those are inputs to your work, not deliverables; relay the verdict and the action. This does not license silence: reporting incremental progress as you go is expected and must not stop, because the operator watches lane output to see work moving. The rule is about VOLUME AND CONTENT, not frequency."
+text_sha = "5392b1ef6f4270f1"
+hooks = []
+
+[[rule]]
+id = "R-0357"
+file = "rules/universal-agent.md"
+anchor = "generated-artifact-verbatim"
+statement = "One narrow exception to R-0356: a generated ARTIFACT the operator asked for is pasted verbatim. If a tool, script or skill produced a report, summary or document AS THE DELIVERABLE, its raw output appears as literal text -- commentary may follow, never replace, and pointing at a tool-output pane does not satisfy it. The distinction is authorship and purpose, not size: an input is material you consumed to reach a conclusion, an artifact is the thing the operator asked to exist. A gate log read to decide PASS is an input; a sprint summary the operator asked for is an artifact. When genuinely unsure, ask rather than defaulting to a dump."
+text_sha = "f36f2bc3e579a335"
+hooks = []
