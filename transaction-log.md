@@ -90,6 +90,7 @@ Deliberate mentions stay: `rules/lane-shorthand.md`, `3-lane-protocol.md` and
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/retired_artifacts.py     |  4 ++++
 - tools/gh/test_l2_post.py          | 14 +++++++++++++
 - tools/gh/test_watch_lane_posts.py | 42 +++++++++++++++++++++++++++++++++++++++
 - tools/gh/watch_lane_posts.py      | 41 +++++++++++++++++++++++++++++++++++++-
