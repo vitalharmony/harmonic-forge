@@ -212,16 +212,19 @@ def _is_l2_completion(lane: str, detail: str) -> bool:
 #: `l2/h1530-null-tolerant-sync-predicate`, `1498` in `fix/1498-...`,
 #: `f433` in `l2/f433-drift-check-patch-id`. `re.search`, not `match` --
 #: the run can sit anywhere in the branch name.
-_BRANCH_ISSUE_RE = re.compile(r"(?:^|/)(?P<prefix>[hHfFiI])?(?P<num>\d{2,6})(?=[-/]|$)")
+#: Prefix letter -> repo, and the regex class built from it, both DERIVED from
+#: `projects.toml` (harmonic-forge#605 preclose finding). Three hardcoded copies
+#: of this map existed and onboarding openclaw exposed them: `O` was added to the
+#: manifest and to `lane-shorthand.md`, and the belt still resolved nothing for a
+#: branch like `l2/o12-fix` because this class read `[hHfFiI]`. A prefix table
+#: that must be edited in four places to add a repo is the drift the manifest
+#: exists to end -- so it is read, not restated.
+_PREFIX_REPO = onboard_manifest.prefix_repos()
 
-#: Prefix letter -> repo, for a branch whose subject issue lives in a
-#: DIFFERENT repo than the worktree hosting it (a Tooling Exception can
-#: touch shared harmonic-forge/tools/ from an hrse-repo branch).
-_PREFIX_REPO = {
-    "h": "vitalharmony/hrse",
-    "f": "vitalharmony/harmonic-forge",
-    "i": "vitalharmony/cymagraph-infra",
-}
+_BRANCH_ISSUE_RE = re.compile(
+    r"(?:^|/)(?P<prefix>[" + "".join(sorted(
+        {c for k in _PREFIX_REPO for c in (k.lower(), k.upper())})) +
+    r"])?(?P<num>\d{2,6})(?=[-/]|$)")
 
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
 

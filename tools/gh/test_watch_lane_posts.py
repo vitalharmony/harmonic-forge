@@ -5,6 +5,7 @@ hrse#1530 (trimmed), not invented shapes."""
 import io
 import json
 import re
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -130,6 +131,51 @@ class ClassifyTests(unittest.TestCase):
         # case (the one that actually happened) is in scope here.
         headless = "## Lane 2 completion: hrse#1754\n\ntext, no marker at all"
         self.assertIsNone(_classify(headless))
+
+
+class PrefixMapIsDerivedTests(unittest.TestCase):
+    """harmonic-forge#605 preclose finding. Three independent copies of the
+    prefix map existed -- this module's `_PREFIX_REPO`, its `_BRANCH_ISSUE_RE`
+    character class, and `batch_auth.REPO_PREFIXES` -- and no test tied any of
+    them together. Onboarding openclaw showed the cost: `O` reached the
+    manifest and `lane-shorthand.md` while the belt still read `[hHfFiI]`, so
+    a branch named `l2/o12-fix` resolved to nothing."""
+
+    def test_every_manifest_repo_has_a_prefix_the_belt_can_resolve(self):
+        import manifest as onboard_manifest
+        for prefix, repo in onboard_manifest.prefix_repos().items():
+            with self.subTest(repo=repo):
+                self.assertEqual(watch_lane_posts._PREFIX_REPO.get(prefix), repo)
+
+    def test_the_branch_regex_accepts_every_manifest_prefix(self):
+        """The regex class and the map must not be able to disagree."""
+        for prefix in watch_lane_posts._PREFIX_REPO:
+            for letter in (prefix.lower(), prefix.upper()):
+                with self.subTest(letter=letter):
+                    match = _BRANCH_ISSUE_RE.search(f"l2/{letter}12-fix")
+                    self.assertIsNotNone(match, f"{letter}12 does not resolve")
+                    self.assertEqual(match.group("num"), "12")
+
+    def test_openclaw_specifically_resolves(self):
+        """The concrete case the finding named, in the branch shapes actually
+        used live (`__gate__/h1343-tc5` exists in the HRSE2 checkout today)."""
+        for branch in ("l2/o12-fix", "__gate__/o12-tc1", "o12"):
+            with self.subTest(branch=branch):
+                match = _BRANCH_ISSUE_RE.search(branch)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group("prefix"), "o")
+        self.assertEqual(watch_lane_posts._PREFIX_REPO["o"],
+                         "vitalharmony/openclaw-projects")
+
+    def test_batch_auth_agrees_with_the_manifest(self):
+        """The third copy. `BATCH O12` resolving against a stale table is
+        silent, which is why this is asserted rather than reviewed."""
+        import manifest as onboard_manifest
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+        import batch_auth
+        expected = {p.repo: p.prefix for p in onboard_manifest.load()
+                    if p.repo and (p.account or "vitalharmony") == "vitalharmony"}
+        self.assertEqual(batch_auth.REPO_PREFIXES, expected)
 
 
 class BranchIssueRegexTests(unittest.TestCase):

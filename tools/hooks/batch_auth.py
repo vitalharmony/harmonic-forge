@@ -214,16 +214,41 @@ def _locked_state(state_path: Path):
     finally:
         os.close(fd)
 
-# vitalharmony/hrse -> "H", etc. -- rules/lane-shorthand.md is the canonical
-# table; K/P point at other accounts entirely and are deliberately excluded
-# here (credential isolation across engagements is a standing rule -- BATCH
-# authorization never crosses an account boundary).
-REPO_PREFIXES = {
-    "vitalharmony/hrse": "H",
-    "vitalharmony/harmonic-forge": "F",
-    "vitalharmony/cymagraph-infra": "I",
-    "vitalharmony/openclaw-projects": "O",
-}
+# vitalharmony/hrse -> "H", etc. DERIVED from projects.toml, not restated
+# (harmonic-forge#605 preclose finding): this was the third independent copy of
+# the prefix map, and no test tied it to either of the other two. Onboarding
+# openclaw showed the cost -- `O` reached the manifest and lane-shorthand.md
+# while this map and the belt's regex kept their own answer, so `BATCH O12`
+# would have resolved against a stale table silently.
+#
+# rules/lane-shorthand.md remains CANONICAL for what a prefix means; the
+# manifest is checked against it (see manifest.check_prefix_agreement), and this
+# reads the manifest so all three agree by construction rather than by review.
+#
+# Cross-account prefixes stay excluded: K/P point at other accounts entirely,
+# and BATCH authorization never crosses an account boundary (credential
+# isolation across engagements is a standing rule). That filter is applied here
+# rather than in the manifest, which legitimately describes every project.
+def _repo_prefixes(account: str = "vitalharmony") -> dict[str, str]:
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
+        import manifest as _manifest  # noqa: PLC0415 — optional, see below
+        return {p.repo: p.prefix for p in _manifest.load()
+                if p.repo and (p.account or account) == account}
+    except Exception:  # noqa: BLE001 — a hook must never fail closed on import
+        # This runs as a PreToolUse hook on every matching command. If the
+        # manifest cannot be read, denying every BATCH would be worse than
+        # falling back to the last-known table -- the hook's job is to gate
+        # authorization, not to become an outage.
+        return {
+            "vitalharmony/hrse": "H",
+            "vitalharmony/harmonic-forge": "F",
+            "vitalharmony/cymagraph-infra": "I",
+            "vitalharmony/openclaw-projects": "O",
+        }
+
+
+REPO_PREFIXES = _repo_prefixes()
 
 ISSUE_KEY = re.compile(r"^([A-Za-z])(\d+)$")
 API_ISSUE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/issues/(\d+)")

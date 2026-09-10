@@ -175,10 +175,12 @@ def sweep_repos(path: Path | None = None) -> list[str]:
     """Repos the hygiene sweep audits: every real repo on the vitalharmony account.
 
     **Not filtered by `onboarded`.** That flag says whether the 3-lane
-    apparatus is installed; stranded work is worth finding either way, and
-    openclaw-projects (onboarded = false) is in the live sweep today. Filtering
-    on it here would silently drop a repo the sweep currently covers, which is
-    the exact class of regression this manifest exists to prevent.
+    apparatus is installed; stranded work is worth finding either way. This
+    cited openclaw-projects as the live `onboarded = false` example until it was
+    onboarded (harmonic-forge#605) -- the property is unchanged, and that
+    onboarding changing no sweep behavior is the demonstration of it. Filtering
+    on this flag would silently drop a repo the sweep covers, which is the exact
+    class of regression this manifest exists to prevent.
 
     ke'nekted IS excluded, because it is a **separate account with separate
     credentials**, and a vitalharmony-authed query against it returns EMPTY
@@ -197,6 +199,26 @@ def prefixes(path: Path | None = None) -> dict[str, str]:
     means something in the operator's muscle memory.
     """
     return {p.prefix: p.name for p in load(path)}
+
+
+def prefix_repos(path: Path | None = None) -> dict[str, str]:
+    """`{lowercase prefix: "owner/name"}` for every entry that HAS a repo.
+
+    The single source for "which repo does branch `o12` belong to"
+    (harmonic-forge#605 preclose finding). Three independent copies of this map
+    existed -- `watch_lane_posts._PREFIX_REPO`, that module's
+    `_BRANCH_ISSUE_RE` prefix character class, and `batch_auth.REPO_PREFIXES` --
+    and onboarding openclaw exposed them: `O` was added to the manifest and to
+    `lane-shorthand.md`, and the belt still could not resolve an `o12` branch
+    because its regex class read `[hHfFiI]`.
+
+    Projected entries are excluded, unlike `prefixes()`: a reserved letter with
+    no repo cannot resolve to one. Accounts other than the caller's are the
+    caller's business -- `batch_auth` deliberately excludes cross-account
+    prefixes, and filters this by `account` rather than expecting a narrower
+    map here.
+    """
+    return {p.prefix.lower(): p.repo for p in load(path) if p.repo}
 
 
 def lane_shorthand_prefixes(platform_root: Path | None = None) -> dict[str, str]:
