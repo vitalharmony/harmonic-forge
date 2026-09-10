@@ -60,6 +60,41 @@ Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - skills/belt-and-suspenders/SKILL.md           | 61 ++++++++++++++--------
 - skills/belt-and-suspenders/test_skill_text.py | 73 ++++++++++++++++++++-------
 - 2 files changed, 95 insertions(+), 39 deletions(-)
+## fix(belt): register L2P as retired and mark it where it still surfaces (harmonic-forge#609)
+
+`L2P` stopped being emitted at #583 -- `l2_post._HEADINGS["plan"]` is `## L2S`.
+It still reached an operator's screen, and nothing stopped it returning.
+
+The source was not code. Historical issue comments carry it, and the belt
+renders a comment's first line straight into the lane's task display, where it
+reads as current because nothing said otherwise. Lane 1 showed it; the operator
+corrected it by hand.
+
+- `L2P` is registered in `retired_artifacts.py`, the machine-readable list
+  `gh_issue.py` checks issue bodies against (#379). It was absent, which is why
+  "make sure it does not appear anywhere" had nothing behind it. Enforcement is
+  backtick-scoped, so a retirement notice in prose does not trip it.
+- The belt MARKS rather than reproduces: `## L2P` renders as
+  `## L2P [retired -> L2S or L2D]`. Marking, not rewriting -- the comment is an
+  accurate record of what was posted and must not be falsified. Driven from the
+  same registry, not a second list.
+- `HRSE2/scripts/post_lane_discussion.py` still described the "L2P/L2D/L2B
+  family" as current.
+- A test asserts no `_HEADINGS` value contains `L2P`, so the original defect
+  cannot silently return.
+
+Deliberate mentions stay: `rules/lane-shorthand.md`, `3-lane-protocol.md` and
+`l2_post.py` all name L2P in order to record that it is retired.
+
+1974 -> 1979 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/retired_artifacts.py     |  4 ++++
+- tools/gh/test_l2_post.py          | 14 +++++++++++++
+- tools/gh/test_watch_lane_posts.py | 42 +++++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 41 +++++++++++++++++++++++++++++++++++++-
+- 4 files changed, 100 insertions(+), 1 deletion(-)
 
 ## fix(manifest): derive the prefix map, spread the OpenClaw venture, clear board 1 (harmonic-forge#605)
 
