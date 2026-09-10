@@ -176,6 +176,28 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         self.assertIn("--all-worktrees", lane1)
         self.assertNotIn("--queue-for l1", lane1)
 
+    def test_does_not_claim_to_have_no_exclusion_list(self):
+        """harmonic-forge#607. The file said "no precedence table, no exclusion
+        list" while `QUEUE_KINDS`, `_is_l2_finding` and the `discussion`
+        removal are all exactly that. A lane reasoning from that sentence
+        misdiagnoses a missing issue as "something posted after my marker",
+        when the cause is usually kind-ineligibility."""
+        text = SKILL.read_text(encoding="utf-8")
+        for claim in ("no precedence table", "no exclusion list"):
+            self.assertNotIn(claim, text,
+                             f"SKILL.md claims {claim!r} while the belt has three")
+
+    def test_names_each_exclusion_and_why_it_exists(self):
+        """The exclusions must be stated WITH the incident that earned them.
+        An out-of-family review caught a proposal to delete them, reasoning
+        from the old sentence -- deleting the finding exclusion reintroduces
+        harmonic-forge#580's false retraction. A filter with no recorded
+        reason reads as accretion, and this repo deletes accretion."""
+        text = SKILL.read_text(encoding="utf-8")
+        for token in ("QUEUE_KINDS", "_is_l2_finding", "discussion"):
+            self.assertIn(token, text, f"{token} is a live filter and is unstated")
+        self.assertIn("580", text, "the finding exclusion must cite its incident")
+
     def test_the_repo_wide_sweep_survives_in_the_suspenders(self):
         """Demoted, not deleted -- and armed there as a literal command."""
         text = SKILL.read_text(encoding="utf-8")

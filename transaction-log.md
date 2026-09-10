@@ -96,6 +96,44 @@ Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - tools/gh/test_gh_issue.py      |  7 ++++++-
 - tools/onboard/test_manifest.py | 14 ++++++++++----
 - 3 files changed, 30 insertions(+), 9 deletions(-)
+## fix(belt): SKILL.md claimed no exclusion list while the belt has three (harmonic-forge#607)
+
+`SKILL.md:279` read "Newest wins, full stop -- no precedence table, no exclusion
+list." Three filters decide what can win:
+
+- `QUEUE_KINDS[lane]` -- a precedence table. A marker addressed to another lane
+  is not this lane's ball.
+- `_is_l2_finding` -- an exclusion list. harmonic-forge#580 AC1: a finding
+  posted after a `ready-for-l3` marker made `last_kind` become Lane 2's, which
+  silently dropped a genuinely queued issue out of Lane 3's belt.
+- `discussion` removed from `QUEUE_KINDS["l2"]` -- measured, 63 issues whose
+  newest post-`l2.done` marker was a discussion, none actionable.
+
+Flagged independently by the product-strategy design assessment and by the
+out-of-family Codex review of it.
+
+Text fix only; no behavior change. Each filter is now stated WITH the incident
+that earned it, because the same out-of-family review caught a proposal to
+delete them reasoning from the old sentence -- and deleting the finding
+exclusion reintroduces #580's false retraction. The doctrine was wrong; the
+filters are right. A filter with no recorded reason reads as accretion, and
+this repo deletes accretion.
+
+The cost of the old sentence was debugging time: when an issue is not where a
+lane expects it, "newest wins, full stop" points at "something posted after my
+marker" when the cause is usually that the newest marker's kind is not in this
+lane's `QUEUE_KINDS`, or that a finding was correctly skipped. It also asserted
+the absence of a state machine that `sprint-plan/scripts/lane_state.py` already
+models.
+
+Two doc-sync guards added, both mutation-checked: reverting to the old sentence
+fails them.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md           | 26 ++++++++++++++++++++++++--
+- skills/belt-and-suspenders/test_skill_text.py | 22 ++++++++++++++++++++++
+- 2 files changed, 46 insertions(+), 2 deletions(-)
 
 ## fix(belt): paginate the candidate search; make the #602 test actually bite
 

@@ -276,8 +276,30 @@ belt was harmonic-forge#590.
 > its `posted-by` is **not** Lane 1, the ball is with Lane 1. If the newest
 > marker is Lane 1's own, it has already acted.
 
-Newest wins, full stop — no precedence table, no exclusion list. "Already acted"
-needs no state because acting *is* posting, which makes Lane 1's marker newest.
+**Newest wins among *queue-eligible* markers** — not newest, full stop. "Already
+acted" needs no state, because acting *is* posting, which makes Lane 1's marker
+newest. That half is true and is the good idea here.
+
+The eligibility half was documented as absent and is not. Three filters decide
+what can win, each earned against a recorded incident, none of them accretion:
+
+| filter | what it excludes | why it exists |
+|---|---|---|
+| `QUEUE_KINDS[lane]` | any kind not listed for that lane | a marker addressed to another lane is not this lane's ball. Lane 3's four kinds and Lane 2's two are a **precedence table** |
+| `_is_l2_finding` | `## L2 Finding` comments | harmonic-forge#580 AC1. A finding posted after a `ready-for-l3` marker made `last_kind` become Lane 2's, which silently dropped a genuinely queued issue out of Lane 3's belt. It is visible to `_classify`, but must never change membership |
+| `discussion` removed from `QUEUE_KINDS["l2"]` | Lane 1 discussion posts | measured: 63 issues whose newest post-`l2.done` marker was a `discussion`, **none actionable** (36 of 46 on a second sample). Alarm rationalization on evidence |
+
+**Do not "simplify" these away on the strength of the old sentence.** An
+out-of-family review caught exactly that proposal being made from it: deleting
+the finding exclusion reintroduces #580's false retraction. The doctrine was
+wrong; the filters are right.
+
+**This is a state machine, and saying otherwise costs debugging time.** "Who
+spoke last" is a *proxy* for "who owes work". When an issue is not where a lane
+expects it, the old sentence points at "something posted after my marker" — when
+the real cause is usually that the newest marker's kind is not in this lane's
+`QUEUE_KINDS`, or that a finding was correctly skipped.
+`sprint-plan/scripts/lane_state.py` already models the real thing.
 
 **This rule is only total if Lane 1 posts a `kind=discussion` when it decides an
 issue needs nothing.** Otherwise that issue is re-offered every tick, and the
