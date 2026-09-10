@@ -63,11 +63,14 @@ a lane not being watched) is silent.
 worktree the way Lane 2 does -- it needs to find WHICHEVER issue is
 currently queued to it, repo-wide, without anyone naming a number.
 `--queue-for l3` answers that: it searches the repo for open issues
-carrying an `l1-post` marker whose `kind` is `ready-for-l3`, `ae`, or
-`sweep` (the three kinds that hand Lane 3 something to do), via
+carrying an `l1-post` marker whose `kind` is one of `QUEUE_KINDS["l3"]`
+(`ready-for-l3`, `ae`, `sweep`, or `ae-and-sweep` -- the kinds that hand
+Lane 3 something to do, read from the constant directly rather than
+restated here, since restating it is exactly what let this prose drift
+out of sync with the code once already, harmonic-forge#579), via
 `gh search issues ... "l1-post v1; kind=<kind>"` -- a literal-substring
 search, not a keyword match, so it doesn't pick up unrelated mentions of
-the word (verified live 2026-09-03: zero false positives across all three
+the word (verified live 2026-09-03: zero false positives across all
 kinds on this repo's real history). A search hit only means the marker
 exists SOMEWHERE on the issue, so each candidate's full comment history is
 then re-checked: an issue only counts as currently queued if that marker
@@ -109,7 +112,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -171,7 +174,7 @@ _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git
 #: this repo (36 of 46 `--queue-for l2` hits were `discussion`, none
 #: actionable) and it was removed.
 QUEUE_KINDS = {
-    "l3": ("ready-for-l3", "ae", "sweep"),
+    "l3": ("ready-for-l3", "ae", "sweep", "ae-and-sweep"),
     "l2": ("handoff", "rework"),
 }
 
@@ -318,12 +321,25 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
         return set()
 
 
-def _fetch_all_comments(repo: str, issue: int) -> list[dict]:
-    """Every comment on `issue` -- `--paginate` is required, not optional
-    (harmonic-forge#570 preclose finding): the unpaginated single-page call
-    returns only the first 30, and a caller deciding "newest classified
-    comment" off page 1 of a 50+-comment thread silently picks the wrong
-    one. Two real harmonic-forge issues already exceed 30 comments."""
+def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
+    """Every comment on `issue`, or `None` if the fetch itself failed --
+    `--paginate` is required, not optional (harmonic-forge#570 preclose
+    finding): the unpaginated single-page call returns only the first 30,
+    and a caller deciding "newest classified comment" off page 1 of a
+    50+-comment thread silently picks the wrong one. Two real
+    harmonic-forge issues already exceed 30 comments.
+
+    `None` (harmonic-forge#579 preclose finding) is distinct from `[]`
+    for the same reason `list_open_issues` distinguishes them: a caller
+    that can't tell "this issue genuinely has zero comments" from "the
+    call raised" cannot decide whether it's safe to conclude the issue
+    carries no ball to pick up. Without this, `discover_l1_sweep`'s own
+    fail-open re-check of a stale queued issue's open-state
+    (`_issue_is_open`) was defeated eight lines later: the state check
+    correctly kept a rate-limited issue as a candidate, but this function
+    still silently returned `[]` for it, so it was excluded from `queued`
+    anyway and reported as `left-queue-for-l1` -- indistinguishable from
+    the issue actually having been resolved."""
     try:
         raw = gh_as(
             _ACCOUNT,
@@ -338,14 +354,14 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict]:
         # everywhere else)
         print(f"[watch_lane_posts] comment fetch failed for #{issue}: {exc}",
               file=sys.stderr)
-        return []
+        return None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return []
+        return None
 
 
-def list_open_issues(repo: str, *, since: str | None = None) -> list[int]:
+def list_open_issues(repo: str, *, since: str | None = None) -> list[int] | None:
     """Every open issue number in `repo`, PRs excluded -- the candidate set
     for Lane 1's repo-wide newest-marker sweep (harmonic-forge#570 AC1/AC8).
     No marker search can pre-filter this the way `discover_queue` does:
@@ -364,6 +380,15 @@ def list_open_issues(repo: str, *, since: str | None = None) -> list[int]:
     with `-f` parameters to POST unless told otherwise, and a POST to this
     endpoint is issue *creation*, which 422s with no `title` and is
     swallowed into an empty result -- reading as "no work," silently.
+
+    Returns `None` -- distinct from `[]` -- when the fetch itself failed
+    (network/auth/rate-limit), never a bare empty list (harmonic-forge#579
+    AC1). A caller that can't tell "genuinely zero open issues" from "the
+    call raised" cannot decide whether it's safe to advance a `since`
+    watermark describing what this call covered; conflating the two is
+    what let a transient failure silently narrow the next cycle's window
+    and drop any issue updated during the lost window off Lane 1's belt
+    for good.
     """
     args = ["api", "-X", "GET", f"repos/{repo}/issues", "--paginate",
             "-f", "state=open", "-f", "per_page=100"]
@@ -374,21 +399,40 @@ def list_open_issues(repo: str, *, since: str | None = None) -> list[int]:
         raw = gh_as(_ACCOUNT, args, counter=_COUNTER)
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
         print(f"[watch_lane_posts] list_open_issues failed: {exc}", file=sys.stderr)
-        return []
+        return None
     try:
         return [int(line) for line in raw.splitlines() if line.strip()]
     except ValueError:
-        return []
+        return None
+
+
+def _issue_is_open(repo: str, issue: int) -> bool:
+    """Live open/closed check for one issue (harmonic-forge#579 AC4) --
+    used only for `extra_issues` candidates that `list_open_issues`'s own
+    `state=open` filter didn't already vouch for. On fetch failure, treat
+    the issue as still open (fail toward keeping it queued, not toward
+    silently dropping it -- the same fail-safe direction as the rest of
+    this module's error handling)."""
+    try:
+        raw = gh_as(_ACCOUNT,
+                    ["api", "-X", "GET", f"repos/{repo}/issues/{issue}", "--jq", ".state"],
+                    counter=_COUNTER)
+    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
+        print(f"[watch_lane_posts] _issue_is_open failed for #{issue}: {exc}", file=sys.stderr)
+        return True
+    return raw.strip() != "closed"
 
 
 def discover_l1_sweep(
-    repo: str, *, since: str | None = None, extra_issues: Iterable[int] = (),
-) -> dict[int, tuple[str, str]]:
-    """`{issue: (lane, detail)}` for every open issue whose newest classified
-    comment is NOT Lane 1's own -- Lane 1's repo-wide newest-marker sweep,
-    the mechanic named in prose under "Role: Lane 1" and given a runnable
-    form here (harmonic-forge#570). An issue with no classified comment at
-    all carries no ball to pick up and is excluded, not reported as queued.
+    repo: str, *, since: str | None = None,
+    extra_issues: Mapping[int, tuple[str, str]] | Iterable[int] = (),
+) -> tuple[dict[int, tuple[str, str]], bool]:
+    """`({issue: (lane, detail)}, fetch_ok)` for every open issue whose newest
+    classified comment is NOT Lane 1's own -- Lane 1's repo-wide newest-marker
+    sweep, the mechanic named in prose under "Role: Lane 1" and given a
+    runnable form here (harmonic-forge#570). An issue with no classified
+    comment at all carries no ball to pick up and is excluded, not reported
+    as queued.
 
     `since` bounds the *discovery* of NEW candidates to recently-updated
     issues -- see `list_open_issues`. Pass `None` (the default, and what the
@@ -397,18 +441,60 @@ def discover_l1_sweep(
     stops receiving updates does not stop being queued, and dropping it
     from the candidate set the moment `since` excludes it would silently
     misreport it as resolved (`left-queue-for-l1`) rather than leave it
-    queued, which is the opposite of what actually happened."""
+    queued, which is the opposite of what actually happened -- UNLESS the
+    issue has actually been closed in the meantime, in which case it must
+    drop out (harmonic-forge#579 AC4): each `extra_issues` candidate not
+    already vouched for by `list_open_issues`'s own `state=open` filter is
+    re-checked live via `_issue_is_open` before being kept.
+
+    Pass a `{issue: (lane, detail)}` mapping (the caller's previously-
+    queued classification) rather than a bare iterable of issue numbers
+    when one is available -- it is the fallback used below when this
+    cycle's own comment fetch for that issue fails, so a transient outage
+    does not masquerade as "resolved" (harmonic-forge#579 preclose
+    finding: the open-state re-check alone was not enough, because
+    `_fetch_all_comments` failing separately for the same issue dropped it
+    right back out on the very next step). A bare `Iterable[int]` still
+    works (no fallback value on a failed comment fetch) for a caller with
+    nothing to fall back to.
+
+    `fetch_ok` is `False` when the underlying `list_open_issues` call itself
+    failed (harmonic-forge#579 AC1) -- distinct from a fetch that succeeded
+    and simply found nothing new. The caller must not advance a `since`
+    watermark on a `False` result: doing so silently narrows the next
+    cycle's window past whatever activity happened during the failed one."""
+    extra_previous: dict[int, tuple[str, str]] = (
+        dict(extra_issues) if isinstance(extra_issues, Mapping) else {}
+    )
+    extra_numbers = set(extra_previous) if extra_previous else set(extra_issues)
+    fresh = list_open_issues(repo, since=since)
+    fetch_ok = fresh is not None
+    fresh_set = set(fresh or ())
+    open_extra = {issue for issue in extra_numbers
+                  if issue in fresh_set or _issue_is_open(repo, issue)}
+    candidates = fresh_set | open_extra
     queued: dict[int, tuple[str, str]] = {}
-    candidates = set(list_open_issues(repo, since=since)) | set(extra_issues)
     for issue in candidates:
+        comments = _fetch_all_comments(repo, issue)
+        if comments is None:
+            # This cycle's comment fetch for `issue` failed -- fall back to
+            # its previously-known classification rather than silently
+            # excluding it, which would read identically to the issue
+            # actually having been resolved (harmonic-forge#579 preclose
+            # finding). No fallback value means no entry, matching this
+            # function's behavior before that finding.
+            previous = extra_previous.get(issue)
+            if previous is not None:
+                queued[issue] = previous
+            continue
         last: tuple[str, str] | None = None
-        for comment in _fetch_all_comments(repo, issue):
+        for comment in comments:
             classified = _classify(comment.get("body", ""))
             if classified is not None:
                 last = classified
         if last is not None and last[0] != "l1":
             queued[issue] = last
-    return queued
+    return queued, fetch_ok
 
 
 def discover_queue(repo: str, lane: str) -> dict[int, str]:
@@ -425,13 +511,44 @@ def discover_queue(repo: str, lane: str) -> dict[int, str]:
     queued: dict[int, str] = {}
     for issue in candidates:
         last_kind: tuple[str, str] | None = None
-        for comment in _fetch_all_comments(repo, issue):
+        for comment in _fetch_all_comments(repo, issue) or ():
+            # `or ()` -- harmonic-forge#579 preclose finding:
+            # `_fetch_all_comments` returns `None` on a failed fetch (not
+            # `[]`, which now means "genuinely zero comments"). This
+            # function has no previous-classification fallback to offer
+            # (unlike `discover_l1_sweep`), so a failed fetch here simply
+            # yields no classified comments this cycle, exactly as an
+            # empty result always has -- not a regression, just no longer
+            # a `TypeError` from iterating `None`.
             classified = _classify(comment.get("body", ""))
             if classified is not None:
                 last_kind = classified
         if last_kind and last_kind[0] == "l1" and last_kind[1] in kinds:
             queued[issue] = last_kind[1]
     return queued
+
+
+def l1_sweep_cycle(
+    repo: str, l1_since: str | None, last_queue: dict[int, str], now: str,
+) -> tuple[dict[int, tuple[str, str]], str | None]:
+    """One Lane 1 sweep poll cycle's core logic -- factored out of `main()`
+    (harmonic-forge#579 preclose finding) so AC1's watermark-gating
+    behavior is directly unit-testable rather than only reachable through
+    `main()`'s infinite polling loop, where no test exercised it (a
+    reverted `if fetch_ok:` gate left the full suite green).
+
+    Returns `(l1_queue, new_l1_since)`. `new_l1_since` is `now` only when
+    `discover_l1_sweep`'s own fetch succeeded (AC1); otherwise it is
+    `l1_since` unchanged, so the next cycle re-covers whatever window this
+    one failed to see.
+
+    `last_queue` holds `{issue: "lane:detail"}` (`main()`'s on-disk-free
+    in-memory queue shape) -- split back into `{issue: (lane, detail)}`
+    before passing to `discover_l1_sweep`, which uses it as its per-issue
+    comment-fetch-failure fallback (harmonic-forge#579 preclose finding)."""
+    previous = {issue: tuple(marker.split(":", 1)) for issue, marker in last_queue.items()}
+    l1_queue, fetch_ok = discover_l1_sweep(repo, since=l1_since, extra_issues=previous)
+    return l1_queue, (now if fetch_ok else l1_since)
 
 
 def main() -> int:
@@ -520,8 +637,7 @@ def main() -> int:
             last_discovered = discovered
 
         if args.queue_for == "l1":
-            l1_queue = discover_l1_sweep(args.repo, since=l1_since, extra_issues=last_queue.keys())
-            l1_since = now
+            l1_queue, l1_since = l1_sweep_cycle(args.repo, l1_since, last_queue, now)
             queue = {issue: f"{lane}:{detail}" for issue, (lane, detail) in l1_queue.items()}
             if first_queue_report:
                 print(f"[watch_lane_posts] queue-for-l1: {len(queue)} issue(s) queued now",
