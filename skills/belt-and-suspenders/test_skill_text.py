@@ -176,6 +176,65 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         self.assertIn("--all-worktrees", lane1)
         self.assertNotIn("--queue-for l1", lane1)
 
+    #: The block harmonic-forge#607 rewrote. Scoped, not a whole-file search:
+    #: the first version of these guards passed with two of the three filter
+    #: rows deleted, because `QUEUE_KINDS` and `discussion` already appeared
+    #: elsewhere in the file (#607 preclose finding).
+    def _filter_block(self) -> str:
+        text = SKILL.read_text(encoding="utf-8")
+        start = text.index("**The lane belts are a different mechanism")
+        end = text.index("**This rule is only total if Lane 1 posts")
+        return text[start:end]
+
+    def test_the_filter_block_names_every_filter_the_code_applies(self):
+        """Doc-SYNC, not doc-only: imports the module and compares. Renaming
+        or deleting `_is_l2_finding` in the code must fail this, which the
+        first version of this guard did not do -- it never read the code, so
+        the AC's "while `_is_l2_finding` exists" condition was unevaluated."""
+        sys.path.insert(0, str(SKILL.parent.parent.parent / "tools" / "gh"))
+        sys.path.insert(0, str(SKILL.parent.parent.parent / "tools" / "onboard"))
+        import watch_lane_posts
+        self.assertTrue(hasattr(watch_lane_posts, "_is_l2_finding"),
+                        "the doc documents a filter the code no longer has")
+        for lane, kinds in watch_lane_posts.QUEUE_KINDS.items():
+            if "discussion" in kinds:
+                self.fail("`discussion` is queue-eligible again; the doc says "
+                          "it was removed and measured")
+        # Assert the TABLE ROWS, not the tokens. #607's first guard checked
+        # whether each name appeared anywhere in the block -- and every one of
+        # them also appears in the block's own prose, so deleting two of the
+        # three rows shipped green. Measured, before this fix:
+        #   delete `QUEUE_KINDS[lane]` row  -> 0 failures
+        #   delete `_is_l2_finding` row     -> 0 failures
+        rows = [line for line in self._filter_block().splitlines()
+                if line.startswith("| `")]
+        self.assertEqual(len(rows), 3, f"expected three filter rows, got {rows!r}")
+        subjects = [line.split("`")[1] for line in rows]
+        self.assertEqual(subjects, ["QUEUE_KINDS[lane]", "_is_l2_finding", "discussion"],
+                         f"a filter row was removed or reordered: {subjects!r}")
+
+    def test_the_block_does_not_claim_the_belts_have_no_filters(self):
+        """harmonic-forge#607. The retired claim, scoped to the block that
+        describes the belts -- the identical sentence is CORRECT of
+        `discover_l1_sweep` and stays there."""
+        for claim in ("no precedence table", "no exclusion list"):
+            self.assertNotIn(claim, self._filter_block())
+
+    def test_the_sweep_keeps_the_claim_that_is_true_of_it(self):
+        """`discover_l1_sweep` really does filter nothing -- executed:
+        `[handoff, L2 Finding]` puts the issue IN the sweep. Deleting this
+        sentence would lose a true statement, which #607's first attempt did."""
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("no precedence table, no exclusion list", text)
+        self.assertIn("discover_l1_sweep", text)
+
+    def test_each_filter_row_cites_its_incident(self):
+        """A filter with no recorded reason reads as accretion, and this repo
+        deletes accretion. Scoped so deleting any one row fails."""
+        block = self._filter_block()
+        self.assertIn("580", block, "the finding exclusion must cite #580")
+        self.assertIn("63 issues", block, "the discussion removal must cite its measurement")
+
     def test_the_repo_wide_sweep_survives_in_the_suspenders(self):
         """Demoted, not deleted -- and armed there as a literal command."""
         text = SKILL.read_text(encoding="utf-8")

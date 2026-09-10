@@ -3,6 +3,64 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): state what each mechanism actually does, verified by executing them (harmonic-forge#607)
+
+Preclose returned five findings. The first two say my fix replaced a false
+statement with a differently-false one, and they are right.
+
+**"Newest wins, full stop -- no precedence table, no exclusion list" was TRUE
+where it stood.** It annotates the `## Role: Lane 1` blockquote, which describes
+`discover_l1_sweep` -- and that function applies neither filter. I deleted a
+correct sentence and put `discover_queue`'s rules in its place, under a heading
+about a different function. Executed:
+
+    discover_l1_sweep  [handoff, L2 Finding] -> {1530: ('l2', '## L2 Finding ...')}
+    discover_l1_sweep  [handoff]             -> {}
+
+A `## L2 Finding` DOES put an issue in Lane 1's sweep. My table said it must
+never change membership.
+
+**And "newest queue-eligible marker wins" was wrong for the belts too.**
+`discover_queue` requires the newest non-finding comment to ITSELF be Lane 1's
+and of an eligible kind -- so a newer ineligible comment EVICTS:
+
+    discover_queue l3  [ready-for-l3]        -> {1530: 'ready-for-l3'}
+    discover_queue l3  [ready-for-l3, disc]  -> {}
+    discover_queue l3  [ready-for-l3, find]  -> {1530: 'ready-for-l3'}
+
+Eviction is not incidental, it is the mechanism: posting anything else clears
+the queue, which is what makes it self-clearing with no "done" bookkeeping. My
+phrasing would have made the `discussion` removal incoherent -- under
+newest-eligible-wins, an older `handoff` would win forever and the 63 measured
+noise issues would never leave Lane 2's belt.
+
+Rewritten to state both mechanisms separately, with executed output for each,
+and which one you are debugging when an answer surprises you.
+
+**The guards were weak in the way the previous two were.** They substring-
+searched the whole file, so two of three filter rows deleted green:
+
+    delete `QUEUE_KINDS[lane]` row  -> 0 failures
+    delete `_is_l2_finding` row     -> 0 failures
+
+Both tokens also appear in the block's own prose. Now scoped to the block and
+asserted as ROWS, and the guard imports `watch_lane_posts` so renaming or
+deleting `_is_l2_finding` in the CODE fails it -- the AC's "while
+`_is_l2_finding` exists" condition was never evaluated before. All three rows
+now fail on deletion.
+
+Also fixed: the `lane_state.py` citation was a bare relative path that resolves
+only in HRSE2, while this skill is linked into four repos. Qualified and marked
+HRSE2-local.
+
+1974 -> 1976 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md           | 61 ++++++++++++++--------
+- skills/belt-and-suspenders/test_skill_text.py | 73 ++++++++++++++++++++-------
+- 2 files changed, 95 insertions(+), 39 deletions(-)
+
 ## fix(manifest): derive the prefix map, spread the OpenClaw venture, clear board 1 (harmonic-forge#605)
 
 Preclose returned four findings. My "the belt went 3 repos -> 4 with no code
@@ -96,6 +154,44 @@ Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - tools/gh/test_gh_issue.py      |  7 ++++++-
 - tools/onboard/test_manifest.py | 14 ++++++++++----
 - 3 files changed, 30 insertions(+), 9 deletions(-)
+## fix(belt): SKILL.md claimed no exclusion list while the belt has three (harmonic-forge#607)
+
+`SKILL.md:279` read "Newest wins, full stop -- no precedence table, no exclusion
+list." Three filters decide what can win:
+
+- `QUEUE_KINDS[lane]` -- a precedence table. A marker addressed to another lane
+  is not this lane's ball.
+- `_is_l2_finding` -- an exclusion list. harmonic-forge#580 AC1: a finding
+  posted after a `ready-for-l3` marker made `last_kind` become Lane 2's, which
+  silently dropped a genuinely queued issue out of Lane 3's belt.
+- `discussion` removed from `QUEUE_KINDS["l2"]` -- measured, 63 issues whose
+  newest post-`l2.done` marker was a discussion, none actionable.
+
+Flagged independently by the product-strategy design assessment and by the
+out-of-family Codex review of it.
+
+Text fix only; no behavior change. Each filter is now stated WITH the incident
+that earned it, because the same out-of-family review caught a proposal to
+delete them reasoning from the old sentence -- and deleting the finding
+exclusion reintroduces #580's false retraction. The doctrine was wrong; the
+filters are right. A filter with no recorded reason reads as accretion, and
+this repo deletes accretion.
+
+The cost of the old sentence was debugging time: when an issue is not where a
+lane expects it, "newest wins, full stop" points at "something posted after my
+marker" when the cause is usually that the newest marker's kind is not in this
+lane's `QUEUE_KINDS`, or that a finding was correctly skipped. It also asserted
+the absence of a state machine that `sprint-plan/scripts/lane_state.py` already
+models.
+
+Two doc-sync guards added, both mutation-checked: reverting to the old sentence
+fails them.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md           | 26 ++++++++++++++++++++++++--
+- skills/belt-and-suspenders/test_skill_text.py | 22 ++++++++++++++++++++++
+- 2 files changed, 46 insertions(+), 2 deletions(-)
 
 ## fix(belt): paginate the candidate search; make the #602 test actually bite
 
