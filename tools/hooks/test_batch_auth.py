@@ -43,6 +43,25 @@ def consumed_one(command, state_path):
     return keys[0] if keys else None
 
 
+# F611: link_pr() now refuses when stdin is not a real TTY, same as
+# authorize()/top_up() (harmonic-forge#589). A test runner's own stdin is
+# not a TTY either, so every pre-existing direct `ba.link_pr(...)` call in
+# this file -- simulating the operator's own already-authorized action, not
+# an agent bypassing the gate -- needs isatty to read True by default.
+# `TtyGateCliTests` exercises the gate itself and applies its own per-call
+# `mock.patch("os.isatty", ...)`, which takes precedence over this module
+# default for the duration of that `with` block.
+_isatty_patcher = mock.patch("os.isatty", return_value=True)
+
+
+def setUpModule():
+    _isatty_patcher.start()
+
+
+def tearDownModule():
+    _isatty_patcher.stop()
+
+
 class StateFixture(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

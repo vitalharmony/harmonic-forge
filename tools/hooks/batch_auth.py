@@ -444,7 +444,16 @@ def authorize(
 def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None) -> None:
     """Record which PR fulfils a BATCH-authorized issue's merge target, once
     opened. See the module docstring's PR-number-gap section for why this
-    call is the only place this mapping can ever be recorded."""
+    call is the only place this mapping can ever be recorded.
+
+    F611 preclose finding: the TTY refusal used to live only in `_cli()`'s
+    `link-pr` dispatch, so a direct `import batch_auth; batch_auth.link_pr(...)`
+    Bash call -- no CLI, no pty -- reached this function ungated and minted
+    the exact binding the gate exists to refuse. The check now lives here,
+    matching `expand_lane_shorthand.py`'s own precedent: the function that
+    performs the mint is the function that refuses, not one of its callers.
+    """
+    _require_tty("link_pr")
     actual_path = STATE_PATH if state_path is None else state_path
     with _locked_state(actual_path):
         state = _load(state_path)
@@ -1423,13 +1432,11 @@ def _cli() -> None:
         consumed = consume(args.command)
         print(f"consumed {consumed}" if consumed else "nothing to consume")
     elif args.cmd == "link-pr":
-        # F611: gated identically to authorize/top-up. link_pr() binds a live
-        # grant to an arbitrary (repo, pr_number) pair with no relation check
-        # between the two -- an agent's Bash call reaching this CLI dispatch
-        # with no TTY could mint standing merge authority over any PR in any
-        # mapped repo. The operator's own terminal is the only sanctioned
-        # caller, exactly as for authorize/top-up.
-        _require_tty("link-pr")
+        # F611 (corrected): the gate lives inside link_pr() itself now, not
+        # here -- a direct `import batch_auth; batch_auth.link_pr(...)` call
+        # bypassed a CLI-only check entirely (confirmed live in preclose
+        # review). No gate needed at this dispatch site; link_pr() refuses on
+        # its own regardless of call path.
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")
     elif args.cmd == "revoke":
