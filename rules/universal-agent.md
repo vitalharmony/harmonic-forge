@@ -612,6 +612,40 @@ log) — that is rung-1-by-design, a record of what changed, not a memory. The
 ladder applies to whatever gets promoted *out of* a delta log into a real
 rule, not to the log itself.
 
+## REPORT DISCIPLINE — WHAT THE OPERATOR NEEDS, NOT WHAT YOU READ
+
+<!-- R-0356 -->
+**A lane's report carries only what the operator must decide or must know to
+advance the issue.** Three sections, in this order: the bottom line, the
+outcome, then the actions that are the operator's to take. Nothing else.
+
+**Never paste a raw INPUT into a report.** A subagent's return, an issue body,
+a full comment thread, a gate log, a test transcript, a file you read — these
+are inputs to your work, not deliverables. Relay the verdict and the action.
+The operator asked you to do the work precisely so they would not have to read
+what you read.
+
+**This does not license silence.** Reporting incremental progress as you go is
+expected and must not stop — the operator watches lane output to see work
+moving. The rule is about VOLUME AND CONTENT, not frequency: report often,
+report short, report what changed and what it means.
+<!-- /R-0356 -->
+
+<!-- R-0357 -->
+**One exception, and it is narrow: a generated ARTIFACT the operator asked for
+is pasted verbatim.** If a tool, script or skill produced a report, summary or
+document *as the deliverable*, its raw output appears as literal text —
+commentary may follow it, never replace it, and pointing at a tool-output pane
+does not satisfy this.
+
+The distinction is authorship and purpose, not size. **Input**: material you
+consumed to reach a conclusion. **Artifact**: the thing the operator asked to
+exist. A gate log you read to decide PASS is an input; a sprint summary the
+operator asked you to produce is an artifact. When genuinely unsure, ask which
+it is rather than defaulting to a dump — a wrong dump costs the operator's
+attention, which is the scarcest thing in this protocol.
+<!-- /R-0357 -->
+
 ## SURGICAL CHANGES (KARPATHY PRINCIPLE)
 
 <!-- R-0048 -->

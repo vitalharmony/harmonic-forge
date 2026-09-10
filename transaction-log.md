@@ -3,6 +3,48 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(rules): R-0356/R-0357 -- report what the operator needs, not what you read (harmonic-forge#621)
+
+Lanes report by pasting what they read: a subagent's return, a whole issue body,
+a full comment thread. Operator: "It's useless. I want ONLY BLUF/outcomes/HITL
+next actions. Only what I need to decide on or know to advance the issue."
+
+And, clarifying the same day: "reporting incremental progress as they keep going
+is fine. I don't want them to stop doing that." So the target is VOLUME AND
+CONTENT, not frequency -- R-0356 says so explicitly, because a rule against
+dumping is one careless reading away from a lane going quiet.
+
+This already existed as operator-memory feedback four times over
+(never_paste_subagent_reports, never_echo_gate_reports, expanded_summary_format,
+bluf_discipline_recurring). Those reach ONE session. The lanes share no memory
+store, so each rediscovers the correction and every correction gets repeated.
+`universal-agent.md` is the surface every lane in every repo loads.
+
+**The conflict had to be resolved, not ignored.** An existing enforced guard
+requires generated artifacts to be pasted VERBATIM and forbids substituting a
+tool-output pane. Written naively this new rule contradicts it and the older
+failure returns. R-0357 states the test:
+
+  INPUT    -- material you consumed to reach a conclusion. Never pasted.
+  ARTIFACT -- the thing the operator asked to exist. Pasted verbatim.
+
+Authorship and purpose, not size. A gate log read to decide PASS is an input; a
+sprint summary the operator asked for is an artifact. Unsure: ask, rather than
+defaulting to a dump.
+
+Deliberately NOT hook-enforced. What counts as "only what the operator needs" is
+a judgment a hook cannot make, and a bad automated guess would either block
+honest reports or pass verbose ones. If it recurs, the next step is measuring
+which lane and which trigger, not a regex.
+
+Both registered: `rule registry: clean. 280 rule(s) annotated and in sync.`
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- rules/universal-agent.md  | 34 ++++++++++++++++++++++++++++++++++
+- tools/rules/registry.toml | 16 ++++++++++++++++
+- 2 files changed, 50 insertions(+)
+
 ## fix(gh): test the wiring, make the implication transitive (harmonic-forge#616)
 
 Preclose returned two findings, and the first is this issue's own shape turned
