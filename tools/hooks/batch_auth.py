@@ -985,9 +985,10 @@ def _diagnose(tokens: list[str], state: dict, is_close: bool,
     return (f"[BATCH] {repo}#{number} is not linked to any authorization. "
             f"`gh pr merge <PR#>` carries no issue number, so the mapping only "
             f"exists if `link-pr` recorded it. Live keys: {', '.join(sorted(live))}. "
-            f"Linked PRs: {', '.join(linked) or 'none'}. Run:\n"
-            f"  python3 tools/hooks/batch_auth.py link-pr <KEY> --repo {repo} "
-            f"--pr {number}")
+            f"Linked PRs: {', '.join(linked) or 'none'}. "
+            f"Ask the operator to run `link-pr` themselves in their own terminal "
+            f"(F611: it requires a real TTY, same as authorize/top-up) -- "
+            f"this is not a command for this session to run.")
 
 
 def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | None:
@@ -1054,7 +1055,8 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
                     f"{'close' if is_close else 'merge'} target is already "
                     "CONSUMED by a different command. A close is single-use "
                     "by design; a merge allocates a new target on the next "
-                    "`link-pr`, so run that first if this is a second repo.")
+                    "`link-pr` -- ask the operator to run that themselves "
+                    "if this is a second repo (F611: TTY-gated).")
             # AC1 (harmonic-forge#552): decide() is READ-ONLY. It used to
             # set consumed/consumed_by and _save() here, which is the root
             # cause of the incident that filed #552. A PreToolUse hook
@@ -1421,6 +1423,13 @@ def _cli() -> None:
         consumed = consume(args.command)
         print(f"consumed {consumed}" if consumed else "nothing to consume")
     elif args.cmd == "link-pr":
+        # F611: gated identically to authorize/top-up. link_pr() binds a live
+        # grant to an arbitrary (repo, pr_number) pair with no relation check
+        # between the two -- an agent's Bash call reaching this CLI dispatch
+        # with no TTY could mint standing merge authority over any PR in any
+        # mapped repo. The operator's own terminal is the only sanctioned
+        # caller, exactly as for authorize/top-up.
+        _require_tty("link-pr")
         link_pr(args.key, args.repo, args.pr_number)
         print(f"linked {args.key.upper()} -> {args.repo}#{args.pr_number}")
     elif args.cmd == "revoke":
