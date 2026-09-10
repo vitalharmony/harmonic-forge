@@ -78,3 +78,28 @@ above); this addition is the documentation cost of a real new CLI verb, not
 avoidable by moving it elsewhere -- it is exactly the kind of "arrives before
 the first prompt" fact that entry argues for keeping unscoped.
 """
+
+[[increase]]
+date = "2026-09-09"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 3413
+why = """
+harmonic-forge#569: inverts R-0116's default so an unmarked mid-turn message
+queues (EOQ retained as its explicit synonym) and adds `NOW` as a separate,
+newly-registered rule for the interrupt case, with the three carve-outs, the
+Esc-is-not-NOW distinction, and the one-line honesty requirement stated in
+the rule text itself, per the issue's own acceptance criteria.
+
+This entry's `bytes` is the full measured delta against the `[files]` row
+above (20,705 - 17,292), not just this change's own addition. The #567
+entry directly above is accurate -- it grew the file 16,355 -> 17,292
+(+937) and claimed exactly 937. The unacknowledged growth is a later,
+unrelated commit: harmonic-forge#583 (`74aae2d`, "stamp a machine-readable
+marker on every l2_post.py kind") grew the file 17,292 -> 18,234 (+942)
+with no `[[increase]]` entry at all, so the `[files]` row was never
+updated past #567's value even though a real, acknowledged-nowhere change
+landed on top of it. Rather than compound that gap with a fourth entry
+later, this one reconciles it directly: of the 3,413 bytes claimed, 942 is
+#583's unrecorded growth finally accounted for, and 2,471 is this change's
+own addition.
+"""

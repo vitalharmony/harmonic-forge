@@ -186,7 +186,17 @@ def build_annotator(text: str):
     if lane_alt:
         parts.append(rf"(?P<lane>\b(?:{lane_alt})\b)")
     if directive_alt:
-        parts.append(rf"(?P<directive>\b(?:{directive_alt})\b)")
+        # Anchored to the START of the line (optional leading whitespace),
+        # never matched mid-sentence (harmonic-forge#569 preclose review,
+        # live-reproduced: bare "NOW" is an ordinary English word, unlike
+        # EOQ/BATCH, so `\b(?:...)\b` alone injected the interrupt gloss
+        # into prose that merely discussed or quoted the token -- "the
+        # issue says: requires an explicit `NOW` token" and a blockquoted
+        # "NOW is the marker" both got rewritten as a live interrupt
+        # instruction). Every directive's own grammar ("`EOQ`/`NOW` +
+        # trailing instruction") already means it leads the message, so
+        # this matches the doc's stated grammar rather than narrowing it.
+        parts.append(rf"(?:^[ \t]*)(?P<directive>(?:{directive_alt})\b)")
     if prefix_alt:
         # 2+ digits: see module docstring "Discrimination (AC4)" -- removes
         # the H1/H2/F5/P0/P1/O2/I5 single-digit prose-collision class.
@@ -200,7 +210,10 @@ def build_annotator(text: str):
         if gd.get("lane"):
             return f"{match.group(0)} [{lane_tokens[match.group(0)]}]"
         if gd.get("directive"):
-            return f"{match.group(0)} [{directives[match.group(0)]}]"
+            # `match.group(0)` may include the leading whitespace consumed
+            # by the line-start anchor (see build_annotator); the dict key
+            # is the bare token, captured separately in the named group.
+            return f"{match.group(0)} [{directives[gd['directive']]}]"
         if gd.get("repo"):
             token = match.group(0)
             prefix_char = token[0]

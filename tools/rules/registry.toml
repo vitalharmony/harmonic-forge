@@ -991,9 +991,9 @@ excepted_by = "R-0351"
 [[rule]]
 id = "R-0116"
 file = "rules/lane-shorthand.md"
-anchor = "eoq-end-of-queue"
-statement = "EOQ appends the new instruction behind current work; the session finishes its existing task to completion before starting it."
-text_sha = "da1cc20e844a4b45"
+anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
+statement = "Queueing is the default for a mid-turn message with no marker (EOQ is a retained explicit synonym): it is appended behind current work, never substituted or run alongside it. Three carve-outs (correction, answer to a blocking question, stop/abort/halt) always land immediately. A session says which it chose, in one line, at the moment it decides."
+text_sha = "6397f4005e03f060"
 hooks = []
 
 [[rule]]
@@ -2318,3 +2318,11 @@ anchor = "a-green-local-gate-is-necessary-and-not-sufficient"
 statement = "A Lane 3 PASS may not be posted while the PR's own required checks are failing, pending, or absent. A PASS states the head SHA it gated and the CI conclusion observed for it; incomplete checks -- including a commit with NO check runs -- make the verdict BLOCKED, not PASS. Only PASS is gated; FAIL and BLOCKED are never blocked. Measured: gate PASS at 00:12, CI failure on the same code at 00:13, main red for three hours across two merges. Coverage spans every route in the repo where the hook is wired (harmonic-forge#565): post_lane_discussion.py, raw `gh issue comment` (bare or gh-as-wrapped), and tools/gh/post_comment.py/mise post-comment -- wired so far only in harmonic-forge's own settings; consuming repos (HRSE2 etc.) need the same line added to their own tracked settings, per R-0353."
 text_sha = "b6fe679488c53a09"
 hooks = ["tools/gh/gate_ci.py", "tools/hooks/enforce_gate_ci_on_raw_post.py"]
+
+[[rule]]
+id = "R-0355"
+file = "rules/lane-shorthand.md"
+anchor = "now-interrupt"
+statement = "NOW interrupts: abandon or suspend current work and act on the NOW instruction instead of queueing it. NOW is not Esc -- Esc kills the turn (abandon-and-restart), NOW suspends it non-destructively. The same one-line honesty requirement as R-0116 applies: a session says which it chose at the moment it decides."
+text_sha = "37e7ca5cc8332a64"
+hooks = []

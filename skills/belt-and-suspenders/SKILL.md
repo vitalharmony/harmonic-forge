@@ -204,8 +204,14 @@ posted. Two hours, a one-line thread, while the lane carried it forward as done.
 
 ## Standing rules, all roles
 
-- **EOQ.** Any trigger queues behind work in flight and never interrupts it
-  (R-0116). Finish the current task to its normal finish line first.
+- **Queue by default.** A mid-turn trigger with no marker (or the explicit
+  `EOQ` synonym) queues behind work in flight rather than interrupting it
+  (R-0116) — finish the current task to its normal finish line first. Three
+  carve-outs always land immediately regardless: a correction, an answer to
+  a question this session itself asked, or stop/abort/halt. `NOW` (R-0355)
+  is the explicit interrupt marker — it, and only it (plus the three
+  carve-outs), suspends in-flight work instead of queueing behind it. State
+  which you chose, in one line, at the moment you decide.
 - **Quiet ticks produce no chat output** — but **always write a tick record**
   (`TickLog`), including on a quiet tick. A quiet tick that writes nothing is
   indistinguishable from a dead monitor.
