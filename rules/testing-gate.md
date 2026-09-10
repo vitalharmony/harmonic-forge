@@ -313,13 +313,30 @@ as `lane_state.py` recognises one, and NOT by the `--kind` the author passed.
 FAIL and BLOCKED are never gated, because a check that can silence a failure
 report is worse than none.
 
-**Coverage is one path of several, and saying so is part of the rule.** Lane 3
-has no raw-post restriction by design, so `gh issue comment` and
-`tools/gh/post_comment.py` remain open routes that this check does not see.
-Both most-recent real gate results went through the covered path, so the
-enforcement point is the live one — but a rule claiming universal enforcement
-it does not have is the same class of error as a gate claiming a green it did
-not read.
+**Coverage spans every route in the repo where the hook is wired
+(harmonic-forge#565).** `gh issue comment --body`/`--body-file` and
+`tools/gh/post_comment.py`/`mise run post-comment` (bare, `gh-as`-wrapped,
+and `mise r`-aliased) are now checked too, by a `PreToolUse` hook
+(`tools/hooks/enforce_gate_ci_on_raw_post.py`, registered in this repo's own
+`.claude/settings.json` and `.codex/hooks.json`) that reuses the same
+`gate_ci.looks_like_a_gate_report()`/`check_gate_result()` this section
+already names — body recognition, not a per-tool `--kind` flag, exactly as
+above. Lane 3's raw-post freedom is unchanged: this adds a content check at
+the two open routes, never a route restriction.
+`post_lane_discussion.py` is not re-checked by this hook — it already guards
+itself in-script — so there is exactly one enforcement point per route, never
+two answering the same question from different code.
+
+**R-0353 still applies: the authoring repo is not the shipping surface.**
+Wiring this hook into harmonic-forge's own settings covers sessions working
+in harmonic-forge itself. It does NOT reach a session in a consuming repo
+(HRSE2, cymagraph-infra, openclaw-projects) — most Lane 3 gate reports are
+posted from exactly there. Each consuming repo needs the same hook line
+added to its own tracked `.claude/settings.json`, the same way
+`deny_lane3_ae_self_post.py` already had to be. That propagation is
+explicitly NOT done by this change — it is named here rather than silently
+assumed, so this paragraph does not repeat #565's own original defect of
+claiming coverage it does not have.
 <!-- /R-0354 -->
 
 ### Why this is a check and not a line of guidance

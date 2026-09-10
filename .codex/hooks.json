@@ -22,6 +22,12 @@
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
             "timeout": 10,
             "statusMessage": "Checking model tier for this issue"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/enforce_gate_ci_on_raw_post.py\"",
+            "timeout": 30,
+            "statusMessage": "Checking gate-report CI coverage (harmonic-forge#565)"
           }
         ]
       },
