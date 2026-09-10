@@ -127,6 +127,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
 import manifest as onboard_manifest  # noqa: E402
 
+from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
+
 from belt_mechanics import (  # noqa: E402
     CallCounter,
     IdentityMismatch,
@@ -404,12 +406,49 @@ def _classify(body: str) -> tuple[str, str] | None:
             posted_by_match = _POSTED_BY_RE.search(marker)
             posted_by = posted_by_match.group(1) if posted_by_match else None
             return _POSTED_BY_LANE.get(posted_by, "l1"), kind
-    headline = body.strip().split("\n", 1)[0]
+    headline = _mark_retired_tokens(body.strip().split("\n", 1)[0])
     if _L2_HEADING_RE.match(headline):
         return "l2", headline
     if _L3_HEADING_RE.match(headline):
         return "l3", headline
     return None
+
+
+#: Retired lane tokens, and what replaced them. Read from the same registry
+#: `gh_issue.py` checks issue bodies against (harmonic-forge#379) rather than
+#: restated -- a second list is the drift this repo keeps paying for.
+_RETIRED_TOKEN_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in RETIRED_ARTIFACTS
+                      if re.fullmatch(r"L[123][A-Z]", k)) + r")\b"
+) if any(re.fullmatch(r"L[123][A-Z]", k) for k in RETIRED_ARTIFACTS) else None
+
+
+def _mark_retired_tokens(headline: str) -> str:
+    """Annotate a retired lane token rather than reproducing it bare.
+
+    harmonic-forge#609. The emitter stopped producing `L2P` at #583, but
+    historical comments still carry it and this function renders a comment's
+    first line straight into the lane's task display -- where it reads as
+    current, because nothing said otherwise. An operator saw exactly that and
+    had to correct Lane 1 by hand.
+
+    Marking, not rewriting: the comment is an accurate record of what was
+    posted in 2026-08 and must not be falsified. `## L2P` becomes
+    `## L2P [retired -> L2S]`, which keeps the quote and stops the display
+    teaching a token that no longer exists.
+    """
+    if _RETIRED_TOKEN_RE is None:
+        return headline
+    def _replace(match: re.Match) -> str:
+        token = match.group(1)
+        note = RETIRED_ARTIFACTS.get(token, "")
+        successors = re.findall(r"`(L[123][A-Z])`", note)
+        if not successors:
+            return f"{token} [retired]"
+        # " or ", not " -> ": L2P was replaced by a CHOICE between two tokens
+        # (L2S for a plan, L2D for a completion), not by a sequence.
+        return f"{token} [retired -> {' or '.join(successors)}]"
+    return _RETIRED_TOKEN_RE.sub(_replace, headline)
 
 
 def _search_candidates(repo: str, marker_text: str) -> set[int]:

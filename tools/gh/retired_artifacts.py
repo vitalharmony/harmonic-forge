@@ -32,6 +32,10 @@ RETIRED_ARTIFACTS: dict[str, str] = {
     "Priority": "retired board field (hrse#839) -- Status (Todo/In Progress/Done) carries the Kanban",
     "WorkEntry": "retired node label (BACKLOG-001/002, v2.3.85) -- work history is HAS_EXPERIENCE -> Experience",
     "HAS_WORK_ENTRY": "retired edge type (BACKLOG-001/002, v2.3.85) -- replaced by HAS_EXPERIENCE",
+    "L2P": "retired lane token (harmonic-forge#583) -- Lane 2 posts `L2S` (spec/plan "
+           "done, ready for Lane 1 review) or `L2D` (done, implementation posted). The "
+           "emitter was fixed; historical issue comments still carry it, so the belt "
+           "marks rather than reproduces it (harmonic-forge#609)",
     ".devin/hooks.v1.json": "retired with the Devin scrub (harmonic-forge#317)",
     "scripts/gate_devin_exec.py": "retired with the Devin scrub (harmonic-forge#317)",
 }

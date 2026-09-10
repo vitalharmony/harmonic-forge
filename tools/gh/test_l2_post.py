@@ -402,6 +402,20 @@ class TestSnapshot(unittest.TestCase):
         self.assertEqual(body["raw_response_sha256"], lp._sha(raw))
 
 
+class PlanHeadingIsL2SNotL2PTests(unittest.TestCase):
+    """harmonic-forge#609 AC5. `L2P` was retired at #583 and the emitter fixed.
+    This asserts it stays fixed -- the original defect returning silently is
+    what put the token back on an operator's screen."""
+
+    def test_plan_emits_l2s(self):
+        self.assertIn("## L2S", lp._HEADINGS["plan"])
+
+    def test_no_heading_emits_l2p(self):
+        for kind, heading in lp._HEADINGS.items():
+            with self.subTest(kind=kind):
+                self.assertNotIn("L2P", heading)
+
+
 if __name__ == "__main__":
     unittest.main()
 

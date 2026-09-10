@@ -133,6 +133,48 @@ class ClassifyTests(unittest.TestCase):
         self.assertIsNone(_classify(headless))
 
 
+class RetiredTokenMarkingTests(unittest.TestCase):
+    """harmonic-forge#609. `L2P` stopped being emitted at #583, but historical
+    comments carry it and the belt renders a comment's first line straight into
+    the lane's task display -- where it reads as current. An operator saw
+    exactly that and corrected Lane 1 by hand."""
+
+    def test_a_retired_token_is_marked_not_reproduced_bare(self):
+        self.assertEqual(
+            watch_lane_posts._mark_retired_tokens(
+                "## L2P — receipt-backed status (harmonic-forge#371)"),
+            "## L2P [retired -> L2S or L2D] — receipt-backed status "
+            "(harmonic-forge#371)")
+
+    def test_the_quote_is_marked_not_falsified(self):
+        """The comment is an accurate record of what was posted. The token
+        must still be visible, not silently rewritten to L2S."""
+        marked = watch_lane_posts._mark_retired_tokens("## L2P — x")
+        self.assertIn("L2P", marked)
+
+    def test_live_tokens_are_untouched(self):
+        for headline in ("## L2S — plan", "## L2D — done", "## L2B — blocked",
+                         "## L3S — spec", "## Lane 3 Gate Update"):
+            with self.subTest(headline=headline):
+                self.assertEqual(watch_lane_posts._mark_retired_tokens(headline),
+                                 headline)
+
+    def test_classify_marks_a_historical_l2p_heading(self):
+        """End to end through the path that actually feeds the display."""
+        lane, detail = watch_lane_posts._classify(
+            "## L2P — receipt-backed status (harmonic-forge#371)\n\nbody")
+        self.assertEqual(lane, "l2")
+        self.assertIn("[retired -> L2S or L2D]", detail)
+
+    def test_the_marking_reads_the_shared_registry(self):
+        """Driven from `retired_artifacts.RETIRED_ARTIFACTS`, not a second
+        list -- a second list is the drift this repo keeps paying for."""
+        from retired_artifacts import RETIRED_ARTIFACTS
+        self.assertIn("L2P", RETIRED_ARTIFACTS)
+        self.assertIn("L2S", RETIRED_ARTIFACTS["L2P"])
+        self.assertIn("L2D", RETIRED_ARTIFACTS["L2P"])
+
+
 class PrefixMapIsDerivedTests(unittest.TestCase):
     """harmonic-forge#605 preclose finding. Three independent copies of the
     prefix map existed -- this module's `_PREFIX_REPO`, its `_BRANCH_ISSUE_RE`
