@@ -27,6 +27,7 @@ carry its shape and the emitter's verbatim lines instead.
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -154,9 +155,71 @@ class OtherInjectedSources(unittest.TestCase):
         self.assertEqual(m.batch_keys(prompt), ["F74"])
 
 
+class NonInteractiveEntrypoint(unittest.TestCase):
+    """AC2's class extended -- the preclose finding on this issue's own PR.
+
+    `cross_family_call.sh --posture read-only` runs a headless `claude -p`
+    with a cold brief that quotes a fetched issue/PR body verbatim; a `BATCH`
+    line in that body reached `UserPromptSubmit` with no envelope, no
+    disclaimer, and (before this fix) no refusal. Reproduced live against
+    this exact module before writing these fixtures.
+    """
+
+    def _with_entrypoint(self, value: str | None):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        else:
+            env["CLAUDE_CODE_ENTRYPOINT"] = value
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def test_a_headless_sdk_cli_prompt_authorizes_nothing(self) -> None:
+        """The exact live-reproduced vector: no envelope, no disclaimer,
+        `CLAUDE_CODE_ENTRYPOINT=sdk-cli`."""
+        with self._with_entrypoint("sdk-cli"):
+            self.assertEqual(m.batch_keys("BATCH F74,F326"), [])
+
+    def test_the_sdk_cli_refusal_names_the_entrypoint(self) -> None:
+        with self._with_entrypoint("sdk-cli"):
+            receipt = m.authorize_batch("BATCH F74")
+        self.assertIn("REFUSED", receipt)
+        self.assertIn("sdk-cli", receipt)
+
+    def test_sdk_py_and_sdk_ts_and_local_agent_and_bench_all_refuse(self) -> None:
+        for value in ("sdk-py", "sdk-ts", "local-agent", "bench", "unknown"):
+            with self.subTest(entrypoint=value), self._with_entrypoint(value):
+                self.assertEqual(m.batch_keys("BATCH F74"), [],
+                                 f"{value!r} must not authorize")
+
+    def test_remote_is_treated_as_non_interactive_not_guessed_safe(self) -> None:
+        """`remote`'s exact meaning was not resolved live; excluded rather
+        than assumed benign -- see the module docstring."""
+        with self._with_entrypoint("remote"):
+            self.assertEqual(m.batch_keys("BATCH F74"), [])
+
+    def test_no_grant_call_results_from_a_headless_prompt(self) -> None:
+        import batch_auth as ba
+
+        with self._with_entrypoint("sdk-cli"), \
+             mock.patch.object(ba, "top_up") as top_up:
+            m.authorize_batch("BATCH F74")
+        top_up.assert_not_called()
+
+
 class TheLegitimatePathStillWorks(unittest.TestCase):
     """AC4 -- the negative control. A fix that closes the hole by closing the
-    door is not a fix; #502 exists because typing BATCH once did nothing."""
+    door is not a fix; #502 exists because typing BATCH once did nothing.
+
+    Explicitly pins `CLAUDE_CODE_ENTRYPOINT=cli` rather than trusting the
+    ambient value this suite happens to run under -- a CI runner or a future
+    reader's own shell could differ, and these tests exist to prove the
+    interactive path works, not to prove today's environment happens to.
+    """
+
+    def setUp(self) -> None:
+        self._env_patch = mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "cli"})
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
 
     def test_the_terse_form_still_authorizes(self) -> None:
         self.assertEqual(m.batch_keys("BATCH F74,F326"), ["F74", "F326"])
@@ -175,6 +238,21 @@ class TheLegitimatePathStillWorks(unittest.TestCase):
 
     def test_prose_about_batching_still_authorizes_nothing(self) -> None:
         self.assertEqual(m.batch_keys("we should batch F74 and F326"), [])
+
+    def test_desktop_and_vscode_and_teams_also_authorize(self) -> None:
+        for value in ("claude-desktop", "claude-vscode", "claude-in-teams"):
+            with self.subTest(entrypoint=value), \
+                 mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": value}):
+                self.assertEqual(m.batch_keys("BATCH F74"), ["F74"])
+
+    def test_a_missing_entrypoint_var_still_authorizes(self) -> None:
+        """Fails OPEN on absence (an older harness build), not closed --
+        refusing every prompt on a missing env var would be indistinguishable
+        from the guard itself being broken."""
+        env = dict(os.environ)
+        env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(m.batch_keys("BATCH F74"), ["F74"])
 
 
 class FailDirection(unittest.TestCase):
