@@ -131,6 +131,32 @@ class RealDocTests(unittest.TestCase):
         self.assertIn("finish everything currently in flight first, then do this.", expanded)
         self.assertNotRegex(expanded, r"\bIt\]")
 
+    def test_now_gloss_expands_only_at_line_start(self) -> None:
+        """harmonic-forge#569 preclose review, live-reproduced: `NOW` is an
+        ordinary English word, unlike `EOQ`/`BATCH`, so an unanchored
+        `\\bNOW\\b` match injected the interrupt gloss into prose that
+        merely discussed or quoted the token -- a docstring reference and a
+        blockquoted sentence both got rewritten as a live interrupt
+        instruction. Anchoring the directive match to the start of the
+        line (its own documented grammar: `NOW` + trailing instruction)
+        fixes both without touching the genuine leading-`NOW` case."""
+        quoting = (
+            "Preclose review. The issue says: requires an explicit `NOW` "
+            "token or Esc.\n> I very rarely want to interrupt. NOW is the "
+            "marker.\n"
+        )
+        result = _run(quoting)
+        if result is not None:
+            expanded = result["hookSpecificOutput"]["additionalContext"]
+            self.assertNotIn("Abandon or suspend", expanded)
+        else:
+            self.assertIsNone(result)
+
+        result = _run("NOW stop and look at this")
+        self.assertIsNotNone(result)
+        expanded = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Abandon or suspend current work", expanded)
+
     def test_batch_gloss_names_what_it_authorizes(self) -> None:
         result = _run("BATCH H767,F316")
         self.assertIsNotNone(result)

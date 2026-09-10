@@ -190,23 +190,72 @@ treating "needs a PR/merge" as if it were itself a reason to stop and ask.
 One named exception to that rule: `universal-lane1.md`'s R-0351.
 <!-- /R-0115 -->
 
-## `EOQ` — end of queue
+## `EOQ` — end of queue (the default for any unmarked mid-turn message)
 
 Grammar: **`EOQ` + trailing instruction**, e.g. `EOQ file and merge the doc
-fix for #334`. Not a status token — no lane digit, and it carries an
-instruction rather than reporting a state, so it does not belong in the `L`
-table above.
+fix for #334` — or the same instruction with **no marker at all**, which
+means the same thing: `EOQ` is an explicit, retained synonym of the
+default, not a distinct behaviour. Not a status token — no lane digit, and
+it carries an instruction rather than reporting a state, so it does not
+belong in the `L` table above. See `NOW` below for the opposite directive.
 
 Direction: operator → any lane or session.
 
 <!-- R-0116 -->
-Meaning: **finish everything currently in flight first, then do this.** It
-is a queueing directive, not an interrupt — the new instruction is appended
+Meaning: **queueing is the default for a mid-turn message carrying no
+marker — finish everything currently in flight first, then do this.** It is
+a queueing directive, not an interrupt — the new instruction is appended
 behind current work, never substituted for it or run alongside it. A
-session receiving `EOQ` mid-task keeps working its existing task to
-completion (implement → verify → commit → merge/close, whatever that task's
-normal finish line is) before starting the `EOQ` instruction.
+session receiving a mid-turn message with no marker (or the explicit `EOQ`
+synonym — retained, not retired, and costs nothing to keep) keeps working
+its existing task to completion (implement → verify → commit →
+merge/close, whatever that task's normal finish line is) before starting
+the queued instruction.
+
+**Three carve-outs always land immediately, marker or not** — queue-by-
+default must not swallow a message whose value is that it arrives now:
+
+1. **A correction** to something already stated or assumed this session —
+   deferring it means the in-flight task completes on the wrong premise
+   and is then merely told so afterward.
+2. **An answer to a question the session itself asked.** The session is
+   blocked on it by construction; queueing it deadlocks the turn.
+3. **Stop / abort / halt.**
+
+Anything not one of those three kinds queues, marker or not.
+
+**Honesty requirement:** a session that queues or interrupts a mid-turn
+message **says which, in one line, at the moment it decides** — e.g. `"new
+work — queued behind #1675"` or `"correction — acting now"`. A
+misclassification then costs one line of operator attention instead of
+being discovered after the wrong thing happened.
 <!-- /R-0116 -->
+
+## `NOW` — interrupt
+
+Grammar: **`NOW` + trailing instruction**, e.g. `NOW stop and look at
+this`. The opposite directive from the default above: it is the marker
+that opts a mid-turn message OUT of queueing.
+
+Direction: operator → any lane or session.
+
+<!-- R-0355 -->
+Meaning: **interrupt.** Abandon or suspend current work and act on the
+`NOW` instruction instead, rather than appending it behind what is already
+in flight. This is the one case where the operator wants the interrupt
+itself, not the safer default above.
+
+**`NOW` is not `Esc`, and the two are not interchangeable.** `Esc` does not
+pause a turn — it kills it. "Esc, then reissue" is abandon-and-restart, not
+redirect, and for a session mid-merge or mid-gate it can cost real work at
+exactly the moment interrupting looks attractive. `NOW` gives the operator
+a non-destructive interrupt — current work is suspended, not discarded;
+`Esc` remains the hard, destructive stop.
+
+The same honesty requirement in R-0116 applies here: a session acting on
+`NOW` says so in one line at the moment it decides, e.g. `"NOW — acting
+now, suspending #1675"`.
+<!-- /R-0355 -->
 
 ## `BATCH` — pre-authorize a multi-issue merge/close pass
 
