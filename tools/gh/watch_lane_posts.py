@@ -642,15 +642,27 @@ def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
     queued: dict[int, str] = {}
     for issue in candidates:
         last_kind: tuple[str, str] | None = None
-        for comment in _fetch_all_comments(repo, issue) or ():
-            # `or ()` -- harmonic-forge#579 preclose finding:
-            # `_fetch_all_comments` returns `None` on a failed fetch (not
-            # `[]`, which now means "genuinely zero comments"). This
-            # function has no previous-classification fallback to offer
-            # (unlike `discover_l1_sweep`), so a failed fetch here simply
-            # yields no classified comments this cycle, exactly as an
-            # empty result always has -- not a regression, just no longer
-            # a `TypeError` from iterating `None`.
+        comments = _fetch_all_comments(repo, issue)
+        if comments is None:
+            # harmonic-forge#602 (found by an out-of-family review). `None` is
+            # a FAILED fetch, distinct from `[]`. The note below was written
+            # when nothing diffed this function's result against a previous
+            # cycle, so yielding no classified comments was genuinely benign.
+            # harmonic-forge#596 added exactly that diff -- `queue_cycle`
+            # emits `left-queue-for-<lane>` for a prior key absent from the new
+            # queue whenever the repo is considered successful -- which turned
+            # this into a live retraction: a transient failure on ONE issue
+            # tells the lane the ball moved on. Repo-level `fetch_ok` was the
+            # fix for a repo-level failure and does not reach an issue-level
+            # one, so this reports the repo as unreliable for this cycle.
+            return {}, False
+        for comment in comments:
+            # harmonic-forge#579 introduced the `None` (failed) vs `[]`
+            # (genuinely zero) distinction this loop now depends on; #602
+            # retired the `or ()` that erased it. The note that used to sit
+            # here said a failed fetch yielding no classified comments was
+            # "not a regression" -- true only while nothing diffed this
+            # function's result against a previous cycle, which #596 changed.
             classified = _classify(comment.get("body", ""))
             if classified is not None and not _is_l2_finding(*classified):
                 last_kind = classified

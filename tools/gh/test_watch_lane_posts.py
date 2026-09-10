@@ -1276,6 +1276,43 @@ class EveryLaneBeltDerivesItsRepoSetTests(unittest.TestCase):
         self.assertNotIn("--repo vitalharmony/", sweep.group(1))
 
 
+class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
+    """harmonic-forge#602 — found by an out-of-family (Codex/gpt-5.6-sol)
+    review of the design assessment, after four in-family passes missed it.
+
+    `_fetch_all_comments` returns None on a FAILED fetch. `discover_queue`
+    consumed that as `or ()` and still reported `fetch_ok=True`, so
+    `queue_cycle` counted the repo as reporting and retracted the issue with
+    `left-queue-for-<lane>` -- telling the lane the ball moved on because one
+    comment fetch hit a rate limit."""
+
+    def test_one_issue_comment_fetch_failure_marks_the_repo_unreliable(self):
+        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
+        self.assertFalse(fetch_ok, "a failed comment fetch must not report success")
+        self.assertEqual(queued, {})
+
+    def test_a_genuinely_empty_comment_list_still_reports_success(self):
+        """`[]` means zero comments and must stay distinguishable from None --
+        otherwise the fix trades a false retraction for a stuck queue."""
+        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
+        self.assertTrue(fetch_ok)
+        self.assertEqual(queued, {})
+
+    def test_queue_cycle_does_not_retract_on_an_issue_level_failure(self):
+        """The end-to-end property: the previously-queued issue survives."""
+        last = {("vitalharmony/hrse", 1530): "ready-for-l3"}
+        with patch("watch_lane_posts.discover_queue", return_value=({}, False)):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z")
+        self.assertEqual(queue, last, "the prior queue must carry forward")
+        self.assertEqual(ok, set(), "a failed repo must not be counted as reporting")
+        self.assertFalse([l for l in lines if "left-queue" in l])
+
+
 class QueueKeyIsRepoQualifiedTests(unittest.TestCase):
     """harmonic-forge#596 AC2: hrse#570 and harmonic-forge#570 both exist. A
     queue keyed on the bare issue number lets one evict the other."""

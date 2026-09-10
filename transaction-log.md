@@ -3,6 +3,43 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): fail closed when a per-issue comment fetch fails (harmonic-forge#602)
+
+`discover_queue` turned a failed per-issue comment fetch into an empty
+iteration via `or ()` and still returned `fetch_ok=True`. `queue_cycle` then
+counted the repo as having reported and emitted `left-queue-for-<lane>` on
+stdout for that issue -- telling the lane the ball moved on because one comment
+fetch hit a rate limit.
+
+Found by an out-of-family review (Codex / gpt-5.6-sol via
+`cross_family_call.sh --posture verify`) of #590/#594/#596. Four in-family
+passes did not find it. Confirmed against source before acting.
+
+The `or ()` was genuinely benign until #596: nothing diffed this function's
+result against a previous cycle, and the note here said so. #596 added exactly
+that diff, and added repo-level `fetch_ok` to stop this class of false
+retraction -- but a repo-level guard cannot see an issue-level failure, so the
+fix landed one level above the remaining hole. This is the other half of #596's
+own preclose finding 2.
+
+Conservative on purpose: one failed issue marks the whole repo unreliable for
+that cycle. A stale queue carried one cycle is recoverable; a false retraction
+is not, because the lane acts on it.
+
+- `None` (failed) now returns `({}, False)`; `[]` (genuinely zero) still
+  reports success, or the fix would trade a false retraction for a stuck queue.
+- Three tests, including the end-to-end property: no `left-queue-for-*` line is
+  emitted and the previously-queued issue survives.
+- The "not a regression" note is corrected, being now the opposite of true.
+
+1960 -> 1963 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 37 +++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 30 +++++++++++++++++++++---------
+- 2 files changed, 58 insertions(+), 9 deletions(-)
+
 ## fix(belt): restore Lane 2 queue discovery; derive the repo set from the manifest (harmonic-forge#596)
 
 Preclose on PR #597 returned four findings, and the strategy review returned a
