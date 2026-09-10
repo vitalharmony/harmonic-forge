@@ -483,8 +483,13 @@ class TestRepoBoardMap(unittest.TestCase):
                          ("vitalharmony", "3"))
         self.assertEqual(gh_issue.resolve_board_for_repo("vitalharmony/cymagraph-infra"),
                          ("vitalharmony", "1"))
+        # Board #4, not #1, since 2026-09-10: openclaw is a prototyping ground
+        # that feeds the products and ships in none of them, so it is its own
+        # venture rather than CymaGraph work. A board is per venture, not per
+        # repo -- which is also why cymagraph-infra above legitimately shares
+        # hrse's #1.
         self.assertEqual(gh_issue.resolve_board_for_repo("vitalharmony/openclaw-projects"),
-                         ("vitalharmony", "1"))
+                         ("vitalharmony", "4"))
 
     def test_unmapped_repo_fails_loudly(self):
         """A default would reintroduce the silent misroute this issue fixes."""

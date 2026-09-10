@@ -3,6 +3,51 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(manifest): onboard openclaw-projects onto its own board (harmonic-forge#605)
+
+openclaw-projects had a live checkout, both lane worktrees, linked directives,
+hooks and a reserved prefix -- but `onboarded = false`, so every manifest
+consumer excluded it. Surfaced by #596: the belt derives its repo set from this
+manifest and reported 3 non-archived repos, not 4, leaving all three armed
+lanes blind to that repo. The manifest was working correctly; it was reporting
+a repo nobody had onboarded.
+
+It also needed its own board. It was pointed at board 1 (CymaGraph Backlog)
+while carrying `milestones = false` -- the only repo with that combination, and
+the mismatch that surfaced the real question, since board 1 is CymaGraph's
+release view and openclaw ships in no CymaGraph release. Operator, 2026-09-10:
+"openclaw 'feeds' the others because I prototype things there but it isn't part
+of the cymagraph product nor will it be for kenekted or leasepal."
+
+So openclaw is its own venture, and the board model is confirmed as PER VENTURE,
+not per repo -- which is also why cymagraph-infra legitimately shares hrse's
+board 1: those two repos ship one CymaGraph release together.
+
+- New board vitalharmony #4 "openclaw Backlog", with Status/Tier/Theme/Venture/
+  Sequence matching board 3's schema. Venture gains an OpenClaw option.
+- `board_number` 1 -> 4, `onboarded` false -> true.
+- The manifest header's board rule is corrected: it asserted openclaw
+  "deliberately shares hrse's board #1", now the opposite of true.
+- Two live-value guards updated. `test_gh_issue.TestRepoBoardMap` and
+  `test_manifest.LiveManifestTests` pin the board map so a change cannot
+  silently misroute issues (the failure #107 fixed once already). They fired
+  correctly; the expectation moved with a recorded reason. A third test's
+  docstring cited openclaw as the live `onboarded = false` example and now
+  points at its own fixture.
+
+forge-onboard: 6 projects, 0 failing checks. The belt went 3 repos -> 4 with no
+code change, which is the point of deriving from the manifest rather than
+listing.
+
+`mise run check` exit 0, 1968 tests.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- projects.toml                  | 18 ++++++++++++++----
+- tools/gh/test_gh_issue.py      |  7 ++++++-
+- tools/onboard/test_manifest.py | 14 ++++++++++----
+- 3 files changed, 30 insertions(+), 9 deletions(-)
+
 ## fix(belt): paginate the candidate search; make the #602 test actually bite
 
 Preclose on PR #603 returned two findings. Both fixed.

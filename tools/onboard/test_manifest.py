@@ -212,9 +212,14 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(mf.sweep_repos(write(self.BODY)), ["o/hb", "o/nb"])
 
     def test_sweep_is_not_filtered_by_onboarded(self) -> None:
-        """openclaw-projects is `onboarded = false` and IS in the live sweep.
-        Stranded work is worth finding whether or not the lane apparatus is
-        installed, and filtering here would silently drop a covered repo."""
+        """A `onboarded = false` repo IS in the sweep. Stranded work is worth
+        finding whether or not the lane apparatus is installed, and filtering
+        here would silently drop a covered repo.
+
+        This used to cite openclaw-projects as the live example; it was
+        onboarded on 2026-09-10, so the example is now the fixture below rather
+        than a shipped entry. The property is unchanged -- and it is why
+        onboarding openclaw changed no sweep behavior."""
         path = write("""
             [[project]]
             name = "not-onboarded"
@@ -243,7 +248,8 @@ class LiveManifestTests(unittest.TestCase):
             "vitalharmony/hrse": ("vitalharmony", "1"),
             "vitalharmony/harmonic-forge": ("vitalharmony", "3"),
             "vitalharmony/cymagraph-infra": ("vitalharmony", "1"),
-            "vitalharmony/openclaw-projects": ("vitalharmony", "1"),
+            # #4 since 2026-09-10 -- its own venture, see the manifest header.
+            "vitalharmony/openclaw-projects": ("vitalharmony", "4"),
         })
 
     def test_the_sweep_list_matches_the_live_hygiene_task(self) -> None:

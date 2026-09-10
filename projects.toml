@@ -30,8 +30,12 @@
 #                 it returns EMPTY rather than erroring, so treating empty as
 #                 absent is a real hazard here.
 # board_owner     Projects v2 board owner, or absent when the repo has no board.
-# board_number    Board number. cymagraph-infra and openclaw-projects
-#                 deliberately share hrse's board #1 rather than having one.
+# board_number    Board number. A board is per VENTURE, not per repo:
+#                 cymagraph-infra shares hrse's board #1 because the two repos
+#                 ship one CymaGraph release together. openclaw-projects moved
+#                 OFF #1 to its own #4 (2026-09-10) -- it is a prototyping
+#                 ground that feeds the products and belongs to none of them,
+#                 so it is its own venture, not CymaGraph work.
 # milestones      Whether the repo carries release milestones. `false` for
 #                 harmonic-forge is a DECISION, not a gap: its work is pulled by
 #                 several ventures and belongs to no single release. See
@@ -80,9 +84,15 @@ path = "~/Harmonic_Projects/openclaw-projects"
 prefix = "O"
 account = "vitalharmony"
 board_owner = "vitalharmony"
-board_number = "1"
+# Its own board (#4), not CymaGraph's #1. openclaw is a prototyping ground whose
+# output FEEDS the products without belonging to any of them -- operator, 2026-09-10:
+# "it isn't part of the cymagraph product nor will it be for kenekted or leasepal."
+# It was pointed at board 1 while carrying `milestones = false`, the only repo with
+# that combination, which is what surfaced the mismatch: board 1 is CymaGraph's
+# release view and openclaw ships in no CymaGraph release.
+board_number = "4"
 milestones = false
-onboarded = false
+onboarded = true
 
 [[project]]
 name = "kenekted"
