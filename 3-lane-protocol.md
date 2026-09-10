@@ -1209,16 +1209,41 @@ same posture: explicit, per-issue, never assumed.
   including Lane 1/Claude Code as an explicit exception to "Lane 1 never
   implements") designs and writes the tooling in one pass. No Lane 1
   handoff document, no Lane 2 relay, no per-round Lane 3 gates.
+- **A batch may be delegated to a subagent — its merge and close may
+  not.** Running a Tooling Exception batch inside a subagent so the parent
+  session stays interruptible is endorsed, not merely tolerated: the
+  subagent implements, runs the gate commands, commits, pushes, and opens
+  PRs, then stops and reports. `gh pr merge` and `gh issue close` stay
+  with the session the operator is in, every time, regardless of how many
+  issues the batch covers or how confident the subagent's own report is.
+  A subagent that also merges and closes performs the full PR → merge →
+  close sequence before the operator ever sees any of it, which is not a
+  faster version of R-0229's review below — it is that review not
+  happening.
 <!-- /R-0228 -->
 <!-- R-0229 -->
-- **One human-reviewed pass, before commit.** The operator (or a
+- **One human-reviewed pass, before the work becomes irreversible** — before
+  commit, when the same session implements and closes; before merge/close,
+  when a subagent implements a delegated batch per R-0228 above (the
+  subagent's own commit and push are not the irreversible step; merge and
+  close are). The operator (or a
   designated reviewer who is not the implementer) reviews for exactly
   three things: (1) scope — it is genuinely tooling per the boundary
   above; (2) containment — the mutations it performs on the dev
   machine/repo are bounded and reversible; (3) honesty — its checks
   verify live behavior, not prose claims (`rules/testing-gate.md` still
   applies to what the tooling *asserts*, even though the tooling itself
-  skips the gate).
+  skips the gate). **This pass cannot be delegated to the agent that
+  implemented the work** — "a designated reviewer who is not the
+  implementer" already says so, and a subagent that merges and closes its
+  own batch is exactly that violation, not a faster path around it.
+  **A delegated batch's completion is verified against live GitHub
+  state** (PRs actually opened, comments actually posted on the issue) —
+  **never against the subagent's own self-report.** A subagent that
+  returns a success narrative having made zero tool calls is
+  indistinguishable from one that worked unless something checks the
+  world rather than the report; requiring a PR to exist before it can be
+  merged makes that failure self-detecting rather than silent.
 <!-- /R-0229 -->
 <!-- R-0230 -->
 - **Even under this exception, the implementer never grades its own

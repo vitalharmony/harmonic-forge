@@ -1922,16 +1922,16 @@ hooks = []
 id = "R-0228"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
-statement = "Under the exception a single implementer designs and writes the tooling in one pass, with no Lane 1 handoff, Lane 2 relay, or per-round Lane 3 gates."
-text_sha = "f90593a57ccae160"
+statement = "Under the exception a single implementer designs and writes the tooling in one pass, with no Lane 1 handoff, Lane 2 relay, or per-round Lane 3 gates. A batch may be delegated to a subagent, which implements/gates/commits/pushes/opens PRs; merge and close stay with the operator's own session regardless."
+text_sha = "d83bf50e29b1f9c8"
 hooks = []
 
 [[rule]]
 id = "R-0229"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
-statement = "The exception requires one human-reviewed pass before commit, checking scope, containment, and honesty."
-text_sha = "92327777413f0ccc"
+statement = "The exception requires one human-reviewed pass before the work becomes irreversible -- before commit for a single implementer, before merge/close for a delegated batch -- checking scope, containment, and honesty. This pass cannot be delegated to the implementing agent, and a delegated batch's completion is verified against live GitHub state, never the subagent's own self-report."
+text_sha = "012a408ce9ee2140"
 hooks = []
 
 [[rule]]
