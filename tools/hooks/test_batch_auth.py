@@ -1590,13 +1590,20 @@ class RevokeTests(StateFixture):
 
 
 class TtyGateCliTests(StateFixture):
-    """harmonic-forge#589, part (b) -- the mint moves off the prompt-parsing
-    path entirely: `authorize`/`top-up`'s CLI dispatch refuses to run unless
-    stdin is a real TTY, independent of `CLAUDE_CODE_ENTRYPOINT` or any other
-    session-scoped signal. An agent's Bash tool call has no TTY on stdin
-    regardless of what the session's entrypoint reports, which is exactly the
-    residual the entrypoint allowlist (batch_provenance.py) cannot close on
-    its own.
+    """harmonic-forge#589, part (b) -- `authorize`/`top-up`'s CLI dispatch
+    refuses to run unless stdin is a real TTY. An agent's Bash tool call has
+    no TTY on stdin regardless of what `CLAUDE_CODE_ENTRYPOINT` reports for
+    the session.
+
+    **Corrected framing (F589 ruling, round 3):** this is a second, separate
+    mint path with no text-parsing surface at all -- it does NOT close the
+    entrypoint allowlist's own residual gap on `expand_lane_shorthand.py`'s
+    prompt-triggered mint, which stays exactly as live and exactly as
+    exposed as before. Both provenance checks in this module are accident
+    prevention against injected text reaching a prompt path, not a security
+    boundary against a hostile or confused agent -- that requires a separate,
+    operator-gated identity, tracked as its own follow-up rather than
+    fabricated out of either of these checks.
 
     `ba.STATE_PATH` is patched (not just `state_path=`) because `_cli()`'s
     dispatch to `authorize()`/`top_up()` passes no `state_path` at all -- it

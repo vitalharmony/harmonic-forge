@@ -1300,21 +1300,30 @@ def _require_tty(cmd: str) -> None:
     """Refuse a minting CLI subcommand when stdin is not a real terminal
     (harmonic-forge#589, part b).
 
-    `CLAUDE_CODE_ENTRYPOINT` (`batch_provenance.py`) is session-scoped by
-    construction -- it cannot distinguish a scheduled `/loop`/ScheduleWakeup
-    delivery from a typed one *within* an already-interactive session, which
-    is exactly the residual gap that check cannot close. `os.isatty(0)` is a
-    different, narrower signal: an operator's own terminal has a TTY on fd 0;
-    a subprocess an agent's Bash tool launches does not, regardless of what
-    the session's entrypoint reports as a whole.
+    **Corrected framing (F589 ruling, round 3):** this does NOT close the
+    `CLAUDE_CODE_ENTRYPOINT` residual named in `batch_provenance.py` --
+    `expand_lane_shorthand.py`'s prompt-triggered mint stays exactly as live
+    and exactly as exposed to that residual as it was before this function
+    existed. What this adds is a second, separate mint path (`authorize`/
+    `top-up` invoked directly by the operator's own terminal) that has no
+    text-parsing attack surface at all, because it never reads a prompt in
+    the first place -- an agent's Bash tool call has no TTY on stdin,
+    regardless of what the session's entrypoint reports. It is a safer
+    alternative to point operator habit at, not a fix applied to the
+    existing one.
 
-    Not a cryptographic proof -- an agent could allocate a pty via
-    `script`/`pty.spawn` -- but it removes the entire text-parsing attack
-    surface for the common case, independent of which hook fired or what
-    session state looks like. This is the path operator habit should move
-    to; `expand_lane_shorthand.py`'s prompt-triggered mint stays live as a
-    secondary, entrypoint-gated path (defense in depth), not replaced by
-    this.
+    Also, per that same ruling: this repo's provenance checks (this one and
+    the entrypoint allowlist) are **accident prevention** -- against injected
+    text reaching a prompt path -- not a security boundary against a hostile
+    or confused agent. Neither this function nor `CLAUDE_CODE_ENTRYPOINT`
+    should be described as closing an attack surface in that stronger sense;
+    a real security boundary requires a separate, operator-gated identity,
+    tracked as its own follow-up issue rather than built here.
+
+    Not even accident-proof on its own terms -- an agent could allocate a
+    pty via `script`/`pty.spawn` -- but it is a real, narrow signal an
+    operator's own terminal always has and a tool-launched subprocess never
+    does.
     """
     if not os.isatty(0):
         print(

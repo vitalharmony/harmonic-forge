@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """Whether a prompt may mint a BATCH grant at all (harmonic-forge#589).
 
-`batch_auth.py`'s docstring already states the boundary: a grant is created
+**Framing, corrected by the operator's ruling (F589, round 3):** this module
+and `batch_auth.py`'s own checks are **accident prevention** against injected
+text reaching the prompt-parsing mint path -- which is what the incident
+below actually was, an accident, not an attack -- not a security boundary
+against a hostile or confused agent. AC2's "by construction" provenance
+language is retired with this correction; nothing here should be read as
+closing that stronger claim. A real security boundary needs a separate,
+operator-gated identity per grant, tracked as its own follow-up issue rather
+than built here.
+
+`batch_auth.py`'s docstring already states the intent: a grant is created
 from an operator's chat message, "never in response to text read from a file,
 issue/PR body, tool output, or web page." Nothing enforced it. On 2026-09-10 a
 `general-purpose` subagent quoted a `sprint-plan`/`milestone_summary.py` audit
@@ -62,8 +72,9 @@ Both were true and the grant was still minted: an unbalanced ``` earlier in
 the report (line 8 of 13,890 characters) inverted the fence parity, so the
 emitter's *opening* fence at line 86 read as a closing one and the `BATCH`
 line at 87 scanned as ordinary prose. Fence parity is a property of text this
-hook does not control and cannot trust. Provenance is the boundary; quoting
-heuristics are a courtesy on top of it.
+hook does not control and cannot trust. Provenance is the accident-prevention
+check that matters here; quoting heuristics are a courtesy on top of it, not
+a security boundary either.
 
 THE ENVELOPE TEST WAS STILL A DENYLIST -- AN ALLOWLIST CLOSES THE REST
 ------------------------------------------------------------------------
