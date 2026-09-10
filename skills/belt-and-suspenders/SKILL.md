@@ -49,7 +49,7 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees ~/Harmonic_Projects/HRSE2 ~/harmonic-forge --watch l2 --watch l3 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees ~/Harmonic_Projects/HRSE2 ~/harmonic-forge ~/Harmonic_Projects/cymagraph-infra ~/Harmonic_Projects/openclaw-projects --watch l2 --watch l3 --interval 300
   ```
 
   **Arm it verbatim, from wherever the session already is** — no `cd` first.
@@ -74,13 +74,13 @@ mid-issue is not the command to arm:
   (harmonic-forge#596). Enumerate instead:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees ~/Harmonic_Projects/HRSE2 ~/harmonic-forge --watch l1 --interval 90
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees ~/Harmonic_Projects/HRSE2 ~/harmonic-forge ~/Harmonic_Projects/cymagraph-infra ~/Harmonic_Projects/openclaw-projects --watch l1 --interval 90
   ```
 
 - **Lane 3** — no worktree of its own; queue-discover, across **both** repos:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --repo vitalharmony/hrse --repo vitalharmony/harmonic-forge --watch l1 --interval 60
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --repo vitalharmony/hrse --repo vitalharmony/harmonic-forge --repo vitalharmony/cymagraph-infra --repo vitalharmony/openclaw-projects --watch l1 --interval 60
   ```
 
 **A monitor that never printed a status line is not proof it is watching
@@ -97,10 +97,19 @@ suspenders' Lane 1 sweep below — it reports the queued count once at the first
 poll, even when that count is zero, and names how many repos it scanned. A
 genuinely quiet repo and a dead process must never look the same on the log.
 
-**Every command here spans both repos**, because every lane carries work in
-both. `--all-worktrees` takes a path in each; `--queue-for` takes a `--repo`
-for each. A belt scanning one repo is a half-belt, and it looks exactly like a
-whole one (harmonic-forge#594, harmonic-forge#596).
+**Every command here spans all four active repos** — `hrse`,
+`harmonic-forge`, `cymagraph-infra`, `openclaw-projects` — because every lane
+carries work in all four, and all four have live `-lane2`/`-lane3` checkouts
+with this skill linked. `--all-worktrees` takes a path in each; `--queue-for`
+takes a `--repo` for each. A belt scanning a subset is a partial belt, and it
+looks exactly like a whole one (harmonic-forge#594, harmonic-forge#596).
+
+**When a repo is added or retired, these commands are what goes stale.** That
+is the standing cost of naming roots explicitly, and it is the deliberate trade
+against inferring them — #594 removed inference precisely because a silently
+narrowed belt is worse than a visibly outdated list. The guard in
+`test_watch_lane_posts.py` asserts the set, so adding a repo fails the suite
+until the commands are updated, rather than quietly halving anyone's coverage.
 
 **A worktree is evidence work was started, not that it is live.** Abandoned
 `/tmp/<repo>-<issue>-impl` checkouts are never pruned, and their branches read
@@ -190,7 +199,7 @@ idempotent check runs every tick regardless of what any other check found. Lane
    the belt itself:
 
    ```
-   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l1 --repo vitalharmony/hrse --repo vitalharmony/harmonic-forge --interval 600
+   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l1 --repo vitalharmony/hrse --repo vitalharmony/harmonic-forge --repo vitalharmony/cymagraph-infra --repo vitalharmony/openclaw-projects --interval 600
    ```
 
 3. **What have I never answered** — count *my own* posted markers per issue.

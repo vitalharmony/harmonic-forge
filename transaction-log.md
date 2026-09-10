@@ -3,6 +3,48 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): all four active repos, not two (harmonic-forge#596)
+
+Operator caught this mid-flight: the belt spans hrse and harmonic-forge, and
+there are FOUR active vitalharmony repos. `cymagraph-infra` and
+`openclaw-projects` each have live `-lane2` and `-lane3` checkouts with this
+skill linked and declared -- verified `[OK]` against their platform
+declarations, all six. So the skill was loaded into those lanes and telling
+them to watch repos that are not theirs.
+
+Same defect as #594's half-belt and #596's hrse-only sweep, one scope wider.
+Naming two repos instead of one fixed the instance and not the class.
+
+- Every lane command and the suspenders' sweep now name all four.
+- The guard asserts the repo SET, not merely "more than one" -- adding or
+  retiring a repo now fails the suite until the commands are updated. That is
+  the standing cost of #594's decision to name roots rather than infer them,
+  and making the cost loud is the whole point: a visibly outdated list beats a
+  silently narrowed belt.
+- A separate guard covers the suspenders' sweep, which sits outside any lane
+  bullet and which the per-lane guard therefore never reached -- the same
+  "control not reached at the point of use" shape as the last three.
+- `test_lane1_belt_names_two_distinct_repo_roots` asserted exactly two roots
+  and is superseded; it now checks only distinctness, with arity owned by the
+  four-repo guard. Two tests asserting the same property with different
+  answers is how the next one goes stale.
+
+Verified live from $HOME:
+
+  root /home/mmangus/Harmonic_Projects/HRSE2: 17 worktree(s)
+  root /home/mmangus/harmonic-forge: 11 worktree(s)
+  root /home/mmangus/Harmonic_Projects/cymagraph-infra: 3 worktree(s)
+  root /home/mmangus/Harmonic_Projects/openclaw-projects: 4 worktree(s)
+  --all-worktrees enumerated 35 live worktree(s)
+
+Suite 1960 -> 1961, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md | 25 +++++++++++------
+- tools/gh/test_watch_lane_posts.py   | 56 +++++++++++++++++++++++++++----------
+- 2 files changed, 58 insertions(+), 23 deletions(-)
+
 ## fix(belt): finish the job — Lane 2 and Lane 3 belts, both repos, every lane (harmonic-forge#596)
 
 #590 fixed Lane 1's pull source. #594 fixed Lane 1's cwd dependence. Both left

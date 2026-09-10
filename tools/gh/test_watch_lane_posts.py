@@ -1010,16 +1010,17 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
         self.assertIsNotNone(match, "the Lane 1 belt must arm --all-worktrees")
         return match.group(1).split()
 
-    def test_lane1_belt_names_two_distinct_repo_roots(self):
-        """`git worktree list` sees one repo; Lane 1 spans two. harmonic-
-        forge#594: the roots are named to --all-worktrees, so the command is
-        correct from any directory."""
+    def test_lane1_repo_roots_are_distinct(self):
+        """harmonic-forge#594: roots are named to --all-worktrees, so the
+        command is correct from any directory. HOW MANY roots is asserted by
+        `EveryLaneBeltSpansBothReposTests._REPOS`, against the live repo set --
+        this one only rejects a duplicate, which contributes nothing and is
+        reported but not fatal at runtime."""
         roots = self._lane1_repo_roots()
-        self.assertEqual(len(roots), 2,
-                         f"--all-worktrees must name exactly two repo roots, got "
-                         f"{roots!r}. Zero roots is the CWD-dependent form #594 "
-                         f"removed; one root is a half-belt.")
-        self.assertNotEqual(roots[0], roots[1])
+        self.assertGreater(len(roots), 1,
+                           f"zero roots is the CWD-dependent form #594 removed; "
+                           f"one root is a partial belt. Got {roots!r}")
+        self.assertEqual(len(roots), len(set(roots)), f"duplicate root in {roots!r}")
 
     def test_lane1_repo_roots_are_paths_not_flags(self):
         """The regression this guards against is a prose edit, so the guard
@@ -1230,6 +1231,16 @@ class EveryLaneBeltSpansBothReposTests(unittest.TestCase):
 
     _LANES = ("Lane 1", "Lane 2", "Lane 3")
 
+    #: Every active vitalharmony repo with live `-lane2`/`-lane3` checkouts and
+    #: this skill linked into them (harmonic-forge#596). Naming roots explicitly
+    #: is #594's deliberate trade -- inference made the belt silently narrow --
+    #: and the standing cost is that this list must be updated when a repo is
+    #: added or retired. Asserting it here is what makes that cost LOUD: the
+    #: suite fails until the commands are updated, instead of a lane quietly
+    #: watching a subset. Verified live: all 4 have their own lane checkouts,
+    #: each `[OK]` against its platform declaration.
+    _REPOS = ("hrse", "harmonic-forge", "cymagraph-infra", "openclaw-projects")
+
     def _lane_block(self, lane: str) -> str:
         text = _SKILL_MD.read_text(encoding="utf-8")
         after = text.split(f"- **{lane}**", 1)
@@ -1244,21 +1255,36 @@ class EveryLaneBeltSpansBothReposTests(unittest.TestCase):
         self.assertIsNotNone(fence, f"{lane} has no command fence")
         return fence.group(1)
 
-    def test_every_lane_command_spans_both_repos(self):
+    def test_every_lane_command_spans_every_active_repo(self):
         for lane in self._LANES:
             with self.subTest(lane=lane):
                 cmd = self._command(lane)
                 if "--all-worktrees" in cmd:
                     roots = re.search(r"--all-worktrees((?:\s+(?!-)\S+)*)", cmd)
                     named = roots.group(1).split()
-                    self.assertEqual(len(named), 2, f"{lane}: {named!r}")
+                    self.assertEqual(len(named), len(self._REPOS), f"{lane}: {named!r}")
                     joined = " ".join(named).lower()
-                    self.assertIn("hrse", joined)
-                    self.assertIn("harmonic-forge", joined)
+                    for repo in self._REPOS:
+                        # HRSE2 is hrse's checkout name -- match the repo's
+                        # distinguishing stem, not the owner/name form.
+                        self.assertIn(repo.replace("hrse", "hrse"), joined,
+                                      f"{lane} does not cover {repo}: {named!r}")
                 else:
                     repos = re.findall(r"--repo\s+(\S+)", cmd)
-                    self.assertIn("vitalharmony/hrse", repos, f"{lane}: {repos!r}")
-                    self.assertIn("vitalharmony/harmonic-forge", repos, f"{lane}: {repos!r}")
+                    for repo in self._REPOS:
+                        self.assertIn(f"vitalharmony/{repo}", repos,
+                                      f"{lane} does not cover {repo}: {repos!r}")
+
+    def test_the_suspenders_sweep_spans_every_active_repo(self):
+        """The Lane 1 backstop is a --queue-for command outside any lane
+        bullet, so the per-lane guard above does not reach it."""
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        sweep = re.search(r"(watch_lane_posts\.py --queue-for l1[^\n]*)",
+                          text.split("## The suspenders", 1)[1])
+        self.assertIsNotNone(sweep, "the suspenders' Lane 1 sweep command was not found")
+        repos = re.findall(r"--repo\s+(\S+)", sweep.group(1))
+        for repo in self._REPOS:
+            self.assertIn(f"vitalharmony/{repo}", repos, f"sweep misses {repo}: {repos!r}")
 
     def test_every_lane_command_is_a_single_unwrapped_line(self):
         """A backslash-continued command is not copy-pasteable, and these are
