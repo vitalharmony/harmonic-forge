@@ -105,6 +105,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -150,14 +151,20 @@ _PREFIX_REPO = {
 
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
 
-#: `l1-post` kinds that hand each lane something to do. Only `l3` is
-#: implemented for `--queue-for` today (the concrete, live need); `l2`'s
-#: kinds are listed for completeness and future use, but `l2` almost
-#: always has its own worktree to self-discover from instead (see
-#: `discover_from_worktree`), so the queue path matters less there.
+#: `l1-post` kinds that hand each lane something to do. `l2`'s kinds are
+#: `handoff` and `rework`, deliberately NOT `discussion` -- R-0337
+#: (`harmonic-forge/rules/lane-shorthand.md`) measured every thread on
+#: `vitalharmony/hrse` and found 63 issues whose newest marker after
+#: `l2.done` was a `discussion`, and *none* of them was a request for more
+#: work (closing notes, merge confirmations, gate sign-offs). A Lane 1
+#: request for more work on an existing branch is posted `--kind rework`
+#: specifically so it is distinguishable from that noise. `discussion` was
+#: here until harmonic-forge#570's preclose review measured it live against
+#: this repo (36 of 46 `--queue-for l2` hits were `discussion`, none
+#: actionable) and it was removed.
 QUEUE_KINDS = {
     "l3": ("ready-for-l3", "ae", "sweep"),
-    "l2": ("handoff", "discussion"),
+    "l2": ("handoff", "rework"),
 }
 
 
@@ -191,21 +198,58 @@ def _worktree_branch(worktree: str) -> str | None:
     return _run_git(worktree, "rev-parse", "--abbrev-ref", "HEAD")
 
 
-def discover_from_worktree(worktree: str) -> tuple[str, int] | None:
-    """`(repo, issue)` from a worktree's current branch, or `None` if the
-    path isn't a git worktree or its branch names no issue."""
+def resolve_worktree(worktree: str) -> tuple[tuple[str, int] | None, str]:
+    """`(pair_or_None, reason)` -- harmonic-forge#570 AC6. A worktree that
+    resolves to nothing is a common, *expected* resting state (a lane between
+    issues sits on a detached HEAD), and silence there reads as "no new work"
+    exactly the way an empty poll result does everywhere else in this module.
+    So every caller gets the reason alongside the `None`, not just the pair.
+    """
     branch = _worktree_branch(worktree)
-    if not branch or branch == "HEAD":
-        return None
+    if not branch:
+        return None, "not a git worktree (no HEAD ref could be read)"
+    if branch == "HEAD":
+        return None, ("detached HEAD with no branch name -- name targets "
+                       "explicitly instead (--repo/--issues or --queue-for)")
     match = _BRANCH_ISSUE_RE.search(branch)
     if not match:
-        return None
+        return None, f"branch {branch!r} names no issue number"
     prefix = (match.group("prefix") or "").lower()
     issue = int(match.group("num"))
     if prefix:
-        return _PREFIX_REPO[prefix], issue
+        return (_PREFIX_REPO[prefix], issue), "resolved"
     repo = _worktree_repo(worktree)
-    return (repo, issue) if repo else None
+    if not repo:
+        return None, (f"branch {branch!r} names issue {issue} but the "
+                       "origin remote could not be resolved")
+    return (repo, issue), "resolved"
+
+
+def discover_from_worktree(worktree: str) -> tuple[str, int] | None:
+    """`(repo, issue)` from a worktree's current branch, or `None` if the
+    path isn't a git worktree or its branch names no issue."""
+    pair, _reason = resolve_worktree(worktree)
+    return pair
+
+
+def report_resolution(worktrees: list[str]) -> list[tuple[str, tuple[str, int] | None, str]]:
+    """Print, to stderr, how many of `worktrees` resolved and why any did
+    not -- harmonic-forge#570 AC6. Zero resolved out of a non-empty list is
+    called out explicitly rather than left to read as "nothing to do"."""
+    resolutions = [(path, *resolve_worktree(path)) for path in worktrees]
+    if not resolutions:
+        return resolutions
+    resolved = sum(1 for _, pair, _ in resolutions if pair is not None)
+    print(f"[watch_lane_posts] worktree targets: {resolved}/{len(resolutions)} resolved",
+          file=sys.stderr)
+    for path, pair, reason in resolutions:
+        if pair is None:
+            print(f"[watch_lane_posts]   unresolved: {path} -- {reason}", file=sys.stderr)
+    if resolved == 0:
+        print(f"[watch_lane_posts] ZERO of {len(resolutions)} --worktrees target(s) "
+              "resolved -- this belt is watching nothing from --worktrees. Name targets "
+              "explicitly with --repo/--issues or --queue-for instead.", file=sys.stderr)
+    return resolutions
 
 
 def _fetch_comments(repo: str, issue: int, since: str) -> list[dict]:
@@ -267,17 +311,96 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
 
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict]:
+    """Every comment on `issue` -- `--paginate` is required, not optional
+    (harmonic-forge#570 preclose finding): the unpaginated single-page call
+    returns only the first 30, and a caller deciding "newest classified
+    comment" off page 1 of a 50+-comment thread silently picks the wrong
+    one. Two real harmonic-forge issues already exceed 30 comments."""
     try:
         raw = gh_as(
-            _ACCOUNT, ["api", f"repos/{repo}/issues/{issue}/comments"],
+            _ACCOUNT,
+            ["api", "-X", "GET", f"repos/{repo}/issues/{issue}/comments",
+             "--paginate", "-f", "per_page=100"],
             counter=_COUNTER,
         )
-    except Exception:  # noqa: BLE001 — same treatment as the other fetch paths
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed (this
+        # sibling of `_fetch_comments` used to swallow silently; a quota
+        # exhaustion here previously read as "every issue has no comments,"
+        # i.e. no work, which is exactly the failure this protocol refuses
+        # everywhere else)
+        print(f"[watch_lane_posts] comment fetch failed for #{issue}: {exc}",
+              file=sys.stderr)
         return []
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         return []
+
+
+def list_open_issues(repo: str, *, since: str | None = None) -> list[int]:
+    """Every open issue number in `repo`, PRs excluded -- the candidate set
+    for Lane 1's repo-wide newest-marker sweep (harmonic-forge#570 AC1/AC8).
+    No marker search can pre-filter this the way `discover_queue` does:
+    Lane 1 needs the newest comment on EVERY open issue, not just ones
+    already carrying a specific marker, because the ball is with Lane 1
+    whenever the newest classified comment is simply not its own.
+
+    `since` (an ISO-8601 timestamp) narrows to issues updated at or after
+    it -- the watermark `main()` threads through on every cycle after the
+    first, so a steady-state Lane 1 sweep is bounded by recent activity
+    rather than re-scanning every open issue's full comment history every
+    poll (preclose finding: 155 open issues * one comments call each, every
+    5 minutes, against a 5,000/hour shared quota).
+
+    `-X GET` is required (preclose finding): `gh api` switches a request
+    with `-f` parameters to POST unless told otherwise, and a POST to this
+    endpoint is issue *creation*, which 422s with no `title` and is
+    swallowed into an empty result -- reading as "no work," silently.
+    """
+    args = ["api", "-X", "GET", f"repos/{repo}/issues", "--paginate",
+            "-f", "state=open", "-f", "per_page=100"]
+    if since:
+        args += ["-f", f"since={since}"]
+    args += ["--jq", ".[] | select(.pull_request == null) | .number"]
+    try:
+        raw = gh_as(_ACCOUNT, args, counter=_COUNTER)
+    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
+        print(f"[watch_lane_posts] list_open_issues failed: {exc}", file=sys.stderr)
+        return []
+    try:
+        return [int(line) for line in raw.splitlines() if line.strip()]
+    except ValueError:
+        return []
+
+
+def discover_l1_sweep(
+    repo: str, *, since: str | None = None, extra_issues: Iterable[int] = (),
+) -> dict[int, tuple[str, str]]:
+    """`{issue: (lane, detail)}` for every open issue whose newest classified
+    comment is NOT Lane 1's own -- Lane 1's repo-wide newest-marker sweep,
+    the mechanic named in prose under "Role: Lane 1" and given a runnable
+    form here (harmonic-forge#570). An issue with no classified comment at
+    all carries no ball to pick up and is excluded, not reported as queued.
+
+    `since` bounds the *discovery* of NEW candidates to recently-updated
+    issues -- see `list_open_issues`. Pass `None` (the default, and what the
+    first cycle of any run must use) for a full scan. `extra_issues` must
+    carry every issue the caller already believes is queued: an issue that
+    stops receiving updates does not stop being queued, and dropping it
+    from the candidate set the moment `since` excludes it would silently
+    misreport it as resolved (`left-queue-for-l1`) rather than leave it
+    queued, which is the opposite of what actually happened."""
+    queued: dict[int, tuple[str, str]] = {}
+    candidates = set(list_open_issues(repo, since=since)) | set(extra_issues)
+    for issue in candidates:
+        last: tuple[str, str] | None = None
+        for comment in _fetch_all_comments(repo, issue):
+            classified = _classify(comment.get("body", ""))
+            if classified is not None:
+                last = classified
+        if last is not None and last[0] != "l1":
+            queued[issue] = last
+    return queued
 
 
 def discover_queue(repo: str, lane: str) -> dict[int, str]:
@@ -315,9 +438,12 @@ def main() -> int:
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
                              "re-derived) -- for watching an issue with no worktree")
-    parser.add_argument("--queue-for", choices=sorted(QUEUE_KINDS), default=None,
+    parser.add_argument("--queue-for", choices=sorted({"l1", *QUEUE_KINDS}), default=None,
                         help="repo-wide: find ANY open issue currently queued to this lane "
-                             "(paired with --repo), no worktree or issue number needed")
+                             "(paired with --repo), no worktree or issue number needed. "
+                             "'l1' is Lane 1's newest-marker sweep (discover_l1_sweep) -- "
+                             "every open issue whose newest comment isn't Lane 1's own -- "
+                             "and is not a `QUEUE_KINDS` lookup like l2/l3.")
     parser.add_argument("--watch", action="append", default=[],
                         choices=["l1", "l2", "l3"],
                         help="lane whose posts to surface on watched issues -- l1, l2, "
@@ -353,22 +479,61 @@ def main() -> int:
     print(f"[watch_lane_posts] worktrees={args.worktrees or None} "
           f"static={sorted(static_pairs) or None} queue_for={args.queue_for or None} "
           f"lanes={sorted(watch) or None} every {args.interval}s", file=sys.stderr)
+    report_resolution(args.worktrees)
 
     last_discovered: set[tuple[str, int]] = set()
     last_queue: dict[int, str] = {}
+    #: harmonic-forge#570 preclose finding: an unbounded full-repo comment
+    #: scan every cycle (155 open issues on vitalharmony/hrse today) burns
+    #: quota fast enough to exhaust it, and quota exhaustion is swallowed
+    #: into an empty result -- which reads as "no work," the exact failure
+    #: this protocol exists to refuse. `l1_since` narrows *new*-candidate
+    #: discovery to issues updated since the last cycle; `last_queue`'s keys
+    #: are always re-checked regardless (see `discover_l1_sweep`'s
+    #: `extra_issues`), so an already-queued issue is never dropped just
+    #: because it went quiet.
+    l1_since: str | None = None
+    #: A queue-for mode reports its queued count once at the first
+    #: evaluation, even if it is zero -- silence and "confirmed watching
+    #: nothing" must not look the same (harmonic-forge#570 preclose finding:
+    #: AC6's guarantee was implemented for --worktrees only, and both
+    #: prescribed Lane 1 and Lane 3 commands pass no --worktrees).
+    first_queue_report = True
     while True:
         time.sleep(args.interval)
         now = _now()
 
-        discovered = {pair for path in args.worktrees
-                      if (pair := discover_from_worktree(path)) is not None}
+        resolutions = [(path, *resolve_worktree(path)) for path in args.worktrees]
+        discovered = {pair for _, pair, _ in resolutions if pair is not None}
         if discovered != last_discovered:
             print(f"[watch_lane_posts] now watching {sorted(discovered | static_pairs)}",
                   file=sys.stderr)
+            report_resolution(args.worktrees)
             last_discovered = discovered
 
-        if args.queue_for:
+        if args.queue_for == "l1":
+            l1_queue = discover_l1_sweep(args.repo, since=l1_since, extra_issues=last_queue.keys())
+            l1_since = now
+            queue = {issue: f"{lane}:{detail}" for issue, (lane, detail) in l1_queue.items()}
+            if first_queue_report:
+                print(f"[watch_lane_posts] queue-for-l1: {len(queue)} issue(s) queued now",
+                      file=sys.stderr)
+                first_queue_report = False
+            for issue, marker in queue.items():
+                if last_queue.get(issue) != marker:
+                    lane, detail = l1_queue[issue]
+                    print(f"{args.repo}#{issue} needs-l1 last={lane} — {detail}")
+                    sys.stdout.flush()
+            for issue in set(last_queue) - set(queue):
+                print(f"{args.repo}#{issue} left-queue-for-l1")
+                sys.stdout.flush()
+            last_queue = queue
+        elif args.queue_for:
             queue = discover_queue(args.repo, args.queue_for)
+            if first_queue_report:
+                print(f"[watch_lane_posts] queue-for-{args.queue_for}: "
+                      f"{len(queue)} issue(s) queued now", file=sys.stderr)
+                first_queue_report = False
             for issue, kind in queue.items():
                 if last_queue.get(issue) != kind:
                     print(f"{args.repo}#{issue} queued-for-{args.queue_for} kind={kind}")

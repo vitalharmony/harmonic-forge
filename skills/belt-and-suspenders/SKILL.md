@@ -8,10 +8,80 @@ description: Arm a lane's proactive work-discovery protocol — a persistent Mon
 Two independent ways to discover work, so a handoff cannot be missed because one
 of them failed. `LANE` selects the role; everything else here is shared.
 
-The mechanics live in `tools/gh/belt_mechanics.py`, not in this file. That is
-deliberate: a mechanic described in prose gets re-derived by each role at read
-time — three implementations wearing one description, which is the defect this
-skill exists to eliminate.
+The mechanics live in `~/harmonic-forge/tools/gh/belt_mechanics.py`, not in
+this file. That is deliberate: a mechanic described in prose gets re-derived
+by each role at read time — three implementations wearing one description,
+which is the defect this skill exists to eliminate. This file itself lives at
+`harmonic-forge/skills/belt-and-suspenders/SKILL.md`, two directories below
+the repo root, so a bare relative `tools/gh` path reads as skill-relative here
+and resolves to nothing — every path below is written absolute, rooted at
+`~/harmonic-forge/`, for exactly that reason (harmonic-forge#570).
+
+## The belt is `watch_lane_posts.py` — copy the command, don't rebuild it
+
+**`watch_lane_posts.py` already is the belt.** It re-derives `(repo, issue)`
+from a worktree's live branch every cycle, has a `--queue-for` mode for a lane
+with no issue in hand, and reports what it resolved and did not (never
+silently — see the last bullet below). A fresh session that reads
+`belt_mechanics.py`, understands it, and then hand-writes a fourth poller has
+not failed to understand the mechanics — it failed to be told that reading is
+the whole job. That happened three times in one session, once per lane
+(harmonic-forge#570): a session that wrote its own belt has re-derived
+something this skill already names, and **that re-derivation is the defect**,
+the same one `belt_mechanics.py`'s existence already eliminated one level
+down.
+
+**Arming is one mechanism per half, never four.** The belt is a `Monitor` on
+the command below; the suspenders are `/loop` (further down). `CronCreate` and
+a hand-written poller script are neither — arming either of them alongside a
+`Monitor` is not extra safety, it is an unrequested second live protocol with
+its own bugs to debug later.
+
+**The literal command, per lane** — a lane between issues sits on a detached
+HEAD with no issue number as its *normal* resting state (confirmed live,
+cross-lane evidence on harmonic-forge#570), so a command that only works
+mid-issue is not the command to arm:
+
+- **Lane 1** — no single worktree to self-discover from; the pull source is a
+  repo-wide sweep over every open issue (`discover_l1_sweep`, harmonic-forge#570
+  AC1/AC8), not a `QUEUE_KINDS` lookup:
+
+  ```
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
+      --queue-for l1 --repo vitalharmony/hrse --interval 300
+  ```
+
+- **Lane 2** — self-discovers from its own worktree when it is genuinely on an
+  issue's branch:
+
+  ```
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
+      --worktrees ~/Harmonic_Projects/HRSE2-lane2 \
+      --watch l1 --interval 90
+  ```
+
+  and falls back to `--queue-for l2` when it is between issues on a detached
+  HEAD, rather than guessing an issue number:
+
+  ```
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
+      --queue-for l2 --repo vitalharmony/hrse --watch l1 --interval 90
+  ```
+
+- **Lane 3** — no worktree of its own either; queue-discover repo-wide:
+
+  ```
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
+      --queue-for l3 --repo vitalharmony/hrse --watch l1 --interval 60
+  ```
+
+**A monitor that never printed a status line is not proof it is watching
+anything.** For `--worktrees`, the script reports its resolved target set at
+startup and on every change — how many resolved, which did not and why — and
+says so explicitly, never silently, when zero resolved. For `--queue-for`
+(every Lane 1 and Lane 3 command above), it reports the queued count once at
+the first poll, even when that count is zero — a genuinely quiet repo and a
+dead process must never look the same on the log.
 
 ## Refuse before arming anything
 
