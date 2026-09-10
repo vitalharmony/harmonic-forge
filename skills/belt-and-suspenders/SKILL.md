@@ -42,14 +42,29 @@ HEAD with no issue number as its *normal* resting state (confirmed live,
 cross-lane evidence on harmonic-forge#570), so a command that only works
 mid-issue is not the command to arm:
 
-- **Lane 1** — no single worktree to self-discover from; the pull source is a
-  repo-wide sweep over every open issue (`discover_l1_sweep`, harmonic-forge#570
-  AC1/AC8), not a `QUEUE_KINDS` lookup:
+- **Lane 1** — **worktrees first.** Lane 1 has no worktree *on an issue branch*,
+  but it can see every worktree there is, and that set is what is actually in
+  flight. Enumerate them rather than listing them: `/tmp/<repo>-<issue>-impl`
+  checkouts appear and vanish per issue, so a hardcoded list narrows the belt
+  silently (harmonic-forge#590).
 
   ```
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py \
-      --queue-for l1 --repo vitalharmony/hrse --interval 300
+      --all-worktrees --worktrees ~/harmonic-forge \
+      --watch l2 --watch l3 --interval 300
   ```
+
+  Run it from the HRSE2 checkout. `git worktree list` only ever sees one
+  repository, so naming `~/harmonic-forge` alongside `--all-worktrees` is what
+  makes the belt span both repos — each named path contributes its own repo's
+  worktrees, not just itself.
+
+  **GitHub enriches; it does not discover.** The repo-wide sweep
+  (`discover_l1_sweep`) is the *suspenders'* backstop, not the belt's pull
+  source — see "Role: Lane 1" below. Arming it as the belt is
+  harmonic-forge#590's regression: it surfaces every open issue in the repo
+  rather than the work in hand, and it collapses two deliberately independent
+  mechanisms into one, which is what this protocol's name is about.
 
 - **Lane 2** — self-discovers from its own worktree when it is genuinely on an
   issue's branch:
@@ -159,7 +174,15 @@ idempotent check runs every tick regardless of what any other check found. Lane
 "nothing owed," then again by letting that check decide whether the other ran.
 
 1. **What changed** since the last tick.
-2. **What do I owe** — repo-wide, ignoring recency.
+2. **What do I owe** — repo-wide, ignoring recency. This is where the
+   repo-wide sweep belongs, and the only place it belongs (harmonic-forge#590).
+   Lane 1 runs it here, per repo, as a one-shot backstop to the belt — never as
+   the belt itself:
+
+   ```
+   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l1 --repo vitalharmony/hrse --interval 600
+   ```
+
 3. **What have I never answered** — count *my own* posted markers per issue.
 
 **Check 3 is the only one orthogonal to the other two.** Checks 1 and 2 both
@@ -193,8 +216,15 @@ posted. Two hours, a one-line thread, while the lane carried it forward as done.
 
 ## Role: Lane 1
 
-**Pull source: a repo-wide newest-marker sweep.** Lane 1 has no single worktree
-to self-discover from, so a manually maintained list is the failure mode.
+**Belt pull source: the live worktrees** (`--all-worktrees`). That set bounds
+discovery to work that exists. GitHub is then read to enrich an issue a worktree
+has already named — it is not the place candidates come from.
+
+**Suspenders backstop: a repo-wide newest-marker sweep** (`discover_l1_sweep`).
+This runs on the *pull loop*, not the monitor, and exists for exactly what the
+belt structurally cannot see: handoffs that predate it, anything its filter
+misses, and issues whose state changed with no new comment. Promoting it to the
+belt was harmonic-forge#590.
 
 > For each open issue, find the newest comment carrying a lane-post marker. If
 > its `posted-by` is **not** Lane 1, the ball is with Lane 1. If the newest

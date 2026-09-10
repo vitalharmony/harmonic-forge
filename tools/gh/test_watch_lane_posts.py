@@ -19,6 +19,7 @@ from watch_lane_posts import (
     discover_from_worktree,
     discover_l1_sweep,
     discover_queue,
+    enumerate_worktrees,
     l1_sweep_cycle,
     list_open_issues,
     report_resolution,
@@ -920,6 +921,100 @@ class BeltSkillDocSyncTests(unittest.TestCase):
         self.assertEqual(listed, set(QUEUE_KINDS["l2"]),
                          "SKILL.md's Lane 2 'Fires on ...' line must list exactly "
                          "QUEUE_KINDS['l2'], no more and no less")
+
+
+class EnumerateWorktreesTests(unittest.TestCase):
+    """harmonic-forge#590: Lane 1's belt is worktrees-first, and the worktree
+    set is not static, so it is read from git rather than hardcoded."""
+
+    _PORCELAIN = (
+        "worktree /home/u/harmonic-forge\n"
+        "HEAD abc123\n"
+        "branch refs/heads/main\n"
+        "\n"
+        "worktree /tmp/hrse2-1676-impl\n"
+        "HEAD def456\n"
+        "branch refs/heads/feat/1676-backfill\n"
+        "\n"
+        "worktree /home/u/HRSE2-lane3\n"
+        "HEAD 789abc\n"
+        "detached\n"
+        "\n"
+    )
+
+    def test_parses_every_worktree_path(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=self._PORCELAIN, stderr="")
+        with patch("watch_lane_posts.subprocess.run", return_value=completed):
+            self.assertEqual(
+                enumerate_worktrees(),
+                ["/home/u/harmonic-forge", "/tmp/hrse2-1676-impl",
+                 "/home/u/HRSE2-lane3"])
+
+    def test_ephemeral_impl_worktree_is_included(self):
+        """The whole point: a `/tmp/<repo>-<issue>-impl` checkout that no
+        hardcoded --worktrees list could have named is discovered."""
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=self._PORCELAIN, stderr="")
+        with patch("watch_lane_posts.subprocess.run", return_value=completed):
+            self.assertIn("/tmp/hrse2-1676-impl", enumerate_worktrees())
+
+    def test_returns_empty_on_git_failure_rather_than_raising(self):
+        for exc in (subprocess.CalledProcessError(128, "git"),
+                    subprocess.TimeoutExpired("git", 15),
+                    OSError("git not found")):
+            with self.subTest(exc=type(exc).__name__):
+                with patch("watch_lane_posts.subprocess.run", side_effect=exc):
+                    self.assertEqual(enumerate_worktrees(), [])
+
+    def test_not_a_repo_yields_no_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(enumerate_worktrees(cwd=tmp), [])
+
+
+class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
+    """harmonic-forge#590 AC1/AC2: SKILL.md's Lane 1 belt watches the live
+    worktrees; the repo-wide sweep is the suspenders' backstop, not the belt's
+    pull source. Asserted mechanically because the regression that produced
+    #590 was a prose edit that read plausibly."""
+
+    def _lane1_belt_command(self) -> str:
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        match = re.search(r"^- \*\*Lane 1\*\*.*?```\n(.*?)```",
+                          text, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match, "SKILL.md's Lane 1 belt command block was not found")
+        return match.group(1)
+
+    def test_lane1_belt_arms_all_worktrees(self):
+        self.assertIn("--all-worktrees", self._lane1_belt_command())
+
+    def test_lane1_belt_does_not_arm_the_repo_wide_sweep(self):
+        self.assertNotIn("--queue-for l1", self._lane1_belt_command(),
+                         "the repo-wide sweep is the suspenders' backstop "
+                         "(harmonic-forge#590); arming it as the belt is the "
+                         "regression this issue fixed")
+
+    def test_lane1_belt_names_a_second_repo_root(self):
+        """`git worktree list` sees one repo; Lane 1 spans two. The command
+        must therefore name the sibling checkout alongside --all-worktrees."""
+        self.assertIn("--worktrees", self._lane1_belt_command(),
+                      "the Lane 1 belt must seed a second repo root, or it "
+                      "silently watches only the repo it was launched from")
+
+    def test_suspenders_still_carry_the_repo_wide_sweep(self):
+        """AC2: demoted to the pull loop, not deleted -- and reachable there,
+        as a literal command, not a description of one."""
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        suspenders = text.split("## The suspenders", 1)
+        self.assertEqual(len(suspenders), 2, "suspenders section not found")
+        self.assertIn("--queue-for l1", suspenders[1],
+                      "the repo-wide sweep must be armed somewhere; the "
+                      "suspenders' pull loop is where harmonic-forge#590 put it")
+
+    def test_discover_l1_sweep_is_kept_not_deleted(self):
+        """AC2: demoted, not removed -- it is still the suspenders' backstop."""
+        self.assertTrue(callable(discover_l1_sweep))
+        self.assertIn("discover_l1_sweep", _SKILL_MD.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

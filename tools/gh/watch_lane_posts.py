@@ -747,6 +747,30 @@ def l1_sweep_cycle(
     return l1_queue, (now if fetch_ok else l1_since)
 
 
+def enumerate_worktrees(cwd: str | None = None) -> list[str]:
+    """Every live worktree of the repo containing `cwd`, via `git worktree list`.
+
+    harmonic-forge#590: Lane 1's belt is worktrees-first, and the set of
+    worktrees is not static -- `/tmp/<repo>-<issue>-impl` checkouts appear and
+    vanish per issue. A hardcoded `--worktrees` list therefore narrows the belt
+    silently, which is the failure mode this protocol exists to avoid. Reading
+    the list at arm time, from git, is the only spelling that cannot go stale.
+
+    Returns [] and stays quiet on failure -- the caller reports a zero-target
+    belt through `report_resolution`, so a second error path here would
+    duplicate that message rather than add to it.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=cwd, capture_output=True, text=True, check=True, timeout=15,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return []
+    return [line.split(" ", 1)[1].strip()
+            for line in out.splitlines() if line.startswith("worktree ")]
+
+
 def main() -> int:
     global _ACCOUNT
     parser = argparse.ArgumentParser(description=__doc__,
@@ -755,6 +779,14 @@ def main() -> int:
                         help="worktree path(s) -- (repo, issue) re-derived from each one's "
                              "CURRENT branch every poll cycle, so this follows a lane across "
                              "issues with zero reconfiguration")
+    parser.add_argument("--all-worktrees", action="store_true",
+                        help="enumerate every live worktree of the repo containing CWD via "
+                             "`git worktree list` and watch all of them -- harmonic-forge#590. "
+                             "A hardcoded --worktrees list goes stale the moment an ephemeral "
+                             "/tmp/<repo>-<issue>-impl worktree is created or removed, and a "
+                             "narrowed belt is silent, not loud. Combines with --worktrees: "
+                             "each named path also contributes ITS repo's worktrees, which is "
+                             "how one belt spans hrse and harmonic-forge at once.")
     parser.add_argument("--repo", help="owner/repo for a manual --issues override")
     parser.add_argument("--issues", type=int, nargs="+", default=[],
                         help="issue numbers to poll, paired with --repo (static, not "
@@ -789,8 +821,22 @@ def main() -> int:
         parser.error("--issues requires --repo")
     if args.queue_for and not args.repo:
         parser.error("--queue-for requires --repo")
+    if args.all_worktrees:
+        # Union, not replacement, and enumerated once per named repo: `git
+        # worktree list` only ever sees one repository, but Lane 1's work spans
+        # hrse and harmonic-forge at the same time. Seeding from CWD alone would
+        # silently halve the belt -- the exact failure class of #590 -- so every
+        # explicitly named worktree also contributes its own repo's set.
+        roots = [None, *args.worktrees]
+        discovered: set[str] = set()
+        for root in roots:
+            discovered.update(enumerate_worktrees(root))
+        print(f"[watch_lane_posts] --all-worktrees enumerated {len(discovered)} live "
+              f"worktree(s) across {len(roots)} repo root(s)", file=sys.stderr)
+        args.worktrees = sorted(set(args.worktrees) | discovered)
     if not args.worktrees and not args.issues and not args.queue_for:
-        parser.error("give at least one of --worktrees, --repo/--issues, or --queue-for")
+        parser.error("give at least one of --worktrees, --repo/--issues, "
+                     "--all-worktrees, or --queue-for")
     if not args.watch and not args.queue_for:
         parser.error("--watch is required unless --queue-for is given")
 

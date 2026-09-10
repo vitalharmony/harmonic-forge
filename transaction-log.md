@@ -3,6 +3,42 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): Lane 1's belt watches the worktrees, not a repo-wide scan (harmonic-forge#590)
+
+The original design puts the repo-wide newest-marker sweep in the SUSPENDERS,
+as a backstop. #570's AC7 wording promoted it to the BELT, so Lane 1 started
+pulling arbitrary open issues out of GitHub instead of the work actually in
+flight -- and collapsed two deliberately independent mechanisms into one,
+which is the thing this protocol is named for.
+
+- `watch_lane_posts.py` gains `--all-worktrees`: `git worktree list` at arm
+  time, unioned with any `--worktrees`. Ephemeral `/tmp/<repo>-<issue>-impl`
+  checkouts appear and vanish per issue, so a hardcoded list narrows the belt
+  silently; enumeration is the only spelling that cannot go stale.
+- Enumeration runs once per named repo root, not just CWD. `git worktree list`
+  sees one repository; Lane 1 spans hrse and harmonic-forge at the same time,
+  and seeding from CWD alone would silently halve the belt -- the same failure
+  class. Measured live: 19/26 targets resolved across both repos.
+- `SKILL.md`'s Lane 1 command is worktrees-first. GitHub enriches an issue a
+  worktree has already named; it is not where candidates come from.
+- `discover_l1_sweep` is kept and demoted, not deleted, and is now armed as a
+  literal command inside the suspenders' "what do I owe" check -- a control
+  that exists but is not reached at the point of use is the recurring defect
+  behind this whole class.
+- 9 new tests, including two doc-sync assertions: the regression that produced
+  #590 was a prose edit that read plausibly, so the property is now mechanical.
+
+Also unblocks main: #588 added 5 bytes to `.claude/rules/lane-shorthand.md`
+without recording them, leaving the context-budget ratchet failing and the
+repo un-committable. The baseline entry is corrected to the measured net.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/SKILL.md | 44 ++++++++++++++---
+- tools/gh/test_watch_lane_posts.py   | 95 +++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py        | 48 ++++++++++++++++++-
+- 4 files changed, 186 insertions(+), 9 deletions(-)
+
 ## feat(belt): read the tick log — no data is not a clean report (harmonic-forge#519)
 
 Two commands, per the ratified plan.
