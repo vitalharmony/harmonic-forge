@@ -79,6 +79,38 @@ def live_batch_keys(now: datetime | None = None) -> list[str]:
     return sorted(keys)
 
 
+def _top_up_hint(target_key: str | None, keys: list[str]) -> str:
+    """Name `top-up` when the acting key is simply not in the batch.
+
+    harmonic-forge#600 AC2. `top-up` has existed since #567 -- it EXTENDS a
+    live grant rather than replacing it, which is exactly what adding
+    newly-discovered work to a running batch needs -- and no denial message
+    mentioned it. The operator was told to satisfy the guard and to preflight
+    NEXT time, with nothing about the one command that fixes this time.
+
+    Only on the not-in-the-batch branch. When the key IS authorized the batch
+    is not the problem, and suggesting `top-up` would point at the wrong thing.
+    """
+    if not target_key or target_key.upper() in {k.upper() for k in keys}:
+        return ""
+    key = target_key.upper()
+    return (
+        f"\n\nTo bring {key} under the batch, ask the OPERATOR to run, in their "
+        f"own terminal:\n"
+        f"  python3 ~/harmonic-forge/tools/hooks/batch_auth.py top-up {key}\n"
+        f"This is not a command for this session to run -- `top-up` mints an "
+        f"authorization and requires a real TTY (harmonic-forge#611), the same "
+        f"as `authorize` and `link-pr`. A relative path will not resolve either: "
+        f"the hooks that print this fire from a lane worktree, not from the "
+        f"forge root.\n"
+        f"`top-up` is the right verb even so: for a key that IS live it extends "
+        f"the expiry and leaves its targets alone, which `authorize` would reset. "
+        f"For {key}, which is not live, it authorizes fresh -- and if {key} has "
+        f"an EXPIRED entry still inside the prune grace window, that fresh "
+        f"authorization replaces it and drops any recorded PR links with it."
+    )
+
+
 def annotate(message: str, *, target_key: str | None = None,
              now: datetime | None = None) -> str:
     """`message` plus a line naming the interrupted batch, or `message` as-is.
@@ -100,9 +132,17 @@ def annotate(message: str, *, target_key: str | None = None,
             head = (f"[BATCH] This denial interrupted an authorized batch, on "
                     f"{target_key.upper()}.")
         elif target_key:
+            # harmonic-forge#600 AC2. "NOT one of the authorized keys" reads
+            # as operator error. The commonest cause is the opposite: the work
+            # was DISCOVERED after the batch was authorized -- the belt exists
+            # to surface work nobody planned, so belt-found work is by
+            # construction never in the key set. Same denial, different remedy,
+            # and the old message named neither.
             head = (f"[BATCH] This denial interrupted a session with a live "
-                    f"batch, while acting on {target_key.upper()} — which is "
-                    f"NOT one of the authorized keys.")
+                    f"batch, while acting on {target_key.upper()}, which the "
+                    f"batch does not cover. If this work was discovered after "
+                    f"the batch was authorized -- which is what the belt is "
+                    f"for -- it was never going to be in the key set.")
         else:
             head = "[BATCH] This denial interrupted an authorized batch."
 
@@ -111,10 +151,25 @@ def annotate(message: str, *, target_key: str | None = None,
         # slice still produced ", +N more" — all forty keys printed, followed
         # by a count claiming they were not.
         shown = keys[:_MAX_KEYS]
-        if target_key and target_key.upper() not in {k.upper() for k in shown}:
+        # Only when the key IS live. harmonic-forge#600 preclose finding: this
+        # prepend was written for the covered branch, where a genuinely live key
+        # can be sorted out past the cap -- and it ran unconditionally, so an
+        # UNCOVERED key was injected into a list labelled "Live keys". That is
+        # also what made `hidden` negative: `shown` held a key `keys` did not.
+        # Flooring the count hid the symptom and left the false listing.
+        live_upper = {k.upper() for k in keys}
+        if (target_key and target_key.upper() in live_upper
+                and target_key.upper() not in {k.upper() for k in shown}):
             # The acting key must always appear. With more live grants than the
             # cap, sorting alone can push it out — `H1636` behind six `F` keys.
             shown = [target_key.upper()] + shown[:_MAX_KEYS - 1]
+        # No floor needed, and deliberately none: with the prepend restricted
+        # to live keys above, `shown` is always a subset of `keys`, so this
+        # cannot go negative. harmonic-forge#600's first cut wrote
+        # `max(0, ...)` here -- which suppressed the observed "+-1 more" while
+        # leaving the false "Live keys" listing that produced it. A floor that
+        # can never trigger is a fix for a bug that no longer exists, and this
+        # repo deletes those rather than keeping them as reassurance.
         hidden = len(keys) - len(shown)
         listed = ", ".join(shown)
         if hidden:
@@ -128,7 +183,7 @@ def annotate(message: str, *, target_key: str | None = None,
             "around it.\n"
             "Many of these are satisfiable before a batch starts — run "
             "`mise run batch-preflight --key <KEY> ...` at the top of the next "
-            "one (harmonic-forge#509)."
+            "one (harmonic-forge#509)." + _top_up_hint(target_key, keys)
         )
     except Exception:
         # A hook is mid-denial. Losing the annotation is survivable; losing the

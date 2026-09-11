@@ -70,6 +70,92 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - tools/gh/test_watch_lane_posts.py | 23 +++++++++++++++--------
 - 1 file changed, 15 insertions(+), 8 deletions(-)
+## fix(batch): address the whole preclose finding, not the symptom (harmonic-forge#600 AC2)
+
+Five findings. The AC2 deliverable was "different cause, different remedy" and
+the remedy I shipped could not be run by its reader, at a path that would not
+resolve, making a claim that is false on the exact branch it fires on.
+
+**1. The remedy was TTY-gated.** `top-up` calls `_require_tty` on the CLI path,
+so telling the AGENT to run it hands it a second denial -- the same misdirection
+AC2 exists to remove. The repo already had the right shape at
+`batch_auth.py:997`: "Ask the operator to run `link-pr` themselves in their own
+terminal... this is not a command for this session to run." Now addressed to the
+operator, saying so explicitly.
+
+**2. The path did not resolve where the hooks fire.** They run from
+`/tmp/<repo>-<issue>-impl`, which has no `tools/hooks/`. Repo convention, and
+the sibling message at `block_lane1_status_claims.py:330`, is a
+`~/harmonic-forge/` path. Fixed, and the message says why a relative path fails.
+
+**3. The uncovered key was printed under "Live keys:".** The prepend was written
+for the COVERED branch, where a genuinely live key can sort past the cap, and it
+ran unconditionally -- injecting a non-live key into a list labelled live, on
+every uncovered denial. That is also the ROOT of the "+-1 more" I "fixed" last
+commit: `hidden` went negative because `shown` held a key `keys` did not.
+Restricted to live keys.
+
+**4. `max(0, ...)` was the symptom, and is now removed.** With the root cause
+fixed, `shown` is always a subset of `keys` and the count cannot go negative, so
+the floor is dead code -- a fix for a bug that no longer exists. Re-breaking the
+prepend now fails 2 tests AND reproduces `+-`, which is the guard being on the
+cause rather than the display.
+
+**5. The message claimed top-up "leaves its targets untouched" -- false here.**
+For a key with no live entry `top_up()` calls `authorize()`, the outright
+replace the sentence warned against. Concretely destructive: an entry expired
+inside the 7-day prune grace still holds its `link_pr` mappings, and a fresh
+authorization drops them. The message now says what actually happens for a
+non-live key, including that loss.
+
+The test asserting #4 never reached the branch -- 40 keys yields hidden=15.
+Negative needs FEWER keys than the cap with an uncovered target, which is the
+common case. Rewritten, plus five more covering the operator-addressed remedy,
+the resolvable path, the live-keys listing, and that a live key sorted past the
+cap is still listed.
+
+2049 -> 2054 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/hooks/batch_context.py      | 43 ++++++++++++++++++++--------
+- tools/hooks/test_batch_context.py | 59 +++++++++++++++++++++++++++++++++------
+- 2 files changed, 82 insertions(+), 20 deletions(-)
+
+## fix(batch): name the cause and the remedy on an uncovered-key denial (harmonic-forge#600 AC2)
+
+"NOT one of the authorized keys" reads as operator error. The commonest cause
+is the opposite: the work was DISCOVERED after the batch was authorized. The
+belt exists to surface work nobody planned, so belt-found work is by
+construction never in the key set. Same denial, different remedy, and the
+message named neither.
+
+- The uncovered-key branch now says the batch does not cover this key and names
+  post-authorization discovery as the likely reason.
+- It names `top-up`, which has existed since #567 and which no denial message
+  mentioned. The operator was told to satisfy the guard and to preflight NEXT
+  time, with nothing about the one command that fixes THIS time. The hint fires
+  only on the uncovered branch -- when the key IS authorized the batch is not
+  the problem, and pointing at top-up would misdirect.
+- It states why top-up and not `authorize`: authorize REPLACES the entry,
+  resetting consumption and wiping recorded PR links.
+
+Also fixes a live cosmetic-but-confusing bug found while reading the output:
+`hidden` could go NEGATIVE, printing a literal "+-1 more". `shown` is extended
+with the acting key when sorting elided it, which can push it past the cap.
+Floored at zero.
+
+AC3 was already done -- `top-up` shipped with a CLI subcommand in #567 -- and
+this commit is what makes it discoverable at the moment it is needed, which is
+the half that was actually missing.
+
+5 tests.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/hooks/batch_context.py      | 44 ++++++++++++++++++++++++++++++++----
+- tools/hooks/test_batch_context.py | 47 ++++++++++++++++++++++++++++++++++++++-
+- 2 files changed, 86 insertions(+), 5 deletions(-)
 
 ## feat(rules): R-0356/R-0357 -- report what the operator needs, not what you read (harmonic-forge#621)
 

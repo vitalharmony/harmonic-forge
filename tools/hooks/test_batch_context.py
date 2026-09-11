@@ -15,6 +15,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -84,7 +85,7 @@ class AnnotateTests(unittest.TestCase):
         """Acting on an unauthorized issue during a batch is worth saying —
         it is a different situation from being stopped on an authorized one."""
         out = self._annotate("denied.", state("F509"), target_key="H999")
-        self.assertIn("NOT one of the authorized keys", out)
+        self.assertIn("which the batch does not cover", out)
 
     def test_without_a_target_key_it_still_names_the_batch(self) -> None:
         out = self._annotate("denied.", state("F509", "F495"))
@@ -340,3 +341,90 @@ class AC3WiringTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("issue_key(repo, issue)", source)
         self.assertIn("target_key=_acting", source)
+
+
+class TopUpRemedyTests(unittest.TestCase):
+    """harmonic-forge#600 AC2. `top-up` has existed since #567 and no denial
+    message named it, so an operator hitting an uncovered key was told to
+    satisfy the guard and to preflight NEXT time -- nothing about the one
+    command that fixes this time."""
+
+    def _annotate(self, target, keys):
+        with patch.object(bc, "live_batch_keys", return_value=keys):
+            return bc.annotate("Blocked: a guard fired.",
+                                          target_key=target)
+
+    def test_an_uncovered_key_is_told_about_top_up(self):
+        out = self._annotate("F594", ["F326", "F504"])
+        self.assertIn("top-up F594", out)
+        self.assertIn("under the batch", out)
+
+    def test_an_authorized_key_is_not(self):
+        """The batch is not the problem there; suggesting top-up would point
+        at the wrong thing."""
+        out = self._annotate("F326", ["F326", "F504"])
+        self.assertNotIn("top-up", out)
+
+    def test_the_cause_is_not_stated_as_operator_error(self):
+        """"NOT one of the authorized keys" reads as a mistake. The commonest
+        cause is work the belt surfaced after the batch was authorized, which
+        is by construction never in the key set."""
+        out = self._annotate("F594", ["F326"])
+        self.assertNotIn("NOT one of the authorized keys", out)
+        self.assertIn("discovered after", out)
+
+    def test_top_up_is_named_over_authorize(self):
+        """`authorize` resets consumption and wipes PR links (#567). The message
+        must name `top-up` as the verb and say what `authorize` would cost --
+        without claiming top-up preserves targets on THIS branch, where it does
+        not (preclose finding)."""
+        out = self._annotate("F594", ["F326"])
+        self.assertIn("top-up", out)
+        self.assertIn("which `authorize` would reset", out)
+
+    def test_an_uncovered_key_is_not_listed_as_live(self):
+        """harmonic-forge#600 preclose finding, and the ROOT of the "+-1 more"
+        bug. The acting key was prepended into `shown` unconditionally -- a
+        prepend written for the covered branch, where a live key can be sorted
+        past the cap. On the uncovered branch it injected a non-live key into a
+        list labelled "Live keys", and made `hidden` negative because `shown`
+        held a key `keys` did not."""
+        out = self._annotate("F594", ["F326", "F504"])
+        self.assertIn("Live keys: F326, F504.", out)
+        self.assertNotIn("Live keys: F594", out)
+
+    def test_a_live_key_sorted_past_the_cap_is_still_listed(self):
+        """The behaviour the prepend exists for must survive the fix."""
+        keys = [f"F{n}" for n in range(500, 540)] + ["A001"]
+        out = self._annotate("A001", keys)
+        self.assertIn("A001", out.split("Live keys:")[1].split("\n")[0])
+
+    def test_the_hidden_count_is_never_negative(self):
+        """Observed live as "+-1 more". The first version of this test used 40
+        keys, which yields hidden=15 and never reaches the branch -- reverting
+        the fix left it green. Negative requires FEWER keys than the cap with an
+        uncovered target, which is the common case, not the exotic one."""
+        out = self._annotate("F594", ["F326", "F504"])
+        self.assertNotIn("+-", out)
+        self.assertNotIn("more", out.split("Live keys:")[1].split("\n")[0])
+
+    def test_the_remedy_is_addressed_to_the_operator_not_the_session(self):
+        """`top-up` is TTY-gated (harmonic-forge#611), so telling the agent to
+        run it hands it a second denial -- the same misdirection AC2 removes."""
+        out = self._annotate("F594", ["F326"])
+        self.assertIn("ask the OPERATOR", out)
+        self.assertIn("not a command for this session to run", out)
+
+    def test_the_remedy_path_resolves_from_a_lane_worktree(self):
+        """These hooks fire from `/tmp/<repo>-<issue>-impl`, which has no
+        `tools/hooks/`. The repo convention is a `~/harmonic-forge/` path."""
+        out = self._annotate("F594", ["F326"])
+        self.assertIn("~/harmonic-forge/tools/hooks/batch_auth.py", out)
+        self.assertNotIn("  python3 tools/hooks/", out)
+
+    def test_it_does_not_claim_targets_are_preserved_for_an_uncovered_key(self):
+        """`top_up()` authorizes FRESH for a key with no live entry -- the very
+        replace the old wording warned about. An expired-but-in-grace entry with
+        recorded PR links loses them."""
+        out = self._annotate("F594", ["F326"])
+        self.assertIn("which is not live, it authorizes fresh", out)
