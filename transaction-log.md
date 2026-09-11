@@ -3,6 +3,23 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(belt): make the mutual-exclusion test CI-safe (harmonic-forge#618)
+
+The test shelled out to the real CLI, and `assert_identity` runs before
+argument validation and calls `gh-as` -- which is on my PATH and not on CI's.
+It passed locally and failed in CI with:
+
+    FileNotFoundError: [Errno 2] No such file or directory: 'gh-as'
+
+A test that only runs on one machine is not a test. Rewritten in-process,
+patching `assert_identity` and asserting `SystemExit(2)` plus the message,
+matching the two sibling tests added alongside it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 23 +++++++++++++++--------
+- 1 file changed, 15 insertions(+), 8 deletions(-)
+
 ## feat(rules): R-0356/R-0357 -- report what the operator needs, not what you read (harmonic-forge#621)
 
 Lanes report by pasting what they read: a subagent's return, a whole issue body,

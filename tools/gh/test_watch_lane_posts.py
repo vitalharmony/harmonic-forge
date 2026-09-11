@@ -1724,14 +1724,21 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
 
     def test_arming_both_the_belt_and_the_sweep_is_refused(self):
         """Collapsing two deliberately independent mechanisms into one process
-        is harmonic-forge#590's regression."""
-        proc = subprocess.run(
-            [sys.executable, str(Path(watch_lane_posts.__file__)),
-             "--queue-for", "l1", "--sweep-for", "l1",
-             "--repo", "vitalharmony/hrse", "--watch", "l2"],
-            capture_output=True, text=True)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("belt and the suspenders", proc.stderr)
+        is harmonic-forge#590's regression.
+
+        In-process, not a subprocess: `assert_identity` runs before argument
+        validation and shells out to `gh-as`, which does not exist on CI. The
+        subprocess form of this test passed locally and failed in CI with
+        `FileNotFoundError: 'gh-as'` -- a test that only runs on one machine."""
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--queue-for", "l1",
+                                        "--sweep-for", "l1", "--repo", "o/r",
+                                        "--watch", "l2"]), \
+             patch("watch_lane_posts.assert_identity"), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            with self.assertRaises(SystemExit) as caught:
+                watch_lane_posts.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("belt and the suspenders", err.getvalue())
 
 
 class BeltDedupMechanicTests(unittest.TestCase):
