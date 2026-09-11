@@ -23,12 +23,14 @@ from watch_lane_posts import (
     branch_ahead_without_completion,
     discover_from_worktree,
     discover_l1_sweep,
+    discover_l3_unanswered_verdicts,
     discover_queue,
     drop_closed_targets,
     RootNotARepo,
     enumerate_repo_roots,
     enumerate_worktrees,
     l1_sweep_cycle,
+    l3_verdict_sweep_cycle,
     list_open_issues,
     report_resolution,
     resolve_worktree,
@@ -1004,6 +1006,216 @@ class L1SweepCycleTests(unittest.TestCase):
                 "2026-09-09T00:00:00Z",
             )
         self.assertEqual(queue, {1530: ("l2", "## L2D — receipt-backed status (harmonic-forge#371)")})
+
+
+def _gate_result(verdict: str) -> str:
+    return (f"## Lane 3 Gate Results — hrse#0000\n\n**Verdict:** {verdict}\n\n"
+            "<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=x -->")
+
+
+class L3UnansweredVerdictTests(unittest.TestCase):
+    """harmonic-forge#629, Check C -- the regression hrse#1771 produced live:
+    a FAIL gate-result got a real Lane 1 ruling, posted as `kind=discussion`,
+    that neither Check A/B nor `discover_queue` ever surfaced because a
+    `discussion` marker carries no queue membership."""
+
+    def _mock_gh(self, open_issues, comments: dict, issue_states: dict | None = None):
+        """`comments`: {issue: [(body, created_at), ...]}, oldest first --
+        matches the real GitHub REST ordering `_fetch_all_comments` relies
+        on."""
+        issue_states = issue_states or {}
+
+        def run(argv, **kwargs):
+            gh_argv = argv[3:]
+            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
+                if isinstance(open_issues, Exception):
+                    raise open_issues
+                return _fake_completed("\n".join(str(n) for n in open_issues))
+            if "api" in gh_argv:
+                comments_paths = [a for a in gh_argv if a.startswith("repos/") and "/comments" in a]
+                if comments_paths:
+                    issue = int(comments_paths[0].rsplit("/", 2)[-2])
+                    rows = comments.get(issue, [])
+                    return _fake_completed(json.dumps(
+                        [{"body": b, "created_at": c} for b, c in rows]))
+                single_issue_paths = [a for a in gh_argv
+                                       if a.startswith("repos/") and "/issues/" in a]
+                if single_issue_paths:
+                    issue = int(single_issue_paths[0].rsplit("/", 1)[-1])
+                    return _fake_completed(issue_states.get(issue, "open"))
+            raise AssertionError(f"unexpected gh call: {argv}")
+        return run
+
+    def test_a_fail_verdict_with_a_later_reply_is_watched(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1771], {1771: [
+                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
+                    ("## L1 ruling\n\nsome text", "2026-09-11T03:35:20Z"),
+                ]})):
+            watching, fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {1771: "FAIL"})
+        self.assertTrue(fetch_ok)
+
+    def test_a_blocked_verdict_with_a_later_reply_is_watched(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1792], {1792: [
+                    (_gate_result("BLOCKED"), "2026-09-11T00:41:39Z"),
+                    ("some later reply, no marker at all", "2026-09-11T00:50:00Z"),
+                ]})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {1792: "BLOCKED"})
+
+    def test_a_pass_verdict_never_fires_even_with_a_later_reply(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1663], {1663: [
+                    (_gate_result("PASS"), "2026-09-11T01:21:10Z"),
+                    ("merged", "2026-09-11T01:21:30Z"),
+                ]})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {})
+
+    def test_a_fail_verdict_with_no_later_comment_does_not_fire_yet(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1771], {1771: [(_gate_result("FAIL"), "2026-09-11T01:34:14Z")]})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {})
+
+    def test_an_issue_with_no_gate_result_at_all_is_excluded(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1530], {1530: [("just chat, no marker", "2026-09-11T00:00:00Z")]})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {})
+
+    def test_only_the_last_gate_result_matters_a_prior_fail_superseded_by_a_pass_does_not_fire(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1000], {1000: [
+                    (_gate_result("FAIL"), "2026-09-01T00:00:00Z"),
+                    ("fix pushed", "2026-09-01T01:00:00Z"),
+                    (_gate_result("PASS"), "2026-09-01T02:00:00Z"),
+                    ("merged", "2026-09-01T03:00:00Z"),
+                ]})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {})
+
+    def test_the_reply_kind_is_irrelevant_a_discussion_marker_still_fires(self):
+        """The regression's own shape: the reply carries `kind=discussion`,
+        which `discover_queue` would never treat as queue membership -- but
+        Check C does not classify the reply at all, only its timestamp."""
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [1771], {1771: [
+                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
+                    ("## L1 ruling\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+                     "2026-09-11T03:35:20Z"),
+                ]})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
+        self.assertEqual(watching, {1771: "FAIL"})
+
+    def test_fetch_failure_reports_fetch_ok_false(self):
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(RuntimeError("502"), {})):
+            watching, fetch_ok = discover_l3_unanswered_verdicts(
+                "vitalharmony/hrse", since="2026-09-01T00:00:00Z", extra_issues=[1771])
+            self.assertFalse(fetch_ok)
+
+    def test_extra_issues_keeps_a_stale_watched_issue_in_the_candidate_set(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [],  # nothing NEW since the watermark
+                {1771: [
+                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
+                    ("a reply", "2026-09-11T03:35:20Z"),
+                ]})):
+            watching, fetch_ok = discover_l3_unanswered_verdicts(
+                "vitalharmony/hrse", since="2026-09-11T02:00:00Z", extra_issues=[1771])
+        self.assertEqual(watching, {1771: "FAIL"})
+        self.assertTrue(fetch_ok)
+
+    def test_a_closed_extra_issue_is_dropped(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                [], {1771: [
+                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
+                    ("a reply", "2026-09-11T03:35:20Z"),
+                ]}, issue_states={1771: "closed"})):
+            watching, _fetch_ok = discover_l3_unanswered_verdicts(
+                "vitalharmony/hrse", since="2026-09-11T02:00:00Z", extra_issues=[1771])
+        self.assertEqual(watching, {})
+
+
+class L3VerdictSweepCycleTests(unittest.TestCase):
+    """Mirrors `L1SweepCycleTests` -- the watermark discipline is identical."""
+
+    def _mock_gh(self, open_issues_or_exc):
+        def run(argv, **kwargs):
+            gh_argv = argv[3:]
+            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
+                if isinstance(open_issues_or_exc, Exception):
+                    raise open_issues_or_exc
+                return _fake_completed("\n".join(str(n) for n in open_issues_or_exc))
+            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
+                return _fake_completed("[]")
+            raise AssertionError(f"unexpected gh call: {argv}")
+        return run
+
+    def test_successful_cycle_advances_the_watermark(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh([])):
+            _watching, new_since = l3_verdict_sweep_cycle(
+                "vitalharmony/hrse", "2026-09-01T00:00:00Z", {}, "2026-09-09T00:00:00Z")
+        self.assertEqual(new_since, "2026-09-09T00:00:00Z")
+
+    def test_failed_cycle_does_not_advance_the_watermark(self):
+        with patch("belt_mechanics.subprocess.run",
+                  side_effect=self._mock_gh(RuntimeError("502"))):
+            _watching, new_since = l3_verdict_sweep_cycle(
+                "vitalharmony/hrse", "2026-09-01T00:00:00Z", {}, "2026-09-09T00:00:00Z")
+        self.assertEqual(new_since, "2026-09-01T00:00:00Z")
+
+
+class QueueCycleL3SweepTests(unittest.TestCase):
+    """`queue_cycle(..., sweep=True)` dispatches to Check C when `lane ==
+    "l3"`, producing the `needs-l1-response` line shape -- distinct from
+    `needs-l1` (Check A's own l1-sweep line), so an operator or a Monitor
+    parsing belt output can tell the two backstops apart."""
+
+    def _mock_gh(self, comments: dict):
+        def run(argv, **kwargs):
+            gh_argv = argv[3:]
+            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
+                return _fake_completed("\n".join(str(n) for n in comments))
+            if "api" in gh_argv:
+                comments_paths = [a for a in gh_argv if a.startswith("repos/") and "/comments" in a]
+                if comments_paths:
+                    issue = int(comments_paths[0].rsplit("/", 2)[-2])
+                    rows = comments.get(issue, [])
+                    return _fake_completed(json.dumps(
+                        [{"body": b, "created_at": c} for b, c in rows]))
+            raise AssertionError(f"unexpected gh call: {argv}")
+        return run
+
+    def test_needs_l1_response_line_is_emitted_for_a_new_fail_verdict(self):
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                {1771: [
+                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
+                    ("## L1 ruling\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+                     "2026-09-11T03:35:20Z"),
+                ]})):
+            queue, lines, ok_repos = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", {}, {}, "2026-09-11T04:00:00Z", sweep=True)
+        self.assertEqual(queue[("vitalharmony/hrse", 1771)], "l3verdict:FAIL")
+        self.assertIn("vitalharmony/hrse#1771 needs-l1-response last-verdict=FAIL", lines)
+        self.assertIn("vitalharmony/hrse", ok_repos)
+
+    def test_an_already_known_verdict_produces_no_duplicate_line(self):
+        """Self-clearing, same as every other queue: a verdict already
+        reported on a previous cycle does not re-print every tick."""
+        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
+                {1771: [
+                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
+                    ("a reply", "2026-09-11T03:35:20Z"),
+                ]})):
+            _queue, lines, _ok = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3",
+                {("vitalharmony/hrse", 1771): "l3verdict:FAIL"}, {},
+                "2026-09-11T04:00:00Z", sweep=True)
+        self.assertEqual(lines, [])
 
 
 class BeltSkillDocSyncTests(unittest.TestCase):
