@@ -1232,8 +1232,17 @@ def enumerate_repo_roots(roots: list[str]) -> list[str]:
 #: main took the work as a squash merge. Without this the belt offers six such
 #: ghosts on this machine right now (harmonic-forge#590 preclose finding).
 #: Cached because re-asking every cycle for a state that essentially never goes
-#: back is pure quota; an issue reopened mid-session is picked up by the
-#: suspenders' repo-wide sweep, which is exactly the backstop it exists to be.
+#: back is pure quota.
+#:
+#: harmonic-forge#640 preclose finding: this comment used to justify the cache
+#: by saying "an issue reopened mid-session is picked up by the suspenders'
+#: repo-wide sweep." That sweep is retired for Lane 1 (harmonic-forge#640) and
+#: was never armed for Lane 2 (whose own worktrees also flow through this same
+#: cache) -- so a reopened issue is now, honestly, invisible to the process
+#: that cached it as closed until that process restarts. Accepted, not fixed
+#: here: expiring or re-verifying this cache is a separate, larger change than
+#: this issue's scope, and a genuinely reopened issue is a rare enough event
+#: that a belt restart (which already happens routinely) recovers it.
 _CLOSED_SEEN: set[tuple[str, int]] = set()
 
 
@@ -1356,11 +1365,13 @@ def comment_watch_cycle(
 
 #: harmonic-forge#638 AC3: a single global cap would converge every lane's
 #: backoff to the same ceiling, erasing the urgency ordering the base
-#: intervals already encode (Lane 3 at 60s is more urgent than the sweep at
-#: 600s, and must stay more urgent at every backoff level too). Scaling the
+#: intervals already encode (Lane 3 at 60s is more urgent than Lane 1 at
+#: 300s, and must stay more urgent at every backoff level too). Scaling the
 #: cap off each lane's own base interval preserves that ordering for free:
-#: Lane 3 backs off to 600s at the cap while the sweep backs off to 6000s,
-#: a 10x reduction in EITHER case, never a shared ceiling.
+#: Lane 3 backs off to 600s at the cap while Lane 1 backs off to 3000s,
+#: a 10x reduction in EITHER case, never a shared ceiling. (harmonic-forge#640
+#: preclose finding: this example used to name the now-retired Lane 1 sweep's
+#: 600s/6000s interval, which had no referent once that sweep was retired.)
 _BACKOFF_FACTOR = 2.0
 _BACKOFF_CAP_MULTIPLIER = 10.0
 
@@ -1571,19 +1582,19 @@ def main() -> int:
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
     parser.add_argument("--sweep-for", choices=("l1", "l3"), metavar="LANE",
-                        help="the SUSPENDERS' repo-wide backstop. `l1`: newest-marker "
-                             "sweep (`discover_l1_sweep`) -- every open issue whose "
-                             "newest classified comment is not Lane 1's own. `l3`: "
-                             "unanswered-verdict watch (`discover_l3_unanswered_"
+                        help="the suspenders' repo-wide backstop -- for Lane 3 only. "
+                             "`l3`: unanswered-verdict watch (`discover_l3_unanswered_"
                              "verdicts`, harmonic-forge#629 Check C) -- every open "
                              "issue whose last Lane 3 gate-result was FAIL/BLOCKED and "
                              "has since received ANY reply, classified or not (a "
                              "`kind=discussion` ruling included -- that gap is exactly "
-                             "what Check C exists to close). Both unbounded by design "
-                             "-- structurally what the belt cannot see. harmonic-"
-                             "forge#618 split `l1` off `--queue-for l1`, which now "
-                             "means the same bounded thing for Lane 1 that it already "
-                             "meant for Lane 2 and Lane 3. Arming either as a belt is "
+                             "what Check C exists to close). Unbounded by design -- "
+                             "structurally what the belt cannot see. `l1` is a listed "
+                             "choice but REFUSED at parse time (harmonic-forge#640, "
+                             "operator ruling): Lane 1's newest-marker sweep "
+                             "(`discover_l1_sweep`) is retired, and its bounded "
+                             "replacement is `--queue-for l1` (harmonic-forge#618), "
+                             "not this flag. Arming `l3` as a belt is still "
                              "harmonic-forge#590's regression.")
     parser.add_argument("--account-repos", metavar="ACCOUNT",
                         help="derive the repo set from projects.toml, the onboarded-repo "
@@ -1639,6 +1650,14 @@ def main() -> int:
         parser.error("--queue-for and --sweep-for are the belt and the suspenders "
                      "respectively; arming both in one process collapses two "
                      "deliberately independent mechanisms (harmonic-forge#590)")
+    if args.sweep_for == "l1":
+        parser.error("--sweep-for l1 is RETIRED (harmonic-forge#640, operator "
+                      "ruling). Lane 1 discovery is worktree-bounded: --all-worktrees "
+                      "for the belt, plus the bounded --queue-for l1 Plan-First catch. "
+                      "GitHub enriches an issue a worktree already named; it is never "
+                      "asked to name candidates. If you found this command in an old "
+                      "transcript or SKILL.md copy, that copy is stale. --sweep-for l3 "
+                      "is unaffected.")
     # Union, not replacement: an explicitly named --worktrees path stays
     # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
     # roots are named to --all-worktrees, so --worktrees has one job again.

@@ -238,10 +238,19 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         self.assertIn("580", block, "the finding exclusion must cite #580")
         self.assertIn("63 issues", block, "the discussion removal must cite its measurement")
 
-    def test_the_repo_wide_sweep_survives_in_the_suspenders(self):
-        """Demoted, not deleted -- and armed there as a literal command."""
+    def test_no_armed_command_anywhere_arms_lane1s_repo_wide_sweep(self):
+        """harmonic-forge#640 preclose finding 1: scoping this to one section
+        left every heading before it unchecked -- the exact retired command
+        re-armed immediately above `## The suspenders` passed the old,
+        narrower version of this guard green. Checked FILE-WIDE: the operator
+        ruled the unbounded sweep out for Lane 1 entirely, not out of one
+        section."""
         text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("--sweep-for l1", text.split("## The suspenders", 1)[1])
+        armed = [line for line in text.splitlines()
+                 if "watch_lane_posts.py" in line and "--sweep-for l1" in line]
+        self.assertFalse(armed,
+                         "the repo-wide sweep is retired for Lane 1; no command "
+                         f"arming it should remain anywhere in SKILL.md, found: {armed!r}")
 
     def test_lane_2_belt_is_worktrees_first(self):
         """harmonic-forge#596: naming the shared lane-2 checkout resolved 0/1 in

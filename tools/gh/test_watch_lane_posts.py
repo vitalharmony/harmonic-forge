@@ -1290,9 +1290,11 @@ class EnumerateWorktreesTests(unittest.TestCase):
 
 class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
     """harmonic-forge#590 AC1/AC2: SKILL.md's Lane 1 belt watches the live
-    worktrees; the repo-wide sweep is the suspenders' backstop, not the belt's
-    pull source. Asserted mechanically because the regression that produced
-    #590 was a prose edit that read plausibly."""
+    worktrees. harmonic-forge#640 retired the repo-wide sweep for Lane 1
+    entirely (operator ruling: worktrees/queued-plans discover, gh only
+    enriches) -- it is no longer a suspenders backstop either. Asserted
+    mechanically because the regression that produced #590 was a prose edit
+    that read plausibly."""
 
     def _lane1_belt_command(self) -> str:
         text = _SKILL_MD.read_text(encoding="utf-8")
@@ -1344,25 +1346,27 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
         lane1 = text.split("- **Lane 1**", 1)[1].split("- **Lane 2**", 1)[0]
         self.assertNotIn("Run it from the HRSE2 checkout", lane1)
 
-    def test_suspenders_still_carry_the_repo_wide_sweep(self):
-        """AC2: demoted to the pull loop, not deleted -- and reachable there,
-        as a literal command, not a description of one."""
+    def test_no_armed_command_anywhere_arms_lane1s_repo_wide_sweep(self):
+        """harmonic-forge#640 preclose finding 1: scoping this to "the
+        suspenders section" left every heading before it unchecked -- the
+        exact retired command re-armed immediately above `## The suspenders`
+        (or anywhere else in the file outside a historical mention) passed
+        both doc-sync suites green under the old, narrower scoping. Checked
+        FILE-WIDE, not section-scoped: the operator ruled the unbounded sweep
+        out for Lane 1 entirely, not just out of one section."""
         text = _SKILL_MD.read_text(encoding="utf-8")
-        suspenders = text.split("## The suspenders", 1)
-        self.assertEqual(len(suspenders), 2, "suspenders section not found")
-        # An ARMED command line, not prose mentioning the flag. harmonic-
-        # forge#618 added the sentence "It is a *different flag* from
-        # `--queue-for l1`" to this section, which satisfied the old substring
-        # check -- so deleting the actual command left this green.
-        armed = [line for line in suspenders[1].splitlines()
+        armed = [line for line in text.splitlines()
                  if "watch_lane_posts.py" in line and "--sweep-for l1" in line]
-        self.assertTrue(armed,
-                        "the repo-wide sweep must be ARMED here, as a command; "
-                        "harmonic-forge#590 put it in the suspenders and #618 "
-                        "gave it its own flag")
+        self.assertFalse(armed,
+                         "harmonic-forge#640 retired the repo-wide sweep for "
+                         "Lane 1; no command arming it may remain anywhere in "
+                         f"SKILL.md, found: {armed!r}")
 
     def test_discover_l1_sweep_is_kept_not_deleted(self):
-        """AC2: demoted, not removed -- it is still the suspenders' backstop."""
+        """harmonic-forge#640: retired from Lane 1's own practice, not deleted
+        as a tool -- Lane 3's Check C reuses its shape (`discover_l3_
+        unanswered_verdicts`), so the function and the doc's mention of it
+        both survive."""
         self.assertTrue(callable(discover_l1_sweep))
         self.assertIn("discover_l1_sweep", _SKILL_MD.read_text(encoding="utf-8"))
 
@@ -1595,15 +1599,18 @@ class EveryLaneBeltDerivesItsRepoSetTests(unittest.TestCase):
                 for cmd in self._commands(lane):
                     self.assertNotIn("--worktrees ", cmd)
 
-    def test_the_suspenders_sweep_derives_its_repo_set_too(self):
-        """The Lane 1 backstop is a --queue-for command outside any lane
-        bullet, so the per-lane guard above never reaches it."""
+    def test_the_suspenders_section_arms_no_separate_lane1_command(self):
+        """harmonic-forge#640: Check 2 used to arm its own `--sweep-for l1`
+        command outside any lane bullet, so the per-lane guard above never
+        reached it -- that command is retired, and Check 2 now points back at
+        the belt's own `--all-worktrees --queue-for l1` (already covered by
+        `test_every_lane_derives_its_repo_set_from_the_manifest`) rather than
+        repeating a second, unbounded one."""
         text = _SKILL_MD.read_text(encoding="utf-8")
-        sweep = re.search(r"(watch_lane_posts\.py --sweep-for l1[^\n]*)",
-                          text.split("## The suspenders", 1)[1])
-        self.assertIsNotNone(sweep, "the suspenders' Lane 1 sweep command was not found")
-        self.assertIn("--account-repos", sweep.group(1))
-        self.assertNotIn("--repo vitalharmony/", sweep.group(1))
+        suspenders_section = text.split("## The suspenders", 1)[1].split("## Role: Lane 1", 1)[0]
+        self.assertNotIn("--sweep-for l1", suspenders_section,
+                         "the repo-wide sweep is retired for Lane 1; no command "
+                         "arming it should remain in the suspenders section")
 
 
 class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
@@ -1921,12 +1928,16 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
         """The WIRING, not just the parameter. harmonic-forge#618 preclose
         finding, and the same shape as #616's: dropping `sweep=` at `main()`'s
         call site left the whole suite green, because the tests above drive
-        `queue_cycle` directly and never exercise the one line that reaches it."""
+        `queue_cycle` directly and never exercise the one line that reaches it.
+
+        Uses `l3`, not `l1` -- harmonic-forge#640 retired `--sweep-for l1`
+        (refused at parse time, see `SweepForL1IsRetiredTests` below); `l3`
+        is unaffected and still exercises the same wiring."""
         seen = {}
         def capture(*a, **kw):
             seen["sweep"] = kw.get("sweep", False)
             raise KeyboardInterrupt          # one cycle, then stop
-        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l1",
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l3",
                                         "--repo", "o/r", "--interval", "0"]), \
              patch("watch_lane_posts.assert_identity"), \
              patch("watch_lane_posts.queue_cycle", side_effect=capture), \
@@ -1968,6 +1979,49 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
                 watch_lane_posts.main()
         self.assertEqual(caught.exception.code, 2)
         self.assertIn("belt and the suspenders", err.getvalue())
+
+
+class SweepForL1IsRetiredTests(unittest.TestCase):
+    """harmonic-forge#640 AC6, added on the live issue thread after preclose
+    found a doc-only fix leaves `--sweep-for l1` fully callable: a session
+    that finds the flag in an old transcript or a stale SKILL.md copy could
+    still run the retired mechanism. Refused at parse time instead. `l3`
+    (`discover_l3_unanswered_verdicts`, harmonic-forge#629 Check C) is a
+    live, unrelated mechanism sharing the flag and must be unaffected --
+    an earlier draft of this AC wrongly proposed removing the flag entirely
+    based on a stale grep that missed `l3` as a valid choice."""
+
+    def test_sweep_for_l1_is_refused_at_parse_time(self):
+        """Mutation-checked per the issue thread's own instruction: with this
+        guard reverted, `--sweep-for l1` must run rather than refuse."""
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l1",
+                                        "--repo", "o/r", "--watch", "l2"]), \
+             patch("watch_lane_posts.assert_identity"), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            with self.assertRaises(SystemExit) as caught:
+                watch_lane_posts.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("RETIRED", err.getvalue())
+        self.assertIn("harmonic-forge#640", err.getvalue())
+        self.assertIn("--queue-for l1", err.getvalue())
+
+    def test_sweep_for_l3_is_unaffected(self):
+        """The corrected scope of AC6: a VALUE check on `l1`, never a removal
+        of the flag -- `l3` must reach `queue_cycle` exactly as before."""
+        seen = {}
+        def capture(*a, **kw):
+            seen["reached"] = True
+            raise KeyboardInterrupt
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l3",
+                                        "--repo", "o/r", "--interval", "0"]), \
+             patch("watch_lane_posts.assert_identity"), \
+             patch("watch_lane_posts.queue_cycle", side_effect=capture), \
+             patch("watch_lane_posts.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                watch_lane_posts.main()
+        self.assertTrue(seen.get("reached"),
+                        "--sweep-for l3 must still reach queue_cycle normally; "
+                        "harmonic-forge#640 retires only the l1 value")
 
 
 class BeltDedupMechanicTests(unittest.TestCase):
