@@ -112,6 +112,22 @@ _MUTATION_MISE_TASKS = {"l1-comment", "post-comment", "gh-new-issue", "lane-comm
 # `tools/lane/cross_family_call.sh …` are governed identically. Before #448
 # the two diverged: the bash-prefixed form was denied by the shell-escape
 # check while the direct form fell through `head != "gh"` to a permit.
+#
+# `--cwd` is part of the permitted shape, and its absence was a live defect
+# (harmonic-forge#598). `verify` posture REQUIRES `--cwd` -- the script exits
+# 2 with `--cwd PATH is required ... for verify posture` before invoking
+# anything -- so the six-token shape this allowlist used to permit could
+# never run. Two suites each stayed green while encoding the contradiction:
+# `test_verify_requires_cwd` here in the script's own tests, and
+# `test_exact_verify_shape_permitted_direct_path` in this hook's, neither
+# aware of the other. `test_the_permitted_shape_is_a_runnable_shape` is the
+# cross-suite guard that now makes the two agree.
+#
+# Permitting an arbitrary directory value grants nothing: `verify` runs under
+# `--sandbox read-only`, so the reviewer can read what it could read from any
+# other cwd, and cannot write from any of them. What `--cwd` selects is where
+# the reviewer starts, not what it may reach. The value is still required to
+# be a non-flag token, so it cannot smuggle another option in.
 _CROSS_FAMILY_BASENAME = "cross_family_call.sh"
 _CROSS_FAMILY_PERMITTED_ARGS = (
     "--caller", "claude",
@@ -119,6 +135,7 @@ _CROSS_FAMILY_PERMITTED_ARGS = (
     "--posture", "verify",
     "--brief",
 )
+_CROSS_FAMILY_TRAILING_ARGS = ("--cwd",)
 
 _READ_METHOD_TOKENS = {"-x", "--method"}
 
@@ -191,7 +208,7 @@ def _cross_family_permitted(argv: list[str]) -> bool:
     """Exactly one invocation shape is permitted, in exactly this order:
 
         <path>/cross_family_call.sh --caller claude --families 2 \\
-            --posture verify --brief <path>
+            --posture verify --brief <path> --cwd <path>
 
     Anything else — a different posture, a third family, a different caller,
     a reordering, or a single extra token — is denied. Order is required
@@ -200,12 +217,17 @@ def _cross_family_permitted(argv: list[str]) -> bool:
     surface of its own to get wrong.
     """
     args = argv[1:]
-    if len(args) != len(_CROSS_FAMILY_PERMITTED_ARGS) + 1:
+    head = len(_CROSS_FAMILY_PERMITTED_ARGS)
+    expected = head + 1 + len(_CROSS_FAMILY_TRAILING_ARGS) + 1
+    if len(args) != expected:
         return False
-    if tuple(args[:-1]) != _CROSS_FAMILY_PERMITTED_ARGS:
+    if tuple(args[:head]) != _CROSS_FAMILY_PERMITTED_ARGS:
         return False
-    brief = args[-1]
-    return bool(brief) and not brief.startswith("-")
+    if tuple(args[head + 1:-1]) != _CROSS_FAMILY_TRAILING_ARGS:
+        return False
+    brief = args[head]
+    cwd = args[-1]
+    return all(bool(value) and not value.startswith("-") for value in (brief, cwd))
 
 
 def _find_explicit_method(args: list[str]) -> str | None:

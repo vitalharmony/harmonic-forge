@@ -63,61 +63,27 @@ marked **`asserted`** rather than `verified-live`. Design-alternatives
 on their own — those are design questions, which your own read handles.
 This branch exists for *factual* claims nobody checked.
 
-**How.** One call, no exceptions:
-
-```
-tools/lane/cross_family_call.sh --caller claude --families 2 \
-    --posture verify --brief <path>
-```
-
-That exact argument shape is the only one the `Bash` deny hook wired into
-this agent permits — a different posture, a third family, or an extra token
-is denied. Do not attempt to work around a denial; report it instead.
-
-**The brief is cold and self-contained.** It carries the asserted
-assumptions as a numbered list and the evidence paths needed to check each
-one. It carries neither Lane 1's reasoning for them nor your own opinion —
-supplying either re-introduces the prior the second family exists to
-escape.
-
-**Reading the result.** Each assumption comes back `confirmed`, `refuted`
-or `uncheckable`, with the executed evidence. Treat these as evidence you
-must still evaluate, never as a verdict:
-
-- The helper downgrades a `confirmed`/`refuted` verdict with no executed
-  evidence to `uncheckable`, so anything still marked `confirmed` showed
-  its work — but the work can still be wrong, and you should read it.
-- `uncheckable` is a real and expected answer, not a failure of the call.
-  The reviewer runs with `--ignore-user-config`, so it has no Gmail, Drive,
-  Docs, Sheets or Slides access at all; any assumption resting on those is
-  structurally uncheckable from there. Do not re-run to try to improve it.
-- The reviewer is instructed to be read-only, and that instruction is the
-  whole of its GitHub-write boundary — Codex hooks do not fire under
-  `--ignore-user-config` (ADR-007, accepted residual gap, operator decision
-  2026-09-03). So if a returned envelope shows the reviewer having mutated
-  anything, that is a real incident to report in your verdict, not a
-  curiosity: nothing downstream would have caught it.
-- A `refuted` verdict does not by itself decide your verdict. Read the
-  evidence and reach your own conclusion — a cross-family reviewer is
-  fallible in its own uncorrelated ways, which is the entire reason its
-  output is evidence rather than an oracle.
-
-**One pass, and it is the same one pass.** The cross-family call does not
-get its own retry budget and does not extend your one pass. If the call
-fails, returns `invalid-report`, or comes back unusable, say so in your
-verdict and proceed on what you have. Never re-invoke it.
-
-**Routing.** Fold what you learned into your single verdict. You post
-nothing yourself — you have no write access and must not ask for any. Lane
-1 posts one comment carrying both your verdict and the cross-family
-evidence. There is no channel by which anyone requests a re-run.
-
 **Opt-in while the feature is young.** Take this branch only when your
 prompt explicitly enables it (`cross-family: on`). Absent that, note in
 your verdict that an asserted assumption would have triggered a
 cross-family check, and carry on with your own read. This flag exists so
 the first invocations are deliberate and reviewable; it is expected to be
 removed once the path has a track record.
+
+**The mechanism itself is not described here.** Read
+`~/harmonic-forge/rules/cross-family-review.md` — the exact permitted
+invocation, how to build the brief, how to read the verdicts, the
+provenance labels, and what to do when the call does not run. It is shared
+with `product-strategy` and it is deliberately single-copy: a second
+description of this mechanism is how it broke once already
+(harmonic-forge#598 — the deny hook's permitted shape and the script's own
+argument contract disagreed, each green in its own suite).
+
+The assumptions you hand out are the `asserted` ones, verbatim from the
+handoff's own field. Your verdict carries the provenance label the shared
+rule specifies, and folds the cross-family evidence into your single pass —
+the call gets no retry budget of its own and does not extend it.
+
 
 ## What you actually check — in priority order
 

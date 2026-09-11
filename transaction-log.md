@@ -3,6 +3,54 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(advisory): make the cross-family branch reachable and give it a second consumer (harmonic-forge#598)
+
+The mechanism #448 built for `pitch-inspection` could not run. The deny
+hook permitted exactly one `cross_family_call.sh` argument sequence, and
+that sequence omitted `--cwd`, which `verify` posture requires -- so the
+only invocation an advisory subagent was allowed to make exited 2 with a
+usage error before invoking anything. Two suites stayed green on either
+side of the contradiction: `test_verify_requires_cwd` asserted the
+requirement, `test_exact_verify_shape_permitted_direct_path` asserted the
+shape without it, and neither knew the other existed.
+
+- `--cwd <path>` joins the allowlisted shape. It grants nothing: `verify`
+  runs under `--sandbox read-only`, so the directory selects where the
+  reviewer starts, not what it can reach.
+- `test_the_permitted_shape_is_a_runnable_shape` is the seam between the
+  two suites -- it reads the allowlist constant out of the hook and runs
+  the argv it describes against the real script, so a future drift in
+  either direction fails. Mutation-checked: reverting the constant fails
+  it with the script's own usage error.
+- `build_cross_family_brief.py` makes the brief reusable rather than
+  hand-assembled, refusing to write one missing any of artifact / intent /
+  question / assumptions, and naming every gap at once. A brief with no
+  assumptions spends the one call and produces nothing, since `verify`
+  returns one verdict per assumption and nothing else.
+- `rules/cross-family-review.md` is the single description of the
+  mechanism -- the invocation, the brief, how to read the verdicts, the
+  three provenance labels, and the fallback. Both agents point at it and
+  neither restates it, because two descriptions is exactly how this broke.
+  R-0358/R-0359/R-0360 registered.
+- `product-strategy` gains the branch with its own trigger, states which
+  family produced which half, and on a failed call completes on its own
+  read labelled `in-family fallback` with the reason quoted -- never
+  relabelled as cross-family, never retried.
+
+Verified live end-to-end against real Codex (`gpt-5.6-sol`): exit 0,
+`status: ok`, both assumptions `confirmed` with executed evidence. The
+reviewer also returned a finding its in-family author had missed -- an
+artifact file that exists but is empty was accepted, so the brief could
+carry a labelled empty code fence. Fixed, with the tests it should have
+had. First live run, first real defect, found across the family boundary.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/lane/test_build_cross_family_brief.py        | 139 +++++++++++++++++++++
+- tools/lane/test_cross_family_call.py               |  73 +++++++++++
+- tools/rules/registry.toml                          |  24 ++++
+- 10 files changed, 629 insertions(+), 58 deletions(-)
+
 ## fix(rules): scope R-0356 and carve out mandated evidence (harmonic-forge#621)
 
 Preclose returned eight findings. The first is the one that matters: **the rule

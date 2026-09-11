@@ -1193,3 +1193,76 @@ def emit_envelope_with_stderr(family, posture, exit_code, native_text, stderr_te
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
+
+
+class TestPermittedShapeIsRunnable(unittest.TestCase):
+    """harmonic-forge#598 — the shape the deny hook permits must be a shape
+    this script accepts.
+
+    Two suites were green while contradicting each other.
+    `TestVerifyPosture.test_verify_requires_cwd` above asserts `verify` exits
+    2 without `--cwd`; `test_exact_verify_shape_permitted_direct_path` in
+    `tools/hooks/test_deny_advisory_subagent_gh_writes.py` asserted the
+    permitted shape had no `--cwd`. Both facts were true and their conjunction
+    meant the one invocation an advisory subagent was allowed to make could
+    only ever print a usage error. Neither suite could see it, because neither
+    knew the other existed.
+
+    This test is the seam between them: it reads the allowlist constant out of
+    the hook and runs the argv it describes against the real script. It is not
+    a restatement of either side — it fails if the hook's shape drifts away
+    from the script's argument contract in EITHER direction.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.brief = Path(self.tmp) / "brief.md"
+        self.brief.write_text("assumption 1: the sky is blue\n")
+        self.scratch = Path(self.tmp) / "scratch"
+        self.scratch.mkdir()
+
+    def _hook_module(self):
+        import importlib.util
+
+        hook = SCRIPT.resolve().parent.parent / "hooks" / "deny_advisory_subagent_gh_writes.py"
+        spec = importlib.util.spec_from_file_location("_xf_deny_hook", hook)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _permitted_argv(self) -> list[str]:
+        """The argv the hook permits, built from its own constants rather than
+        retyped here — a copy would drift silently, which is the defect."""
+        module = self._hook_module()
+        argv = list(module._CROSS_FAMILY_PERMITTED_ARGS) + [str(self.brief)]
+        for flag in module._CROSS_FAMILY_TRAILING_ARGS:
+            argv.append(flag)
+            argv.append(str(self.scratch))
+        return argv
+
+    def test_the_hook_still_permits_the_argv_this_test_runs(self):
+        """Guards the guard: if the allowlist's shape changes such that the
+        argv assembled above is no longer what it permits, this test's
+        premise is void and it must say so rather than pass vacuously."""
+        module = self._hook_module()
+        argv = self._permitted_argv()
+        self.assertTrue(
+            module._cross_family_permitted([str(SCRIPT), *argv]),
+            f"the hook no longer permits the argv under test: {argv}",
+        )
+
+    def test_the_permitted_shape_is_a_runnable_shape(self):
+        argv = self._permitted_argv()
+        result = run_script(*argv, path=make_stub_path(self.tmp))
+        self.assertNotEqual(
+            2,
+            result.returncode,
+            "the hook-permitted argv was rejected as a usage error by the "
+            f"script itself: {result.stderr}",
+        )
+        self.assertNotIn("Usage:", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
+        envelope = json.loads(result.stdout.strip())
+        self.assertEqual("codex", envelope["family"])
+        self.assertEqual("verify", envelope["posture"])
