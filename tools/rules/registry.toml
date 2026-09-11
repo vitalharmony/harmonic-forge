@@ -2344,3 +2344,27 @@ statement = "Evidence a protocol rule requires is MANDATORY and unaffected by R-
 text_sha = "a5174b34f289388f"
 hooks = []
 exception_to = ["R-0356"]
+
+[[rule]]
+id = "R-0358"
+file = "rules/cross-family-review.md"
+anchor = "the-call"
+statement = "A cross-family advisory call uses exactly one argument sequence -- --caller claude --families 2 --posture verify --brief <path> --cwd <path> -- and a denial is reported, never worked around."
+text_sha = "2ad368553235740a"
+hooks = ["tools/hooks/deny_advisory_subagent_gh_writes.py"]
+
+[[rule]]
+id = "R-0359"
+file = "rules/cross-family-review.md"
+anchor = "provenance"
+statement = "A report that took the cross-family branch states which family produced the adversarial half and which produced the rest."
+text_sha = "4710f60b32729bae"
+hooks = []
+
+[[rule]]
+id = "R-0360"
+file = "rules/cross-family-review.md"
+anchor = "when-the-call-does-not-run"
+statement = "When the cross-family call does not run, the review completes on the in-family read, says so with the failure quoted, is labelled in-family fallback rather than cross-family, and is not retried."
+text_sha = "e1d395de1f53e115"
+hooks = []

@@ -497,8 +497,14 @@ real `~/.gemini/.env`, if present, is copied into the throwaway one.
   applied to Codex elsewhere in this ADR, pending a repo-side deny mechanism
   for Codex equivalent to Gemini's admin policy.
 
-- `verify` (harmonic-forge#448) is **Codex-only**, consumed by
-  `pitch-inspection`'s cross-family branch, and is the first posture built
+- `verify` (harmonic-forge#448) is **Codex-only**, consumed by the shared
+  cross-family branch that `pitch-inspection` and `product-strategy` both
+  take (`rules/cross-family-review.md`, harmonic-forge#598 — the mechanism is
+  described in exactly one place, because two descriptions is how it broke:
+  the deny hook's permitted invocation omitted the `--cwd` this posture
+  requires, so the only shape an advisory agent was allowed to run exited 2
+  before invoking anything, with a green suite on each side of the
+  contradiction). It is the first posture built
   around removing an inherited capability rather than adding a restriction.
   `codex exec --ignore-user-config -m gpt-5.6-sol --sandbox read-only`, with
   trust re-added by `-c` for exactly the one `--cwd` it is given. It reuses

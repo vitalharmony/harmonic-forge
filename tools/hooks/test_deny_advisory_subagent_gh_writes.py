@@ -185,7 +185,17 @@ class TestFailClosedOnMalformedPayload(unittest.TestCase):
 
 
 _XF = "/home/u/harmonic-forge/tools/lane/cross_family_call.sh"
-_OK_ARGS = "--caller claude --families 2 --posture verify --brief /tmp/brief.md"
+#: harmonic-forge#598 — the correct-arity tail every deny case must carry.
+#: Without it the arity check at the top of `_cross_family_permitted` rejects
+#: the command before the posture/family/caller value under test is ever
+#: compared, and each of those tests silently becomes a duplicate of
+#: `test_missing_cwd_denied`. Found by preclose inspection: with the value
+#: comparison deleted, `--families 3` was permitted and all 2,086 tests passed.
+_TAIL = " --brief /tmp/b.md --cwd /tmp/s"
+_OK_ARGS = (
+    "--caller claude --families 2 --posture verify "
+    "--brief /tmp/brief.md --cwd /tmp/scratch"
+)
 
 
 class TestCrossFamilyPermitBranch(unittest.TestCase):
@@ -222,20 +232,44 @@ class TestCrossFamilyPermitBranch(unittest.TestCase):
         )
 
     def test_read_only_posture_denied(self):
-        self._assert_denied(f"{_XF} --caller claude --families 2 --posture read-only --brief /tmp/b.md")
+        self._assert_denied(
+            f"{_XF} --caller claude --families 2 --posture read-only"
+            f"{_TAIL}"
+        )
 
     def test_three_families_denied(self):
-        self._assert_denied(f"{_XF} --caller claude --families 3 --posture verify --brief /tmp/b.md")
+        self._assert_denied(
+            f"{_XF} --caller claude --families 3 --posture verify{_TAIL}"
+        )
 
     def test_non_claude_caller_denied(self):
-        self._assert_denied(f"{_XF} --caller codex --families 2 --posture verify --brief /tmp/b.md")
+        self._assert_denied(
+            f"{_XF} --caller codex --families 2 --posture verify{_TAIL}"
+        )
 
     def test_extra_trailing_token_denied(self):
-        self._assert_denied(f"{_XF} {_OK_ARGS} --cwd /tmp/scratch")
+        self._assert_denied(f"{_XF} {_OK_ARGS} --sandbox workspace-write")
+
+    def test_cwd_value_that_is_a_flag_denied(self):
+        self._assert_denied(
+            f"{_XF} --caller claude --families 2 --posture verify "
+            f"--brief /tmp/b.md --cwd --sandbox"
+        )
+
+    def test_missing_cwd_denied(self):
+        """harmonic-forge#598 — the six-token shape this allowlist permitted
+        before #598 cannot run at all (`verify` requires `--cwd`), so it is a
+        permit that only ever produced an exit-2 usage error. It is denied now
+        rather than left as a permitted-but-broken shape, which is what let the
+        defect survive a green suite."""
+        self._assert_denied(
+            f"{_XF} --caller claude --families 2 --posture verify --brief /tmp/b.md"
+        )
 
     def test_reordered_args_denied(self):
         self._assert_denied(
-            f"{_XF} --posture verify --caller claude --families 2 --brief /tmp/b.md"
+            f"{_XF} --posture verify --caller claude --families 2"
+            f"{_TAIL}"
         )
 
     def test_missing_brief_value_denied(self):
@@ -243,6 +277,18 @@ class TestCrossFamilyPermitBranch(unittest.TestCase):
 
     def test_brief_value_that_is_a_flag_denied(self):
         self._assert_denied(f"{_XF} --caller claude --families 2 --posture verify --brief --cwd")
+
+    def test_brief_builder_is_permitted(self):
+        """harmonic-forge#598 AC6 — the advisory agents can reach the brief
+        builder. It writes one file in a scratch path and mutates nothing on
+        GitHub, so it falls through to the default permit; asserted here
+        rather than assumed, because adding its basename to
+        `_MUTATION_WRAPPER_BASENAMES` (an easy future reflex) would disable
+        the cross-family branch entirely and nothing else would notice."""
+        self._assert_permitted(
+            "python3 /home/u/harmonic-forge/tools/lane/build_cross_family_brief.py "
+            "--artifact a.md --intent i --question q --assumption x --out /tmp/b.md"
+        )
 
     def test_bare_invocation_denied(self):
         self._assert_denied(_XF)
