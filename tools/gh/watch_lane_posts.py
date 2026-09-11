@@ -1270,8 +1270,8 @@ def comment_watch_cycle(
     watermarks: "Watermarks",
     seen: "SeenSet",
     primed_targets: set[str],
-) -> list[str]:
-    """One comment-watch poll over `targets`, returning the lines to announce.
+) -> tuple[list[str], bool]:
+    """One comment-watch poll over `targets`, returning `(lines, fetch_failed)`.
 
     Extracted from `main()`'s loop by harmonic-forge#599's preclose finding:
     every behavior AC1/AC3/AC4/AC6 name lived inside `while True:` with no seam
@@ -1291,8 +1291,15 @@ def comment_watch_cycle(
       reaches 15 minutes backwards, so priming can now swallow a handoff posted
       moments before arming. A count cannot tell the operator that happened;
       the refs can, and the entry is permanent.
+
+    `fetch_failed` (harmonic-forge#638 preclose finding) is `True` if ANY
+    target's fetch failed this cycle -- "I do not know" must never read as
+    "nothing found" for backoff purposes. A rate-limited belt that also backs
+    off is finding out about real work later than a belt that just keeps
+    retrying at the armed cadence.
     """
     lines: list[str] = []
+    fetch_failed = False
     account = _ACCOUNT or "vitalharmony"
     for repo, issue in targets:
         target = f"{repo}#{issue}"
@@ -1304,6 +1311,7 @@ def comment_watch_cycle(
         if comments is None:
             print(f"[watch_lane_posts] {target}: comment fetch failed -- "
                   "watermark held, window will be re-read", file=sys.stderr)
+            fetch_failed = True
             continue
         priming = target not in primed_targets
         suppressed: list[str] = []
@@ -1343,7 +1351,7 @@ def comment_watch_cycle(
                       f"will NOT be re-announced -- delete {seen.path} to "
                       "replay.", file=sys.stderr)
         watermarks.advance(account, _wm_key(repo, issue), _parse_iso(now))
-    return lines
+    return lines, fetch_failed
 
 
 #: harmonic-forge#638 AC3: a single global cap would converge every lane's
@@ -1389,6 +1397,43 @@ def next_poll_interval(base_interval: int, quiet_streak: int) -> int:
     # exactly the "stop working" failure this AC exists to rule out.
     capped_exponent = min(quiet_streak, 32)
     return int(min(base_interval * (_BACKOFF_FACTOR ** capped_exponent), cap))
+
+
+def cycle_is_quiet(
+    printed_anything: bool,
+    queue: dict,
+    mode: str | None,
+    ok_repos: set[str],
+    repos: list[str],
+    comment_fetch_failed: bool,
+) -> bool:
+    """harmonic-forge#638 preclose findings 1/2: "did this cycle print a NEW
+    line" is not the same signal as "there is currently no outstanding work" --
+    dedup means a still-queued, unchanged item prints nothing, and a failed
+    fetch also prints nothing. Both must block backoff, not be read as quiet.
+
+    Finding 1 -- `queue_cycle` only emits a line on a queue-marker CHANGE, so
+    real unpicked work sitting in `queue` unchanged across cycles would let
+    the belt back off to 10x while it waits. `mode and queue` catches that:
+    a non-empty queue in queue-for/sweep-for mode is never quiet, regardless
+    of whether this cycle printed anything about it.
+
+    Finding 1 (repo-fetch half) -- a repo that failed to report this cycle
+    (`ok_repos` short of `repos`) must not be read as "nothing there either" --
+    it's "unknown", and unknown must not read as quiet.
+
+    Finding 2 -- `comment_watch_cycle`'s `fetch_failed` flag: "I do not know"
+    must never read as "nothing found" for backoff purposes.
+    """
+    if printed_anything:
+        return False
+    if mode and queue:
+        return False
+    if mode and len(ok_repos) < len(repos):
+        return False
+    if comment_fetch_failed:
+        return False
+    return True
 
 
 def queue_cycle(
@@ -1749,6 +1794,8 @@ def main() -> int:
             last_discovered = discovered
 
         mode = args.queue_for or args.sweep_for
+        queue: dict = last_queue
+        ok_repos: set[str] = set()
         if mode:
             label = "sweep-for" if args.sweep_for else "queue-for"
             print(f"[watch_lane_posts] {label}-{mode} scanning "
@@ -1777,8 +1824,10 @@ def main() -> int:
         # window permanently and silently, which is the failure the mechanic
         # exists to prevent, in the file that documents it as mandatory.
         #
-        for line in comment_watch_cycle(sorted(discovered | static_pairs), watch,
-                                        now, watermarks, seen, primed_targets):
+        comment_lines, comment_fetch_failed = comment_watch_cycle(
+            sorted(discovered | static_pairs), watch,
+            now, watermarks, seen, primed_targets)
+        for line in comment_lines:
             print(line)
             sys.stdout.flush()
             cycle_emitted = True
@@ -1804,10 +1853,15 @@ def main() -> int:
             cycle_emitted = True
 
         # harmonic-forge#638 AC1/AC2/AC3: back off on sustained quiet, reset
-        # the moment anything is found. `next_poll_interval` cannot return
-        # anything but a positive number of seconds (AC2) -- there is no
-        # branch here that skips the sleep-and-continue.
-        quiet_streak = 0 if cycle_emitted else quiet_streak + 1
+        # the moment anything is found -- or the moment anything is merely
+        # KNOWN to still be outstanding (`cycle_is_quiet`, preclose findings
+        # 1/2: a still-queued unchanged item and a failed fetch both print
+        # nothing, and neither may read as "nothing found"). `next_poll_
+        # interval` cannot return anything but a positive number of seconds
+        # (AC2) -- there is no branch here that skips the sleep-and-continue.
+        quiet = cycle_is_quiet(cycle_emitted, queue, mode, ok_repos, repos,
+                                comment_fetch_failed)
+        quiet_streak = 0 if not quiet else quiet_streak + 1
         sleep_for = next_poll_interval(args.interval, quiet_streak)
         if sleep_for != last_reported_interval:
             # AC5: the measured saving, recorded as it happens rather than
