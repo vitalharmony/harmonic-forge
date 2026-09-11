@@ -119,8 +119,8 @@ root, because a root that contributes nothing (not a repo, or the *same* repo
 as another root) is otherwise invisible inside an aggregate count, and a belt
 covering one repo instead of two looks identical to one covering both
 (harmonic-forge#590). Lane 2's belt is worktrees-first too, so that guarantee
-covers it as well. For `--queue-for` — the Lane 3 command above, and the
-suspenders' Lane 1 sweep below — it reports the queued count once at the first
+covers it as well. For `--queue-for` — the Lane 3 command above, and Lane 1's
+own bounded `--queue-for l1` — it reports the queued count once at the first
 poll, even when that count is zero, and names how many repos it scanned. A
 genuinely quiet repo and a dead process must never look the same on the log.
 
@@ -236,10 +236,10 @@ what backs off instead: `next_poll_interval()` doubles the sleep on each
 consecutive quiet cycle (no stdout line emitted), capped at 10x the armed
 interval, and resets to the armed interval the instant anything is found.
 The cap scales off each lane's OWN base interval rather than one shared
-ceiling, so Lane 3's 60s watcher still polls more often than the sweep's
-600s backstop even fully backed off (600s vs. 6000s) — the same urgency
-ordering the armed intervals already encode, preserved at every backoff
-level. A stderr line records each change (quiet_streak, new interval, and
+ceiling, so Lane 3's 60s belt still polls more often than Lane 1's 300s belt
+even fully backed off (600s vs. 3000s) — the same urgency ordering the armed
+intervals already encode, preserved at every backoff level. A stderr line
+records each change (quiet_streak, new interval, and
 the resulting fraction of the base call rate) as it happens, so the saving
 is a measured fact on the record, not a claim.
 
@@ -329,10 +329,15 @@ and harmonic-forge#618 gave it its own flag (`--sweep-for l1`) once
 lane. **That backstop is retired by explicit operator ruling (harmonic-forge#640):**
 an account-wide scan with no worktree or queued-plan in hand is exactly the
 independent-discovery case the operator's own framing excludes, regardless of
-which loop arms it or how narrow its own internal reasoning was. The accepted
-gap this leaves — a state change with literally no new comment, on an issue no
-worktree or Plan-First catch names — goes uncaught until something else
-surfaces it; it is not compensated for with a wider scan. `discover_l1_sweep`
+which loop arms it or how narrow its own internal reasoning was. **The accepted
+gap this leaves is wider than "no new comment"**: `--queue-for l1` runs
+`discover_queue`, which admits only `QUEUE_KINDS["l1"] = ("plan",)` — so on an
+issue with no live worktree, EVERY non-`plan` inbound marker is uncaught, not
+only a silent state change. A `gate-result` FAIL/BLOCKED, a `## L2 Finding`, an
+`l2.done`, or a `discussion` on such an issue goes unseen by Lane 1's belt
+until something else surfaces it (the operator, a different lane's own belt,
+or Lane 1 re-arming after noticing); it is not compensated for with a wider
+scan. `discover_l1_sweep`
 really does filter nothing — no precedence table, no exclusion list, newest
 wins outright — which is exactly the property that makes it too broad to run
 unbounded.
