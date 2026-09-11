@@ -23,6 +23,15 @@ The four required sections, and why each is required:
   * **assumptions** -- at least one, because `verify` produces one verdict per
     asserted assumption and nothing else. Zero assumptions is a call with no
     product.
+  * **evidence paths** -- at least one, and this is the section whose absence
+    was the defect (harmonic-forge#598 preclose finding 1). Embedding the
+    artifact makes the brief READABLE cold; it does not make the assumptions
+    CHECKABLE. `verify`'s whole product is a verdict backed by output the
+    reviewer actually obtained, and a reviewer with nothing to run returns
+    all-`uncheckable` -- a call that spends the one pass, exits 0, reports
+    `status: ok`, and checks nothing. The paths are resolved relative to the
+    `--cwd` the call is given, which is why that must be the repository the
+    artifact lives in and not an empty scratch directory.
 
 What this deliberately does NOT carry: the caller's own reasoning for its
 assumptions, and the caller's opinion of the artifact. Supplying either
@@ -53,6 +62,7 @@ def build(
     intent: str,
     question: str,
     assumptions: list[str],
+    evidence: list[str] | None = None,
 ) -> str:
     """Render the brief. Raises ValueError naming every missing section at
     once -- reporting only the first would make filling one in reveal the
@@ -74,6 +84,8 @@ def build(
         missing.append("--question")
     if not [a for a in assumptions if _clean(a)]:
         missing.append("--assumption (at least one)")
+    if not [e for e in (evidence or []) if _clean(e)]:
+        missing.append("--evidence (at least one path or command)")
     if missing:
         raise ValueError(
             "the brief would not be self-contained; missing: " + ", ".join(missing)
@@ -84,6 +96,13 @@ def build(
     parts.append("\n## Asserted assumptions -- one verdict each\n")
     for index, assumption in enumerate(a for a in assumptions if _clean(a)):
         parts.append(f"\n{index + 1}. {_clean(assumption)}\n")
+    parts.append(
+        "\n## Where the evidence is\n\nResolve these from your working "
+        "directory. Run what you need; a verdict without executed output is "
+        "discarded.\n"
+    )
+    for item in (e for e in (evidence or []) if _clean(e)):
+        parts.append(f"\n- `{_clean(item)}`\n")
     parts.append("\n## The artifact\n")
     for name, body in artifacts:
         parts.append(f"\n### `{name}`\n\n```\n{body.rstrip()}\n```\n")
@@ -108,12 +127,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--question", default="", help="the specific question for the reviewer")
     parser.add_argument("--assumption", action="append", default=[],
                         help="an asserted, unverified claim; repeatable, at least one required")
+    parser.add_argument("--evidence", action="append", default=[],
+                        help="a path or command the reviewer can run to check an "
+                             "assumption, resolved from --cwd; repeatable, at least "
+                             "one required")
     parser.add_argument("--out", required=True, help="path to write the brief to")
     args = parser.parse_args(argv)
 
     try:
         artifacts = _read_artifacts(args.artifact)
-        brief = build(artifacts, args.intent, args.question, args.assumption)
+        brief = build(artifacts, args.intent, args.question, args.assumption,
+                      args.evidence)
     except ValueError as exc:
         print(f"build_cross_family_brief: {exc}", file=sys.stderr)
         return 2

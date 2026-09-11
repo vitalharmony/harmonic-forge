@@ -38,8 +38,11 @@ You have read access to this codebase (`Read`, `Grep`, `Glob`) and to live GitHu
 - **One permitted non-`gh` helper.** When the cross-family branch below
   applies, `tools/lane/cross_family_call.sh` in the exact shape the shared
   rule gives is permitted, along with `tools/lane/build_cross_family_brief.py`
-  to produce its brief. Those two, in that shape, are the only commands you
-  run that are not reads. A different posture, a third family or an extra
+  to produce its brief, `mkdir` for the scratch directory that brief lives in,
+  and `tools/lane/cross_family_provenance.py` to compute the provenance label
+  from the envelope. Those, in that shape, are the only commands you run that
+  are not reads — and none of them touches the repository under review or any
+  GitHub state. A different posture, a third family or an extra
   token is denied by the same hook that gates your `gh` access — report a
   denial, never work around it.
 - **Never implement, never mutate.** You are advisory only — no `Write`/`Edit` access, and `Bash` is read-only survey access only (see above), by design. Your output is a recommendation ready to be turned into an ADR, an epic scope decision, or a Lane 1 handoff by the calling session — never code, never a direct file edit, never a GitHub mutation, even a "harmless" one like a comment.
@@ -80,12 +83,17 @@ labels, and what to do when the call does not run. It is shared with
 `pitch-inspection` and deliberately single-copy.
 
 **What you hand out.** The assumptions from (2), one per `--assumption`, in
-the words you would use to state them plainly — not your reasoning for them,
-and not your opinion of the plan. Both re-introduce the prior the second
+the words you would use to state them plainly, each paired with an
+`--evidence` path or command that would settle it — and `--cwd` set to the
+repository the artifact lives in. An assumption with nothing to run against
+returns `uncheckable`, and a call where every assumption does that has
+produced nothing while looking like a success. Not your reasoning for the
+assumptions, and not your opinion of the plan. Both re-introduce the prior the second
 family exists to escape.
 
-**Your report states which model produced which half**, using the provenance
-labels the shared rule specifies. A red-team whose provenance is unstated is
+**Your report states which model produced which half**, using the label
+`cross_family_provenance.py` computes from the envelope — do not compose it
+yourself. A red-team whose provenance is unstated is
 indistinguishable from an in-family one. If the call does not run, the review
 completes on your own read, labelled `in-family fallback` with the reason
 quoted — never relabelled as cross-family, and never retried.

@@ -3,6 +3,62 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(advisory): close four preclose findings; wire the belt/BATCH notice (harmonic-forge#598, #600 AC1/AC4/AC5)
+
+Preclose inspection returned four findings on the previous commit. All four
+were real and all four are fixed here.
+
+1. **An all-`uncheckable` result was labelled `cross-family`.** With `--cwd`
+   documented as an empty scratch directory, the reviewer's `git log/diff`
+   and every relative path in the brief resolve to nothing, so every verdict
+   normalizes down to `uncheckable` -- and the call exits 0 with `status: ok`
+   having checked nothing. Three fixes, because the finding had three causes:
+   `--cwd` is now the repository the artifact lives in (and the rule says why
+   the old advice was wrong); the brief carries `--evidence` paths again, the
+   anchor lost when `pitch-inspection`'s inline prose was replaced; and the
+   label is no longer composed by hand -- `cross_family_provenance.py`
+   computes it, and gives ALL-`uncheckable` its own label. `uncheckable`
+   beside a `confirmed` is the mechanism working; all of them is the
+   mechanism having produced nothing.
+
+2. **`pitch-inspection` was pointed at a mechanism its own file forbade.** It
+   said "no file writes" and the shared rule requires a scratch dir and a
+   written brief. `product-strategy` got that carve-out and it did not.
+
+3. **Three deny tests were vacuous.** They passed the pre-#598 six-token argv,
+   so the arity check rejected them before the posture/family/caller value
+   each is named for was ever compared. Mutation-checked: deleting the value
+   comparison now fails five tests; before this commit it failed none and all
+   2,086 passed with `--families 3` permitted.
+
+4. **`unittest.main()` sat above an appended class**, so direct invocation ran
+   9 of 13 tests and skipped exactly the four guarding the empty-artifact
+   defect.
+
+The live re-verification found a fifth, and the cross-family reviewer found it
+the same way it found the first: by running something. `stderr` from a
+`process-error` envelope was interpolated into the fallback label verbatim, so
+an error message containing `cross-family (` produced a FALLBACK line carrying
+the cross-family marker -- demonstrated with a forged envelope, not argued.
+Reserved markers are redacted from untrusted text now. Two live invocations,
+two real defects in the reviewer's own reviewing machinery, neither found
+in-family.
+
+Also lands harmonic-forge#600 AC1/AC4/AC5. `belt_batch_view.py` reads the
+BATCH state file and imports nothing from `tools/hooks/` (AC4), and
+`queue_cycle` emits one stderr line when it queues work during a live batch:
+that the item is not covered, that it stays queued and will be offered again,
+and that `top-up` is the operator's remedy (AC1). On stderr and never in the
+rows, so the stdout contract a Monitor parses is byte-identical with and
+without a live batch -- asserted, not assumed (AC5).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/lane/cross_family_provenance.py              | 165 ++++++++++++++++++++
+- tools/lane/test_build_cross_family_brief.py        |  57 +++++--
+- tools/lane/test_cross_family_provenance.py         | 158 +++++++++++++++++++
+- 11 files changed, 757 insertions(+), 35 deletions(-)
+
 ## feat(advisory): make the cross-family branch reachable and give it a second consumer (harmonic-forge#598)
 
 The mechanism #448 built for `pitch-inspection` could not run. The deny

@@ -37,9 +37,17 @@ and nothing else — a different posture, a third family, a reordering, or one
 extra token is denied. Do not attempt to work around a denial; report it.
 <!-- /R-0358 -->
 
-`--cwd` names a scratch directory you create; it need not be a git repository.
-It sets where the reviewer starts, not what it may reach — `verify` runs under
-`--sandbox read-only`, so the choice of directory grants nothing.
+**`--cwd` is the repository checkout the artifact lives in.** Not a scratch
+directory — that instruction was wrong when first written here and is the
+defect this paragraph exists to prevent (harmonic-forge#598 preclose finding
+1). It is true that the choice grants no *reach*: `verify` runs under
+`--sandbox read-only`, so the reviewer can read what it could read from
+anywhere. It is false that the choice does not matter. `codex exec -C <cwd>`
+starts the reviewer there, so from an empty directory `git log/show/diff` —
+which the reviewer's own contract instructs it to run — all fail, `gh issue
+view` has no repo context, and every relative path in the brief resolves to
+nothing. Every verdict comes back `uncheckable`, the call exits 0 with
+`status: ok`, and the one pass is spent having checked nothing.
 
 ## The brief — build it, do not write it
 
@@ -49,13 +57,19 @@ python3 ~/harmonic-forge/tools/lane/build_cross_family_brief.py \
     --intent "<what the artifact is trying to achieve>" \
     --question "<the specific question>" \
     --assumption "<an asserted, unverified claim>" [--assumption …] \
+    --evidence "<a path or command that checks one>" [--evidence …] \
     --out <brief path>
 ```
 
-It refuses to write a brief missing any of the four, naming all the gaps at
+It refuses to write a brief missing any of the five, naming all the gaps at
 once. That refusal is the point: `verify` returns one verdict per asserted
 assumption and nothing else, so a brief with no assumptions spends the call
 and produces nothing — and there is no second call.
+
+`--evidence` is the half that is easy to skip and expensive to skip. Embedding
+the artifact makes the brief *readable* cold; it does not make the assumptions
+*checkable*. The paths resolve from the `--cwd` above, which is why the two
+must agree.
 
 **What the brief must not carry:** your reasoning for the assumptions, or your
 opinion of the artifact. Either one hands the second family the prior it exists
@@ -93,14 +107,22 @@ provenance is unstated is indistinguishable from an in-family one, and the
 whole value of the branch is that a reader can tell them apart.
 <!-- /R-0359 -->
 
-Use these three labels verbatim, so a reader (and a grep) can tell the states
-apart without parsing prose:
+**Do not compose the label yourself — compute it and paste it:**
 
 ```
-Red-team provenance: cross-family (codex / gpt-5.6-sol)
-Red-team provenance: in-family fallback (claude-opus-5) — cross-family call did not run: <reason>
-Red-team provenance: in-family only (claude-opus-5) — cross-family branch not triggered
+python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope <envelope path>
+# or, when the branch did not trigger:
+python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope /dev/null --not-triggered
 ```
+
+A label derived by reading prose is a label that will sometimes be derived
+wrong, and the wrong one has a specific shape worth naming: the call runs,
+exits 0, returns `status: ok`, and every verdict is `uncheckable` because the
+reviewer could not reach the evidence. Nothing about that envelope looks like
+a failure, and reading it as a success produces a report labelled
+`cross-family` that contains no cross-family checking. The classifier gives
+that state its own label. `uncheckable` beside a `confirmed` is the mechanism
+working; ALL-`uncheckable` is the mechanism having produced nothing.
 
 ## When the call does not run — loud, non-fatal, never relabelled
 

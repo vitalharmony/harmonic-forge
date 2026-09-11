@@ -39,11 +39,21 @@ way, scoped to Lane 2's added content.
 ## You start cold, but you survey everything live
 
 Read-only `Bash` (`gh issue view <N> --json comments`, `git log/show/diff`),
-plus `Read`/`Grep`/`Glob` on the codebase, plus — when the cross-family
-branch below applies — the one permitted `cross_family_call.sh` invocation.
-You never mutate anything — no `gh` writes, no git writes, no file writes.
+plus `Read`/`Grep`/`Glob` on the codebase. You never mutate anything — no
+`gh` writes, no git writes, no file writes into the repository under review.
 If the draft handoff or issue number isn't in your prompt, ask for it
 before proceeding.
+
+**One bounded exception, and only when the cross-family branch below
+applies** (harmonic-forge#598 preclose finding — without this stated, the
+rule above forbids two of the three steps that branch requires, and the
+contradiction resolves silently inside your own reasoning): you may create a
+scratch directory outside the repository, run
+`tools/lane/build_cross_family_brief.py --out <path in that scratch dir>`,
+make the one permitted `cross_family_call.sh` invocation, and run
+`tools/lane/cross_family_provenance.py` on the envelope it returns. Those
+four, in that shape, are the only non-read commands you run. Nothing in the
+repository under review is written, and no GitHub state is touched.
 
 ## The cross-family branch — same-family review cannot catch a confabulation
 
@@ -80,7 +90,9 @@ description of this mechanism is how it broke once already
 argument contract disagreed, each green in its own suite).
 
 The assumptions you hand out are the `asserted` ones, verbatim from the
-handoff's own field. Your verdict carries the provenance label the shared
+handoff's own field, each with the `--evidence` path that would check it —
+and `--cwd` is the repository the handoff is about, not the scratch dir the
+brief lives in. Those two are what make a verdict possible at all. Your verdict carries the provenance label the shared
 rule specifies, and folds the cross-family evidence into your single pass —
 the call gets no retry budget of its own and does not extend it.
 

@@ -127,6 +127,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
 import manifest as onboard_manifest  # noqa: E402
 
+import belt_batch_view  # noqa: E402
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
@@ -1245,6 +1246,7 @@ def queue_cycle(
     l1_since: dict[str, str | None],
     now: str,
     sweep: bool = False,
+    batch_state_path: Path | None = None,
 ) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
     """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
 
@@ -1312,6 +1314,24 @@ def queue_cycle(
     for repo, issue in set(last_queue) - set(queue):
         if repo in ok_repos:
             lines.append(f"{repo}#{issue} left-queue-for-{lane}")
+
+    # harmonic-forge#600 AC1. A belt event that lands during a live batch used
+    # to arrive with nothing said about the batch at all, so a session either
+    # acted on it (breaking the batch's scope) or dropped it (losing the work),
+    # and neither outcome left a trace. This says the third thing: it is
+    # queued, it is not covered, and here is the remedy.
+    #
+    # On STDERR, beside the rows and never inside them -- AC5 keeps the stdout
+    # contract's three row shapes exactly as they were, because a Monitor
+    # parses them. And through `belt_batch_view`, which reads the state file
+    # and imports nothing from `tools/hooks/` -- AC4.
+    notice = belt_batch_view.deferral_notice(
+        belt_batch_view.live_batch_keys(state_path=batch_state_path),
+        len(lines),
+    )
+    if notice is not None:
+        print(notice, file=sys.stderr)
+
     return queue, lines, ok_repos
 
 
