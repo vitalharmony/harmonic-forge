@@ -1346,6 +1346,51 @@ def comment_watch_cycle(
     return lines
 
 
+#: harmonic-forge#638 AC3: a single global cap would converge every lane's
+#: backoff to the same ceiling, erasing the urgency ordering the base
+#: intervals already encode (Lane 3 at 60s is more urgent than the sweep at
+#: 600s, and must stay more urgent at every backoff level too). Scaling the
+#: cap off each lane's own base interval preserves that ordering for free:
+#: Lane 3 backs off to 600s at the cap while the sweep backs off to 6000s,
+#: a 10x reduction in EITHER case, never a shared ceiling.
+_BACKOFF_FACTOR = 2.0
+_BACKOFF_CAP_MULTIPLIER = 10.0
+
+
+def next_poll_interval(base_interval: int, quiet_streak: int) -> int:
+    """harmonic-forge#638 AC1/AC2/AC3: the next sleep, given how many
+    CONSECUTIVE quiet cycles (no stdout lines) have just happened.
+
+    AC1 -- exponential backoff, capped: `quiet_streak == 0` (the cycle that
+    just found something, or the very first cycle) returns `base_interval`
+    unchanged; each further quiet cycle roughly doubles it, up to
+    `base_interval * _BACKOFF_CAP_MULTIPLIER`.
+
+    AC2 -- this function cannot express "stop polling". Its return is
+    always a positive, finite number of seconds -- there is no input, quiet
+    for however long, that produces anything else. The belt's `while True:`
+    loop calls `time.sleep()` on this return unconditionally; nothing here
+    or in the caller ever branches to not sleep-and-continue.
+
+    AC3 -- the cap is `base_interval * _BACKOFF_CAP_MULTIPLIER`, not a fixed
+    number, so Lane 3's 60s base still backs off to a lower ceiling (600s)
+    than the sweep's 600s base (6000s) -- the SAME relative urgency the
+    armed intervals already encode is preserved at every backoff level, not
+    just at the base.
+    """
+    if quiet_streak <= 0:
+        return base_interval
+    cap = base_interval * _BACKOFF_CAP_MULTIPLIER
+    # AC2's own guarantee, made structural rather than asserted: `streak`
+    # here is capped by the number of doublings that could possibly matter
+    # (beyond this, `_BACKOFF_FACTOR ** streak` has already exceeded `cap`
+    # for any realistic base/cap pair) -- a genuinely unbounded quiet run
+    # (hours, days) must not compute `2.0 ** 10_000` and overflow, which is
+    # exactly the "stop working" failure this AC exists to rule out.
+    capped_exponent = min(quiet_streak, 32)
+    return int(min(base_interval * (_BACKOFF_FACTOR ** capped_exponent), cap))
+
+
 def queue_cycle(
     repos: list[str],
     lane: str,
@@ -1661,6 +1706,13 @@ def main() -> int:
     #: AC6's guarantee was implemented for --worktrees only, and both
     #: prescribed Lane 1 and Lane 3 commands pass no --worktrees).
     first_queue_report = True
+    #: harmonic-forge#638 AC1/AC5: consecutive cycles with zero stdout lines.
+    #: Reset to 0 the moment any cycle finds something; the sleep at the
+    #: bottom of the loop backs off with it via `next_poll_interval()`.
+    quiet_streak = 0
+    #: The interval actually used last cycle, so a CHANGE (not every cycle)
+    #: gets a stderr line -- AC5's measured-saving record, not silent tuning.
+    last_reported_interval = args.interval
     # Poll FIRST, sleep after (harmonic-forge#596). Sleeping first meant a belt
     # printed nothing until one whole interval had elapsed -- ten minutes of
     # silence for the suspenders' 600s sweep, which is documented as a one-shot
@@ -1669,6 +1721,10 @@ def main() -> int:
     # operator wait an interval to find out is the same failure, deferred.
     while True:
         now = _now()
+        #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
+        #: line at all, across every source below (queue-for/sweep-for,
+        #: comment-watch, branch-ahead). Drives `quiet_streak`.
+        cycle_emitted = False
 
         # Re-enumerated every cycle, not frozen at arm time: a Monitor lives
         # for the whole session, and Lane 2 creates worktrees during it
@@ -1711,6 +1767,7 @@ def main() -> int:
             for line in lines:
                 print(line)
                 sys.stdout.flush()
+                cycle_emitted = True
             last_queue = queue
 
         # harmonic-forge#599. `SKILL.md` declares dedup as one mechanic with
@@ -1724,6 +1781,7 @@ def main() -> int:
                                         now, watermarks, seen, primed_targets):
             print(line)
             sys.stdout.flush()
+            cycle_emitted = True
         since = now
 
         #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
@@ -1743,8 +1801,25 @@ def main() -> int:
         for line in branch_ahead_lines(resolutions, last_ahead):
             print(line)
             sys.stdout.flush()
+            cycle_emitted = True
 
-        time.sleep(args.interval)
+        # harmonic-forge#638 AC1/AC2/AC3: back off on sustained quiet, reset
+        # the moment anything is found. `next_poll_interval` cannot return
+        # anything but a positive number of seconds (AC2) -- there is no
+        # branch here that skips the sleep-and-continue.
+        quiet_streak = 0 if cycle_emitted else quiet_streak + 1
+        sleep_for = next_poll_interval(args.interval, quiet_streak)
+        if sleep_for != last_reported_interval:
+            # AC5: the measured saving, recorded as it happens rather than
+            # reasoned about once. Prints on every CHANGE, not every cycle,
+            # so a long quiet run costs one line per doubling, not per poll.
+            print(f"[watch_lane_posts] backoff: quiet_streak={quiet_streak}, "
+                  f"next poll in {sleep_for}s (base {args.interval}s, "
+                  f"cap {int(args.interval * _BACKOFF_CAP_MULTIPLIER)}s) -- "
+                  f"{args.interval / sleep_for:.1%} of base-interval API "
+                  "call rate while this holds", file=sys.stderr)
+            last_reported_interval = sleep_for
+        time.sleep(sleep_for)
 
 
 if __name__ == "__main__":

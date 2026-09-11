@@ -32,6 +32,7 @@ from watch_lane_posts import (
     l1_sweep_cycle,
     l3_verdict_sweep_cycle,
     list_open_issues,
+    next_poll_interval,
     report_resolution,
     resolve_worktree,
 )
@@ -2036,6 +2037,84 @@ class QueueKeyIsRepoQualifiedTests(unittest.TestCase):
         self.assertEqual(sorted(queue),
                          [("vitalharmony/harmonic-forge", 570),
                           ("vitalharmony/hrse", 570)])
+
+
+class NextPollIntervalTests(unittest.TestCase):
+    """harmonic-forge#638 AC1/AC2/AC3."""
+
+    def test_a_zero_streak_returns_the_base_interval_unchanged(self) -> None:
+        """AC1: the cycle that just found something (or the very first
+        cycle) polls at the armed cadence, not a backed-off one."""
+        for base in (60, 90, 300, 600):
+            with self.subTest(base=base):
+                self.assertEqual(next_poll_interval(base, 0), base)
+
+    def test_a_negative_streak_is_treated_the_same_as_zero(self) -> None:
+        """Defensive: no caller should ever construct one, but a function
+        this central to AC2's guarantee must not behave strangely on an
+        out-of-domain input either."""
+        self.assertEqual(next_poll_interval(60, -1), 60)
+
+    def test_the_interval_roughly_doubles_each_further_quiet_cycle(self) -> None:
+        base = 60
+        prev = next_poll_interval(base, 1)
+        for streak in range(2, 4):
+            current = next_poll_interval(base, streak)
+            self.assertGreater(current, prev, f"streak={streak}")
+            prev = current
+
+    def test_growth_caps_at_ten_times_the_base_interval(self) -> None:
+        """AC1's 'capped' half -- sustained quiet must not grow unbounded."""
+        for base in (60, 300, 600):
+            with self.subTest(base=base):
+                self.assertEqual(next_poll_interval(base, 1000), base * 10)
+
+    def test_never_returns_anything_but_a_positive_finite_interval(self) -> None:
+        """AC2: there is no quiet-streak length, however long, that makes
+        this function express 'stop polling'. Swept across a wide range of
+        streak lengths and bases -- the guarantee is about EVERY input, not
+        one example."""
+        for base in (30, 60, 90, 300, 600, 3600):
+            for streak in (0, 1, 2, 5, 10, 50, 1000, 10_000):
+                value = next_poll_interval(base, streak)
+                self.assertIsInstance(value, int)
+                self.assertGreater(value, 0)
+                self.assertLessEqual(value, base * 10)
+
+    def test_the_cap_scales_with_each_lanes_own_base_preserving_urgency_order(self) -> None:
+        """AC3: a shared global cap would let a backed-off sweep (600s base)
+        converge to the SAME interval as a backed-off Lane 3 watcher (60s
+        base), erasing the urgency difference the armed intervals encode.
+        The cap must scale with base instead, so Lane 3 stays strictly more
+        frequent than the sweep at every backoff level, not just at the
+        base."""
+        lane3_capped = next_poll_interval(60, 1000)
+        sweep_capped = next_poll_interval(600, 1000)
+        self.assertLess(lane3_capped, sweep_capped)
+        self.assertEqual(sweep_capped / lane3_capped, 10)
+
+
+class BeltNeverPausesDocSyncTests(unittest.TestCase):
+    """harmonic-forge#638 AC6: SKILL.md states plainly that the belt does
+    not pause, and why -- doc-SYNC against the actual constant, not a
+    number that could silently drift from the code it describes."""
+
+    def test_skill_md_states_the_belt_never_pauses(self) -> None:
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("belt never pauses", text.lower())
+
+    def test_skill_md_names_the_real_cap_multiplier(self) -> None:
+        """Doc-sync: the "10x" figure in the doc must match
+        `_BACKOFF_CAP_MULTIPLIER`, not a hand-typed number that can drift
+        the moment the constant changes."""
+        from watch_lane_posts import _BACKOFF_CAP_MULTIPLIER
+
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(f"{int(_BACKOFF_CAP_MULTIPLIER)}x", text)
+
+    def test_skill_md_documents_the_suspenders_never_stop_guarantee(self) -> None:
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("Never call `stop`", text)
 
 
 if __name__ == "__main__":
