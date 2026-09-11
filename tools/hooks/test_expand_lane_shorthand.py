@@ -575,9 +575,11 @@ class BatchAuthorizationTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertEqual(m.batch_keys(prompt), [])
 
-    def test_authorize_batch_writes_two_merge_targets_and_one_close(self):
+    def test_authorize_batch_writes_two_merge_targets_and_no_close(self):
         """A cross-repo issue needs one merge per repo; harmonic-forge#497
-        needed two and the single granted slot made the second prompt."""
+        needed two and the single granted slot made the second prompt.
+        harmonic-forge#612: no close target at all any more -- closing
+        happens via a live-gated `Closes #N`, never a direct BATCH grant."""
         import json as _json
         import batch_auth as ba
 
@@ -589,7 +591,7 @@ class BatchAuthorizationTests(unittest.TestCase):
         for key in ("F1", "F2"):
             actions = [t["action"] for t in state[key]["targets"]]
             self.assertEqual(actions.count("gh pr merge"), 2, key)
-            self.assertEqual(actions.count("gh issue close"), 1, key)
+            self.assertEqual(actions.count("gh issue close"), 0, key)
 
     def test_a_non_batch_prompt_writes_nothing_and_returns_empty(self):
         import batch_auth as ba
@@ -666,7 +668,10 @@ class BatchWiringTests(unittest.TestCase):
     def test_a_re_mention_extends_rather_than_resetting_consumption(self) -> None:
         """A mid-batch "keep going on the BATCH F495 work" is encouragement,
         not a new grant. Replacing silently un-consumed a spent single-use
-        close and wiped every recorded link_pr mapping."""
+        target and wiped every recorded link_pr mapping. harmonic-forge#612:
+        converted from a close target (removed entirely) to one of the two
+        merge targets `authorize_batch` now grants -- the property under
+        test (re-mention extends, never resets) is identical either way."""
         import batch_auth as ba
 
         tmp = Path(tempfile.mkdtemp()) / "state.json"
@@ -680,21 +685,22 @@ class BatchWiringTests(unittest.TestCase):
             # TtyGateCliTests in test_batch_auth.py is what proves the gate itself.
             with mock.patch("os.isatty", return_value=True):
                 ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
-            close_cmd = "gh issue close 495 --repo vitalharmony/harmonic-forge"
-            self.assertEqual(ba.decide(close_cmd, state_path=tmp)[0], "allow")
+            merge_cmd = "gh pr merge 42 --repo vitalharmony/hrse"
+            self.assertEqual(ba.decide(merge_cmd, state_path=tmp)[0], "allow")
             # `decide()` is read-only as of harmonic-forge#552 AC1 — it no
             # longer consumes, so spending the slot now takes an explicit
             # `consume()`, the way `batch_consume.py` does on PostToolUse.
             # What this test is actually about is unchanged: a re-mention must
             # EXTEND, never reset, whatever has already been spent.
             self.assertEqual(
-                ba.consume(close_cmd, state_path=tmp,
+                ba.consume(merge_cmd, state_path=tmp,
                            landed=lambda *a, **k: True), ["F495"])
             receipt = m.authorize_batch("BATCH F495", state_path=tmp)
         self.assertIn("extended", receipt)
         state = json.loads(tmp.read_text())
-        closes = [t for t in state["F495"]["targets"] if "close" in t["action"]]
-        self.assertTrue(closes[0]["consumed"], "the spent close was un-consumed")
+        merges = [t for t in state["F495"]["targets"] if t["action"] == "gh pr merge"]
+        self.assertTrue(any(t["consumed"] for t in merges),
+                         "the spent merge target was un-consumed")
         self.assertIn(42, [t.get("pr_number") for t in state["F495"]["targets"]],
                       "the recorded link_pr mapping was wiped")
 

@@ -81,13 +81,15 @@ class StateFixture(unittest.TestCase):
 
 
 class AuthorizeTests(StateFixture):
-    def test_default_authorizes_both_actions(self):
-        """harmonic-forge#356 gap 2: one BATCH grant covers implement ->
-        merge -> close without a second authorize() call."""
+    def test_default_authorizes_merge_only(self):
+        """harmonic-forge#612: BATCH no longer grants `gh issue close` at
+        all, default or otherwise -- closing now happens via a live-gated
+        `Closes #N` (see `block_closing_keywords.py`), never a second
+        direct target here."""
         ba.authorize(["H395"], state_path=self.state_path)
         state = ba._load(self.state_path)
         actions = {t["action"] for t in state["H395"]["targets"]}
-        self.assertEqual(actions, {"gh pr merge", "gh issue close"})
+        self.assertEqual(actions, {"gh pr merge"})
 
     def test_writes_one_entry_per_key(self):
         ba.authorize(["h395", "f334"], state_path=self.state_path)
@@ -96,13 +98,15 @@ class AuthorizeTests(StateFixture):
         self.assertIn("F334", state)
         self.assertTrue(all(not t["consumed"] for t in state["H395"]["targets"]))
 
-    def test_narrower_action_list_is_still_supported(self):
-        """The H767 case this gap was found from: an issue closed without
-        ever having a PR needs only the close target."""
-        ba.authorize(["H767"], ["gh issue close"], state_path=self.state_path)
-        state = ba._load(self.state_path)
-        actions = [t["action"] for t in state["H767"]["targets"]]
-        self.assertEqual(actions, ["gh issue close"])
+    def test_gh_issue_close_action_is_refused_outright(self):
+        """harmonic-forge#612 AC1: no code path in this module authorizes
+        `gh issue close` -- not merely absent from the default, refused even
+        when explicitly requested. The H767 case (an issue closed without
+        ever having a PR) this action list used to serve no longer applies:
+        closing is either live-BATCH-linked to a `gh pr merge` (via
+        `Closes #N`) or fully manual; there is no third, close-only shape."""
+        with self.assertRaises(ValueError):
+            ba.authorize(["H767"], ["gh issue close"], state_path=self.state_path)
 
     def test_empty_actions_list_rejected(self):
         with self.assertRaises(ValueError):
@@ -128,20 +132,25 @@ class AuthorizeTests(StateFixture):
             ba.link_pr("H999", "vitalharmony/hrse", 1202, state_path=self.state_path)
 
     def test_link_pr_requires_a_merge_target(self):
-        ba.authorize(["H767"], ["gh issue close"], state_path=self.state_path)
+        """harmonic-forge#612: authorize() can no longer construct a
+        targetless key through public API (the only authorizable action is
+        `gh pr merge`, so every authorized key has one) -- hand-craft the
+        state directly to confirm `link_pr`'s own defensive check still
+        holds against a malformed/legacy entry with no merge target."""
+        state = {"H767": {"authorized_at": ba._now().isoformat(),
+                           "expires_at": (ba._now() + ba.timedelta(hours=1)).isoformat(),
+                           "targets": []}}
+        ba._save(state, self.state_path)
         with self.assertRaises(ValueError):
             ba.link_pr("H767", "vitalharmony/hrse", 1202, state_path=self.state_path)
 
-    def test_link_pr_records_repo_and_number_on_the_merge_target_only(self):
+    def test_link_pr_records_repo_and_number_on_the_merge_target(self):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("h395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         state = ba._load(self.state_path)
         merge_target = next(t for t in state["H395"]["targets"] if t["action"] == "gh pr merge")
-        close_target = next(t for t in state["H395"]["targets"] if t["action"] == "gh issue close")
         self.assertEqual(merge_target["repo"], "vitalharmony/hrse")
         self.assertEqual(merge_target["pr_number"], 1202)
-        self.assertIsNone(close_target["repo"])
-        self.assertIsNone(close_target["pr_number"])
 
 
 class TopUpCliTests(StateFixture):
@@ -286,15 +295,6 @@ class ClassifyTests(unittest.TestCase):
 
 
 class DecideAllowTests(StateFixture):
-    def test_issue_close_allowed_under_live_authorization(self):
-        ba.authorize(["H395"], state_path=self.state_path)
-        result = ba.decide(
-            "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
-            state_path=self.state_path,
-        )
-        self.assertEqual(result[0], "allow")
-        self.assertIn("H395", result[1])
-
     def test_pr_merge_allowed_under_live_authorization_and_link(self):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
@@ -304,9 +304,11 @@ class DecideAllowTests(StateFixture):
         self.assertEqual(result[0], "allow")
         self.assertIn("H395", result[1])
 
-    def test_merge_then_close_both_allowed_from_one_authorize_call(self):
-        """The gap 2 scenario end to end: one authorize(), merge consumes
-        only the merge target, close still allows independently."""
+    def test_merge_allows_but_close_never_does_from_the_same_authorize_call(self):
+        """harmonic-forge#612: one authorize() call now only ever grants
+        merge. Closing that same issue is unaffected by the merge grant --
+        it always asks, whether or not the merge is live, consumed, or
+        never touched at all."""
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         merge_result = ba.decide(
@@ -317,15 +319,7 @@ class DecideAllowTests(StateFixture):
             state_path=self.state_path,
         )
         self.assertEqual(merge_result[0], "allow")
-        self.assertEqual(close_result[0], "allow")
-
-    def test_narrow_close_only_authorization_does_not_grant_merge(self):
-        ba.authorize(["H767"], ["gh issue close"], state_path=self.state_path)
-        result = ba.decide(
-            "gh api repos/vitalharmony/hrse/issues/767 -X PATCH -f state=closed",
-            state_path=self.state_path,
-        )
-        self.assertEqual(result[0], "allow")
+        self.assertEqual(close_result[0], "ask")
 
 
 class DecideAskTests(StateFixture):
@@ -368,13 +362,17 @@ class DecideAskTests(StateFixture):
         )
         self.assertEqual(result[0], "ask")
 
-    def test_gh_as_wrapped_issue_close_allowed_under_live_authorization(self):
-        """Same wrapper, this time matching the bare form's `allow` result
-        once a real BATCH grant exists (AC2/AC4: no change to decide()'s
-        fail-toward-ask direction or existing BATCH semantics)."""
+    def test_gh_as_wrapped_pr_merge_allowed_under_live_authorization(self):
+        """Same wrapper, this time matching a genuine `allow` result once a
+        real BATCH grant exists (AC2/AC4: no change to decide()'s
+        fail-toward-ask direction or existing BATCH semantics). harmonic-
+        forge#612: `gh issue close` can never allow any more (its own
+        dedicated coverage in `AskDiagnosticTests`), so wrapper-stripping
+        for an `allow` result is exercised through merge instead."""
         ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         result = ba.decide(
-            "gh-as vitalharmony gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
+            "gh-as vitalharmony gh pr merge 1202 --repo vitalharmony/hrse",
             state_path=self.state_path,
         )
         self.assertEqual(result[0], "allow")
@@ -398,10 +396,13 @@ class DecideAskTests(StateFixture):
         )
         self.assertEqual(result[0], "ask")
 
-    def test_gha_wrapped_issue_close_allowed_under_live_authorization(self):
+    def test_gha_wrapped_pr_merge_allowed_under_live_authorization(self):
+        """harmonic-forge#612: converted from `gh issue close` to `gh pr
+        merge` -- see the sibling `gh-as` test above for why."""
         ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         result = ba.decide(
-            "gha vh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
+            "gha vh pr merge 1202 --repo vitalharmony/hrse",
             state_path=self.state_path,
         )
         self.assertEqual(result[0], "allow")
@@ -498,10 +499,15 @@ class DecideSilentTests(StateFixture):
 
 
 class ConsumptionTests(StateFixture):
+    """harmonic-forge#612: `gh pr merge` throughout -- `gh issue close` is
+    always `ask` now (see `DecideAskTests`), so it can no longer carry the
+    generic allow/consume/re-ask behavior this class exists to cover."""
+
     def setUp(self):
         super().setUp()
         ba.authorize(["H395"], state_path=self.state_path)
-        self.command = "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed"
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
+        self.command = "gh pr merge 1202 --repo vitalharmony/hrse"
 
     def test_a_second_identical_command_still_allows(self):
         """Idempotent per command hash -- hook order independence."""
@@ -517,20 +523,18 @@ class ConsumptionTests(StateFixture):
         self.assertEqual(ba.decide(self.command, state_path=self.state_path)[0],
                          "allow")
         consume_ok(self.command, self.state_path)
-        other_command = self.command.replace("state=closed", "state=closed ")
+        other_command = self.command.replace("--repo", " --repo")
         result = ba.decide(other_command, state_path=self.state_path)
         self.assertEqual(result[0], "ask")
 
-    def test_consumed_flag_is_set_on_the_close_target_only(self):
-        """Consuming the close target must not mark the merge target
-        consumed -- they are independent (harmonic-forge#356 gap 2)."""
-        consume_ok(self.command, self.state_path)
-        state = ba._load(self.state_path)
-        close_target = next(t for t in state["H395"]["targets"] if t["action"] == "gh issue close")
-        merge_target = next(t for t in state["H395"]["targets"] if t["action"] == "gh pr merge")
-        self.assertTrue(close_target["consumed"])
-        self.assertIsNotNone(close_target["consumed_by"])
-        self.assertFalse(merge_target["consumed"])
+    def test_a_gh_issue_close_command_is_never_consumable(self):
+        """harmonic-forge#612: no target exists for `decide()` to have ever
+        allowed, so `consume()` -- which only spends what `decide()` already
+        allowed -- finds nothing to spend either. Confirms the two halves
+        agree, not just `decide()` in isolation."""
+        close_command = "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed"
+        self.assertEqual(ba.decide(close_command, state_path=self.state_path)[0], "ask")
+        self.assertEqual(consume_ok(close_command, self.state_path), [])
 
 
 class GraphQLProtectionTests(StateFixture):
@@ -595,14 +599,19 @@ class InvocationPrefixTests(StateFixture):
                 result = ba.decide(cmd, state_path=self.state_path)
                 self.assertEqual(result[0], "ask", cmd)
 
-    def test_prefixed_close_allows_with_a_grant(self):
+    def test_prefixed_merge_allows_with_a_grant(self):
+        """harmonic-forge#612: `gh issue close` is never `allow`, prefixed
+        or not (see `AskDiagnosticTests`'s dedicated coverage) -- this
+        prefix-stripping behavior is exercised through merge instead, the
+        only command class it can still apply to."""
         for cmd in (
-            "env GH_HOST=x gh issue close 700 --repo vitalharmony/hrse",
-            "command gh issue close 700 --repo vitalharmony/hrse",
-            "nohup gh issue close 700 --repo vitalharmony/hrse",
+            "env GH_HOST=x gh pr merge 700 --repo vitalharmony/hrse",
+            "command gh pr merge 700 --repo vitalharmony/hrse",
+            "nohup gh pr merge 700 --repo vitalharmony/hrse",
         ):
             with self.subTest(cmd=cmd):
-                ba.authorize(["H700"], ["gh issue close"], state_path=self.state_path)
+                ba.authorize(["H700"], state_path=self.state_path)
+                ba.link_pr("H700", "vitalharmony/hrse", 700, state_path=self.state_path)
                 result = ba.decide(cmd, state_path=self.state_path)
                 self.assertEqual(result[0], "allow", cmd)
 
@@ -626,7 +635,8 @@ class LockingTests(StateFixture):
         a temp-file + atomic `os.replace`, so a lockless read sees the state
         before or after a write, never during.
         """
-        ba.authorize(["H600"], ["gh issue close"], state_path=self.state_path)
+        ba.authorize(["H600"], state_path=self.state_path)
+        ba.link_pr("H600", "vitalharmony/hrse", 1600, state_path=self.state_path)
         lock_path = self.state_path.with_name(self.state_path.name + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         holder_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -634,7 +644,7 @@ class LockingTests(StateFixture):
         try:
             start = time.monotonic()
             result = ba.decide(
-                "gh api repos/vitalharmony/hrse/issues/600 -X PATCH -f state=closed",
+                "gh pr merge 1600 --repo vitalharmony/hrse",
                 state_path=self.state_path,
             )
             elapsed = time.monotonic() - start
@@ -657,8 +667,9 @@ class LockingTests(StateFixture):
         hoped for. Two DIFFERENT command strings target the same slot —
         identical strings are deliberately idempotent and would prove nothing.
         """
-        ba.authorize(["H500"], ["gh issue close"], state_path=self.state_path)
-        base_cmd = "gh api repos/vitalharmony/hrse/issues/500 -X PATCH -f state=closed"
+        ba.authorize(["H500"], state_path=self.state_path)
+        ba.link_pr("H500", "vitalharmony/hrse", 1500, state_path=self.state_path)
+        base_cmd = "gh pr merge 1500 --repo vitalharmony/hrse"
         cmd_a, cmd_b = base_cmd, base_cmd + " "  # distinct hashes, same target
 
         entered_save = threading.Event()
@@ -700,10 +711,10 @@ class LockingTests(StateFixture):
         )
 
         state = ba._load(self.state_path)
-        close_targets = [t for t in state["H500"]["targets"]
-                         if "close" in t["action"].lower()]
-        self.assertEqual([t["consumed"] for t in close_targets], [True],
-                         "the one-shot close target is consumed exactly once")
+        merge_targets = [t for t in state["H500"]["targets"]
+                         if "merge" in t["action"].lower()]
+        self.assertEqual([t["consumed"] for t in merge_targets], [True],
+                         "the one-shot merge target is consumed exactly once")
 
 
 if __name__ == "__main__":
@@ -729,8 +740,7 @@ class CrossRepoMergeArityTests(unittest.TestCase):
                 if "merge" in t["action"].lower()]
 
     def test_link_pr_allocates_beyond_the_granted_targets(self):
-        ba.authorize(["F1"], actions=["gh pr merge", "gh issue close"],
-                  state_path=self.tmp)
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         self.assertEqual(len(self._merge_targets()), 1)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
         ba.link_pr("F1", "o/b", 2, state_path=self.tmp)
@@ -752,18 +762,25 @@ class CrossRepoMergeArityTests(unittest.TestCase):
         self.assertEqual(len(self._merge_targets()), 1)
 
     def test_a_close_target_is_never_allocated_a_second_time(self):
-        """A close is irreversible and happens once; only merges recur."""
-        ba.authorize(["F1"], actions=["gh pr merge", "gh issue close"],
-                  state_path=self.tmp)
+        """harmonic-forge#612: a close target can never exist at all now --
+        `link_pr()` allocating merge targets must never create one as a
+        side effect either."""
+        ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
         ba.link_pr("F1", "o/b", 2, state_path=self.tmp)
         state = json.loads(self.tmp.read_text())
         closes = [t for t in state["F1"]["targets"]
                   if "close" in t["action"].lower()]
-        self.assertEqual(len(closes), 1)
+        self.assertEqual(len(closes), 0)
 
     def test_link_pr_still_refuses_a_key_with_no_merge_action(self):
-        ba.authorize(["F1"], actions=["gh issue close"], state_path=self.tmp)
+        """harmonic-forge#612: authorize() can no longer construct a
+        no-merge-action key through public API -- hand-craft the state
+        directly, same as `test_link_pr_requires_a_merge_target` above."""
+        state = {"F1": {"authorized_at": ba._now().isoformat(),
+                         "expires_at": (ba._now() + ba.timedelta(hours=1)).isoformat(),
+                         "targets": []}}
+        ba._save(state, self.tmp)
         with self.assertRaises(ValueError):
             ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
 
@@ -956,14 +973,31 @@ class AskDiagnosticTests(unittest.TestCase):
         self.assertEqual(verdict, "ask")
         return reason
 
-    def test_no_authorization_says_so(self):
+    def test_gh_issue_close_always_gives_the_fixed_batch_612_reason(self):
+        """harmonic-forge#612: closing has exactly one reason now, regardless
+        of any authorization state -- no diagnosis is computed at all, since
+        no code path in this module can ever authorize a close directly."""
         reason = self._reason("gh issue close 9 --repo vitalharmony/hrse")
-        self.assertIn("No authorization exists", reason)
+        self.assertEqual(reason, ba.ASK_ISSUE_CLOSE)
+
+    def test_a_live_merge_grant_for_the_same_issue_does_not_change_the_close_reason(self):
+        ba.authorize(["H9"], state_path=self.tmp)
+        reason = self._reason("gh issue close 9 --repo vitalharmony/hrse")
+        self.assertEqual(reason, ba.ASK_ISSUE_CLOSE)
+
+    def test_no_authorization_says_so(self):
+        """harmonic-forge#612: `_diagnose()`'s issue-shorthand-keyed messaging
+        (`issue_key`/repo-prefix lookup) was `gh issue close`-only and is now
+        dead code, removed along with the rest of that branch -- a merge
+        with no live grant at all gets the merge-specific no-grant message."""
+        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
+        self.assertIn("No live authorization has a merge target at all", reason)
 
     def test_expired_names_the_expiry_time(self):
-        ba.authorize(["H9"], actions=["gh issue close"], ttl_hours=-1,
+        ba.authorize(["H9"], actions=["gh pr merge"], ttl_hours=-1,
                   state_path=self.tmp)
-        reason = self._reason("gh issue close 9 --repo vitalharmony/hrse")
+        ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
+        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
         self.assertIn("EXPIRED", reason)
 
     def test_an_unlinked_pr_names_link_pr_and_tells_the_session_not_to_run_it(self):
@@ -986,27 +1020,34 @@ class AskDiagnosticTests(unittest.TestCase):
         reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash")
         self.assertIn("CONSUMED", reason)
 
-    def test_an_unmapped_repo_says_so_instead_of_naming_a_null_key(self):
-        """`issue_key` returns None for a repo with no shorthand, and the
-        first draft rendered that as "no authorization exists for None --
-        issue `BATCH None`", sending the operator to type an impossibility."""
-        reason = self._reason("gh issue close 9 --repo someorg/unmapped")
-        self.assertIn("no shorthand prefix", reason)
+    def test_an_unmapped_repo_no_longer_applies_to_merge_diagnosis(self):
+        """harmonic-forge#612: `issue_key`/repo-shorthand resolution was
+        close-only. Merge diagnosis never calls `issue_key` at all (it keys
+        on linked (repo, pr_number) pairs, not a repo-prefix table), so an
+        unmapped repo produces the ordinary no-live-grant message, not a
+        shorthand-specific one -- and never a bare `None`."""
+        reason = self._reason("gh pr merge 9 --repo someorg/unmapped")
+        self.assertIn("No live authorization has a merge target at all", reason)
         self.assertNotIn("None", reason)
 
-    def test_the_four_diagnostics_are_mutually_distinguishable(self):
-        """The point of AC4: no two states produce the same guidance."""
+    def test_the_four_merge_diagnostics_are_mutually_distinguishable(self):
+        """The point of AC4: no two states produce the same guidance.
+        harmonic-forge#612: all four are merge-diagnostic states now --
+        `gh issue close` produces exactly one fixed reason regardless of
+        state (its own dedicated test above), so it no longer contributes a
+        distinguishable state to this set."""
         seen = set()
         self.tmp.write_text("{}")
-        seen.add(self._reason("gh issue close 9 --repo vitalharmony/hrse"))
+        seen.add(self._reason("gh pr merge 9 --repo vitalharmony/hrse"))
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
         seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse"))
         ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
         consume_ok("gh pr merge 42 --repo vitalharmony/hrse", self.tmp)
         seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash"))
-        ba.authorize(["H8"], actions=["gh issue close"], ttl_hours=-1,
+        ba.authorize(["H8"], actions=["gh pr merge"], ttl_hours=-1,
                   state_path=self.tmp)
-        seen.add(self._reason("gh issue close 8 --repo vitalharmony/hrse"))
+        ba.link_pr("H8", "vitalharmony/hrse", 43, state_path=self.tmp)
+        seen.add(self._reason("gh pr merge 43 --repo vitalharmony/hrse"))
         self.assertEqual(len(seen), 4, seen)
 
 
@@ -1270,13 +1311,16 @@ class PrecloseRegressionTests(StateFixture):
                          if s["action"] == "gh pr merge")
             self.assertTrue(merge["consumed"], f"{key} merged but not consumed")
 
-    def test_a_merge_and_a_close_in_one_call_consume_both_targets(self):
+    def test_a_merge_and_a_close_in_one_call_consumes_only_the_merge_half(self):
+        """harmonic-forge#612: the close half of a bundled command is never
+        authorized, so it is never consumed either -- only the merge half's
+        own single target is spent."""
         ba.authorize(["F552"], state_path=self.state_path)
         ba.link_pr("F552", "vitalharmony/harmonic-forge", 561,
                    state_path=self.state_path)
         command = ("gh pr merge 561 --repo vitalharmony/harmonic-forge --squash "
                    "&& gh issue close 552 --repo vitalharmony/harmonic-forge")
-        self.assertEqual(consume_ok(command, self.state_path), ["F552", "F552"])
+        self.assertEqual(consume_ok(command, self.state_path), ["F552"])
         state = ba._load(self.state_path)
         self.assertTrue(all(s["consumed"] for s in state["F552"]["targets"]))
 
@@ -1526,15 +1570,16 @@ class PruneTests(StateFixture):
         """TC3: pruning must not make a recently-expired key look never
         authorized -- the EXPIRED diagnostic is the whole reason AC1 forbids
         zero retention."""
-        ba.authorize(["H9"], actions=["gh issue close"], ttl_hours=-1,
+        ba.authorize(["H9"], actions=["gh pr merge"], ttl_hours=-1,
                      state_path=self.state_path)
+        ba.link_pr("H9", "vitalharmony/hrse", 9, state_path=self.state_path)
         # authorize() prunes BEFORE writing the new entry, so an entry that
         # expires the instant it's created (ttl_hours=-1) is never a
         # candidate for its own creating call's prune.
         state = ba._load(self.state_path)
         self.assertIn("H9", state)
         reason, message = ba.decide(
-            "gh issue close 9 --repo vitalharmony/hrse", state_path=self.state_path)
+            "gh pr merge 9 --repo vitalharmony/hrse", state_path=self.state_path)
         self.assertEqual(reason, "ask")
         self.assertIn("EXPIRED", message)
 
@@ -1561,8 +1606,9 @@ class RevokeTests(StateFixture):
 
     def test_revoke_on_an_already_consumed_key_is_a_noop(self):
         """AC5: standing down a batch that mostly landed is the normal case."""
-        ba.authorize(["F1"], actions=["gh issue close"], state_path=self.state_path)
-        consumed_one("gh issue close 1 --repo vitalharmony/harmonic-forge",
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.link_pr("F1", "vitalharmony/harmonic-forge", 1, state_path=self.state_path)
+        consumed_one("gh pr merge 1 --repo vitalharmony/harmonic-forge",
                       self.state_path)
         before = ba._load(self.state_path)
         changed = ba.revoke(["F1"], state_path=self.state_path)

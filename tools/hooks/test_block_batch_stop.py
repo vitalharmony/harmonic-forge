@@ -27,12 +27,15 @@ NOW = datetime(2026, 9, 7, 6, 0, tzinfo=timezone.utc)
 
 
 def entry(hours: float = 6, consumed: bool = False,
-          merges: int = 1, close_consumed: bool | None = None) -> dict:
-    close = consumed if close_consumed is None else close_consumed
+          merges: int = 1, linked: bool = True) -> dict:
+    """harmonic-forge#612: merge-only targets. `linked` controls whether
+    each target carries a `pr_number` -- an unlinked target is exactly the
+    "spare capacity for a repo that may never need it" case, and is never
+    pending regardless of `consumed`."""
     return {"expires_at": (NOW + timedelta(hours=hours)).isoformat(),
-            "targets": [{"action": "gh pr merge", "consumed": consumed}
-                        for _ in range(merges)]
-                       + [{"action": "gh issue close", "consumed": close}]}
+            "targets": [{"action": "gh pr merge", "consumed": consumed,
+                         "pr_number": (100 + i) if linked else None}
+                        for i in range(merges)]}
 
 
 class PendingTests(unittest.TestCase):
@@ -46,37 +49,44 @@ class PendingTests(unittest.TestCase):
     def test_an_expired_entry_is_not_pending(self) -> None:
         self.assertEqual(bbs.live_pending({"F502": entry(hours=-1)}, NOW), [])
 
-    def test_a_merged_but_unclosed_entry_is_still_pending(self) -> None:
-        """Merged, not yet closed — genuinely mid-batch."""
-        e = entry(merges=1)
-        e["targets"][0]["consumed"] = True
+    def test_one_of_two_linked_merges_still_unconsumed_is_pending(self) -> None:
+        """harmonic-forge#612: replaces the old "merged but unclosed" case --
+        closing no longer exists as a separate tracked action, but a
+        genuinely cross-repo issue with one repo's merge landed and the
+        other's still outstanding is still real pending work."""
+        e = entry(merges=2, consumed=False, linked=True)
+        e["targets"][0]["consumed"] = True   # the first repo's merge landed
         self.assertEqual(bbs.live_pending({"F502": e}, NOW), ["F502"])
 
-    def test_a_spare_merge_target_does_not_keep_a_finished_batch_pending(self) -> None:
+    def test_a_spare_unlinked_merge_target_does_not_keep_a_finished_batch_pending(self) -> None:
         """THE defect this predicate was rewritten for. A grant carries two
         merge targets so a cross-repo issue does not prompt on its second
-        merge; a single-repo issue consumes one and leaves the spare forever.
-        Asking "any unconsumed target" therefore reported every FINISHED batch
-        as pending for the rest of its 12h TTL, and the Stop hook refused to
+        merge; a single-repo issue consumes (links, then confirms merged)
+        only one and leaves the spare forever UNLINKED. Asking "any
+        unconsumed target" therefore reported every FINISHED batch as
+        pending for the rest of its 12h TTL, and the Stop hook refused to
         end any turn with no action available that could clear it. Measured
-        live on F495 and F498, both merged and closed."""
-        e = entry(merges=2, consumed=False)
+        live on F495 and F498, both merged (and, pre-#612, closed)."""
+        e = entry(merges=2, consumed=False, linked=False)
+        e["targets"][0]["pr_number"] = 100
         e["targets"][0]["consumed"] = True   # the one merge that happened
-        e["targets"][2]["consumed"] = True   # the close
+        # targets[1] stays unlinked (pr_number=None) -- the spare
         self.assertEqual(bbs.live_pending({"F502": e}, NOW), [],
-                         "a spare merge target is not outstanding work")
+                         "a spare, never-linked merge target is not outstanding work")
 
-    def test_an_entry_with_no_close_target_is_never_pending(self) -> None:
-        """Nothing here can tell when a merges-only grant is finished, and
+    def test_an_entry_with_no_merge_targets_is_never_pending(self) -> None:
+        """Nothing here can tell when a targetless grant is finished, and
         guessing in the blocking direction is the whole failure above."""
-        e = {"expires_at": (NOW + timedelta(hours=6)).isoformat(),
-             "targets": [{"action": "gh pr merge", "consumed": False}]}
+        e = {"expires_at": (NOW + timedelta(hours=6)).isoformat(), "targets": []}
         self.assertEqual(bbs.live_pending({"F502": e}, NOW), [])
 
-    def test_legacy_single_action_close_entries_are_understood(self) -> None:
-        """Entries predating the `targets` list are one flat dict."""
+    def test_legacy_single_action_merge_entries_are_understood(self) -> None:
+        """Entries predating the `targets` list are one flat dict. harmonic-
+        forge#612: converted from a close entry (no longer a real shape --
+        BATCH never authorizes close) to a merge entry, the only legacy
+        single-action shape that can still occur."""
         legacy = {"expires_at": (NOW + timedelta(hours=2)).isoformat(),
-                  "action": "gh issue close", "consumed": False}
+                  "action": "gh pr merge", "consumed": False, "pr_number": 100}
         self.assertEqual(bbs.live_pending({"F316": legacy}, NOW), ["F316"])
 
     def test_malformed_entries_are_skipped_not_raised(self) -> None:

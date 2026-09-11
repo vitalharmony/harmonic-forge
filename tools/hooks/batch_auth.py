@@ -159,7 +159,15 @@ STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 #: size on purpose -- a size-derived TTL would be a second thing to get wrong,
 #: and the failure mode of "too short" is the one that actually bit.
 DEFAULT_TTL_HOURS = 12.0
-DEFAULT_ACTIONS = ("gh pr merge", "gh issue close")
+# harmonic-forge#612: BATCH no longer grants `gh issue close` directly --
+# closing now happens via a `Closes #N` line in the PR body, live-gated
+# independently by `tools/gh/block_closing_keywords.py` (its own state-file
+# read, never a call into this module -- harmonic-forge#600 AC4 forbids
+# `tools/gh/` importing `tools/hooks/`). `"gh issue close"` is refused
+# outright if ever passed as an explicit `--action` (AC1: no code path in
+# this module authorizes it, not merely "not the default").
+DEFAULT_ACTIONS = ("gh pr merge",)
+CLOSE_ACTION_REMOVED = "gh issue close"
 
 #: AC1 disposition (harmonic-forge#567): a GRACE WINDOW past expiry, not the
 #: house's usual count-based cap (`lane3_audit.py`'s `MAX_RECORDS`,
@@ -268,9 +276,13 @@ API_ISSUE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/issues/(\d+)")
 API_MERGE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge")
 
 ASK_ISSUE_CLOSE = (
-    "Closing an issue. The protocol requires an explicit human close -- "
-    "Lane 3's gate or the operator's instruction, never an agent's own "
-    "judgement -- unless a live BATCH authorization covers this exact issue."
+    "Closing an issue directly. This always requires an explicit human "
+    "close -- Lane 3's gate or the operator's instruction, never an "
+    "agent's own judgement, and BATCH no longer authorizes this command "
+    "at all (harmonic-forge#612). A live BATCH batch that needs a "
+    "sequenced close should carry a `Closes #N` line in the merged PR's "
+    "body instead -- live-gated separately by block_closing_keywords.py, "
+    "never by this decision."
 )
 
 
@@ -423,6 +435,13 @@ def authorize(
         raise TypeError(f"actions must be a list of strings, not a bare string: {actions!r}")
     if not actions:
         raise ValueError("authorize() requires at least one action")
+    if CLOSE_ACTION_REMOVED in actions:
+        raise ValueError(
+            f"{CLOSE_ACTION_REMOVED!r} is no longer an authorizable action "
+            "(harmonic-forge#612) -- closing now happens via a `Closes #N` "
+            "line in the PR body, live-gated independently by "
+            "tools/gh/block_closing_keywords.py, not a direct BATCH grant"
+        )
     actual_path = STATE_PATH if state_path is None else state_path
     with _locked_state(actual_path):
         state = _load(state_path)
@@ -686,23 +705,6 @@ def _ask_pr_merge_reason(tokens: list[str]) -> str:
     return reason
 
 
-def _match_issue_close(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
-    target_info = classify_issue_close(tokens)
-    if target_info is None:
-        return None
-    repo, number = target_info
-    if repo is None or number is None:
-        return None
-    key = issue_key(repo, number)
-    entry = state.get(key) if key else None
-    if entry is None:
-        return None
-    target = next((t for t in entry.get("targets", []) if "close" in t.get("action", "").lower()), None)
-    if target is None:
-        return None
-    return key, entry, target
-
-
 #: A branch segment carrying an issue number: an optional shorthand prefix
 #: letter, then the number. `l1/h1757-gate-attribution` -> ("h", "1757");
 #: `feat/1754-prompt-cache-parity` -> ("", "1754"). Two digits minimum, so the
@@ -943,41 +945,21 @@ def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | 
     return _derived_merge_match(repo, number, state)
 
 
-def _diagnose(tokens: list[str], state: dict, is_close: bool,
-              now: datetime) -> str:
-    """Why no authorization matched — the four states, told apart.
+def _diagnose(tokens: list[str], state: dict, now: datetime) -> str:
+    """Why no merge authorization matched.
 
-    `decide()` returning a bare "this requires explicit instruction" leaves the
-    operator unable to distinguish "I never issued BATCH for this", "it
-    expired", "it is already spent" and "the PR was never linked". Those need
-    four different actions.
+    harmonic-forge#612: the `is_close` branch this function used to carry is
+    gone -- `decide()` now returns `ASK_ISSUE_CLOSE` for every `gh issue
+    close` unconditionally, before this function is ever reached for that
+    command class, so a close-specific diagnosis here would be dead code.
+    Only `gh pr merge`'s two live states (no live grant at all, or a live
+    grant that isn't linked to this exact PR) still need telling apart.
     """
-    target_info = (classify_issue_close(tokens) if is_close
-                   else classify_pr_merge(tokens))
+    target_info = classify_pr_merge(tokens)
     repo, number = target_info if target_info else (None, None)
     if repo is None or number is None:
         return ("[BATCH] Could not resolve this command to a repo and number, "
                 "so no authorization could match it. Pass an explicit --repo.")
-
-    if is_close:
-        key = issue_key(repo, number)
-        if key is None:
-            # An unmapped repo has no shorthand, so no BATCH key can ever name
-            # it. Saying "no authorization exists for None -- issue `BATCH
-            # None`" sent the operator to type a literal impossibility.
-            return (f"[BATCH] {repo} has no shorthand prefix, so no BATCH key "
-                    "can refer to it. Add it to harmonic-forge's projects.toml "
-                    "and rules/lane-shorthand.md, or close by explicit "
-                    "instruction.")
-        entry = state.get(key)
-        if entry is None:
-            return (f"[BATCH] No authorization exists for {key}. Issue one with "
-                    f"a chat message containing `BATCH {key}`.")
-        if not _entry_live(entry, now):
-            return (f"[BATCH] {key} EXPIRED at {entry.get('expires_at', '?')}. "
-                    f"Re-issue `BATCH {key}`.")
-        return (f"[BATCH] {key} is live but was not authorized for a close "
-                "action. Re-issue it, or close by explicit instruction.")
 
     # A merge carries a PR number, never an issue number, so the only way it
     # reaches an authorization is a recorded `link-pr`. That call has no
@@ -1043,8 +1025,20 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
                 continue
             covered = True
 
-            match = _match_issue_close(tokens, state) if is_close else _match_pr_merge(tokens, state)
-            reason = ASK_ISSUE_CLOSE if is_close else _ask_pr_merge_reason(tokens)
+            if is_close:
+                # harmonic-forge#612 AC1: no code path in this module
+                # authorizes `gh issue close` -- unconditional, regardless of
+                # what a state file (even a hand-edited or pre-#612 one
+                # still inside its TTL) might contain. `_match_issue_close`
+                # is never reached for this command class any more; closing
+                # a batched issue now happens via `Closes #N`, live-gated
+                # independently by `block_closing_keywords.py` (its own
+                # state-file read, never a call into this module -- see that
+                # file's docstring for why), never through this function.
+                return "ask", ASK_ISSUE_CLOSE
+
+            match = _match_pr_merge(tokens, state)
+            reason = _ask_pr_merge_reason(tokens)
             # harmonic-forge#502 AC4: a prompt that does not say WHY is
             # indistinguishable from any other permission prompt. The
             # operator's own words on the incident that filed this issue:
@@ -1052,7 +1046,7 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             # TELL WHAT." These four states need four different actions,
             # and only the diagnostic makes that self-service.
             if match is None:
-                return "ask", reason + "\n\n" + _diagnose(tokens, state, is_close, now)
+                return "ask", reason + "\n\n" + _diagnose(tokens, state, now)
             key, entry, target = match
             if not _entry_live(entry, now):
                 return "ask", reason + (
@@ -1210,6 +1204,13 @@ def consume(command: str, state_path: Path | None = None,
         repo, number = info
         if not repo or not number:
             continue
+        if is_close:
+            # harmonic-forge#612: no code path authorizes a close, so none
+            # ever consumes one either -- `decide()` already never returns
+            # "allow" for this command class, and `consume()` (called by
+            # `batch_consume.py` only after an "allow") should agree by
+            # construction, not merely by there being nothing left to match.
+            continue
         try:
             # Match, derive and confirm-landed all happen OUTSIDE the lock.
             # `_locked_state`'s own contract forbids holding it across a
@@ -1219,8 +1220,7 @@ def consume(command: str, state_path: Path | None = None,
             # on a valid grant.
             state = _load(state_path)
             now = _now()
-            match = (_match_issue_close(tokens, state) if is_close
-                     else _match_pr_merge(tokens, state))
+            match = _match_pr_merge(tokens, state)
             if match is None:
                 continue
             key, entry, target = match

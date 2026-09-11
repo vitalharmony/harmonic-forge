@@ -521,16 +521,19 @@ def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from batch_auth import DEFAULT_TTL_HOURS, top_up  # noqa: PLC0415
 
-        fresh = top_up(keys, actions=["gh pr merge", "gh pr merge",
-                                      "gh issue close"],
+        # harmonic-forge#612: no `gh issue close` target -- BATCH no longer
+        # grants closing directly. Closing a batched issue now happens via a
+        # `Closes #N` line in the merged PR's body, live-gated independently
+        # by tools/gh/block_closing_keywords.py, not a target here.
+        fresh = top_up(keys, actions=["gh pr merge", "gh pr merge"],
                        state_path=state_path)
     except Exception as exc:  # noqa: BLE001
         return (f"BATCH authorization FAILED for {', '.join(keys)}: {exc}. "
-                "Every merge and close will prompt. Fix before relying on it.")
+                "Every merge will prompt. Fix before relying on it.")
     extended = [k for k in keys if k not in fresh]
     parts = []
     if fresh:
-        parts.append(f"authorized {', '.join(fresh)} (2 merge + 1 close each, "
+        parts.append(f"authorized {', '.join(fresh)} (2 merge slots each, "
                      f"{DEFAULT_TTL_HOURS:g}h TTL)")
     if extended:
         # Said explicitly: a re-mention EXTENDS, it does not reset. Replacing

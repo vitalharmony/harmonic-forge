@@ -16,12 +16,27 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HOOK_DIR = Path(__file__).resolve().parent
 GATE = HOOK_DIR / "batch_gate.py"
 IRREVERSIBLE = HOOK_DIR / "block_irreversible_ops.py"
 sys.path.insert(0, str(HOOK_DIR))
 import batch_auth as ba  # noqa: E402
+
+# F611/harmonic-forge#612: link_pr() requires a real TTY. This suite's own
+# process (a test runner) has none either, and every direct `ba.link_pr(...)`
+# call here simulates the operator's own already-authorized action, not an
+# agent bypass -- same module-default pattern as test_batch_auth.py.
+_isatty_patcher = mock.patch("os.isatty", return_value=True)
+
+
+def setUpModule():
+    _isatty_patcher.start()
+
+
+def tearDownModule():
+    _isatty_patcher.stop()
 
 
 class BatchGateEndToEndTests(unittest.TestCase):
@@ -49,10 +64,12 @@ class BatchGateEndToEndTests(unittest.TestCase):
         return proc.returncode, proc.stdout
 
     def test_a_covered_authorized_command_emits_allow(self):
-        ba.authorize(["H395"], ["gh issue close"], state_path=self.state_path)
-        _rc, out = self._run(
-            GATE, "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed"
-        )
+        """harmonic-forge#612: converted to `gh pr merge` -- `gh issue close`
+        can never emit `allow` any more (see `test_batch_auth.py`'s own
+        dedicated coverage of that fixed behavior)."""
+        ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 395, state_path=self.state_path)
+        _rc, out = self._run(GATE, "gh pr merge 395 --repo vitalharmony/hrse")
         decision = json.loads(out)["hookSpecificOutput"]["permissionDecision"]
         self.assertEqual(decision, "allow")
 
@@ -94,8 +111,9 @@ class HookOrderIndependenceTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.state_path = Path(self.tmpdir.name) / "batch-authorized.json"
-        ba.authorize(["H395"], ["gh issue close"], state_path=self.state_path)
-        self.command = "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed"
+        ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 395, state_path=self.state_path)
+        self.command = "gh pr merge 395 --repo vitalharmony/hrse"
 
     def tearDown(self):
         self.tmpdir.cleanup()
