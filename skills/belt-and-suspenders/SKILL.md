@@ -216,10 +216,49 @@ duplicate because `TaskList` said "No tasks found" while an older, more capable
 monitor had been running the whole session and later fired from a task id Lane 1
 had never seen. Confirm through a real signal before re-arming.
 
+**The belt never pauses, ever — this is deliberate, not an oversight**
+(harmonic-forge#638). It exists to catch work while the operator is not
+looking; a belt that sleeps until the operator issues a command removes its
+own reason to exist, precisely in the window it is the only thing watching.
+That is not hypothetical: four Lane 2 plans (H1383, H1771, H1662, H1663) sat
+posted and unpicked while nothing surfaced them, which is what
+harmonic-forge#618 was filed to fix. Do not re-propose an idle-after-N-ticks
+design for the belt on token-cost grounds — **a quiet belt tick already costs
+zero tokens.** `Monitor` turns stdout into conversation notifications; every
+diagnostic `watch_lane_posts.py` prints on a quiet cycle goes to stderr,
+which never reaches the model. Ten quiet cycles cost exactly what zero do.
+
+**What a quiet belt tick genuinely costs is GitHub API quota**, and that is
+what backs off instead: `next_poll_interval()` doubles the sleep on each
+consecutive quiet cycle (no stdout line emitted), capped at 10x the armed
+interval, and resets to the armed interval the instant anything is found.
+The cap scales off each lane's OWN base interval rather than one shared
+ceiling, so Lane 3's 60s watcher still polls more often than the sweep's
+600s backstop even fully backed off (600s vs. 6000s) — the same urgency
+ordering the armed intervals already encode, preserved at every backoff
+level. A stderr line records each change (quiet_streak, new interval, and
+the resulting fraction of the base call rate) as it happens, so the saving
+is a measured fact on the record, not a claim.
+
 ## The suspenders — a pull loop
 
 `/loop 10m proactively find work to do`. The wakeup delay must match the cadence
 set here literally — not a generic idle-tick default.
+
+**The suspenders are where the token cost actually is** (harmonic-forge#638,
+correcting the belt-side idea above): `/loop` wakes the model on every tick
+regardless of whether anything happened — a full turn, context and all —
+unlike the belt's stderr-only quiet cost. Back off toward `ScheduleWakeup`'s
+3600s maximum as quiet ticks accumulate, and reset to the working 10m
+cadence on any activity. **Never call `stop`** — no re-arming is ever
+required, and no operator action is needed to resume, the identical
+guarantee the belt makes for itself above. The two halves therefore share
+one shape (back off, cap, reset on activity, never stop), differing only in
+what "stop" would have meant for each: for the belt it is unacceptable at
+any tick count; for the suspenders it is unnecessary, since backing off to
+3600s already gets the cost within one order of magnitude of a genuine
+pause (one model turn per hour, not zero) without ever needing to be told
+to wake back up.
 
 Each tick runs three checks. **Checks never gate each other**: a cheap
 idempotent check runs every tick regardless of what any other check found. Lane

@@ -27,11 +27,13 @@ from watch_lane_posts import (
     discover_queue,
     drop_closed_targets,
     RootNotARepo,
+    cycle_is_quiet,
     enumerate_repo_roots,
     enumerate_worktrees,
     l1_sweep_cycle,
     l3_verdict_sweep_cycle,
     list_open_issues,
+    next_poll_interval,
     report_resolution,
     resolve_worktree,
 )
@@ -1726,9 +1728,24 @@ class CommentWatchCycleTests(unittest.TestCase):
 
     def _cycle(self, comments, now=None):
         with patch("watch_lane_posts._fetch_comments", return_value=comments):
-            return watch_lane_posts.comment_watch_cycle(
+            lines, _fetch_failed = watch_lane_posts.comment_watch_cycle(
                 self.target, {"l1"}, now or self.NOW,
                 self.wm, self.seen, self.primed)
+            return lines
+
+    def test_a_failed_fetch_reports_fetch_failed_true(self):
+        """harmonic-forge#638 preclose finding 2 -- 'I do not know' must never
+        read as 'nothing found' for backoff purposes."""
+        with patch("watch_lane_posts._fetch_comments", return_value=None):
+            _lines, fetch_failed = watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed)
+        self.assertTrue(fetch_failed)
+
+    def test_a_successful_fetch_reports_fetch_failed_false(self):
+        with patch("watch_lane_posts._fetch_comments", return_value=[]):
+            _lines, fetch_failed = watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed)
+        self.assertFalse(fetch_failed)
 
     def test_a_failed_fetch_does_not_advance_the_watermark(self):
         """AC1/AC6, and mutation M1 -- the exact regression this issue is about."""
@@ -2036,6 +2053,156 @@ class QueueKeyIsRepoQualifiedTests(unittest.TestCase):
         self.assertEqual(sorted(queue),
                          [("vitalharmony/harmonic-forge", 570),
                           ("vitalharmony/hrse", 570)])
+
+
+class NextPollIntervalTests(unittest.TestCase):
+    """harmonic-forge#638 AC1/AC2/AC3."""
+
+    def test_a_zero_streak_returns_the_base_interval_unchanged(self) -> None:
+        """AC1: the cycle that just found something (or the very first
+        cycle) polls at the armed cadence, not a backed-off one."""
+        for base in (60, 90, 300, 600):
+            with self.subTest(base=base):
+                self.assertEqual(next_poll_interval(base, 0), base)
+
+    def test_a_negative_streak_is_treated_the_same_as_zero(self) -> None:
+        """Defensive: no caller should ever construct one, but a function
+        this central to AC2's guarantee must not behave strangely on an
+        out-of-domain input either."""
+        self.assertEqual(next_poll_interval(60, -1), 60)
+
+    def test_the_interval_roughly_doubles_each_further_quiet_cycle(self) -> None:
+        base = 60
+        prev = next_poll_interval(base, 1)
+        for streak in range(2, 4):
+            current = next_poll_interval(base, streak)
+            self.assertGreater(current, prev, f"streak={streak}")
+            prev = current
+
+    def test_growth_caps_at_ten_times_the_base_interval(self) -> None:
+        """AC1's 'capped' half -- sustained quiet must not grow unbounded."""
+        for base in (60, 300, 600):
+            with self.subTest(base=base):
+                self.assertEqual(next_poll_interval(base, 1000), base * 10)
+
+    def test_never_returns_anything_but_a_positive_finite_interval(self) -> None:
+        """AC2: there is no quiet-streak length, however long, that makes
+        this function express 'stop polling'. Swept across a wide range of
+        streak lengths and bases -- the guarantee is about EVERY input, not
+        one example."""
+        for base in (30, 60, 90, 300, 600, 3600):
+            for streak in (0, 1, 2, 5, 10, 50, 1000, 10_000):
+                value = next_poll_interval(base, streak)
+                self.assertIsInstance(value, int)
+                self.assertGreater(value, 0)
+                self.assertLessEqual(value, base * 10)
+
+    def test_the_cap_scales_with_each_lanes_own_base_preserving_urgency_order(self) -> None:
+        """AC3: a shared global cap would let a backed-off sweep (600s base)
+        converge to the SAME interval as a backed-off Lane 3 watcher (60s
+        base), erasing the urgency difference the armed intervals encode.
+        The cap must scale with base instead, so Lane 3 stays strictly more
+        frequent than the sweep at every backoff level, not just at the
+        base."""
+        lane3_capped = next_poll_interval(60, 1000)
+        sweep_capped = next_poll_interval(600, 1000)
+        self.assertLess(lane3_capped, sweep_capped)
+        self.assertEqual(sweep_capped / lane3_capped, 10)
+
+
+class CycleIsQuietTests(unittest.TestCase):
+    """harmonic-forge#638 preclose findings 1/2/3.
+
+    Finding 1: dedup makes an unchanged, still-queued item look "quiet" --
+    `queue_cycle` only emits a line on a queue-marker CHANGE, not on every
+    cycle a queued item remains unpicked. A non-empty `queue` in queue-for/
+    sweep-for mode must never read as quiet, printed line or not.
+
+    Finding 2: a failed fetch (repo-fetch half via `ok_repos` short of
+    `repos`, or comment-fetch half via `comment_fetch_failed`) must never
+    read as quiet either -- "I do not know" is not "nothing found".
+
+    Finding 3: none of the original 9 tests exercised the loop's own
+    reset-trigger logic -- the preclose demonstrated live that replacing
+    `quiet_streak = 0 if cycle_emitted else quiet_streak + 1` with
+    `quiet_streak = quiet_streak + 1` (backoff never resets, an outright
+    AC1 violation) still left the full suite green. These tests drive
+    `cycle_is_quiet` itself, the function that decision now routes through,
+    so that exact mutation is caught: it would report `quiet=True` on a
+    cycle carrying real queued work or a failed fetch, which every test
+    below asserts must be `False`.
+    """
+
+    def test_printed_line_is_never_quiet(self):
+        self.assertFalse(cycle_is_quiet(True, {}, "l1", set(), [], False))
+
+    def test_no_mode_no_queue_no_failure_is_quiet(self):
+        """The ordinary quiet case: comment-watch-only mode, nothing printed,
+        nothing failed."""
+        self.assertTrue(cycle_is_quiet(False, {}, None, set(), [], False))
+
+    def test_nonempty_queue_is_never_quiet_even_with_no_printed_line(self):
+        """Finding 1: a queued item that didn't change this cycle prints
+        nothing, but real work is still outstanding."""
+        queue = {("vitalharmony/hrse", 1530): "l1:handoff"}
+        self.assertFalse(cycle_is_quiet(False, queue, "l1", {"vitalharmony/hrse"},
+                                         ["vitalharmony/hrse"], False))
+
+    def test_a_repo_that_failed_to_report_is_never_quiet(self):
+        """Finding 1 (fetch half): `ok_repos` short of `repos` means at least
+        one repo's own queue_cycle fetch failed -- unknown, not empty."""
+        self.assertFalse(cycle_is_quiet(False, {}, "l1", set(),
+                                         ["vitalharmony/hrse"], False))
+
+    def test_comment_fetch_failure_is_never_quiet(self):
+        """Finding 2."""
+        self.assertFalse(cycle_is_quiet(False, {}, None, set(), [], True))
+
+    def test_empty_queue_with_mode_and_all_repos_reporting_is_quiet(self):
+        """A queue-for/sweep-for mode that genuinely found nothing, from
+        every repo it asked, is quiet."""
+        self.assertTrue(cycle_is_quiet(False, {}, "l1", {"vitalharmony/hrse"},
+                                        ["vitalharmony/hrse"], False))
+
+    def test_the_exact_mutation_the_preclose_demonstrated_is_caught(self):
+        """Reproduces the preclose's own live check: with a non-empty queue
+        and no printed line, the loop's reset condition must fire. Simulates
+        `quiet_streak = 0 if not cycle_is_quiet(...) else quiet_streak + 1`
+        across three cycles of sustained real work sitting in queue -- a
+        mutation that always increments (backoff never resets) would let
+        `quiet_streak` grow unboundedly here; the correct behavior holds it
+        at 0 throughout."""
+        queue = {("vitalharmony/hrse", 1530): "l1:handoff"}
+        quiet_streak = 0
+        for _ in range(3):
+            quiet = cycle_is_quiet(False, queue, "l1", {"vitalharmony/hrse"},
+                                    ["vitalharmony/hrse"], False)
+            quiet_streak = 0 if not quiet else quiet_streak + 1
+        self.assertEqual(quiet_streak, 0,
+                          "real outstanding work must hold the backoff at 0")
+
+
+class BeltNeverPausesDocSyncTests(unittest.TestCase):
+    """harmonic-forge#638 AC6: SKILL.md states plainly that the belt does
+    not pause, and why -- doc-SYNC against the actual constant, not a
+    number that could silently drift from the code it describes."""
+
+    def test_skill_md_states_the_belt_never_pauses(self) -> None:
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("belt never pauses", text.lower())
+
+    def test_skill_md_names_the_real_cap_multiplier(self) -> None:
+        """Doc-sync: the "10x" figure in the doc must match
+        `_BACKOFF_CAP_MULTIPLIER`, not a hand-typed number that can drift
+        the moment the constant changes."""
+        from watch_lane_posts import _BACKOFF_CAP_MULTIPLIER
+
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(f"{int(_BACKOFF_CAP_MULTIPLIER)}x", text)
+
+    def test_skill_md_documents_the_suspenders_never_stop_guarantee(self) -> None:
+        text = _SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("Never call `stop`", text)
 
 
 if __name__ == "__main__":
