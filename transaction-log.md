@@ -3,6 +3,23 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(belt): make the mutual-exclusion test CI-safe (harmonic-forge#618)
+
+The test shelled out to the real CLI, and `assert_identity` runs before
+argument validation and calls `gh-as` -- which is on my PATH and not on CI's.
+It passed locally and failed in CI with:
+
+    FileNotFoundError: [Errno 2] No such file or directory: 'gh-as'
+
+A test that only runs on one machine is not a test. Rewritten in-process,
+patching `assert_identity` and asserting `SystemExit(2)` plus the message,
+matching the two sibling tests added alongside it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 23 +++++++++++++++--------
+- 1 file changed, 15 insertions(+), 8 deletions(-)
+
 ## feat(rules): R-0356/R-0357 -- report what the operator needs, not what you read (harmonic-forge#621)
 
 Lanes report by pasting what they read: a subagent's return, a whole issue body,
@@ -44,6 +61,124 @@ Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - rules/universal-agent.md  | 34 ++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml | 16 ++++++++++++++++
 - 2 files changed, 50 insertions(+)
+## fix(belt): wire the plan guard, bind --sweep-for, correct the stale help (harmonic-forge#618)
+
+Preclose returned six findings across the pair. The first is the worst kind.
+
+**1. `reject_plan_as_discussion()` was defined and NEVER CALLED.** The whole
+load-bearing AC was dead code: `mise run lane-comment` with a `## Plan` body
+still posted `kind=discussion`, byte-identical to the four measured stalls. My
+edit that added the call site aborted before writing and I did not re-check.
+Wired into `validate_kind` now, with a test that drives the CLI path.
+
+**2. The guard keyed on one heading nothing mandates.** `## Plan` matched;
+`## L2S` -- the heading `l2_post.py` actually stamps -- did not. Keying on one
+spelling moves the bypass rather than closing it. Both now match, and
+`KIND_HEADING["plan"]` uses the same pattern so the cross-check agrees.
+
+**3. The remediation named a command that does not exist.** `mise run l2-post`
+is not in HRSE2's task table at all, and harmonic-forge's version has no
+`--file` and hardcodes its own repo, so it cannot post to an hrse issue. A
+Lane 2 session would have been blocked with no working alternative -- worse
+than the drift. `plan` is now a real kind on `lane-comment`, which is the only
+tool that can post there, and the message names it.
+
+**4. `--queue-for`'s own --help still said `l1` is the unbounded sweep.** After
+the split that is false in both halves, and it is the first thing an operator
+reads. Someone reading it and then seeing `--queue-for l1` in the Lane 1 belt
+command would conclude the belt arms the sweep -- i.e. read the shipped command
+as #590's regression and "fix" it.
+
+**5. `test_suspenders_still_carry_the_repo_wide_sweep` passed on prose.** The
+new sentence "It is a *different flag* from `--queue-for l1`" satisfied its
+substring check, so deleting the armed command left it green. Now asserts an
+actual command line.
+
+**6. Nothing bound `--sweep-for` to the sweep path.** Dropping `sweep=` at
+`main()`'s call site routed the suspenders to the BOUNDED queue -- covering the
+same narrow set as the belt while printing `sweep-for-l1` -- and the suite
+stayed green. Two tests: one that `queue_cycle` respects the parameter, and one
+that `main()` actually passes it. The second is the one that matters; the first
+version of this fix had only the equivalent of the first, which is the same
+untested-wiring shape as #616 and as finding 1 above.
+
+All six mutations now fail:
+
+    drop sweep= at the call site           -> 1 failure(s)
+    QUEUE_POSTERS back to hardcoded l1     -> 1 failure(s)
+    add discussion to l1 kinds             -> 2 failure(s)
+    delete the armed sweep command         -> 2 failure(s)
+
+2054 -> 2056 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/gh/test_watch_lane_posts.py | 70 +++++++++++++++++++++++++++++++++++++--
+- tools/gh/watch_lane_posts.py      | 12 ++++---
+- 2 files changed, 74 insertions(+), 8 deletions(-)
+
+## fix(belt): give Lane 1 a bounded inbound queue; split the sweep's flag (harmonic-forge#618)
+
+Four Lane 2 plans -- hrse#1383, #1662, #1663, #1771 -- sat unactioned until
+Lane 2 asked Lane 1 why it kept ignoring them. Three causes, and I only filed
+the third.
+
+**Measured before implementing**, which changed the fix:
+
+    hrse#1383, comment before Lane 1's reply:
+      ## Plan — H1383  ||  discussion / LANE2
+
+1. **The plans were posted as `kind=discussion`.** `l2_post.py --kind plan`
+   exists and stamps `## L2S` plus `kind=plan`; these went through
+   `lane-comment`, which defaults to `discussion`. `post_lane_discussion.py`
+   now REFUSES a body headed `## Plan` with `kind=discussion` and names the
+   right emitter -- refuse, not restamp, because rewriting the kind changes
+   what the thread records about who declared what. Same defect
+   harmonic-forge#473 fixed for Lane 3's artifacts in this very script: "there
+   was never a missing emitter, only a missing argument."
+
+2. **`discussion` is deliberately un-queueable** -- removed from
+   `QUEUE_KINDS["l2"]` on 63 measured issues, none actionable. So a plan
+   wearing that kind is invisible to every bounded queue, correctly. AC1 as I
+   filed it would not have worked.
+
+3. **Lane 1's belt is worktrees-first and a Plan-First issue has no worktree**
+   until Lane 1 approves the plan. `QUEUE_KINDS["l1"] = ("plan",)`, and Lane
+   1's belt now arms both halves as Lane 2's has since #596.
+
+**`QUEUE_KINDS["l1"]` alone changed nothing.** `discover_queue` hardcoded
+`last_kind[0] == "l1"` -- correct for lanes 2 and 3, which receive work handed
+DOWN, and structurally wrong for Lane 1, whose inbound is handed UP by Lane 2.
+A `kind=plan` marker is `posted-by=LANE2`, so the check rejected it and the
+queue stayed empty. Caught by running it, not by reading it. `QUEUE_POSTERS`
+makes the direction explicit per lane.
+
+**`--sweep-for l1` is split off `--queue-for l1`.** `--queue-for l1` used to
+route to the unbounded repo-wide sweep, so it meant something categorically
+different from `--queue-for l2` -- an inconsistency that was itself a trap, and
+the reason Lane 1 could not simply copy Lane 2's fix. `--queue-for` now means
+one thing for every lane; the sweep has its own name and stays in the
+suspenders; arming both in one process is refused (#590).
+
+Verified end to end:
+
+    newest = kind=plan (LANE2)   -> {1383: 'plan'}
+    plan then L1 answered        -> {}   (self-clearing)
+    plan posted as discussion    -> {}   (why the four stalled)
+    l2 handoff still works       -> {1383: 'handoff'}
+
+Third instance of one property, now stated in SKILL.md rather than fixed a
+third time per lane: A LANE'S INBOUND WORK HAS NO WORKTREE, because the
+worktree is created in response to it.
+
+2045 -> 2054 tests, `mise run check` exit 0.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- skills/belt-and-suspenders/test_skill_text.py |  7 ++-
+- tools/gh/test_watch_lane_posts.py             | 91 ++++++++++++++++++++++++++-
+- tools/gh/watch_lane_posts.py                  | 80 +++++++++++++++++++----
+- 4 files changed, 182 insertions(+), 19 deletions(-)
 
 ## fix(gh): test the wiring, make the implication transitive (harmonic-forge#616)
 
