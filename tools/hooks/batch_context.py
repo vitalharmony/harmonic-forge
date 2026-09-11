@@ -79,6 +79,30 @@ def live_batch_keys(now: datetime | None = None) -> list[str]:
     return sorted(keys)
 
 
+def _top_up_hint(target_key: str | None, keys: list[str]) -> str:
+    """Name `top-up` when the acting key is simply not in the batch.
+
+    harmonic-forge#600 AC2. `top-up` has existed since #567 -- it EXTENDS a
+    live grant rather than replacing it, which is exactly what adding
+    newly-discovered work to a running batch needs -- and no denial message
+    mentioned it. The operator was told to satisfy the guard and to preflight
+    NEXT time, with nothing about the one command that fixes this time.
+
+    Only on the not-in-the-batch branch. When the key IS authorized the batch
+    is not the problem, and suggesting `top-up` would point at the wrong thing.
+    """
+    if not target_key or target_key.upper() in {k.upper() for k in keys}:
+        return ""
+    return (
+        f"\n\nTo bring {target_key.upper()} into the RUNNING batch rather than "
+        f"replacing it:\n"
+        f"  python3 tools/hooks/batch_auth.py top-up {target_key.upper()}\n"
+        f"`top-up` extends a live grant and leaves its targets untouched; "
+        f"`authorize` REPLACES the entry, resetting consumption and wiping "
+        f"recorded PR links (harmonic-forge#567). Use top-up mid-batch."
+    )
+
+
 def annotate(message: str, *, target_key: str | None = None,
              now: datetime | None = None) -> str:
     """`message` plus a line naming the interrupted batch, or `message` as-is.
@@ -100,9 +124,17 @@ def annotate(message: str, *, target_key: str | None = None,
             head = (f"[BATCH] This denial interrupted an authorized batch, on "
                     f"{target_key.upper()}.")
         elif target_key:
+            # harmonic-forge#600 AC2. "NOT one of the authorized keys" reads
+            # as operator error. The commonest cause is the opposite: the work
+            # was DISCOVERED after the batch was authorized -- the belt exists
+            # to surface work nobody planned, so belt-found work is by
+            # construction never in the key set. Same denial, different remedy,
+            # and the old message named neither.
             head = (f"[BATCH] This denial interrupted a session with a live "
-                    f"batch, while acting on {target_key.upper()} — which is "
-                    f"NOT one of the authorized keys.")
+                    f"batch, while acting on {target_key.upper()}, which the "
+                    f"batch does not cover. If this work was discovered after "
+                    f"the batch was authorized -- which is what the belt is "
+                    f"for -- it was never going to be in the key set.")
         else:
             head = "[BATCH] This denial interrupted an authorized batch."
 
@@ -115,7 +147,11 @@ def annotate(message: str, *, target_key: str | None = None,
             # The acting key must always appear. With more live grants than the
             # cap, sorting alone can push it out — `H1636` behind six `F` keys.
             shown = [target_key.upper()] + shown[:_MAX_KEYS - 1]
-        hidden = len(keys) - len(shown)
+        # max(0, ...): `shown` is extended with the acting key when sorting
+        # elided it, which can push it past the cap and make this negative --
+        # printing a literal "+-1 more" (observed). A count of hidden keys is
+        # never negative; the honest floor is zero.
+        hidden = max(0, len(keys) - len(shown))
         listed = ", ".join(shown)
         if hidden:
             listed += f", +{hidden} more"
@@ -128,7 +164,7 @@ def annotate(message: str, *, target_key: str | None = None,
             "around it.\n"
             "Many of these are satisfiable before a batch starts — run "
             "`mise run batch-preflight --key <KEY> ...` at the top of the next "
-            "one (harmonic-forge#509)."
+            "one (harmonic-forge#509)." + _top_up_hint(target_key, keys)
         )
     except Exception:
         # A hook is mid-denial. Losing the annotation is survivable; losing the

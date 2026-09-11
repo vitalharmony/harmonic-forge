@@ -15,6 +15,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -84,7 +85,7 @@ class AnnotateTests(unittest.TestCase):
         """Acting on an unauthorized issue during a batch is worth saying —
         it is a different situation from being stopped on an authorized one."""
         out = self._annotate("denied.", state("F509"), target_key="H999")
-        self.assertIn("NOT one of the authorized keys", out)
+        self.assertIn("which the batch does not cover", out)
 
     def test_without_a_target_key_it_still_names_the_batch(self) -> None:
         out = self._annotate("denied.", state("F509", "F495"))
@@ -340,3 +341,47 @@ class AC3WiringTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("issue_key(repo, issue)", source)
         self.assertIn("target_key=_acting", source)
+
+
+class TopUpRemedyTests(unittest.TestCase):
+    """harmonic-forge#600 AC2. `top-up` has existed since #567 and no denial
+    message named it, so an operator hitting an uncovered key was told to
+    satisfy the guard and to preflight NEXT time -- nothing about the one
+    command that fixes this time."""
+
+    def _annotate(self, target, keys):
+        with patch.object(bc, "live_batch_keys", return_value=keys):
+            return bc.annotate("Blocked: a guard fired.",
+                                          target_key=target)
+
+    def test_an_uncovered_key_is_told_about_top_up(self):
+        out = self._annotate("F594", ["F326", "F504"])
+        self.assertIn("top-up F594", out)
+        self.assertIn("RUNNING batch", out)
+
+    def test_an_authorized_key_is_not(self):
+        """The batch is not the problem there; suggesting top-up would point
+        at the wrong thing."""
+        out = self._annotate("F326", ["F326", "F504"])
+        self.assertNotIn("top-up", out)
+
+    def test_the_cause_is_not_stated_as_operator_error(self):
+        """"NOT one of the authorized keys" reads as a mistake. The commonest
+        cause is work the belt surfaced after the batch was authorized, which
+        is by construction never in the key set."""
+        out = self._annotate("F594", ["F326"])
+        self.assertNotIn("NOT one of the authorized keys", out)
+        self.assertIn("discovered after", out)
+
+    def test_top_up_is_named_over_authorize(self):
+        """`authorize` REPLACES the entry, resetting consumption and wiping PR
+        links (#567) -- naming it here would undo a running batch."""
+        out = self._annotate("F594", ["F326"])
+        self.assertIn("`authorize` REPLACES", out)
+
+    def test_the_hidden_count_is_never_negative(self):
+        """Observed live: "+-1 more". `shown` is extended with the acting key
+        when sorting elided it, which can push it past the cap."""
+        keys = [f"F{n}" for n in range(500, 540)]
+        out = self._annotate("F999", keys)
+        self.assertNotIn("+-", out)

@@ -70,6 +70,40 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
 - tools/gh/test_watch_lane_posts.py | 23 +++++++++++++++--------
 - 1 file changed, 15 insertions(+), 8 deletions(-)
+## fix(batch): name the cause and the remedy on an uncovered-key denial (harmonic-forge#600 AC2)
+
+"NOT one of the authorized keys" reads as operator error. The commonest cause
+is the opposite: the work was DISCOVERED after the batch was authorized. The
+belt exists to surface work nobody planned, so belt-found work is by
+construction never in the key set. Same denial, different remedy, and the
+message named neither.
+
+- The uncovered-key branch now says the batch does not cover this key and names
+  post-authorization discovery as the likely reason.
+- It names `top-up`, which has existed since #567 and which no denial message
+  mentioned. The operator was told to satisfy the guard and to preflight NEXT
+  time, with nothing about the one command that fixes THIS time. The hint fires
+  only on the uncovered branch -- when the key IS authorized the batch is not
+  the problem, and pointing at top-up would misdirect.
+- It states why top-up and not `authorize`: authorize REPLACES the entry,
+  resetting consumption and wiping recorded PR links.
+
+Also fixes a live cosmetic-but-confusing bug found while reading the output:
+`hidden` could go NEGATIVE, printing a literal "+-1 more". `shown` is extended
+with the acting key when sorting elided it, which can push it past the cap.
+Floored at zero.
+
+AC3 was already done -- `top-up` shipped with a CLI subcommand in #567 -- and
+this commit is what makes it discoverable at the moment it is needed, which is
+the half that was actually missing.
+
+5 tests.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- tools/hooks/batch_context.py      | 44 ++++++++++++++++++++++++++++++++----
+- tools/hooks/test_batch_context.py | 47 ++++++++++++++++++++++++++++++++++++++-
+- 2 files changed, 86 insertions(+), 5 deletions(-)
 
 ## feat(rules): R-0356/R-0357 -- report what the operator needs, not what you read (harmonic-forge#621)
 
