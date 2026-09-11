@@ -3,6 +3,57 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(rules): scope R-0356 and carve out mandated evidence (harmonic-forge#621)
+
+Preclose returned eight findings. The first is the one that matters: **the rule
+I shipped contradicts R-0131, and it is already live in main.**
+
+R-0131 / R-0176: "Each check's gate report carries the evidence artifact itself,
+not just a prose claim... A claim without its artifact does not satisfy this
+rule." R-0356 listed "a gate log, a test transcript" as never-paste, and R-0357
+closed the only escape by classifying a gate log explicitly as an input. A Lane
+3 obeying the newest, always-loaded, unqualified rule would strip the evidence
+out of a PASS -- and strip Lane 1's HITL review of the artifact it inspects.
+Neither rule pair carried exception_to/excepted_by, so nothing in the corpus
+said which one loses.
+
+Fixed, and the other seven with it:
+
+- **Scope stated.** R-0356 governs a STATUS REPORT in chat. A handoff, spec,
+  gate report, issue comment or PR body has its own mandated shape and is
+  untouched. Without that, "Nothing else" invalidated the 12-section handoff
+  template `l1_post.py` validates.
+- **Mandated evidence is named and wins outright** -- R-0131/R-0176, R-0132's
+  size escape (a link, not a summary), R-0240's inline preconditions. Where a
+  rule names an artifact, that naming IS the answer; do not re-derive it.
+- **Progress notes exempted from the three-part shape.** "Three sections...
+  Nothing else" made "rebased onto main, gate running" non-compliant nine lines
+  above the clause saying such notes must not stop -- pushing toward batching
+  narration, which is the harmonic-forge#615 failure the clause exists to
+  prevent.
+- **The operator's standing instruction is acknowledged as BROADER**, and
+  governs where they differ. R-0357 narrowed its trigger unilaterally and cited
+  it nowhere; it triggers on any tool-generated output regardless of who asked.
+- **"Show me the diff" is decided.** The old test keyed on creation, so
+  anything that already existed fell outside both branches and the compliant
+  answer to "show me X" was a paraphrase of X. Paste it.
+- **Registry**: reciprocal `exception_to`/`excepted_by`, and R-0357's anchor
+  corrected to `report-discipline` -- it was the only row of 65 in this file
+  naming no section, so a constructed link resolved to the top of the file.
+
+Not fixed here, filed separately: `query_rules.py --hooks-report` crashes on a
+list-shaped `hooks` value, so the registry's own wiring audit is dead and a
+wrong `hooks` on any future row will not be caught. Pre-existing, unrelated to
+these rules, and out of scope for a rules-text correction.
+
+`rule registry: clean. 280 rule(s) annotated and in sync.`
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016PG84ERqwv39ouyC1EANJn
+- rules/universal-agent.md  | 79 +++++++++++++++++++++++++++++++----------------
+- tools/rules/registry.toml | 12 ++++---
+- 2 files changed, 60 insertions(+), 31 deletions(-)
+
 ## test(belt): make the mutual-exclusion test CI-safe (harmonic-forge#618)
 
 The test shelled out to the real CLI, and `assert_identity` runs before

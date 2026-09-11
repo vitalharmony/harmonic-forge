@@ -615,35 +615,62 @@ rule, not to the log itself.
 ## REPORT DISCIPLINE — WHAT THE OPERATOR NEEDS, NOT WHAT YOU READ
 
 <!-- R-0356 -->
-**A lane's report carries only what the operator must decide or must know to
-advance the issue.** Three sections, in this order: the bottom line, the
-outcome, then the actions that are the operator's to take. Nothing else.
+**Scope: a STATUS REPORT to the operator** — what a lane says in chat about
+where it is. It is not a protocol artifact. A Lane 1 handoff, a Lane 3 test
+spec or gate report, an issue comment, a PR body: those have mandated shapes of
+their own and this rule does not touch them.
 
-**Never paste a raw INPUT into a report.** A subagent's return, an issue body,
-a full comment thread, a gate log, a test transcript, a file you read — these
-are inputs to your work, not deliverables. Relay the verdict and the action.
-The operator asked you to do the work precisely so they would not have to read
-what you read.
+**A status report carries only what the operator must decide or must know to
+advance the issue.** Lead with the bottom line, then the outcome, then the
+actions that are the operator's to take.
 
-**This does not license silence.** Reporting incremental progress as you go is
-expected and must not stop — the operator watches lane output to see work
-moving. The rule is about VOLUME AND CONTENT, not frequency: report often,
-report short, report what changed and what it means.
+**Never paste a raw INPUT into a status report.** A subagent's return, an issue
+body, a full comment thread, a log you read to reach a conclusion, a file you
+opened. Those are inputs to your work; relay the verdict and the action. The
+operator delegated the work precisely so they would not have to read what you
+read.
+
+**This does not license silence, and progress notes are exempt from the shape
+above.** Narrating as you work is expected and must not stop — the operator
+watches lane output to see work moving (harmonic-forge#615). "rebased onto
+main, gate running" is a complete and correct report. The rule is about VOLUME
+AND CONTENT, not frequency, and a one-line note is not required to have three
+sections.
 <!-- /R-0356 -->
 
 <!-- R-0357 -->
-**One exception, and it is narrow: a generated ARTIFACT the operator asked for
-is pasted verbatim.** If a tool, script or skill produced a report, summary or
-document *as the deliverable*, its raw output appears as literal text —
-commentary may follow it, never replace it, and pointing at a tool-output pane
-does not satisfy this.
+**Evidence a protocol rule requires is mandatory and unaffected by R-0356.**
+Where a rule says paste it, paste it:
 
-The distinction is authorship and purpose, not size. **Input**: material you
-consumed to reach a conclusion. **Artifact**: the thing the operator asked to
-exist. A gate log you read to decide PASS is an input; a sprint summary the
-operator asked you to produce is an artifact. When genuinely unsure, ask which
-it is rather than defaulting to a dump — a wrong dump costs the operator's
-attention, which is the scarcest thing in this protocol.
+- **R-0131 / R-0176** — a Lane 3 gate report carries the evidence artifact
+  itself: pasted command+output, log excerpt with timestamp, actual query
+  output. "A claim without its artifact does not satisfy this rule." R-0132's
+  size escape is the only exception, and it is a link to
+  `~/Harmonic_Projects/testplan/{issue}/`, not a summary.
+- **R-0240** — a handoff's precondition evidence is pasted inline.
+- Every `LEAD_FIELDS` and template heading `l1_post.py` validates.
+
+R-0356 lists "a log you read" as an input. In a **gate report** that same log is
+the deliverable, and R-0131 wins outright. If a rule names an artifact, that
+naming is the answer; do not re-derive it from the input/artifact test below.
+
+**Otherwise: a generated ARTIFACT the operator asked for is pasted verbatim.**
+Its raw output appears as literal text — commentary may follow, never replace,
+and pointing at a tool-output pane does not satisfy it. **This is narrower than
+the operator's own standing instruction**, which triggers on any tool-, script-
+or skill-generated report or summary regardless of who asked; where the two
+differ, the broader one governs and you paste.
+
+**The test is authorship and purpose, not size.** An input is material you
+consumed to reach a conclusion; an artifact is the thing asked to exist. Two
+cases the test does not decide, resolved here rather than left open:
+
+- **The operator asks to SEE something that already exists** — a diff, a log
+  line, a config value, an error message. Paste it. They asked for the text,
+  not your reading of it; "it already existed" is not a reason to paraphrase.
+- **Genuinely unsure, and nobody asked** — relay the verdict and say the raw
+  output is available. Do not ask the operator to re-confirm a request they
+  already made.
 <!-- /R-0357 -->
 
 ## SURGICAL CHANGES (KARPATHY PRINCIPLE)

@@ -2331,14 +2331,16 @@ hooks = []
 id = "R-0356"
 file = "rules/universal-agent.md"
 anchor = "report-discipline"
-statement = "A lane's report carries only what the operator must decide or must know to advance the issue: bottom line, outcome, then the operator's own actions. Never paste a raw INPUT -- a subagent's return, an issue body, a full comment thread, a gate log, a test transcript, a file you read. Those are inputs to your work, not deliverables; relay the verdict and the action. This does not license silence: reporting incremental progress as you go is expected and must not stop, because the operator watches lane output to see work moving. The rule is about VOLUME AND CONTENT, not frequency."
-text_sha = "5392b1ef6f4270f1"
+statement = "Scope: a STATUS REPORT to the operator -- what a lane says in chat about where it is. NOT a protocol artifact; a handoff, test spec, gate report, issue comment or PR body has its own mandated shape and is untouched. A status report carries only what the operator must decide or must know: bottom line, outcome, then the operator's own actions. Never paste a raw INPUT -- a subagent's return, an issue body, a comment thread, a log you read to reach a conclusion, a file you opened; relay the verdict and the action. This does not license silence and PROGRESS NOTES ARE EXEMPT from the three-part shape: narrating as you work is expected and must not stop, a one-line note is a complete report, and the rule is about volume and content, not frequency."
+text_sha = "7db371401769df86"
 hooks = []
+excepted_by = "R-0357"
 
 [[rule]]
 id = "R-0357"
 file = "rules/universal-agent.md"
-anchor = "generated-artifact-verbatim"
-statement = "One narrow exception to R-0356: a generated ARTIFACT the operator asked for is pasted verbatim. If a tool, script or skill produced a report, summary or document AS THE DELIVERABLE, its raw output appears as literal text -- commentary may follow, never replace, and pointing at a tool-output pane does not satisfy it. The distinction is authorship and purpose, not size: an input is material you consumed to reach a conclusion, an artifact is the thing the operator asked to exist. A gate log read to decide PASS is an input; a sprint summary the operator asked for is an artifact. When genuinely unsure, ask rather than defaulting to a dump."
-text_sha = "f36f2bc3e579a335"
+anchor = "report-discipline"
+statement = "Evidence a protocol rule requires is MANDATORY and unaffected by R-0356: R-0131/R-0176 (a gate report carries the pasted artifact, R-0132's size escape being a link not a summary), R-0240 (handoff precondition evidence inline), and every template heading l1_post.py validates. Where a rule names an artifact, that naming is the answer -- do not re-derive it from the input/artifact test. Otherwise a generated ARTIFACT the operator asked for is pasted verbatim, commentary after and never instead; this is NARROWER than the operator's standing instruction, which triggers on any tool-generated report regardless of who asked, and where they differ the broader governs and you paste. The test is authorship and purpose, not size. Two cases resolved explicitly: the operator asking to SEE something that already exists (a diff, a log line, an error) is pasted, because they asked for the text and not your reading of it; genuinely unsure with nobody asking, relay the verdict and say the raw output is available."
+text_sha = "a5174b34f289388f"
 hooks = []
+exception_to = ["R-0356"]
