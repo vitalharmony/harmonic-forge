@@ -93,13 +93,21 @@ def _top_up_hint(target_key: str | None, keys: list[str]) -> str:
     """
     if not target_key or target_key.upper() in {k.upper() for k in keys}:
         return ""
+    key = target_key.upper()
     return (
-        f"\n\nTo bring {target_key.upper()} into the RUNNING batch rather than "
-        f"replacing it:\n"
-        f"  python3 tools/hooks/batch_auth.py top-up {target_key.upper()}\n"
-        f"`top-up` extends a live grant and leaves its targets untouched; "
-        f"`authorize` REPLACES the entry, resetting consumption and wiping "
-        f"recorded PR links (harmonic-forge#567). Use top-up mid-batch."
+        f"\n\nTo bring {key} under the batch, ask the OPERATOR to run, in their "
+        f"own terminal:\n"
+        f"  python3 ~/harmonic-forge/tools/hooks/batch_auth.py top-up {key}\n"
+        f"This is not a command for this session to run -- `top-up` mints an "
+        f"authorization and requires a real TTY (harmonic-forge#611), the same "
+        f"as `authorize` and `link-pr`. A relative path will not resolve either: "
+        f"the hooks that print this fire from a lane worktree, not from the "
+        f"forge root.\n"
+        f"`top-up` is the right verb even so: for a key that IS live it extends "
+        f"the expiry and leaves its targets alone, which `authorize` would reset. "
+        f"For {key}, which is not live, it authorizes fresh -- and if {key} has "
+        f"an EXPIRED entry still inside the prune grace window, that fresh "
+        f"authorization replaces it and drops any recorded PR links with it."
     )
 
 
@@ -143,15 +151,26 @@ def annotate(message: str, *, target_key: str | None = None,
         # slice still produced ", +N more" — all forty keys printed, followed
         # by a count claiming they were not.
         shown = keys[:_MAX_KEYS]
-        if target_key and target_key.upper() not in {k.upper() for k in shown}:
+        # Only when the key IS live. harmonic-forge#600 preclose finding: this
+        # prepend was written for the covered branch, where a genuinely live key
+        # can be sorted out past the cap -- and it ran unconditionally, so an
+        # UNCOVERED key was injected into a list labelled "Live keys". That is
+        # also what made `hidden` negative: `shown` held a key `keys` did not.
+        # Flooring the count hid the symptom and left the false listing.
+        live_upper = {k.upper() for k in keys}
+        if (target_key and target_key.upper() in live_upper
+                and target_key.upper() not in {k.upper() for k in shown}):
             # The acting key must always appear. With more live grants than the
             # cap, sorting alone can push it out — `H1636` behind six `F` keys.
             shown = [target_key.upper()] + shown[:_MAX_KEYS - 1]
-        # max(0, ...): `shown` is extended with the acting key when sorting
-        # elided it, which can push it past the cap and make this negative --
-        # printing a literal "+-1 more" (observed). A count of hidden keys is
-        # never negative; the honest floor is zero.
-        hidden = max(0, len(keys) - len(shown))
+        # No floor needed, and deliberately none: with the prepend restricted
+        # to live keys above, `shown` is always a subset of `keys`, so this
+        # cannot go negative. harmonic-forge#600's first cut wrote
+        # `max(0, ...)` here -- which suppressed the observed "+-1 more" while
+        # leaving the false "Live keys" listing that produced it. A floor that
+        # can never trigger is a fix for a bug that no longer exists, and this
+        # repo deletes those rather than keeping them as reassurance.
+        hidden = len(keys) - len(shown)
         listed = ", ".join(shown)
         if hidden:
             listed += f", +{hidden} more"
