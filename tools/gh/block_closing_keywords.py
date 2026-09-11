@@ -50,6 +50,7 @@ DENY only costs one extra explicit close.
 """
 import json
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -64,7 +65,32 @@ RELEVANT_COMMAND = re.compile(
     r"(?i)\bgh\s+(pr\s+(create|edit)|issue\s+(comment|edit)|api\b.*-X\s*PATCH)"
 )
 
-REPO_FLAG = re.compile(r"--repo[= ]([\w.-]+/[\w.-]+)")
+def _real_repo_flag(command: str) -> str | None:
+    """The command's own `--repo` flag, as an actual argv token -- never a
+    same-looking substring sitting inside a quoted `--body`/`--title`
+    argument's VALUE.
+
+    Preclose finding: a naive command-wide regex matched `--repo ...` text
+    pasted into a PR body (this house's own PR bodies routinely paste `gh
+    ... --repo ...` example commands), redirecting a bare `#N` to whichever
+    repo that quoted example named -- a live grant on the wrong issue then
+    read as a false ALLOW for the real one. `shlex.split` tokenizes the
+    command the way a shell would: a quoted argument is ONE token
+    regardless of what it contains, so text inside `--body "..."` can never
+    be mistaken for a top-level `--repo` flag.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        # Unbalanced quotes or similar -- cannot safely tokenize, so no
+        # flag can be trusted. Falls through to the cwd-remote fallback.
+        return None
+    for i, tok in enumerate(tokens):
+        if tok == "--repo" and i + 1 < len(tokens):
+            return tokens[i + 1]
+        if tok.startswith("--repo="):
+            return tok.split("=", 1)[1]
+    return None
 
 #: Owned and written by `tools/hooks/batch_auth.py` (`STATE_PATH` there).
 #: Named here rather than imported (harmonic-forge#600 AC4) -- see module
@@ -105,9 +131,9 @@ def _resolve_repo(command: str, explicit: str | None) -> str | None:
     guessed from the closing keyword's own text when that text carries none."""
     if explicit:
         return explicit
-    flag_match = REPO_FLAG.search(command)
-    if flag_match:
-        return flag_match.group(1)
+    real_flag = _real_repo_flag(command)
+    if real_flag:
+        return real_flag
     try:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -175,10 +201,7 @@ def main() -> None:
         print(json.dumps({}))
         return
 
-    explicit_repo_flag = None
-    flag_match = REPO_FLAG.search(command)
-    if flag_match:
-        explicit_repo_flag = flag_match.group(1)
+    explicit_repo_flag = _real_repo_flag(command)
 
     unauthorized: list[str] = []
     for match in matches:

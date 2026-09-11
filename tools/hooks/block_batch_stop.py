@@ -118,26 +118,36 @@ def _decisions_section_has_content(text: str) -> bool:
 
 
 def live_pending(state: dict, now: datetime) -> list[str]:
-    """Keys whose authorization is unexpired and whose issue is NOT yet closed.
+    """Keys whose authorization is unexpired and still has a linked PR that
+    has not been confirmed merged.
 
-    **Keyed on the CLOSE target, not on "any unconsumed target".** The first
-    version asked the latter and was wrong in a way that would have wedged
-    every session in the repo: a BATCH grant carries TWO merge targets so a
-    cross-repo issue does not prompt on its second merge, and a single-repo
-    issue consumes exactly one — leaving the spare unconsumed forever. So from
-    the moment a batch FINISHED until its 12h TTL elapsed, this reported it as
-    pending and the Stop hook refused to end any turn, with no action available
-    that could clear it. Measured live: F495 and F498 were both merged and
-    closed and both still reported pending.
+    **Keyed on a LINKED-but-unconsumed merge target, not "any unconsumed
+    target" and (as of harmonic-forge#612) not a close target either.** The
+    first version asked "any unconsumed target" and was wrong in a way that
+    would have wedged every session in the repo: a BATCH grant carries TWO
+    merge targets so a cross-repo issue does not prompt on its second merge,
+    and a single-repo issue consumes exactly one — leaving the spare
+    unconsumed forever. So from the moment a batch FINISHED until its 12h TTL
+    elapsed, this reported it as pending and the Stop hook refused to end any
+    turn, with no action available that could clear it. Measured live: F495
+    and F498 were both merged and closed and both still reported pending.
 
-    The close is the right signal because it is what actually ends an issue:
-    one per key, single-use, and consumed exactly when the work is done. A
-    spare merge target means "this issue may still touch another repo", which
-    is not the same as "there is work outstanding".
+    harmonic-forge#612 removed the close target entirely (BATCH no longer
+    grants `gh issue close` at all), which would have made this function
+    permanently return nothing — the opposite failure, silently. The
+    replacement signal keeps the same shape the close target had (single-use,
+    consumed exactly when the work is done) without the spare-target false
+    positive: `link_pr()` only ever populates `pr_number` on a target once a
+    real PR names it, so an UNLINKED merge target (`pr_number is None`) is
+    exactly the "spare capacity for a repo that may never need it" case the
+    original bug was about, and is never pending. A LINKED-but-unconsumed
+    target means a real PR exists and has not yet been confirmed merged --
+    genuine outstanding work, the same role the close target used to play.
 
-    An entry with no close target at all (authorized for merges only) is never
-    pending — nothing here can tell when such a grant is finished, and
-    guessing in the blocking direction is what this docstring is about.
+    An entry with no merge targets at all (should not occur post-#612, since
+    merge is the only authorizable action) is never pending — nothing here
+    can tell when such a grant is finished, and guessing in the blocking
+    direction is what this docstring is about.
     """
     pending: list[str] = []
     for key, entry in (state or {}).items():
@@ -152,9 +162,11 @@ def live_pending(state: dict, now: datetime) -> list[str]:
         if not isinstance(targets, list):
             # Pre-`targets` single-action entries: one dict, same fields.
             targets = [entry]
-        closes = [t for t in targets if isinstance(t, dict)
-                  and "close" in str(t.get("action", "")).lower()]
-        if closes and not all(t.get("consumed") for t in closes):
+        merges = [t for t in targets if isinstance(t, dict)
+                  and "merge" in str(t.get("action", "")).lower()]
+        linked_unconsumed = [t for t in merges
+                              if t.get("pr_number") is not None and not t.get("consumed")]
+        if linked_unconsumed:
             pending.append(key)
     return sorted(pending)
 

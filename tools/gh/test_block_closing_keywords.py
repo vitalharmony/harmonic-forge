@@ -179,5 +179,41 @@ class ClosingKeywordAllowedWithLiveBatch(unittest.TestCase):
         self.assertTrue(_is_denied(result))
 
 
+class RepoFlagSpoofingIsRejected(unittest.TestCase):
+    """Preclose finding on harmonic-forge#612: a naive command-wide
+    `--repo` search matched `--repo ...` text pasted into the PR BODY
+    (this house's own PR bodies routinely paste example `gh ... --repo
+    ...` command lines) -- when that quoted text appears EARLIER in the
+    command string than the real `--repo` flag, `re.search`'s
+    leftmost-match picked the fake one, redirecting a bare `#N` to
+    whichever repo the quoted text named. A live grant on that OTHER repo
+    then read as a false ALLOW for the real PR's actual issue."""
+
+    def setUp(self):
+        self.tmp = Path(__import__("tempfile").mkdtemp()) / "batch-authorized.json"
+        self.patcher = mock.patch.object(bck, "BATCH_STATE_PATH", self.tmp)
+        self.patcher.start()
+        live = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        # F42 (harmonic-forge) is live; H42 (hrse) is NOT -- the real PR
+        # below targets hrse, so only H42 should ever be consulted.
+        self.tmp.write_text(json.dumps({
+            "F42": {"authorized_at": datetime.now(timezone.utc).isoformat(),
+                    "expires_at": live,
+                    "targets": [{"action": "gh pr merge", "consumed": False,
+                                 "consumed_by": None, "repo": None, "pr_number": None}]},
+        }))
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_a_repo_flag_quoted_earlier_in_the_body_is_never_read_as_the_real_flag(self):
+        result = _run_hook(
+            'gh pr create --title x '
+            '--body "Closes #42 (built with --repo vitalharmony/harmonic-forge)" '
+            '--repo vitalharmony/hrse'
+        )
+        self.assertTrue(_is_denied(result))
+
+
 if __name__ == "__main__":
     unittest.main()
