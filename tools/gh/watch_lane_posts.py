@@ -482,6 +482,32 @@ def _classify(body: str) -> tuple[str, str] | None:
     return None
 
 
+#: harmonic-forge#629. A Lane 3 `kind=gate-result` comment states its own
+#: verdict as `**Verdict:** PASS|FAIL|BLOCKED|...` -- confirmed live against
+#: the hrse#1792/#1771/#1798 gate-result comments this issue's own
+#: regression case involved. `_classify` only reports the marker's `kind`
+#: (`gate-result`), never this -- a second, narrower regex, because the
+#: verdict is meaningful only for this one kind and nothing else in this
+#: file needs it.
+_VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*(\w+)")
+
+#: FAIL/BLOCKED are the two verdicts Check C watches for -- both mean the
+#: gate did not close the issue, so Lane 1 owes the thread a response, same
+#: as the two closest analogues (`R-0354`'s BLOCKED handling and a plain
+#: gate FAIL). PASS, and any other verdict, never triggers this check.
+_UNANSWERED_VERDICTS = frozenset({"FAIL", "BLOCKED"})
+
+
+def _gate_verdict(body: str) -> str | None:
+    """A Lane 3 gate-result comment's own stated verdict, or `None` if the
+    body carries no `**Verdict:**` line (a comment classified `("l3",
+    "gate-result")` by marker but written before this convention, or by a
+    tool that doesn't follow it, still returns `None` here -- Check C's
+    caller treats that as "nothing to watch," not an error)."""
+    match = _VERDICT_RE.search(body)
+    return match.group(1) if match else None
+
+
 #: Retired lane tokens, and what replaced them. Read from the same registry
 #: `gh_issue.py` checks issue bodies against (harmonic-forge#379) rather than
 #: restated -- a second list is the drift this repo keeps paying for.
@@ -755,6 +781,87 @@ def discover_l1_sweep(
         if last is not None and last[0] != "l1":
             queued[issue] = last
     return queued, fetch_ok
+
+
+def discover_l3_unanswered_verdicts(
+    repo: str, *, since: str | None = None,
+    extra_issues: Mapping[int, str] | Iterable[int] = (),
+) -> tuple[dict[int, str], bool]:
+    """`({issue: verdict}, fetch_ok)` for every open issue whose LAST Lane-3
+    `gate-result` comment stated `FAIL` or `BLOCKED`, AND has at least one
+    later comment of any kind on the thread -- harmonic-forge#629, Check C.
+
+    Structurally identical to `discover_l1_sweep` (this issue's own Design
+    Alternatives section names it as the pattern to reuse) — same `since`/
+    `extra_issues` split, same fetch-failure and closed-issue handling — but
+    answers a different question: not "whose newest classified comment is
+    not this lane's own" (that is `discover_queue`'s "still queued" check
+    and `discover_l1_sweep`'s "needs Lane 1" check), but "did a FAIL/BLOCKED
+    gate result ever get a reply, of ANY kind, classified or not."
+
+    That "any kind" is the point (harmonic-forge#629's own regression case):
+    hrse#1771's Lane 1 ruling after a FAIL gate-result was posted as
+    `kind=discussion` — a real, substantive reply that neither Check A/B nor
+    `discover_queue` (which only tracks `QUEUE_KINDS` markers) would ever
+    surface, because a `discussion` marker carries no queue membership by
+    design (harmonic-forge#570 measurement). Check C does not classify the
+    reply at all — it only asks whether ANY comment landed after the
+    FAIL/BLOCKED gate-result, timestamp-only, so a reply's `kind` (or
+    absence of one) can never suppress it.
+
+    An issue whose last Lane-3 gate-result was PASS, or that has no
+    Lane-3 gate-result at all, or whose FAIL/BLOCKED gate-result has no
+    later comment yet, carries no ball to watch and is excluded — same
+    "excluded, not reported as queued" posture `discover_l1_sweep` states
+    for an issue with no classified comment at all.
+    """
+    extra_numbers = set(extra_issues)
+    fresh = list_open_issues(repo, since=since)
+    fetch_ok = fresh is not None
+    fresh_set = set(fresh or ())
+    open_extra = {issue for issue in extra_numbers
+                  if issue in fresh_set or _issue_is_open(repo, issue)}
+    candidates = fresh_set | open_extra
+    watching: dict[int, str] = {}
+    for issue in candidates:
+        comments = _fetch_all_comments(repo, issue)
+        if comments is None:
+            # Same fallback shape as `discover_l1_sweep`: a failed fetch
+            # falls back to the previous cycle's classification rather than
+            # silently reading as resolved.
+            if isinstance(extra_issues, Mapping) and issue in extra_issues:
+                watching[issue] = extra_issues[issue]
+            continue
+        last_gate_result: dict | None = None
+        for comment in comments:
+            if _classify(comment.get("body", "")) == ("l3", "gate-result"):
+                last_gate_result = comment
+        if last_gate_result is None:
+            continue
+        verdict = _gate_verdict(last_gate_result.get("body", ""))
+        if verdict not in _UNANSWERED_VERDICTS:
+            continue
+        gate_time = last_gate_result.get("created_at", "")
+        answered = any(
+            comment.get("created_at", "") > gate_time
+            for comment in comments if comment is not last_gate_result
+        )
+        if answered:
+            watching[issue] = verdict
+    return watching, fetch_ok
+
+
+def l3_verdict_sweep_cycle(
+    repo: str, l3_since: str | None, last_queue: dict[int, str], now: str,
+) -> tuple[dict[int, str], str | None]:
+    """One Check C poll cycle's core logic — mirrors `l1_sweep_cycle`
+    exactly (same factoring rationale: directly unit-testable rather than
+    only reachable through `main()`'s infinite loop). Returns
+    `(watching, new_l3_since)`; `new_l3_since` advances to `now` only on a
+    successful fetch, same watermark discipline as `l1_sweep_cycle`."""
+    watching, fetch_ok = discover_l3_unanswered_verdicts(
+        repo, since=l3_since, extra_issues=last_queue)
+    return watching, (now if fetch_ok else l3_since)
 
 
 def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
@@ -1274,7 +1381,22 @@ def queue_cycle(
     ok_repos: set[str] = set()
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
-        if sweep:
+        if sweep and lane == "l3":
+            # harmonic-forge#629, Check C. `l1_since` is reused as a plain
+            # per-repo watermark dict here, not Lane-1-specific -- only one
+            # `--sweep-for` value runs per process, so there is never a
+            # collision between the two sweep types sharing it. `prior`'s
+            # values are this mode's own `"l3verdict:{verdict}"` markers
+            # from the previous cycle (set below); strip the prefix back to
+            # a bare verdict before handing them to `l3_verdict_sweep_cycle`
+            # as its `extra_issues` fallback map.
+            prior_verdicts = {issue: marker.removeprefix("l3verdict:") for issue, marker in prior.items()}
+            l3_queue, since = l3_verdict_sweep_cycle(repo, l1_since.get(repo), prior_verdicts, now)
+            fetch_ok = since == now
+            l1_since[repo] = since
+            found = {issue: f"l3verdict:{verdict}" for issue, verdict in l3_queue.items()}
+            lane_label = "l3-sweep"
+        elif sweep:
             l1_queue, since = l1_sweep_cycle(repo, l1_since.get(repo), prior, now)
             # `l1_sweep_cycle` encodes fetch_ok by whether it advanced the
             # watermark to `now` -- it returns the OLD `since` unchanged on a
@@ -1306,7 +1428,10 @@ def queue_cycle(
     for (repo, issue), marker in queue.items():
         if last_queue.get((repo, issue)) == marker:
             continue
-        if sweep:
+        if marker.startswith("l3verdict:"):
+            verdict = marker.removeprefix("l3verdict:")
+            lines.append(f"{repo}#{issue} needs-l1-response last-verdict={verdict}")
+        elif sweep:
             last_lane, _, detail = marker.partition(":")
             lines.append(f"{repo}#{issue} needs-l1 last={last_lane} — {detail}")
         else:
@@ -1355,15 +1480,21 @@ def main() -> int:
                              "hrse and harmonic-forge, and naming them makes the command "
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
-    parser.add_argument("--sweep-for", choices=("l1",), metavar="LANE",
-                        help="the SUSPENDERS' repo-wide newest-marker backstop "
-                             "(`discover_l1_sweep`): every open issue whose newest "
-                             "classified comment is not this lane's own. Unbounded by "
-                             "design -- it is what the belt structurally cannot see. "
-                             "harmonic-forge#618 split this off `--queue-for l1`, which "
-                             "now means the same bounded thing for Lane 1 that it "
-                             "already meant for Lane 2 and Lane 3. Arming THIS as a belt "
-                             "is harmonic-forge#590's regression.")
+    parser.add_argument("--sweep-for", choices=("l1", "l3"), metavar="LANE",
+                        help="the SUSPENDERS' repo-wide backstop. `l1`: newest-marker "
+                             "sweep (`discover_l1_sweep`) -- every open issue whose "
+                             "newest classified comment is not Lane 1's own. `l3`: "
+                             "unanswered-verdict watch (`discover_l3_unanswered_"
+                             "verdicts`, harmonic-forge#629 Check C) -- every open "
+                             "issue whose last Lane 3 gate-result was FAIL/BLOCKED and "
+                             "has since received ANY reply, classified or not (a "
+                             "`kind=discussion` ruling included -- that gap is exactly "
+                             "what Check C exists to close). Both unbounded by design "
+                             "-- structurally what the belt cannot see. harmonic-"
+                             "forge#618 split `l1` off `--queue-for l1`, which now "
+                             "means the same bounded thing for Lane 1 that it already "
+                             "meant for Lane 2 and Lane 3. Arming either as a belt is "
+                             "harmonic-forge#590's regression.")
     parser.add_argument("--account-repos", metavar="ACCOUNT",
                         help="derive the repo set from projects.toml, the onboarded-repo "
                              "manifest, for ACCOUNT -- R-0122 and this protocol's design "

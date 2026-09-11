@@ -384,16 +384,30 @@ Parameters: `K` = 90 minutes (measured, no observed failures) · no session lock
 
 ## Role: Lane 3
 
-**Two-stage readiness, both stages every tick, unconditionally:**
+**Three checks, every tick, unconditionally — none gates any other:**
 
 - **Check A — spec owed.** Newest `kind=ready-for-l3` with no spec of mine after
   it on the thread means a spec is owed *now*. Do not wait for a sweep or an AE;
   neither exists until the spec does.
 - **Check B — execute ready.** `mise run gate-checkout <branch>` **first**, never
   assumed still-current from a prior tick.
+- **Check C — did a FAIL/BLOCKED verdict ever get a response?**
+  (`discover_l3_unanswered_verdicts`, harmonic-forge#629). Structurally
+  identical to Lane 1's own `discover_l1_sweep` sweep (`--sweep-for l3`, same
+  `since`/`extra_issues`/watermark shape): every open issue whose LAST Lane 3
+  `gate-result` comment stated `FAIL` or `BLOCKED`, that has since received
+  ANY comment — classified or not. The "any kind" is the point: hrse#1771's
+  real Lane 1 ruling after a FAIL landed as `kind=discussion`, which neither
+  Check A nor Check B, nor `discover_queue`'s own `QUEUE_KINDS` tracking, ever
+  surfaced — a gate-result FAIL/BLOCKED is not itself a `QUEUE_KINDS["l3"]`
+  member, so the issue had already left every mechanism that was watching it.
+  Check C classifies nothing about the reply; it only asks whether a later
+  comment exists at all, timestamp-only, so no reply shape can suppress it.
 
-B runs regardless of what A found: a spec posted on an earlier tick can have its
-AE and sweep land on any later tick, and only B sees that.
+B and C both run regardless of what A found: a spec posted on an earlier tick
+can have its AE and sweep land on any later tick, and only B sees that; a
+verdict posted on an earlier tick can get its Lane 1 response on any later
+one, and only C sees that.
 
 **Lane 3 takes the session lock** — its belt and loop both run `gate-checkout` in
 one shared worktree, so two ticks landing together corrupt a checkout. One lock
