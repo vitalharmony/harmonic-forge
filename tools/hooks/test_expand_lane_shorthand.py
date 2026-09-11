@@ -672,7 +672,14 @@ class BatchWiringTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp()) / "state.json"
         with mock.patch.object(ba, "STATE_PATH", tmp):
             m.authorize_batch("BATCH F495", state_path=tmp)
-            ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
+            # F611 moved the TTY gate inside link_pr() itself (harmonic-forge#622
+            # postmortem: a direct import call, same as this one, bypassed a
+            # CLI-only gate entirely). This call simulates the operator's own
+            # already-authorized action recording a PR mapping, not an agent
+            # bypass, so it patches isatty True rather than proving the gate --
+            # TtyGateCliTests in test_batch_auth.py is what proves the gate itself.
+            with mock.patch("os.isatty", return_value=True):
+                ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
             close_cmd = "gh issue close 495 --repo vitalharmony/harmonic-forge"
             self.assertEqual(ba.decide(close_cmd, state_path=tmp)[0], "allow")
             # `decide()` is read-only as of harmonic-forge#552 AC1 — it no
