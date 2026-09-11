@@ -677,7 +677,7 @@ class BatchWiringTests(unittest.TestCase):
             # CLI-only gate entirely). This call simulates the operator's own
             # already-authorized action recording a PR mapping, not an agent
             # bypass, so it patches isatty True rather than proving the gate --
-            # TtyGateCliTests below is what proves the gate itself.
+            # TtyGateCliTests in test_batch_auth.py is what proves the gate itself.
             with mock.patch("os.isatty", return_value=True):
                 ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
             close_cmd = "gh issue close 495 --repo vitalharmony/harmonic-forge"
