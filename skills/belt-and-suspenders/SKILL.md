@@ -72,12 +72,15 @@ mid-issue is not the command to arm:
   hard error, not a warning: a root you asserted and that contributes nothing
   would arm a narrower belt than you asked for.
 
-  **GitHub enriches; it does not discover.** The repo-wide sweep
-  (`discover_l1_sweep`) is the *suspenders'* backstop, not the belt's pull
-  source — see "Role: Lane 1" below. Arming it as the belt is
-  harmonic-forge#590's regression: it surfaces every open issue in the repo
-  rather than the work in hand, and it collapses two deliberately independent
-  mechanisms into one, which is what this protocol's name is about.
+  **GitHub enriches; it does not discover.** Every `gh`-backed check Lane 1
+  runs takes an issue number a worktree, or the bounded Plan-First catch
+  above, has already produced — never an independent, issue-number-free
+  account-wide scan. The old unbounded repo-wide sweep (`discover_l1_sweep`)
+  is retired for Lane 1 entirely, by explicit operator ruling
+  (harmonic-forge#640): *"the design is to start with the worktrees and only
+  use gh for enrichment."* An unbounded scan with no worktree in hand fails
+  that framing regardless of which pull loop arms it — see "Role: Lane 1"
+  below.
 
 - **Lane 2** — **both halves, in one command.** Naming the shared
   `HRSE2-lane2` checkout does not work: between issues it sits on a detached
@@ -266,15 +269,14 @@ idempotent check runs every tick regardless of what any other check found. Lane
 "nothing owed," then again by letting that check decide whether the other ran.
 
 1. **What changed** since the last tick.
-2. **What do I owe** — repo-wide, ignoring recency. This is where the
-   repo-wide sweep belongs, and the only place it belongs (harmonic-forge#590).
-   Lane 1 runs it here, per repo, as a one-shot backstop to the belt — never as
-   the belt itself:
-
-   ```
-   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --sweep-for l1 --account-repos vitalharmony --interval 600
-   ```
-
+2. **What do I owe** — for Lane 1, this is the same `--all-worktrees
+   --queue-for l1` command the belt already arms (see "Role: Lane 1"), run
+   once here rather than left to the persistent Monitor. There is no wider,
+   repo-wide form of this check for Lane 1: the original design put an
+   unbounded newest-marker sweep here as a backstop (harmonic-forge#590), and
+   that backstop is retired by operator ruling (harmonic-forge#640) — an
+   account-wide scan with no worktree or queued-plan in hand is independent
+   discovery, not enrichment, regardless of which loop runs it.
 3. **What have I never answered** — count *my own* posted markers per issue.
 
 **Check 3 is the only one orthogonal to the other two.** Checks 1 and 2 both
@@ -318,38 +320,29 @@ posted. Two hours, a one-line thread, while the lane carried it forward as done.
 discovery to work that exists. GitHub is then read to enrich an issue a worktree
 has already named — it is not the place candidates come from.
 
-**Suspenders backstop: a repo-wide newest-marker sweep** (`discover_l1_sweep`,
-armed with `--sweep-for l1`). It is a *different flag* from `--queue-for l1`
-since harmonic-forge#618: `--queue-for` now means the same bounded thing for
-every lane, and the unbounded sweep has its own name. Arming the sweep as a
-belt is #590's regression, and the two are refused in one process.
-This runs on the *pull loop*, not the monitor, and exists for exactly what the
-belt structurally cannot see: handoffs that predate it, anything its filter
-misses, and issues whose state changed with no new comment. Promoting it to the
-belt was harmonic-forge#590.
-
-> For each open issue, find the newest comment carrying a lane-post marker. If
-> its `posted-by` is **not** Lane 1, the ball is with Lane 1. If the newest
-> marker is Lane 1's own, it has already acted.
-
-**Newest wins, full stop — no precedence table, no exclusion list.** That is
-true *here*, of `discover_l1_sweep`, and it is why the sweep is the backstop:
-it cannot be narrowed by a filter. "Already acted" needs no state because
-acting *is* posting, which makes Lane 1's marker newest. Executed:
-
-```
-discover_l1_sweep  [handoff, L2 Finding] -> {1530: ('l2', '## L2 Finding — something')}
-discover_l1_sweep  [handoff]             -> {}
-```
-
-Note the first line: a `## L2 Finding` **does** put the issue in Lane 1's sweep.
-The sweep excludes nothing, findings included.
+**No unbounded backstop.** Lane 1 has no repo-wide sweep. The original design
+(harmonic-forge#590) put one in the suspenders' pull loop as a backstop for
+exactly what the belt structurally cannot see — handoffs that predate it,
+anything its filter misses, issues whose state changed with no new comment —
+and harmonic-forge#618 gave it its own flag (`--sweep-for l1`) once
+`--queue-for l1` came to mean the same bounded thing it means for every other
+lane. **That backstop is retired by explicit operator ruling (harmonic-forge#640):**
+an account-wide scan with no worktree or queued-plan in hand is exactly the
+independent-discovery case the operator's own framing excludes, regardless of
+which loop arms it or how narrow its own internal reasoning was. The accepted
+gap this leaves — a state change with literally no new comment, on an issue no
+worktree or Plan-First catch names — goes uncaught until something else
+surfaces it; it is not compensated for with a wider scan. `discover_l1_sweep`
+really does filter nothing — no precedence table, no exclusion list, newest
+wins outright — which is exactly the property that makes it too broad to run
+unbounded.
 
 **The lane belts are a different mechanism, and the difference matters.**
-`discover_queue` — what `--queue-for l2` and `--queue-for l3` run — applies two
-filters the sweep does not, and it does *not* mean "the newest eligible marker
-wins". It means **the newest non-finding comment must ITSELF be Lane 1's and of
-an eligible kind**, so a newer ineligible comment *evicts*:
+Lane 1's only live `gh`-backed check, `--queue-for l1`, runs `discover_queue`
+instead — the same function `--queue-for l2` and `--queue-for l3` run. It does
+*not* mean "the newest eligible marker wins". It means **the newest
+non-finding comment must ITSELF be Lane 1's and of an eligible kind**, so a
+newer ineligible comment *evicts*:
 
 ```
 discover_queue l3  [ready-for-l3]        -> {1530: 'ready-for-l3'}
@@ -368,10 +361,10 @@ proposal: deleting `_is_l2_finding` reintroduces #580's false retraction. Each
 filter is here because something was lost without it.
 
 **Which mechanism you are debugging decides the answer.** An issue missing from
-`--queue-for l3` is almost always eviction by a newer ineligible comment — not
-"nothing was posted". An issue unexpectedly *in* Lane 1's sweep is almost always
-a finding or any other non-Lane-1 comment, because the sweep filters nothing.
-`HRSE2/.claude/skills/sprint-plan/scripts/lane_state.py` models the per-issue
+`--queue-for l1`/`--queue-for l2`/`--queue-for l3` is almost always eviction by
+a newer ineligible comment — not "nothing was posted", and not evidence that a
+wider scan is owed. `HRSE2/.claude/skills/sprint-plan/scripts/lane_state.py`
+models the per-issue
 state machine explicitly and is the better thing to read when the belt's answer
 is surprising. (HRSE2-local: that path does not resolve from the other repos
 this skill is linked into.)
@@ -432,7 +425,8 @@ Parameters: `K` = 90 minutes (measured, no observed failures) · no session lock
   assumed still-current from a prior tick.
 - **Check C — did a FAIL/BLOCKED verdict ever get a response?**
   (`discover_l3_unanswered_verdicts`, harmonic-forge#629). Structurally
-  identical to Lane 1's own `discover_l1_sweep` sweep (`--sweep-for l3`, same
+  identical in shape to `discover_l1_sweep` (retired for Lane 1, harmonic-forge#640,
+  but reused here) (`--sweep-for l3`, same
   `since`/`extra_issues`/watermark shape): every open issue whose LAST Lane 3
   `gate-result` comment stated `FAIL` or `BLOCKED`, that has since received
   ANY comment — classified or not. The "any kind" is the point: hrse#1771's
