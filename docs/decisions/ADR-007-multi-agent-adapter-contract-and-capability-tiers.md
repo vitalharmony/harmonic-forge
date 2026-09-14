@@ -169,6 +169,7 @@ enforcement is an admin-tier policy passed at launch.
 | `tools/gh/block_closing_keywords.py` | closing keywords in PR bodies, `gh issue comment`/`edit`, and `gh api -X PATCH` on comments | all | **gap** | admin-policy deny (#362) |
 | `block_irreversible_ops.py` | unrecoverable git/filesystem ops (asks; does not deny) | all | partial — `gate_codex_tool.py` denies Lane 3 git mutations, `sudo`, `sh -c`/`python -c` indirection, package installs | admin-policy deny (#362 for L1/2, #326 for L3) |
 | `model_tier_gate.py` | `deep` issue on a low-tier model | all | **supported** — `CODEX_HIGH = "gpt-5.6-sol"`, wired via the `^apply_patch$` matcher; HRSE2 confirmed live 2026-08-09 | **gap — #323** |
+| `tier_model_trigger_check.py` / `tier_model_stop_backstop.py` / `record_session_model.py` | `deep` issue assigned to, or posted on by, a low-tier model (harmonic-forge#656) | 1, 2 (Stop: all but 3) | **gap** — Claude Code only by design; Codex carries `model` on its payload and has no equivalent wiring | **gap** |
 | `deny_lane3_ae_self_post.py` | Lane 3 self-authorizing | 3 | **gap** | **covered** (#326) — self-posting needs `run_shell_command`, denied whole-tool at Lane 3 |
 | `deny_advisory_subagent_gh_writes.py` | advisory subagents writing to GitHub | 1 | **gap** | admin-policy deny (#362) |
 | `lane3_cloud_cli_policy.py` | `kubectl`/`doctl` write ops inside a gate | 3 | **gap** | **covered** (#326) — both are shell invocations, denied whole-tool at Lane 3 |

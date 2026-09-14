@@ -3,6 +3,60 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): apply the ten preclose fixes to the tier/model hooks (harmonic-forge#656)
+
+1. Read cap: refs are ordered by prompt position; on a non-high model any ref
+   past the cap blocks ("too many issue references to check -- resend naming
+   fewer issues") instead of passing as an unchecked note.
+2. Case: owner/repo is lowercased before the board lookup; a repo with no
+   known board is a note on a non-high model (NO_BOARD), never "no Tier".
+3. Not an issue: a GhItemListError whose text is GraphQL's "Could not resolve
+   to an Issue" / NOT_FOUND is NOT_AN_ISSUE (narrow classifier,
+   is_not_an_issue_error) -- skipped with a note by the trigger check, None
+   (allow) in the edit gate. 403/timeout/network stay LOOKUP_FAILED.
+4. The three new registrations in .claude/settings.json are guarded
+   ([ -f "$f" ] && python3 "$f" || true), so a missing file is a no-op.
+   None of the three hooks exits 2; blocks are JSON on stdout.
+5. Edit gate: resolve_tier reads through model_tier_gate.timed_run (shared by
+   all three Tier readers); a timeout is LOOKUP_FAILED.
+6. Stop backstop: when the bounded tail scan ends before the turn start it
+   reports "backstop scan truncated; earlier posts in this turn were not
+   checked" alongside any posts it did find.
+7. Trigger check and Stop backstop read Tier with ttl=0; the edit gate keeps
+   _CACHE_TTL (read_tier gained a ttl parameter).
+8-10. Tests: run() resolving the model from a transcript fixture with no model
+   argument; _timed_run passing timeout to subprocess.run; record_session_model
+   .main() writing the record. Regression tests for 1, 2, 3, 5, 6, 7; each was
+   confirmed to fail with its fix reverted.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_tier_model_trigger_check.py | 151 +++++++++++++++++++++++++--
+- tools/hooks/tier_model_stop_backstop.py      |  54 ++++++++--
+- tools/hooks/tier_model_trigger_check.py      | 125 +++++++++++++++-------
+- 8 files changed, 488 insertions(+), 70 deletions(-)
+
+## fix(hooks): tier/model check at trigger time, Stop backstop, fail-closed deep lookups (harmonic-forge#656)
+
+- tier_model_trigger_check.py (UserPromptSubmit, LANE 1/2): blocks a prompt
+  naming a deep-Tier issue on a non-high model, or an unreadable Tier on a
+  non-high model; suggests /model sonnet for fast/standard on a high model.
+- tier_model_stop_backstop.py (Stop): reports posts on deep issues from a
+  non-high model; never blocks.
+- session_model.py + record_session_model.py (SessionStart): current model
+  from transcript attachment / /model output / message.model, then the
+  SessionStart record, then settings.
+- model_tier_gate.py: resolve_tier returns LOOKUP_FAILED on GhItemListError;
+  _main denies a code write on it unless the model is already high.
+- Registered in .claude/settings.json. Claude Code only.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_tier_model_trigger_check.py       | 251 ++++++++++++++++++++
+- tools/hooks/tier_model_stop_backstop.py            | 254 ++++++++++++++++++++
+- tools/hooks/tier_model_trigger_check.py            | 255 +++++++++++++++++++++
+- 12 files changed, 1556 insertions(+), 67 deletions(-)
+
 ## fix(F645): unify installed lane launcher sources
 - mise.toml                                       |  6 +-
 - tools/lane/check_installed_lane_sources.py      | 92 +++++++++++++++++++++++++
