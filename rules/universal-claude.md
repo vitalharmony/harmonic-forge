@@ -108,3 +108,15 @@ derivable from code or Git.
   in-progress changes onto it; check `git status` before assuming a fresh
   branch starts clean.
 <!-- /R-0088 -->
+<!-- R-0364 -->
+- **Every GitHub-touching subagent (Agent tool) prompt must state:**
+  "GitHub reads: named issues/comments only; no list or search endpoints;
+  no re-reading threads the parent already summarized." Before launching
+  any fan-out of subagents that touch GitHub, the dispatching session
+  estimates the resulting call count first. A REST-budget guard
+  (`tools/gh/gh_shim` + `tools/hooks/guard_gh_rest_budget.py`,
+  harmonic-forge#650) catches scan-shaped commands, but a fan-out of many
+  subagents each making a few allowed, non-scan calls can still exhaust
+  the shared budget on aggregate volume alone — the guard cannot see that
+  coming from inside any one subagent's own call.
+<!-- /R-0364 -->

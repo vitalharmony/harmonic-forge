@@ -2376,3 +2376,19 @@ anchor = "phase-epic-closure"
 statement = "A phase/epic closure requires an explicit shipped/shipped-inert determination -- shipped needs a post-label comment with a fenced block of real-data output, shipped-inert needs a named open blocked_by supply issue -- mechanically enforced by block_undetermined_phase_close.py and backstopped by repo_hygiene.py's audit_phase_closures sweep."
 text_sha = "5725a68f650fee89"
 hooks = ["tools/hooks/block_undetermined_phase_close.py"]
+
+[[rule]]
+id = "R-0363"
+file = "rules/universal-agent.md"
+anchor = "github-api-rest-core-budget"
+statement = "The REST core budget is enforced by two independent layers -- the ~/.local/bin/gh shim and the guard_gh_rest_budget.py PreToolUse hook, sharing gh_scan_patterns.py and one one-shot operator override -- not by prose; a direct requests/urllib call to api.github.com is intercepted by neither and is banned outright."
+text_sha = "cfd23520469570f1"
+hooks = ["tools/gh/gh_shim", "tools/hooks/guard_gh_rest_budget.py"]
+
+[[rule]]
+id = "R-0364"
+file = "rules/universal-claude.md"
+anchor = "tool-use-safeguards"
+statement = "Every GitHub-touching subagent prompt states the named-issues-only/no-list-or-search constraint, and the dispatching session estimates call count before launching any GitHub-touching subagent fan-out."
+text_sha = "d35dabf21c8a9386"
+hooks = []
