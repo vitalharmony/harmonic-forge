@@ -339,6 +339,15 @@ def compare(captured: dict, fixture: dict, lane3_additions: list[str]) -> list[s
             continue
         expected = _apply_declared_deltas(want[key], agent)
         actual = got[key]
+        # `stderr` is not part of the documented launch tuple (argv/cwd/env,
+        # see this module's own docstring) -- it leaks into the cell dict as
+        # a byproduct of capture, not as an AC8 identity claim. harmonic-
+        # forge#651 gives every launch a real stderr line (the platform-rules
+        # sync, best-effort and non-deterministic in content -- it depends on
+        # the operator's actual ~/harmonic-forge state), so it is excluded
+        # from the comparison here rather than frozen into the fixture.
+        expected = {k: v for k, v in expected.items() if k != "stderr"}
+        actual = {k: v for k, v in actual.items() if k != "stderr"}
         if actual == expected:
             continue
         # A Lane 3 cell may differ by tokens on the committed closed list, and

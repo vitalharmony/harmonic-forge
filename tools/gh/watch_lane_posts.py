@@ -80,24 +80,44 @@ separate "I'm done" bookkeeping required anywhere.
 
 Usage
 -----
-    # The Lane 3 case: find whatever is queued to me, repo-wide, no
-    # worktree and no issue number needed. The repo set is DERIVED, not
-    # listed (R-0122) -- a new repo is picked up automatically, an archived
-    # one drops out:
-    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
-        --watch l1 --interval 60
+    # The Lane 1 case: every live worktree, repo-wide, plus the bounded
+    # Plan-First catch (harmonic-forge#618) -- see CANONICAL_BELTS["1"]:
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
+        --queue-for l1 --watch l2 --watch l3 --interval 300
 
     # The Lane 2 case: BOTH halves. --all-worktrees follows Lane 2 into its
     # per-issue /tmp/<repo>-<issue>-impl checkout; --queue-for l2 catches an
     # inbound handoff on an issue no worktree exists for yet, which is every
     # inbound handoff (harmonic-forge#596). Worktrees-only misses all of them:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
-        --queue-for l2 --watch l1 --interval 90
+        --queue-for l2 --watch l1 --interval 300
 
-    # Manual override, when there is no worktree to read (or watching an
-    # issue this session isn't actually checked out on). A single --repo:
-    python3 watch_lane_posts.py --repo vitalharmony/hrse --issues 1530 \\
-        --watch l2 --watch l3 --interval 30
+    # The Lane 3 case: find whatever is queued to me, repo-wide, no
+    # worktree and no issue number needed. The repo set is DERIVED, not
+    # listed (R-0122) -- a new repo is picked up automatically, an archived
+    # one drops out:
+    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
+        --watch l1 --interval 300
+
+    # The Lane 3 sweep (the suspenders): the repo-wide unanswered-verdict
+    # backstop, `CANONICAL_BELTS["3"][1]`, its own lock so arming it never
+    # contends with the belt above:
+    python3 watch_lane_posts.py --sweep-for l3 --account-repos vitalharmony \\
+        --interval 300
+
+**There is no manual-override / one-shot form any more (harmonic-forge#651
+AC1, pitch-inspection override).** Every invocation -- Bash, Monitor,
+`subprocess`, cron, a hand-typed debugging command -- reaches this same
+`main()`, and `main()` has no branch that exits before its `while True:`
+loop. So every invocation is belt mode, and every invocation is checked
+against `CANONICAL_BELTS[os.environ["LANE"]]` and refused verbatim
+(printing the exact command to copy) if it does not match. A static
+`--repo OWNER/REPO --issues N --watch ...` debugging command that predates
+this issue is no longer runnable this way -- there is no flag combination
+exempt from the LANE/canonical-argv gate. Lane 3's repo-wide sweep
+(`--sweep-for l3`) is `CANONICAL_BELTS["3"][1]`, its own table entry with
+its own lock (`sweep-lane3.lock`), so arming it never contends with the
+lane's own belt (`CANONICAL_BELTS["3"][0]`, `belt-lane3.lock`).
 
 `--queue-for`, `--worktrees`/`--all-worktrees`, and `--repo`/`--issues` may
 be combined; the watched set is their union, re-derived every cycle. The one
@@ -114,13 +134,16 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1364,14 +1387,16 @@ def comment_watch_cycle(
 
 
 #: harmonic-forge#638 AC3: a single global cap would converge every lane's
-#: backoff to the same ceiling, erasing the urgency ordering the base
-#: intervals already encode (Lane 3 at 60s is more urgent than Lane 1 at
-#: 300s, and must stay more urgent at every backoff level too). Scaling the
-#: cap off each lane's own base interval preserves that ordering for free:
-#: Lane 3 backs off to 600s at the cap while Lane 1 backs off to 3000s,
-#: a 10x reduction in EITHER case, never a shared ceiling. (harmonic-forge#640
-#: preclose finding: this example used to name the now-retired Lane 1 sweep's
-#: 600s/6000s interval, which had no referent once that sweep was retired.)
+#: backoff to the same ceiling, erasing any urgency ordering distinct base
+#: intervals encode. Scaling the cap off each lane's own base interval
+#: preserves that for free, whatever the base is set to. (harmonic-forge#651:
+#: every lane's canonical base interval is now 300s -- see CANONICAL_BELTS --
+#: so today all three back off to the same 3000s cap; this function still
+#: scales per-base rather than to a shared constant, in case a future lane
+#: is armed at a different interval again. harmonic-forge#640 preclose
+#: finding: an earlier version of this example named the now-retired Lane 1
+#: sweep's 600s/6000s interval, which had no referent once that sweep was
+#: retired.)
 _BACKOFF_FACTOR = 2.0
 _BACKOFF_CAP_MULTIPLIER = 10.0
 
@@ -1561,10 +1586,279 @@ def queue_cycle(
     return queue, lines, ok_repos
 
 
-def main() -> int:
-    global _ACCOUNT
+#: harmonic-forge#651 AC1. Canonical belt/sweep argv per LANE, enforced
+#: verbatim in `main()` so every invocation path (Bash, Monitor, `subprocess`,
+#: cron) hits the same gate -- a control living only in `SKILL.md` prose is
+#: exactly what the 2026-09-14 incident routed around. Interval 300
+#: throughout (harmonic-forge#650 companion sets the same floor for the `gh`
+#: shim/hook). Lane 3 carries two entries -- its belt (`--queue-for l3
+#: --watch l1`) and its own repo-wide sweep (`--sweep-for l3`) -- each with
+#: its own lock, per pitch-inspection: arming one must never block the other.
+CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
+    "1": [
+        {
+            "argv": ["--all-worktrees", "--account-repos", "vitalharmony",
+                      "--queue-for", "l1", "--watch", "l2", "--watch", "l3",
+                      "--interval", "300"],
+            "lock": "belt-lane1.lock",
+        },
+    ],
+    "2": [
+        {
+            "argv": ["--all-worktrees", "--account-repos", "vitalharmony",
+                      "--queue-for", "l2", "--watch", "l1", "--interval", "300"],
+            "lock": "belt-lane2.lock",
+        },
+    ],
+    "3": [
+        {
+            "argv": ["--queue-for", "l3", "--account-repos", "vitalharmony",
+                      "--watch", "l1", "--interval", "300"],
+            "lock": "belt-lane3.lock",
+        },
+        {
+            "argv": ["--sweep-for", "l3", "--account-repos", "vitalharmony",
+                      "--interval", "300"],
+            "lock": "sweep-lane3.lock",
+        },
+    ],
+}
+
+#: Overridable in tests (`patch("watch_lane_posts.BELT_LOCK_DIR", tmp_path)`)
+#: so a unit test never touches the operator's real cache directory.
+BELT_LOCK_DIR = Path.home() / ".cache" / "harmonic-forge"
+
+
+def _canonical_vars(parser: argparse.ArgumentParser, argv: list[str]) -> dict[str, Any]:
+    ns = parser.parse_args(argv)
+    d = vars(ns).copy()
+    d["watch"] = sorted(d.get("watch") or [])
+    return d
+
+
+def _matching_canonical_entry(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, lane: str
+) -> dict[str, Any] | None:
+    actual = vars(args).copy()
+    actual["watch"] = sorted(actual.get("watch") or [])
+    for entry in CANONICAL_BELTS.get(lane, []):
+        if actual == _canonical_vars(parser, entry["argv"]):
+            return entry
+    return None
+
+
+def _enforce_canonical_belt(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> dict[str, Any]:
+    """harmonic-forge#651 AC1. `main()` has no one-shot or test mode -- every
+    invocation reaches the `while True:` loop below -- so every invocation is
+    gated here, with no exempt flag combination (pitch-inspection named
+    change). Refuses unless `LANE` names 1/2/3 and the parsed arguments match
+    that lane's table entry exactly (compared as parsed values, `watch`
+    sorted, so `--interval=300`/`--int 300`/reordering can't slip past --
+    `allow_abbrev=False` on the parser closes the abbreviation form)."""
+    lane = os.environ.get("LANE")
+    if lane not in CANONICAL_BELTS:
+        parser.error(
+            "belt/sweep mode requires LANE=1|2|3 in the environment "
+            "(harmonic-forge#651) -- launch via lane1/lane2/lane3, don't set "
+            "LANE inline")
+    entry = _matching_canonical_entry(parser, args, lane)
+    if entry is None:
+        canonical_cmds = "\n".join(
+            "  " + " ".join(["watch_lane_posts.py", *e["argv"]])
+            for e in CANONICAL_BELTS[lane]
+        )
+        parser.error(
+            f"LANE={lane}'s arguments do not match its canonical command "
+            f"(harmonic-forge#651) -- copy exactly:\n{canonical_cmds}")
+    return entry
+
+
+def _proc_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _nearest_session_pid(start_pid: int | None = None) -> int | None:
+    """The nearest `claude`/`codex` ancestor of `start_pid` (default: this
+    process) -- the "session" a belt lock holder belongs to, per
+    pitch-inspection step 3. Best-effort via `/proc`; returns None if it
+    can't be determined (non-Linux, sandboxed `/proc`, or no such ancestor),
+    which callers treat as "unknown session" and fall back to the plain
+    same-process duplicate check."""
+    pid = start_pid or os.getpid()
+    seen: set[int] = set()
+    while pid and pid > 1 and pid not in seen:
+        seen.add(pid)
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text().strip()
+        except OSError:
+            return None
+        if comm in ("claude", "codex"):
+            return pid
+        try:
+            status = Path(f"/proc/{pid}/status").read_text()
+        except OSError:
+            return None
+        ppid = None
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                ppid = int(line.split(None, 1)[1])
+                break
+        if ppid is None:
+            return None
+        pid = ppid
+    return None
+
+
+def _parse_lock_holder(raw: str) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _acquire_belt_lock(lock_name: str):
+    """harmonic-forge#651 AC2. Exclusive, non-blocking `flock` on
+    `BELT_LOCK_DIR/lock_name`, released automatically on process exit or
+    crash (`flock` semantics -- no PID-file staleness window). On
+    contention, resolved by pitch-inspection step 3's holder-liveness rule:
+
+    - holder's session is dead: SIGTERM the holder pid, wait up to 5s,
+      reclaim, and log the reclaim to stderr;
+    - holder's session is alive and is the caller's own session (or session
+      is unknown, the plain AC2 case): exit 4 silently on stdout -- a
+      stderr line names the holder's pid/start time, but nothing is printed
+      that would surface as a notification;
+    - holder's session is alive and is a DIFFERENT session: print the
+      refusal to STDOUT (so the arming session sees another session owns
+      the belt), then exit 4.
+
+    Returns the open file handle; keep it referenced for the process
+    lifetime so the lock is held.
+    """
+    BELT_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    path = BELT_LOCK_DIR / lock_name
+    fh = open(path, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        holder = _parse_lock_holder(fh.read().strip())
+        my_session = _nearest_session_pid()
+        holder_pid = holder.get("pid") if holder else None
+        holder_start = holder.get("start") if holder else None
+        holder_session = holder.get("session_pid") if holder else None
+
+        if holder_session and not _proc_alive(holder_session):
+            if holder_pid:
+                try:
+                    os.kill(holder_pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            deadline = time.time() + 5
+            reclaimed = False
+            while time.time() < deadline:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    reclaimed = True
+                    break
+                except BlockingIOError:
+                    time.sleep(0.2)
+            if not reclaimed:
+                print(f"[watch_lane_posts] belt lock {lock_name}: holder pid "
+                      f"{holder_pid} would not release after SIGTERM -- "
+                      "exiting", file=sys.stderr)
+                sys.exit(4)
+            print(f"[watch_lane_posts] belt lock {lock_name}: prior holder's "
+                  f"session (pid {holder_session}) was dead -- reclaimed "
+                  f"from pid {holder_pid}", file=sys.stderr)
+        elif holder_session and my_session and holder_session != my_session:
+            print(f"belt already running for lock {lock_name} (pid "
+                  f"{holder_pid} since {holder_start}, session "
+                  f"{holder_session}); this duplicate exits by design -- "
+                  "another session owns this belt")
+            sys.exit(4)
+        else:
+            print(f"belt already running for lock {lock_name} (pid "
+                  f"{holder_pid} since {holder_start}); this duplicate exits "
+                  "by design", file=sys.stderr)
+            sys.exit(4)
+    fh.seek(0)
+    fh.truncate()
+    fh.write(json.dumps({
+        "pid": os.getpid(),
+        "start": _now(),
+        "session_pid": _nearest_session_pid(),
+    }))
+    fh.flush()
+    return fh
+
+
+def _check_git_staleness(
+    parser: argparse.ArgumentParser, script_dir: Path | None = None
+) -> None:
+    """harmonic-forge#651 AC3. Local-git-only, no REST budget cost: fetch the
+    remote-tracking ref (`git fetch --quiet origin main`), then refuse belt
+    mode if HEAD is behind it. Fails OPEN (warns, continues) on any git
+    error -- a broken git invocation must not become a second way to
+    silently disable every lane's belt.
+
+    `script_dir` defaults to this module's own directory; tests pass a
+    throwaway repo instead of touching the real harmonic-forge checkout."""
+    script_dir = script_dir or Path(__file__).resolve().parent
+    try:
+        root_proc = subprocess.run(
+            ["git", "-C", str(script_dir), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=7)
+        if root_proc.returncode != 0:
+            raise RuntimeError(root_proc.stderr.strip())
+        repo_root = root_proc.stdout.strip()
+        subprocess.run(["git", "-C", repo_root, "fetch", "--quiet", "origin", "main"],
+                       capture_output=True, text=True, timeout=15)
+        head = subprocess.run(["git", "-C", repo_root, "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=7).stdout.strip()
+        remote = subprocess.run(["git", "-C", repo_root, "rev-parse", "origin/main"],
+                                capture_output=True, text=True, timeout=7).stdout.strip()
+        count_proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=7)
+        if count_proc.returncode != 0:
+            raise RuntimeError(count_proc.stderr.strip())
+        behind = int(count_proc.stdout.strip())
+    except Exception as exc:  # fail open, deliberately broad
+        print(f"[watch_lane_posts] staleness check failed ({exc}) -- "
+              "continuing (fail-open)", file=sys.stderr)
+        return
+    if behind > 0:
+        parser.error(
+            f"~/harmonic-forge is {behind} commit(s) behind origin/main "
+            f"(HEAD={head[:12]}, origin/main={remote[:12]}) -- relaunch via "
+            "lane1/lane2/lane3 to pick up the pull (harmonic-forge#651)")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Split out of `main()` (harmonic-forge#651) so `CANONICAL_BELTS`
+    enforcement -- both at runtime (`_enforce_canonical_belt`) and in
+    `test_belt_skill_matches_table.py`'s doc-sync check -- normalizes a
+    canonical or extracted command through the EXACT SAME parser `main()`
+    runs, never a second hand-built one that could quietly drift from it."""
     parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     allow_abbrev=False)
     parser.add_argument("--worktrees", nargs="+", default=[],
                         help="worktree path(s) -- (repo, issue) re-derived from each one's "
                              "CURRENT branch every poll cycle, so this follows a lane across "
@@ -1634,6 +1928,12 @@ def main() -> int:
                              "before polling: a slot authenticating as someone "
                              "else refuses loudly rather than returning empty, "
                              "because empty reads as 'no new work'.")
+    return parser
+
+
+def main() -> int:
+    global _ACCOUNT
+    parser = _build_parser()
     args = parser.parse_args()
 
     _ACCOUNT = args.account
@@ -1658,6 +1958,9 @@ def main() -> int:
                       "asked to name candidates. If you found this command in an old "
                       "transcript or SKILL.md copy, that copy is stale. --sweep-for l3 "
                       "is unaffected.")
+    _belt_lock_entry = _enforce_canonical_belt(parser, args)
+    _check_git_staleness(parser)
+    _belt_lock_handle = _acquire_belt_lock(_belt_lock_entry["lock"])  # noqa: F841
     # Union, not replacement: an explicitly named --worktrees path stays
     # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
     # roots are named to --all-worktrees, so --worktrees has one job again.

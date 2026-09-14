@@ -2,13 +2,16 @@
 """Unit tests for watch_lane_posts.py (harmonic-forge#442) -- pure parsing
 logic only, no live gh/API calls. Fixtures are real comment bodies from
 hrse#1530 (trimmed), not invented shapes."""
+import argparse
 import datetime as dt
 import io
 import json
+import os
 import re
 import sys
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1937,9 +1940,13 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
         def capture(*a, **kw):
             seen["sweep"] = kw.get("sweep", False)
             raise KeyboardInterrupt          # one cycle, then stop
-        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l3",
-                                        "--repo", "o/r", "--interval", "0"]), \
+        argv = ["watch_lane_posts.py",
+                *watch_lane_posts.CANONICAL_BELTS["3"][1]["argv"]]
+        with patch.object(sys, "argv", argv), \
+             patch.dict(os.environ, {"LANE": "3"}), \
              patch("watch_lane_posts.assert_identity"), \
+             patch("watch_lane_posts._check_git_staleness"), \
+             patch("watch_lane_posts._acquire_belt_lock"), \
              patch("watch_lane_posts.queue_cycle", side_effect=capture), \
              patch("watch_lane_posts.time.sleep"):
             with self.assertRaises(KeyboardInterrupt):
@@ -1953,9 +1960,17 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
         def capture(*a, **kw):
             seen["sweep"] = kw.get("sweep", False)
             raise KeyboardInterrupt
-        with patch.object(sys, "argv", ["watch_lane_posts.py", "--queue-for", "l1",
-                                        "--repo", "o/r", "--interval", "0"]), \
+        # LANE=3's plain belt entry (--queue-for, no --all-worktrees) --
+        # avoids a real `--all-worktrees` enumeration of every worktree on
+        # this machine, which is what made this test (LANE=1's canonical
+        # argv, previously used here) take ~15s of real I/O.
+        argv = ["watch_lane_posts.py",
+                *watch_lane_posts.CANONICAL_BELTS["3"][0]["argv"]]
+        with patch.object(sys, "argv", argv), \
+             patch.dict(os.environ, {"LANE": "3"}), \
              patch("watch_lane_posts.assert_identity"), \
+             patch("watch_lane_posts._check_git_staleness"), \
+             patch("watch_lane_posts._acquire_belt_lock"), \
              patch("watch_lane_posts.queue_cycle", side_effect=capture), \
              patch("watch_lane_posts.time.sleep"):
             with self.assertRaises(KeyboardInterrupt):
@@ -2012,9 +2027,13 @@ class SweepForL1IsRetiredTests(unittest.TestCase):
         def capture(*a, **kw):
             seen["reached"] = True
             raise KeyboardInterrupt
-        with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l3",
-                                        "--repo", "o/r", "--interval", "0"]), \
+        argv = ["watch_lane_posts.py",
+                *watch_lane_posts.CANONICAL_BELTS["3"][1]["argv"]]
+        with patch.object(sys, "argv", argv), \
+             patch.dict(os.environ, {"LANE": "3"}), \
              patch("watch_lane_posts.assert_identity"), \
+             patch("watch_lane_posts._check_git_staleness"), \
+             patch("watch_lane_posts._acquire_belt_lock"), \
              patch("watch_lane_posts.queue_cycle", side_effect=capture), \
              patch("watch_lane_posts.time.sleep"):
             with self.assertRaises(KeyboardInterrupt):
@@ -2257,6 +2276,230 @@ class BeltNeverPausesDocSyncTests(unittest.TestCase):
     def test_skill_md_documents_the_suspenders_never_stop_guarantee(self) -> None:
         text = _SKILL_MD.read_text(encoding="utf-8")
         self.assertIn("Never call `stop`", text)
+
+
+def _with_interval(argv: list[str], value: str) -> list[str]:
+    argv = list(argv)
+    argv[argv.index("--interval") + 1] = value
+    return argv
+
+
+class CanonicalBeltEnforcementTests(unittest.TestCase):
+    """harmonic-forge#651 AC1/AC2. Every invocation reaches `main()`'s
+    `while True:` loop (there is no one-shot/test-exempt mode), so every
+    invocation is gated by `_enforce_canonical_belt` against
+    `CANONICAL_BELTS[LANE]` -- compared as PARSED argparse values (`--watch`
+    order-insensitive), never as a raw-argv string, so `--interval=300`,
+    `--int 300`, or a reordered `--watch` cannot slip past.
+    `_check_git_staleness` and `_acquire_belt_lock` are patched out in every
+    case: this class is about the argv/LANE gate alone."""
+
+    def _run(self, argv: list[str], env: dict[str, str] | None):
+        patches = [
+            patch.object(sys, "argv", ["watch_lane_posts.py", *argv]),
+            patch("watch_lane_posts.assert_identity"),
+            patch("watch_lane_posts._check_git_staleness"),
+            patch("watch_lane_posts._acquire_belt_lock"),
+            patch("watch_lane_posts.queue_cycle", side_effect=KeyboardInterrupt),
+            patch("watch_lane_posts.time.sleep"),
+        ]
+        err = io.StringIO()
+        patches.append(patch("sys.stderr", err))
+        saved_lane = os.environ.get("LANE")
+        try:
+            if env is None:
+                os.environ.pop("LANE", None)
+            else:
+                os.environ.update(env)
+            for p in patches:
+                p.start()
+            try:
+                watch_lane_posts.main()
+                outcome = None
+            except SystemExit as exc:
+                outcome = exc.code
+            except KeyboardInterrupt:
+                outcome = "looped"
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+        finally:
+            if saved_lane is None:
+                os.environ.pop("LANE", None)
+            else:
+                os.environ["LANE"] = saved_lane
+        return outcome, err.getvalue()
+
+    def test_dropping_queue_for_l1_is_refused(self):
+        argv = [a for a in watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
+                if a not in ("--queue-for", "l1")]
+        outcome, err = self._run(argv, {"LANE": "1"})
+        self.assertEqual(outcome, 2)
+        self.assertIn("canonical command", err)
+
+    def test_interval_60_is_refused(self):
+        argv = _with_interval(watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"], "60")
+        outcome, err = self._run(argv, {"LANE": "1"})
+        self.assertEqual(outcome, 2)
+        self.assertIn("canonical command", err)
+
+    def test_an_extra_unexpected_watch_value_is_refused(self):
+        """Lane 1's canonical entry already watches l2 and l3 -- adding a
+        third (l1, watching itself) must still be caught, proving the
+        comparison is an exact-set match, not merely `>=` the required set."""
+        argv = [*watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"], "--watch", "l1"]
+        outcome, err = self._run(argv, {"LANE": "1"})
+        self.assertEqual(outcome, 2)
+        self.assertIn("canonical command", err)
+
+    def test_canonical_argv_in_a_different_order_is_accepted(self):
+        """The comparison is over PARSED values (`vars(args)`, `--watch`
+        sorted), not the raw token sequence -- so a reordering of the exact
+        same canonical flags must be accepted, not refused."""
+        canonical = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
+        # Swap the two --watch pairs and move --interval 300 to the front.
+        reordered = ["--interval", "300", "--all-worktrees", "--account-repos",
+                     "vitalharmony", "--watch", "l3", "--watch", "l2",
+                     "--queue-for", "l1"]
+        self.assertEqual(sorted(canonical), sorted(reordered),
+                         "test fixture drifted from CANONICAL_BELTS['1']")
+        outcome, _err = self._run(reordered, {"LANE": "1"})
+        self.assertEqual(outcome, "looped",
+                         "a reordered-but-identical canonical command must "
+                         "reach the poll loop, not be refused")
+
+    def test_lane_env_var_unset_is_refused(self):
+        argv = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
+        outcome, err = self._run(argv, None)
+        self.assertEqual(outcome, 2)
+        self.assertIn("LANE=1|2|3", err)
+
+    def test_allow_abbrev_is_disabled(self):
+        """AC1: `allow_abbrev=False` on the parser -- a glued/abbreviated
+        form of a canonical flag must not silently parse as if spelled out,
+        which would let it slip past the exact-match comparison undetected."""
+        parser = argparse.ArgumentParser(allow_abbrev=False)
+        # Build the real parser the way main() does, minus running main()
+        # itself -- easiest done by asserting on the module-level behavior:
+        # an abbreviated `--int` for `--interval` must be REJECTED by argparse
+        # itself (unrecognized argument), proving abbreviation is off.
+        argv = ["--all-worktrees", "--account-repos", "vitalharmony",
+                "--queue-for", "l1", "--watch", "l2", "--watch", "l3",
+                "--int", "300"]
+        outcome, err = self._run(argv, {"LANE": "1"})
+        self.assertEqual(outcome, 2)
+        self.assertIn("unrecognized", err.lower())
+
+
+class BeltLockTests(unittest.TestCase):
+    """harmonic-forge#651 AC2. `_acquire_belt_lock` takes an exclusive,
+    non-blocking `flock` -- a second instance while the first still holds it
+    must exit 4, never block."""
+
+    def test_second_attempt_while_first_holds_the_lock_exits_4(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_dir = Path(tmp)
+            lock_path = lock_dir / "belt-lane1.lock"
+            marker = lock_dir / "acquired"
+            holder_script = (
+                "import fcntl, json, os, sys, time\n"
+                "fh = open(sys.argv[1], 'a+')\n"
+                "fcntl.flock(fh.fileno(), fcntl.LOCK_EX)\n"
+                "fh.write(json.dumps({'pid': os.getpid(), 'start': 'test', "
+                "'session_pid': None}))\n"
+                "fh.flush()\n"
+                "open(sys.argv[2], 'w').close()\n"
+                "time.sleep(10)\n"
+            )
+            proc = subprocess.Popen(
+                [sys.executable, "-c", holder_script, str(lock_path), str(marker)])
+            try:
+                deadline = time.time() + 5
+                while not marker.exists():
+                    if time.time() > deadline:
+                        self.fail("holder subprocess never acquired the lock")
+                    time.sleep(0.05)
+                with patch("watch_lane_posts.BELT_LOCK_DIR", lock_dir), \
+                     patch("watch_lane_posts._nearest_session_pid",
+                          return_value=None):
+                    with self.assertRaises(SystemExit) as caught:
+                        watch_lane_posts._acquire_belt_lock("belt-lane1.lock")
+                self.assertEqual(caught.exception.code, 4)
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+
+
+class GitStalenessTests(unittest.TestCase):
+    """harmonic-forge#651 AC3. Local-git-only staleness check: two temp
+    repos, one standing in for `origin/main`, the local one deliberately one
+    commit behind it (reproduced by advancing origin from a THIRD clone --
+    resetting the local repo back a commit would just discard the same
+    commit object, not exercise a real fetch of new history)."""
+
+    def _run_git(self, args, cwd):
+        result = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                                text=True, timeout=15)
+        self.assertEqual(result.returncode, 0,
+                         f"git {args} failed: {result.stderr}")
+        return result.stdout.strip()
+
+    def _init_repos(self, root: Path) -> Path:
+        origin = root / "origin.git"
+        origin.mkdir()
+        self._run_git(["init", "--bare", "-b", "main"], cwd=origin)
+
+        seed = root / "seed"
+        seed.mkdir()
+        self._run_git(["init", "-b", "main"], cwd=seed)
+        self._run_git(["config", "user.email", "t@example.invalid"], cwd=seed)
+        self._run_git(["config", "user.name", "T"], cwd=seed)
+        (seed / "f.txt").write_text("a\n")
+        self._run_git(["add", "f.txt"], cwd=seed)
+        self._run_git(["commit", "-q", "-m", "A"], cwd=seed)
+        self._run_git(["remote", "add", "origin", str(origin)], cwd=seed)
+        self._run_git(["push", "-q", "origin", "main"], cwd=seed)
+
+        local = root / "local"
+        self._run_git(["clone", "-q", str(origin), str(local)], cwd=root)
+
+        advancer = root / "advancer"
+        self._run_git(["clone", "-q", str(origin), str(advancer)], cwd=root)
+        self._run_git(["config", "user.email", "t@example.invalid"], cwd=advancer)
+        self._run_git(["config", "user.name", "T"], cwd=advancer)
+        (advancer / "f.txt").write_text("b\n")
+        self._run_git(["commit", "-aq", "-m", "B"], cwd=advancer)
+        self._run_git(["push", "-q", "origin", "main"], cwd=advancer)
+
+        (local / "tools" / "gh").mkdir(parents=True)
+        return local
+
+    def test_refuses_when_head_is_behind_origin_main(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            fake_file = local / "tools" / "gh" / "watch_lane_posts.py"
+            head = self._run_git(["rev-parse", "HEAD"], cwd=local)
+            with patch.object(watch_lane_posts, "__file__", str(fake_file)):
+                parser = argparse.ArgumentParser()
+                with self.assertRaises(SystemExit) as caught:
+                    watch_lane_posts._check_git_staleness(parser)
+            self.assertEqual(caught.exception.code, 2)
+
+    def test_fails_open_on_a_broken_git_invocation(self):
+        """AC3: any git error must warn and continue, never block the belt."""
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_repo = Path(tmp) / "tools" / "gh"
+            not_a_repo.mkdir(parents=True)
+            fake_file = not_a_repo / "watch_lane_posts.py"
+            with patch.object(watch_lane_posts, "__file__", str(fake_file)), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err:
+                parser = argparse.ArgumentParser()
+                watch_lane_posts._check_git_staleness(parser)  # must not raise
+            self.assertIn("staleness check failed", err.getvalue())
 
 
 if __name__ == "__main__":
