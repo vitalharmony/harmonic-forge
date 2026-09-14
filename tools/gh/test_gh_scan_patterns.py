@@ -178,6 +178,119 @@ class Override(unittest.TestCase):
         self.assertFalse(gsp.consume_override())
         self.assertFalse(gsp._OVERRIDE_FILE.exists())
 
+    def test_a_directory_at_the_override_path_is_never_a_valid_grant(self):
+        """harmonic-forge#650 preclose-check: `mkdir -p` on the override
+        path used to pass `stat()`, fail silently on `unlink()`, and still
+        return True -- an agent could self-grant with `mkdir` alone."""
+        gsp._OVERRIDE_FILE.mkdir()
+        self.assertFalse(gsp.override_present())
+        self.assertFalse(gsp.consume_override())
+        self.assertTrue(gsp._OVERRIDE_FILE.is_dir())  # left untouched, not deleted
+        gsp._OVERRIDE_FILE.rmdir()
+
+    def test_one_touch_grants_exactly_one_scan_under_concurrent_callers(self):
+        """harmonic-forge#650 preclose-check: two racing callers both
+        observing the file as fresh before either deleted it used to grant
+        both. The lock must make exactly one caller win."""
+        import threading
+
+        gsp._OVERRIDE_FILE.write_text("")
+        results: list[bool] = []
+        lock = threading.Lock()
+
+        def worker() -> None:
+            got = gsp.consume_override()
+            with lock:
+                results.append(got)
+
+        threads = [threading.Thread(target=worker) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sum(results), 1)
+
+    def test_override_present_does_not_consume(self):
+        """The hook only peeks; only the shim's `consume_override()` may
+        delete the grant (harmonic-forge#650 preclose-check: both layers
+        consuming meant a typed scan was refused even with a fresh
+        override, because the hook had already deleted it)."""
+        gsp._OVERRIDE_FILE.write_text("")
+        self.assertTrue(gsp.override_present())
+        self.assertTrue(gsp._OVERRIDE_FILE.exists())
+        self.assertTrue(gsp.override_present())  # repeatable, still not consumed
+        self.assertTrue(gsp.consume_override())
+        self.assertFalse(gsp._OVERRIDE_FILE.exists())
+
+
+class ValueTakingFlags(unittest.TestCase):
+    """harmonic-forge#650 preclose-check: a flag with a value placed before
+    the endpoint/subcommand used to hide the scan from classification
+    entirely, because the value token (e.g. "GET") was read as if it were
+    the endpoint or subcommand."""
+
+    def test_dash_x_get_before_endpoint_is_still_a_scan(self):
+        self.assertIsNotNone(gsp.scan_reason(["api", "-X", "GET", "repos/o/r/issues", "--paginate"]))
+
+    def test_glued_dash_x_get_is_still_a_scan(self):
+        self.assertIsNotNone(gsp.scan_reason(["api", "-XGET", "repos/o/r/issues"]))
+
+    def test_long_method_equals_form_is_still_a_scan(self):
+        self.assertIsNotNone(gsp.scan_reason(["api", "--method=GET", "search/issues"]))
+
+    def test_header_flag_before_endpoint_is_still_a_scan(self):
+        self.assertIsNotNone(
+            gsp.scan_reason(["api", "-H", "Accept: application/vnd.github+json", "repos/o/r/issues"])
+        )
+
+    def test_repo_flag_before_subcommand_is_still_a_scan(self):
+        self.assertIsNotNone(gsp.scan_reason(["issue", "-R", "vitalharmony/hrse", "list"]))
+
+    def test_method_flag_before_endpoint_reaches_the_real_path(self):
+        # Regression guard for the parser itself, independent of scan
+        # classification: the endpoint must be recovered correctly even
+        # when method flags precede it, or *no* classification (scan or
+        # not) can ever be trusted.
+        method, positional = gsp._split_argv(["api", "-X", "GET", "repos/o/r/issues"])
+        self.assertEqual(method, "GET")
+        self.assertEqual(positional, ["api", "repos/o/r/issues"])
+
+
+class WriteMethodsAreNeverScans(unittest.TestCase):
+    """harmonic-forge#650 preclose-check: `gh api repos/o/r/issues -X POST`
+    (creating an issue -- `mise run gh-new-issue`'s own shape) used to match
+    the same collection-path pattern as a GET list scan and be refused."""
+
+    def test_post_create_against_a_collection_path_is_not_a_scan(self):
+        self.assertIsNone(gsp.scan_reason(["api", "repos/o/r/issues", "-X", "POST", "-f", "title=x"]))
+
+    def test_implicit_post_via_field_flag_is_not_a_scan(self):
+        self.assertIsNone(gsp.scan_reason(["api", "repos/o/r/issues", "-f", "title=x"]))
+
+    def test_post_to_pulls_collection_is_not_a_scan(self):
+        self.assertIsNone(gsp.scan_reason(["api", "repos/o/r/pulls", "-X", "POST", "-f", "head=x"]))
+
+    def test_get_to_the_same_collection_path_is_still_a_scan(self):
+        self.assertIsNotNone(gsp.scan_reason(["api", "repos/o/r/issues"]))
+
+
+class GhBasenameNormalization(unittest.TestCase):
+    """harmonic-forge#650 preclose-check: calling `gh` by absolute path
+    used to skip the hook's `stripped[0] == "gh"` exact-string check."""
+
+    def test_bare_gh_is_recognized(self):
+        self.assertTrue(gsp.is_gh_invocation("gh"))
+
+    def test_absolute_path_gh_is_recognized(self):
+        self.assertTrue(gsp.is_gh_invocation("/usr/bin/gh"))
+
+    def test_relative_path_gh_is_recognized(self):
+        self.assertTrue(gsp.is_gh_invocation("./gh"))
+
+    def test_non_gh_binary_is_not_recognized(self):
+        self.assertFalse(gsp.is_gh_invocation("ghost"))
+        self.assertFalse(gsp.is_gh_invocation("/usr/bin/curl"))
+
 
 if __name__ == "__main__":
     unittest.main()

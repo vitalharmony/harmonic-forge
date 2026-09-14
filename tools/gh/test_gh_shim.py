@@ -111,6 +111,7 @@ class Refusal(unittest.TestCase):
         """A bug in the shim must never brick `gh` entirely."""
         shim = _load_shim()
         fake_patterns = mock.Mock()
+        fake_patterns.consume_override.return_value = False
         fake_patterns.scan_reason.side_effect = RuntimeError("boom")
         with mock.patch.object(sys, "argv", ["gh", "pr", "view", "5"]), \
              mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \

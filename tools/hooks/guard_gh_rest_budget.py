@@ -17,27 +17,40 @@ Modeled on `block_raw_board_scan.py`: same `shell_parse.command_segments`/
 payload or an internal exception must never wedge the session -- print a
 visible systemMessage and let the tool call through, never crash).
 
-WHY THE HOOK ALSO CONSUMES THE OVERRIDE
+WHY THE HOOK ONLY *PEEKS* AT THE OVERRIDE
 -------------------------------------------
 The contract is "one `touch ~/.cache/harmonic-forge/gh_scan_override`
-unlocks exactly one scan, through whichever layer the command actually
-reaches." A typed `gh issue list` reaches this hook and never touches the
-shim (this hook denies it outright, so `gh` never runs); a script that
-calls `gh` via `subprocess` reaches only the shim. If this hook checked but
-never consumed the override, a typed scan would deny with the override
-present and unconsumed, matching the operator's intent -- but if it merely
-observed without consuming, a second typed scan in the same session would
-also pass, silently doubling the grant. So this hook calls
-`consume_override()` itself, exactly like the shim, and both share the
-same on-disk file: whichever layer's `scan_reason()` match fires first
-consumes the one grant.
+unlocks the next `gh` call, whatever it is." Only `tools/gh/gh_shim` ever
+actually execs the real `gh`, so it is the only layer that *consumes* the
+override (`consume_override()`). This hook only asks "is a grant sitting
+there right now" (`override_present()`), to decide whether to let a
+scan-shaped command through to the shim -- it never deletes the file
+itself. Consuming here too would double-spend or silently waste one grant:
+a command this hook denies outright never reaches `gh` at all, so consuming
+on the hook's own decision would burn the grant on a call that never ran;
+and if the hook let the command through *without* deleting the file, the
+shim then sees it fresh and consumes it there -- exactly once, at the layer
+that actually executes.
 
 The hook does NOT re-implement the budget-floor check -- that fires inside
 the shim at actual execution time, and re-checking it here would just be a
 second network round-trip for the same answer on every Bash call. This
-hook's job is narrower: catch scan-shaped argv, an inline script that would
-hit the API directly, an under-interval `watch_lane_posts.py` belt-mode
-invocation, and any attempt to self-grant the override file.
+hook's job is narrower: catch scan-shaped argv, an inline script or heredoc
+that would hit the API directly, an under-interval `watch_lane_posts.py`
+belt-mode invocation typed directly into Bash, and any attempt to
+self-grant the override file.
+
+MONITOR-ARMED WATCHERS AREN'T COVERED HERE, BY DESIGN
+---------------------------------------------------------
+This hook only fires on the `Bash` tool matcher, so a belt armed via the
+`Monitor` tool (not a typed Bash command) never reaches `_watch_lane_posts_violation`
+below. That gap is closed structurally, not by this hook, in
+harmonic-forge#651's `CANONICAL_BELTS` argv enforcement built directly into
+`watch_lane_posts.py` itself -- "This lives in the script, so it holds
+whether launched via Bash, Monitor, subprocess or cron" (that issue's own
+AC1). The check below stays as defense-in-depth for a directly-typed
+command; it is not this hook's job to re-solve what #651 already solves
+at the source.
 """
 
 from __future__ import annotations
@@ -69,17 +82,43 @@ _OVERRIDE_HINT = (
 _OVERRIDE_WRITE_PATTERN = re.compile(
     r"gh_scan_override\b"
 )
+#: Binaries/verbs safe to run against the override path without ever
+#: creating or modifying it -- a narrow allowlist, checked only against the
+#: first token of the segment. Everything else touching the path is denied
+#: by default (harmonic-forge#650 preclose-check: the old check was an
+#: allowlist of known WRITE shapes, and a `mkdir -p`, `env touch`, or a
+#: `pathlib.Path.home()/....touch()` call matched none of them).
+_OVERRIDE_READ_ONLY_BINARIES = ("cat", "stat", "ls", "test", "file", "wc", "head", "tail", "[")
 
 _API_GITHUB_PATTERN = re.compile(r"api\.github\.com")
 _FETCH_ITEM_LIST_PATTERN = re.compile(r"fetch_item_list\s*\(")
 _TTL_ZERO_PATTERN = re.compile(r"ttl\s*=\s*0\b")
+#: Matches `gh issue list` / `gh pr list` / `gh search` as either a shell
+#: word sequence OR a Python list-literal sequence (`"gh","issue","list"`).
+#: `_LIST_LITERAL_JUNK` strips comma/quote punctuation first so both forms
+#: collapse to the same whitespace-separated shape before matching
+#: (harmonic-forge#650 preclose-check: the un-widened regex needed literal
+#: whitespace between `issue` and `list`, so `["gh","issue","list"]` --
+#: AC6's own example -- passed uncaught).
+_LIST_LITERAL_JUNK = re.compile(r"""['",]+""")
 _GH_LIST_SEARCH_LITERAL = re.compile(
-    r"""['"]\s*(?:gh\s+)?(?:issue\s+list|pr\s+list|search\b)"""
+    r"""(?:^|\s)(?:gh\s+)?(?:issue\s+list|pr\s+list|search\b)"""
+)
+#: Raw HTTP libraries hitting the GitHub API directly, bypassing both guard
+#: layers entirely (neither ever sees a `gh` invocation). Checked against
+#: the RAW, un-heredoc-masked command text in `main()` -- `command_segments`
+#: replaces a heredoc body with a placeholder specifically so its prose
+#: isn't parsed as shell tokens, which also means no segment-level check
+#: can ever see inside one. This is deliberately a separate, cruder,
+#: whole-string scan for exactly that reason.
+_RAW_HTTP_TO_GITHUB = re.compile(
+    r"(?:requests\.(?:get|post|put|patch|delete)|urllib\.request\.urlopen|"
+    r"httpx\.(?:get|post|put|patch|delete))\s*\([^)]*api\.github\.com"
 )
 
 _WATCH_LANE_POSTS_PATTERN = re.compile(r"watch_lane_posts\.py")
 _INTERVAL_VALUE_PATTERN = re.compile(r"--interval[= ](\d+)")
-_BELT_MODE_FLAGS = ("--queue-for", "--watch", "--all-worktrees")
+_BELT_MODE_FLAGS = ("--queue-for", "--watch", "--all-worktrees", "--sweep-for")
 
 _MIN_INTERVAL_SECONDS = 300
 
@@ -100,26 +139,42 @@ def _fail_open(message: str) -> None:
     print(json.dumps({"systemMessage": f"guard_gh_rest_budget: {message}; guard did not run"}))
 
 
-_WRITE_BINARIES = ("touch", "cp", "mv", "tee", "install", "ln")
-
-
 def _is_override_write(tokens: list[str]) -> bool:
-    """Any command that would create/touch/write the override path -- the
-    operator, never an agent, may grant this file. Deliberately over-broad
-    (a plain `cat`/read of the path is not itself a write, but ">"/write
-    binaries/write-shaped Python calls are) rather than trying to be a
-    precise filesystem-effect analyzer.
+    """Any command that so much as REFERENCES the override path is denied,
+    unless it is unambiguously read-only. The operator, never an agent, may
+    grant this file, and the previous version of this check tried to name
+    every way a write could look -- `touch`, `cp`, `>`, `open(`, `Path(`,
+    `write_text`, `os.replace` -- which is exactly the game an agent (or a
+    prompt-injected instruction) always wins eventually. `mkdir -p` on the
+    path, `env touch`, and `pathlib.Path.home() / '...' ).touch()` all
+    created the file and matched none of those names
+    (harmonic-forge#650 preclose-check findings). Denying by default and
+    carving out a narrow read-only allowlist closes the whole class instead
+    of the three shapes anyone happened to test.
     """
     joined = " ".join(tokens)
     if not _OVERRIDE_WRITE_PATTERN.search(joined):
         return False
-    if tokens and tokens[0] in _WRITE_BINARIES:
-        return True
-    if ">" in tokens or any(t.startswith(">") for t in tokens):
-        return True
-    if "os.replace" in joined or "open(" in joined or "Path(" in joined or "write_text" in joined:
-        return True
-    return False
+    first = tokens[0] if tokens else ""
+    # Strip a leading `env VAR=val ...` or `sudo` wrapper before judging the
+    # "binary" -- `env touch ~/.../gh_scan_override` must not read as `env`
+    # being on some allowlist.
+    idx = 0
+    while idx < len(tokens) and (
+        tokens[idx] in ("env", "sudo") or _ASSIGNMENT.match(tokens[idx] or "")
+    ):
+        idx += 1
+    effective = tokens[idx] if idx < len(tokens) else first
+    if effective in _OVERRIDE_READ_ONLY_BINARIES:
+        # Still deny if there's any redirection into the path alongside the
+        # read -- `cat x > gh_scan_override` is not read-only.
+        if ">" in tokens or any(t.startswith(">") for t in tokens):
+            return True
+        return False
+    return True
+
+
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _watch_lane_posts_violation(tokens: list[str]) -> str | None:
@@ -156,8 +211,12 @@ def _inline_script_violation(tokens: list[str]) -> str | None:
         return "inline script targets `api.github.com` directly, bypassing both guard layers."
     if _FETCH_ITEM_LIST_PATTERN.search(joined) and _TTL_ZERO_PATTERN.search(joined):
         return "inline script calls `fetch_item_list(..., ttl=0)` -- an always-live full-board scan."
-    if _GH_LIST_SEARCH_LITERAL.search(joined):
-        return "inline script contains a `gh issue list`/`gh pr list`/`gh search` argument sequence as a string literal."
+    normalized = _LIST_LITERAL_JUNK.sub(" ", joined)
+    if _GH_LIST_SEARCH_LITERAL.search(normalized):
+        return (
+            "inline script contains a `gh issue list`/`gh pr list`/`gh search` argument "
+            "sequence, as a string literal or a Python list literal."
+        )
     return None
 
 
@@ -173,14 +232,17 @@ def _check_segment(tokens: list[str]) -> str | None:
         )
 
     stripped = strip_invocation_prefix(tokens)
-    if stripped and stripped[0] == "gh" and gh_scan_patterns is not None:
+    if stripped and gh_scan_patterns is not None and gh_scan_patterns.is_gh_invocation(stripped[0]):
         try:
             reason = gh_scan_patterns.scan_reason(stripped[1:])
         except Exception:
             reason = None
         if reason is not None:
             try:
-                overridden = gh_scan_patterns.consume_override()
+                # Peek only -- do not consume. The shim consumes this same
+                # grant when it actually execs `gh` (see the module
+                # docstring's "WHY THE HOOK ONLY PEEKS" section above).
+                overridden = gh_scan_patterns.override_present()
             except Exception:
                 overridden = False
             if not overridden:
@@ -217,6 +279,21 @@ def main() -> None:
         return
 
     try:
+        # Checked against the RAW command text, before heredoc-masking --
+        # `command_segments()` replaces a heredoc body with a placeholder
+        # specifically so its prose isn't parsed as shell tokens, which
+        # means a raw HTTP call to the GitHub API sitting inside one
+        # (`python3 - <<EOF ... requests.get("https://api.github.com/...")
+        # ... EOF`) is invisible to every segment-level check above,
+        # AC2's own "heredoc bodies" language names this exact shape
+        # (harmonic-forge#650 preclose-check finding).
+        if _RAW_HTTP_TO_GITHUB.search(command):
+            _deny(
+                "Command contains a raw HTTP call to the GitHub API "
+                "(requests/urllib/httpx), which neither guard layer can see "
+                "once it runs -- this includes heredoc bodies."
+            )
+            return
         for segment in command_segments(command):
             reason = _check_segment(segment)
             if reason is not None:

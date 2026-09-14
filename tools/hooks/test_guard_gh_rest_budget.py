@@ -27,10 +27,12 @@ def _run_subprocess(command: str) -> dict:
 
 
 def _check(command: str, override: bool = False) -> str | None:
-    """In-process check via `_check_segment`, with `consume_override` mocked
-    so tests don't touch the real filesystem override path."""
+    """In-process check via `_check_segment`, with `override_present` mocked
+    so tests don't touch the real filesystem override path. The hook only
+    peeks at the override (never consumes it) -- the shim is the sole
+    consumer -- so this must mock `override_present`, not `consume_override`."""
     import gh_scan_patterns
-    with mock.patch.object(gh_scan_patterns, "consume_override", return_value=override):
+    with mock.patch.object(gh_scan_patterns, "override_present", return_value=override):
         for segment in guard.command_segments(command):
             reason = guard._check_segment(segment)
             if reason is not None:
@@ -106,6 +108,32 @@ class OverrideFileWriteDenial(unittest.TestCase):
     def test_reading_override_file_is_allowed(self):
         self.assertIsNone(_check("cat ~/.cache/harmonic-forge/gh_scan_override"))
 
+    def test_mkdir_on_override_path_denied(self):
+        """harmonic-forge#650 preclose-check: `mkdir` was not on the old
+        write-binary allowlist, so `mkdir -p` on the override path passed
+        clean and created a valid-looking (but bogus) grant."""
+        self.assertIsNotNone(_check("mkdir -p ~/.cache/harmonic-forge/gh_scan_override"))
+
+    def test_env_prefixed_touch_denied(self):
+        """harmonic-forge#650 preclose-check: `env touch ...` read `env` as
+        `tokens[0]`, which was never on the write-binary allowlist."""
+        self.assertIsNotNone(_check("env FOO=bar touch ~/.cache/harmonic-forge/gh_scan_override"))
+
+    def test_pathlib_touch_call_denied(self):
+        """harmonic-forge#650 preclose-check: `.touch()` on a `pathlib.Path`
+        matched none of the old write-shaped substrings (`open(`, `Path(`,
+        `write_text`, `os.replace`)."""
+        self.assertIsNotNone(_check(
+            "python3 -c \"import pathlib; "
+            "pathlib.Path.home().joinpath('.cache/harmonic-forge/gh_scan_override').touch()\""
+        ))
+
+    def test_cat_with_redirect_into_override_still_denied(self):
+        self.assertIsNotNone(_check("cat x > ~/.cache/harmonic-forge/gh_scan_override"))
+
+    def test_reading_via_stat_is_allowed(self):
+        self.assertIsNone(_check("stat ~/.cache/harmonic-forge/gh_scan_override"))
+
 
 class InlineScriptDenial(unittest.TestCase):
     def test_api_github_com_denied(self):
@@ -127,6 +155,56 @@ class InlineScriptDenial(unittest.TestCase):
         self.assertIsNotNone(_check(
             'python3 -c "import subprocess; subprocess.run(\'gh issue list\'.split())"'
         ))
+
+    def test_ac6_list_literal_form_denied(self):
+        """The exact AC6 example: a Python list literal, not a whitespace
+        string, so `issue` and `list` are separated by `","` rather than a
+        space (harmonic-forge#650 preclose-check finding)."""
+        self.assertIsNotNone(_check(
+            'python3 -c \'import subprocess; subprocess.run(["gh","issue","list",'
+            '"--repo","vitalharmony/hrse"])\''
+        ))
+
+
+class RawHttpHeredocDenial(unittest.TestCase):
+    """harmonic-forge#650 preclose-check: `command_segments()` replaces a
+    heredoc body with a placeholder so its prose is never tokenized, which
+    means no segment-level check can see a raw HTTP call inside one. The
+    fix scans the RAW command text separately, in `main()`."""
+
+    def test_heredoc_urllib_to_github_denied(self):
+        decision = _run_subprocess(
+            "python3 - <<'EOF'\n"
+            "import urllib.request\n"
+            "urllib.request.urlopen('https://api.github.com/repos/o/r/issues')\n"
+            "EOF"
+        )
+        self.assertEqual(
+            decision.get("hookSpecificOutput", {}).get("permissionDecision"), "deny"
+        )
+
+    def test_heredoc_requests_to_github_denied(self):
+        decision = _run_subprocess(
+            "python3 - <<'EOF'\n"
+            "import requests\n"
+            "requests.get('https://api.github.com/repos/o/r/issues')\n"
+            "EOF"
+        )
+        self.assertEqual(
+            decision.get("hookSpecificOutput", {}).get("permissionDecision"), "deny"
+        )
+
+    def test_ordinary_heredoc_with_no_api_call_is_allowed(self):
+        decision = _run_subprocess("cat <<'EOF'\nsome ordinary text, no API calls here\nEOF")
+        self.assertNotIn("hookSpecificOutput", decision)
+
+
+class GhBasenameNormalization(unittest.TestCase):
+    """harmonic-forge#650 preclose-check: `stripped[0] == "gh"` (exact
+    string) let `/usr/bin/gh issue list` straight through."""
+
+    def test_absolute_path_gh_scan_denied(self):
+        self.assertIsNotNone(_check("/usr/bin/gh issue list"))
 
 
 class HookOutputShape(unittest.TestCase):

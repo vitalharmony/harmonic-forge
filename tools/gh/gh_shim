@@ -54,8 +54,22 @@ def main() -> None:
         import gh_scan_patterns  # noqa: PLC0415 -- imported lazily so an import
         # failure alone can never prevent falling through to the real `gh`.
 
+        # The override, when fresh, is spent here -- the single place this
+        # process ever actually execs the real `gh` -- and bypasses BOTH
+        # checks below (scan shape and budget floor). It is not scoped to
+        # "unlock one scan": the operator's `touch` means "let the next
+        # call through, whatever it is" (harmonic-forge#650 preclose-check
+        # finding: an override that only bypassed the scan check was still
+        # spent and lost when the budget floor then refused the same call).
+        if gh_scan_patterns.consume_override():
+            os.execv(real_gh, [real_gh, *argv])
+            return  # pragma: no cover -- execv never returns for real; the
+            # return exists so tests that mock it out see the intended
+            # control flow (fall through to the final execv is a bug, not
+            # a fallback -- it would exec `gh` a second time).
+
         reason = gh_scan_patterns.scan_reason(argv)
-        if reason is not None and not gh_scan_patterns.consume_override():
+        if reason is not None:
             print(
                 f"gh-shim: refused ({reason}). Read named issues only; for a "
                 "real full scan the operator runs: "
