@@ -146,6 +146,20 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
+# harmonic-forge#656 preclose fix 5: a board read with no timeout could hang
+# until the hook's registration timeout killed it, which Claude Code treats as
+# a non-blocking error -- the edit went through. A timed-out read raises
+# `TimeoutExpired`, which `read_tier` turns into LOOKUP_FAILED.
+_READ_TIMEOUT_SECONDS = 4
+
+
+def timed_run(cmd: list[str], timeout: float = _READ_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    """`_run` with a timeout -- the one timed board-read runner every Tier
+    reader in this directory uses (edit gate, trigger check, Stop backstop)."""
+    return subprocess.run(cmd, capture_output=True, text=True, check=False,
+                          timeout=timeout)
+
+
 def _allow() -> None:
     sys.exit(0)
 
@@ -256,24 +270,63 @@ class _TierLookupFailed:
 LOOKUP_FAILED = _TierLookupFailed()
 
 
-def read_tier(repo: str, issue_number: int, project_number: str, run=None):
-    """`(tier, error)` for one issue on one board, through the shared cache.
+class _NotAnIssue:
+    """harmonic-forge#656 preclose fix 3: GitHub has no issue with that number
+    (a PR number, or a number that does not exist). Not a failed read -- a
+    rate limit or a 403 is -- so it must never block; callers skip it."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "NOT_AN_ISSUE"
+
+
+NOT_AN_ISSUE = _NotAnIssue()
+
+# The GraphQL error for `repository.issue(number: N)` when N is not an issue.
+# `gh` surfaces it on stderr ("GraphQL: Could not resolve to an Issue with the
+# number of 1833. (repository.issue)") and, on a zero exit, in the payload's
+# `errors[].message`; both become the `GhItemListError` text. `NOT_FOUND` is
+# that error's `type`. Deliberately nothing broader: a 403, a timeout or a
+# network error must stay LOOKUP_FAILED.
+_NOT_AN_ISSUE_RE = re.compile(r"Could not resolve to an Issue\b|\bNOT_FOUND\b")
+
+
+def is_not_an_issue_error(message: str) -> bool:
+    """True when a `GhItemListError` message says the number is not an issue."""
+    return bool(_NOT_AN_ISSUE_RE.search(message or ""))
+
+
+def read_tier(repo: str, issue_number: int, project_number: str, run=None,
+              ttl: float = _CACHE_TTL):
+    """`(tier, error)` for one issue on one board.
 
     `tier` is a Tier string, None (no Tier set, or the shared module is not
-    importable), or LOOKUP_FAILED with `error` carrying the reason. Always the
-    gate's `_CACHE_TTL`/`_CACHE_DIR`: `fetch_issue_tier`'s own default is
-    `ttl=0`, and harmonic-forge#650's budget floor needs the cache on every
-    hot path that reads a Tier (the trigger check and Stop backstop included).
+    importable), NOT_AN_ISSUE (GitHub has no issue with that number), or
+    LOOKUP_FAILED with `error` carrying the reason. `ttl` defaults to the edit
+    gate's `_CACHE_TTL`, which collapses an editing burst into one read; the
+    trigger check and Stop backstop pass `ttl=0` (harmonic-forge#656 preclose
+    fix 7), because a cached "no Tier" or stale Tier there lets a trigger
+    through for the whole window after the Tier is raised -- the reason
+    `fetch_issue_tier` itself defaults to `ttl=0`.
     """
     if _item_list_cache is None:
         return None, None  # shared module unavailable -- fail-open
     try:
         return _item_list_cache.fetch_issue_tier(
             repo, issue_number, project_number,
-            run=run or _run, ttl=_CACHE_TTL, cache_dir=_CACHE_DIR,
+            run=run or _run, ttl=ttl, cache_dir=_CACHE_DIR,
         ), None
     except _item_list_cache.GhItemListError as exc:
-        return LOOKUP_FAILED, str(exc).strip() or exc.__class__.__name__
+        message = str(exc).strip() or exc.__class__.__name__
+        if is_not_an_issue_error(message):
+            return NOT_AN_ISSUE, message
+        return LOOKUP_FAILED, message
     except subprocess.TimeoutExpired as exc:
         return LOOKUP_FAILED, f"board read timed out after {exc.timeout}s"
 
@@ -309,7 +362,10 @@ def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None):
         if repo is None:
             return None
         _owner, number = board
-    return read_tier(repo, issue_number, number)[0]
+    tier = read_tier(repo, issue_number, number, run=timed_run)[0]
+    # A branch naming a number GitHub has no issue for carries no Tier: the
+    # same allow as "no Tier set", never a LOOKUP_FAILED deny.
+    return None if tier is NOT_AN_ISSUE else tier
 
 
 def resolve_claude_model(transcript_path: str) -> str | None:

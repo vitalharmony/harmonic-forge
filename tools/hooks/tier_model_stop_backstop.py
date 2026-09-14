@@ -13,9 +13,13 @@ bounded like every other transcript read in this directory) and collects the
 Bash tool calls that post to an issue thread and did not error:
 `l1_post.py`, `l2_post.py post`, `post_comment.py`, `mise run lane-comment`,
 `gh issue comment`, and `gh api .../issues/N/comments` with a POST. For each
-posted `(repo, issue)` it reads the board Tier (the gate's 120 s cache) and,
+posted `(repo, issue)` it reads the board Tier fresh (`ttl=0`) and,
 for `deep`, compares the model that made the call (that assistant entry's
 `message.model`, else `session_model.current_model`).
+
+The transcript read is bounded (`_SCAN_MAX_BYTES`). When the bound is hit
+before the start of the turn, the report says so ("backstop scan truncated"),
+because a post made early in a long turn was otherwise silently unchecked.
 
 **Never blocks.** A Stop `block` forces Claude to continue rather than handing
 control to the operator, which is the opposite of what a report is for. Output
@@ -50,6 +54,10 @@ _HRSE_DEFAULT = "vitalharmony/hrse"
 _API_COMMENTS_RE = re.compile(r"(?:^|/)repos/([^/\s]+/[^/\s]+)/issues/(\d+)/comments/?$")
 _ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
 _GH_FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field", "--input"})
+# The transcript tail read's bound, passed to `session_model._tail_lines`.
+_SCAN_MAX_BYTES = 4 << 20
+_SCAN_CHUNK_BYTES = 65536
+_TRUNCATED_NOTE = "backstop scan truncated; earlier posts in this turn were not checked"
 
 
 def _flag(tokens: list[str], *names: str) -> str | None:
@@ -143,10 +151,27 @@ def _is_turn_start(entry: dict) -> bool:
 def turn_posts(transcript_path: str) -> list[tuple[str, str | None, str]]:
     """`(command, model_of_that_call, tool_use_id)` for this turn's successful
     Bash calls, oldest first."""
+    return scan_turn(transcript_path)[0]
+
+
+def _bytes_scanned(size: int) -> int:
+    """How much of a `size`-byte file `_tail_lines` reads: whole chunks until
+    `_SCAN_MAX_BYTES` is reached, never more than the file."""
+    chunks = -(-_SCAN_MAX_BYTES // _SCAN_CHUNK_BYTES)
+    return min(size, chunks * _SCAN_CHUNK_BYTES)
+
+
+def scan_turn(transcript_path: str) -> tuple[list[tuple[str, str | None, str]], bool]:
+    """`(turn_posts, truncated)`. `truncated` is True when the bounded tail
+    read ran out before reaching the turn's first entry (harmonic-forge#656
+    preclose fix 6), so earlier calls in this turn were never seen."""
     errored: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
+    reached_turn_start = False
     try:
-        for line in session_model._tail_lines(transcript_path):
+        size = os.path.getsize(transcript_path)
+        for line in session_model._tail_lines(transcript_path, chunk_size=_SCAN_CHUNK_BYTES,
+                                              max_bytes=_SCAN_MAX_BYTES):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
@@ -154,6 +179,7 @@ def turn_posts(transcript_path: str) -> list[tuple[str, str | None, str]]:
             if not isinstance(entry, dict):
                 continue
             if _is_turn_start(entry):
+                reached_turn_start = True
                 break
             content = (entry.get("message") or {}).get("content")
             if not isinstance(content, list) or entry.get("isSidechain"):
@@ -172,14 +198,14 @@ def turn_posts(transcript_path: str) -> list[tuple[str, str | None, str]]:
                         if isinstance(command, str):
                             calls.append((command, model, block.get("id") or ""))
     except OSError:
-        return []
+        return [], False
+    truncated = not reached_turn_start and size > _bytes_scanned(size)
     calls.reverse()
-    return [call for call in calls if call[2] not in errored]
+    return [call for call in calls if call[2] not in errored], truncated
 
 
 def _timed_run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False,
-                          timeout=_READ_TIMEOUT_SECONDS)
+    return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS)
 
 
 def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None) -> dict | None:
@@ -196,12 +222,15 @@ def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None
         return cache["repo"]
 
     posted: list[tuple[str, int, str | None]] = []
-    for command, model, _tool_id in turn_posts(transcript_path):
+    calls, truncated = scan_turn(transcript_path)
+    for command, model, _tool_id in calls:
         for repo, issue in posted_targets(command, cwd_repo):
+            repo = repo.lower()
             if not any(p[:2] == (repo, issue) for p in posted):
                 posted.append((repo, issue, model))
+    messages: list[str] = [_TRUNCATED_NOTE + "."] if truncated else []
     if not posted:
-        return None
+        return _report(messages)
 
     if lookup is None:
         from tier_model_trigger_check import _boards  # noqa: PLC0415
@@ -212,9 +241,10 @@ def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None
             board = boards.get(repo)
             if board is None:
                 return None, None
-            return model_tier_gate.read_tier(repo, number, board, run=_timed_run)
+            # ttl=0 (preclose fix 7): a report on a Tier raised mid-turn must
+            # not be hidden by the edit gate's 120 s cache.
+            return model_tier_gate.read_tier(repo, number, board, run=_timed_run, ttl=0)
 
-    messages: list[str] = []
     for repo, issue, call_model in posted[:_MAX_TIER_READS]:
         model = call_model or fallback_model or session_model.current_model(
             transcript_path, cwd, payload.get("session_id"))
@@ -232,6 +262,10 @@ def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None
                 f"Posted on {repo}#{issue} (Tier {tier}) from {label}; this needs "
                 f"redoing on a high-tier model."
             )
+    return _report(messages)
+
+
+def _report(messages: list[str]) -> dict | None:
     if not messages:
         return None
     return {"systemMessage": "\n".join(messages) + " (harmonic-forge#656)"}

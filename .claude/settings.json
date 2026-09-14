@@ -96,7 +96,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/tier_model_trigger_check.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_trigger_check.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 30
           }
         ]
@@ -107,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/record_session_model.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_session_model.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -148,7 +148,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/tier_model_stop_backstop.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_stop_backstop.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 25
           }
         ]

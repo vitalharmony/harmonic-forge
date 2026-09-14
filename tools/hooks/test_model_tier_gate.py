@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -61,7 +62,7 @@ class TestCachedItemList(unittest.TestCase):
                 return _completed(TIER_QUERY_JSON)
             return _completed("")
 
-        with patch("model_tier_gate._run", side_effect=fake_run), \
+        with patch("model_tier_gate.timed_run", side_effect=fake_run), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
              patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
@@ -80,7 +81,7 @@ class TestCachedItemList(unittest.TestCase):
             seen.append(cmd)
             return _completed(TIER_QUERY_JSON)
 
-        with patch("model_tier_gate._run", side_effect=fake_run), \
+        with patch("model_tier_gate.timed_run", side_effect=fake_run), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
              patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
@@ -95,7 +96,7 @@ class TestCachedItemList(unittest.TestCase):
     def test_lookup_failure_is_not_cached(self):
         """A quota blip must not freeze a false 'unset' for the TTL window --
         the hrse#802 lesson, applied to the write side of the cache."""
-        with patch("model_tier_gate._run", return_value=_completed("", returncode=1)), \
+        with patch("model_tier_gate.timed_run", return_value=_completed("", returncode=1)), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
              patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
@@ -108,7 +109,7 @@ class TestCachedItemList(unittest.TestCase):
         def fake_run(cmd):
             return _completed(TIER_QUERY_JSON)
 
-        with patch("model_tier_gate._run", side_effect=fake_run), \
+        with patch("model_tier_gate.timed_run", side_effect=fake_run), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
              patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
@@ -145,7 +146,7 @@ class TierResolutionTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def _resolve(self, payload_json, *, repo="o/r", board=("owner", "3")):
-        with patch.object(m, "_run", return_value=_completed(payload_json)), \
+        with patch.object(m, "timed_run", return_value=_completed(payload_json)), \
              patch.object(m, "_CACHE_DIR", self.cache_dir), \
              patch.object(m, "resolve_repo", return_value=repo), \
              patch.object(m, "resolve_project_board", return_value=board):
@@ -214,6 +215,67 @@ class TierResolutionTests(unittest.TestCase):
             self.assertIs(m.resolve_tier("/cwd", 999), m.LOOKUP_FAILED)
             self.assertEqual(m.read_tier("o/r", 999, "3"),
                              (m.LOOKUP_FAILED, "HTTP 403: rate limit"))
+
+    def test_not_an_issue_is_distinct_from_a_failed_read(self):
+        """harmonic-forge#656 preclose fix 3: a PR number (GraphQL NOT_FOUND)
+        is not a failed read. `read_tier` says so; the edit gate treats it as
+        no Tier (allow), never LOOKUP_FAILED (deny)."""
+        def not_found(*a, **k):
+            raise m._item_list_cache.GhItemListError(
+                "GraphQL: Could not resolve to an Issue with the number of 1833. (repository.issue)")
+
+        with patch.object(m._item_list_cache, "fetch_issue_tier", not_found), \
+             patch.object(m, "resolve_repo", return_value="o/r"), \
+             patch.object(m, "resolve_project_board", return_value=("owner", "3")):
+            self.assertIs(m.read_tier("o/r", 1833, "3")[0], m.NOT_AN_ISSUE)
+            self.assertIsNone(m.resolve_tier("/cwd", 1833))
+
+    def test_not_an_issue_classifier_is_narrow(self):
+        self.assertTrue(m.is_not_an_issue_error(
+            "Could not resolve to an Issue with the number of 5."))
+        self.assertTrue(m.is_not_an_issue_error('{"type": "NOT_FOUND"}'))
+        for message in ("HTTP 403: API rate limit exceeded", "gh api graphql failed",
+                        "error connecting to api.github.com", "board read timed out after 4s"):
+            with self.subTest(message=message):
+                self.assertFalse(m.is_not_an_issue_error(message))
+
+    def test_resolve_tier_read_is_timed(self):
+        """Preclose fix 5: an untimed read hung until the registration timeout
+        killed the hook, which let the edit through. Simulated: only a call
+        carrying a timeout can time out; an untimed one "succeeds" with deep."""
+        node = {"project": {"number": 3}, "value": {"name": "deep"}}
+        body = json.dumps({"data": {"repository": {"issue": {"projectItems": {"nodes": [node]}}}}})
+
+        def fake_subprocess_run(cmd, **kw):
+            if kw.get("timeout") is not None:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw["timeout"])
+            return _completed(body)
+
+        with tempfile.TemporaryDirectory() as cache_dir, \
+             patch("subprocess.run", side_effect=fake_subprocess_run), \
+             patch.object(m, "_CACHE_DIR", Path(cache_dir)), \
+             patch.object(m, "resolve_repo", return_value="o/r"), \
+             patch.object(m, "resolve_project_board", return_value=("owner", "3")):
+            self.assertIs(m.resolve_tier("/cwd", 999), m.LOOKUP_FAILED)
+
+    def test_timed_run_passes_a_timeout(self):
+        with patch("subprocess.run", return_value=_completed("")) as sp:
+            m.timed_run(["gh"])
+        self.assertEqual(sp.call_args.kwargs.get("timeout"), m._READ_TIMEOUT_SECONDS)
+
+    def test_edit_gate_keeps_its_cache_ttl(self):
+        """Preclose fix 7 is the trigger check and backstop only."""
+        seen = {}
+
+        def fake_fetch(repo, issue_number, project_number, **kw):
+            seen.update(kw)
+            return None
+
+        with patch.object(m._item_list_cache, "fetch_issue_tier", fake_fetch), \
+             patch.object(m, "resolve_repo", return_value="o/r"), \
+             patch.object(m, "resolve_project_board", return_value=("owner", "3")):
+            m.resolve_tier("/cwd", 1)
+        self.assertEqual(seen["ttl"], m._CACHE_TTL)
 
     def test_lookup_failed_is_never_an_escalating_tier(self):
         self.assertNotIn(m.LOOKUP_FAILED, m.ESCALATING_TIERS)

@@ -6,7 +6,10 @@ Run: python3 tools/hooks/test_tier_model_trigger_check.py"""
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -94,6 +97,25 @@ class ParserTests(unittest.TestCase):
     def test_bare_number_without_verb_is_not_a_ref(self):
         self.assertEqual(refs("wait 1830 seconds"), [])
 
+    def test_refs_are_in_prompt_order_not_kind_order(self):
+        """Preclose fix 1: a bare `#1830` named first used to sort behind every
+        prefixed `H` ref, and past the read cap."""
+        self.assertEqual(
+            refs("Plan #1830 -- follow-up to H1801, H1806, H1807, H1811, H1813 and H1771"),
+            [(HRSE, 1830), (HRSE, 1801), (HRSE, 1806), (HRSE, 1807), (HRSE, 1811),
+             (HRSE, 1813), (HRSE, 1771)])
+
+    def test_mixed_order_kinds_interleave(self):
+        self.assertEqual(
+            refs("see vitalharmony/harmonic-forge#650, then Implement H1830 and #12"),
+            [(FORGE, 650), (HRSE, 1830), (HRSE, 12)])
+
+    def test_owner_repo_and_url_are_lowercased(self):
+        """Preclose fix 2: `VitalHarmony/HRSE#1830` is hrse#1830."""
+        self.assertEqual(refs("Implement VitalHarmony/HRSE#1830"), [(HRSE, 1830)])
+        self.assertEqual(refs("https://github.com/VitalHarmony/Harmonic-Forge/issues/650"),
+                         [(FORGE, 650)])
+
     def test_no_cwd_repo_drops_bare_refs_only(self):
         self.assertEqual(refs("Plan #794 and H1830", cwd_repo=None), [(HRSE, 1830)])
 
@@ -163,13 +185,49 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(fake.calls, [(HRSE, 1437), (HRSE, 1443)])
         self.assertIn("#1443 is Tier deep", out["reason"])
 
-    def test_read_cap_lists_unchecked_and_never_blocks_on_them(self):
+    def test_read_cap_blocks_a_non_high_model(self):
+        """Preclose fix 1: a ref past the cap is unchecked, so on a non-high
+        model it blocks rather than going through silently."""
         prompt = "Plan " + ", ".join(f"H{n}" for n in range(1100, 1108))
-        tiers = {(HRSE, n): "deep" for n in range(1106, 1108)}
-        out, fake = run(prompt, "claude-sonnet-5", tiers)
+        out, fake = run(prompt, "claude-sonnet-5", {})
+        self.assertEqual(len(fake.calls), t._MAX_TIER_READS)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("Too many issue references to check -- resend naming fewer issues",
+                      out["reason"])
+        self.assertIn("vitalharmony/hrse#1106, vitalharmony/hrse#1107", out["reason"])
+
+    def test_read_cap_on_a_high_model_lists_unchecked_without_blocking(self):
+        prompt = "Plan " + ", ".join(f"H{n}" for n in range(1100, 1108))
+        out, fake = run(prompt, "claude-opus-5", {})
         self.assertEqual(len(fake.calls), t._MAX_TIER_READS)
         self.assertNotIn("decision", out)
         self.assertIn("vitalharmony/hrse#1106, vitalharmony/hrse#1107", out["systemMessage"])
+
+    def test_deep_issue_named_first_among_seven_is_checked(self):
+        """The preclose scenario, verbatim."""
+        out, fake = run("Plan #1830 -- follow-up to H1801, H1806, H1807, H1811, H1813 and H1771",
+                        "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertEqual(fake.calls[0], (HRSE, 1830))
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("vitalharmony/hrse#1830 is Tier deep", out["reason"])
+
+    def test_mixed_case_owner_repo_deep_blocks(self):
+        """Preclose fix 2 through the real board lookup: the manifest's lowercase
+        key must match a capitalized ref."""
+        with patch.object(model_tier_gate._item_list_cache, "fetch_issue_tier",
+                          return_value="deep"), \
+             patch.object(t, "_boards", return_value={HRSE: "1"}):
+            out = t.run({"prompt": "Implement VitalHarmony/HRSE#1830", "cwd": "/cwd"},
+                        env={"LANE": "2"}, model="claude-sonnet-5")
+        self.assertEqual(out["decision"], "block")
+
+    def test_unknown_repo_on_sonnet_is_a_note_not_silence(self):
+        """Preclose fix 2: a repo with no board is reported, never read as no Tier."""
+        with patch.object(t, "_boards", return_value={HRSE: "1"}):
+            out = t.run({"prompt": "Implement someone/else#5", "cwd": "/cwd"},
+                        env={"LANE": "2"}, model="claude-sonnet-5")
+        self.assertNotIn("decision", out)
+        self.assertIn("no project board is known for someone/else", out["systemMessage"])
 
     def test_no_tier_set_is_silent(self):
         out, _ = run("Plan H1830", "claude-sonnet-5", {})
@@ -206,7 +264,8 @@ class ScopeTests(unittest.TestCase):
 
 
 class RealLookupPathTests(unittest.TestCase):
-    def test_board_reads_use_the_gate_cache_and_manifest_board(self):
+    def test_board_reads_are_fresh_and_use_the_manifest_board(self):
+        """Preclose fix 7: `ttl=0`, never the edit gate's 120 s cache."""
         seen = {}
 
         def fake_fetch(repo, issue_number, project_number, **kw):
@@ -217,8 +276,31 @@ class RealLookupPathTests(unittest.TestCase):
             tier, error = t.lookup_tier("vitalharmony/cymagraph-infra", 344, t._boards())
         self.assertEqual((tier, error), ("deep", None))
         self.assertEqual(seen["project"], "1")
-        self.assertEqual(seen["kw"]["ttl"], model_tier_gate._CACHE_TTL)
-        self.assertEqual(seen["kw"]["cache_dir"], model_tier_gate._CACHE_DIR)
+        self.assertEqual(seen["kw"]["ttl"], 0)
+
+    def test_a_raised_tier_is_seen_despite_a_warm_gate_cache(self):
+        """Preclose fix 7 end to end: a cached "no Tier" written by the edit
+        gate must not hide a Tier raised since."""
+        cache_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, cache_dir, ignore_errors=True)
+
+        def payload(tier):
+            node = {"project": {"number": 1}, "value": {"name": tier} if tier else None}
+            return subprocess.CompletedProcess([], 0, json.dumps({"data": {"repository": {
+                "issue": {"projectItems": {"nodes": [node]}}}}}), "")
+
+        with patch.object(model_tier_gate, "_CACHE_DIR", cache_dir):
+            self.assertEqual(model_tier_gate.read_tier(HRSE, 1830, "1",
+                                                       run=lambda cmd: payload(None)), (None, None))
+            with patch.object(model_tier_gate, "timed_run", lambda cmd, timeout=None: payload("deep")):
+                self.assertEqual(t.lookup_tier(HRSE, 1830, {HRSE: "1"}), ("deep", None))
+
+    def test_timed_run_passes_a_timeout_to_subprocess(self):
+        """Preclose fix 9: the old test raised TimeoutExpired itself and passed
+        with the timeout deleted."""
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as sp:
+            t._timed_run(["gh", "api", "graphql"])
+        self.assertEqual(sp.call_args.kwargs.get("timeout"), t._READ_TIMEOUT_SECONDS)
 
     def test_timeout_is_a_failed_read_not_an_allow(self):
         import subprocess
@@ -232,7 +314,62 @@ class RealLookupPathTests(unittest.TestCase):
         self.assertIn("timed out", error)
 
     def test_unknown_repo_is_not_read(self):
-        self.assertEqual(t.lookup_tier("someone/else", 1, t._boards()), (None, None))
+        with patch.object(model_tier_gate._item_list_cache, "fetch_issue_tier") as fetch:
+            self.assertEqual(t.lookup_tier("someone/else", 1, t._boards()), (t.NO_BOARD, None))
+        fetch.assert_not_called()
+
+    def _run_real(self, prompt, error, model="claude-sonnet-5"):
+        def boom(*a, **k):
+            raise model_tier_gate._item_list_cache.GhItemListError(error)
+
+        with patch.object(model_tier_gate._item_list_cache, "fetch_issue_tier", boom), \
+             patch.object(t, "_boards", return_value={HRSE: "1"}), \
+             patch.object(model_tier_gate, "resolve_repo", return_value=HRSE):
+            return t.run({"prompt": prompt, "cwd": "/cwd"}, env={"LANE": "2"}, model=model)
+
+    def test_pr_number_is_skipped_with_a_note_not_blocked(self):
+        """Preclose fix 3: "Implement H1824, see PR #1833" blocked for good."""
+        out = self._run_real(
+            "see PR #1833",
+            "GraphQL: Could not resolve to an Issue with the number of 1833. (repository.issue)")
+        self.assertNotIn("decision", out)
+        self.assertIn("vitalharmony/hrse#1833 is not an issue", out["systemMessage"])
+
+    def test_not_found_type_is_not_an_issue(self):
+        out = self._run_real("see #1833", "NOT_FOUND: no issue")
+        self.assertNotIn("decision", out)
+
+    def test_a_403_is_still_a_failed_read(self):
+        out = self._run_real("Implement #1833", "HTTP 403: API rate limit exceeded")
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("could not be read (HTTP 403", out["reason"])
+
+
+class TranscriptModelTests(unittest.TestCase):
+    """Preclose fix 8: every DecisionTests case passes `model` straight into
+    `run`, so `session_model.current_model` in `run()` was untested."""
+
+    def _run(self, model_id):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        transcript = root / "t.jsonl"
+        transcript.write_text(json.dumps({
+            "isSidechain": False, "type": "attachment",
+            "attachment": {"type": "model", "identity": {"modelId": model_id}},
+        }) + "\n")
+        fake = FakeTiers({(HRSE, 1830): "deep"})
+        with patch.object(model_tier_gate, "resolve_repo", return_value=HRSE):
+            return t.run({"prompt": "Plan H1830", "cwd": str(root),
+                          "transcript_path": str(transcript)},
+                         env={"LANE": "2"}, lookup=fake)
+
+    def test_sonnet_transcript_blocks_on_deep(self):
+        out = self._run("claude-sonnet-5")
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("claude-sonnet-5", out["reason"])
+
+    def test_opus_transcript_allows_deep(self):
+        self.assertIsNone(self._run("claude-opus-5[1m]"))
 
 
 class MainTests(unittest.TestCase):

@@ -171,6 +171,69 @@ class TurnTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(calls, [])
 
+    def test_truncated_scan_is_reported(self):
+        """Preclose fix 6: a post early in a long turn, then more output than
+        the scan bound, used to produce no report at all."""
+        filler = [tool_use(f"f{i}", "echo " + "x" * 2000) for i in range(20)]
+        path = self.transcript(
+            prompt("Plan H1830"),
+            tool_use("a", "gh issue comment 1830 --body x"), tool_result("a"),
+            *filler,
+            tool_use("z", "gh issue comment 1831 --body x"), tool_result("z"),
+        )
+        with patch.object(b, "_SCAN_MAX_BYTES", 8192), patch.object(b, "_SCAN_CHUNK_BYTES", 4096):
+            out, calls = self.run_hook(path, {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
+        self.assertIn("backstop scan truncated; earlier posts in this turn were not checked",
+                      out["systemMessage"])
+        self.assertIn("vitalharmony/hrse#1831 (Tier deep)", out["systemMessage"])
+        self.assertEqual(calls, [(HRSE, 1831)])
+
+    def test_truncated_scan_with_no_posts_found_still_reports(self):
+        filler = [tool_use(f"f{i}", "echo " + "x" * 2000) for i in range(20)]
+        path = self.transcript(prompt("x"), *filler)
+        with patch.object(b, "_SCAN_MAX_BYTES", 8192), patch.object(b, "_SCAN_CHUNK_BYTES", 4096):
+            out, _ = self.run_hook(path, {})
+        self.assertIn("backstop scan truncated", out["systemMessage"])
+
+    def test_scan_that_reaches_turn_start_is_not_truncated(self):
+        filler = [tool_use(f"f{i}", "echo " + "x" * 2000) for i in range(20)]
+        path = self.transcript(*filler, prompt("x"), tool_use("a", "git status"))
+        with patch.object(b, "_SCAN_MAX_BYTES", 8192), patch.object(b, "_SCAN_CHUNK_BYTES", 4096):
+            out, _ = self.run_hook(path, {})
+        self.assertIsNone(out)
+
+    def test_whole_short_file_is_not_truncated(self):
+        path = self.transcript(tool_use("a", "git status"))
+        out, _ = self.run_hook(path, {})
+        self.assertIsNone(out)
+
+    def test_mixed_case_repo_flag_is_checked(self):
+        path = self.transcript(prompt("x"),
+                               tool_use("a", "gh issue comment 1830 -R VitalHarmony/HRSE --body x"),
+                               tool_result("a"))
+        out, calls = self.run_hook(path, {(HRSE, 1830): "deep"})
+        self.assertEqual(calls, [(HRSE, 1830)])
+        self.assertIn("Tier deep", out["systemMessage"])
+
+    def test_real_lookup_reads_fresh(self):
+        """Preclose fix 7: the backstop reads with ttl=0."""
+        path = self.transcript(prompt("x"), tool_use("a", "gh issue comment 1830 --body x"),
+                               tool_result("a"))
+        seen = {}
+
+        def fake_fetch(repo, issue_number, project_number, **kw):
+            seen.update(kw)
+            return "deep"
+
+        import tier_model_trigger_check
+        with patch.object(model_tier_gate._item_list_cache, "fetch_issue_tier", fake_fetch), \
+             patch.object(tier_model_trigger_check, "_boards", return_value={HRSE: "1"}), \
+             patch.object(model_tier_gate, "resolve_repo", return_value=HRSE):
+            out = b.run({"transcript_path": path, "cwd": "/cwd"}, env={"LANE": "2"},
+                        fallback_model="claude-sonnet-5")
+        self.assertEqual(seen["ttl"], 0)
+        self.assertIn("Tier deep", out["systemMessage"])
+
     def test_missing_transcript_is_silent(self):
         out, _ = self.run_hook(str(self.root / "missing.jsonl"), {})
         self.assertIsNone(out)

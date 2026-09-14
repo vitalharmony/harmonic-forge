@@ -138,6 +138,19 @@ class Fallbacks(Base):
 
 
 class RecordHookMain(Base):
+    def test_main_records_the_payload_model(self):
+        """Preclose fix 10: nothing tested that main() writes the record."""
+        import io
+        from unittest.mock import patch
+        payload = {"session_id": "abc-123", "model": "claude-opus-5[1m]",
+                   "hook_event_name": "SessionStart", "source": "startup"}
+        with patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+             patch.object(sm, "SESSION_MODEL_DIR", self.records):
+            record_session_model.main()
+        self.assertEqual((self.records / "abc-123").read_text(encoding="utf-8"),
+                         "claude-opus-5[1m]\n")
+        self.assertEqual(sm.recorded_model("abc-123", self.records), "claude-opus-5[1m]")
+
     def test_main_never_raises_on_garbage(self):
         import io
         from unittest.mock import patch
