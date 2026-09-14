@@ -72,9 +72,8 @@ If (1) holds and (2) does not, say so in one line and skip the branch: every
 load-bearing claim was verified live, so there is nothing for a second family
 to check.
 
-**Opt-in while the path is young.** Take this branch only when your prompt
-explicitly enables it (`cross-family: on`), exactly as `pitch-inspection`
-does. Absent that, note that the branch would have triggered and carry on.
+This branch runs whenever the trigger above holds. No prompt flag is needed
+(harmonic-forge#648).
 
 **The mechanism is not described here.** Read
 `~/harmonic-forge/rules/cross-family-review.md` — the one permitted

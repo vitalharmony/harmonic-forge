@@ -386,6 +386,23 @@ class TestVerifyContractCarriesReadOnlyBoundary(unittest.TestCase):
         never thinks to include it still gets it."""
         self.assertIn('"$VERIFY_CONTRACT"', self.source)
 
+    def test_contract_accepts_pre_executed_evidence_as_executed(self):
+        """harmonic-forge#648 — a verbatim quote from the brief's own
+        'Pre-executed evidence' section (built mechanically by
+        build_cross_family_brief.py's --evidence-run) must count as executed
+        evidence, since `verify` itself has no network to check a GitHub/npm
+        claim on its own."""
+        normalized = " ".join(self.contract.split())
+        self.assertIn(
+            "A verbatim quote from the brief's 'Pre-executed evidence' "
+            "section is executed evidence; cite the command it came from.",
+            normalized,
+        )
+        self.assertIn(
+            "quoting the artifact or assumptions sections is not evidence",
+            normalized,
+        )
+
 
 class TestAC7FrozenReplay(unittest.TestCase):
     """AC7 — replay against hrse#1530's real handoff (Implementation Spec).

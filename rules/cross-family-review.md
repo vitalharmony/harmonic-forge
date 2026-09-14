@@ -76,6 +76,59 @@ opinion of the artifact. Either one hands the second family the prior it exists
 to escape. The builder cannot detect an opinion written into `--intent`; that
 part is yours to hold.
 
+### `--evidence-run` — builder-executed, allowlisted network evidence (harmonic-forge#648)
+
+`verify` runs under `--sandbox read-only` with `--ignore-user-config`, so the
+reviewer has no network access at all — it cannot reach `api.github.com` or
+`registry.npmjs.org` to check a GitHub- or npm-shaped assumption itself. The
+brief builder closes that gap by running a narrow, allowlisted read command
+**itself**, mechanically, before the brief is written — never by asking the
+model to run it, which would just re-introduce the confabulation risk one
+level up.
+
+```
+python3 ~/harmonic-forge/tools/lane/build_cross_family_brief.py … \
+    --evidence-run "gh api repos/o/r/issues/comments/123 --jq .body" \
+    --evidence-run "npm view @scope/pkg@1.2.3 license"
+```
+
+Each `--evidence-run` value is `shlex.split` and checked against a **positive
+allowlist** — never a denylist, because `gh` accepts glued and `=` flag forms
+(`-fx=y`, `--input=f`, `-iXPOST`) that a denylist scoped to space-separated
+tokens would miss:
+
+- **`gh api <endpoint>`** — the endpoint (the first non-flag token) must not
+  be `graphql`. Every other token must be exactly one of `--jq`/`-q <expr>`,
+  `--paginate`, `--slurp`, `-t`/`--template <tpl>`, `-H 'Accept: …'`, or
+  `-X GET`/`--method GET`. Anything else — `--hostname`, any other `-H`
+  value, `-f`/`-F`/`--field`/`--raw-field`, `--input`, a glued `-fx=y`, an
+  `-iXPOST` — is refused.
+- **`npm view <args>`** — positional arguments only; any flag at all is
+  refused.
+- A refused command prints `refused --evidence-run (not allowlisted): <cmd>`
+  to stderr, exits non-zero, and writes **no brief file at all** — a partial
+  brief built around a refused command would be worse than none, since it
+  looks complete.
+- An allowed command is run via `subprocess.run(argv, capture_output=True,
+  text=True, timeout=30)` — no shell, in the builder's own working
+  directory. A non-zero exit, or a 30s timeout (recorded as `exit: timeout`),
+  is still embedded and the brief is still written; only an allowlist
+  refusal blocks writing.
+- Every result — command, `exit: N`, stdout, stderr (each truncated at 8,000
+  characters with `[truncated]` appended if cut) — is embedded verbatim under
+  `## Pre-executed evidence (captured by the brief builder)`.
+
+**This allowlist is the sole gate on these commands.**
+`tools/hooks/deny_advisory_subagent_gh_writes.py` classifies a Bash command
+by its first token's basename (`gh`, `mise`, a wrapper script's basename,
+`cross_family_call.sh`, …) — a `python3 …/build_cross_family_brief.py
+--evidence-run "gh api …"` invocation resolves to `python3`, which the hook
+does not special-case, so it falls through to that hook's own "out of
+scope" permit and the hook never inspects the `--evidence-run` string's
+contents at all. Nothing upstream of the builder is checking these
+commands; the builder's own allowlist above is the only thing standing
+between an advisory subagent and an unbounded `gh api`/`npm view` call.
+
 ## Reading the result
 
 Each assumption returns `confirmed`, `refuted` or `uncheckable` with the
