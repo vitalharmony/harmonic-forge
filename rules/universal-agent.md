@@ -215,6 +215,49 @@ Full investigation, live measurements, and the decomposed follow-up
 issues (harmonic-forge#218 epic, #219–223): the research briefing at
 `~/Harmonic_Projects/research/2026-08-10-gh-graphql-rate-limit-briefing.md`.
 
+## GITHUB API — REST CORE BUDGET (harmonic-forge#650)
+
+R-0019/R-0020 above cover the GraphQL quota. On 2026-09-14 the shared
+token's separate **REST core** budget hit `X-Ratelimit-Used: 5000` about
+an hour into an orchestration session, and every lane lost the ability to
+read or post to GitHub at all — REST draws from a larger quota than
+GraphQL, but it is not unlimited, and nothing was watching it.
+
+<!-- R-0363 -->
+The mechanism is two independent enforcement layers, not this prose —
+prose alone is not the mechanism, exactly as R-0019's own comment-vs-hook
+history already established for the GraphQL quota:
+
+- **`~/.local/bin/gh`, a shim** (`tools/gh/gh_shim`, installed by
+  `tools/gh/install_gh_shim.sh`) placed ahead of the real `gh` binary on
+  PATH. It refuses (exit 3) any scan-shaped invocation — `gh issue list`,
+  `gh pr list`, `gh search ...`, a full-issue/PR-list or repo-wide-comment
+  REST `api` call, a GraphQL `search(...)` query, or `gh project
+  item-list` — and separately refuses any `gh` call at all once the REST
+  core budget drops under 1000 remaining. It sees every invocation
+  regardless of whether it was typed directly or run from inside a
+  script's `subprocess` call.
+- **`tools/hooks/guard_gh_rest_budget.py`, a `PreToolUse` hook.** It denies
+  the same scan shapes when typed directly into a Bash tool call, an
+  inline script that would hit the API directly, and an under-floor
+  `watch_lane_posts.py --interval`, before the command ever reaches the
+  shim.
+
+Both layers classify scans through the one shared module,
+`tools/gh/gh_scan_patterns.py`, and both consume the same one-shot
+operator override (`touch ~/.cache/harmonic-forge/gh_scan_override`) — a
+single `touch` unlocks exactly one scan, through whichever layer the
+command actually reaches. Agents may never create that override file
+themselves; both layers deny an attempt to do so.
+
+**The residual, explicitly-named gap: a script file making a direct
+`requests`/`urllib`/similar HTTP call to `api.github.com` is intercepted
+by NEITHER layer** — neither watches raw HTTP, only `gh` invocations and
+shell commands. Making any such call is banned by this rule; every
+GitHub read or write goes through `gh` (which both layers do see), never
+through a hand-rolled HTTP client.
+<!-- /R-0363 -->
+
 ## CLOUD-NATIVE & 12-FACTOR READINESS
 
 Target: every project survives a clean forklift to its cloud target.

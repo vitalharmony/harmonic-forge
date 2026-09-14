@@ -48,6 +48,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/guard_gh_rest_budget.py\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/enforce_gate_ci_on_raw_post.py\""
           },
           {
