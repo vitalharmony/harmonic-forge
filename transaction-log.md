@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(F645): unify installed lane launcher sources
+- mise.toml                                       |  6 +-
+- tools/lane/check_installed_lane_sources.py      | 92 +++++++++++++++++++++++++
+- tools/lane/test_check_installed_lane_sources.py | 87 +++++++++++++++++++++++
+- 3 files changed, 184 insertions(+), 1 deletion(-)
+
 ## fix(advisory): close four preclose findings; wire the belt/BATCH notice (harmonic-forge#598, #600 AC1/AC4/AC5)
 
 Preclose inspection returned four findings on the previous commit. All four

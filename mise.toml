@@ -28,6 +28,10 @@ GH_PROJECT_NUMBER = "3"
 description = "Run every test under tools/ (harmonic-forge#293). Dependency-free — stdlib unittest, no install step."
 run = "python3 tools/run_tests.py"
 
+[tasks.lane-launcher-source-check]
+description = "Verify the installed lane1/lane2/lane3 commands all resolve to this canonical tools/lane source (harmonic-forge#645). Read-only developer-machine check."
+run = "python3 tools/lane/check_installed_lane_sources.py --bin-dir \"$HOME/.local/bin\""
+
 [tasks.check]
 description = "Verification gate — syntax check over tools/ and sync_rules.py, then the full test suite"
 run = """
@@ -39,6 +43,7 @@ echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
 # exists yet)" while 336 passing tests sat in the repo unrun. Running them
 # here means `mise run check` means what a reader assumes it means.
 python3 tools/run_tests.py
+python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
 # harmonic-forge#543: report platform-link drift from the gate rather than
 # from a lane launcher. Fails on DRIFT (a declared link missing or pointing
 # outside the platform); reports loudly without failing when the checkout
@@ -401,4 +406,3 @@ echo "[hooks] core.hooksPath = $(git config --get core.hooksPath)"
 python3 ./sync_rules.py --project . || true
 python3 ./sync_rules.py --verify --project .
 """
-
