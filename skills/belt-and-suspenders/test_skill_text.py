@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Mechanical assertions over SKILL.md (harmonic-forge#518 AC2, AC10).
+"""Mechanical assertions over SKILL.md and DESIGN.md (harmonic-forge#518 AC2,
+AC10; harmonic-forge#659).
+
+harmonic-forge#659 moved the skill's former body, verbatim bar the Lane 3 sweep
+retirement, to `DESIGN.md`, and cut `SKILL.md` to "run belt_plan.py, make exactly
+the calls it prints". The rationale assertions below therefore read `DESIGN`;
+`TestSkillIsTheShortProcedure` asserts the new `SKILL.md` itself.
 
 AC2 exists because the defect it targets survived a human reading past it: the
 Documents file's Lane 2 section ends "My role in this loop is limited to **Lane
@@ -20,6 +26,7 @@ import unittest
 from pathlib import Path
 
 SKILL = Path(__file__).parent / "SKILL.md"
+DESIGN = Path(__file__).parent / "DESIGN.md"
 
 #: The kinds enumeration — marker names as data, not as authority. Anything on
 #: this line is a `kind=` value the belt filters on.
@@ -58,7 +65,7 @@ def _norm(text: str) -> str:
 
 
 def _section(name: str) -> str:
-    text = SKILL.read_text(encoding="utf-8")
+    text = DESIGN.read_text(encoding="utf-8")
     start = text.index(f"## Role: {name}")
     rest = text[start + 1:]
     nxt = rest.find("\n## ")
@@ -106,14 +113,14 @@ class TestEveryRoleHasTheOwnOutputPredicate(unittest.TestCase):
     """AC10 — the check orthogonal to the other two, per role."""
 
     def test_the_shared_section_states_it(self):
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("never answered", text)
         self.assertIn("my own posted markers", text)
 
     def test_it_is_named_as_the_orthogonal_one(self):
         """Stating the check is not enough — the reason it exists is what stops
         it being dropped as redundant with the other two."""
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("orthogonal", text)
         self.assertIn("hrse#1715", text)
 
@@ -122,11 +129,11 @@ class TestRefusalIsStatedBeforeArming(unittest.TestCase):
     """The settled decision: no lane means no protocols, neither one."""
 
     def test_no_lane_fallback_to_lane_1(self):
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("do not fall back to lane 1", text)
 
     def test_identity_is_asserted_before_polling(self):
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("assert_identity", text)
         self.assertIn("refuse rather than return empty", text)
 
@@ -135,14 +142,14 @@ class TestNoBareGh(unittest.TestCase):
     """AC4/TC4 — every documented invocation is wrapped."""
 
     def test_every_gh_invocation_in_the_skill_is_scoped(self):
-        for i, line in enumerate(SKILL.read_text(encoding="utf-8").splitlines(), 1):
+        for i, line in enumerate(DESIGN.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if re.search(r"(?<![-\w])gh\s+(api|search|issue|pr|repo)\b", stripped):
                 self.assertIn("gh-as", stripped, f"line {i}: bare gh — {stripped!r}")
 
     def test_gh_auth_switch_appears_nowhere(self):
         """R-0014. It mutates global state for every other session on the box."""
-        self.assertNotIn("gh auth switch", SKILL.read_text(encoding="utf-8"))
+        self.assertNotIn("gh auth switch", DESIGN.read_text(encoding="utf-8"))
 
 
 class TestRunnableBeltCommandPerLane(unittest.TestCase):
@@ -156,7 +163,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         repo-root-relative, INCLUDING inside fenced code blocks (a runnable
         command is exactly where AC2's own regression would land -- a
         backtick-only scan misses every command in a ``` fence)."""
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         for i, line in enumerate(text.splitlines(), 1):
             idx = line.find("tools/gh/")
             while idx != -1:
@@ -171,7 +178,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         the regression. This test used to assert the opposite -- it has been
         red since #590 merged, which is exactly how a vacuous guard in the
         sibling suite survived review (#594 preclose finding)."""
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         lane1 = text.split("- **Lane 1**", 1)[1].split("- **Lane 2**", 1)[0]
         self.assertIn("--all-worktrees", lane1)
         # #618 split the flags: the forbidden thing is the UNBOUNDED sweep.
@@ -184,7 +191,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
     #: rows deleted, because `QUEUE_KINDS` and `discussion` already appeared
     #: elsewhere in the file (#607 preclose finding).
     def _filter_block(self) -> str:
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         start = text.index("**The lane belts are a different mechanism")
         end = text.index("**This rule is only total if Lane 1 posts")
         return text[start:end]
@@ -194,8 +201,8 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         or deleting `_is_l2_finding` in the code must fail this, which the
         first version of this guard did not do -- it never read the code, so
         the AC's "while `_is_l2_finding` exists" condition was unevaluated."""
-        sys.path.insert(0, str(SKILL.parent.parent.parent / "tools" / "gh"))
-        sys.path.insert(0, str(SKILL.parent.parent.parent / "tools" / "onboard"))
+        sys.path.insert(0, str(DESIGN.parent.parent.parent / "tools" / "gh"))
+        sys.path.insert(0, str(DESIGN.parent.parent.parent / "tools" / "onboard"))
         import watch_lane_posts
         self.assertTrue(hasattr(watch_lane_posts, "_is_l2_finding"),
                         "the doc documents a filter the code no longer has")
@@ -227,7 +234,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         """`discover_l1_sweep` really does filter nothing -- executed:
         `[handoff, L2 Finding]` puts the issue IN the sweep. Deleting this
         sentence would lose a true statement, which #607's first attempt did."""
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         self.assertIn("no precedence table, no exclusion list", text)
         self.assertIn("discover_l1_sweep", text)
 
@@ -245,7 +252,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         narrower version of this guard green. Checked FILE-WIDE: the operator
         ruled the unbounded sweep out for Lane 1 entirely, not out of one
         section."""
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         armed = [line for line in text.splitlines()
                  if "watch_lane_posts.py" in line and "--sweep-for l1" in line]
         self.assertFalse(armed,
@@ -257,7 +264,7 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         the detached-HEAD resting state, and Lane 2 is required to work in
         `/tmp/<repo>-<issue>-impl` anyway -- the one path a static list can
         name is the one path it may not work in."""
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         lane2 = text.split("- **Lane 2**", 1)[1].split("- **Lane 3**", 1)[0]
         self.assertIn("--all-worktrees", lane2)
         self.assertNotIn("--worktrees ~/", lane2)
@@ -269,23 +276,79 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
         """harmonic-forge#596: a belt scanning a subset is a partial belt and
         looks exactly like a whole one -- and per R-0122 the set is derived
         from the manifest, not listed here."""
-        text = SKILL.read_text(encoding="utf-8")
+        text = DESIGN.read_text(encoding="utf-8")
         lane3 = text.split("- **Lane 3**", 1)[1].split("**A monitor that never", 1)[0]
         self.assertIn("--account-repos", lane3)
         self.assertNotIn("--repo vitalharmony/", lane3)
 
     def test_states_the_belt_is_watch_lane_posts_and_rebuilding_is_the_defect(self):
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("`watch_lane_posts.py` already is the belt", text)
         self.assertIn("that re-derivation is the defect", text)
 
     def test_names_cron_and_hand_written_poller_as_neither_mechanism(self):
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("`croncreate` and a hand-written poller script are neither", text)
 
     def test_states_the_zero_resolved_reporting_guarantee(self):
-        text = _norm(SKILL.read_text(encoding="utf-8"))
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
         self.assertIn("never silently, when zero resolved", text)
+
+
+class TestSkillIsTheShortProcedure(unittest.TestCase):
+    """harmonic-forge#659 AC4. A 493-line skill was paraphrased instead of
+    copied; the skill is now a procedure whose only content is "run the plan,
+    copy it exactly"."""
+
+    def _text(self) -> str:
+        return SKILL.read_text(encoding="utf-8")
+
+    def test_skill_is_at_most_30_lines(self):
+        self.assertLessEqual(len(self._text().splitlines()), 30)
+
+    def test_skill_runs_belt_plan(self):
+        self.assertIn("python3 ~/harmonic-forge/tools/lane/belt_plan.py", self._text())
+
+    def test_skill_says_copy_exactly(self):
+        self.assertIn("character for character", _norm(self._text()))
+
+    def test_skill_names_what_to_report(self):
+        text = _norm(self._text())
+        self.assertIn("monitor task id", text)
+        self.assertIn("loop job id", text)
+
+    def test_skill_never_stops_and_never_asks(self):
+        text = _norm(self._text())
+        self.assertIn("never stops", text)
+        self.assertIn("never asks the operator", text)
+
+    def test_skill_does_not_send_lanes_to_design_md(self):
+        """AC4: the rationale lives beside the skill, and the skill does not
+        tell lanes to read it -- reading prose is what produced paraphrase."""
+        self.assertNotIn("DESIGN.md", self._text())
+
+    def test_skill_carries_no_runnable_command_of_its_own(self):
+        """Any command retyped here is a second source that can drift from
+        belt_plan.py -- the class #651 and #659 exist to remove."""
+        text = self._text()
+        self.assertNotIn("watch_lane_posts.py", text)
+        self.assertNotIn("--sweep-for", text)
+        self.assertNotIn("/loop 10m", text)
+
+    def test_frontmatter_is_unchanged(self):
+        text = self._text()
+        self.assertTrue(text.startswith("---\nname: belt-and-suspenders\n"))
+        self.assertIn("description: Arm a lane's proactive work-discovery protocol", text)
+
+
+class TestDesignRetiresTheLane3Sweep(unittest.TestCase):
+    """harmonic-forge#659 AC1: no doc shows `--sweep-for l3` as a runnable
+    command."""
+
+    def test_no_runnable_sweep_for_l3_in_design(self):
+        armed = [line for line in DESIGN.read_text(encoding="utf-8").splitlines()
+                 if "watch_lane_posts.py" in line and "--sweep-for" in line]
+        self.assertFalse(armed, f"a runnable sweep command remains: {armed!r}")
 
 
 if __name__ == "__main__":

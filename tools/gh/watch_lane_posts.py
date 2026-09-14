@@ -99,11 +99,9 @@ Usage
     python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
         --watch l1 --interval 300
 
-    # The Lane 3 sweep (the suspenders): the repo-wide unanswered-verdict
-    # backstop, `CANONICAL_BELTS["3"][1]`, its own lock so arming it never
-    # contends with the belt above:
-    python3 watch_lane_posts.py --sweep-for l3 --account-repos vitalharmony \\
-        --interval 300
+    # No lane arms a repo-wide sweep. `--sweep-for l1` is retired
+    # (harmonic-forge#640) and `--sweep-for l3` is retired
+    # (harmonic-forge#659); both are refused at parse time.
 
 **There is no manual-override / one-shot form any more (harmonic-forge#651
 AC1, pitch-inspection override).** Every invocation -- Bash, Monitor,
@@ -114,10 +112,14 @@ against `CANONICAL_BELTS[os.environ["LANE"]]` and refused verbatim
 (printing the exact command to copy) if it does not match. A static
 `--repo OWNER/REPO --issues N --watch ...` debugging command that predates
 this issue is no longer runnable this way -- there is no flag combination
-exempt from the LANE/canonical-argv gate. Lane 3's repo-wide sweep
-(`--sweep-for l3`) is `CANONICAL_BELTS["3"][1]`, its own table entry with
-its own lock (`sweep-lane3.lock`), so arming it never contends with the
-lane's own belt (`CANONICAL_BELTS["3"][0]`, `belt-lane3.lock`).
+exempt from the LANE/canonical-argv gate. Every lane has exactly one
+table entry, its belt; Lane 3's former repo-wide sweep (`--sweep-for l3`)
+is retired (harmonic-forge#659) and no longer in the table.
+
+The exact tool calls a lane makes to arm (this Monitor command, plus the
+`/loop` suspenders) are printed by `tools/lane/belt_plan.py`, and a
+PreToolUse hook (`tools/hooks/enforce_belt_arming.py`) denies any other
+arming call (harmonic-forge#659).
 
 `--queue-for`, `--worktrees`/`--all-worktrees`, and `--repo`/`--issues` may
 be combined; the watched set is their union, re-derived every cycle. The one
@@ -1591,9 +1593,10 @@ def queue_cycle(
 #: cron) hits the same gate -- a control living only in `SKILL.md` prose is
 #: exactly what the 2026-09-14 incident routed around. Interval 300
 #: throughout (harmonic-forge#650 companion sets the same floor for the `gh`
-#: shim/hook). Lane 3 carries two entries -- its belt (`--queue-for l3
-#: --watch l1`) and its own repo-wide sweep (`--sweep-for l3`) -- each with
-#: its own lock, per pitch-inspection: arming one must never block the other.
+#: shim/hook). One entry per lane. Lane 3's second entry, its repo-wide
+#: sweep (`--sweep-for l3`), is retired (harmonic-forge#659): that sweep
+#: exhausted the shared REST budget twice on 2026-09-14. `tools/lane/
+#: belt_plan.py` builds the Monitor command from this table -- never retype it.
 CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
     "1": [
         {
@@ -1615,11 +1618,6 @@ CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
             "argv": ["--queue-for", "l3", "--account-repos", "vitalharmony",
                       "--watch", "l1", "--interval", "300"],
             "lock": "belt-lane3.lock",
-        },
-        {
-            "argv": ["--sweep-for", "l3", "--account-repos", "vitalharmony",
-                      "--interval", "300"],
-            "lock": "sweep-lane3.lock",
         },
     ],
 }
@@ -1876,8 +1874,10 @@ def _build_parser() -> argparse.ArgumentParser:
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
     parser.add_argument("--sweep-for", choices=("l1", "l3"), metavar="LANE",
-                        help="the suspenders' repo-wide backstop -- for Lane 3 only. "
-                             "`l3`: unanswered-verdict watch (`discover_l3_unanswered_"
+                        help="RETIRED for every value -- both are refused at parse "
+                             "time. `l3` (harmonic-forge#659, operator ruling: it "
+                             "exhausted the shared REST budget twice on 2026-09-14) was "
+                             "the unanswered-verdict watch (`discover_l3_unanswered_"
                              "verdicts`, harmonic-forge#629 Check C) -- every open "
                              "issue whose last Lane 3 gate-result was FAIL/BLOCKED and "
                              "has since received ANY reply, classified or not (a "
@@ -1888,8 +1888,7 @@ def _build_parser() -> argparse.ArgumentParser:
                              "operator ruling): Lane 1's newest-marker sweep "
                              "(`discover_l1_sweep`) is retired, and its bounded "
                              "replacement is `--queue-for l1` (harmonic-forge#618), "
-                             "not this flag. Arming `l3` as a belt is still "
-                             "harmonic-forge#590's regression.")
+                             "not this flag.")
     parser.add_argument("--account-repos", metavar="ACCOUNT",
                         help="derive the repo set from projects.toml, the onboarded-repo "
                              "manifest, for ACCOUNT -- R-0122 and this protocol's design "
@@ -1956,8 +1955,15 @@ def main() -> int:
                       "for the belt, plus the bounded --queue-for l1 Plan-First catch. "
                       "GitHub enriches an issue a worktree already named; it is never "
                       "asked to name candidates. If you found this command in an old "
-                      "transcript or SKILL.md copy, that copy is stale. --sweep-for l3 "
-                      "is unaffected.")
+                      "transcript or SKILL.md copy, that copy is stale.")
+    if args.sweep_for == "l3":
+        parser.error("--sweep-for l3 is RETIRED (harmonic-forge#659, operator "
+                      "ruling): the repo-wide sweep exhausted the account's shared "
+                      "REST budget twice on 2026-09-14 (19:33 and 21:32 UTC). No lane "
+                      "runs a repo-wide sweep. Lane 3's only belt is --queue-for l3; "
+                      "run `python3 ~/harmonic-forge/tools/lane/belt_plan.py` for the "
+                      "exact arming calls. If you found this command in an old "
+                      "transcript or SKILL.md copy, that copy is stale.")
     _belt_lock_entry = _enforce_canonical_belt(parser, args)
     _check_git_staleness(parser)
     _belt_lock_handle = _acquire_belt_lock(_belt_lock_entry["lock"])  # noqa: F841

@@ -82,6 +82,16 @@
         ]
       },
       {
+        "matcher": "Monitor|CronCreate|Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "SendMessage",
         "hooks": [
           {

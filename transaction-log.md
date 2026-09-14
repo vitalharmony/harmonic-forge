@@ -3,6 +3,31 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): enforce belt-and-suspenders arming at the tool call; retire --sweep-for l3 (harmonic-forge#659)
+
+- watch_lane_posts.py refuses --sweep-for l3 at parse time (RETIRED, #659);
+  CANONICAL_BELTS["3"] holds only the queue belt; docstring drops the sweep.
+- New tools/lane/belt_plan.py: prints, for $LANE, the exact Monitor call
+  (built from CANONICAL_BELTS), the Skill(loop) call and the report
+  template; exits 2 when LANE is not 1/2/3. canonical_calls() for the hook.
+- New tools/hooks/enforce_belt_arming.py (PreToolUse Monitor|CronCreate|Skill,
+  LANE 1/2/3 only): denies a non-canonical watch_lane_posts Monitor, a
+  paraphrased /loop, and any belt/suspenders CronCreate except the exact
+  "proactively find work to do" cron the /loop skill itself creates for the
+  canonical invocation (verified in real transcripts; denying it would deny
+  the canonical arm). Deny is JSON stdout, exit 0; fails open.
+- skills/belt-and-suspenders/SKILL.md cut to a 4-step "run belt_plan.py,
+  copy exactly" procedure; former body moved to DESIGN.md (edits only retire
+  the Lane 3 sweep). Doc-sync and skill-text tests repointed accordingly.
+- Registered in .claude/settings.json with the guarded form.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_enforce_belt_arming.py       | 195 ++++++++++
+- tools/lane/belt_plan.py                       |  92 +++++
+- tools/lane/test_belt_plan.py                  |  79 ++++
+- 11 files changed, 1254 insertions(+), 597 deletions(-)
+
 ## fix(hooks): detect launch model from ANTHROPIC_MODEL / ancestor --model (harmonic-forge#656)
 
 Live check after #657 merged: `claude -p --model opus` was resolved as sonnet and
