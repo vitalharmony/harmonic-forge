@@ -49,6 +49,21 @@
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/enforce_gate_ci_on_raw_post.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_data_migration_close.py\"",
+            "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_missing_preclose_inspection.py\"",
+            "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_undetermined_phase_close.py\"",
+            "timeout": 25
           }
         ]
       },

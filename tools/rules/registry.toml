@@ -2291,7 +2291,7 @@ id = "R-0351"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
 statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only, may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
-text_sha = "4d1630237163c317"
+text_sha = "4fc6469a93c036f9"
 hooks = []
 exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
 
@@ -2368,3 +2368,11 @@ anchor = "when-the-call-does-not-run"
 statement = "When the cross-family call does not run, the review completes on the in-family read, says so with the failure quoted, is labelled in-family fallback rather than cross-family, and is not retried."
 text_sha = "e1d395de1f53e115"
 hooks = []
+
+[[rule]]
+id = "R-0361"
+file = "3-lane-protocol.md"
+anchor = "phase-epic-closure"
+statement = "A phase/epic closure requires an explicit shipped/shipped-inert determination -- shipped needs a post-label comment with a fenced block of real-data output, shipped-inert needs a named open blocked_by supply issue -- mechanically enforced by block_undetermined_phase_close.py and backstopped by repo_hygiene.py's audit_phase_closures sweep."
+text_sha = "5725a68f650fee89"
+hooks = ["tools/hooks/block_undetermined_phase_close.py"]

@@ -91,7 +91,9 @@ matters:
 - **Every other absolute stands.** A `data-migration`-labeled issue still
   requires `migration-executed`/`migration-abandoned` (R-0169); a
   Tooling-Exception diff still requires `preclose-inspected` before close
-  (R-0090's exceptions, hrse#1487); nothing here waives either.
+  (R-0090's exceptions, hrse#1487); a `phase`/`epic`-labeled issue still
+  requires a `shipped`/`shipped-inert` determination before close
+  (harmonic-forge#642); nothing here waives any of them.
 - **This is decision authority, not a bypass of the live `batch_gate.py`
   PreToolUse hook.** `gh pr merge`/`gh issue close` still prompt for
   approval without a live `BATCH` authorization from the operator,

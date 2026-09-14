@@ -871,6 +871,7 @@ class MainCleanGuardTests(unittest.TestCase):
              patch.object(rh, "audit_repo", noop), \
              patch.object(rh, "audit_migrations", noop), \
              patch.object(rh, "audit_unlabelled_migrations", noop), \
+             patch.object(rh, "audit_phase_closures", noop), \
              patch.object(rh, "audit_unboarded", noop), \
              patch.object(rh, "audit_board_status_drift", noop), \
              patch.object(rh, "audit_open_prs", fake_audit_open_prs), \
@@ -1141,3 +1142,133 @@ class WorktreePruneTests(unittest.TestCase):
             entries = rh._worktree_entries(self.checkout)
         self.assertNotIn(self.checkout, [p for p, _ in entries])
 
+
+
+class PhaseClosureSweepTests(unittest.TestCase):
+    """harmonic-forge#642 AC6 — the after-the-fact backstop for
+    block_undetermined_phase_close.py, plus its read-only candidate report."""
+
+    REPO = "vitalharmony/hrse"
+
+    @staticmethod
+    def _issue(number, labels, title="Phase 4 — sensing layer", state="closed",
+               closed_at="2026-09-14T12:00:00Z", state_reason="completed"):
+        return {
+            "number": number, "title": title, "state": state,
+            "closed_at": closed_at, "state_reason": state_reason,
+            "labels": [{"name": n} for n in labels],
+        }
+
+    def _sweep(self, closed_by_label: dict, all_issues=None, events=None,
+               comments=None, blockers=None):
+        """`closed_by_label` maps label ('phase'/'epic') -> list of issues."""
+        events = events if events is not None else []
+        comments = comments if comments is not None else []
+        blockers = blockers if blockers is not None else []
+        all_issues = all_issues if all_issues is not None else []
+
+        def fake_rest(path):
+            if "labels=phase" in path:
+                return closed_by_label.get("phase", [])
+            if "labels=epic" in path:
+                return closed_by_label.get("epic", [])
+            if "/events" in path:
+                return events
+            if "/comments" in path:
+                return comments
+            if "dependencies/blocked_by" in path:
+                return blockers
+            if "state=all" in path:
+                return all_issues
+            return []
+
+        report = rh.Report()
+        with patch.object(rh, "_rest", side_effect=fake_rest):
+            rh.audit_phase_closures(self.REPO, report)
+        return report
+
+    def test_no_determination_is_undetermined(self):
+        report = self._sweep({"phase": [self._issue(195, ["phase"])]})
+        self.assertEqual(len(report.undetermined_phase_closures), 1)
+        self.assertEqual(report.undetermined_phase_closures[0].name, "#195")
+
+    def test_both_labels_is_undetermined(self):
+        report = self._sweep({"phase": [
+            self._issue(195, ["phase", "shipped", "shipped-inert"])]})
+        self.assertEqual(len(report.undetermined_phase_closures), 1)
+
+    def test_closed_before_effective_date_excluded(self):
+        """hrse#195 itself: closed 2026-09-01, before the gate existed."""
+        report = self._sweep({"phase": [
+            self._issue(195, ["phase"], closed_at="2026-09-01T05:02:43Z")]})
+        self.assertEqual(report.undetermined_phase_closures, [])
+
+    def test_not_planned_exempt(self):
+        report = self._sweep({"phase": [
+            self._issue(195, ["phase"], state_reason="not_planned")]})
+        self.assertEqual(report.undetermined_phase_closures, [])
+
+    def test_shipped_with_evidence_after_label_passes(self):
+        report = self._sweep(
+            {"phase": [self._issue(195, ["phase", "shipped"])]},
+            events=[{"event": "labeled", "label": {"name": "shipped"},
+                     "created_at": "2026-09-14T10:00:00Z"}],
+            comments=[{"created_at": "2026-09-14T11:00:00Z",
+                       "body": "query output:\n```\nDISCUSSED=42\n```"}],
+        )
+        self.assertEqual(report.undetermined_phase_closures, [])
+
+    def test_shipped_without_evidence_fails(self):
+        report = self._sweep(
+            {"phase": [self._issue(195, ["phase", "shipped"])]},
+            events=[{"event": "labeled", "label": {"name": "shipped"},
+                     "created_at": "2026-09-14T10:00:00Z"}],
+            comments=[{"created_at": "2026-09-14T11:00:00Z", "body": "looks good"}],
+        )
+        self.assertEqual(len(report.undetermined_phase_closures), 1)
+
+    def test_shipped_inert_with_open_blocker_passes(self):
+        report = self._sweep(
+            {"phase": [self._issue(195, ["phase", "shipped-inert"])]},
+            blockers=[{"state": "open", "number": 200}],
+        )
+        self.assertEqual(report.undetermined_phase_closures, [])
+
+    def test_shipped_inert_no_blocker_fails(self):
+        report = self._sweep(
+            {"phase": [self._issue(195, ["phase", "shipped-inert"])]},
+            blockers=[],
+        )
+        self.assertEqual(len(report.undetermined_phase_closures), 1)
+
+    def test_shipped_inert_all_blockers_closed_reports_landed(self):
+        report = self._sweep(
+            {"phase": [self._issue(195, ["phase", "shipped-inert"])]},
+            blockers=[{"state": "closed", "number": 200}],
+        )
+        self.assertEqual(len(report.inert_supply_landed), 1)
+        self.assertEqual(report.inert_supply_landed[0].name, "#195")
+
+    def test_phase_candidate_annotated_with_open_epic(self):
+        phase_195 = self._issue(195, [], title="BACKLOG-052 Phase 4 — sensing layer")
+        epic_191 = {"number": 191, "title": "BACKLOG-052 epic", "state": "open",
+                    "closed_at": None, "labels": [{"name": "epic"}]}
+        open_193 = self._issue(193, [], title="Phase 1", state="open", closed_at=None)
+        report = self._sweep({}, all_issues=[phase_195, epic_191, open_193])
+        names = {f.name for f in report.phase_candidates}
+        self.assertIn("#195", names)
+        self.assertIn("#193", names)
+        detail_195 = next(f.detail for f in report.phase_candidates if f.name == "#195")
+        self.assertIn("#191", detail_195)
+
+    def test_issue_already_carrying_phase_label_is_not_a_candidate(self):
+        issue = self._issue(195, ["phase"], title="Phase 4")
+        report = self._sweep({}, all_issues=[issue])
+        self.assertEqual(report.phase_candidates, [])
+
+    def test_pull_requests_skipped_in_both_passes(self):
+        pr = self._issue(853, ["phase"])
+        pr["pull_request"] = {"url": "x"}
+        report = self._sweep({"phase": [pr]}, all_issues=[pr])
+        self.assertEqual(report.undetermined_phase_closures, [])
+        self.assertEqual(report.phase_candidates, [])

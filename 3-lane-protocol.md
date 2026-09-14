@@ -350,6 +350,35 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
   it actually happened (hrse#871). The hook remains fail-open by design;
   it makes the mistake rare, not impossible.
 <!-- /R-0171 -->
+<!-- R-0361 -->
+- **A `phase`/`epic` closure requires an explicit `shipped`/`shipped-inert`
+  determination — neither is the default (harmonic-forge#642).** Scope is
+  deliberately narrow: phases and epics only, not every issue, because the
+  trigger is closing something OTHER WORK IS SPECIFIED AGAINST — hrse#195
+  (BACKLOG-052 Phase 4) closed correct, verified, ten of ten tests
+  passing, and produced nothing; `DISCUSSED` measured 0 months later,
+  while three downstream phases had assumed it was live. Every actor
+  disclosed the zero-data state honestly, four separate times, before
+  merge — the protocol simply had no criterion this could fail on.
+
+  Apply the `phase` label at filing time. At closure, exactly one of:
+  - **`shipped`** — produces output on real, non-fixture data. Requires a
+    comment posted AFTER the `shipped` label containing a fenced block of
+    that real output — a test result does not qualify.
+  - **`shipped-inert`** — correct and verified but cannot yet produce
+    output. Requires a native, OPEN `blocked_by` dependency naming the
+    supply issue; closing inert with no open blocker is refused.
+
+  Mechanically enforced by `tools/hooks/block_undetermined_phase_close.py`
+  (fail-open, same posture as every sibling close hook — it does not see
+  GraphQL mutations, heredoc bodies, or web-UI closes) and backstopped
+  after the fact by `tools/gh/repo_hygiene.py`'s `audit_phase_closures`
+  sweep, which catches every close path the hook structurally can't.
+  Neither control enforces that the `phase`/`epic` label itself was
+  applied at filing time — the sweep's `phase_candidates` report is the
+  read-only mitigation for that one gap, the same relationship
+  `data-migration`'s sweep has to its own filing-time gap (hrse#871).
+<!-- /R-0361 -->
 <!-- R-0172 -->
 - Blocked from committing until 100% of tests pass at the required coverage
   threshold.
