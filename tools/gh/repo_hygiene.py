@@ -119,6 +119,26 @@ class Report:
     #: `orphaned`. A human decision is legitimately pending; that is not an
     #: incident.
     blocked_open_prs: list[Finding] = field(default_factory=list)
+    #: harmonic-forge#642 AC6. Closed `phase`/`epic` issues, closed on or
+    #: after PHASE_GATE_EFFECTIVE, that would fail `block_undetermined_
+    #: phase_close.py`'s own decision table if evaluated today -- the
+    #: after-the-fact backstop for every close path the fail-open hook
+    #: can't see (GraphQL, heredoc, web UI). Fails the check: this is a
+    #: phase that closed without an enforceable determination, which is
+    #: exactly the "may be losing reachability information" bar STRANDED
+    #: and unrun migrations already clear.
+    undetermined_phase_closures: list[Finding] = field(default_factory=list)
+    #: Report-only. A `shipped-inert` closure whose blocking supply
+    #: issue(s) have since closed -- "re-evaluate: supply may have
+    #: landed". Not a failure: nobody is losing anything by leaving an
+    #: inert phase inert a little longer once its own gate already passed.
+    inert_supply_landed: list[Finding] = field(default_factory=list)
+    #: Report-only, read-only candidate enumeration (AC6's other half, and
+    #: what AC4's future dependents report will need). Issues that LOOK
+    #: like a phase or a stale epic but carry no `phase` label -- the
+    #: mitigation for the gate's one structural hole: a human has to apply
+    #: the opt-in label in the first place.
+    phase_candidates: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -151,7 +171,15 @@ class Report:
         # forgotten action, not a pending human decision -- the same
         # "may be losing work" bar STRANDED and unrun migrations already
         # clear. `blocked_open_prs` does NOT fail, same posture as `orphaned`.
-        return bool(self.stranded or self.unrun_migrations or self.green_unmerged_prs)
+        # `undetermined_phase_closures` (harmonic-forge#642 AC1/AC5) fails
+        # alongside stranded/unrun_migrations/green_unmerged_prs: a phase or
+        # epic that closed with no enforceable shipped/shipped-inert
+        # determination is exactly the "other work assumed this was live"
+        # incident hrse#195 was. `inert_supply_landed` and `phase_candidates`
+        # are report-only, same posture as `orphaned` -- a re-evaluation
+        # opportunity and a labelling gap, neither one lost work by itself.
+        return bool(self.stranded or self.unrun_migrations or self.green_unmerged_prs
+                    or self.undetermined_phase_closures)
 
 
 def audit_repo(repo: str, report: Report) -> None:
@@ -461,6 +489,168 @@ def audit_unlabelled_migrations(repo: str, report: Report) -> None:
                         f"has no {MIGRATION_LABEL!r} label — invisible to both "
                         f"the close gate and the unrun sweep"),
             ))
+
+
+#: UTC date of the implementing commit (harmonic-forge#642). Only closures
+#: on or after this date are eligible for `undetermined_phase_closures` --
+#: a phase that closed before the gate existed (hrse#195 itself, closed
+#: 2026-09-01) could not have been evaluated against it and is reported
+#: only under `phase_candidates`, never as an incident.
+PHASE_GATE_EFFECTIVE = "2026-09-14"
+
+PHASE_LABEL = "phase"
+EPIC_LABEL = "epic"
+SHIPPED_LABEL = "shipped"
+SHIPPED_INERT_LABEL = "shipped-inert"
+
+#: Same vocabulary as `block_undetermined_phase_close.py`'s own decision
+#: table -- title matches this OR the issue carries `epic` -- but this is
+#: a title heuristic for CANDIDATE enumeration, not a determination. It is
+#: known to over-match (`Cloud Migration Phase 3`, `Phase 1, Child A`) --
+#: that is why this finding is report-only.
+PHASE_TITLE = re.compile(r"(?i)\bPhase\s+\d+")
+BACKLOG_TITLE = re.compile(r"BACKLOG-(\d+)")
+
+
+def _labels_of(issue: dict) -> set[str]:
+    return {label["name"] for label in issue.get("labels", [])}
+
+
+def _fenced_comment_after(repo: str, number: str, since: str) -> bool:
+    for comment in _rest(f"repos/{repo}/issues/{number}/comments?per_page=100"):
+        created = comment.get("created_at") or ""
+        if created < since:
+            continue
+        body = comment.get("body") or ""
+        fences = sum(1 for line in body.splitlines()
+                     if line.strip().startswith(("```", "~~~")))
+        if fences >= 2:
+            return True
+    return False
+
+
+def _latest_labeled_at(repo: str, number: str, label: str) -> str | None:
+    latest: str | None = None
+    for event in _rest(f"repos/{repo}/issues/{number}/events?per_page=100"):
+        if event.get("event") == "labeled" and (event.get("label") or {}).get("name") == label:
+            created = event.get("created_at")
+            if created and (latest is None or created > latest):
+                latest = created
+    return latest
+
+
+def _blockers(repo: str, number: str) -> list[dict]:
+    try:
+        return _rest(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
+    except GhError:
+        return []
+
+
+def audit_phase_closures(repo: str, report: Report) -> None:
+    """AC6 (harmonic-forge#642): does any closed `phase`/`epic` issue fail
+    the live gate's own decision table? Plus the read-only candidate
+    enumeration AC6 and AC4's future dependents report both depend on.
+
+    The after-the-fact backstop for `block_undetermined_phase_close.py`,
+    the same relationship hrse#867's sweep has to hrse#859's close hook:
+    this reads state afterwards, so it catches every close *path*
+    regardless of how the close happened (GraphQL, heredoc, web UI --
+    everything the fail-open hook structurally can't see).
+
+    Re-evaluates the SAME table the hook enforces, at sweep time, against
+    the issue's CURRENT state -- not the state at close time. A `shipped`
+    issue that later loses its evidence comment (deleted, edited) would
+    newly appear here; that is intentional, not a bug, since the
+    obligation the label makes is about what the record shows now.
+    """
+    gated_closed: dict[int, dict] = {}
+    for label in (PHASE_LABEL, EPIC_LABEL):
+        for issue in _rest(
+                f"repos/{repo}/issues?state=closed&labels={label}&per_page=100"):
+            if "pull_request" in issue:
+                continue
+            gated_closed[issue["number"]] = issue
+
+    for number, issue in gated_closed.items():
+        n = str(number)
+        if issue.get("state_reason") in ("not_planned", "duplicate"):
+            continue
+        closed_at = issue.get("closed_at") or ""
+        labels = _labels_of(issue)
+        shipped = SHIPPED_LABEL in labels
+        inert = SHIPPED_INERT_LABEL in labels
+
+        if inert:
+            blockers = _blockers(repo, n)
+            if blockers and all(b.get("state") != "open" for b in blockers):
+                report.inert_supply_landed.append(Finding(
+                    repo=repo, name=f"#{number}",
+                    detail=(f"shipped-inert, all blocker(s) closed — "
+                            f"re-evaluate: supply may have landed; "
+                            f"{issue['title'][:60]}"),
+                ))
+
+        if closed_at[:10] < PHASE_GATE_EFFECTIVE:
+            continue  # closed before the gate existed -- hrse#195 itself
+
+        fails = False
+        if not shipped and not inert:
+            fails = True
+        elif shipped and inert:
+            fails = True
+        elif shipped:
+            since = _latest_labeled_at(repo, n, SHIPPED_LABEL)
+            if since is None or not _fenced_comment_after(repo, n, since):
+                fails = True
+        else:  # inert
+            if not _blockers(repo, n):
+                fails = True
+
+        if fails:
+            gate_labels = "/".join(sorted(labels & {PHASE_LABEL, EPIC_LABEL}))
+            report.undetermined_phase_closures.append(Finding(
+                repo=repo, name=f"#{number}",
+                detail=(f"closed {closed_at[:10] or 'unknown'} labelled "
+                        f"{gate_labels} with no valid shipped/shipped-inert "
+                        f"determination; {issue['title'][:60]}"),
+            ))
+
+    # phase_candidates: report-only, read-only enumeration.
+    candidates: dict[int, dict] = {}
+    for issue in _rest(f"repos/{repo}/issues?state=all&per_page=100"):
+        if "pull_request" in issue:
+            continue
+        candidates[issue["number"]] = issue
+
+    epics_by_backlog: dict[str, int] = {}
+    for number, issue in candidates.items():
+        if issue.get("state") == "open" and EPIC_LABEL in _labels_of(issue):
+            match = BACKLOG_TITLE.search(issue["title"])
+            if match:
+                epics_by_backlog[match.group(1)] = number
+
+    for number, issue in candidates.items():
+        labels = _labels_of(issue)
+        if PHASE_LABEL in labels:
+            continue
+        title = issue["title"]
+        is_title_phase = bool(PHASE_TITLE.search(title))
+        is_stale_closed_epic = (
+            issue.get("state") == "closed"
+            and EPIC_LABEL in labels
+            and (issue.get("closed_at") or "")[:10] < PHASE_GATE_EFFECTIVE
+            and not (labels & {SHIPPED_LABEL, SHIPPED_INERT_LABEL})
+        )
+        if not (is_title_phase or is_stale_closed_epic):
+            continue
+        annotation = ""
+        match = BACKLOG_TITLE.search(title)
+        if match and match.group(1) in epics_by_backlog:
+            annotation = f" (epic #{epics_by_backlog[match.group(1)]})"
+        report.phase_candidates.append(Finding(
+            repo=repo, name=f"#{number}",
+            detail=f"{issue.get('state')} — no `phase` label{annotation}; {title[:60]}",
+        ))
 
 
 # hrse#979: which board a repo's issues live on. A board is per VENTURE, not
@@ -1123,6 +1313,7 @@ def main() -> int:
         try:
             audit_migrations(repo, report)
             audit_unlabelled_migrations(repo, report)
+            audit_phase_closures(repo, report)
             audit_unboarded(repo, report, board_cache)
             audit_board_status_drift(repo, report, board_cache)
             audit_open_prs(repo, report)
@@ -1182,6 +1373,30 @@ def main() -> int:
               f"issue(s) with no record the migration ran:")
         for f in report.unrun_migrations:
             print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
+    if report.undetermined_phase_closures:
+        print(f"UNDETERMINED PHASE CLOSURES — {len(report.undetermined_phase_closures)} "
+              f"closed phase/epic issue(s) with no enforceable shipped/shipped-inert "
+              f"determination:")
+        for f in report.undetermined_phase_closures:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  hrse#195 closed exactly this way — correct, verified, ten of ten "
+              "tests passing, produces nothing. Apply shipped/shipped-inert and its "
+              "required evidence (harmonic-forge#642).")
+        print()
+    if report.inert_supply_landed:
+        print(f"INERT SUPPLY LANDED — {len(report.inert_supply_landed)} "
+              f"shipped-inert issue(s) whose blocker(s) have since closed:")
+        for f in report.inert_supply_landed:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
+    if report.phase_candidates:
+        print(f"PHASE CANDIDATES — {len(report.phase_candidates)} issue(s) that "
+              f"look like a phase or a stale epic but carry no `phase` label:")
+        for f in report.phase_candidates:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  Read-only enumeration (harmonic-forge#642 AC6) — a title match, "
+              "not a determination. Reported, not failed.")
         print()
     if report.green_unmerged_prs:
         print(f"GREEN & UNMERGED — {len(report.green_unmerged_prs)} open PR(s) "
@@ -1263,7 +1478,8 @@ def main() -> int:
             or report.unboarded or report.checkout_off_main
             or report.stale_stashes or report.missing_transaction_log
             or report.board_status_drift or report.green_unmerged_prs
-            or report.blocked_open_prs):
+            or report.blocked_open_prs or report.undetermined_phase_closures
+            or report.inert_supply_landed or report.phase_candidates):
         print("repo hygiene: clean.")
         return prune_exit
 
@@ -1280,6 +1496,10 @@ def main() -> int:
             print("Review the STRANDED list before deleting anything.")
         if report.green_unmerged_prs:
             print("Merge the GREEN & UNMERGED list's PRs — nothing is blocking them.")
+        if report.undetermined_phase_closures:
+            print("A closed phase/epic issue with no enforceable determination means "
+                  "other work may have assumed it was live. Apply shipped/shipped-inert "
+                  "and its required evidence (harmonic-forge#642).")
         if not args.prune_worktrees:
             print("Nothing was deleted.")
         return max(prune_exit, 1)
