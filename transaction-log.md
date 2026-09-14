@@ -3,6 +3,27 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): tier/model check at trigger time, Stop backstop, fail-closed deep lookups (harmonic-forge#656)
+
+- tier_model_trigger_check.py (UserPromptSubmit, LANE 1/2): blocks a prompt
+  naming a deep-Tier issue on a non-high model, or an unreadable Tier on a
+  non-high model; suggests /model sonnet for fast/standard on a high model.
+- tier_model_stop_backstop.py (Stop): reports posts on deep issues from a
+  non-high model; never blocks.
+- session_model.py + record_session_model.py (SessionStart): current model
+  from transcript attachment / /model output / message.model, then the
+  SessionStart record, then settings.
+- model_tier_gate.py: resolve_tier returns LOOKUP_FAILED on GhItemListError;
+  _main denies a code write on it unless the model is already high.
+- Registered in .claude/settings.json. Claude Code only.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_tier_model_trigger_check.py       | 251 ++++++++++++++++++++
+- tools/hooks/tier_model_stop_backstop.py            | 254 ++++++++++++++++++++
+- tools/hooks/tier_model_trigger_check.py            | 255 +++++++++++++++++++++
+- 12 files changed, 1556 insertions(+), 67 deletions(-)
+
 ## fix(F645): unify installed lane launcher sources
 - mise.toml                                       |  6 +-
 - tools/lane/check_installed_lane_sources.py      | 92 +++++++++++++++++++++++++

@@ -99,8 +99,10 @@ class TestCachedItemList(unittest.TestCase):
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
              patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
-            self.assertIsNone(m.resolve_tier("/some/cwd", 999))
+            # harmonic-forge#656 AC6: a failed read is LOOKUP_FAILED, not None.
+            self.assertIs(m.resolve_tier("/some/cwd", 999), m.LOOKUP_FAILED)
         self.assertEqual(list(self.cache_dir.glob("tier__*.json")), [])
+        self.assertEqual(list(self.cache_dir.glob("field__*.json")), [])
 
     def test_different_issues_do_not_share_a_cache_entry(self):
         def fake_run(cmd):
@@ -200,14 +202,22 @@ class TierResolutionTests(unittest.TestCase):
         with patch.object(m, "resolve_project_board", return_value=None):
             self.assertIsNone(m.resolve_tier("/cwd", 999))
 
-    def test_lookup_error_fails_open(self):
+    def test_lookup_error_is_distinct_from_unset(self):
+        """harmonic-forge#656 AC6: this test used to assert None (fail open).
+        A failed read must no longer look like "no Tier set"."""
         def boom(*a, **k):
-            raise m._item_list_cache.GhItemListError("quota")
+            raise m._item_list_cache.GhItemListError("HTTP 403: rate limit")
 
         with patch.object(m._item_list_cache, "fetch_issue_tier", boom), \
              patch.object(m, "resolve_repo", return_value="o/r"), \
              patch.object(m, "resolve_project_board", return_value=("owner", "3")):
-            self.assertIsNone(m.resolve_tier("/cwd", 999))
+            self.assertIs(m.resolve_tier("/cwd", 999), m.LOOKUP_FAILED)
+            self.assertEqual(m.read_tier("o/r", 999, "3"),
+                             (m.LOOKUP_FAILED, "HTTP 403: rate limit"))
+
+    def test_lookup_failed_is_never_an_escalating_tier(self):
+        self.assertNotIn(m.LOOKUP_FAILED, m.ESCALATING_TIERS)
+        self.assertIs(m._TierLookupFailed(), m.LOOKUP_FAILED)
 
     def test_escalating_tiers_is_deep_only(self):
         self.assertEqual(m.ESCALATING_TIERS, frozenset({"deep"}))
@@ -316,7 +326,30 @@ class ModelTierFamilies(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         path = root / "t.jsonl"
         path.write_text(json.dumps({"message": {"role": "user"}}) + "\n")
+        # harmonic-forge#656: settings are a fallback source now, so isolate
+        # the operator's real ~/.claude/settings.json from this assertion.
+        with patch.object(m.session_model, "settings_model", return_value=None), \
+             patch.object(m.session_model, "recorded_model", return_value=None):
+            self.assertTrue(m.required_tier_met({"transcript_path": str(path)}, True))
+
+    def test_a_model_switch_after_the_last_reply_is_honored(self):
+        """harmonic-forge#656 AC4: `/model opus` then an immediate resend."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "t.jsonl"
+        path.write_text(
+            json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5"}}) + "\n"
+            + json.dumps({"type": "user", "message": {"role": "user", "content":
+                "<local-command-stdout>Set model to `Opus 5 (1M context)` for this "
+                "session only</local-command-stdout>"}}) + "\n"
+        )
         self.assertTrue(m.required_tier_met({"transcript_path": str(path)}, True))
+
+    def test_settings_fallback_can_deny(self):
+        with patch.object(m.session_model, "transcript_model", return_value=None), \
+             patch.object(m.session_model, "recorded_model", return_value=None), \
+             patch.object(m.session_model, "settings_model", return_value="sonnet"):
+            self.assertFalse(m.required_tier_met({"transcript_path": "/nope"}, True))
 
     def test_codex_sol_satisfies_deep_unchanged(self):
         self.assertTrue(m.required_tier_met({"model": "gpt-5.6-sol"}, True))
@@ -682,6 +715,53 @@ class MainBashGatingTests(unittest.TestCase):
              patch.object(m, "resolve_tier", return_value="deep"):
             out = self._run_main(payload)
         self.assertIn('"permissionDecision": "deny"', out)
+
+    def test_656_lookup_failure_denies_edit_on_sonnet(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+        }
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value=m.LOOKUP_FAILED):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("Tier lookup failed for issue #1438", out)
+        self.assertNotIn("LANE_MODEL", out, "the lookup-failed deny names no override")
+
+    def test_656_lookup_failure_allows_edit_on_opus(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-opus-5"),
+        }
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value=m.LOOKUP_FAILED):
+            out = self._run_main(payload)
+        self.assertEqual(out, "")
+
+    def test_656_no_branch_issue_stays_fail_open(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/nonexistent/no-branch",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+        }
+        with patch.object(m, "resolve_issue_target", return_value=None), \
+             patch.object(m, "resolve_tier") as fake_resolve_tier:
+            out = self._run_main(payload)
+            fake_resolve_tier.assert_not_called()
+        self.assertEqual(out, "")
+
+    def test_656_unset_tier_stays_fail_open(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+        }
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value=None):
+            out = self._run_main(payload)
+        self.assertEqual(out, "")
 
     def test_ac4_lane3_allows_edit_write_too(self):
         payload = {

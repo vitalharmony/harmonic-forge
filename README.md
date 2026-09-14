@@ -95,6 +95,8 @@ that kept getting violated became executable hooks in `tools/hooks/`:
 | `block_lane1_status_claims.py` | Lane 1 posting unverified status, or a Lane 2 session writing into the main checkout |
 | `deny_lane3_ae_self_post.py` | Lane 3 authorizing its own approval |
 | `model_tier_gate.py` | `deep`-Tier issues entering a lane on an under-powered model |
+| `tier_model_trigger_check.py` | A Lane 1/2 prompt naming a `deep`-Tier issue on a non-high model, blocked before work starts; suggests `/model sonnet` for `fast`/`standard` work on a high model (Claude Code only) |
+| `tier_model_stop_backstop.py` | A lane artifact posted on a `deep`-Tier issue from a non-high model going unnoticed; reports at turn end, never blocks (Claude Code only) |
 | `mypy_cwd_trap.py` | A known mechanical footgun that produced phantom type errors |
 | `remind_gate_readiness_sweep.py` | Gate-readiness claims that skipped the sweep |
 | `check_worktree_busy.py` | A checkout yanking state out from under a live process in a sibling worktree |

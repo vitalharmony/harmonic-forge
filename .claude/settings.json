@@ -93,11 +93,25 @@
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
             "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/tier_model_trigger_check.py\"",
+            "timeout": 30
           }
         ]
       }
     ],
     "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/record_session_model.py\"",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "compact",
         "hooks": [
@@ -131,6 +145,11 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/block_batch_stop.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/tier_model_stop_backstop.py\"",
+            "timeout": 25
           }
         ]
       }

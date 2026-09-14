@@ -6,9 +6,20 @@ the issue currently being worked on from the branch name in cwd, looks up
 its board `Tier` field, and denies a code-writing tool call if the
 session's active model doesn't match the required tier.
 
-Fail-open on every resolution failure (no branch match, no board access, no
-gh, unexpected payload shape) -- this hook must never wedge a lane over its
+Fail-open on resolution failures (no branch match, no board or repo mapping,
+no gh, unexpected payload shape) -- this hook must never wedge a lane over its
 own telemetry breaking. See 3-lane-protocol.md Tooling Exception.
+
+One exception, harmonic-forge#656 AC6: when the branch DID name an issue and
+the board read itself failed (`GhItemListError`, e.g. a rate-limit 403),
+`resolve_tier` returns `LOOKUP_FAILED` rather than None, and a session not
+already on a high-tier model is denied. Treating a failed read as "no Tier"
+allowed every `deep` edit during exactly the windows the lanes are busiest.
+The Claude Code session model now comes from `session_model.current_model`
+(transcript attachment, `/model` output or `message.model`, then the
+SessionStart record, then settings). The trigger-time companion is
+`tier_model_trigger_check.py`; the turn-end backstop is
+`tier_model_stop_backstop.py`. Those two are Claude Code only.
 
 Wired identically for Claude Code (Edit|Write matcher) and Codex
 (apply_patch matcher) -- both feed the same PreToolUse JSON shape over
@@ -52,6 +63,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
+import session_model  # noqa: E402
+from session_model import _tail_lines  # noqa: E402,F401 -- re-exported; one bounded reader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 try:
@@ -217,7 +230,55 @@ def resolve_repo(cwd: str) -> str | None:
         return None
 
 
-def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None) -> str | None:
+class _TierLookupFailed:
+    """harmonic-forge#656 AC6: the board read itself failed (rate limit, 403,
+    timeout) -- distinct from "the issue has no Tier" (None).
+
+    Before this, `resolve_tier` turned `GhItemListError` into None and `_main`
+    allowed, exactly as if no Tier were set -- so a `deep` edit on the wrong
+    model went through whenever the board read failed, which is precisely a
+    rate-limit window, when the lanes are busiest. A singleton rather than a
+    string so it can never collide with a real Tier value or be matched by
+    `in ESCALATING_TIERS`.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "LOOKUP_FAILED"
+
+
+LOOKUP_FAILED = _TierLookupFailed()
+
+
+def read_tier(repo: str, issue_number: int, project_number: str, run=None):
+    """`(tier, error)` for one issue on one board, through the shared cache.
+
+    `tier` is a Tier string, None (no Tier set, or the shared module is not
+    importable), or LOOKUP_FAILED with `error` carrying the reason. Always the
+    gate's `_CACHE_TTL`/`_CACHE_DIR`: `fetch_issue_tier`'s own default is
+    `ttl=0`, and harmonic-forge#650's budget floor needs the cache on every
+    hot path that reads a Tier (the trigger check and Stop backstop included).
+    """
+    if _item_list_cache is None:
+        return None, None  # shared module unavailable -- fail-open
+    try:
+        return _item_list_cache.fetch_issue_tier(
+            repo, issue_number, project_number,
+            run=run or _run, ttl=_CACHE_TTL, cache_dir=_CACHE_DIR,
+        ), None
+    except _item_list_cache.GhItemListError as exc:
+        return LOOKUP_FAILED, str(exc).strip() or exc.__class__.__name__
+    except subprocess.TimeoutExpired as exc:
+        return LOOKUP_FAILED, f"board read timed out after {exc.timeout}s"
+
+
+def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None):
     """Return the issue's Tier (harmonic-forge#257).
 
     harmonic-forge#250: reads *one issue* rather than fetching the whole
@@ -232,13 +293,11 @@ def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None) -> s
     points, far more requests, and latency on every operation. Cheap *and*
     cached is the point.
 
-    Returns None when the issue carries no tier, when the board or repo
-    cannot be resolved, or when the lookup fails -- all of which must keep
-    meaning allow, not deny: this hook fires on every Edit/Write and must
-    never wedge a lane over its own telemetry.
+    Returns None when the issue carries no tier or when the board or repo
+    cannot be resolved -- both keep meaning allow. Returns LOOKUP_FAILED when
+    the read itself failed (harmonic-forge#656 AC6); `_main` denies on that
+    unless the session is already on a high-tier model.
     """
-    if _item_list_cache is None:
-        return None  # shared module unavailable -- fail-open
     hinted_target = HINTED_TARGETS.get(repo_hint or "")
     if hinted_target:
         repo, number = hinted_target
@@ -250,62 +309,26 @@ def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None) -> s
         if repo is None:
             return None
         _owner, number = board
-    try:
-        return _item_list_cache.fetch_issue_tier(
-            repo, issue_number, number,
-            run=_run, ttl=_CACHE_TTL, cache_dir=_CACHE_DIR,
-        )
-    except _item_list_cache.GhItemListError:
-        return None
-
-
-def _tail_lines(path: str, chunk_size: int = 65536, max_bytes: int = 4 << 20):
-    """Yield lines from the end of a file backwards, in bounded chunks.
-
-    harmonic-forge#314 (C4): this used `readlines()`, pulling the whole
-    transcript into memory on every Edit/Write/MultiEdit call to use only
-    the last model-bearing line. Local transcripts reach 107 MB, so that
-    cost was paid on every code-writing tool call in a long session.
-
-    Gives up after `max_bytes`. A transcript whose last 4 MB carries no
-    `message.model` line then falls through to the caller's fail-open
-    path -- the same outcome the old code gave for a file with no model
-    line at all, at bounded cost instead of unbounded.
-    """
-    with open(path, "rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        position = handle.tell()
-        remainder = b""
-        scanned = 0
-        while position > 0 and scanned < max_bytes:
-            read_size = min(chunk_size, position)
-            position -= read_size
-            scanned += read_size
-            handle.seek(position)
-            block = handle.read(read_size) + remainder
-            parts = block.split(b"\n")
-            # parts[0] may be a partial line whose head is in a chunk we
-            # have not read yet -- hold it back until we have that chunk.
-            remainder = parts[0] if position > 0 else b""
-            tail = parts[1:] if position > 0 else parts
-            for line in reversed(tail):
-                if line.strip():
-                    yield line.decode("utf-8", "replace")
+    return read_tier(repo, issue_number, number)[0]
 
 
 def resolve_claude_model(transcript_path: str) -> str | None:
-    try:
-        for line in _tail_lines(transcript_path):
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            model = (entry.get("message") or {}).get("model")
-            if model:
-                return model
-    except OSError:
-        return None
-    return None
+    """Newest model-bearing transcript entry (harmonic-forge#656: now also a
+    `/model` switch or a model attachment, not only `message.model`)."""
+    return session_model.transcript_model(transcript_path)
+
+
+def claude_model_is_high(model: str | None) -> bool:
+    """True when a Claude model string names a family in CLAUDE_HIGH_FAMILIES.
+
+    Case-insensitive, because `session_model.current_model` can return a
+    `/model` display name (`Opus 5 (1M context)`) or a settings value (`opus`)
+    as well as a model id (`claude-opus-5`). None is not high.
+    """
+    if not model:
+        return False
+    lowered = model.lower()
+    return any(family in lowered for family in CLAUDE_HIGH_FAMILIES)
 
 
 # harmonic-forge#440: a redirection token, optionally fd-prefixed
@@ -457,11 +480,14 @@ def required_tier_met(payload: dict, high_required: bool) -> bool:
     if "model" in payload:  # Codex: model is a direct field
         model = payload["model"]
         is_high = CODEX_HIGH in model
-    else:  # Claude Code: model must be read from the transcript tail
-        model = resolve_claude_model(payload.get("transcript_path", ""))
+    else:  # Claude Code: no model on the payload (harmonic-forge#656 AC4)
+        model = session_model.current_model(
+            payload.get("transcript_path", ""), payload.get("cwd") or "",
+            payload.get("session_id"),
+        )
         if model is None:
             return True  # fail open -- can't resolve, don't block
-        is_high = any(family in model for family in CLAUDE_HIGH_FAMILIES)
+        is_high = claude_model_is_high(model)
     return is_high if high_required else True
 
 
@@ -491,6 +517,18 @@ def _main() -> None:
     issue_number, repo_hint = target
 
     tier = resolve_tier(cwd, issue_number, repo_hint)
+    if tier is LOOKUP_FAILED:
+        # harmonic-forge#656 AC6: fail closed on a failed read, but only for a
+        # session not already on a high-tier model -- a high model satisfies
+        # any Tier, so the unknown Tier cannot matter. Deliberately names no
+        # override.
+        if required_tier_met(payload, high_required=True):
+            _allow()
+        _deny(
+            f"Tier lookup failed for issue #{issue_number}; refusing a code "
+            f"write rather than risking a deep issue on the wrong model. "
+            f"A high-tier model (`/model opus`) is not affected."
+        )
     if tier not in ESCALATING_TIERS:
         _allow()
 
