@@ -14,3 +14,5 @@ description: Arm a lane's proactive work-discovery protocol — a persistent Mon
    Monitor expires, re-arm the same call unchanged. A hook denies any other
    arming call: no `CronCreate` of your own, no hand-written prompt, no
    repo-wide sweep.
+5. Pacing back-off between ticks uses `ScheduleWakeup`, never a new `/loop` or
+   `CronCreate`.

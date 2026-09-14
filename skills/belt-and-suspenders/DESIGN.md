@@ -276,8 +276,12 @@ set here literally — not a generic idle-tick default.
 **The suspenders are where the token cost actually is** (harmonic-forge#638,
 correcting the belt-side idea above): `/loop` wakes the model on every tick
 regardless of whether anything happened — a full turn, context and all —
-unlike the belt's stderr-only quiet cost. Back off toward `ScheduleWakeup`'s
-3600s maximum as quiet ticks accumulate, and reset to the working 10m
+unlike the belt's stderr-only quiet cost. **Arming is fixed at 10m**: the
+`/loop` call and the one `CronCreate` it makes are exactly the canonical ones,
+and `tools/hooks/enforce_belt_arming.py` denies any other cadence, any other
+prompt, and a second arm in the same session (harmonic-forge#659). Back-off is
+therefore never a re-arm: on quiet ticks, back off with `ScheduleWakeup` (which
+the hook does not govern) toward its 3600s maximum, and reset to the 10m
 cadence on any activity. **Never call `stop`** — no re-arming is ever
 required, and no operator action is needed to resume, the identical
 guarantee the belt makes for itself above. The two halves therefore share

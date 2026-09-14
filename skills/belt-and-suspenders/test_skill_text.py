@@ -341,6 +341,24 @@ class TestSkillIsTheShortProcedure(unittest.TestCase):
         self.assertIn("description: Arm a lane's proactive work-discovery protocol", text)
 
 
+class TestPacingBackOffIsScheduleWakeup(unittest.TestCase):
+    """harmonic-forge#659 preclose F: DESIGN.md said to back off the loop toward
+    3600s while the hook denies any /loop or CronCreate but the canonical 10m
+    one. Arming is fixed; back-off is ScheduleWakeup."""
+
+    def test_skill_says_back_off_uses_schedule_wakeup(self):
+        lines = [line for line in SKILL.read_text(encoding="utf-8").splitlines()
+                 if "ScheduleWakeup" in line]
+        self.assertTrue(lines, "SKILL.md must name ScheduleWakeup as the back-off")
+        self.assertIn("back-off", _norm(" ".join(lines)))
+
+    def test_design_says_arming_is_fixed_and_back_off_is_schedule_wakeup(self):
+        text = _norm(DESIGN.read_text(encoding="utf-8"))
+        self.assertIn("arming is fixed at 10m", text)
+        self.assertIn("back off with `schedulewakeup`", text)
+        self.assertNotIn("back off toward `schedulewakeup`'s", text)
+
+
 class TestDesignRetiresTheLane3Sweep(unittest.TestCase):
     """harmonic-forge#659 AC1: no doc shows `--sweep-for l3` as a runnable
     command."""

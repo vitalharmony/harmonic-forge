@@ -3,6 +3,34 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): exact-match loop/cron arming, per-session re-arm guard, parsed Monitor check (harmonic-forge#659)
+
+Answers the #659 preclose findings A-F:
+- A/D: no keyword regex. In LANE=1/2/3 sessions every Skill(loop) whose args
+  are not exactly `10m proactively find work to do`, and every CronCreate that
+  is not exactly {cron "*/10 * * * *", prompt "proactively find work to do",
+  recurring true (absent = true)}, is denied. The reason prints the canonical
+  calls and sends other timed work to Monitor or Bash run_in_background.
+- B: cron and recurring are compared, not just prompt.
+- C: the allowed canonical CronCreate is recorded per session_id under
+  ~/.cache/harmonic-forge/belt_arming/ (HARMONIC_FORGE_BELT_ARMING_DIR
+  overrides); a second one in the same session is denied as already armed.
+  Recorded at the cron, not the Skill call: transcripts show the loop skill
+  issues its CronCreate after the Skill call.
+- E: Monitor commands are parsed with shell_parse; only a segment that
+  executes watch_lane_posts.py (program, python script arg, or under
+  timeout) is checked. pgrep/grep/tail mentions are allowed.
+- F: SKILL.md and DESIGN.md say arming is fixed at 10m and back-off is
+  ScheduleWakeup.
+Regression test per finding; each verified to fail with its fix reverted.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- skills/belt-and-suspenders/test_skill_text.py |  18 +++
+- tools/hooks/enforce_belt_arming.py            | 150 ++++++++++++++++++-------
+- tools/hooks/test_enforce_belt_arming.py       | 154 ++++++++++++++++++++++++--
+- 5 files changed, 278 insertions(+), 54 deletions(-)
+
 ## fix(belt): enforce belt-and-suspenders arming at the tool call; retire --sweep-for l3 (harmonic-forge#659)
 
 - watch_lane_posts.py refuses --sweep-for l3 at parse time (RETIRED, #659);

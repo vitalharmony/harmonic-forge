@@ -13,23 +13,29 @@ shared REST budget twice that day. The literal strings were in context. Prose
 was not enough; `watch_lane_posts.py` validates its own argv but nothing saw the
 tool calls. This does.
 
-WHAT IS DENIED
---------------
-- `Monitor` whose command runs `watch_lane_posts.py` and is not, after
-  whitespace normalization, the lane's canonical command (`~`, `$HOME`,
-  `${HOME}` and the absolute home path are equivalent spellings).
-- `Skill` with `skill` `loop` (or `<plugin>:loop`) whose args mention finding
-  work, the belt or the suspenders but are not exactly
+WHAT IS DENIED (in a LANE=1/2/3 session)
+----------------------------------------
+- `Skill` `loop` (or `<plugin>:loop`) whose args, stripped, are not exactly
   `10m proactively find work to do`.
-- `CronCreate` whose prompt mentions finding work, the belt, the suspenders or
-  `watch_lane_posts`, unless the prompt is exactly
-  `proactively find work to do`. That one exception is not a second arming
-  path: it is the call the `/loop` skill itself makes for
-  `/loop 10m proactively find work to do` (observed in real transcripts as
-  `{"cron": "*/10 * * * *", "prompt": "proactively find work to do",
-  "recurring": true}`), so denying it would deny the canonical arm.
+- `CronCreate` that is not exactly `{"cron": "*/10 * * * *", "prompt":
+  "proactively find work to do", "recurring": true}` (`recurring` absent counts
+  as true, the tool's default). That is the call the `/loop` skill makes for the
+  canonical loop, observed in real transcripts right after the `Skill` call.
+- A second canonical `CronCreate` in the same session ("already armed"): the
+  first allowed one is recorded under `~/.cache/harmonic-forge/belt_arming/
+  <session_id>`, so a re-arm cannot stack a duplicate job (#659 preclose C).
+- `Monitor` whose command *executes* `watch_lane_posts.py` -- as the program, or
+  as the script argument to `python`/`python3` -- and is not, after whitespace
+  normalization, the lane's canonical command (`~`, `$HOME`, `${HOME}` and the
+  absolute home path are equivalent spellings). Commands that only mention the
+  name (`pgrep -af watch_lane_posts.py`, `grep`, `tail`) are allowed.
 
-Unrelated Monitors, crons and skills pass untouched.
+There is no keyword matching (#659 preclose A and D): a regex over free text
+let reworded suspenders prompts through and denied unrelated crons. Instead,
+every non-canonical loop or cron in a lane session is denied, and the deny
+reason points other timed work at `Monitor` or Bash `run_in_background`, which
+this hook does not restrict. Back-off between ticks is `ScheduleWakeup`, which
+this hook does not govern either.
 
 HOW IT DENIES
 -------------
@@ -47,22 +53,36 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+
 LANES = ("1", "2", "3")
 
-#: Mentions that make a cron prompt or loop args an arming attempt.
-ARMING_RE = re.compile(
-    r"find(?:s|ing)?\s+(?:\w+\s+)?work|belt|suspenders|watch_lane_posts",
-    re.IGNORECASE,
-)
+#: The `CronCreate` the `/loop` skill makes for `/loop 10m proactively find work
+#: to do` (observed in real transcripts). `recurring` absent means true.
+LOOP_CRON = {"cron": "*/10 * * * *", "prompt": "proactively find work to do",
+             "recurring": True}
 
-#: The prompt the `/loop` skill hands `CronCreate` for the canonical loop.
-LOOP_CRON_PROMPT = "proactively find work to do"
+WATCHER_NAME = "watch_lane_posts.py"
+
+#: Where the per-session "canonical cron already allowed" markers live.
+#: Overridable for tests.
+ARMING_DIR_ENV = "HARMONIC_FORGE_BELT_ARMING_DIR"
+DEFAULT_ARMING_DIR = Path.home() / ".cache" / "harmonic-forge" / "belt_arming"
+
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_PYTHON_RE = re.compile(r"^python(\d+(\.\d+)?)?$")
 
 
 def _load_belt_plan():
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
     import belt_plan  # noqa: PLC0415
     return belt_plan
+
+
+def arming_dir() -> Path:
+    override = os.environ.get(ARMING_DIR_ENV)
+    return Path(override) if override else DEFAULT_ARMING_DIR
 
 
 def _normalize_command(command: str) -> str:
@@ -73,6 +93,34 @@ def _normalize_command(command: str) -> str:
     return text
 
 
+def _executes_watcher(tokens: list[str]) -> bool:
+    """True when this command segment runs `watch_lane_posts.py`."""
+    tokens = strip_invocation_prefix(tokens)
+    if tokens and tokens[0] == "timeout":
+        rest = tokens[1:]
+        while rest and rest[0].startswith("-"):
+            rest = rest[1:]
+        return _executes_watcher(rest[1:])  # drop the DURATION
+    if not tokens:
+        return False
+    program = Path(tokens[0]).name
+    if program == WATCHER_NAME:
+        return True
+    if _PYTHON_RE.match(program):
+        for arg in tokens[1:]:
+            if not arg.startswith("-"):
+                return Path(arg).name == WATCHER_NAME
+    return False
+
+
+def _monitor_runs_watcher(command: str) -> bool:
+    try:
+        segments = command_segments(command)
+    except ValueError:  # unbalanced quotes: the shell would refuse it too
+        return WATCHER_NAME in command
+    return any(_executes_watcher(segment) for segment in segments)
+
+
 def _reason(lane: str, calls: dict[str, Any], what: str) -> str:
     return (
         f"{what}\n\n"
@@ -81,13 +129,28 @@ def _reason(lane: str, calls: dict[str, Any], what: str) -> str:
         "belt_plan.py`, harmonic-forge#659):\n"
         f"  Monitor {json.dumps(calls['monitor'])}\n"
         f"  Skill {json.dumps(calls['loop'])}\n"
-        "Arming is Skill(loop) plus that Monitor only -- never CronCreate "
-        "directly, never a hand-written prompt, never a repo-wide sweep."
+        "The loop skill then makes exactly this CronCreate, once per session:\n"
+        f"  CronCreate {json.dumps(LOOP_CRON)}\n"
+        "In a lane session those are the only /loop and CronCreate calls allowed. "
+        "For any other timed or repeated work use Monitor (a streaming command) "
+        "or Bash with run_in_background -- neither is restricted. Back off "
+        "between suspenders ticks with ScheduleWakeup, never a new /loop or "
+        "CronCreate."
     )
 
 
+def _is_canonical_cron(tool_input: dict[str, Any]) -> bool:
+    return (tool_input.get("cron") == LOOP_CRON["cron"]
+            and tool_input.get("prompt") == LOOP_CRON["prompt"]
+            and tool_input.get("recurring", True) is True)
+
+
 def decide(payload: dict[str, Any], lane: str | None) -> str | None:
-    """The deny reason for this tool call, or None to allow."""
+    """The deny reason for this tool call, or None to allow.
+
+    Allowing the canonical CronCreate records it for the session, so the same
+    session's next canonical CronCreate is denied as already armed.
+    """
     if lane not in LANES:
         return None
     tool = payload.get("tool_name") or ""
@@ -97,7 +160,7 @@ def decide(payload: dict[str, Any], lane: str | None) -> str | None:
 
     if tool == "Monitor":
         command = tool_input.get("command") or ""
-        if not isinstance(command, str) or "watch_lane_posts.py" not in command:
+        if not isinstance(command, str) or not _monitor_runs_watcher(command):
             return None
         belt_plan = _load_belt_plan()
         calls = belt_plan.canonical_calls(lane)
@@ -111,27 +174,34 @@ def decide(payload: dict[str, Any], lane: str | None) -> str | None:
         skill = tool_input.get("skill") or ""
         if not isinstance(skill, str) or not (skill == "loop" or skill.endswith(":loop")):
             return None
-        args = tool_input.get("args") or ""
-        if not isinstance(args, str) or not ARMING_RE.search(args):
-            return None
         belt_plan = _load_belt_plan()
         calls = belt_plan.canonical_calls(lane)
-        if args.strip() == calls["loop"]["args"]:
+        args = tool_input.get("args")
+        if isinstance(args, str) and args.strip() == calls["loop"]["args"]:
             return None
         return _reason(lane, calls,
-                       "Denied: this /loop prompt is a hand-written or paraphrased "
-                       "suspenders prompt, not the canonical one.")
+                       "Denied: in a lane session /loop runs only the canonical "
+                       "suspenders prompt.")
 
     if tool == "CronCreate":
-        prompt = tool_input.get("prompt") or ""
-        if not isinstance(prompt, str) or not ARMING_RE.search(prompt):
-            return None
-        if prompt.strip() == LOOP_CRON_PROMPT:
-            return None
         belt_plan = _load_belt_plan()
         calls = belt_plan.canonical_calls(lane)
-        return _reason(lane, calls,
-                       "Denied: CronCreate is not a way to arm the suspenders.")
+        if not _is_canonical_cron(tool_input):
+            return _reason(lane, calls,
+                           "Denied: in a lane session CronCreate is allowed only as "
+                           "the canonical suspenders job the loop skill creates.")
+        session_id = payload.get("session_id")
+        if isinstance(session_id, str) and _SESSION_ID_RE.match(session_id):
+            marker = arming_dir() / session_id
+            if marker.exists():
+                return _reason(lane, calls,
+                               "Denied: the suspenders are already armed in this "
+                               f"session (recorded at {marker}); a second job would "
+                               "stack duplicate ticks. Nothing to re-arm -- the "
+                               "existing job keeps running.")
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps(LOOP_CRON) + "\n", encoding="utf-8")
+        return None
 
     return None
 
