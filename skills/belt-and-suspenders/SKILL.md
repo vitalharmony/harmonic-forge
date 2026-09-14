@@ -17,6 +17,24 @@ the repo root, so a bare relative `tools/gh` path reads as skill-relative here
 and resolves to nothing — every path below is written absolute, rooted at
 `~/harmonic-forge/`, for exactly that reason (harmonic-forge#570).
 
+## Invariants (enforced by watch_lane_posts.py)
+
+harmonic-forge#651: these four held as prose alone through a 2026-09-14
+incident that exhausted the account's shared REST budget. They are now
+mechanically enforced (`CANONICAL_BELTS`, a per-lane `flock`, and a local
+git staleness refusal) — this list states them, it does not implement them.
+
+- **Arm the canonical command once.** There is exactly one argument set per
+  `LANE` value (two for Lane 3 — its belt and its sweep), and the script
+  refuses anything else, printing the command to copy.
+- **A duplicate exits 4 by design.** A second arm for a lane already armed
+  is not a bug to investigate; it is the mechanism working.
+- **Never convert a sweep into a Monitor.** `--sweep-for` is the suspenders'
+  one-shot backstop. Arming it as a persistent `Monitor` is
+  harmonic-forge#590's regression, not a stronger belt.
+- **Never ask the operator whether to stop.** The belt never pauses, ever —
+  it backs off, it never stops (see "The belt never pauses" below).
+
 ## The belt is `watch_lane_posts.py` — copy the command, don't rebuild it
 
 **`watch_lane_posts.py` already is the belt.** It re-derives `(repo, issue)`
@@ -98,7 +116,7 @@ mid-issue is not the command to arm:
   transfer.
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 90
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 300
   ```
 
   `--all-worktrees` follows Lane 2's own in-flight work; `--queue-for l2`
@@ -107,7 +125,15 @@ mid-issue is not the command to arm:
 - **Lane 3** — no worktree of its own; queue-discover:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 60
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 300
+  ```
+
+  Lane 3 also arms the suspenders' repo-wide sweep (`--sweep-for l3`, see
+  "The suspenders" below) as its own canonical command, with its own lock —
+  arming one must never block the other:
+
+  ```
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --sweep-for l3 --account-repos vitalharmony --interval 300
   ```
 
 **A monitor that never printed a status line is not proof it is watching

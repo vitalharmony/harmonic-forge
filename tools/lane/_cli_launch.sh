@@ -268,3 +268,18 @@ cli_args+=("${lane_passthrough[@]}")
 
 unset _lane_agent _lane_command _lane_dir _lane_env_prefix \
       _lane_default_flag _lane_policy_file _lane_denied _token _arg
+
+## Platform-rules sync -- immediately before the final exec (harmonic-forge#651)
+#
+# A fast-forward-only pull of ~/harmonic-forge itself. The 2026-09-14 incident
+# was a Lane 1 session running belt-mode tooling from a checkout 3 commits
+# behind origin/main -- both the stale SKILL.md prose AND the stale script
+# that still accepted a retired flag were served from the same stale
+# checkout, so the launcher is the one place that can close that gap for
+# every subsequent hook/skill/tool invocation in the session. Best-effort by
+# design: this must never block session startup -- a warning and continue on
+# any failure (missing sync_rules.py, no network, merge conflict a
+# fast-forward-only pull refuses, timeout).
+if ! timeout 30 python3 "$HOME/harmonic-forge/sync_rules.py" --pull >&2; then
+  echo "${_lane_name:-lane launcher}: sync_rules.py --pull failed or timed out -- continuing with the current ~/harmonic-forge checkout" >&2
+fi

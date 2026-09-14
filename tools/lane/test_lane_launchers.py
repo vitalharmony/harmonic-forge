@@ -881,5 +881,43 @@ class VersionFloors(unittest.TestCase):
                 self.assertIn(version, source)
 
 
+# ---------------------------------------------------------------------------
+# harmonic-forge#651 -- sync_rules.py --pull runs before the final exec
+# ---------------------------------------------------------------------------
+class PlatformRulesSync(unittest.TestCase):
+    """Every lane launches through the shared `_cli_launch.sh`, which is where
+    `sync_rules.py --pull` is invoked (immediately before the final exec, per
+    the issue) -- so asserting it fires at all three lanes exercises the one
+    shared call site rather than three separate ones. Best-effort by design:
+    the fixture's HOME has no `harmonic-forge/sync_rules.py` at all, which is
+    exactly the "sync fails" case, and the launch must still proceed."""
+
+    def test_sync_rules_pull_runs_and_failure_does_not_block_launch(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    cell = tree.run(lane, [])
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    self.assertIn("sync_rules.py --pull failed", cell["stderr"])
+                    self.assertIn("continuing with the current "
+                                  "~/harmonic-forge checkout", cell["stderr"])
+
+    def test_sync_rules_pull_invoked_before_the_final_exec(self):
+        """The call site lives in `_cli_launch.sh`, sourced by every launcher
+        strictly before its own final `exec` line -- grepped directly, the
+        same style `_read_launcher_source` already uses elsewhere in this
+        file to check launcher script text rather than runtime behavior."""
+        source = (LANE_DIR / "_cli_launch.sh").read_text()
+        self.assertIn("sync_rules.py", source)
+        self.assertIn('--pull', source)
+        for lane in ("1", "2", "3"):
+            launcher = _code_only(LANE_DIR / f"lane{lane}")
+            source_idx = launcher.find("_cli_launch.sh")
+            exec_idx = launcher.rfind("exec systemd-inhibit")
+            self.assertGreater(exec_idx, source_idx,
+                                f"lane{lane}: _cli_launch.sh must be sourced "
+                                "before the final exec")
+
+
 if __name__ == "__main__":
     unittest.main()
