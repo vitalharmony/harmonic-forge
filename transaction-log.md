@@ -3,6 +3,21 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): detect launch model from ANTHROPIC_MODEL / ancestor --model (harmonic-forge#656)
+
+Live check after #657 merged: `claude -p --model opus` was resolved as sonnet and
+blocked on a deep trigger. The SessionStart payload carries no model in 2.1.270,
+and a fresh session has no model-bearing transcript entry at its first
+UserPromptSubmit, so resolution fell through to settings. Add launch_model()
+between the recorded model and settings, and use it in the SessionStart recorder.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/record_session_model.py |  2 +-
+- tools/hooks/session_model.py        | 41 +++++++++++++++++++++++++++++++++++-
+- tools/hooks/test_session_model.py   | 42 +++++++++++++++++++++++++++++++++++++
+- 3 files changed, 83 insertions(+), 2 deletions(-)
+
 ## fix(hooks): apply the ten preclose fixes to the tier/model hooks (harmonic-forge#656)
 
 1. Read cap: refs are ordered by prompt position; on a non-high model any ref

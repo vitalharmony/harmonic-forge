@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -160,3 +161,44 @@ class RecordHookMain(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaunchModelTests(unittest.TestCase):
+    """harmonic-forge#656 follow-up: SessionStart carries no model in 2.1.270."""
+
+    def _proc(self, tree):
+        import tempfile, os as _os
+        root = tempfile.mkdtemp()
+        for pid, (argv, ppid) in tree.items():
+            d = _os.path.join(root, str(pid))
+            _os.makedirs(d)
+            with open(_os.path.join(d, "cmdline"), "wb") as fh:
+                fh.write(b"\0".join(a.encode() for a in argv) + b"\0")
+            with open(_os.path.join(d, "status"), "w") as fh:
+                fh.write(f"Name:\tx\nPPid:\t{ppid}\n")
+        return root
+
+    def test_env_wins(self):
+        self.assertEqual(sm.launch_model({"ANTHROPIC_MODEL": "claude-opus-5"}, proc_root="/nonexistent", pid=1), "claude-opus-5")
+
+    def test_ancestor_model_flag(self):
+        root = self._proc({30: (["python3", "hook.py"], 20), 20: (["/bin/sh", "-c", "x"], 10),
+                           10: (["claude", "-p", "--model", "opus", "hi"], 1)})
+        self.assertEqual(sm.launch_model({}, proc_root=root, pid=30), "opus")
+
+    def test_equals_form(self):
+        root = self._proc({30: (["python3"], 10), 10: (["claude", "--model=fable"], 1)})
+        self.assertEqual(sm.launch_model({}, proc_root=root, pid=30), "fable")
+
+    def test_no_flag_returns_none(self):
+        root = self._proc({30: (["python3"], 10), 10: (["claude", "-p", "hi"], 1)})
+        self.assertIsNone(sm.launch_model({}, proc_root=root, pid=30))
+
+    def test_current_model_prefers_launch_over_settings(self):
+        import tempfile, os as _os, json as _json
+        home = tempfile.mkdtemp(); _os.makedirs(_os.path.join(home, ".claude"))
+        with open(_os.path.join(home, ".claude", "settings.json"), "w") as fh:
+            _json.dump({"model": "sonnet"}, fh)
+        with mock.patch.object(sm, "launch_model", return_value="opus"):
+            from pathlib import Path as _P
+            self.assertEqual(sm.current_model("", "/nonexistent", None, record_dir=_P(home), home=_P(home)), "opus")

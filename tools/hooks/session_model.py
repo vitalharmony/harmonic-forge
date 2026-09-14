@@ -26,7 +26,9 @@ Resolution order (AC4):
 2. The model a `SessionStart` hook recorded from its payload
    (`record_session_model.py`), for a fresh session with no model-bearing
    transcript entry yet -- the `--model` launch flag case.
-3. The effective settings `model`: project `.claude/settings.local.json`,
+3. The launch model: `ANTHROPIC_MODEL`, then the nearest ancestor process
+   argv `--model X` (the SessionStart payload carries no model in 2.1.270).
+4. The effective settings `model`: project `.claude/settings.local.json`,
    project `.claude/settings.json`, then `~/.claude/settings.json`.
 
 Returns None when nothing resolves. Claude Code only: Codex and Gemini lanes
@@ -190,6 +192,42 @@ def settings_model(cwd: str, home: Path | None = None) -> str | None:
     return None
 
 
+def launch_model(environ: dict | None = None, proc_root: str = "/proc",
+                 pid: int | None = None) -> str | None:
+    """The model a session was launched with, when nothing has recorded it yet.
+
+    Measured 2026-09-14 (claude 2.1.270, `claude -p --model opus`): the
+    `SessionStart` payload carries no `model` field, and a fresh session has no
+    model-bearing transcript entry when its first `UserPromptSubmit` fires. So a
+    lane launched with `--model opus` fell through to settings (`sonnet`) and was
+    blocked on its first deep trigger. Read the launch instead: `ANTHROPIC_MODEL`,
+    then the nearest ancestor process whose argv carries `--model X`/`--model=X`.
+    """
+    env = os.environ if environ is None else environ
+    value = (env.get("ANTHROPIC_MODEL") or "").strip()
+    if value:
+        return value
+    current = os.getpid() if pid is None else pid
+    for _ in range(12):
+        try:
+            with open(f"{proc_root}/{current}/cmdline", "rb") as fh:
+                argv = [a.decode(errors="replace") for a in fh.read().split(b"\0") if a]
+            with open(f"{proc_root}/{current}/status") as fh:
+                parent = next((int(line.split()[1]) for line in fh
+                               if line.startswith("PPid:")), 0)
+        except (OSError, ValueError):
+            return None
+        for i, arg in enumerate(argv):
+            if arg == "--model" and i + 1 < len(argv) and argv[i + 1].strip():
+                return argv[i + 1].strip()
+            if arg.startswith("--model=") and arg[8:].strip():
+                return arg[8:].strip()
+        if parent <= 1:
+            return None
+        current = parent
+    return None
+
+
 def current_model(transcript_path: str | None, cwd: str | None,
                   session_id: str | None = None, *,
                   record_dir: Path | None = None,
@@ -198,6 +236,7 @@ def current_model(transcript_path: str | None, cwd: str | None,
     try:
         return (transcript_model(transcript_path or "")
                 or recorded_model(session_id, record_dir)
+                or launch_model()
                 or settings_model(cwd or "", home))
     except Exception:  # noqa: BLE001 -- a model read must never crash a hook
         return None

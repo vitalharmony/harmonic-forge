@@ -22,7 +22,7 @@ import session_model  # noqa: E402
 
 
 def record(payload: dict, record_dir: Path | None = None) -> Path | None:
-    model = payload.get("model")
+    model = payload.get("model") or session_model.launch_model()
     if not isinstance(model, str) or not model.strip():
         return None
     path = session_model.record_path(payload.get("session_id") or "", record_dir)
