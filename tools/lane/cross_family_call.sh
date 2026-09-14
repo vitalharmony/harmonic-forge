@@ -237,6 +237,10 @@ Rules for "verdict":
 brief's own text and report "confirmed" -- if you did not run or read
 something, the verdict is "uncheckable". A confirmed/refuted verdict with an
 empty "evidence" will be discarded and recorded as "uncheckable".
+A verbatim quote from the brief's 'Pre-executed evidence' section is executed
+evidence; cite the command it came from. A confirmed or refuted verdict must
+quote text from that section or from a command you ran yourself; quoting the
+artifact or assumptions sections is not evidence.
 
 You are a READ-ONLY reviewer. Do not mutate anything, on GitHub or on disk.
 Specifically: no `gh issue close`, `gh pr merge`, `gh issue comment`, `gh api`

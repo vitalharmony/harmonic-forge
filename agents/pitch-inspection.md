@@ -73,12 +73,8 @@ marked **`asserted`** rather than `verified-live`. Design-alternatives
 on their own — those are design questions, which your own read handles.
 This branch exists for *factual* claims nobody checked.
 
-**Opt-in while the feature is young.** Take this branch only when your
-prompt explicitly enables it (`cross-family: on`). Absent that, note in
-your verdict that an asserted assumption would have triggered a
-cross-family check, and carry on with your own read. This flag exists so
-the first invocations are deliberate and reviewable; it is expected to be
-removed once the path has a track record.
+This branch runs whenever the trigger above holds. No prompt flag is needed
+(harmonic-forge#648).
 
 **The mechanism itself is not described here.** Read
 `~/harmonic-forge/rules/cross-family-review.md` — the exact permitted

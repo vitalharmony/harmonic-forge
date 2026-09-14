@@ -9,6 +9,7 @@ import importlib.util
 import io
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 _MODULE_PATH = Path(__file__).resolve().parent / "build_cross_family_brief.py"
@@ -172,3 +173,154 @@ class TestEvidencePaths(unittest.TestCase):
         promise the reviewer something the helper will overrule."""
         brief = m.build([("a.md", "x")], "i", "q", ["c"], ["path"])
         self.assertIn("discarded", brief)
+
+
+class TestEvidenceRunAllowlist(unittest.TestCase):
+    """harmonic-forge#648 — `--evidence-run` is gated by a POSITIVE
+    allowlist, never a denylist, because `gh` accepts glued/`=` flag forms a
+    denylist scoped to space-separated tokens would miss."""
+
+    def _refused(self, cmd: str) -> None:
+        with self.assertRaises(ValueError) as caught:
+            m.run_evidence(cmd)
+        self.assertEqual(
+            f"refused --evidence-run (not allowlisted): {cmd}",
+            str(caught.exception),
+        )
+
+    def test_post_method_is_refused(self):
+        self._refused("gh api -X POST repos/o/r/issues")
+
+    def test_field_flag_is_refused(self):
+        self._refused("gh api repos/o/r/issues -f a=b")
+
+    def test_curl_is_refused(self):
+        self._refused("curl https://example.com")
+
+    def test_graphql_endpoint_is_refused_even_with_a_query_document(self):
+        self._refused("gh api graphql -f query='query{viewer{login}}'")
+
+    def test_glued_field_flag_is_refused(self):
+        self._refused("gh api repos/o/r -fx=y")
+
+    def test_input_flag_glued_form_is_refused(self):
+        self._refused("gh api repos/o/r --input=f")
+
+    def test_field_long_form_glued_is_refused(self):
+        self._refused("gh api repos/o/r --field=a=b")
+
+    def test_glued_method_override_is_refused(self):
+        self._refused("gh api repos/o/r -iXPOST")
+
+    def test_non_accept_header_is_refused(self):
+        self._refused("gh api repos/o/r -H 'X-HTTP-Method-Override: POST'")
+
+    def test_bare_gh_api_endpoint_is_accepted(self):
+        self.assertTrue(m._evidence_run_allowlisted(["gh", "api", "repos/o/r"]))
+
+    def test_npm_view_with_positional_args_is_accepted(self):
+        self.assertTrue(m._evidence_run_allowlisted(["npm", "view", "x", "version"]))
+
+    def test_npm_view_with_any_flag_is_refused(self):
+        self.assertFalse(m._evidence_run_allowlisted(["npm", "view", "x", "--json"]))
+
+    def test_accept_header_spaced_form_is_accepted(self):
+        self.assertTrue(m._evidence_run_allowlisted(
+            ["gh", "api", "repos/o/r", "-H", "Accept: application/vnd.github+json"]))
+
+    def test_get_method_is_accepted(self):
+        self.assertTrue(m._evidence_run_allowlisted(["gh", "api", "repos/o/r", "-X", "GET"]))
+
+
+class TestEvidenceRunExecution(unittest.TestCase):
+    """Mocked-subprocess coverage: the embedded section, truncation, and
+    timeout handling, none of which should ever shell out for real in this
+    suite."""
+
+    def test_embeds_command_exit_stdout_stderr(self):
+        captured = {}
+
+        def fake_run(argv, capture_output, text, timeout):
+            captured["argv"] = argv
+            return _FakeCompletedProcess(0, "hello stdout", "some stderr")
+
+        with unittest.mock.patch.object(m.subprocess, "run", fake_run):
+            result = m.run_evidence("gh api repos/o/r")
+        self.assertEqual(result["cmd"], "gh api repos/o/r")
+        self.assertEqual(result["exit"], 0)
+        self.assertEqual(result["stdout"], "hello stdout")
+        self.assertEqual(result["stderr"], "some stderr")
+        self.assertEqual(captured["argv"], ["gh", "api", "repos/o/r"])
+
+        section = m.render_evidence_run_section([result])
+        self.assertIn("## Pre-executed evidence (captured by the brief builder)", section)
+        self.assertIn("gh api repos/o/r", section)
+        self.assertIn("exit: 0", section)
+        self.assertIn("hello stdout", section)
+        self.assertIn("some stderr", section)
+
+    def test_nonzero_exit_is_still_embedded_and_brief_still_written(self):
+        def fake_run(argv, capture_output, text, timeout):
+            return _FakeCompletedProcess(1, "", "HTTP 403: rate limited")
+
+        with unittest.mock.patch.object(m.subprocess, "run", fake_run):
+            result = m.run_evidence("gh api repos/o/r")
+        self.assertEqual(result["exit"], 1)
+        self.assertIn("rate limited", result["stderr"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = Path(tmp) / "a.md"
+            art.write_text("ARTIFACT\n")
+            out = Path(tmp) / "brief.md"
+            with unittest.mock.patch.object(m.subprocess, "run", fake_run):
+                code = m.main([
+                    "--artifact", str(art), "--intent", "i", "--question", "q",
+                    "--assumption", "a", "--evidence", "p",
+                    "--evidence-run", "gh api repos/o/r",
+                    "--out", str(out),
+                ])
+            self.assertEqual(code, 0)
+            self.assertTrue(out.exists())
+            self.assertIn("exit: 1", out.read_text())
+
+    def test_truncates_long_output_at_8000_chars(self):
+        def fake_run(argv, capture_output, text, timeout):
+            return _FakeCompletedProcess(0, "x" * 9000, "")
+
+        with unittest.mock.patch.object(m.subprocess, "run", fake_run):
+            result = m.run_evidence("gh api repos/o/r")
+        self.assertEqual(len(result["stdout"]), 8000 + len("[truncated]"))
+        self.assertTrue(result["stdout"].endswith("[truncated]"))
+
+    def test_timeout_is_recorded_and_brief_still_written(self):
+        def fake_run(argv, capture_output, text, timeout):
+            raise m.subprocess.TimeoutExpired(cmd=argv, timeout=timeout,
+                                               output="partial", stderr="")
+
+        with unittest.mock.patch.object(m.subprocess, "run", fake_run):
+            result = m.run_evidence("gh api repos/o/r")
+        self.assertEqual(result["exit"], "timeout")
+
+        section = m.render_evidence_run_section([result])
+        self.assertIn("exit: timeout", section)
+
+    def test_a_refused_command_writes_no_brief(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            art = Path(tmp) / "a.md"
+            art.write_text("ARTIFACT\n")
+            out = Path(tmp) / "brief.md"
+            code = m.main([
+                "--artifact", str(art), "--intent", "i", "--question", "q",
+                "--assumption", "a", "--evidence", "p",
+                "--evidence-run", "gh api -X POST repos/o/r",
+                "--out", str(out),
+            ])
+            self.assertNotEqual(code, 0)
+            self.assertFalse(out.exists())
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
