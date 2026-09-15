@@ -7,6 +7,11 @@ Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transacti
 - tools/gh/repo_hygiene.py      |  6 ++++--
 - tools/gh/test_repo_hygiene.py | 30 ++++++++++++++++++++++++++++++
 - 2 files changed, 34 insertions(+), 2 deletions(-)
+## fix(hooks): clear the belt arming record when its suspenders cron is deleted (harmonic-forge#675)
+- .claude/settings.json                   |  13 ++-
+- tools/hooks/enforce_belt_arming.py      | 141 +++++++++++++++++++++++--
+- tools/hooks/test_enforce_belt_arming.py | 180 +++++++++++++++++++++++++++++++-
+- 3 files changed, 322 insertions(+), 12 deletions(-)
 
 ## test(hooks): isolate session_model fallback tests from the real --model ancestor (harmonic-forge#671)
 - tools/hooks/test_model_tier_gate.py |  3 ++-
