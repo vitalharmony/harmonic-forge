@@ -96,11 +96,19 @@ matters:
      highest-risk acceptance criterion, plus one chosen at random, so no
      gate can predict which claim gets re-checked.
 
-  Escalate to a full re-run only when the head SHA moved after the gate,
-  a test case's evidence is asserted rather than executed or is thin, the
-  issue is Tier `deep`, or it is labeled `data-migration`. A spot-check
-  that disagrees with the gate is not a PASS: it routes to the operator
-  as a decision, the same as a FAIL.
+  **Outside this carve-out entirely** (no Lane 1 merge/close, whatever
+  Lane 1 re-runs itself):
+  - The PR head moved after the gate. The PASS covers only the SHA it names
+    (R-0354), so the new head goes back to Lane 3 via `ready-for-l3`.
+  - Any test case's evidence is asserted rather than executed. That is an
+    unverified AC, which routes to the operator per the PASS-only bullet
+    above.
+  - The spot-check disagrees with the gate. It routes to the operator as a
+    decision, the same as a FAIL.
+
+  **Still eligible, but re-run every test case instead of spot-checking**
+  when the issue is Tier `deep`, its Tier is unset or cannot be read, or it
+  is labeled `data-migration`.
 - **Every other absolute stands.** A `data-migration`-labeled issue still
   requires `migration-executed`/`migration-abandoned` (R-0169); a
   Tooling-Exception diff still requires `preclose-inspected` before close
