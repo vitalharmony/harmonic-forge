@@ -165,3 +165,16 @@ class QueueCycleEmitsTheNoticeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# harmonic-forge queue-noise filters: no real milestone lookup or cache write from tests.
+from unittest.mock import patch as _ms_patch  # noqa: E402
+_ms = _ms_patch("watch_lane_posts.milestone_exclusions", return_value=[])
+
+
+def setUpModule():  # noqa: F811
+    _ms.start()
+
+
+def tearDownModule():  # noqa: F811
+    _ms.stop()

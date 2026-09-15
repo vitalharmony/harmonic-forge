@@ -570,7 +570,85 @@ def _mark_retired_tokens(headline: str) -> str:
     return _RETIRED_TOKEN_RE.sub(_replace, headline)
 
 
-def _search_candidates(repo: str, marker_text: str) -> set[int]:
+# Queue-noise filters (operator ruling 2026-09-14). The belt listed every issue
+# that ever got a handoff marker, including work that is not the lane's to
+# pick up. Applied as search qualifiers, so they cost no extra calls.
+_LANE1_OWNED_LABEL = "tooling-exception"   # Lane 1 implements these
+_NEVER_QUEUED_LABEL = "epic"               # never implemented directly
+_MILESTONE_CACHE_TTL = 3600
+_MILESTONE_CACHE = Path.home() / ".cache" / "harmonic-forge" / "current_milestone.json"
+_NUMBERED_MILESTONE = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def milestone_exclusions(repo: str, *, cache_path: Path | None = None,
+                         fetch=None, now: float | None = None) -> list[str]:
+    """Milestones whose issues are NOT current release work for `repo`: every
+    open numbered milestone later than the current one, plus `Later`. The
+    current release is the lowest-numbered open numbered milestone that still
+    has open issues -- measured 2026-09-14, hrse's `2.8` is open with 0 open
+    issues while `2.9` holds the work, so "lowest open" alone picks the wrong
+    one. Non-numbered milestones other than `Later` (e.g. `Platform`) and
+    unmilestoned issues stay queued. Returns [] for a repo with no numbered
+    milestones or when the lookup fails (more noise, never a dropped queue).
+    Cached for an hour: one call per hour per repo."""
+    path = cache_path or _MILESTONE_CACHE
+    now = time.time() if now is None else now
+    try:
+        cached = json.loads(path.read_text())
+        entry = cached.get(repo)
+        if entry and now - entry["at"] < _MILESTONE_CACHE_TTL:
+            return list(entry["exclude"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        cached = {}
+    try:
+        if fetch is None:
+            raw = gh_as(_ACCOUNT, ["api", "-X", "GET", f"repos/{repo}/milestones",
+                                   "-f", "state=open", "-f", "per_page=100",
+                                   "--jq", '.[] | "\\(.title)\\t\\(.open_issues)"'],
+                        counter=_COUNTER)
+            rows = []
+            for line in raw.splitlines():
+                title, _, count = line.rpartition("\t")
+                if title:
+                    rows.append((title.strip(), int(count)))
+        else:
+            rows = fetch(repo)
+    except Exception as exc:  # noqa: BLE001 -- fail open to "no filter"
+        print(f"[watch_lane_posts] milestone lookup failed for {repo}: {exc}",
+              file=sys.stderr)
+        return []
+
+    def version(title: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in title.split("."))
+
+    numbered = [(t, n) for t, n in rows if _NUMBERED_MILESTONE.match(t)]
+    active = [t for t, n in numbered if n > 0]
+    if not active:
+        exclude: list[str] = []
+    else:
+        current = min(active, key=version)
+        exclude = sorted((t for t, _ in numbered if version(t) > version(current)), key=version)
+        exclude += [t for t, _ in rows if t == "Later"]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cached = cached if isinstance(cached, dict) else {}
+        cached[repo] = {"exclude": exclude, "at": now}
+        path.write_text(json.dumps(cached))
+    except OSError:
+        pass
+    return exclude
+
+
+def queue_qualifiers(repo: str, lane: str, exclude_milestones: list[str]) -> str:
+    """Search qualifiers that keep work that isn't `lane`'s off its queue."""
+    parts = [f"-label:{_NEVER_QUEUED_LABEL}"]
+    if lane in ("l2", "l3"):
+        parts.append(f"-label:{_LANE1_OWNED_LABEL}")
+    parts += [f'-milestone:"{m}"' for m in exclude_milestones]
+    return " ".join(parts)
+
+
+def _search_candidates(repo: str, marker_text: str, qualifiers: str = "") -> set[int]:
     """Open issues whose comment history contains `marker_text` SOMEWHERE --
     a coarse, cheap pre-filter. `discover_queue` re-checks each one to see
     if that marker is still the LATEST classified comment."""
@@ -606,7 +684,7 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
         raw = gh_as(
             _ACCOUNT,
             ["api", "-X", "GET", "search/issues",
-             "-f", f"q=repo:{repo} state:open {marker_text}",
+             "-f", f"q=repo:{repo} state:open {qualifiers} {marker_text}".replace("  ", " "),
              "--paginate", "-f", "per_page=100",
              "--jq", 'if .incomplete_results then "INCOMPLETE" else empty end,'
                      " (.items[].number)"],
@@ -907,9 +985,10 @@ def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
     candidates: set[int] = set()
+    qualifiers = queue_qualifiers(repo, lane, milestone_exclusions(repo))
     for kind in kinds:
         try:
-            candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}")
+            candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}", qualifiers)
         except SearchUnavailable:
             # `fetch_ok=False`, mirroring `discover_l1_sweep` (harmonic-
             # forge#579 AC1). The caller must NOT diff this repo's queue
