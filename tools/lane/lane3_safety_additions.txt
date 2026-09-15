@@ -70,6 +70,27 @@
 # this registry does today either).
 --append-system-prompt
 
+# AMENDMENT 4 -- harmonic-forge#644.  Codex gains `--sandbox workspace-write`
+# and `--add-dir <testplan>` at Lane 3 only (see `_agent_registry.sh`'s
+# AGENT_LANE_SANDBOX / AGENT_LANE_ADD_DIR and `_cli_launch.sh` step 4b).
+#
+# Same kind as `--admin-policy` above, not `--append-system-prompt`/`--model`:
+# a PERMISSION boundary, and its un-removability is real for `--sandbox` --
+# #644's registry declaration feeds `registry_lane_denied_tokens`, so a
+# passthrough `--sandbox` is denied outright at Lane 3 (Codex hard-errors on a
+# second `--sandbox` token, so "inject unless given" would let a caller
+# silently override to `danger-full-access` instead of erroring). `--add-dir`
+# is different in kind from `--sandbox` in the same amendment: it is injected
+# UNCONDITIONALLY rather than denied, because Codex accepts repeated
+# `--add-dir` with no conflict (verified live) -- a caller's own `--add-dir`
+# still applies alongside the launcher's. Once this lands, the previously
+# memorized manual launch
+# `lane3 --agent codex -- resume --last --sandbox workspace-write --add-dir …`
+# is refused (its own `--sandbox` is now denied); plain
+# `lane3 --agent codex -- resume --last` is the replacement.
+--sandbox
+--add-dir
+
 # AMENDMENT 3 -- harmonic-forge#665, 2026-09-15.  Claude gains `--model` at
 # every lane, Lane 3 included, and `--effort` when LANE_DEFAULT_EFFORT is set
 # (see `_agent_registry.sh`'s AGENT_MODEL_FLAG / AGENT_EFFORT_FLAG and

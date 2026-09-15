@@ -221,6 +221,29 @@ declare -A AGENT_LANE_POLICY=(
   [gemini:3]="gemini-lane3.toml"
 )
 
+# AGENT_LANE_ADD_DIR / AGENT_LANE_SANDBOX -- harmonic-forge#644.
+#
+# Same NC7 pattern as AGENT_LANE_POLICY above: every agent:lane slot is
+# declared, populated only at [codex:3]. Two tables, not one, because their
+# live-verified Codex flag semantics differ (harmonic-forge#644 Plan,
+# Delegated Judgment 1): `--add-dir` is repeatable, so it is injected
+# unconditionally below and never denied -- a caller's own `--add-dir` still
+# applies alongside it. `--sandbox` hard-errors on a second occurrence
+# ("cannot be used multiple times"), so a caller-supplied one cannot be
+# "inject unless given" without risking a silent override to
+# `danger-full-access`; it goes on the deny list instead, the same mechanism
+# that makes `--admin-policy` un-removable for `gemini:3`.
+declare -A AGENT_LANE_ADD_DIR=(
+  [claude:1]="" [claude:2]="" [claude:3]=""
+  [codex:1]=""  [codex:2]=""  [codex:3]="Harmonic_Projects/testplan"
+  [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
+)
+declare -A AGENT_LANE_SANDBOX=(
+  [claude:1]="" [claude:2]="" [claude:3]=""
+  [codex:1]=""  [codex:2]=""  [codex:3]="workspace-write"
+  [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
+)
+
 # The agents this registry knows. `--agent` is CLOSED against this list: an
 # unrecognized value is a hard error, never an exec attempt (ADR-007 § 3).
 LANE_AGENTS=(claude codex gemini)
@@ -275,6 +298,10 @@ registry_assert_integrity() {
     for lane in 1 2 3; do
       [ -v "AGENT_LANE_POLICY[$agent:$lane]" ] \
         || _registry_die "agent registry: no policy slot declared for $agent at lane $lane -- declare it empty rather than omitting it (harmonic-forge#322 NC7)"
+      [ -v "AGENT_LANE_ADD_DIR[$agent:$lane]" ] \
+        || _registry_die "agent registry: no add-dir slot declared for $agent at lane $lane -- declare it empty rather than omitting it (harmonic-forge#644)"
+      [ -v "AGENT_LANE_SANDBOX[$agent:$lane]" ] \
+        || _registry_die "agent registry: no sandbox slot declared for $agent at lane $lane -- declare it empty rather than omitting it (harmonic-forge#644)"
     done
   done
 }
@@ -341,10 +368,17 @@ registry_agent_for_command() {
 # rather than shipped behind a claim this mechanism cannot support.
 registry_lane_denied_tokens() {
   local agent="$1" lane="$2"
-  local policy flag
+  local policy flag sandbox
   policy="$(registry_lookup AGENT_LANE_POLICY "$agent:$lane")"
-  [ -n "$policy" ] || return 0
-  flag="$(registry_lookup AGENT_POLICY_FLAG "$agent")"
-  [ -n "$flag" ] || return 0
-  printf '%s\n' "$flag"
+  if [ -n "$policy" ]; then
+    flag="$(registry_lookup AGENT_POLICY_FLAG "$agent")"
+    [ -n "$flag" ] && printf '%s\n' "$flag"
+  fi
+  # harmonic-forge#644: `--sandbox` cannot be "inject unless given" like
+  # `--add-dir` below -- Codex hard-errors on a second `--sandbox`, so a
+  # caller-supplied one would silently win the launcher's own instead of
+  # erroring, and could widen the sandbox to `danger-full-access`. Denied
+  # outright instead, same mechanism as `--admin-policy`.
+  sandbox="$(registry_lookup AGENT_LANE_SANDBOX "$agent:$lane")"
+  [ -n "$sandbox" ] && printf '%s\n' "--sandbox"
 }
