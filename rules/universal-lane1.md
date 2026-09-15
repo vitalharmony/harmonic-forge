@@ -85,9 +85,30 @@ matters:
   carrying any disclosed partial/unverified AC still routes to the
   operator as a decision — the carve-out exists for the case with nothing
   left to decide, not to compress judgment calls into narration.
-- **Independent re-verification is not optional.** Re-running the gate's
-  own claims live is the precondition, not a courtesy; accepting a PASS
-  on the gate's word alone does not qualify.
+- **Independent re-verification is not optional, and it is a spot-check,
+  not a second gate run** (harmonic-forge#668). Accepting a PASS on the
+  gate's word alone still does not qualify, but re-running every Lane 3
+  test case repeats the gate at full cost without adding independence.
+  The minimum is:
+  1. The PR head SHA equals the SHA the gate result names, and CI on that
+     SHA is green.
+  2. Re-run **one or two** test cases live: the one covering the
+     highest-risk acceptance criterion, plus one chosen at random, so no
+     gate can predict which claim gets re-checked.
+
+  **Outside this carve-out entirely** (no Lane 1 merge/close, whatever
+  Lane 1 re-runs itself):
+  - The PR head moved after the gate. The PASS covers only the SHA it names
+    (R-0354), so the new head goes back to Lane 3 via `ready-for-l3`.
+  - Any test case's evidence is asserted rather than executed. That is an
+    unverified AC, which routes to the operator per the PASS-only bullet
+    above.
+  - The spot-check disagrees with the gate. It routes to the operator as a
+    decision, the same as a FAIL.
+
+  **Still eligible, but re-run every test case instead of spot-checking**
+  when the issue is Tier `deep`, its Tier is unset or cannot be read, or it
+  is labeled `data-migration`.
 - **Every other absolute stands.** A `data-migration`-labeled issue still
   requires `migration-executed`/`migration-abandoned` (R-0169); a
   Tooling-Exception diff still requires `preclose-inspected` before close

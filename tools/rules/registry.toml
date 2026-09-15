@@ -2290,8 +2290,8 @@ hooks = [{ script = "block_lane2_status_claims.py", events = ["PreToolUse:Bash"]
 id = "R-0351"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
-statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only, may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
-text_sha = "4fc6469a93c036f9"
+statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only (a spot-check: gated SHA equals PR head and CI green, plus 1-2 test cases re-run live -- highest-risk and one random; a moved head, asserted evidence or a disagreeing spot-check leaves the carve-out; Tier deep, unset/unreadable Tier or data-migration requires every test case re-run), may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
+text_sha = "494cf7ad29567fa7"
 hooks = []
 exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
 
