@@ -199,6 +199,21 @@ class DecisionTests(unittest.TestCase):
         self.assertNotIn("decision", out)
         self.assertIn("not checked", out["systemMessage"])
 
+    def test_pasted_notification_plus_typed_trigger_still_blocks(self):
+        """Preclose finding: a pasted tick followed by a real trigger is operator
+        text, not a notification."""
+        prompt = ("<task-notification>\n<event>vitalharmony/hrse#1821 queued-for-l2 "
+                  "kind=handoff</event>\n</task-notification>\nImplement H1817")
+        out, _ = run(prompt, "claude-sonnet-5",
+                     {(HRSE, 1821): "standard", (HRSE, 1817): "deep"})
+        self.assertEqual(out["decision"], "block")
+
+    def test_notification_with_leading_bom_is_still_advisory(self):
+        prompt = ("\ufeff<task-notification>\n<event>vitalharmony/hrse#1830 queued-for-l2 "
+                  "kind=handoff</event>\n</task-notification>")
+        out, _ = run(prompt, "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertNotIn("decision", out)
+
     def test_typed_prompt_mentioning_task_notification_midway_still_blocks(self):
         out, _ = run("Plan H1830 <task-notification>", "claude-sonnet-5",
                      {(HRSE, 1830): "deep"})

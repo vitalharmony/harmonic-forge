@@ -305,8 +305,15 @@ def run(payload: dict, env: dict | None = None, lookup=None, model=_UNSET) -> di
 
 
 def is_notification(prompt: str) -> bool:
-    """A harness-injected belt/Monitor/background-task event, not operator text."""
-    return prompt.lstrip().startswith("<task-notification>")
+    """A harness-injected belt/Monitor/background-task event, not operator text.
+
+    The WHOLE prompt must be one notification block: anything typed before or
+    after it (e.g. a pasted tick plus `Implement H1817`) makes it operator
+    text again, so a real trigger can't ride in on a pasted tag (preclose)."""
+    body = prompt.strip().lstrip("\ufeff")
+    return (body.startswith("<task-notification>")
+            and body.endswith("</task-notification>")
+            and body.count("<task-notification>") == body.count("</task-notification>"))
 
 
 def main() -> None:
