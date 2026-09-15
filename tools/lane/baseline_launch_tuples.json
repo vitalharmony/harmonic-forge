@@ -737,6 +737,10 @@
         "--why=Lane 3 (gate) Claude Code session",
         "--mode=block",
         "codex",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "<HOME>/Harmonic_Projects/testplan",
         "--permission-mode",
         "plan"
       ],
@@ -758,6 +762,10 @@
         "--why=Lane 3 (gate) Claude Code session",
         "--mode=block",
         "codex",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "<HOME>/Harmonic_Projects/testplan",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane3",
@@ -777,7 +785,11 @@
         "--who=lane3",
         "--why=Lane 3 (gate) Claude Code session",
         "--mode=block",
-        "codex"
+        "codex",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "<HOME>/Harmonic_Projects/testplan"
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
@@ -797,6 +809,10 @@
         "--why=Lane 3 (gate) Claude Code session",
         "--mode=block",
         "codex",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "<HOME>/Harmonic_Projects/testplan",
         "-p",
         "two words here"
       ],

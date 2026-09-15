@@ -548,16 +548,71 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             self.assertIn("cannot be set, removed, or contradicted",
                           denied["stderr"])
 
-    def test_claude_and_codex_lane3_remain_flagless(self):
-        """AC4 stays vacuous for Claude and Codex, and that is recorded rather
-        than mistaken for enforcement. Codex's real enforcement path is
-        `.codex/hooks.json` (ADR-007 § 8), not a launcher flag."""
+    def test_claude_lane3_remains_flagless(self):
+        """AC4 stays vacuous for Claude, and that is recorded rather than
+        mistaken for enforcement. Claude has no launcher safety flag at
+        Lane 3 at all (unchanged by harmonic-forge#644, which only touches
+        Codex)."""
         with _FixtureTree() as tree:
-            for agent in ("claude", "codex"):
-                with self.subTest(agent=agent):
-                    args = _agent_args(tree.run("3", [], LANE_CLI=agent))
-                    self.assertNotIn("--admin-policy", args)
-                    self.assertNotIn("--sandbox", args)
+            args = _agent_args(tree.run("3", [], LANE_CLI="claude"))
+            self.assertNotIn("--admin-policy", args)
+            self.assertNotIn("--sandbox", args)
+
+    def test_codex_lane3_gains_sandbox_and_add_dir(self):
+        """harmonic-forge#644: unlike Claude above, Codex Lane 3 DOES carry a
+        launcher-supplied safety grant now -- the OS sandbox plus a
+        forge-owned write-guard hook (`lane3_codex_write_guard.py`), not a
+        `.codex/hooks.json`-only enforcement path as the prior test assumed."""
+        with _FixtureTree() as tree:
+            args = _agent_args(tree.run("3", [], LANE_CLI="codex"))
+            self.assertIn("--sandbox", args)
+            self.assertEqual(args[args.index("--sandbox") + 1], "workspace-write")
+            self.assertIn("--add-dir", args)
+            self.assertTrue(
+                args[args.index("--add-dir") + 1].endswith("Harmonic_Projects/testplan"))
+
+    def test_codex_lane3_sandbox_and_add_dir_reach_resume_last(self):
+        """NC2 (Lane 1's check of Plan F644): the grant is injected globally,
+        before the subcommand, so it reaches a `resume --last` launch too --
+        not only the bare form above. `resume`/`--last` are passthrough
+        (step 5), injected after the launcher's own flags (step 4b), so the
+        result is `codex --sandbox workspace-write --add-dir <testplan>
+        resume --last`, never the injection moved after the subcommand."""
+        with _FixtureTree() as tree:
+            cell = tree.run("3", ["resume", "--last"], LANE_CLI="codex")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            args = _agent_args(cell)
+            self.assertEqual(
+                args[:5],
+                ["codex", "--sandbox", "workspace-write", "--add-dir",
+                 args[4]])
+            self.assertTrue(args[4].endswith("Harmonic_Projects/testplan"))
+            self.assertEqual(args[5:], ["resume", "--last"])
+
+    def test_codex_lane3_caller_sandbox_denied(self):
+        """A caller-supplied `--sandbox` at codex:3 is refused outright and
+        nothing launches (harmonic-forge#644 NC1/AC4) -- unlike `--add-dir`
+        below, `--sandbox` cannot be silently overridden without risking a
+        widen to `danger-full-access`."""
+        with _FixtureTree() as tree:
+            denied = tree.run("3", ["--sandbox", "danger-full-access"], LANE_CLI="codex")
+            self.assertFalse(denied["launched"])
+            self.assertIn("cannot be set, removed, or contradicted", denied["stderr"])
+
+    def test_codex_lane3_caller_add_dir_coexists(self):
+        """A caller-supplied `--add-dir` at codex:3 still launches, with BOTH
+        the launcher's own testplan grant and the caller's own directory
+        present -- `--add-dir` is repeatable, verified live, so it is
+        injected unconditionally rather than denied (harmonic-forge#644)."""
+        with _FixtureTree() as tree:
+            cell = tree.run("3", ["--add-dir", "/tmp"], LANE_CLI="codex")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            args = _agent_args(cell)
+            add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+            self.assertEqual(len(add_dir_indices), 2)
+            values = {args[i + 1] for i in add_dir_indices}
+            self.assertIn("/tmp", values)
+            self.assertTrue(any(v.endswith("Harmonic_Projects/testplan") for v in values))
 
     def test_deny_mechanism_is_registry_generic_not_gemini_specific(self):
         """NC7.  Fill the declared-empty gemini:3 slot and the deny follows,

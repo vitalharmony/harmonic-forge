@@ -353,6 +353,27 @@ if [ -n "$_lane_policy_file" ]; then
   unset _lane_policy_flag _lane_policy_path
 fi
 
+# 4b. The lane's sandbox/add-dir grant, if the registry declares one for this
+#     agent+lane (harmonic-forge#644). Injected before passthrough so a
+#     `resume`/`exec` subcommand supplied as the caller's own argument still
+#     receives it (`codex --sandbox workspace-write --add-dir <testplan>
+#     resume --last`) -- the same reasoning AGENT_DEFAULT_FLAG already relies
+#     on in step 3. `--add-dir` is injected unconditionally (Codex accepts
+#     repeated `--add-dir` with no conflict, verified live) so a caller's own
+#     `--add-dir` still applies alongside it; `--sandbox` is never
+#     conditionally injected here at all -- a caller-supplied one is refused
+#     outright by the AC4 deny check above, so this always fires.
+_lane_sandbox="$(registry_lookup AGENT_LANE_SANDBOX "$_lane_agent:$LANE")"
+if [ -n "$_lane_sandbox" ]; then
+  cli_args+=("--sandbox" "$_lane_sandbox")
+fi
+unset _lane_sandbox
+_lane_add_dir="$(registry_lookup AGENT_LANE_ADD_DIR "$_lane_agent:$LANE")"
+if [ -n "$_lane_add_dir" ]; then
+  cli_args+=("--add-dir" "$HOME/$_lane_add_dir")
+fi
+unset _lane_add_dir
+
 # 5. The caller's own arguments, last.
 cli_args+=("${lane_passthrough[@]}")
 
