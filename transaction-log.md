@@ -3,6 +3,96 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(belt): operator ALLOW LOOP override for non-canonical loop/cron (harmonic-forge#659)
+
+Per the operator ruling of 2026-09-14 on #659.
+
+- New UserPromptSubmit hook tools/hooks/grant_loop_override.py: a line the
+  operator types starting `ALLOW LOOP` (LANE=1/2/3) writes
+  <arming dir>/<session_id>.loop_grant with a created timestamp and says so
+  (systemMessage + expiry). Candidate lines come from the new shared
+  expand_lane_shorthand.directive_lines() (fences + _QUOTE_PREFIX_RE, now also
+  used by _scan_batch) and must pass _provenance_refusal(); a refused line is
+  reported, nothing recorded. Separate file rather than a UPS mode: the guard
+  keeps one event and one output contract; grant path/TTL/format live in the
+  guard and are imported.
+- enforce_belt_arming.py: grant valid 10 min. A non-canonical Skill(loop)
+  checks it and records its args without consuming; the following CronCreate
+  (prompt must be a substring of those args) consumes it; a direct CronCreate
+  consumes it; a second Skill under one grant is denied. Monitor/watcher check
+  never consults it. Loop/cron deny reasons name the operator's ALLOW LOOP
+  line and never the state file.
+- enforce_belt_arming.py denies, in every session, Bash/Monitor commands that
+  mention the arming dir unless every segment is read-only with no redirect,
+  and Write/Edit/MultiEdit/NotebookEdit into it. Matcher widened accordingly;
+  UPS hook registered after expand_lane_shorthand.py.
+
+Tests: grant from a typed line, not from blockquote/fence/mid-sentence/
+task-notification/no-LANE; loop + its cron allowed then denied; expired grant
+ignored; shell and file-tool writes denied. Each verified red with its
+behavior reverted (blockquote: red only with both the line anchor and the
+quote filter reverted -- two independent layers).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/grant_loop_override.py      |  99 +++++++++++++++
+- tools/hooks/test_enforce_belt_arming.py | 152 ++++++++++++++++++++++-
+- tools/hooks/test_grant_loop_override.py | 123 +++++++++++++++++++
+- 6 files changed, 592 insertions(+), 22 deletions(-)
+
+## fix(belt): exact-match loop/cron arming, per-session re-arm guard, parsed Monitor check (harmonic-forge#659)
+
+Answers the #659 preclose findings A-F:
+- A/D: no keyword regex. In LANE=1/2/3 sessions every Skill(loop) whose args
+  are not exactly `10m proactively find work to do`, and every CronCreate that
+  is not exactly {cron "*/10 * * * *", prompt "proactively find work to do",
+  recurring true (absent = true)}, is denied. The reason prints the canonical
+  calls and sends other timed work to Monitor or Bash run_in_background.
+- B: cron and recurring are compared, not just prompt.
+- C: the allowed canonical CronCreate is recorded per session_id under
+  ~/.cache/harmonic-forge/belt_arming/ (HARMONIC_FORGE_BELT_ARMING_DIR
+  overrides); a second one in the same session is denied as already armed.
+  Recorded at the cron, not the Skill call: transcripts show the loop skill
+  issues its CronCreate after the Skill call.
+- E: Monitor commands are parsed with shell_parse; only a segment that
+  executes watch_lane_posts.py (program, python script arg, or under
+  timeout) is checked. pgrep/grep/tail mentions are allowed.
+- F: SKILL.md and DESIGN.md say arming is fixed at 10m and back-off is
+  ScheduleWakeup.
+Regression test per finding; each verified to fail with its fix reverted.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- skills/belt-and-suspenders/test_skill_text.py |  18 +++
+- tools/hooks/enforce_belt_arming.py            | 150 ++++++++++++++++++-------
+- tools/hooks/test_enforce_belt_arming.py       | 154 ++++++++++++++++++++++++--
+- 5 files changed, 278 insertions(+), 54 deletions(-)
+
+## fix(belt): enforce belt-and-suspenders arming at the tool call; retire --sweep-for l3 (harmonic-forge#659)
+
+- watch_lane_posts.py refuses --sweep-for l3 at parse time (RETIRED, #659);
+  CANONICAL_BELTS["3"] holds only the queue belt; docstring drops the sweep.
+- New tools/lane/belt_plan.py: prints, for $LANE, the exact Monitor call
+  (built from CANONICAL_BELTS), the Skill(loop) call and the report
+  template; exits 2 when LANE is not 1/2/3. canonical_calls() for the hook.
+- New tools/hooks/enforce_belt_arming.py (PreToolUse Monitor|CronCreate|Skill,
+  LANE 1/2/3 only): denies a non-canonical watch_lane_posts Monitor, a
+  paraphrased /loop, and any belt/suspenders CronCreate except the exact
+  "proactively find work to do" cron the /loop skill itself creates for the
+  canonical invocation (verified in real transcripts; denying it would deny
+  the canonical arm). Deny is JSON stdout, exit 0; fails open.
+- skills/belt-and-suspenders/SKILL.md cut to a 4-step "run belt_plan.py,
+  copy exactly" procedure; former body moved to DESIGN.md (edits only retire
+  the Lane 3 sweep). Doc-sync and skill-text tests repointed accordingly.
+- Registered in .claude/settings.json with the guarded form.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_enforce_belt_arming.py       | 195 ++++++++++
+- tools/lane/belt_plan.py                       |  92 +++++
+- tools/lane/test_belt_plan.py                  |  79 ++++
+- 11 files changed, 1254 insertions(+), 597 deletions(-)
+
 ## fix(hooks): detect launch model from ANTHROPIC_MODEL / ancestor --model (harmonic-forge#656)
 
 Live check after #657 merged: `claude -p --model opus` was resolved as sonnet and

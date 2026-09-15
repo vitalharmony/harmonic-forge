@@ -87,6 +87,16 @@
         ]
       },
       {
+        "matcher": "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "SendMessage",
         "hooks": [
           {
@@ -113,6 +123,11 @@
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
             "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/grant_loop_override.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
           },
           {
             "type": "command",
