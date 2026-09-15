@@ -568,7 +568,7 @@ slot, an operator-facing display name, a default flag. An unrecognized
 
 | agent | what the launcher injects | why |
 |---|---|---|
-| `claude` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly) | harmonic-forge#179 |
+| `claude` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly); `--model sonnet` (override with `LANE_DEFAULT_MODEL`, or pass `--model`); `--effort <level>` only when `LANE_DEFAULT_EFFORT` is set (or pass `--effort`). Refuses to launch while `CLAUDE_CODE_EFFORT_LEVEL` or `ANTHROPIC_MODEL` is set. `LANE_MODEL` is a tier-hook bypass and is never read here | harmonic-forge#179, #665 |
 | `gemini` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421 …`, plus `--admin-policy` at Lanes 1 and 2 | harmonic-forge#318, #362 |
 | `codex` | nothing — bare passthrough | flag injection broke Codex's own argument parsing (harmonic-forge#179) |
 

@@ -162,6 +162,88 @@ if [ "${#_lane_denied[@]}" -gt 0 ]; then
   done
 fi
 
+## harmonic-forge#665 -- launch-default preconditions
+#
+# Environment that would contradict the launcher's model/effort choice refuses
+# the launch; see AGENT_LAUNCH_REFUSED_ENV in the registry for why each one.
+#
+# The lookup is assigned before the loop on purpose: `set -e` ignores a failing
+# command substitution inside a `for` word list, which would turn a missing
+# registry entry into a loop that runs zero times and a launch that proceeds.
+_lane_refused_env="$(registry_lookup AGENT_LAUNCH_REFUSED_ENV "$_lane_agent")"
+for _var in $_lane_refused_env; do
+  if [ -n "${!_var:-}" ]; then
+    _lane_launch_die "$_var is set -- it would override the lane's launch model/effort ($_lane_refused_env are refused, harmonic-forge#665). Unset it and use LANE_DEFAULT_MODEL / LANE_DEFAULT_EFFORT. Nothing was launched."
+  fi
+done
+# Claude Code also applies a settings file's `env` block to its own process, so
+# the same variables arriving that way reach the session and its hooks just the
+# same. The launcher has already cd'd into the lane's worktree, so project
+# settings resolve against the directory the session will start in.
+if [ -n "$_lane_refused_env" ]; then
+  _lane_settings_hit="$(python3 - "$_lane_refused_env" \
+      "$HOME/.claude/settings.json" "$PWD/.claude/settings.json" \
+      "$PWD/.claude/settings.local.json" /etc/claude-code/managed-settings.json <<'PY'
+import json, sys
+refused = sys.argv[1].split()
+for path in sys.argv[2:]:
+    try:
+        env = json.load(open(path)).get("env") or {}
+    except (OSError, ValueError, AttributeError):
+        continue
+    if not isinstance(env, dict):
+        continue
+    for name in refused:
+        if str(env.get(name) or "").strip():
+            print(f"{name} in {path}")
+            raise SystemExit(0)
+PY
+)" || _lane_launch_die "could not read Claude settings files to check for $_lane_refused_env -- refusing to launch rather than assuming none are set."
+  [ -z "$_lane_settings_hit" ] \
+    || _lane_launch_die "$_lane_settings_hit (settings \`env\` block) would override the lane's launch model/effort ($_lane_refused_env are refused, harmonic-forge#665). Remove it. Nothing was launched."
+  unset _lane_settings_hit
+fi
+
+# An explicit but EMPTY --model/--effort (`--model=`, or `--model ""`) is
+# treated as not given, by operator ruling 2026-09-15: it is dropped from the
+# passthrough, so the launch default applies (sonnet, and no --effort). Left in,
+# it would suppress the default and hand the CLI nothing.
+for _table in AGENT_MODEL_FLAG AGENT_EFFORT_FLAG; do
+  _flag="$(registry_lookup "$_table" "$_lane_agent")"
+  [ -n "$_flag" ] || continue
+  _kept=()
+  _n=${#lane_passthrough[@]}
+  _i=0
+  while [ "$_i" -lt "$_n" ]; do
+    _arg="${lane_passthrough[$_i]}"
+    if [ "$_arg" = "$_flag=" ]; then
+      _i=$((_i + 1))
+      continue
+    fi
+    if [ "$_arg" = "$_flag" ] && [ $((_i + 1)) -lt "$_n" ] && [ -z "${lane_passthrough[$((_i + 1))]}" ]; then
+      _i=$((_i + 2))
+      continue
+    fi
+    _kept+=("$_arg")
+    _i=$((_i + 1))
+  done
+  lane_passthrough=("${_kept[@]}")
+done
+unset _table _flag _i _n _kept
+
+_lane_effort_env="$(registry_lookup AGENT_EFFORT_FLAG_ENV "$_lane_agent")"
+if [ -n "$_lane_effort_env" ] && [ -n "${!_lane_effort_env:-}" ]; then
+  _lane_effort_levels="$(registry_lookup AGENT_EFFORT_LEVELS "$_lane_agent")"
+  _lane_effort_ok=0
+  for _level in $_lane_effort_levels; do
+    [ "${!_lane_effort_env}" = "$_level" ] && _lane_effort_ok=1
+  done
+  [ "$_lane_effort_ok" -eq 1 ] \
+    || _lane_launch_die "$_lane_effort_env='${!_lane_effort_env}' is not an effort level ($_lane_effort_levels). Nothing was launched."
+  unset _lane_effort_levels _lane_effort_ok _level
+fi
+unset _var _lane_effort_env _lane_refused_env
+
 ## Build the launch command
 cli_args=()
 
@@ -190,26 +272,34 @@ fi
 #    so claude-api/claude-pro still exec the wrapper rather than plain claude.
 cli_args+=("$_lane_command")
 
-# 3. The agent's default flag, unless the caller passed it explicitly. This is
-#    the harmonic-forge#179 override affordance, retained unchanged at every
-#    lane including Lane 3 (harmonic-forge#322, Lane 1 decision 3).
-_lane_default_flag="$(registry_lookup AGENT_DEFAULT_FLAG "$_lane_agent")"
-if [ -n "$_lane_default_flag" ]; then
-  _lane_flag_given=0
-  for _arg in "${lane_passthrough[@]}"; do
-    if [ "$_arg" = "$_lane_default_flag" ] || [ "${_arg%%=*}" = "$_lane_default_flag" ]; then
-      _lane_flag_given=1
-      break
+# 3. The agent's launch-default flags, each unless the caller passed it
+#    explicitly (spaced or `=` form, before or after a bare `--`). This is the
+#    harmonic-forge#179 override affordance, retained unchanged at every lane
+#    including Lane 3 (harmonic-forge#322, Lane 1 decision 3). `--model` and
+#    `--effort` joined `--permission-mode` in harmonic-forge#665; an empty
+#    resolved value injects nothing, which is how an unset effort stays unset.
+_lane_inject_default() {
+  local flag_table="$1" env_table="$2" value_table="$3"
+  local flag env_name value arg
+  flag="$(registry_lookup "$flag_table" "$_lane_agent")"
+  [ -n "$flag" ] || return 0
+  for arg in "${lane_passthrough[@]}"; do
+    if [ "$arg" = "$flag" ] || [ "${arg%%=*}" = "$flag" ]; then
+      return 0
     fi
   done
-  if [ "$_lane_flag_given" -eq 0 ]; then
-    _lane_flag_env="$(registry_lookup AGENT_DEFAULT_FLAG_ENV "$_lane_agent")"
-    _lane_flag_value="$(registry_lookup AGENT_DEFAULT_FLAG_VALUE "$_lane_agent")"
-    cli_args+=("$_lane_default_flag" "${!_lane_flag_env:-$_lane_flag_value}")
-    unset _lane_flag_env _lane_flag_value
+  env_name="$(registry_lookup "$env_table" "$_lane_agent")"
+  value="$(registry_lookup "$value_table" "$_lane_agent")"
+  if [ -n "$env_name" ] && [ -n "${!env_name:-}" ]; then
+    value="${!env_name}"
   fi
-  unset _lane_flag_given
-fi
+  [ -n "$value" ] || return 0
+  cli_args+=("$flag" "$value")
+}
+_lane_inject_default AGENT_DEFAULT_FLAG AGENT_DEFAULT_FLAG_ENV AGENT_DEFAULT_FLAG_VALUE
+_lane_inject_default AGENT_MODEL_FLAG AGENT_MODEL_FLAG_ENV AGENT_MODEL_FLAG_VALUE
+_lane_inject_default AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
+unset -f _lane_inject_default
 
 # 3b. A brevity directive for the chat surface (hrse#1703 AC6). Comment-time
 #     validation (`l1_post.py`'s lead-block/cap requirement) cannot see what a
@@ -267,7 +357,7 @@ fi
 cli_args+=("${lane_passthrough[@]}")
 
 unset _lane_agent _lane_command _lane_dir _lane_env_prefix \
-      _lane_default_flag _lane_policy_file _lane_denied _token _arg
+      _lane_policy_file _lane_denied _token _arg
 
 ## Platform-rules sync -- immediately before the final exec (harmonic-forge#651)
 #
