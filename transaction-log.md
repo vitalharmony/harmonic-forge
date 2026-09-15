@@ -3,6 +3,32 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): a notification must be the whole prompt (harmonic-forge#661 preclose)
+
+A pasted <task-notification> followed by a typed trigger was downgraded to a
+warning. Require the prompt to be exactly one notification block; strip a BOM.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_tier_model_trigger_check.py | 15 +++++++++++++++
+- tools/hooks/tier_model_trigger_check.py      | 11 +++++++++--
+- 2 files changed, 24 insertions(+), 2 deletions(-)
+
+## fix(hooks): belt notifications warn instead of block in the tier check (harmonic-forge#661)
+
+A belt Monitor event arrives as a <task-notification> prompt listing every
+queued issue; #656 blocked it on a Sonnet lane whenever the queue held a deep
+issue, erasing every belt tick. Notifications now get a systemMessage plus
+additionalContext ("Do NOT start these on this model"); operator-typed prompts
+keep the block. Edits and posts on deep work stay covered by model_tier_gate
+and the Stop backstop.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/test_tier_model_trigger_check.py | 29 ++++++++++++++++++++++++++--
+- tools/hooks/tier_model_trigger_check.py      | 22 +++++++++++++++++++--
+- 2 files changed, 47 insertions(+), 4 deletions(-)
+
 ## feat(belt): operator ALLOW LOOP override for non-canonical loop/cron (harmonic-forge#659)
 
 Per the operator ruling of 2026-09-14 on #659.

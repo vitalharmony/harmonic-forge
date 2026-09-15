@@ -198,7 +198,8 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str]):
     return model_tier_gate.read_tier(repo.lower(), number, board, run=_timed_run, ttl=0)
 
 
-def decide(refs: list[tuple[str, int]], model: str | None, lookup) -> dict | None:
+def decide(refs: list[tuple[str, int]], model: str | None, lookup,
+           advisory: bool = False) -> dict | None:
     """The hook's JSON output for these refs, or None for a silent allow."""
     high = model_tier_gate.claude_model_is_high(model)
     model_label = model or "an unresolved model"
@@ -253,6 +254,18 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup) -> dict | Non
                 f"(at most {_MAX_TIER_READS} are read; this session is {model_label}; "
                 f"not checked: {unchecked_text})."
             )
+    if blocks and advisory:
+        # A belt/task notification is not a trigger: it lists every queued
+        # issue, so blocking it would erase every belt tick of a Sonnet lane
+        # (operator ruling 2026-09-14). Warn the operator and the model
+        # instead; deep work actually started is still refused by
+        # model_tier_gate (edits) and reported by the Stop backstop (posts).
+        message = ("Belt/task notification not blocked (it is not a trigger). "
+                   "Do NOT start these on this model:\n"
+                   + "\n".join(blocks + notes) + " (harmonic-forge#656)")
+        return {"systemMessage": message,
+                "hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                       "additionalContext": message}}
     if blocks:
         return {"decision": "block",
                 "reason": "\n".join(blocks + notes) + " (harmonic-forge#656)"}
@@ -288,7 +301,19 @@ def run(payload: dict, env: dict | None = None, lookup=None, model=_UNSET) -> di
 
         def lookup(repo, number):
             return lookup_tier(repo, number, boards)
-    return decide(refs, model, lookup)
+    return decide(refs, model, lookup, advisory=is_notification(prompt))
+
+
+def is_notification(prompt: str) -> bool:
+    """A harness-injected belt/Monitor/background-task event, not operator text.
+
+    The WHOLE prompt must be one notification block: anything typed before or
+    after it (e.g. a pasted tick plus `Implement H1817`) makes it operator
+    text again, so a real trigger can't ride in on a pasted tag (preclose)."""
+    body = prompt.strip().lstrip("\ufeff")
+    return (body.startswith("<task-notification>")
+            and body.endswith("</task-notification>")
+            and body.count("<task-notification>") == body.count("</task-notification>"))
 
 
 def main() -> None:
