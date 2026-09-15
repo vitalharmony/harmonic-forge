@@ -3,6 +3,8 @@
 `tools/lane/belt_plan.py` prints, or not at all (harmonic-forge#659).
 
 Matcher: `Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit`.
+Also registered on `PostToolUse` with matcher `CronCreate|CronDelete`, where it
+only maintains the arming record and never decides (harmonic-forge#675).
 The arming checks are active only when `LANE` is 1, 2 or 3; the grant-directory
 write guard (below) is active in every session.
 
@@ -26,6 +28,17 @@ WHAT IS DENIED (in a LANE=1/2/3 session)
 - A second canonical `CronCreate` in the same session ("already armed"): the
   first allowed one is recorded under `~/.cache/harmonic-forge/belt_arming/
   <session_id>`, so a re-arm cannot stack a duplicate job (#659 preclose C).
+
+THE ARMING RECORD (harmonic-forge#675)
+--------------------------------------
+PreToolUse writes the record with `created` and `owner_pid` (the nearest
+ancestor `claude` process). PostToolUse `CronCreate` adds the job `id`, and
+PostToolUse `CronDelete` of that same id removes the record, so a deleted
+suspenders job can be re-armed. Deleting any other cron leaves it. A record that
+cannot correspond to a live job is stale and does not block a re-arm: one with no
+`id` older than `ID_LESS_STALE_SECONDS` (the create was denied or failed after
+PreToolUse wrote it), or one whose `owner_pid` is gone or no longer `claude` (the
+session was resumed in a new process, and session-only crons die with the old one).
 - `Monitor` whose command *executes* `watch_lane_posts.py` -- as the program, or
   as the script argument to `python`/`python3` -- and is not, after whitespace
   normalization, the lane's canonical command (`~`, `$HOME`, `${HOME}` and the
@@ -95,6 +108,9 @@ WATCHER_NAME = "watch_lane_posts.py"
 #: Overridable for tests.
 ARMING_DIR_ENV = "HARMONIC_FORGE_BELT_ARMING_DIR"
 DEFAULT_ARMING_DIR = Path.home() / ".cache" / "harmonic-forge" / "belt_arming"
+
+#: An arming record with no job id older than this never had a successful create.
+ID_LESS_STALE_SECONDS = 120
 
 #: `ALLOW LOOP` grants: `<session_id>` + this suffix, valid for the TTL.
 GRANT_SUFFIX = ".loop_grant"
@@ -294,8 +310,104 @@ def _is_canonical_cron(tool_input: dict[str, Any]) -> bool:
             and tool_input.get("recurring", True) is True)
 
 
+def _cmdline(proc_root: str, pid: int) -> str | None:
+    try:
+        with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
+            return " ".join(a.decode(errors="replace") for a in fh.read().split(b"\0") if a)
+    except OSError:
+        return None
+
+
+def owner_claude_pid(proc_root: str = "/proc", pid: int | None = None) -> int | None:
+    """The nearest ancestor process whose cmdline contains `claude`, walking
+    `/proc/<pid>/status` `PPid:` like `session_model.launch_model`."""
+    current = os.getpid() if pid is None else pid
+    for _ in range(12):
+        cmdline = _cmdline(proc_root, current)
+        if cmdline is None:
+            return None
+        if "claude" in cmdline:
+            return current
+        try:
+            with open(f"{proc_root}/{current}/status") as fh:
+                parent = next((int(line.split()[1]) for line in fh
+                               if line.startswith("PPid:")), 0)
+        except (OSError, ValueError):
+            return None
+        if parent <= 1:
+            return None
+        current = parent
+    return None
+
+
+def _session_marker(session_id: object) -> Path | None:
+    if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+        return None
+    return arming_dir() / session_id
+
+
+def _read_record(marker: Path) -> dict[str, Any]:
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _record_created(marker: Path, record: dict[str, Any]) -> float:
+    created = record.get("created")
+    if isinstance(created, (int, float)):
+        return float(created)
+    return marker.stat().st_mtime  # the pre-#675 format carries no `created`
+
+
+def _record_is_stale(marker: Path, record: dict[str, Any], now: float, proc_root: str) -> bool:
+    if not record.get("id") and now - _record_created(marker, record) > ID_LESS_STALE_SECONDS:
+        return True
+    owner = record.get("owner_pid")
+    if isinstance(owner, int):
+        cmdline = _cmdline(proc_root, owner)
+        if cmdline is None or "claude" not in cmdline:
+            return True
+    return False
+
+
+def _write_record(marker: Path, now: float, proc_root: str) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(LOOP_CRON, created=now, owner_pid=owner_claude_pid(proc_root))
+    marker.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+def record_post_tool_use(payload: dict[str, Any], lane: str | None) -> None:
+    """PostToolUse only maintains the arming record; it never decides (AC7).
+    A successful canonical CronCreate adds its job id to the PreToolUse record;
+    a successful CronDelete of that id removes the record."""
+    if lane not in LANES:
+        return
+    marker = _session_marker(payload.get("session_id"))
+    tool_input = payload.get("tool_input") or {}
+    if marker is None or not isinstance(tool_input, dict) or not marker.exists():
+        return
+    tool = payload.get("tool_name") or ""
+    record = _read_record(marker)
+    if tool == "CronCreate" and _is_canonical_cron(tool_input) and not record.get("id"):
+        response = payload.get("tool_response")
+        if isinstance(response, str):
+            try:
+                response = json.loads(response)
+            except ValueError:
+                return
+        job_id = response.get("id") if isinstance(response, dict) else None
+        if isinstance(job_id, str) and job_id:
+            record["id"] = job_id
+            marker.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    elif tool == "CronDelete" and record.get("id") and tool_input.get("id") == record["id"]:
+        marker.unlink(missing_ok=True)
+
+
 def decide(payload: dict[str, Any], lane: str | None,
-           notes: list[str] | None = None) -> str | None:
+           notes: list[str] | None = None, now: float | None = None,
+           proc_root: str = "/proc") -> str | None:
     """The deny reason for this tool call, or None to allow.
 
     Allowing the canonical CronCreate records it for the session, so the same
@@ -371,16 +483,21 @@ def decide(payload: dict[str, Any], lane: str | None,
                            "Denied: in a lane session CronCreate is allowed only as "
                            "the canonical suspenders job the loop skill creates.",
                            override_hint=True)
-        if isinstance(session_id, str) and _SESSION_ID_RE.match(session_id):
-            marker = arming_dir() / session_id
+        marker = _session_marker(session_id)
+        if marker is not None:
+            now = time.time() if now is None else now
             if marker.exists():
-                return _reason(lane, calls,
-                               "Denied: the suspenders are already armed in this "
-                               f"session (recorded at {marker}); a second job would "
-                               "stack duplicate ticks. Nothing to re-arm -- the "
-                               "existing job keeps running.")
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(json.dumps(LOOP_CRON) + "\n", encoding="utf-8")
+                record = _read_record(marker)
+                if not _record_is_stale(marker, record, now, proc_root):
+                    job = (f"as cron `{record['id']}`" if record.get("id") else
+                           f"(job id unknown, recorded "
+                           f"{int(now - _record_created(marker, record))}s ago)")
+                    return _reason(lane, calls,
+                                   f"Denied: the suspenders are already armed in this "
+                                   f"session {job}; a second job would stack duplicate "
+                                   f"ticks. If CronList does not show it, the operator "
+                                   f"removes `{marker}`.")
+            _write_record(marker, now, proc_root)
         return None
 
     return None
@@ -391,6 +508,10 @@ def main() -> int:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             print(json.dumps({}))
+            return 0
+        if (payload.get("hook_event_name") or "PreToolUse") == "PostToolUse":
+            record_post_tool_use(payload, os.environ.get("LANE"))
+            print(json.dumps({}))  # never a permissionDecision on PostToolUse (#675 AC7)
             return 0
         notes: list[str] = []
         reason = decide(payload, os.environ.get("LANE"), notes)
