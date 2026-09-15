@@ -166,21 +166,83 @@ fi
 #
 # Environment that would contradict the launcher's model/effort choice refuses
 # the launch; see AGENT_LAUNCH_REFUSED_ENV in the registry for why each one.
-for _var in $(registry_lookup AGENT_LAUNCH_REFUSED_ENV "$_lane_agent"); do
+#
+# The lookup is assigned before the loop on purpose: `set -e` ignores a failing
+# command substitution inside a `for` word list, which would turn a missing
+# registry entry into a loop that runs zero times and a launch that proceeds.
+_lane_refused_env="$(registry_lookup AGENT_LAUNCH_REFUSED_ENV "$_lane_agent")"
+for _var in $_lane_refused_env; do
   if [ -n "${!_var:-}" ]; then
-    _lane_launch_die "$_var is set -- it would override the lane's launch model/effort ($(registry_lookup AGENT_LAUNCH_REFUSED_ENV "$_lane_agent") are refused, harmonic-forge#665). Unset it and use LANE_DEFAULT_MODEL / LANE_DEFAULT_EFFORT. Nothing was launched."
+    _lane_launch_die "$_var is set -- it would override the lane's launch model/effort ($_lane_refused_env are refused, harmonic-forge#665). Unset it and use LANE_DEFAULT_MODEL / LANE_DEFAULT_EFFORT. Nothing was launched."
   fi
 done
+# Claude Code also applies a settings file's `env` block to its own process, so
+# the same variables arriving that way reach the session and its hooks just the
+# same. The launcher has already cd'd into the lane's worktree, so project
+# settings resolve against the directory the session will start in.
+if [ -n "$_lane_refused_env" ]; then
+  _lane_settings_hit="$(python3 - "$_lane_refused_env" \
+      "$HOME/.claude/settings.json" "$PWD/.claude/settings.json" \
+      "$PWD/.claude/settings.local.json" /etc/claude-code/managed-settings.json <<'PY'
+import json, sys
+refused = sys.argv[1].split()
+for path in sys.argv[2:]:
+    try:
+        env = json.load(open(path)).get("env") or {}
+    except (OSError, ValueError, AttributeError):
+        continue
+    if not isinstance(env, dict):
+        continue
+    for name in refused:
+        if str(env.get(name) or "").strip():
+            print(f"{name} in {path}")
+            raise SystemExit(0)
+PY
+)" || _lane_launch_die "could not read Claude settings files to check for $_lane_refused_env -- refusing to launch rather than assuming none are set."
+  [ -z "$_lane_settings_hit" ] \
+    || _lane_launch_die "$_lane_settings_hit (settings \`env\` block) would override the lane's launch model/effort ($_lane_refused_env are refused, harmonic-forge#665). Remove it. Nothing was launched."
+  unset _lane_settings_hit
+fi
+
+# An explicit but EMPTY --model/--effort (`--model=`, or `--model ""`) is
+# treated as not given, by operator ruling 2026-09-15: it is dropped from the
+# passthrough, so the launch default applies (sonnet, and no --effort). Left in,
+# it would suppress the default and hand the CLI nothing.
+for _table in AGENT_MODEL_FLAG AGENT_EFFORT_FLAG; do
+  _flag="$(registry_lookup "$_table" "$_lane_agent")"
+  [ -n "$_flag" ] || continue
+  _kept=()
+  _n=${#lane_passthrough[@]}
+  _i=0
+  while [ "$_i" -lt "$_n" ]; do
+    _arg="${lane_passthrough[$_i]}"
+    if [ "$_arg" = "$_flag=" ]; then
+      _i=$((_i + 1))
+      continue
+    fi
+    if [ "$_arg" = "$_flag" ] && [ $((_i + 1)) -lt "$_n" ] && [ -z "${lane_passthrough[$((_i + 1))]}" ]; then
+      _i=$((_i + 2))
+      continue
+    fi
+    _kept+=("$_arg")
+    _i=$((_i + 1))
+  done
+  lane_passthrough=("${_kept[@]}")
+done
+unset _table _flag _i _n _kept
+
 _lane_effort_env="$(registry_lookup AGENT_EFFORT_FLAG_ENV "$_lane_agent")"
 if [ -n "$_lane_effort_env" ] && [ -n "${!_lane_effort_env:-}" ]; then
   _lane_effort_levels="$(registry_lookup AGENT_EFFORT_LEVELS "$_lane_agent")"
-  case " $_lane_effort_levels " in
-    *" ${!_lane_effort_env} "*) ;;
-    *) _lane_launch_die "$_lane_effort_env='${!_lane_effort_env}' is not an effort level ($_lane_effort_levels). Nothing was launched." ;;
-  esac
-  unset _lane_effort_levels
+  _lane_effort_ok=0
+  for _level in $_lane_effort_levels; do
+    [ "${!_lane_effort_env}" = "$_level" ] && _lane_effort_ok=1
+  done
+  [ "$_lane_effort_ok" -eq 1 ] \
+    || _lane_launch_die "$_lane_effort_env='${!_lane_effort_env}' is not an effort level ($_lane_effort_levels). Nothing was launched."
+  unset _lane_effort_levels _lane_effort_ok _level
 fi
-unset _var _lane_effort_env
+unset _var _lane_effort_env _lane_refused_env
 
 ## Build the launch command
 cli_args=()

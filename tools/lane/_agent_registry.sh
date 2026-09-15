@@ -110,9 +110,11 @@ declare -A AGENT_DEFAULT_FLAG_VALUE=(
   [gemini]=""
 )
 
-# harmonic-forge#665: a lane's default model and effort come from the launch,
-# never from whatever ~/.claude/settings.json last held -- `/model` and `/effort`
-# confirmed with Enter rewrite that file, which silently re-routed every lane.
+# harmonic-forge#665: a lane's model comes from the launch, never from whatever
+# ~/.claude/settings.json last held -- `/model` confirmed with Enter rewrites
+# that file, which silently re-routed every lane. Effort comes from the launch
+# only when LANE_DEFAULT_EFFORT is set; unset, the CLI's settings-resolved effort
+# still applies, by operator ruling (no effort fallback).
 #
 # NOT `LANE_MODEL`: both tier hooks read a set LANE_MODEL as "skip the check"
 # (tier_model_trigger_check.py, model_tier_gate.py), so feeding it into --model
@@ -158,9 +160,13 @@ declare -A AGENT_EFFORT_LEVELS=(
 # `effort:` frontmatter (code.claude.com/docs/en/model-config), which would
 # silently defeat turn-scoped escalation. ANTHROPIC_MODEL is read by
 # session_model.launch_model() BEFORE the argv --model, so the tier hooks would
-# judge a different model than the one this launcher chose.
+# judge a different model than the one this launcher chose. The
+# ANTHROPIC_DEFAULT_*_MODEL remaps are the same failure one step removed: the
+# CLI resolves the `opus`/`sonnet` alias through them, so `--model opus` could
+# run Sonnet while every hook reads "opus" from argv. Checked in the launcher's
+# environment AND in Claude settings `env` blocks (_cli_launch.sh).
 declare -A AGENT_LAUNCH_REFUSED_ENV=(
-  [claude]="CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_MODEL"
+  [claude]="CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL"
   [codex]=""
   [gemini]=""
 )
