@@ -3,6 +3,34 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): drop milestone scoping; label filters only (harmonic-forge#663)
+
+Live search showed excluding 3.0/Later dropped the active resonance-chain
+queue (#1814, #1817, #1821, #1823). Operator ruling: keep only -label:epic and
+-label:tooling-exception (l2/l3).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/gh/test_l2_post.py          | 13 -------
+- tools/gh/test_watch_lane_posts.py | 72 ++++++-------------------------------
+- tools/gh/watch_lane_posts.py      | 75 ++++-----------------------------------
+- 4 files changed, 17 insertions(+), 156 deletions(-)
+
+## fix(belt): filter epic, tooling-exception and future milestones from queue searches (harmonic-forge#663)
+
+Queue searches now carry -label:epic (all lanes), -label:tooling-exception
+(l2/l3), and -milestone for numbered milestones after the current release plus
+Later. The current release is the lowest open numbered milestone with open
+issues (hrse 2.8 is open with 0), cached hourly, failing open to no filter.
+Tests never make a real lookup or write the real cache.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/gh/test_l2_post.py          | 13 ++++++
+- tools/gh/test_watch_lane_posts.py | 81 +++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 85 +++++++++++++++++++++++++++++++++++++--
+- 4 files changed, 189 insertions(+), 3 deletions(-)
+
 ## fix(hooks): a notification must be the whole prompt (harmonic-forge#661 preclose)
 
 A pasted <task-notification> followed by a typed trigger was downgraded to a

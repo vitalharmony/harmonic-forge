@@ -2495,3 +2495,32 @@ class GitStalenessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class QueueNoiseFilterTests(unittest.TestCase):
+    """Operator ruling 2026-09-14 (harmonic-forge#663)."""
+
+    def test_l2_and_l3_exclude_epic_and_tooling_exception(self):
+        from watch_lane_posts import queue_qualifiers
+        for lane in ("l2", "l3"):
+            q = queue_qualifiers("vitalharmony/hrse", lane)
+            self.assertIn("-label:epic", q)
+            self.assertIn("-label:tooling-exception", q)
+            self.assertNotIn("milestone", q)
+
+    def test_l1_keeps_tooling_exception_issues(self):
+        from watch_lane_posts import queue_qualifiers
+        q = queue_qualifiers("vitalharmony/hrse", "l1")
+        self.assertIn("-label:epic", q)
+        self.assertNotIn("tooling-exception", q)
+
+    def test_discover_queue_passes_qualifiers_to_search(self):
+        seen = []
+        def fake_search(repo, marker, qualifiers=""):
+            seen.append(qualifiers)
+            return set()
+        with patch("watch_lane_posts._search_candidates", side_effect=fake_search):
+            discover_queue("vitalharmony/hrse", "l2")
+        self.assertTrue(seen)
+        self.assertTrue(all("-label:tooling-exception" in q and "-label:epic" in q for q in seen))

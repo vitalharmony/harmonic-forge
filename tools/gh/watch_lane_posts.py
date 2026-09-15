@@ -570,7 +570,24 @@ def _mark_retired_tokens(headline: str) -> str:
     return _RETIRED_TOKEN_RE.sub(_replace, headline)
 
 
-def _search_candidates(repo: str, marker_text: str) -> set[int]:
+# Queue-noise filters (operator ruling 2026-09-14, harmonic-forge#663). The belt listed every issue
+# that ever got a handoff marker, including work that is not the lane's to
+# pick up. Applied as search qualifiers, so they cost no extra calls.
+_LANE1_OWNED_LABEL = "tooling-exception"   # Lane 1 implements these
+_NEVER_QUEUED_LABEL = "epic"               # never implemented directly
+def queue_qualifiers(repo: str, lane: str) -> str:
+    """Search qualifiers that keep work that isn't `lane`'s off its queue.
+
+    No milestone scoping (operator ruling 2026-09-14): measured live, the
+    active resonance-chain workgroup sits in hrse's `3.0`/`Later` milestones,
+    so excluding "future" milestones dropped the lane's actual queue."""
+    parts = [f"-label:{_NEVER_QUEUED_LABEL}"]
+    if lane in ("l2", "l3"):
+        parts.append(f"-label:{_LANE1_OWNED_LABEL}")
+    return " ".join(parts)
+
+
+def _search_candidates(repo: str, marker_text: str, qualifiers: str = "") -> set[int]:
     """Open issues whose comment history contains `marker_text` SOMEWHERE --
     a coarse, cheap pre-filter. `discover_queue` re-checks each one to see
     if that marker is still the LATEST classified comment."""
@@ -606,7 +623,7 @@ def _search_candidates(repo: str, marker_text: str) -> set[int]:
         raw = gh_as(
             _ACCOUNT,
             ["api", "-X", "GET", "search/issues",
-             "-f", f"q=repo:{repo} state:open {marker_text}",
+             "-f", f"q=repo:{repo} state:open {qualifiers} {marker_text}".replace("  ", " "),
              "--paginate", "-f", "per_page=100",
              "--jq", 'if .incomplete_results then "INCOMPLETE" else empty end,'
                      " (.items[].number)"],
@@ -907,9 +924,10 @@ def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
     candidates: set[int] = set()
+    qualifiers = queue_qualifiers(repo, lane)
     for kind in kinds:
         try:
-            candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}")
+            candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}", qualifiers)
         except SearchUnavailable:
             # `fetch_ok=False`, mirroring `discover_l1_sweep` (harmonic-
             # forge#579 AC1). The caller must NOT diff this repo's queue
