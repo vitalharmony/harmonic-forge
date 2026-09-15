@@ -173,10 +173,35 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(out["decision"], "block")
         self.assertIn("an unresolved model", out["reason"])
 
-    def test_belt_notification_blocks_on_sonnet_lane2(self):
-        """Added case (a)."""
+    def test_bare_queue_line_typed_by_operator_still_blocks(self):
+        """Added case (a), as operator-typed text: still a block."""
         out, _ = run("vitalharmony/hrse#1830 queued-for-l2 kind=handoff",
                      "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertEqual(out["decision"], "block")
+
+    def test_task_notification_warns_instead_of_blocking(self):
+        """Operator ruling 2026-09-14: a belt notification lists the whole
+        queue; blocking it erased every belt tick of a Sonnet lane."""
+        prompt = ("<task-notification>\n<task-id>b1</task-id>\n"
+                  "<summary>Monitor event: \"Lane 2 belt\"</summary>\n"
+                  "<event>vitalharmony/hrse#1830 queued-for-l2 kind=handoff</event>\n"
+                  "</task-notification>")
+        out, _ = run(prompt, "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertNotIn("decision", out)
+        self.assertIn("#1830 is Tier deep", out["systemMessage"])
+        self.assertIn("Do NOT start", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_task_notification_past_read_cap_warns_not_blocks(self):
+        events = "\n".join(f"vitalharmony/hrse#{n} queued-for-l2 kind=handoff"
+                           for n in range(1100, 1111))
+        prompt = f"<task-notification>\n<event>{events}</event>\n</task-notification>"
+        out, _ = run(prompt, "claude-sonnet-5", {})
+        self.assertNotIn("decision", out)
+        self.assertIn("not checked", out["systemMessage"])
+
+    def test_typed_prompt_mentioning_task_notification_midway_still_blocks(self):
+        out, _ = run("Plan H1830 <task-notification>", "claude-sonnet-5",
+                     {(HRSE, 1830): "deep"})
         self.assertEqual(out["decision"], "block")
 
     def test_then_chain_checks_both_and_blocks_on_second(self):
