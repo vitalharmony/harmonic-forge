@@ -4,6 +4,7 @@
 cache. Run: python3 tools/hooks/test_session_model.py"""
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -49,6 +50,13 @@ class Base(unittest.TestCase):
         self.home = self.root / "home"
         (self.home / ".claude").mkdir(parents=True)
         self.records = self.root / "records"
+        # harmonic-forge#671: `current_model` calls `launch_model()` with no
+        # environ/proc_root, so it reads the real ANTHROPIC_MODEL and the real
+        # ancestor `--model` -- every lane session carries one. These fixtures
+        # own every source; `LaunchModelTests` covers real resolution explicitly.
+        launch = mock.patch.object(sm, "launch_model", return_value=None)
+        launch.start()
+        self.addCleanup(launch.stop)
 
     def transcript(self, *entries):
         path = self.root / "t.jsonl"
@@ -136,6 +144,11 @@ class Fallbacks(Base):
     def test_malformed_settings_are_skipped(self):
         (self.home / ".claude" / "settings.json").write_text("{not json")
         self.assertIsNone(self.current("", cwd=str(self.root)))
+
+    def test_isolation_holds_when_the_environment_names_a_model(self):
+        """harmonic-forge#671 AC3: fails if `Base.setUp`'s launch_model patch is removed."""
+        with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "opus"}):
+            self.assertIsNone(self.current("", cwd=str(self.root)))
 
 
 class RecordHookMain(Base):
