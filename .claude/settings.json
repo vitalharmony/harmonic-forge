@@ -82,7 +82,7 @@
         ]
       },
       {
-        "matcher": "Monitor|CronCreate|Skill",
+        "matcher": "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -118,6 +118,11 @@
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
             "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/grant_loop_override.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
           },
           {
             "type": "command",

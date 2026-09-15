@@ -3,6 +3,43 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(belt): operator ALLOW LOOP override for non-canonical loop/cron (harmonic-forge#659)
+
+Per the operator ruling of 2026-09-14 on #659.
+
+- New UserPromptSubmit hook tools/hooks/grant_loop_override.py: a line the
+  operator types starting `ALLOW LOOP` (LANE=1/2/3) writes
+  <arming dir>/<session_id>.loop_grant with a created timestamp and says so
+  (systemMessage + expiry). Candidate lines come from the new shared
+  expand_lane_shorthand.directive_lines() (fences + _QUOTE_PREFIX_RE, now also
+  used by _scan_batch) and must pass _provenance_refusal(); a refused line is
+  reported, nothing recorded. Separate file rather than a UPS mode: the guard
+  keeps one event and one output contract; grant path/TTL/format live in the
+  guard and are imported.
+- enforce_belt_arming.py: grant valid 10 min. A non-canonical Skill(loop)
+  checks it and records its args without consuming; the following CronCreate
+  (prompt must be a substring of those args) consumes it; a direct CronCreate
+  consumes it; a second Skill under one grant is denied. Monitor/watcher check
+  never consults it. Loop/cron deny reasons name the operator's ALLOW LOOP
+  line and never the state file.
+- enforce_belt_arming.py denies, in every session, Bash/Monitor commands that
+  mention the arming dir unless every segment is read-only with no redirect,
+  and Write/Edit/MultiEdit/NotebookEdit into it. Matcher widened accordingly;
+  UPS hook registered after expand_lane_shorthand.py.
+
+Tests: grant from a typed line, not from blockquote/fence/mid-sentence/
+task-notification/no-LANE; loop + its cron allowed then denied; expired grant
+ignored; shell and file-tool writes denied. Each verified red with its
+behavior reverted (blockquote: red only with both the line anchor and the
+quote filter reverted -- two independent layers).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017jPwzesevY5APPqarz52sj
+- tools/hooks/grant_loop_override.py      |  99 +++++++++++++++
+- tools/hooks/test_enforce_belt_arming.py | 152 ++++++++++++++++++++++-
+- tools/hooks/test_grant_loop_override.py | 123 +++++++++++++++++++
+- 6 files changed, 592 insertions(+), 22 deletions(-)
+
 ## fix(belt): exact-match loop/cron arming, per-session re-arm guard, parsed Monitor check (harmonic-forge#659)
 
 Answers the #659 preclose findings A-F:

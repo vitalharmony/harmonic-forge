@@ -407,6 +407,24 @@ def _provenance_refusal(prompt: str, line_index: int) -> str | None:
                 "guard failed to load)")
 
 
+def directive_lines(prompt: str):
+    """Yield `(index, line)` for every line that could carry a typed directive:
+    outside fenced code blocks and not quote-prefixed (`_QUOTE_PREFIX_RE`).
+
+    Shared by BATCH (`_scan_batch`) and `ALLOW LOOP` (`grant_loop_override.py`,
+    harmonic-forge#659) so the two directives cannot disagree about what counts
+    as quoting. A courtesy, not the trust boundary -- `_provenance_refusal` is.
+    """
+    fenced = False
+    for index, line in enumerate(prompt.splitlines()):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or _QUOTE_PREFIX_RE.match(line):
+            continue
+        yield index, line
+
+
 def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:
     """The first BATCH line's index and keys, BEFORE any provenance test.
 
@@ -422,13 +440,7 @@ def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:
     except Exception:
         valid = set()
 
-    fenced = False
-    for index, line in enumerate(prompt.splitlines()):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced or _QUOTE_PREFIX_RE.match(line):
-            continue
+    for index, line in directive_lines(prompt):
         match = _BATCH_RE.match(line)
         if not match:
             continue

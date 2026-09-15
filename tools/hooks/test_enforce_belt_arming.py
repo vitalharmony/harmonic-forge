@@ -314,11 +314,161 @@ class Registration(unittest.TestCase):
         settings = json.loads((HERE.parent.parent / ".claude" / "settings.json")
                               .read_text(encoding="utf-8"))
         entries = [e for e in settings["hooks"]["PreToolUse"]
-                   if e.get("matcher") == "Monitor|CronCreate|Skill"]
+                   if e.get("matcher") ==
+                   "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit"]
         self.assertEqual(len(entries), 1)
         commands = [h["command"] for h in entries[0]["hooks"]]
         self.assertIn('f="${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py"; '
                       '[ -f "$f" ] && python3 "$f" || true', commands)
+
+    def test_forge_settings_register_the_grant_hook_after_expansion(self):
+        settings = json.loads((HERE.parent.parent / ".claude" / "settings.json")
+                              .read_text(encoding="utf-8"))
+        commands = [h["command"] for e in settings["hooks"]["UserPromptSubmit"]
+                    for h in e["hooks"]]
+        expand = next(i for i, c in enumerate(commands) if "expand_lane_shorthand.py" in c)
+        grant = commands.index('f="${HOME}/harmonic-forge/tools/hooks/grant_loop_override.py"; '
+                               '[ -f "$f" ] && python3 "$f" || true')
+        self.assertGreater(grant, expand)
+
+
+def _write_grant_file(arming, session_id, age_seconds=0.0, **extra):
+    import time
+    path = Path(arming) / f"{session_id}{guard.GRANT_SUFFIX}"
+    path.write_text(json.dumps({"created": time.time() - age_seconds, "reason": "",
+                                **extra}), encoding="utf-8")
+    return path
+
+
+class AllowLoopGrant(unittest.TestCase):
+    """#659 operator ruling: one non-canonical arming per typed ALLOW LOOP."""
+
+    LOOP = {"skill": "loop", "args": "5m x"}
+    LOOP_CRON = {"cron": "*/5 * * * *", "prompt": "x", "recurring": True}
+
+    def test_one_loop_and_its_cron_then_a_second_is_denied(self):
+        with tempfile.TemporaryDirectory() as arming:
+            grant = _write_grant_file(arming, "sess-g")
+            skill = _run("Skill", self.LOOP, session_id="sess-g", arming_dir=arming)
+            self.assertIsNone(_decision(skill))
+            self.assertTrue(grant.exists(), "the Skill call must not consume the grant")
+            self.assertIn("ALLOW LOOP", json.loads(skill.stdout).get("systemMessage", ""))
+            cron = _run("CronCreate", self.LOOP_CRON, session_id="sess-g", arming_dir=arming)
+            self.assertIsNone(_decision(cron))
+            self.assertFalse(grant.exists(), "the loop's CronCreate consumes the grant")
+            self.assertEqual(_decision(_run("Skill", self.LOOP, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+            self.assertEqual(_decision(_run("CronCreate", self.LOOP_CRON, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+
+    def test_a_second_skill_before_the_cron_is_denied(self):
+        with tempfile.TemporaryDirectory() as arming:
+            _write_grant_file(arming, "sess-g")
+            _run("Skill", self.LOOP, session_id="sess-g", arming_dir=arming)
+            second = _run("Skill", {"skill": "loop", "args": "1m y"},
+                          session_id="sess-g", arming_dir=arming)
+            self.assertEqual(_decision(second), "deny")
+
+    def test_after_a_skill_only_that_skills_cron_consumes(self):
+        with tempfile.TemporaryDirectory() as arming:
+            grant = _write_grant_file(arming, "sess-g")
+            _run("Skill", self.LOOP, session_id="sess-g", arming_dir=arming)
+            other = dict(self.LOOP_CRON, prompt="something else")
+            self.assertEqual(_decision(_run("CronCreate", other, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+            self.assertTrue(grant.exists())
+
+    def test_a_direct_cron_consumes_the_grant(self):
+        with tempfile.TemporaryDirectory() as arming:
+            grant = _write_grant_file(arming, "sess-g")
+            cron = {"cron": "0 * * * *", "prompt": "remind me"}
+            self.assertIsNone(_decision(_run("CronCreate", cron, session_id="sess-g",
+                                             arming_dir=arming)))
+            self.assertFalse(grant.exists())
+            self.assertEqual(_decision(_run("CronCreate", cron, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+
+    def test_an_expired_grant_is_ignored(self):
+        with tempfile.TemporaryDirectory() as arming:
+            _write_grant_file(arming, "sess-g", age_seconds=11 * 60)
+            self.assertEqual(_decision(_run("Skill", self.LOOP, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+            self.assertEqual(_decision(_run("CronCreate", self.LOOP_CRON, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+
+    def test_another_sessions_grant_does_not_apply(self):
+        with tempfile.TemporaryDirectory() as arming:
+            _write_grant_file(arming, "sess-other")
+            self.assertEqual(_decision(_run("Skill", self.LOOP, session_id="sess-g",
+                                            arming_dir=arming)), "deny")
+
+    def test_the_grant_never_unlocks_the_belt_monitor(self):
+        with tempfile.TemporaryDirectory() as arming:
+            grant = _write_grant_file(arming, "sess-g")
+            self.assertEqual(_decision(_run("Monitor", {"command": INCIDENT_SWEEP},
+                                            session_id="sess-g", arming_dir=arming)), "deny")
+            self.assertTrue(grant.exists())
+
+    def test_deny_names_the_operator_override_without_telling_the_agent_to_write_it(self):
+        out = json.loads(_run("Skill", self.LOOP).stdout)
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("the operator can grant one with a line starting `ALLOW LOOP`", reason)
+        self.assertNotIn(".loop_grant", reason)
+        self.assertNotIn("belt_arming", reason)
+        monitor = json.loads(_run("Monitor", {"command": INCIDENT_SWEEP}).stdout)
+        self.assertNotIn("ALLOW LOOP",
+                         monitor["hookSpecificOutput"]["permissionDecisionReason"])
+
+
+class GrantDirectoryIsHookOwned(unittest.TestCase):
+    """#659 ruling: agents cannot forge a grant by writing the state file."""
+
+    def _deny(self, tool, tool_input, lane="3"):
+        return _decision(_run(tool, tool_input, lane=lane,
+                              arming_dir=str(guard.DEFAULT_ARMING_DIR)))
+
+    WRITES = (
+        "echo '{}' > ~/.cache/harmonic-forge/belt_arming/s.loop_grant",
+        "echo x >> $HOME/.cache/harmonic-forge/belt_arming/s.loop_grant",
+        "touch ${HOME}/.cache/harmonic-forge/belt_arming/s.loop_grant",
+        "mkdir -p ~/.cache/harmonic-forge/belt_arming && touch ~/.cache/harmonic-forge/belt_arming/s",
+        "cp /tmp/g ~/.cache/harmonic-forge/belt_arming/s.loop_grant",
+        "mv /tmp/g ~/.cache/harmonic-forge/belt_arming/",
+        "printf x | tee ~/.cache/harmonic-forge/belt_arming/s.loop_grant",
+        "cd ~/.cache/harmonic-forge && touch belt_arming/s.loop_grant",
+        "cd ~/.cache/harmonic-forge/belt_arming && touch s.loop_grant",
+        "python3 -c \"open('/home/u/.cache/harmonic-forge/belt_arming/s.loop_grant','w').write('{}')\"",
+        "python3 - <<'EOF'\nimport pathlib\npathlib.Path.home().joinpath('.cache/harmonic-forge/belt_arming/s.loop_grant').write_text('{}')\nEOF",
+        "rm -f ~/.cache/harmonic-forge/belt_arming/s",
+        "find ~/.cache/harmonic-forge/belt_arming -name s -delete",
+        "echo $(touch ~/.cache/harmonic-forge/belt_arming/s.loop_grant)",
+    )
+
+    def test_shell_writes_are_denied_in_every_session(self):
+        for command in self.WRITES:
+            for lane in ("3", None):
+                with self.subTest(command=command, lane=lane):
+                    self.assertEqual(self._deny("Bash", {"command": command}, lane=lane),
+                                     "deny")
+        self.assertEqual(self._deny("Monitor", {"command": self.WRITES[0]}), "deny")
+
+    def test_file_tools_are_denied(self):
+        target = str(guard.DEFAULT_ARMING_DIR / "s.loop_grant")
+        for tool, key in (("Write", "file_path"), ("Edit", "file_path"),
+                          ("MultiEdit", "file_path"), ("NotebookEdit", "notebook_path")):
+            with self.subTest(tool=tool):
+                self.assertEqual(self._deny(tool, {key: target, "content": "{}"}), "deny")
+
+    def test_reads_and_unrelated_commands_are_allowed(self):
+        for command in ("ls -la ~/.cache/harmonic-forge/belt_arming",
+                        "cat ~/.cache/harmonic-forge/belt_arming/s.loop_grant 2>/dev/null",
+                        "find ~/.cache/harmonic-forge/belt_arming -mmin -10",
+                        "grep -rn belt_arming tools/hooks | head",
+                        "python3 tools/run_tests.py",
+                        "echo hi > /tmp/x"):
+            with self.subTest(command=command):
+                self.assertIsNone(self._deny("Bash", {"command": command}))
+        self.assertIsNone(self._deny("Write", {"file_path": "/tmp/x.py", "content": ""}))
 
 
 if __name__ == "__main__":
