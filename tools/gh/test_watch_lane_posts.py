@@ -2497,82 +2497,30 @@ if __name__ == "__main__":
     unittest.main()
 
 
-from watch_lane_posts import milestone_exclusions as _REAL_EXCLUSIONS  # noqa: E402
-
 
 class QueueNoiseFilterTests(unittest.TestCase):
-    """Operator ruling 2026-09-14: the belt stops listing work that isn't the lane's."""
+    """Operator ruling 2026-09-14 (harmonic-forge#663)."""
 
-    def _excl(self, rows, now=1000.0, path=None):
-        import tempfile
-        path = path or Path(tempfile.mkdtemp()) / "m.json"
-        return _REAL_EXCLUSIONS("vitalharmony/hrse", cache_path=path,
-                                fetch=lambda r: rows, now=now)
-
-    def test_l2_excludes_epic_tooling_exception_and_future_milestones(self):
+    def test_l2_and_l3_exclude_epic_and_tooling_exception(self):
         from watch_lane_posts import queue_qualifiers
-        q = queue_qualifiers("vitalharmony/hrse", "l2", ["3.0", "Later"])
-        for part in ("-label:epic", "-label:tooling-exception", '-milestone:"3.0"', '-milestone:"Later"'):
-            self.assertIn(part, q)
+        for lane in ("l2", "l3"):
+            q = queue_qualifiers("vitalharmony/hrse", lane)
+            self.assertIn("-label:epic", q)
+            self.assertIn("-label:tooling-exception", q)
+            self.assertNotIn("milestone", q)
 
     def test_l1_keeps_tooling_exception_issues(self):
         from watch_lane_posts import queue_qualifiers
-        q = queue_qualifiers("vitalharmony/hrse", "l1", [])
+        q = queue_qualifiers("vitalharmony/hrse", "l1")
         self.assertIn("-label:epic", q)
         self.assertNotIn("tooling-exception", q)
-        self.assertNotIn("milestone", q)
-
-    def test_empty_older_milestone_is_not_current(self):
-        """Live shape 2026-09-14: 2.8 open with 0 issues, 2.9 holds the work."""
-        rows = [("2.8", 0), ("2.9", 8), ("3.0", 53), ("Later", 71), ("Platform", 24)]
-        self.assertEqual(self._excl(rows), ["3.0", "Later"])
-
-    def test_numeric_not_lexical_ordering(self):
-        rows = [("2.9", 3), ("2.10", 5), ("Later", 1)]
-        self.assertEqual(self._excl(rows), ["2.10", "Later"])
-
-    def test_repo_without_numbered_milestones_excludes_nothing(self):
-        self.assertEqual(self._excl([]), [])
-
-    def test_lookup_failure_excludes_nothing(self):
-        import tempfile
-        def boom(repo):
-            raise RuntimeError("HTTP 403")
-        path = Path(tempfile.mkdtemp()) / "m.json"
-        self.assertEqual(_REAL_EXCLUSIONS("vitalharmony/hrse", cache_path=path, fetch=boom, now=1.0), [])
-
-    def test_cached_for_an_hour(self):
-        import tempfile
-        path = Path(tempfile.mkdtemp()) / "m.json"
-        calls = []
-        def fetch(repo):
-            calls.append(repo)
-            return [("2.9", 1), ("3.0", 1)]
-        for t in (1000.0, 1000.0 + 3599):
-            _REAL_EXCLUSIONS("vitalharmony/hrse", cache_path=path, fetch=fetch, now=t)
-        self.assertEqual(len(calls), 1)
-        _REAL_EXCLUSIONS("vitalharmony/hrse", cache_path=path, fetch=fetch, now=1000.0 + 3601)
-        self.assertEqual(len(calls), 2)
 
     def test_discover_queue_passes_qualifiers_to_search(self):
         seen = []
         def fake_search(repo, marker, qualifiers=""):
             seen.append(qualifiers)
             return set()
-        with patch("watch_lane_posts._search_candidates", side_effect=fake_search), \
-             patch("watch_lane_posts.milestone_exclusions", return_value=["3.0"]):
+        with patch("watch_lane_posts._search_candidates", side_effect=fake_search):
             discover_queue("vitalharmony/hrse", "l2")
         self.assertTrue(seen)
-        self.assertTrue(all("-label:tooling-exception" in q and '-milestone:"3.0"' in q for q in seen))
-
-
-_milestone_patch = patch("watch_lane_posts.milestone_exclusions", return_value=[])
-
-
-def setUpModule():
-    """No test may make a real milestone lookup or write the real cache."""
-    _milestone_patch.start()
-
-
-def tearDownModule():
-    _milestone_patch.stop()
+        self.assertTrue(all("-label:tooling-exception" in q and "-label:epic" in q for q in seen))
