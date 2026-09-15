@@ -190,6 +190,8 @@ def capture_cell(
         # Strip anything that would leak the operator's real session into the
         # capture, then rebuild a minimal deterministic environment.
         for key in ("LANE", "LANE_AGENT", "LANE_CLI", "LANE_PERMISSION_MODE",
+                    "LANE_DEFAULT_MODEL", "LANE_DEFAULT_EFFORT",
+                    "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_MODEL",
                     "GH_CONFIG_DIR", "GOOGLE_CLOUD_PROJECT"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"

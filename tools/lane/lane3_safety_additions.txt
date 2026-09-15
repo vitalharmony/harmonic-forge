@@ -69,3 +69,17 @@
 # passthrough duplicate, which no other AGENT_DEFAULT_FLAG-style entry in
 # this registry does today either).
 --append-system-prompt
+
+# AMENDMENT 3 -- harmonic-forge#665, 2026-09-15.  Claude gains `--model` at
+# every lane, Lane 3 included, and `--effort` when LANE_DEFAULT_EFFORT is set
+# (see `_agent_registry.sh`'s AGENT_MODEL_FLAG / AGENT_EFFORT_FLAG and
+# `_cli_launch.sh` step 3).
+#
+# Same kind as `--append-system-prompt` above, not `--admin-policy`: a launch
+# DEFAULT, not a permission boundary. A passthrough `--model`/`--effort`
+# suppresses the injection rather than being denied -- the same #179 override
+# affordance `--permission-mode` has always had. The point is that a lane's
+# model comes from its launch rather than from whatever ~/.claude/settings.json
+# last held, which `/model` and `/effort` rewrite whenever confirmed with Enter.
+--model
+--effort

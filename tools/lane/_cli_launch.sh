@@ -162,6 +162,26 @@ if [ "${#_lane_denied[@]}" -gt 0 ]; then
   done
 fi
 
+## harmonic-forge#665 -- launch-default preconditions
+#
+# Environment that would contradict the launcher's model/effort choice refuses
+# the launch; see AGENT_LAUNCH_REFUSED_ENV in the registry for why each one.
+for _var in $(registry_lookup AGENT_LAUNCH_REFUSED_ENV "$_lane_agent"); do
+  if [ -n "${!_var:-}" ]; then
+    _lane_launch_die "$_var is set -- it would override the lane's launch model/effort ($(registry_lookup AGENT_LAUNCH_REFUSED_ENV "$_lane_agent") are refused, harmonic-forge#665). Unset it and use LANE_DEFAULT_MODEL / LANE_DEFAULT_EFFORT. Nothing was launched."
+  fi
+done
+_lane_effort_env="$(registry_lookup AGENT_EFFORT_FLAG_ENV "$_lane_agent")"
+if [ -n "$_lane_effort_env" ] && [ -n "${!_lane_effort_env:-}" ]; then
+  _lane_effort_levels="$(registry_lookup AGENT_EFFORT_LEVELS "$_lane_agent")"
+  case " $_lane_effort_levels " in
+    *" ${!_lane_effort_env} "*) ;;
+    *) _lane_launch_die "$_lane_effort_env='${!_lane_effort_env}' is not an effort level ($_lane_effort_levels). Nothing was launched." ;;
+  esac
+  unset _lane_effort_levels
+fi
+unset _var _lane_effort_env
+
 ## Build the launch command
 cli_args=()
 
@@ -190,26 +210,34 @@ fi
 #    so claude-api/claude-pro still exec the wrapper rather than plain claude.
 cli_args+=("$_lane_command")
 
-# 3. The agent's default flag, unless the caller passed it explicitly. This is
-#    the harmonic-forge#179 override affordance, retained unchanged at every
-#    lane including Lane 3 (harmonic-forge#322, Lane 1 decision 3).
-_lane_default_flag="$(registry_lookup AGENT_DEFAULT_FLAG "$_lane_agent")"
-if [ -n "$_lane_default_flag" ]; then
-  _lane_flag_given=0
-  for _arg in "${lane_passthrough[@]}"; do
-    if [ "$_arg" = "$_lane_default_flag" ] || [ "${_arg%%=*}" = "$_lane_default_flag" ]; then
-      _lane_flag_given=1
-      break
+# 3. The agent's launch-default flags, each unless the caller passed it
+#    explicitly (spaced or `=` form, before or after a bare `--`). This is the
+#    harmonic-forge#179 override affordance, retained unchanged at every lane
+#    including Lane 3 (harmonic-forge#322, Lane 1 decision 3). `--model` and
+#    `--effort` joined `--permission-mode` in harmonic-forge#665; an empty
+#    resolved value injects nothing, which is how an unset effort stays unset.
+_lane_inject_default() {
+  local flag_table="$1" env_table="$2" value_table="$3"
+  local flag env_name value arg
+  flag="$(registry_lookup "$flag_table" "$_lane_agent")"
+  [ -n "$flag" ] || return 0
+  for arg in "${lane_passthrough[@]}"; do
+    if [ "$arg" = "$flag" ] || [ "${arg%%=*}" = "$flag" ]; then
+      return 0
     fi
   done
-  if [ "$_lane_flag_given" -eq 0 ]; then
-    _lane_flag_env="$(registry_lookup AGENT_DEFAULT_FLAG_ENV "$_lane_agent")"
-    _lane_flag_value="$(registry_lookup AGENT_DEFAULT_FLAG_VALUE "$_lane_agent")"
-    cli_args+=("$_lane_default_flag" "${!_lane_flag_env:-$_lane_flag_value}")
-    unset _lane_flag_env _lane_flag_value
+  env_name="$(registry_lookup "$env_table" "$_lane_agent")"
+  value="$(registry_lookup "$value_table" "$_lane_agent")"
+  if [ -n "$env_name" ] && [ -n "${!env_name:-}" ]; then
+    value="${!env_name}"
   fi
-  unset _lane_flag_given
-fi
+  [ -n "$value" ] || return 0
+  cli_args+=("$flag" "$value")
+}
+_lane_inject_default AGENT_DEFAULT_FLAG AGENT_DEFAULT_FLAG_ENV AGENT_DEFAULT_FLAG_VALUE
+_lane_inject_default AGENT_MODEL_FLAG AGENT_MODEL_FLAG_ENV AGENT_MODEL_FLAG_VALUE
+_lane_inject_default AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
+unset -f _lane_inject_default
 
 # 3b. A brevity directive for the chat surface (hrse#1703 AC6). Comment-time
 #     validation (`l1_post.py`'s lead-block/cap requirement) cannot see what a
@@ -267,7 +295,7 @@ fi
 cli_args+=("${lane_passthrough[@]}")
 
 unset _lane_agent _lane_command _lane_dir _lane_env_prefix \
-      _lane_default_flag _lane_policy_file _lane_denied _token _arg
+      _lane_policy_file _lane_denied _token _arg
 
 ## Platform-rules sync -- immediately before the final exec (harmonic-forge#651)
 #

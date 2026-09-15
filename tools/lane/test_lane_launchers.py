@@ -76,6 +76,8 @@ class _FixtureTree:
                    **env_overrides) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         for key in ("LANE", "LANE_AGENT", "LANE_CLI", "LANE_PERMISSION_MODE",
+                    "LANE_DEFAULT_MODEL", "LANE_DEFAULT_EFFORT",
+                    "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_MODEL",
                     "GH_CONFIG_DIR"):
             env.pop(key, None)
         env["PATH"] = f"{self.stub_bin}{os.pathsep}{env['PATH']}"
@@ -309,6 +311,17 @@ class RegistryIntegrity(unittest.TestCase):
         cell = self._run_with_broken_registry(corrupt)
         self.assertFalse(cell["launched"])
         self.assertNotEqual(cell["returncode"], 0)
+
+    def test_missing_model_flag_declaration_refuses_to_launch(self):
+        """harmonic-forge#665 TC8: the new attributes are required, not optional."""
+        def drop_claude_model_flag(path: Path) -> None:
+            text = path.read_text()
+            self.assertIn('  [claude]="--model"\n', text)
+            path.write_text(text.replace('  [claude]="--model"\n', "", 1))
+
+        cell = self._run_with_broken_registry(drop_claude_model_flag)
+        self.assertFalse(cell["launched"])
+        self.assertIn("AGENT_MODEL_FLAG[claude] is not defined", cell["stderr"])
 
     def test_registry_lookup_has_no_default_fallback(self):
         """NC5: no `:-` anywhere in the registry's own lookups.  A default turns
@@ -807,6 +820,108 @@ class Lane3Provision(unittest.TestCase):
         decided by an argument -- which reintroduces the hazard AC5 removes the
         moment the flag reaches an alias or muscle memory."""
         self.assertNotIn("--provision", _code_only(LANE_DIR / "lane3"))
+
+
+# ---------------------------------------------------------------------------
+# harmonic-forge#665 -- launch-default model and effort
+# ---------------------------------------------------------------------------
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    """Every value given for `flag`, in spaced or `=` form."""
+    values = []
+    for i, arg in enumerate(args):
+        if arg == flag and i + 1 < len(args):
+            values.append(args[i + 1])
+        elif arg.startswith(flag + "="):
+            values.append(arg[len(flag) + 1:])
+    return values
+
+
+class LaunchDefaultModelAndEffort(unittest.TestCase):
+
+    def test_clean_env_injects_sonnet_and_no_effort_at_every_lane(self):
+        """TC1 / AC1."""
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    cell = tree.run(lane, [], LANE_CLI="claude")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    args = _agent_args(cell)
+                    self.assertEqual(_flag_values(args, "--model"), ["sonnet"])
+                    self.assertEqual(_flag_values(args, "--effort"), [])
+
+    def test_env_sets_model_and_effort(self):
+        """TC2 / AC2."""
+        with _FixtureTree() as tree:
+            cell = tree.run("1", [], LANE_CLI="claude",
+                            LANE_DEFAULT_MODEL="opus", LANE_DEFAULT_EFFORT="low")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            args = _agent_args(cell)
+            self.assertEqual(_flag_values(args, "--model"), ["opus"])
+            self.assertEqual(_flag_values(args, "--effort"), ["low"])
+
+    def test_passthrough_suppresses_injection_in_every_form(self):
+        """TC3 / TC4 / AC2: spaced, `=`, and after a bare `--`."""
+        cases = {
+            "model spaced": (["--model", "fable"], "--model", ["fable"]),
+            "model equals": (["--model=fable"], "--model", ["fable"]),
+            "effort after --": (["--", "--effort=high"], "--effort", ["high"]),
+            "effort spaced": (["--effort", "max"], "--effort", ["max"]),
+        }
+        with _FixtureTree() as tree:
+            for name, (argv, flag, expected) in cases.items():
+                with self.subTest(name):
+                    cell = tree.run("3" if "--" in argv else "2", argv,
+                                    LANE_CLI="claude",
+                                    LANE_DEFAULT_MODEL="opus",
+                                    LANE_DEFAULT_EFFORT="low")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    self.assertEqual(_flag_values(_agent_args(cell), flag),
+                                     expected)
+
+    def test_lane_model_is_never_converted_into_a_launch_flag(self):
+        """TC5 / AC3: LANE_MODEL is the tier hooks' bypass, not a model choice."""
+        with _FixtureTree() as tree:
+            cell = tree.run("2", [], LANE_CLI="claude", LANE_MODEL="opus")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(_flag_values(_agent_args(cell), "--model"),
+                             ["sonnet"])
+
+    def test_contradicting_env_refuses_to_launch(self):
+        """TC6 / AC4."""
+        with _FixtureTree() as tree:
+            for var, value in (("CLAUDE_CODE_EFFORT_LEVEL", "high"),
+                               ("ANTHROPIC_MODEL", "opus")):
+                with self.subTest(var=var):
+                    cell = tree.run("2", [], LANE_CLI="claude", **{var: value})
+                    self.assertFalse(cell["launched"])
+                    self.assertNotEqual(cell["returncode"], 0)
+                    self.assertIn(var, cell["stderr"])
+
+    def test_invalid_effort_refuses_to_launch(self):
+        with _FixtureTree() as tree:
+            cell = tree.run("2", [], LANE_CLI="claude", LANE_DEFAULT_EFFORT="lwo")
+            self.assertFalse(cell["launched"])
+            self.assertIn("not an effort level", cell["stderr"])
+
+    def test_empty_effort_env_injects_nothing(self):
+        with _FixtureTree() as tree:
+            cell = tree.run("2", [], LANE_CLI="claude", LANE_DEFAULT_EFFORT="")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(_flag_values(_agent_args(cell), "--effort"), [])
+
+    def test_codex_and_gemini_get_no_model_or_effort_and_are_not_refused(self):
+        """TC7 / AC5: the refusal and injection are claude-only declarations."""
+        with _FixtureTree() as tree:
+            for agent in ("codex", "gemini"):
+                with self.subTest(agent=agent):
+                    cell = tree.run("2", [], LANE_CLI=agent,
+                                    LANE_DEFAULT_MODEL="opus",
+                                    LANE_DEFAULT_EFFORT="low",
+                                    ANTHROPIC_MODEL="opus")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    args = _agent_args(cell)
+                    self.assertNotIn("--model", args)
+                    self.assertNotIn("--effort", args)
 
 
 # ---------------------------------------------------------------------------

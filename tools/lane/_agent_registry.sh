@@ -32,7 +32,15 @@
 #   AGENT_DEFAULT_FLAG       a flag injected unless the caller passed it
 #   AGENT_DEFAULT_FLAG_ENV   env var supplying that flag's value
 #   AGENT_DEFAULT_FLAG_VALUE fallback when that env var is unset
-#   AGENT_POLICY_FLAG        the flag a per-lane policy file is passed with
+#   AGENT_MODEL_FLAG         launch-default model flag, same injection rule
+#   AGENT_MODEL_FLAG_ENV     env var supplying the model
+#   AGENT_MODEL_FLAG_VALUE   fallback model when that env var is unset
+#   AGENT_EFFORT_FLAG        launch-default effort flag, same injection rule
+#   AGENT_EFFORT_FLAG_ENV    env var supplying the effort level
+#   AGENT_EFFORT_FLAG_VALUE  fallback effort; "" injects nothing (CLI default)
+#   AGENT_EFFORT_LEVELS      accepted effort values, space-separated
+#   AGENT_LAUNCH_REFUSED_ENV env vars whose presence refuses the launch
+#   AGENT_POLICY_FLAG       the flag a per-lane policy file is passed with
 #   AGENT_POLICY_CHECK       precondition check on that file: `toml` or `none`
 #
 # Per agent x lane, keyed "<agent>:<lane>":
@@ -102,6 +110,61 @@ declare -A AGENT_DEFAULT_FLAG_VALUE=(
   [gemini]=""
 )
 
+# harmonic-forge#665: a lane's default model and effort come from the launch,
+# never from whatever ~/.claude/settings.json last held -- `/model` and `/effort`
+# confirmed with Enter rewrite that file, which silently re-routed every lane.
+#
+# NOT `LANE_MODEL`: both tier hooks read a set LANE_MODEL as "skip the check"
+# (tier_model_trigger_check.py, model_tier_gate.py), so feeding it into --model
+# would switch escalation off on every lane. Effort has no fallback, so an unset
+# LANE_DEFAULT_EFFORT injects nothing. Codex/Gemini: empty, per #179 above.
+declare -A AGENT_MODEL_FLAG=(
+  [claude]="--model"
+  [codex]=""
+  [gemini]=""
+)
+declare -A AGENT_MODEL_FLAG_ENV=(
+  [claude]="LANE_DEFAULT_MODEL"
+  [codex]=""
+  [gemini]=""
+)
+declare -A AGENT_MODEL_FLAG_VALUE=(
+  [claude]="sonnet"
+  [codex]=""
+  [gemini]=""
+)
+declare -A AGENT_EFFORT_FLAG=(
+  [claude]="--effort"
+  [codex]=""
+  [gemini]=""
+)
+declare -A AGENT_EFFORT_FLAG_ENV=(
+  [claude]="LANE_DEFAULT_EFFORT"
+  [codex]=""
+  [gemini]=""
+)
+declare -A AGENT_EFFORT_FLAG_VALUE=(
+  [claude]=""
+  [codex]=""
+  [gemini]=""
+)
+declare -A AGENT_EFFORT_LEVELS=(
+  [claude]="low medium high xhigh max"
+  [codex]=""
+  [gemini]=""
+)
+
+# Refused rather than warned about. CLAUDE_CODE_EFFORT_LEVEL outranks skill
+# `effort:` frontmatter (code.claude.com/docs/en/model-config), which would
+# silently defeat turn-scoped escalation. ANTHROPIC_MODEL is read by
+# session_model.launch_model() BEFORE the argv --model, so the tier hooks would
+# judge a different model than the one this launcher chose.
+declare -A AGENT_LAUNCH_REFUSED_ENV=(
+  [claude]="CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_MODEL"
+  [codex]=""
+  [gemini]=""
+)
+
 # Gemini's admin tier is the only mechanism proven live (harmonic-forge#326's
 # canary) to survive --yolo and remove denied tools from the model's tool list
 # entirely. The CLI does NOT fail closed on a missing or invalid policy file --
@@ -163,6 +226,9 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_ENV_PREFIX AGENT_DEFAULT_FLAG AGENT_DEFAULT_FLAG_ENV
   AGENT_DEFAULT_FLAG_VALUE AGENT_POLICY_FLAG AGENT_POLICY_CHECK
   AGENT_SYSTEM_PROMPT_FLAG
+  AGENT_MODEL_FLAG AGENT_MODEL_FLAG_ENV AGENT_MODEL_FLAG_VALUE
+  AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
+  AGENT_EFFORT_LEVELS AGENT_LAUNCH_REFUSED_ENV
 )
 
 _registry_die() {
