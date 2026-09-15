@@ -152,12 +152,101 @@ class BashTests(unittest.TestCase):
 
 
 class LaneGateTests(unittest.TestCase):
+    """harmonic-forge#644 rework: this guard's own fail-closed branches
+    (unparseable, unresolvable-cd, unrecognized-apply_patch) used to deny
+    at every LANE value, because they run before lane3_write_outside_testplan
+    is ever called. Every one of them must ALLOW outright at LANE unset/1/2,
+    and still DENY, unchanged, at LANE=3."""
+
     def test_lane2_allows_write_outside_testplan(self):
         with tempfile.TemporaryDirectory() as worktree:
             cmd = "echo hi > f.txt"
             self.assertEqual(
                 decision(run_guard(bash_payload(cmd, worktree), lane="2")), "allow"
             )
+
+    def _run_raw(self, raw_stdin: str, lane: str | None) -> dict:
+        import os
+        env = dict(os.environ)
+        if lane is None:
+            env.pop("LANE", None)
+        else:
+            env["LANE"] = lane
+        result = subprocess.run(
+            [sys.executable, str(GUARD)],
+            input=raw_stdin,
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        return json.loads(result.stdout)
+
+    def test_fail_closed_branches_allow_outside_lane3(self):
+        with tempfile.TemporaryDirectory() as worktree:
+            cases = {
+                "unparseable_json": ("not json at all", None),
+                "missing_cwd_and_input": (json.dumps({"tool_name": "Bash"}), None),
+                "malformed_shell": (
+                    json.dumps(bash_payload("echo 'unterminated", worktree)), None
+                ),
+                "dynamic_cd_relative_write": (
+                    json.dumps(bash_payload(
+                        "cd $SOME_VAR && echo hi > z.md", worktree)), None
+                ),
+                "markerless_apply_patch": (
+                    json.dumps(apply_patch_payload(
+                        "*** Begin Patch\n*** End Patch", worktree)), None
+                ),
+            }
+            for name, (raw, _) in cases.items():
+                for lane in (None, "1", "2"):
+                    with self.subTest(case=name, lane=lane):
+                        self.assertEqual(
+                            decision(self._run_raw(raw, lane)), "allow")
+                with self.subTest(case=name, lane="3"):
+                    self.assertEqual(
+                        decision(self._run_raw(raw, "3")), "deny")
+
+    def test_mutation_check_removing_early_return_breaks_non_lane3_allow(self):
+        """Sanity check on the fix itself, not just the guard's behavior:
+        with the LANE!=3 early return commented out, the malformed-shell
+        case above must go back to denying at LANE=2 -- proving the new
+        tests above actually exercise the fix rather than passing for an
+        unrelated reason."""
+        source = GUARD.read_text()
+        marker = 'if os.environ.get("LANE") != "3":'
+        self.assertIn(marker, source)
+        start = source.index(marker)
+        end = source.index("\n\n", start)
+        mutated = source[:start] + "if False:" + source[start + len(marker):]
+        # Written alongside the real guard (not an arbitrary tempdir) so its
+        # `sys.path.insert(..., parent)` + `from block_lane1_status_claims
+        # import ...` still resolves -- a copy elsewhere would fail that
+        # import and produce no stdout at all, which is a crash, not a
+        # decision.
+        mutated_path = HOOK_DIR / "_mutated_lane3_codex_write_guard_for_test.py"
+        mutated_path.write_text(mutated)
+        try:
+            with tempfile.TemporaryDirectory() as worktree:
+                env = {}
+                import os
+                env.update(os.environ)
+                env["LANE"] = "2"
+                result = subprocess.run(
+                    [sys.executable, str(mutated_path)],
+                    input=json.dumps(bash_payload("echo 'unterminated", worktree)),
+                    text=True, capture_output=True, env=env, check=False,
+                )
+                mutated_decision = json.loads(result.stdout)
+            self.assertEqual(
+                decision(mutated_decision), "deny",
+                "mutating the early return away should restore the bug "
+                "(LANE=2 denied) -- if this still allows, the test above "
+                "is not exercising the fix",
+            )
+        finally:
+            mutated_path.unlink()
 
 
 class ImportGraphTests(unittest.TestCase):

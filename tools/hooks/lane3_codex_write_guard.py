@@ -11,9 +11,18 @@ Repo-agnostic: reads no repo-specific config, so one copy in
 
 Never imports or calls `protected_write_denial` — that predicate carries
 `write_on_main_branch` and the Lane 2 checks, which would change Codex
-Lane 1 and Lane 2 behavior too. This guard applies only at `LANE=3`, and
-that gate lives in `lane3_write_outside_testplan` itself (allows outright
-at any other `LANE` value), so this file does not re-read `LANE`.
+Lane 1 and Lane 2 behavior too.
+
+This guard DOES read `LANE` itself (harmonic-forge#644 rework), despite
+`lane3_write_outside_testplan` already gating on it: several of this
+file's own branches deny BEFORE ever calling that predicate (an
+unparseable command, an unresolvable `cd` plus a relative write, an
+unrecognized `apply_patch` shape) — those are fail-closed decisions this
+file makes on its own, and they ran unconditionally at every `LANE`
+value, blocking ordinary Codex Lane 1/Lane 2 writes. So `main()` checks
+`LANE == "3"` first and allows outright otherwise, before any parsing;
+every fail-closed branch below still applies, unchanged, once `LANE`
+actually is `"3"`.
 
 apply_patch `tool_input` shape (harmonic-forge#644 Step 0, cited per the
 Implementation Spec — never guessed): `{"command": "<patch text>"}`,
@@ -26,6 +35,7 @@ at that tag: `*** Add File: `, `*** Update File: `, `*** Delete File: `,
 `*** Move to: `.
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -167,6 +177,16 @@ def bash_decision(command: str, cwd: Path) -> dict:
 
 
 def main() -> int:
+    if os.environ.get("LANE") != "3":
+        # harmonic-forge#644 rework: this file's own fail-closed branches
+        # below (unparseable command, unresolvable cd + relative write,
+        # unrecognized apply_patch) run before lane3_write_outside_testplan
+        # ever gets called, so they cannot rely on that predicate's own
+        # LANE gate. Allow outright here, before any parsing, so a Codex
+        # Lane 1/Lane 2 session is never denied by this guard.
+        print(json.dumps(_allow()))
+        return 0
+
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
