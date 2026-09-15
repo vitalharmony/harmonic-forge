@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(hooks): isolate session_model fallback tests from the real --model ancestor (harmonic-forge#671)
+- tools/hooks/test_model_tier_gate.py |  3 ++-
+- tools/hooks/test_session_model.py   | 13 +++++++++++++
+- 2 files changed, 15 insertions(+), 1 deletion(-)
+
 ## fix(belt): drop milestone scoping; label filters only (harmonic-forge#663)
 
 Live search showed excluding 3.0/Later dropped the active resonance-chain

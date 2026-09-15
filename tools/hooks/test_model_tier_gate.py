@@ -391,7 +391,8 @@ class ModelTierFamilies(unittest.TestCase):
         # harmonic-forge#656: settings are a fallback source now, so isolate
         # the operator's real ~/.claude/settings.json from this assertion.
         with patch.object(m.session_model, "settings_model", return_value=None), \
-             patch.object(m.session_model, "recorded_model", return_value=None):
+             patch.object(m.session_model, "recorded_model", return_value=None), \
+             patch.object(m.session_model, "launch_model", return_value=None):
             self.assertTrue(m.required_tier_met({"transcript_path": str(path)}, True))
 
     def test_a_model_switch_after_the_last_reply_is_honored(self):
