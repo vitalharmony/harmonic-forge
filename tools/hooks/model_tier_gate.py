@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
 import session_model  # noqa: E402
 from session_model import _tail_lines  # noqa: E402,F401 -- re-exported; one bounded reader
+from lane3_codex_write_guard import apply_patch_targets  # noqa: E402 -- harmonic-forge#630, one patch parser, not two
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 try:
@@ -192,6 +193,60 @@ def resolve_issue_target(cwd: str) -> tuple[int, str | None] | None:
 def resolve_issue_number(cwd: str) -> int | None:
     target = resolve_issue_target(cwd)
     return target[0] if target else None
+
+
+# harmonic-forge#630: which directories a write-capable tool call actually
+# targets. `resolve_issue_target` takes any directory inside the target
+# worktree -- `git -C <dir> branch --show-current` and the worktree-path
+# regex both work from a subdirectory, not only the worktree root -- so
+# these return the nearest EXISTING ancestor directory of each write path,
+# never the file path itself: Write can create a file (and parent dirs)
+# that do not exist yet, and `git -C` needs a real directory to chdir into.
+def _nearest_existing_dir(path: str) -> str | None:
+    d = os.path.dirname(path) or path
+    seen = set()
+    while d and d not in seen:
+        if os.path.isdir(d):
+            return d
+        seen.add(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def write_target_dirs(payload: dict) -> list[str] | None:
+    """The write target(s) a tool call names, as existing directories.
+
+    None means this tool call has no resolvable write target at all (no
+    `file_path`, an unrecognized `apply_patch` body, or a `Bash` command --
+    `bash_command_writes_files` proves ONLY that a write happens, never
+    where, so Bash keeps resolving from the session cwd, unchanged from
+    before this issue). An empty list is impossible by construction: every
+    branch below either returns `None` or at least one directory.
+
+    AC3: apply_patch is the one shape that can name several paths in one
+    call (`apply_patch_targets` already parses this for
+    `lane3_codex_write_guard`, harmonic-forge#644 -- reused here rather than
+    a second patch parser). Each target's own existing ancestor is returned;
+    callers decide what "different issues in one call" means for them.
+    """
+    tool_name = payload.get("tool_name")
+    tool_input = payload.get("tool_input") or {}
+    if tool_name in ("Edit", "Write", "MultiEdit"):
+        path = tool_input.get("file_path")
+        if not path:
+            return None
+        d = _nearest_existing_dir(path)
+        return [d] if d else None
+    if tool_name == "apply_patch":
+        targets = apply_patch_targets(tool_input.get("command", ""))
+        if not targets:
+            return None
+        dirs = [d for d in (_nearest_existing_dir(t) for t in targets) if d]
+        return dirs or None
+    return None
 
 
 def _mise_env_value(mise_toml: str, key: str) -> str | None:
@@ -542,6 +597,13 @@ def required_tier_met(payload: dict, high_required: bool) -> bool:
             payload.get("session_id"),
         )
         if model is None:
+            # harmonic-forge#630 AC4: fail open, but say so -- this is the
+            # exact silent path the issue named ("a deep issue worked while
+            # the board is briefly unreachable is ungated and nothing
+            # anywhere records it").
+            print("model_tier_gate: session model unresolvable, failing "
+                  "open (tier requirement not enforced this call)",
+                  file=sys.stderr)
             return True  # fail open -- can't resolve, don't block
         is_high = claude_model_is_high(model)
     return is_high if high_required else True
@@ -566,14 +628,44 @@ def _main() -> None:
     elif tool_name not in ("Edit", "Write", "MultiEdit", "apply_patch"):
         _allow()
 
-    cwd = payload.get("cwd") or os.getcwd()
-    target = resolve_issue_target(cwd)
-    if target is None:
-        _allow()
-    issue_number, repo_hint = target
+    # harmonic-forge#630: resolve the issue from the WRITE TARGET when this
+    # tool call has one, falling back to the session cwd only when it does
+    # not (Bash -- `bash_command_writes_files` proves a write happens, never
+    # where -- or an Edit/Write/apply_patch payload this hook can't parse).
+    # A session sitting in `main` editing a `deep`-tier worktree by absolute
+    # path is gated on THAT worktree's issue now, not on `main`'s (no issue).
+    write_dirs = write_target_dirs(payload)
+    resolve_dirs = write_dirs if write_dirs is not None else [payload.get("cwd") or os.getcwd()]
 
-    tier = resolve_tier(cwd, issue_number, repo_hint)
-    if tier is LOOKUP_FAILED:
+    # AC3: a single call CAN name more than one issue (apply_patch touching
+    # two worktrees in one patch). Every resolved target is kept, deduped by
+    # (issue_number, repo_hint) -- never silently narrowed to one -- and the
+    # call is gated on the WORST outcome across all of them below.
+    resolved: list[tuple[str, int, str | None]] = []
+    seen_issues: set[tuple[int, str | None]] = set()
+    for d in resolve_dirs:
+        target = resolve_issue_target(d)
+        if target is None or target in seen_issues:
+            continue
+        seen_issues.add(target)
+        resolved.append((d, target[0], target[1]))
+
+    if not resolved:
+        _allow()
+
+    lookup_failed_issue: int | None = None
+    escalating_issue: int | None = None
+    escalating_tier: str | None = None
+    for d, issue_number, repo_hint in resolved:
+        tier = resolve_tier(d, issue_number, repo_hint)
+        if tier is LOOKUP_FAILED:
+            lookup_failed_issue = issue_number
+            break  # a failed lookup is the worst outcome any target can have
+        if tier in ESCALATING_TIERS and escalating_issue is None:
+            escalating_issue = issue_number
+            escalating_tier = tier
+
+    if lookup_failed_issue is not None:
         # harmonic-forge#656 AC6: fail closed on a failed read, but only for a
         # session not already on a high-tier model -- a high model satisfies
         # any Tier, so the unknown Tier cannot matter. Deliberately names no
@@ -581,11 +673,11 @@ def _main() -> None:
         if required_tier_met(payload, high_required=True):
             _allow()
         _deny(
-            f"Tier lookup failed for issue #{issue_number}; refusing a code "
-            f"write rather than risking a deep issue on the wrong model. "
-            f"A high-tier model (`/model opus`) is not affected."
+            f"Tier lookup failed for issue #{lookup_failed_issue}; refusing a "
+            f"code write rather than risking a deep issue on the wrong "
+            f"model. A high-tier model (`/model opus`) is not affected."
         )
-    if tier not in ESCALATING_TIERS:
+    if escalating_issue is None:
         _allow()
 
     if required_tier_met(payload, high_required=True):
@@ -593,7 +685,7 @@ def _main() -> None:
 
     switch_cmd = "/model gpt-5.6-sol" if "model" in payload else "/model opus"
     _deny(
-        f"Issue #{issue_number} is Tier '{tier}' "
+        f"Issue #{escalating_issue} is Tier '{escalating_tier}' "
         f"-- harmonic-forge#202 requires the high-tier model for this work. "
         f"Run `{switch_cmd}` and retry, or set LANE_MODEL to override."
     )

@@ -838,5 +838,154 @@ class MainBashGatingTests(unittest.TestCase):
         self.assertEqual(out, "")
 
 
+
+class WriteTargetResolutionTests(unittest.TestCase):
+    """harmonic-forge#630 -- the gate resolves from the write target, not
+    the session's own cwd."""
+
+    def _run_main(self, payload: dict, env: dict | None = None) -> str:
+        return MainBashGatingTests._run_main(self, payload, env)
+
+    def _transcript(self, model: str) -> str:
+        return MainBashGatingTests._transcript(self, model)
+
+    def test_ac1_edit_resolved_from_file_path_not_cwd(self):
+        """The session sits on `main` (no issue); the file it edits is in a
+        `deep`-tier worktree. AC1: resolved from the write target."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-1438-impl/backend/app/x.py"},
+        }
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d == "/tmp/hrse2-1438-impl"), \
+             patch.object(m, "resolve_tier", return_value="deep") as fake_tier:
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        # resolved against the FILE's worktree dir, never the session cwd
+        self.assertEqual(fake_tier.call_args[0][0], "/tmp/hrse2-1438-impl")
+
+    def test_ac2_main_checkout_no_longer_bypasses_a_deep_worktree_write(self):
+        """The exact bypass the issue was filed for: a session on `main`
+        (resolves to no issue) writing into a `deep`-tier worktree by
+        absolute path must still be gated."""
+        payload = {
+            "tool_name": "Write",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-1438-impl/new_file.py"},
+        }
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d == "/tmp/hrse2-1438-impl"), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+
+    def test_ac1_bash_still_falls_back_to_cwd_unchanged(self):
+        """Bash has no extractable write target (`bash_command_writes_files`
+        proves a write happens, never where) -- AC1's stated fallback case."""
+        payload = {
+            "tool_name": "Bash",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"command": "echo x > f.py"},
+        }
+        with patch.object(m, "_run", return_value=_completed("")),              patch.object(m, "resolve_tier", return_value="deep") as fake_tier:
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertEqual(fake_tier.call_args[0][0], "/tmp/hrse2-1438-impl")
+
+    def test_ac3_two_targets_in_one_apply_patch_gates_on_the_worse_one(self):
+        """AC3: a single apply_patch touching two different issues' worktrees
+        does not silently pick one -- the `deep` target must still deny even
+        though it is listed second."""
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/hrse2-100-impl/a.py\n"
+            "*** Update File: /tmp/hrse2-200-impl/b.py\n"
+            "*** End Patch\n"
+        )
+        payload = {
+            "tool_name": "apply_patch",
+            "model": "gpt-5.6-mini",  # a real, non-high Codex model
+            "cwd": "/some/other/dir",
+            "tool_input": {"command": patch_body},
+        }
+
+        def fake_isdir(d):
+            return d in ("/tmp/hrse2-100-impl", "/tmp/hrse2-200-impl")
+
+        def fake_resolve_tier(d, issue_number, repo_hint):
+            return "fast" if issue_number == 100 else "deep"
+
+        with patch.object(m.os.path, "isdir", side_effect=fake_isdir), \
+             patch.object(m, "resolve_tier", side_effect=fake_resolve_tier):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("#200", out)
+
+    def test_ac3_two_targets_neither_deep_allows(self):
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/hrse2-100-impl/a.py\n"
+            "*** Update File: /tmp/hrse2-200-impl/b.py\n"
+            "*** End Patch\n"
+        )
+        payload = {
+            "tool_name": "apply_patch",
+            "model": "gpt-5.6-mini",
+            "cwd": "/some/other/dir",
+            "tool_input": {"command": patch_body},
+        }
+
+        def fake_isdir(d):
+            return d in ("/tmp/hrse2-100-impl", "/tmp/hrse2-200-impl")
+
+        with patch.object(m.os.path, "isdir", side_effect=fake_isdir), \
+             patch.object(m, "resolve_tier", return_value="fast"):
+            out = self._run_main(payload)
+        self.assertEqual(out, "")
+
+    def test_ac4_required_tier_met_fail_open_logs_to_stderr(self):
+        import io
+        stderr = io.StringIO()
+        payload = {"transcript_path": "/does/not/exist.jsonl", "cwd": "/tmp"}
+        with patch.object(m.session_model, "current_model", return_value=None),              patch("sys.stderr", stderr):
+            result = m.required_tier_met(payload, high_required=True)
+        self.assertTrue(result)
+        self.assertIn("failing open", stderr.getvalue())
+
+    def test_ac5_seam_write_target_deep_session_cwd_no_issue(self):
+        """The exact adversarial case AC5 names: the write target resolves to
+        a `deep` issue while the session's own cwd resolves to NO issue at
+        all. Mutation-checked below."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",  # main, no issue
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-9999-impl/x.py"},
+        }
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d == "/tmp/hrse2-9999-impl"), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("#9999", out)
+
+    def test_ac5_mutation_reverting_to_cwd_only_fails_the_seam_test(self):
+        """Confirms test_ac5 above actually exercises the fix: with
+        `write_target_dirs` forced to report no target (the pre-fix
+        behavior), the same payload must be ALLOWED -- proving the seam
+        test would have failed against the original bug."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-9999-impl/x.py"},
+        }
+        with patch.object(m, "write_target_dirs", return_value=None),              patch.object(m, "resolve_issue_target", return_value=None):
+            out = self._run_main(payload)
+        self.assertEqual(out, "", "pre-fix behavior (cwd-only) allows this "
+                          "write -- confirms the AC5 test is load-bearing")
+
+
 if __name__ == "__main__":
     unittest.main()
