@@ -838,5 +838,266 @@ class MainBashGatingTests(unittest.TestCase):
         self.assertEqual(out, "")
 
 
+
+class WriteTargetResolutionTests(unittest.TestCase):
+    """harmonic-forge#630 -- the gate resolves from the write target, not
+    the session's own cwd."""
+
+    def _run_main(self, payload: dict, env: dict | None = None) -> str:
+        return MainBashGatingTests._run_main(self, payload, env)
+
+    def _transcript(self, model: str) -> str:
+        return MainBashGatingTests._transcript(self, model)
+
+    def test_ac1_edit_resolved_from_file_path_not_cwd(self):
+        """The session sits on `main` (no issue); the file it edits is in a
+        `deep`-tier worktree. AC1: resolved from the write target."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-1438-impl/backend/app/x.py"},
+        }
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d == "/tmp/hrse2-1438-impl"), \
+             patch.object(m, "resolve_tier", return_value="deep") as fake_tier:
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        # resolved against the FILE's worktree dir, never the session cwd
+        self.assertEqual(fake_tier.call_args[0][0], "/tmp/hrse2-1438-impl")
+
+    def test_ac2_main_checkout_no_longer_bypasses_a_deep_worktree_write(self):
+        """The exact bypass the issue was filed for: a session on `main`
+        (resolves to no issue) writing into a `deep`-tier worktree by
+        absolute path must still be gated."""
+        payload = {
+            "tool_name": "Write",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-1438-impl/new_file.py"},
+        }
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d == "/tmp/hrse2-1438-impl"), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+
+    def test_ac1_bash_still_falls_back_to_cwd_unchanged(self):
+        """Bash has no extractable write target (`bash_command_writes_files`
+        proves a write happens, never where) -- AC1's stated fallback case."""
+        payload = {
+            "tool_name": "Bash",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"command": "echo x > f.py"},
+        }
+        with patch.object(m, "_run", return_value=_completed("")),              patch.object(m, "resolve_tier", return_value="deep") as fake_tier:
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertEqual(fake_tier.call_args[0][0], "/tmp/hrse2-1438-impl")
+
+    def test_ac3_two_targets_in_one_apply_patch_gates_on_the_worse_one(self):
+        """AC3: a single apply_patch touching two different issues' worktrees
+        does not silently pick one -- the `deep` target must still deny even
+        though it is listed second."""
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/hrse2-100-impl/a.py\n"
+            "*** Update File: /tmp/hrse2-200-impl/b.py\n"
+            "*** End Patch\n"
+        )
+        payload = {
+            "tool_name": "apply_patch",
+            "model": "gpt-5.6-mini",  # a real, non-high Codex model
+            "cwd": "/some/other/dir",
+            "tool_input": {"command": patch_body},
+        }
+
+        def fake_isdir(d):
+            return d in ("/tmp/hrse2-100-impl", "/tmp/hrse2-200-impl")
+
+        def fake_resolve_tier(d, issue_number, repo_hint):
+            return "fast" if issue_number == 100 else "deep"
+
+        with patch.object(m.os.path, "isdir", side_effect=fake_isdir), \
+             patch.object(m, "resolve_tier", side_effect=fake_resolve_tier):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("#200", out)
+
+    def test_ac3_two_targets_neither_deep_allows(self):
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/hrse2-100-impl/a.py\n"
+            "*** Update File: /tmp/hrse2-200-impl/b.py\n"
+            "*** End Patch\n"
+        )
+        payload = {
+            "tool_name": "apply_patch",
+            "model": "gpt-5.6-mini",
+            "cwd": "/some/other/dir",
+            "tool_input": {"command": patch_body},
+        }
+
+        def fake_isdir(d):
+            return d in ("/tmp/hrse2-100-impl", "/tmp/hrse2-200-impl")
+
+        with patch.object(m.os.path, "isdir", side_effect=fake_isdir), \
+             patch.object(m, "resolve_tier", return_value="fast"):
+            out = self._run_main(payload)
+        self.assertEqual(out, "")
+
+    def test_ac4_required_tier_met_fail_open_logs_to_stderr(self):
+        import io
+        stderr = io.StringIO()
+        payload = {"transcript_path": "/does/not/exist.jsonl", "cwd": "/tmp"}
+        with patch.object(m.session_model, "current_model", return_value=None),              patch("sys.stderr", stderr):
+            result = m.required_tier_met(payload, high_required=True)
+        self.assertTrue(result)
+        self.assertIn("failing open", stderr.getvalue())
+
+    def test_ac5_seam_write_target_deep_session_cwd_no_issue(self):
+        """The exact adversarial case AC5 names: the write target resolves to
+        a `deep` issue while the session's own cwd resolves to NO issue at
+        all. Mutation-checked below."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",  # main, no issue
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-9999-impl/x.py"},
+        }
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d == "/tmp/hrse2-9999-impl"), \
+             patch.object(m, "resolve_tier", return_value="deep"):
+            out = self._run_main(payload)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("#9999", out)
+
+    def test_ac5_mutation_reverting_to_cwd_only_fails_the_seam_test(self):
+        """Confirms test_ac5 above actually exercises the fix: with
+        `write_target_dirs` forced to report no target (the pre-fix
+        behavior), the same payload must be ALLOWED -- proving the seam
+        test would have failed against the original bug."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": self._transcript("claude-sonnet-5"),
+            "tool_input": {"file_path": "/tmp/hrse2-9999-impl/x.py"},
+        }
+        with patch.object(m, "write_target_dirs", return_value=None), \
+             patch.object(m, "resolve_issue_target", return_value=None):
+            out = self._run_main(payload)
+        self.assertEqual(out, "", "pre-fix behavior (cwd-only) allows this "
+                          "write -- confirms the AC5 test is load-bearing")
+
+
+class PrecloseFindingRegressionTests(unittest.TestCase):
+    """harmonic-forge#630 preclose-inspection findings 1-3 (2026-09-16),
+    each reproduced against real git state, not mocked resolution --
+    the panel's own point was that the mocked tests above did not exercise
+    a nested path or a relative apply_patch target."""
+
+    def setUp(self):
+        self.worktree = Path(tempfile.mkdtemp(prefix="hrse2-888888-impl-",
+                                              dir="/tmp"))
+        # WORKTREE_ISSUE_RE needs the EXACT name; tempfile's suffix breaks
+        # that, so build the real path by hand and clean it up ourselves.
+        shutil.rmtree(self.worktree, ignore_errors=True)
+        self.worktree = Path("/tmp/hrse2-888888-impl")
+        (self.worktree / "backend" / "app").mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.worktree, ignore_errors=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=self.worktree, check=True)
+        (self.worktree / "README").write_text("x")
+        subprocess.run(["git", "add", "-A"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=self.worktree, check=True)
+
+    def test_finding1_nested_path_in_detached_head_worktree_still_resolves(self):
+        """A file nested under a worktree whose branch is detached (a
+        conflicted rebase, or any non-conforming branch name) must still
+        resolve via the worktree-root fallback -- not silently fall
+        through because the nearest existing directory is a subdirectory."""
+        nested = str(self.worktree / "backend" / "app" / "x.py")
+        dirs = m.write_target_dirs({"tool_name": "Edit",
+                                    "tool_input": {"file_path": nested}})
+        self.assertEqual(dirs, [str(self.worktree)])
+        self.assertEqual(m.resolve_issue_target(dirs[0]), (888888, "hrse"))
+
+    def test_finding1_end_to_end_deny_survives_detached_head(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": None,
+            "tool_input": {"file_path": str(self.worktree / "backend" / "app" / "x.py")},
+        }
+        import io
+        stdin = io.StringIO(json.dumps(payload))
+        stdout = io.StringIO()
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), \
+             patch.dict(os.environ, {k: v for k, v in os.environ.items()
+                                     if k not in ("LANE_MODEL", "LANE")}, clear=True), \
+             patch.object(m, "resolve_tier", return_value="deep"), \
+             patch.object(m.session_model, "current_model", return_value="claude-sonnet-5"):
+            try:
+                m._main()
+            except SystemExit:
+                pass
+        self.assertIn('"permissionDecision": "deny"', stdout.getvalue())
+        self.assertIn("#888888", stdout.getvalue())
+
+    def test_finding2_relative_apply_patch_target_resolves_against_payload_cwd(self):
+        """A repo-relative apply_patch target must resolve against
+        `payload["cwd"]`, never the hook process's own unrelated cwd."""
+        body = "*** Begin Patch\n*** Update File: backend/app/x.py\n*** End Patch\n"
+        payload = {
+            "tool_name": "apply_patch",
+            "cwd": str(self.worktree),
+            "tool_input": {"command": body},
+        }
+        self.assertEqual(m.write_target_dirs(payload), [str(self.worktree)])
+
+    def test_finding2_relative_target_ignores_hook_process_cwd(self):
+        """Regression guard: resolving from the hook's OWN cwd (not the
+        payload's) would resolve to whatever repo this test happens to run
+        in -- assert it does NOT, by running from a directory that is not
+        the target worktree at all."""
+        body = "*** Begin Patch\n*** Update File: backend/app/x.py\n*** End Patch\n"
+        payload = {
+            "tool_name": "apply_patch",
+            "cwd": str(self.worktree),
+            "tool_input": {"command": body},
+        }
+        real_cwd = os.getcwd()
+        try:
+            os.chdir(tempfile.gettempdir())
+            dirs = m.write_target_dirs(payload)
+        finally:
+            os.chdir(real_cwd)
+        self.assertEqual(dirs, [str(self.worktree)])
+
+    def test_finding3_target_resolving_to_no_issue_logs_to_stderr(self):
+        """AC4, extended to the resolution path this issue itself added:
+        a write target that resolves to no tracked issue at all must not
+        allow in total silence."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/does/not/matter",
+            "tool_input": {"file_path": "/tmp/definitely-not-a-worktree/x.py"},
+        }
+        import io
+        stdin = io.StringIO(json.dumps(payload))
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), \
+             patch("sys.stderr", stderr), \
+             patch.dict(os.environ, {k: v for k, v in os.environ.items()
+                                     if k not in ("LANE_MODEL", "LANE")}, clear=True):
+            try:
+                m._main()
+            except SystemExit:
+                pass
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("no tracked issue resolved", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
