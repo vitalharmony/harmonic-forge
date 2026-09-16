@@ -66,6 +66,7 @@ from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_
 import session_model  # noqa: E402
 from session_model import _tail_lines  # noqa: E402,F401 -- re-exported; one bounded reader
 from lane3_codex_write_guard import apply_patch_targets  # noqa: E402 -- harmonic-forge#630, one patch parser, not two
+from lane3_codex_write_guard import _resolve as _codex_resolve  # noqa: E402 -- one relative-path resolver, not two (preclose finding 2)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 try:
@@ -216,8 +217,33 @@ def _nearest_existing_dir(path: str) -> str | None:
     return None
 
 
+def _worktree_root_for(path: str) -> str | None:
+    """The git worktree root containing `path`'s nearest existing ancestor.
+
+    harmonic-forge#630 preclose finding 1: `resolve_issue_target`'s branch
+    check already works from any subdirectory (`git -C <dir> branch
+    --show-current` understands subdirectories), but its worktree-path
+    fallback (`WORKTREE_ISSUE_RE`) is anchored to the exact worktree root
+    and never matches a subdirectory. A file nested inside a worktree
+    (anything but a file sitting directly in the worktree root) fell
+    through to `_nearest_existing_dir`'s bare answer, which is normally a
+    subdirectory, silently dropping that fallback for a detached-HEAD or
+    non-conforming-branch worktree -- exactly the state a conflicted
+    rebase leaves a Lane 2 worktree in. Resolving to the real git root
+    first makes the worktree-regex fallback see what it expects again,
+    without changing `resolve_issue_target`'s own contract for its
+    existing callers.
+    """
+    existing = _nearest_existing_dir(path)
+    if existing is None:
+        return None
+    result = _run(["git", "-C", existing, "rev-parse", "--show-toplevel"])
+    top = result.stdout.strip() if result.returncode == 0 else ""
+    return top or existing
+
+
 def write_target_dirs(payload: dict) -> list[str] | None:
-    """The write target(s) a tool call names, as existing directories.
+    """The write target(s) a tool call names, as existing worktree roots.
 
     None means this tool call has no resolvable write target at all (no
     `file_path`, an unrecognized `apply_patch` body, or a `Bash` command --
@@ -231,6 +257,14 @@ def write_target_dirs(payload: dict) -> list[str] | None:
     `lane3_codex_write_guard`, harmonic-forge#644 -- reused here rather than
     a second patch parser). Each target's own existing ancestor is returned;
     callers decide what "different issues in one call" means for them.
+
+    harmonic-forge#630 preclose finding 2: `apply_patch` bodies routinely
+    carry repo-relative paths, not just absolute ones. `apply_patch_targets`
+    returns them as written; resolving a relative target requires the
+    PAYLOAD's own cwd, never the hook process's own cwd (which is whatever
+    directory happened to invoke this hook, unrelated to the tool call).
+    `lane3_codex_write_guard._resolve` already has this exact contract --
+    reused here rather than a second relative-path resolver.
     """
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}
@@ -238,13 +272,15 @@ def write_target_dirs(payload: dict) -> list[str] | None:
         path = tool_input.get("file_path")
         if not path:
             return None
-        d = _nearest_existing_dir(path)
+        d = _worktree_root_for(path)
         return [d] if d else None
     if tool_name == "apply_patch":
         targets = apply_patch_targets(tool_input.get("command", ""))
         if not targets:
             return None
-        dirs = [d for d in (_nearest_existing_dir(t) for t in targets) if d]
+        payload_cwd = Path(payload.get("cwd") or os.getcwd())
+        resolved_targets = [_codex_resolve(t, payload_cwd) for t in targets]
+        dirs = [d for d in (_worktree_root_for(t) for t in resolved_targets if t) if d]
         return dirs or None
     return None
 
@@ -651,6 +687,17 @@ def _main() -> None:
         resolved.append((d, target[0], target[1]))
 
     if not resolved:
+        # harmonic-forge#630 AC4 (preclose finding 3): a write TARGET was
+        # named but none of its candidate directories resolved to a
+        # tracked issue -- most commonly a genuinely untracked path, but
+        # also the residual case of a resolvable-in-principle worktree
+        # that `resolve_issue_target` could not read (deleted mid-session,
+        # a `git` error). Both look identical from here; say so on stderr
+        # either way rather than let a deep-tier write through in silence.
+        if write_dirs is not None:
+            print(f"model_tier_gate: no tracked issue resolved from "
+                  f"{len(resolve_dirs)} write target(s) ({resolve_dirs}); "
+                  f"allowing", file=sys.stderr)
         _allow()
 
     lookup_failed_issue: int | None = None

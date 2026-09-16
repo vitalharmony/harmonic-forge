@@ -981,10 +981,122 @@ class WriteTargetResolutionTests(unittest.TestCase):
             "transcript_path": self._transcript("claude-sonnet-5"),
             "tool_input": {"file_path": "/tmp/hrse2-9999-impl/x.py"},
         }
-        with patch.object(m, "write_target_dirs", return_value=None),              patch.object(m, "resolve_issue_target", return_value=None):
+        with patch.object(m, "write_target_dirs", return_value=None), \
+             patch.object(m, "resolve_issue_target", return_value=None):
             out = self._run_main(payload)
         self.assertEqual(out, "", "pre-fix behavior (cwd-only) allows this "
                           "write -- confirms the AC5 test is load-bearing")
+
+
+class PrecloseFindingRegressionTests(unittest.TestCase):
+    """harmonic-forge#630 preclose-inspection findings 1-3 (2026-09-16),
+    each reproduced against real git state, not mocked resolution --
+    the panel's own point was that the mocked tests above did not exercise
+    a nested path or a relative apply_patch target."""
+
+    def setUp(self):
+        self.worktree = Path(tempfile.mkdtemp(prefix="hrse2-888888-impl-",
+                                              dir="/tmp"))
+        # WORKTREE_ISSUE_RE needs the EXACT name; tempfile's suffix breaks
+        # that, so build the real path by hand and clean it up ourselves.
+        shutil.rmtree(self.worktree, ignore_errors=True)
+        self.worktree = Path("/tmp/hrse2-888888-impl")
+        (self.worktree / "backend" / "app").mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.worktree, ignore_errors=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=self.worktree, check=True)
+        (self.worktree / "README").write_text("x")
+        subprocess.run(["git", "add", "-A"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=self.worktree, check=True)
+
+    def test_finding1_nested_path_in_detached_head_worktree_still_resolves(self):
+        """A file nested under a worktree whose branch is detached (a
+        conflicted rebase, or any non-conforming branch name) must still
+        resolve via the worktree-root fallback -- not silently fall
+        through because the nearest existing directory is a subdirectory."""
+        nested = str(self.worktree / "backend" / "app" / "x.py")
+        dirs = m.write_target_dirs({"tool_name": "Edit",
+                                    "tool_input": {"file_path": nested}})
+        self.assertEqual(dirs, [str(self.worktree)])
+        self.assertEqual(m.resolve_issue_target(dirs[0]), (888888, "hrse"))
+
+    def test_finding1_end_to_end_deny_survives_detached_head(self):
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/home/mmangus/Harmonic_Projects/HRSE2",
+            "transcript_path": None,
+            "tool_input": {"file_path": str(self.worktree / "backend" / "app" / "x.py")},
+        }
+        import io
+        stdin = io.StringIO(json.dumps(payload))
+        stdout = io.StringIO()
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), \
+             patch.dict(os.environ, {k: v for k, v in os.environ.items()
+                                     if k not in ("LANE_MODEL", "LANE")}, clear=True), \
+             patch.object(m, "resolve_tier", return_value="deep"), \
+             patch.object(m.session_model, "current_model", return_value="claude-sonnet-5"):
+            try:
+                m._main()
+            except SystemExit:
+                pass
+        self.assertIn('"permissionDecision": "deny"', stdout.getvalue())
+        self.assertIn("#888888", stdout.getvalue())
+
+    def test_finding2_relative_apply_patch_target_resolves_against_payload_cwd(self):
+        """A repo-relative apply_patch target must resolve against
+        `payload["cwd"]`, never the hook process's own unrelated cwd."""
+        body = "*** Begin Patch\n*** Update File: backend/app/x.py\n*** End Patch\n"
+        payload = {
+            "tool_name": "apply_patch",
+            "cwd": str(self.worktree),
+            "tool_input": {"command": body},
+        }
+        self.assertEqual(m.write_target_dirs(payload), [str(self.worktree)])
+
+    def test_finding2_relative_target_ignores_hook_process_cwd(self):
+        """Regression guard: resolving from the hook's OWN cwd (not the
+        payload's) would resolve to whatever repo this test happens to run
+        in -- assert it does NOT, by running from a directory that is not
+        the target worktree at all."""
+        body = "*** Begin Patch\n*** Update File: backend/app/x.py\n*** End Patch\n"
+        payload = {
+            "tool_name": "apply_patch",
+            "cwd": str(self.worktree),
+            "tool_input": {"command": body},
+        }
+        real_cwd = os.getcwd()
+        try:
+            os.chdir(tempfile.gettempdir())
+            dirs = m.write_target_dirs(payload)
+        finally:
+            os.chdir(real_cwd)
+        self.assertEqual(dirs, [str(self.worktree)])
+
+    def test_finding3_target_resolving_to_no_issue_logs_to_stderr(self):
+        """AC4, extended to the resolution path this issue itself added:
+        a write target that resolves to no tracked issue at all must not
+        allow in total silence."""
+        payload = {
+            "tool_name": "Edit",
+            "cwd": "/does/not/matter",
+            "tool_input": {"file_path": "/tmp/definitely-not-a-worktree/x.py"},
+        }
+        import io
+        stdin = io.StringIO(json.dumps(payload))
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), \
+             patch("sys.stderr", stderr), \
+             patch.dict(os.environ, {k: v for k, v in os.environ.items()
+                                     if k not in ("LANE_MODEL", "LANE")}, clear=True):
+            try:
+                m._main()
+            except SystemExit:
+                pass
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("no tracked issue resolved", stderr.getvalue())
 
 
 if __name__ == "__main__":
