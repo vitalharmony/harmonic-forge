@@ -1394,13 +1394,27 @@ class InertPhaseDependentsTests(unittest.TestCase):
         self.assertIn("#194", detail)
         self.assertIn("#196", detail)
 
-    def test_gh_failure_recorded_as_no_dependents_not_a_crash(self):
+    def test_gh_failure_reported_as_unreadable_never_as_empty(self):
+        """harmonic-forge#647 preclose: a failed dependency call must NOT be
+        indistinguishable from 'nothing depends on this inert phase'. The
+        module's own GhError contract forbids quietly reporting all-clean."""
         report = self._sweep(
             [self._issue(195, ["phase", "shipped-inert"])],
             {},
             dependents_error=rh.GhError("network down"),
         )
-        self.assertEqual(report.inert_phase_dependents, [])
+        self.assertEqual(len(report.inert_phase_dependents), 1)
+        self.assertEqual(report.inert_phase_dependents[0].name, "#195")
+        self.assertIn("UNREADABLE", report.inert_phase_dependents[0].detail)
+
+    def test_a_clean_run_and_a_failed_run_are_distinguishable(self):
+        """The failure mode the preclose panel named: byte-identical output
+        between 'asked and found nothing' and 'never asked'."""
+        clean = self._sweep([self._issue(195, ["phase", "shipped-inert"])], {195: []})
+        failed = self._sweep([self._issue(195, ["phase", "shipped-inert"])], {},
+                             dependents_error=rh.GhError("rate limited"))
+        self.assertEqual(clean.inert_phase_dependents, [])
+        self.assertNotEqual(failed.inert_phase_dependents, [])
 
     def test_pull_requests_in_shipped_inert_listing_skipped(self):
         pr = self._issue(853, ["phase", "shipped-inert"])
@@ -1409,11 +1423,36 @@ class InertPhaseDependentsTests(unittest.TestCase):
                                             "repository_url": "https://api.github.com/repos/vitalharmony/harmonic-forge"}]})
         self.assertEqual(report.inert_phase_dependents, [])
 
-    def test_no_prose_parsing_in_source(self):
-        """AC3: the function's only network call is dependencies/blocking,
-        plus the labelled-issue listing -- no title/body regex on 'Depends on'
-        or 'Phase N'."""
-        import inspect
-        source = inspect.getsource(rh.audit_inert_phase_dependents)
-        self.assertNotIn("Depends on", source)
-        self.assertNotRegex(source, r"Phase\s+\d+")
+    def test_only_the_two_expected_api_paths_are_called(self):
+        """AC3, asserted as the PROPERTY rather than as string literals
+        (harmonic-forge#647 preclose): the audit's only network calls are the
+        shipped-inert listing and dependencies/blocking. A later change that
+        started reading issue bodies -- the prose inference AC3 forbids --
+        would fetch a third path and fail here, which a grep for 'Depends on'
+        in the source would not catch."""
+        called: list[str] = []
+
+        def recording_rest(path):
+            called.append(path)
+            if f"labels={rh.SHIPPED_INERT_LABEL}" in path:
+                return [self._issue(195, ["phase", "shipped-inert"])]
+            if "/dependencies/blocking" in path:
+                return [{"number": 194, "state": "open",
+                         "repository_url":
+                             "https://api.github.com/repos/vitalharmony/harmonic-forge"}]
+            return []
+
+        report = rh.Report()
+        with patch.object(rh, "_rest", side_effect=recording_rest):
+            rh.audit_inert_phase_dependents(self.REPO, report)
+
+        self.assertEqual(len(report.inert_phase_dependents), 1)
+        for path in called:
+            self.assertTrue(
+                f"labels={rh.SHIPPED_INERT_LABEL}" in path
+                or "/dependencies/blocking" in path,
+                f"unexpected network path {path!r} -- AC3 allows only the "
+                f"shipped-inert listing and dependencies/blocking",
+            )
+        self.assertTrue(any("/dependencies/blocking" in p for p in called),
+                        "the dependency API must actually be consulted")

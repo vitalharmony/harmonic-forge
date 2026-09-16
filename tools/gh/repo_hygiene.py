@@ -666,12 +666,23 @@ def audit_phase_closures(repo: str, report: Report) -> None:
         ))
 
 
-def _dependents(repo: str, number: str) -> list[dict]:
-    """Issues the native dependency API lists as blocked by `number`."""
+def _dependents(repo: str, number: str) -> list[dict] | None:
+    """Issues the native dependency API lists as blocked by `number`.
+
+    `None` means the call did not happen (rate limit, expired token, 5xx) --
+    NOT "nothing depends on it". The distinction is the whole point: this
+    module's own GhError contract is that a hygiene check must never quietly
+    report "all clean" because its API calls failed, and for this audit the
+    section's absence IS the answer, so a swallowed error deletes the only
+    signal that AC1's question was asked (harmonic-forge#647 preclose).
+    """
     try:
         return _rest(f"repos/{repo}/issues/{number}/dependencies/blocking")
-    except GhError:
-        return []
+    except GhError as exc:
+        print(f"[hygiene] {repo}#{number}: dependents unreadable -- "
+              f"the inert-phase-dependents answer for this issue is UNKNOWN, "
+              f"not empty: {exc}", file=sys.stderr)
+        return None
 
 
 def _issue_ref(item: dict, fallback_repo: str) -> str:
@@ -699,8 +710,18 @@ def audit_inert_phase_dependents(repo: str, report: Report) -> None:
         if "pull_request" in issue:
             continue
         number = issue["number"]
-        open_dependents = [d for d in _dependents(repo, str(number))
-                           if d.get("state") == "open"]
+        dependents = _dependents(repo, str(number))
+        if dependents is None:
+            # Reported, never silently dropped: an unreadable dependency call
+            # and a genuinely dependent-free phase must not look identical.
+            report.inert_phase_dependents.append(Finding(
+                repo=repo, name=f"#{number}",
+                detail=(f"shipped-inert, dependents UNREADABLE (dependency API "
+                        f"call failed -- rerun to get an answer); "
+                        f"{issue['title'][:60]}"),
+            ))
+            continue
+        open_dependents = [d for d in dependents if d.get("state") == "open"]
         if not open_dependents:
             continue
         refs = ", ".join(_issue_ref(d, repo) for d in open_dependents)
