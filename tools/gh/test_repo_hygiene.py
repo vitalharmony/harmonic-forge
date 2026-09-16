@@ -676,6 +676,11 @@ class NewChecksAreReportOnlyTests(unittest.TestCase):
         r.missing_transaction_log.append(rh.Finding("c", "fix: x", "no entry"))
         self.assertFalse(r.actionable)
 
+    def test_inert_phase_dependents_alone_does_not_fail(self):
+        r = rh.Report()
+        r.inert_phase_dependents.append(rh.Finding("r", "#195", "open dependent"))
+        self.assertFalse(r.actionable)
+
     def test_stranded_still_fails_alongside_all_three_new_categories(self):
         r = rh.Report()
         r.checkout_off_main.append(rh.Finding("c", "feat/x", "expected 'main'"))
@@ -872,6 +877,7 @@ class MainCleanGuardTests(unittest.TestCase):
              patch.object(rh, "audit_migrations", noop), \
              patch.object(rh, "audit_unlabelled_migrations", noop), \
              patch.object(rh, "audit_phase_closures", noop), \
+             patch.object(rh, "audit_inert_phase_dependents", noop), \
              patch.object(rh, "audit_unboarded", noop), \
              patch.object(rh, "audit_board_status_drift", noop), \
              patch.object(rh, "audit_open_prs", fake_audit_open_prs), \
@@ -1302,3 +1308,112 @@ class PhaseClosureSweepTests(unittest.TestCase):
         report = self._sweep({"phase": [pr]}, all_issues=[pr])
         self.assertEqual(report.undetermined_phase_closures, [])
         self.assertEqual(report.phase_candidates, [])
+
+
+class InertPhaseDependentsTests(unittest.TestCase):
+    """harmonic-forge#647 (#642 AC4) — report-only, native-links-only reader
+    of open work depending on a closed shipped-inert phase."""
+
+    REPO = "vitalharmony/harmonic-forge"
+
+    @staticmethod
+    def _issue(number, labels, title="Phase 4 — sensing layer", state="closed"):
+        return {
+            "number": number, "title": title, "state": state,
+            "labels": [{"name": n} for n in labels],
+        }
+
+    def _sweep(self, inert_issues, dependents_by_number: dict, dependents_error=None):
+        """`dependents_by_number` maps inert issue number -> list of
+        `blocking` items (already shaped like the GitHub API response)."""
+        def fake_rest(path):
+            if f"labels={rh.SHIPPED_INERT_LABEL}" in path:
+                return inert_issues
+            if "/dependencies/blocking" in path:
+                if dependents_error is not None:
+                    raise dependents_error
+                number = int(path.rsplit("/issues/", 1)[1].split("/", 1)[0])
+                return dependents_by_number.get(number, [])
+            return []
+
+        report = rh.Report()
+        with patch.object(rh, "_rest", side_effect=fake_rest):
+            rh.audit_inert_phase_dependents(self.REPO, report)
+        return report
+
+    def test_empty_when_no_inert_issues(self):
+        report = self._sweep([], {})
+        self.assertEqual(report.inert_phase_dependents, [])
+
+    def test_open_dependent_reported(self):
+        report = self._sweep(
+            [self._issue(195, ["phase", "shipped-inert"])],
+            {195: [{"number": 194, "state": "open",
+                    "repository_url": "https://api.github.com/repos/vitalharmony/harmonic-forge"}]},
+        )
+        self.assertEqual(len(report.inert_phase_dependents), 1)
+        self.assertEqual(report.inert_phase_dependents[0].name, "#195")
+        self.assertIn("#194", report.inert_phase_dependents[0].detail)
+
+    def test_closed_dependent_not_reported(self):
+        report = self._sweep(
+            [self._issue(195, ["phase", "shipped-inert"])],
+            {195: [{"number": 194, "state": "closed",
+                    "repository_url": "https://api.github.com/repos/vitalharmony/harmonic-forge"}]},
+        )
+        self.assertEqual(report.inert_phase_dependents, [])
+
+    def test_no_open_dependent_at_all_not_reported(self):
+        report = self._sweep(
+            [self._issue(195, ["phase", "shipped-inert"])],
+            {195: []},
+        )
+        self.assertEqual(report.inert_phase_dependents, [])
+
+    def test_cross_repo_dependent_rendered_as_owner_repo_number(self):
+        report = self._sweep(
+            [self._issue(30, ["phase", "shipped-inert"])],
+            {30: [{"number": 199, "state": "open",
+                   "repository_url": "https://api.github.com/repos/vitalharmony/hrse"}]},
+        )
+        self.assertEqual(len(report.inert_phase_dependents), 1)
+        self.assertIn("vitalharmony/hrse#199", report.inert_phase_dependents[0].detail)
+
+    def test_multiple_open_dependents_all_named(self):
+        report = self._sweep(
+            [self._issue(195, ["phase", "shipped-inert"])],
+            {195: [
+                {"number": 194, "state": "open",
+                 "repository_url": "https://api.github.com/repos/vitalharmony/harmonic-forge"},
+                {"number": 196, "state": "open",
+                 "repository_url": "https://api.github.com/repos/vitalharmony/harmonic-forge"},
+            ]},
+        )
+        self.assertEqual(len(report.inert_phase_dependents), 1)
+        detail = report.inert_phase_dependents[0].detail
+        self.assertIn("#194", detail)
+        self.assertIn("#196", detail)
+
+    def test_gh_failure_recorded_as_no_dependents_not_a_crash(self):
+        report = self._sweep(
+            [self._issue(195, ["phase", "shipped-inert"])],
+            {},
+            dependents_error=rh.GhError("network down"),
+        )
+        self.assertEqual(report.inert_phase_dependents, [])
+
+    def test_pull_requests_in_shipped_inert_listing_skipped(self):
+        pr = self._issue(853, ["phase", "shipped-inert"])
+        pr["pull_request"] = {"url": "x"}
+        report = self._sweep([pr], {853: [{"number": 1, "state": "open",
+                                            "repository_url": "https://api.github.com/repos/vitalharmony/harmonic-forge"}]})
+        self.assertEqual(report.inert_phase_dependents, [])
+
+    def test_no_prose_parsing_in_source(self):
+        """AC3: the function's only network call is dependencies/blocking,
+        plus the labelled-issue listing -- no title/body regex on 'Depends on'
+        or 'Phase N'."""
+        import inspect
+        source = inspect.getsource(rh.audit_inert_phase_dependents)
+        self.assertNotIn("Depends on", source)
+        self.assertNotRegex(source, r"Phase\s+\d+")

@@ -139,6 +139,17 @@ class Report:
     #: mitigation for the gate's one structural hole: a human has to apply
     #: the opt-in label in the first place.
     phase_candidates: list[Finding] = field(default_factory=list)
+    #: harmonic-forge#647 AC1 (#642 AC4). Report-only. For each closed
+    #: `shipped-inert` issue, the OPEN issues the native dependency API
+    #: lists as blocked by it -- "what depends on a phase that is closed
+    #: but produces nothing". hrse#195 had three such dependents and
+    #: nobody could see it. Read from `dependencies/blocking` only, never
+    #: inferred from prose (AC3): prose needs per-repo phase-number
+    #: resolution and is the published-marker credential class R-0170
+    #: rejects. Not a failure -- depending on an inert phase is a
+    #: legitimate open state that can last months, and failing weekly on
+    #: it trains people to ignore the sweep.
+    inert_phase_dependents: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -652,6 +663,51 @@ def audit_phase_closures(repo: str, report: Report) -> None:
         report.phase_candidates.append(Finding(
             repo=repo, name=f"#{number}",
             detail=f"{issue.get('state')} — no `phase` label{annotation}; {title[:60]}",
+        ))
+
+
+def _dependents(repo: str, number: str) -> list[dict]:
+    """Issues the native dependency API lists as blocked by `number`."""
+    try:
+        return _rest(f"repos/{repo}/issues/{number}/dependencies/blocking")
+    except GhError:
+        return []
+
+
+def _issue_ref(item: dict, fallback_repo: str) -> str:
+    """`owner/repo#N` from the item's own `repository_url`. Never assume the
+    queried repo: a dependent may live in another repository (harmonic-forge#647)."""
+    url = item.get("repository_url") or ""
+    parts = [p for p in url.split("/") if p]
+    where = "/".join(parts[-2:]) if len(parts) >= 2 else fallback_repo
+    return f"{where}#{item.get('number')}"
+
+
+def audit_inert_phase_dependents(repo: str, report: Report) -> None:
+    """harmonic-forge#647 (#642 AC4): which OPEN work depends on a phase that
+    is closed but produces nothing?
+
+    Slice 1 made `shipped-inert` a label and its blocker a native
+    `blocked_by` link. Nothing read the other direction, which is the
+    question AC4 asks. One hop only: a transitive closure would report
+    hrse#196 under hrse#195 twice (it also depends on #194), and needs
+    open-to-open edges this slice deliberately does not backfill.
+    """
+    for issue in _rest(
+            f"repos/{repo}/issues?state=closed&labels={SHIPPED_INERT_LABEL}"
+            f"&per_page=100"):
+        if "pull_request" in issue:
+            continue
+        number = issue["number"]
+        open_dependents = [d for d in _dependents(repo, str(number))
+                           if d.get("state") == "open"]
+        if not open_dependents:
+            continue
+        refs = ", ".join(_issue_ref(d, repo) for d in open_dependents)
+        report.inert_phase_dependents.append(Finding(
+            repo=repo, name=f"#{number}",
+            detail=(f"shipped-inert, {len(open_dependents)} open dependent(s): "
+                    f"{refs}; {issue['title'][:60]}"),
         ))
 
 
@@ -1316,6 +1372,7 @@ def main() -> int:
             audit_migrations(repo, report)
             audit_unlabelled_migrations(repo, report)
             audit_phase_closures(repo, report)
+            audit_inert_phase_dependents(repo, report)
             audit_unboarded(repo, report, board_cache)
             audit_board_status_drift(repo, report, board_cache)
             audit_open_prs(repo, report)
@@ -1391,6 +1448,15 @@ def main() -> int:
               f"shipped-inert issue(s) whose blocker(s) have since closed:")
         for f in report.inert_supply_landed:
             print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print()
+    if report.inert_phase_dependents:
+        print(f"INERT PHASE DEPENDENTS — {len(report.inert_phase_dependents)} "
+              f"shipped-inert issue(s) with open work depending on them:")
+        for f in report.inert_phase_dependents:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  Report-only (harmonic-forge#647) — native dependency links "
+              "only, never prose. Depending on an inert phase is a legitimate "
+              "open state; re-plan it or accept it.")
         print()
     if report.phase_candidates:
         print(f"PHASE CANDIDATES — {len(report.phase_candidates)} issue(s) that "
