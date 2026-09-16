@@ -24,7 +24,8 @@ import enforce_belt_arming as guard  # noqa: E402
 _ARMING_ROOT = tempfile.TemporaryDirectory(prefix="belt_arming_test_")
 
 
-def _run(tool_name, tool_input, lane="3", raw=None, session_id=None, arming_dir=None):
+def _run(tool_name, tool_input, lane="3", raw=None, session_id=None, arming_dir=None,
+         event=None, tool_response=None):
     env = {k: v for k, v in os.environ.items() if k != "LANE"}
     if lane is not None:
         env["LANE"] = lane
@@ -32,6 +33,10 @@ def _run(tool_name, tool_input, lane="3", raw=None, session_id=None, arming_dir=
     payload = {"tool_name": tool_name, "tool_input": tool_input}
     if session_id is not None:
         payload["session_id"] = session_id
+    if event is not None:
+        payload["hook_event_name"] = event
+    if tool_response is not None:
+        payload["tool_response"] = tool_response
     stdin = raw if raw is not None else json.dumps(payload)
     result = subprocess.run([sys.executable, str(HOOK)], input=stdin, env=env,
                             capture_output=True, text=True)
@@ -224,6 +229,168 @@ class PrecloseC_SecondArmInOneSessionIsDenied(unittest.TestCase):
             self.assertIsNone(_decision(cron))
 
 
+class DeletedCronClearsTheArmingRecord(unittest.TestCase):
+    """harmonic-forge#675: a deleted, failed or resumed suspenders cron must not
+    lock the session out of re-arming."""
+
+    def _arm(self, arming, session_id="sess-a", job_id="cron-x"):
+        """PreToolUse create, then PostToolUse create carrying `job_id`."""
+        created = _run("CronCreate", CANONICAL_CRON, session_id=session_id, arming_dir=arming)
+        self.assertIsNone(_decision(created))
+        _run("CronCreate", CANONICAL_CRON, session_id=session_id, arming_dir=arming,
+             event="PostToolUse", tool_response={"id": job_id, "recurring": True})
+        record = json.loads((Path(arming) / session_id).read_text())
+        self.assertEqual(record["id"], job_id)
+        return record
+
+    def test_ac1_after_crondelete_the_next_canonical_create_is_allowed(self):
+        with tempfile.TemporaryDirectory() as arming:
+            self._arm(arming)
+            _run("CronDelete", {"id": "cron-x"}, session_id="sess-a", arming_dir=arming,
+                 event="PostToolUse", tool_response={"id": "cron-x"})
+            self.assertFalse((Path(arming) / "sess-a").exists())
+            again = _run("CronCreate", CANONICAL_CRON, session_id="sess-a", arming_dir=arming)
+            self.assertIsNone(_decision(again))
+            self.assertTrue((Path(arming) / "sess-a").exists())
+
+    def test_ac2_a_live_recorded_job_still_denies_a_second_create(self):
+        with tempfile.TemporaryDirectory() as arming:
+            self._arm(arming)
+            second = _run("CronCreate", CANONICAL_CRON, session_id="sess-a", arming_dir=arming)
+            self.assertEqual(_decision(second), "deny")
+            reason = json.loads(second.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("already armed", reason)
+            self.assertIn("cron-x", reason)
+
+    def test_ac3_deleting_another_cron_leaves_the_record(self):
+        with tempfile.TemporaryDirectory() as arming:
+            self._arm(arming)
+            _run("CronDelete", {"id": "other-y"}, session_id="sess-a", arming_dir=arming,
+                 event="PostToolUse", tool_response={"id": "other-y"})
+            self.assertEqual(json.loads((Path(arming) / "sess-a").read_text())["id"], "cron-x")
+            # A PreToolUse CronDelete is not the successful delete: the record stays.
+            _run("CronDelete", {"id": "cron-x"}, session_id="sess-a", arming_dir=arming)
+            self.assertEqual(json.loads((Path(arming) / "sess-a").read_text())["id"], "cron-x")
+            self.assertEqual(_decision(_run("CronCreate", CANONICAL_CRON, session_id="sess-a",
+                                            arming_dir=arming)), "deny")
+
+    def test_ac4_an_id_less_record_denies_with_an_honest_message(self):
+        with tempfile.TemporaryDirectory() as arming:
+            _run("CronCreate", CANONICAL_CRON, session_id="sess-a", arming_dir=arming)
+            second = _run("CronCreate", CANONICAL_CRON, session_id="sess-a", arming_dir=arming)
+            reason = json.loads(second.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("job id unknown", reason)
+            self.assertIn(str(Path(arming) / "sess-a"), reason)
+            self.assertNotIn("the existing job keeps running",
+                             guard.__file__ and Path(guard.__file__).read_text(encoding="utf-8"))
+
+    def test_ac7_posttooluse_never_decides(self):
+        with tempfile.TemporaryDirectory() as arming:
+            payloads = [
+                ("CronCreate", CANONICAL_CRON, {"id": "cron-x"}),
+                ("CronCreate", {"cron": "0 * * * *", "prompt": "anything"}, {"id": "z"}),
+                ("CronDelete", {"id": "cron-x"}, {"id": "cron-x"}),
+                ("CronDelete", {"id": "missing"}, {"id": "missing"}),
+            ]
+            for tool, tool_input, response in payloads:
+                with self.subTest(tool=tool, tool_input=tool_input):
+                    result = _run(tool, tool_input, session_id="sess-a", arming_dir=arming,
+                                  event="PostToolUse", tool_response=response)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertNotIn("permissionDecision", result.stdout)
+
+    def test_a_payload_without_an_event_name_is_still_pretooluse(self):
+        self.assertEqual(_decision(_run("CronCreate", INCIDENT_CRON)), "deny")
+
+
+class StaleArmingRecordsDoNotLockTheSessionOut(unittest.TestCase):
+    """#675 AC6, against an injected /proc rather than the host's."""
+
+    def setUp(self):
+        self.arming = tempfile.TemporaryDirectory()
+        self.proc = tempfile.TemporaryDirectory()
+        self.addCleanup(self.arming.cleanup)
+        self.addCleanup(self.proc.cleanup)
+        self.marker = Path(self.arming.name) / "sess-a"
+        os.environ[guard.ARMING_DIR_ENV] = self.arming.name
+        self.addCleanup(os.environ.pop, guard.ARMING_DIR_ENV, None)
+
+    def _fake_process(self, pid, cmdline):
+        entry = Path(self.proc.name) / str(pid)
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"\0".join(part.encode() for part in cmdline))
+        (entry / "status").write_text("PPid:\t1\n")
+
+    def _write_record(self, **fields):
+        self.marker.write_text(json.dumps(dict(guard.LOOP_CRON, **fields)), encoding="utf-8")
+
+    def _decide(self, now):
+        return guard.decide({"tool_name": "CronCreate", "tool_input": CANONICAL_CRON,
+                             "session_id": "sess-a"}, "3", now=now, proc_root=self.proc.name)
+
+    def test_an_id_less_record_past_the_window_is_stale(self):
+        now = 1_000_000.0
+        self._write_record(created=now - guard.ID_LESS_STALE_SECONDS - 1, owner_pid=None)
+        self.assertIsNone(self._decide(now))
+        self.assertEqual(json.loads(self.marker.read_text())["created"], now)
+
+    def test_an_id_less_record_inside_the_window_still_denies(self):
+        now = 1_000_000.0
+        self._write_record(created=now - 5, owner_pid=None)
+        self.assertIn("job id unknown", self._decide(now) or "")
+
+    def test_a_record_whose_owner_process_is_gone_is_stale(self):
+        now = 1_000_000.0
+        self._write_record(created=now, owner_pid=4242, id="cron-x")
+        self.assertIsNone(self._decide(now))
+
+    def test_a_record_whose_owner_is_no_longer_claude_is_stale(self):
+        now = 1_000_000.0
+        self._fake_process(4242, ["node", "server.js"])
+        self._write_record(created=now, owner_pid=4242, id="cron-x")
+        self.assertIsNone(self._decide(now))
+
+    def test_a_live_claude_owner_with_an_id_denies(self):
+        now = 1_000_000.0
+        self._fake_process(4242, ["claude", "--permission-mode", "auto"])
+        self._write_record(created=now, owner_pid=4242, id="cron-x")
+        self.assertIn("cron-x", self._decide(now) or "")
+
+    def test_a_pre_675_record_is_stale_only_once_the_window_passes(self):
+        self.marker.parent.mkdir(parents=True, exist_ok=True)
+        self.marker.write_text(json.dumps(guard.LOOP_CRON), encoding="utf-8")
+        mtime = self.marker.stat().st_mtime
+        self.assertIn("job id unknown", self._decide(mtime + 5) or "")
+        self.assertIsNone(self._decide(mtime + guard.ID_LESS_STALE_SECONDS + 1))
+
+    def test_the_owner_pid_walk_finds_the_nearest_claude_ancestor(self):
+        self._fake_process(11, ["claude", "--permission-mode", "auto"])
+        entry = Path(self.proc.name) / "12"
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"python3\0hook.py")
+        (entry / "status").write_text("PPid:\t11\n")
+        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12), 11)
+        self.assertIsNone(guard.owner_claude_pid(self.proc.name, pid=99))
+
+
+class PostToolUseFailsOpen(unittest.TestCase):
+    """#675 AC5: an exception in the new branches allows, with a systemMessage."""
+
+    def test_a_raising_record_hook_still_allows(self):
+        payload = json.dumps({"tool_name": "CronDelete", "tool_input": {"id": "x"},
+                              "session_id": "sess-a", "hook_event_name": "PostToolUse"})
+        result = subprocess.run(
+            [sys.executable, "-c",
+             f"import sys; sys.path.insert(0, {str(HERE)!r}); "
+             "import enforce_belt_arming as g; "
+             "g.record_post_tool_use = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('boom')); "
+             "sys.exit(g.main())"],
+            input=payload, env={**os.environ, "LANE": "3"}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("permissionDecision", result.stdout)
+        self.assertIn("guard did not run", result.stdout)
+
+
 class PrecloseD_NoKeywordMatching(unittest.TestCase):
     """#659 preclose D: a word-boundary-free regex denied unrelated crons as
     mis-armed suspenders, and let other unrelated ones through. Now every
@@ -316,6 +483,17 @@ class Registration(unittest.TestCase):
         entries = [e for e in settings["hooks"]["PreToolUse"]
                    if e.get("matcher") ==
                    "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit"]
+        self.assertEqual(len(entries), 1)
+        commands = [h["command"] for h in entries[0]["hooks"]]
+        self.assertIn('f="${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py"; '
+                      '[ -f "$f" ] && python3 "$f" || true', commands)
+
+    def test_forge_settings_register_the_hook_on_posttooluse_crons(self):
+        """#675: PostToolUse CronCreate|CronDelete maintains the arming record."""
+        settings = json.loads((HERE.parent.parent / ".claude" / "settings.json")
+                              .read_text(encoding="utf-8"))
+        entries = [e for e in settings["hooks"]["PostToolUse"]
+                   if e.get("matcher") == "CronCreate|CronDelete"]
         self.assertEqual(len(entries), 1)
         commands = [h["command"] for h in entries[0]["hooks"]]
         self.assertIn('f="${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py"; '
