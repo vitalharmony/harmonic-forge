@@ -590,8 +590,10 @@ def audit_phase_closures(repo: str, report: Report) -> None:
                             f"{issue['title'][:60]}"),
                 ))
 
-        if closed_at[:10] < PHASE_GATE_EFFECTIVE:
-            continue  # closed before the gate existed -- hrse#195 itself
+        if closed_at[:10] < PHASE_GATE_EFFECTIVE and not (shipped or inert):
+            # closed before the gate existed -- hrse#195 itself. A pre-gate closure
+            # retroactively given a determination is still validated (harmonic-forge#673).
+            continue
 
         fails = False
         if not shipped and not inert:

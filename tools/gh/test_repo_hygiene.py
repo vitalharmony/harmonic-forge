@@ -1203,6 +1203,36 @@ class PhaseClosureSweepTests(unittest.TestCase):
             self._issue(195, ["phase"], closed_at="2026-09-01T05:02:43Z")]})
         self.assertEqual(report.undetermined_phase_closures, [])
 
+    PRE_GATE = "2026-09-01T05:02:43Z"
+    RETRO_LABEL = [{"event": "labeled", "label": {"name": "shipped"},
+                    "created_at": "2026-09-14T10:00:00Z"}]
+
+    def test_pre_gate_retroactive_shipped_without_evidence_reported(self):
+        """harmonic-forge#673 AC1: hrse#192's evidence comment deleted."""
+        report = self._sweep(
+            {"phase": [self._issue(192, ["phase", "shipped"], closed_at=self.PRE_GATE)]},
+            events=self.RETRO_LABEL,
+            comments=[{"created_at": "2026-09-14T11:00:00Z", "body": "looks good"}],
+        )
+        self.assertEqual([f.name for f in report.undetermined_phase_closures], ["#192"])
+
+    def test_pre_gate_retroactive_shipped_with_evidence_after_label_clean(self):
+        report = self._sweep(
+            {"phase": [self._issue(192, ["phase", "shipped"], closed_at=self.PRE_GATE)]},
+            events=self.RETRO_LABEL,
+            comments=[{"created_at": "2026-09-14T11:00:00Z",
+                       "body": "query output:\n```\nDISCUSSED=42\n```"}],
+        )
+        self.assertEqual(report.undetermined_phase_closures, [])
+
+    def test_pre_gate_retroactive_shipped_inert_without_blocker_reported(self):
+        """harmonic-forge#673 AC1: hrse#195's blocked_by links stripped."""
+        report = self._sweep(
+            {"phase": [self._issue(195, ["phase", "shipped-inert"], closed_at=self.PRE_GATE)]},
+            blockers=[],
+        )
+        self.assertEqual([f.name for f in report.undetermined_phase_closures], ["#195"])
+
     def test_not_planned_exempt(self):
         report = self._sweep({"phase": [
             self._issue(195, ["phase"], state_reason="not_planned")]})

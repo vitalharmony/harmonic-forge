@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hygiene): validate retroactive shipped/shipped-inert determinations on pre-gate phase closures (harmonic-forge#673)
+- tools/gh/repo_hygiene.py      |  6 ++++--
+- tools/gh/test_repo_hygiene.py | 30 ++++++++++++++++++++++++++++++
+- 2 files changed, 34 insertions(+), 2 deletions(-)
+
 ## test(hooks): isolate session_model fallback tests from the real --model ancestor (harmonic-forge#671)
 - tools/hooks/test_model_tier_gate.py |  3 ++-
 - tools/hooks/test_session_model.py   | 13 +++++++++++++
