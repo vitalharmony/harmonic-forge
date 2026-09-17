@@ -191,6 +191,27 @@ def sweep_repos(path: Path | None = None) -> list[str]:
             if p.repo and p.account == "vitalharmony"]
 
 
+def lane_repo_checkouts(path: Path | None = None) -> list[Path]:
+    """Root checkouts of every repo the 3-lane apparatus is installed in.
+
+    The single declared source for "which repos does a lane mechanism cover",
+    added by harmonic-forge#681 so a second hand-maintained literal cannot
+    drift from this manifest. It already had: `test_codex_hook_trust.py`
+    carried its own three-entry tuple, openclaw-projects was never in it, and
+    the probe reported green over a repo it had no assertion about.
+
+    Filtered on `onboarded` — that flag is exactly "the 3-lane apparatus is
+    installed here", which is the same question a lane-mechanism probe asks.
+    (Contrast `sweep_repos()` above, which deliberately does NOT filter on it,
+    because stranded work is worth finding in a repo nobody onboarded.)
+
+    Existence is not checked, matching `Project.checkout`: a declared checkout
+    that is absent is a finding for the caller to report, not a row to drop
+    silently.
+    """
+    return [p.checkout for p in load(path) if p.onboarded and p.checkout]
+
+
 def prefixes(path: Path | None = None) -> dict[str, str]:
     """`{PREFIX: name}` for every entry, projected repos included.
 
