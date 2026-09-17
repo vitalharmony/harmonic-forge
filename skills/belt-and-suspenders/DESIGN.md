@@ -284,7 +284,14 @@ So the sleep is now the armed interval, clamped by a deadline the loop holds
 (`--deadline-seconds`, derived from the same constant as the Monitor's own
 `timeout_ms`). The loop never schedules a sleep it will not live to serve, and
 takes a final poll near the end of the window instead of sleeping into the
-kill. Six polls per window at a 300s base, worst-case latency 300s.
+kill. **Seven** polls per window at a 300s base, worst-case latency 300s — and
+that seven is measured, not derived: it comes from walking the real function
+(`test_the_window_poll_count_is_measured_not_derived`, poll times `[0, 300,
+600, 900, 1200, 1500, 1770]`), and it is one higher than the six the
+implementation spec estimated, because the final clamped sleep fits one more
+poll inside the reserve before the window ends. Do not restate this figure from
+a schedule; the window prints its own measured count when it ends, and that
+print is the authority.
 
 The quota concern was real and is not dismissed: the honest saving available
 inside a fixed 30-minute container was never the 10x the old cap implied, and
