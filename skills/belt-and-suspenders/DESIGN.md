@@ -36,7 +36,10 @@ git staleness refusal) — this list states them, it does not implement them.
   one-shot backstop. Arming it as a persistent `Monitor` is
   harmonic-forge#590's regression, not a stronger belt.
 - **Never ask the operator whether to stop.** The belt never pauses, ever —
-  it backs off, it never stops (see "The belt never pauses" below).
+  and since harmonic-forge#680 that is true in practice and not only as a
+  claim: it polls at its armed interval for the whole window (see "The belt
+  never pauses" below). It previously backed off past its own container's
+  lifetime and went blind for the last ~20 minutes of every quiet window.
 
 ## The belt is `watch_lane_posts.py` — copy the command, don't rebuild it
 
@@ -70,7 +73,7 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l1 --watch l2 --watch l3 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
   ```
 
   **Both halves, for the same reason Lane 2 needs both.** `--all-worktrees`
@@ -119,7 +122,7 @@ mid-issue is not the command to arm:
   transfer.
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
   `--all-worktrees` follows Lane 2's own in-flight work; `--queue-for l2`
@@ -128,7 +131,7 @@ mid-issue is not the command to arm:
 - **Lane 3** — no worktree of its own; queue-discover:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 300
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
   Lane 3 no longer arms a repo-wide sweep. `--sweep-for l3` is RETIRED
@@ -256,17 +259,40 @@ zero tokens.** `Monitor` turns stdout into conversation notifications; every
 diagnostic `watch_lane_posts.py` prints on a quiet cycle goes to stderr,
 which never reaches the model. Ten quiet cycles cost exactly what zero do.
 
-**What a quiet belt tick genuinely costs is GitHub API quota**, and that is
-what backs off instead: `next_poll_interval()` doubles the sleep on each
-consecutive quiet cycle (no stdout line emitted), capped at 10x the armed
-interval, and resets to the armed interval the instant anything is found.
-The cap scales off each lane's OWN base interval rather than one shared
-ceiling, so Lane 3's 60s belt still polls more often than Lane 1's 300s belt
-even fully backed off (600s vs. 3000s) — the same urgency ordering the armed
-intervals already encode, preserved at every backoff level. A stderr line
-records each change (quiet_streak, new interval, and
-the resulting fraction of the base call rate) as it happens, so the saving
-is a measured fact on the record, not a claim.
+**What a quiet belt tick genuinely costs is GitHub API quota** — but the
+backoff that used to act on it is **retired for the sleep decision**
+(harmonic-forge#680), and this paragraph is the correction rather than the
+original claim.
+
+The original design doubled the sleep per consecutive quiet cycle, capped at
+10x the armed interval. Two things were wrong with it together, and neither
+alone:
+
+- **The cap was unreachable.** 10x a 300s base is 3000s inside a Monitor whose
+  hard maximum lifetime is 1800s. The process is always killed first, so the
+  backoff never levelled off — it just kept doubling until the container died.
+- **The first doubling already broke the latency guarantee.** With a 300s base,
+  a post landing just after a poll that then sleeps 600s waits ~599s. At a 300s
+  base with a 300s latency bound there is **zero headroom**: no cap value and
+  no deadline logic satisfies both.
+
+Measured consequence: **2 polls per 30-minute window, then ~20 minutes blind**,
+concentrated at the back of every quiet window — precisely when the belt is the
+only thing watching. It missed a real Lane 3 spec that way.
+
+So the sleep is now the armed interval, clamped by a deadline the loop holds
+(`--deadline-seconds`, derived from the same constant as the Monitor's own
+`timeout_ms`). The loop never schedules a sleep it will not live to serve, and
+takes a final poll near the end of the window instead of sleeping into the
+kill. Six polls per window at a 300s base, worst-case latency 300s.
+
+The quota concern was real and is not dismissed: the honest saving available
+inside a fixed 30-minute container was never the 10x the old cap implied, and
+`next_poll_interval()` is kept — tested, with its "cannot express stop polling"
+invariant intact — for a future lane armed at a base long enough to have
+headroom. It simply no longer decides this sleep. The window's **measured**
+poll count is printed when the window ends, rather than a rate derived from a
+schedule the process never completes.
 
 ## The suspenders — a pull loop
 

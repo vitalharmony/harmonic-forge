@@ -117,12 +117,42 @@ class AllowsTheCanonicalCalls(unittest.TestCase):
                 self.assertEqual(json.loads(result.stdout), {})
 
     def test_home_spellings_are_equivalent(self):
-        cmd = belt_plan.canonical_calls("3")["monitor"]["command"]
+        monitor = belt_plan.canonical_calls("3")["monitor"]
+        cmd = monitor["command"]
         home = os.path.expanduser("~")
         for spelling in ("$HOME/", "${HOME}/", home + "/"):
             with self.subTest(spelling=spelling):
                 variant = cmd.replace("~/", spelling).replace(" --", "   --", 1)
-                self.assertIsNone(_decision(_run("Monitor", {"command": variant})))
+                # harmonic-forge#680 NC3 compares `timeout_ms` alongside the
+                # command, so an otherwise-canonical call must carry it. This
+                # test is about SPELLING equivalence; the timeout is held at
+                # its canonical value so only the spelling varies.
+                self.assertIsNone(_decision(_run("Monitor", {
+                    "command": variant, "timeout_ms": monitor["timeout_ms"]})))
+
+    def test_a_non_canonical_timeout_is_denied(self):
+        """harmonic-forge#680 NC3. The command alone was compared, so a belt
+        armed canonically with a SHORTER lifetime passed while the poller held
+        a `--deadline-seconds` derived from the intended one — the original
+        defect one layer up: a derived number and a real lifetime that nothing
+        checks against each other."""
+        monitor = dict(belt_plan.canonical_calls("3")["monitor"])
+        monitor["timeout_ms"] = 300000
+        result = _run("Monitor", monitor, lane="3")
+        self.assertEqual(_decision(result), "deny",
+                         "a non-canonical timeout_ms must deny")
+        reason = (json.loads(result.stdout or "{}").get("hookSpecificOutput")
+                  or {}).get("permissionDecisionReason", "")
+        self.assertIn("timeout_ms", reason,
+                      "the denial must name what is actually wrong")
+
+    def test_an_absent_timeout_is_denied(self):
+        """Absent means the Monitor takes its own 300000 default — five
+        minutes, not thirty — so the poller's deadline would be six times the
+        window it actually has."""
+        monitor = dict(belt_plan.canonical_calls("3")["monitor"])
+        monitor.pop("timeout_ms")
+        self.assertIsNotNone(_decision(_run("Monitor", monitor, lane="3")))
 
     def test_canonical_loop_is_allowed(self):
         result = _run("Skill", belt_plan.canonical_calls("3")["loop"])

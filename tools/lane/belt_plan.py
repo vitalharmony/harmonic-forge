@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-from watch_lane_posts import CANONICAL_BELTS  # noqa: E402
+from watch_lane_posts import CANONICAL_BELTS, MONITOR_LIFETIME_S  # noqa: E402
 
 LANES = ("1", "2", "3")
 
@@ -42,7 +42,13 @@ LANES = ("1", "2", "3")
 WATCHER = "~/harmonic-forge/tools/gh/watch_lane_posts.py"
 
 #: Monitor's own maximum (`timeout_ms` above 1800000 is capped to it).
-MONITOR_TIMEOUT_MS = 1800000
+#:
+#: harmonic-forge#680: DERIVED, not declared. The poller holds the same number
+#: as `--deadline-seconds` and refuses to schedule a sleep past it; two
+#: independently-maintained numbers is exactly what produced that defect (a
+#: 3000s backoff cap inside an 1800s container, with nothing checking them
+#: together).
+MONITOR_TIMEOUT_MS = MONITOR_LIFETIME_S * 1000
 
 LOOP_SKILL = "loop"
 LOOP_ARGS = "10m proactively find work to do"

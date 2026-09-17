@@ -83,21 +83,21 @@ Usage
     # The Lane 1 case: every live worktree, repo-wide, plus the bounded
     # Plan-First catch (harmonic-forge#618) -- see CANONICAL_BELTS["1"]:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
-        --queue-for l1 --watch l2 --watch l3 --interval 300
+        --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
 
     # The Lane 2 case: BOTH halves. --all-worktrees follows Lane 2 into its
     # per-issue /tmp/<repo>-<issue>-impl checkout; --queue-for l2 catches an
     # inbound handoff on an issue no worktree exists for yet, which is every
     # inbound handoff (harmonic-forge#596). Worktrees-only misses all of them:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
-        --queue-for l2 --watch l1 --interval 300
+        --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
 
     # The Lane 3 case: find whatever is queued to me, repo-wide, no
     # worktree and no issue number needed. The repo set is DERIVED, not
     # listed (R-0122) -- a new repo is picked up automatically, an archived
     # one drops out:
     python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
-        --watch l1 --interval 300
+        --watch l1 --interval 300 --deadline-seconds 1800
 
     # No lane arms a repo-wide sweep. `--sweep-for l1` is retired
     # (harmonic-forge#640) and `--sweep-for l3` is retired
@@ -144,6 +144,7 @@ import signal
 import subprocess
 import sys
 import time
+from time import monotonic as _monotonic
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -1417,6 +1418,19 @@ def comment_watch_cycle(
 #: finding: an earlier version of this example named the now-retired Lane 1
 #: sweep's 600s/6000s interval, which had no referent once that sweep was
 #: retired.)
+#: harmonic-forge#680. The container lifetime every canonical belt runs inside,
+#: in seconds — the SINGLE source for it. `belt_plan.MONITOR_TIMEOUT_MS` is
+#: derived from this (`* 1000`) rather than declared separately, and the same
+#: value is emitted to the poller as `--deadline-seconds`, so the deadline the
+#: loop holds and the timeout the Monitor is given cannot disagree.
+#:
+#: This direction is deliberate: `CANONICAL_BELTS` below must embed the flag
+#: (the arming gate compares PARSED argument values, so a flag absent from the
+#: table would make every canonical command fail the comparison), and the table
+#: lives here. Declaring the number in `belt_plan` and importing it here would
+#: be a circular import.
+MONITOR_LIFETIME_S = 1800
+
 _BACKOFF_FACTOR = 2.0
 _BACKOFF_CAP_MULTIPLIER = 10.0
 
@@ -1453,6 +1467,57 @@ def next_poll_interval(base_interval: int, quiet_streak: int) -> int:
     # exactly the "stop working" failure this AC exists to rule out.
     capped_exponent = min(quiet_streak, 32)
     return int(min(base_interval * (_BACKOFF_FACTOR ** capped_exponent), cap))
+
+
+#: harmonic-forge#680. A deadline the loop will not schedule past, and a
+#: reserve so the last poll happens INSIDE the window rather than racing the
+#: kill.
+_FINAL_POLL_RESERVE_S = 30
+
+
+def sleep_before_next_poll(
+    base_interval: int,
+    quiet_streak: int,
+    deadline: float | None,
+    now: float,
+) -> int | None:
+    """Seconds to sleep, or `None` meaning "the window is over, stop".
+
+    harmonic-forge#680. Two things the old `time.sleep(next_poll_interval(...))`
+    could not do, and both caused a real miss:
+
+    **1. The sleep never exceeds `base_interval` (NC1).** AC1 requires a post
+    made at ANY point in the window to be emitted within one base interval.
+    The first doubling already breaks that: at a 300s base, a post landing
+    just after a poll that then sleeps 600s waits ~599s against a 300s bound.
+    There is no cap value and no deadline logic that satisfies both — at a
+    300s base with a 300s latency bound the backoff has zero headroom. So the
+    backoff is not merely capped lower, it is not applied to the sleep at all.
+
+    `next_poll_interval` is deliberately KEPT and still tested: its AC2
+    property ("cannot express 'stop polling'") is worth preserving as an
+    invariant, and a future lane armed at a longer base could use it with
+    headroom. It is simply not what decides this sleep.
+
+    **2. The loop cannot schedule past its own death.** The Monitor kills the
+    process at a fixed lifetime; the old loop happily slept 1200s starting at
+    t=600s in an 1800s container, so the third poll never ran and the belt was
+    blind for the last ~20 minutes of every quiet window. With a deadline in
+    hand that is structurally impossible: the sleep is clamped to the time
+    remaining, and when there is not enough left for another poll the loop
+    stops rather than sleeping into the kill.
+
+    `deadline is None` (a belt started by hand, or an older invocation) keeps
+    the previous unbounded behaviour rather than crashing — but the canonical
+    arming path always supplies it.
+    """
+    interval = max(1, int(base_interval))
+    if deadline is None:
+        return interval
+    remaining = deadline - now
+    if remaining <= _FINAL_POLL_RESERVE_S:
+        return None
+    return int(min(interval, remaining - _FINAL_POLL_RESERVE_S))
 
 
 def cycle_is_quiet(
@@ -1620,21 +1685,24 @@ CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
         {
             "argv": ["--all-worktrees", "--account-repos", "vitalharmony",
                       "--queue-for", "l1", "--watch", "l2", "--watch", "l3",
-                      "--interval", "300"],
+                      "--interval", "300",
+                      "--deadline-seconds", str(MONITOR_LIFETIME_S)],
             "lock": "belt-lane1.lock",
         },
     ],
     "2": [
         {
             "argv": ["--all-worktrees", "--account-repos", "vitalharmony",
-                      "--queue-for", "l2", "--watch", "l1", "--interval", "300"],
+                      "--queue-for", "l2", "--watch", "l1", "--interval", "300",
+                      "--deadline-seconds", str(MONITOR_LIFETIME_S)],
             "lock": "belt-lane2.lock",
         },
     ],
     "3": [
         {
             "argv": ["--queue-for", "l3", "--account-repos", "vitalharmony",
-                      "--watch", "l1", "--interval", "300"],
+                      "--watch", "l1", "--interval", "300",
+                      "--deadline-seconds", str(MONITOR_LIFETIME_S)],
             "lock": "belt-lane3.lock",
         },
     ],
@@ -1939,6 +2007,15 @@ def _build_parser() -> argparse.ArgumentParser:
                              "and/or l3 (repeatable). Not required when only --queue-for "
                              "is used -- queue entry/exit is its own event.")
     parser.add_argument("--interval", type=int, default=30, help="poll interval, seconds")
+    parser.add_argument("--deadline-seconds", type=int, default=None,
+                        help="the container lifetime this belt runs inside "
+                             "(harmonic-forge#680). The loop never schedules a "
+                             "sleep that ends after it, and stops rather than "
+                             "sleeping into the kill. Supplied by belt_plan.py "
+                             "from MONITOR_TIMEOUT_MS, so the deadline and the "
+                             "Monitor's own timeout are one number, not two "
+                             "that must agree. Omitted means unbounded, the "
+                             "pre-#680 behaviour.")
     parser.add_argument("--account", default=_ACCOUNT,
                         help="gh-as account slot every call is scoped to "
                              f"(default: {_ACCOUNT}). Its identity is asserted "
@@ -2101,6 +2178,13 @@ def main() -> int:
     #: Reset to 0 the moment any cycle finds something; the sleep at the
     #: bottom of the loop backs off with it via `next_poll_interval()`.
     quiet_streak = 0
+    #: harmonic-forge#680 AC3: counted, not derived. The window's own poll
+    #: count is printed when it ends.
+    polls_this_window = 0
+    #: Monotonic so a wall-clock adjustment mid-window cannot move the
+    #: deadline. `None` keeps the pre-#680 unbounded loop.
+    deadline = (_monotonic() + args.deadline_seconds
+                if args.deadline_seconds else None)
     #: The interval actually used last cycle, so a CHANGE (not every cycle)
     #: gets a stderr line -- AC5's measured-saving record, not silent tuning.
     last_reported_interval = args.interval
@@ -2208,16 +2292,21 @@ def main() -> int:
         quiet = cycle_is_quiet(cycle_emitted, queue, mode, ok_repos, repos,
                                 comment_fetch_failed)
         quiet_streak = 0 if not quiet else quiet_streak + 1
-        sleep_for = next_poll_interval(args.interval, quiet_streak)
+        polls_this_window += 1
+        sleep_for = sleep_before_next_poll(
+            args.interval, quiet_streak, deadline, _monotonic())
+        if sleep_for is None:
+            # harmonic-forge#680 AC3: the MEASURED count, printed at the one
+            # moment it is known. A number derived from the schedule is the
+            # same species of claim as the 3000s cap that was never reachable.
+            print(f"[watch_lane_posts] window complete: {polls_this_window} poll(s) "
+                  f"in {args.deadline_seconds}s (base interval {args.interval}s). "
+                  "Re-arm to continue.", file=sys.stderr)
+            return 0
         if sleep_for != last_reported_interval:
-            # AC5: the measured saving, recorded as it happens rather than
-            # reasoned about once. Prints on every CHANGE, not every cycle,
-            # so a long quiet run costs one line per doubling, not per poll.
-            print(f"[watch_lane_posts] backoff: quiet_streak={quiet_streak}, "
-                  f"next poll in {sleep_for}s (base {args.interval}s, "
-                  f"cap {int(args.interval * _BACKOFF_CAP_MULTIPLIER)}s) -- "
-                  f"{args.interval / sleep_for:.1%} of base-interval API "
-                  "call rate while this holds", file=sys.stderr)
+            print(f"[watch_lane_posts] next poll in {sleep_for}s "
+                  f"(base {args.interval}s, quiet_streak={quiet_streak})",
+                  file=sys.stderr)
             last_reported_interval = sleep_for
         time.sleep(sleep_for)
 
