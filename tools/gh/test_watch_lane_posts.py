@@ -37,6 +37,8 @@ from watch_lane_posts import (
     l3_verdict_sweep_cycle,
     list_open_issues,
     next_poll_interval,
+    sleep_before_next_poll,
+    MONITOR_LIFETIME_S,
     report_resolution,
     resolve_worktree,
 )
@@ -2351,7 +2353,8 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         # Swap the two --watch pairs and move --interval 300 to the front.
         reordered = ["--interval", "300", "--all-worktrees", "--account-repos",
                      "vitalharmony", "--watch", "l3", "--watch", "l2",
-                     "--queue-for", "l1"]
+                     "--queue-for", "l1", "--deadline-seconds",
+                     str(watch_lane_posts.MONITOR_LIFETIME_S)]
         self.assertEqual(sorted(canonical), sorted(reordered),
                          "test fixture drifted from CANONICAL_BELTS['1']")
         outcome, _err = self._run(reordered, {"LANE": "1"})
@@ -2524,3 +2527,107 @@ class QueueNoiseFilterTests(unittest.TestCase):
             discover_queue("vitalharmony/hrse", "l2")
         self.assertTrue(seen)
         self.assertTrue(all("-label:tooling-exception" in q and "-label:epic" in q for q in seen))
+
+
+class DeadlineAwareSleep(unittest.TestCase):
+    """harmonic-forge#680. The belt went blind for ~20 minutes of every quiet
+    30-minute window and missed a real Lane 3 spec. Two independent causes."""
+
+    BASE = 300
+
+    def test_the_sleep_never_exceeds_one_base_interval(self):
+        """NC1/AC1. A post made at any point must be emitted within one base
+        interval, so a 600s sleep at a 300s base fails by construction — the
+        FIRST doubling, long before any cap is reached."""
+        for streak in range(0, 12):
+            with self.subTest(quiet_streak=streak):
+                self.assertLessEqual(
+                    sleep_before_next_poll(self.BASE, streak, 1800, 0), self.BASE)
+
+    def test_no_sleep_ends_after_the_deadline(self):
+        """AC2/TC3, asserted directly rather than inferred from a poll count."""
+        deadline = 1800
+        now = 0.0
+        while True:
+            sleep_for = sleep_before_next_poll(self.BASE, 5, deadline, now)
+            if sleep_for is None:
+                break
+            self.assertLessEqual(now + sleep_for, deadline,
+                                 f"a sleep starting at {now} ends past {deadline}")
+            now += sleep_for
+
+    def test_the_window_poll_count_is_measured_not_derived(self):
+        """AC3/NC2. **Seven, and the spec's estimate of six was one low.**
+
+        NC2 worked the schedule to "6 polls per window"; walking the actual
+        implementation gives 7, because the final clamped sleep lands one more
+        poll inside the reserve before the window ends. Asserting the measured
+        number rather than the quoted one is the whole point of AC3 — a count
+        derived from a schedule is the same species of claim as the 3000s cap
+        that was never reachable.
+        """
+        now, polls = 0.0, 0
+        while True:
+            polls += 1
+            sleep_for = sleep_before_next_poll(self.BASE, polls, MONITOR_LIFETIME_S, now)
+            if sleep_for is None:
+                break
+            now += sleep_for
+        self.assertEqual(polls, 7)
+        self.assertGreater(polls, 2, "2 polls per window was the defect")
+
+    def test_the_loop_stops_rather_than_sleeping_into_the_kill(self):
+        self.assertIsNone(sleep_before_next_poll(self.BASE, 1, 1800, 1799))
+        self.assertIsNone(sleep_before_next_poll(self.BASE, 1, 1800, 1800))
+
+    def test_an_absent_deadline_keeps_the_previous_behaviour(self):
+        """A belt started by hand, or an older invocation, must not crash."""
+        self.assertEqual(sleep_before_next_poll(self.BASE, 7, None, 0), self.BASE)
+
+    def test_next_poll_interval_is_kept_and_still_honours_its_own_contract(self):
+        """NC1 keeps the function rather than deleting it: its AC2 property is
+        worth preserving as an invariant, and a lane armed at a longer base
+        could use it with headroom. It simply no longer decides the sleep."""
+        for streak in range(0, 40):
+            self.assertGreater(next_poll_interval(600, streak), 0)
+
+
+class CapAndLifetimeAgree(unittest.TestCase):
+    """AC2 — the RELATIONSHIP is asserted, not two constants that happen to
+    agree today. This is the test that fails if either value moves alone."""
+
+    def test_every_canonical_belt_declares_the_shared_lifetime(self):
+        from watch_lane_posts import CANONICAL_BELTS
+
+        for lane, entries in CANONICAL_BELTS.items():
+            for entry in entries:
+                argv = entry["argv"]
+                with self.subTest(lane=lane):
+                    self.assertIn("--deadline-seconds", argv)
+                    value = argv[argv.index("--deadline-seconds") + 1]
+                    self.assertEqual(int(value), MONITOR_LIFETIME_S)
+
+    def test_the_monitor_timeout_is_derived_from_the_same_constant(self):
+        """NC3's premise: one number, not two. `belt_plan` must not declare
+        its own lifetime."""
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "belt_plan_f680",
+            _Path(__file__).resolve().parents[1] / "lane" / "belt_plan.py")
+        belt_plan = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(belt_plan)
+        self.assertEqual(belt_plan.MONITOR_TIMEOUT_MS, MONITOR_LIFETIME_S * 1000)
+
+    def test_no_canonical_sleep_can_outlive_the_declared_lifetime(self):
+        """The two numbers the original defect set against each other, checked
+        together: with a 300s base inside MONITOR_LIFETIME_S, every scheduled
+        sleep fits."""
+        now = 0.0
+        while True:
+            sleep_for = sleep_before_next_poll(300, 9, MONITOR_LIFETIME_S, now)
+            if sleep_for is None:
+                break
+            self.assertLessEqual(now + sleep_for, MONITOR_LIFETIME_S)
+            now += sleep_for

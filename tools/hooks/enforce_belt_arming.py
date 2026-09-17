@@ -433,11 +433,29 @@ def decide(payload: dict[str, Any], lane: str | None,
             return None
         belt_plan = _load_belt_plan()
         calls = belt_plan.canonical_calls(lane)
-        if _normalize_command(command) == _normalize_command(calls["monitor"]["command"]):
-            return None
-        return _reason(lane, calls,
-                       "Denied: this Monitor runs watch_lane_posts.py but is not "
-                       f"LANE={lane}'s canonical belt command.")
+        if _normalize_command(command) != _normalize_command(calls["monitor"]["command"]):
+            return _reason(lane, calls,
+                           "Denied: this Monitor runs watch_lane_posts.py but is not "
+                           f"LANE={lane}'s canonical belt command.")
+        # harmonic-forge#680 NC3. The command alone was compared, and
+        # `timeout_ms` appeared nowhere in this file — so a belt armed with the
+        # canonical command and a NON-canonical lifetime passed the gate, while
+        # the poller held a `--deadline-seconds` derived from the intended one.
+        # That is the original defect one layer up: a derived number and a real
+        # lifetime that nothing checks against each other. The poller's deadline
+        # is only trustworthy if the Monitor it runs inside is actually given
+        # the matching timeout, so both are compared or neither means anything.
+        expected_timeout = calls["monitor"]["timeout_ms"]
+        actual_timeout = tool_input.get("timeout_ms")
+        if actual_timeout != expected_timeout:
+            return _reason(lane, calls,
+                           f"Denied: canonical belt command but timeout_ms="
+                           f"{actual_timeout!r}, not {expected_timeout!r}. The "
+                           "poller's --deadline-seconds is derived from the "
+                           "canonical lifetime; arming a different one makes it "
+                           "schedule against a window it does not have "
+                           "(harmonic-forge#680).")
+        return None
 
     if tool == "Skill":
         skill = tool_input.get("skill") or ""
