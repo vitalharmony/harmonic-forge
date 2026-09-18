@@ -479,7 +479,15 @@ numbers, similar titles.
 Lane 2 does not push, open PRs, merge, close, file issues, or execute write-tier
 paths (R-0157, R-0350).
 
-Parameters: `K` = 90 minutes (measured, no observed failures) · no session lock.
+Parameters: `K` = 90 minutes (measured, no observed failures) · no session lock ·
+tick log at `~/.claude/state/belt/ticks-<belt_id>.jsonl`.
+
+The tick log path was missing from this line alone — Lane 1's and Lane 3's both
+had one — so a compliant Lane 2 could neither write the record `:360` mandates
+nor report the path `:529` requires without inventing a location
+(harmonic-forge#685). It is written by `watch_lane_posts.py` itself and keyed by
+`belt_id`, so every role's path derives the same way and no role has to be told
+its own separately.
 
 ## Role: Lane 3
 

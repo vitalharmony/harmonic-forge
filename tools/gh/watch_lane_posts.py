@@ -160,6 +160,7 @@ from belt_mechanics import (  # noqa: E402
     CallCounter,
     IdentityMismatch,
     SeenSet,
+    TickLog,
     Watermarks,
     assert_identity,
     gh_as,
@@ -1323,6 +1324,7 @@ def comment_watch_cycle(
     watermarks: "Watermarks",
     seen: "SeenSet",
     primed_targets: set[str],
+    tick: "TickLog | None" = None,
 ) -> tuple[list[str], bool]:
     """One comment-watch poll over `targets`, returning `(lines, fetch_failed)`.
 
@@ -1385,6 +1387,16 @@ def comment_watch_cycle(
                 continue
             if cid:
                 seen.add(cid, SeenSet.EMITTED)
+            #: harmonic-forge#685. `created_at` is the COMMENT's own timestamp,
+            #: not this tick's -- that distinction is the whole point of
+            #: `record_emit`'s `posted_at` (harmonic-forge#519). A tick
+            #: timestamp yields detection-to-action only; the interval between
+            #: a marker being posted and a belt noticing it is the outage this
+            #: telemetry exists to expose, and only the comment's own time can
+            #: measure it.
+            if tick is not None:
+                tick.record_emit(f"{repo}#{issue}",
+                                 posted_at=comment.get("created_at"))
             lines.append(f"{repo}#{issue} {lane} — {detail}")
         if priming:
             primed_targets.add(target)
@@ -2133,6 +2145,13 @@ def main() -> int:
         belt_id += f"+s{args.sweep_for}"
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
+    #: harmonic-forge#685. Keyed by `belt_id` for the same reason the seen-set
+    #: is: two belts with different watch/queue arguments are different
+    #: processes and their ticks must not interleave into one file.
+    #: `DESIGN.md:529` requires this path be reported at arm time.
+    tick_log_path = _BELT_STATE / f"ticks-{belt_id}.jsonl"
+    lane_label = args.queue_for or (sorted(watch)[0] if watch else "none")
+    print(f"[watch_lane_posts] tick log: {tick_log_path}", file=sys.stderr)
     #: Targets this belt has already primed. PER TARGET, not one scalar for the
     #: run: a target whose first fetch failed never got a priming pass, then
     #: replayed its whole overlap window as new -- priming inverted into the
@@ -2196,6 +2215,21 @@ def main() -> int:
     # operator wait an interval to find out is the same failure, deferred.
     while True:
         now = _now()
+        #: harmonic-forge#685. One record per tick, written in a `finally` at
+        #: the bottom of this loop so a quiet tick and a tick that raised are
+        #: both recorded. `DESIGN.md:360`: "a quiet tick that writes nothing is
+        #: indistinguishable from a dead monitor" -- so the write is
+        #: unconditional, while chat output stays governed by `cycle_emitted`.
+        #: The class has existed and been tested since harmonic-forge#519 with
+        #: no caller; this is the caller.
+        tick = TickLog(path=tick_log_path, lane=lane_label, trigger="belt")
+        #: `_COUNTER` is module-level and accumulates for the life of the
+        #: process, so handing it to the tick directly would report a running
+        #: total as this tick's cost — rising every cycle and never matching
+        #: what the tick actually spent. Snapshot here, subtract at write.
+        #: A zero left in the record would be worse than absent: `belt_report`
+        #: reads it as a real measurement.
+        _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql)
         #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
         #: line at all, across every source below (queue-for/sweep-for,
         #: comment-watch, branch-ahead). Drives `quiet_streak`.
@@ -2256,7 +2290,7 @@ def main() -> int:
         #
         comment_lines, comment_fetch_failed = comment_watch_cycle(
             sorted(discovered | static_pairs), watch,
-            now, watermarks, seen, primed_targets)
+            now, watermarks, seen, primed_targets, tick)
         for line in comment_lines:
             print(line)
             sys.stdout.flush()
@@ -2289,6 +2323,27 @@ def main() -> int:
         # nothing, and neither may read as "nothing found"). `next_poll_
         # interval` cannot return anything but a positive number of seconds
         # (AC2) -- there is no branch here that skips the sleep-and-continue.
+        #: harmonic-forge#685. Written before the sleep, unconditionally —
+        #: including on a quiet tick, which is the case the record exists for.
+        #: `repo_result` distinguishes "polled and matched nothing" from "never
+        #: polled", so a blind poll cannot read as a quiet one in the log the
+        #: same way `N/M repo(s) that reported` already keeps it honest on
+        #: stderr.
+        for _r in repos:
+            tick.repo_result(_ACCOUNT, _r, _r in ok_repos)
+        tick.counter = CallCounter(
+            calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
+            calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],
+        )
+        tick.actions_taken.append("emitted" if cycle_emitted else "quiet")
+        try:
+            tick.write()
+        except OSError as exc:
+            #: A telemetry write must never kill the belt — a dead belt is the
+            #: one failure this protocol cannot tolerate (DESIGN.md).
+            print(f"[watch_lane_posts] tick log write failed: {exc}",
+                  file=sys.stderr)
+
         quiet = cycle_is_quiet(cycle_emitted, queue, mode, ok_repos, repos,
                                 comment_fetch_failed)
         quiet_streak = 0 if not quiet else quiet_streak + 1
