@@ -1704,6 +1704,7 @@ def queue_cycle(
     sweep: bool = False,
     batch_state_path: Path | None = None,
     candidate_pairs: set[tuple[str, int]] | None = None,
+    recorded_only: bool = False,
 ) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
     """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
 
@@ -1793,6 +1794,29 @@ def queue_cycle(
             #: retracted below.
             for issue, marker in prior.items():
                 if issue not in checked and issue not in found:
+                    #: harmonic-forge#691 preclose finding 2. The carry-
+                    #: forward above exists because "not in `checked`" is
+                    #: ambiguous for a worktree/`--issues`-derived candidate
+                    #: set -- a worktree can silently drop out (branch
+                    #: switch, removal) without the issue actually
+                    #: resolving. That ambiguity does not exist for a belt
+                    #: whose ENTIRE candidate set is `read_queue_candidates`
+                    #: (`recorded_only=True`, set once at arm time): that
+                    #: source re-reads the full candidates directory every
+                    #: tick, so an issue's absence from it this tick IS the
+                    #: decisive "this candidate is no longer queue-eligible"
+                    #: signal (its file was overwritten with a
+                    #: non-queue-relevant kind, pruned, or aged out) -- not
+                    #: an artifact of a partial scan. Carrying it forward
+                    #: anyway means a recorded candidate, once queued, never
+                    #: leaves for the life of the process, and a genuine
+                    #: SECOND post of the same kind later gets suppressed by
+                    #: the dedup check below (identical marker still "in"
+                    #: `last_queue`). Let it drop here instead; the
+                    #: retraction pass below emits `left-queue-for-<lane>`
+                    #: for it, same as any other genuinely-resolved issue.
+                    if recorded_only:
+                        continue
                     queue[(repo, issue)] = marker
 
     lines: list[str] = []
@@ -2272,6 +2296,20 @@ def main() -> int:
         parser.error("--issues takes a single --repo: an issue number means nothing "
                      "without exactly one repo to resolve it against")
     static_pairs = {(repos[0], n) for n in args.issues} if repos else set()
+    #: harmonic-forge#691 preclose finding 2. A belt-invocation-level
+    #: property, fixed at arm time -- NOT "did this tick happen to find zero
+    #: worktrees", which fluctuates every cycle and would wrongly toggle the
+    #: carry-forward behavior below. `repo_roots is not None` covers
+    #: `--all-worktrees` even on a cycle where it currently enumerates
+    #: nothing; `explicit_worktrees`/`args.issues` cover `--worktrees`/
+    #: `--repo --issues`. When none of the three were ever given (Lane 3's
+    #: canonical belt: `--queue-for l3` alone), `read_queue_candidates` --
+    #: a full re-read of the candidates directory every tick, never a
+    #: partial scan -- is the ONLY candidate source, so an issue's absence
+    #: from it this tick is a decisive "no longer queue-eligible" signal,
+    #: not the worktree-scan ambiguity `queue_cycle`'s carry-forward logic
+    #: was written to protect against.
+    recorded_only = not explicit_worktrees and not args.issues and repo_roots is None
     since = _now()
     print(f"[watch_lane_posts] worktrees={args.worktrees or None} "
           f"static={sorted(static_pairs) or None} queue_for={args.queue_for or None} "
@@ -2431,7 +2469,8 @@ def main() -> int:
             queue, lines, ok_repos = queue_cycle(
                 repos, mode, last_queue, l1_since, now,
                 sweep=bool(args.sweep_for),
-                candidate_pairs=discovered | static_pairs | posted_candidates)
+                candidate_pairs=discovered | static_pairs | posted_candidates,
+                recorded_only=recorded_only)
             if first_queue_report:
                 # Reports repos that ACTUALLY REPORTED, not len(argv). A run
                 # where every search failed used to print a line byte-identical

@@ -426,7 +426,23 @@ def main() -> int:
     #: `posted_by="l2"` matches this tool's own hardcoded footer
     #: (`posted-by=LANE2`, see `compose_body` above) rather than deriving
     #: it from `LANE`, because this tool IS Lane 2's, unconditionally.
-    belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
+    #:
+    #: `finding` is the one `--kind` deliberately excluded from this call
+    #: (harmonic-forge#691 preclose finding 1). `finding` is never a member
+    #: of any lane's `QUEUE_KINDS` in `watch_lane_posts.py` -- it is
+    #: `LOCK_EXEMPT_KINDS`-adjacent narrative, not a queue-membership
+    #: transition (harmonic-forge#580 AC1: "a finding must not itself
+    #: change ANY lane's queue membership"). Recording it anyway would
+    #: overwrite the one-file-per-issue candidate store with an
+    #: ineligible-for-everyone entry, silently evicting whatever
+    #: queue-relevant `kind` (a Lane 1 `ready-for-l3`, an `handoff`, a
+    #: `plan`, ...) was recorded there before it -- the issue then vanishes
+    #: from `read_candidates` for every lane with no error. A `finding` is
+    #: legitimate precisely because a locked/blocked Lane 2 can still post
+    #: one; it must not also silently clear the belt's memory of what the
+    #: issue is still queued for.
+    if args.kind != "finding":
+        belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
     print(json.dumps(result))
     return 0
 

@@ -1704,6 +1704,89 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
                           f"an uninspected candidate must not retract: {lines!r}")
 
 
+class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
+    """harmonic-forge#691 preclose finding 2. The worktree-scan carry-forward
+    above (`test_a_queued_issue_whose_candidate_disappears_carries_forward_
+    not_retracted`) is correct for a candidate set derived from a partial
+    scan. It is WRONG for a belt whose candidate set is `read_queue_
+    candidates` alone (Lane 3's canonical belt: `--queue-for l3`, no
+    `--worktrees`/`--issues`/`--all-worktrees`) -- there, that source is a
+    full re-read of the candidates directory every tick, so an issue's
+    absence from it IS the decisive "no longer queue-eligible" signal, not
+    an artifact of a partial scan. `recorded_only=True` is the caller's
+    (arm-time) declaration of that property; this reproduces the reporter's
+    exact 3-tick repro end to end, `discover_queue` unmocked."""
+
+    _READY = "body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->"
+
+    def test_ineligible_recorded_candidate_leaves_queue_not_carried_forward(self):
+        """Tick 1: 1530 is a candidate (ready-for-l3 recorded) and checks out
+        live -> queued. Tick 2: the file behind it was overwritten with an
+        ineligible kind (Lane 3 posted its own gate-result) -- simulated
+        here by the issue simply no longer appearing in `candidate_pairs`,
+        exactly what `read_queue_candidates` would now return. With
+        `recorded_only=True` this must NOT carry forward; it must leave the
+        queue."""
+        last: dict = {}
+        with patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self._READY}]):
+            queue1, lines1, ok1 = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                candidate_pairs={("vitalharmony/hrse", 1530)},
+                recorded_only=True)
+        self.assertEqual(ok1, {"vitalharmony/hrse"})
+        self.assertIn(("vitalharmony/hrse", 1530), queue1)
+        self.assertIn("vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3", lines1)
+
+        # Tick 2: 1530 no longer a recorded candidate at all (file overwritten
+        # with a non-queue-eligible kind, e.g. Lane 3's own gate-result).
+        with patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self._READY}]):
+            queue2, lines2, ok2 = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", queue1, {}, "2026-09-10T00:05:00Z",
+                candidate_pairs=set(),
+                recorded_only=True)
+        self.assertEqual(ok2, {"vitalharmony/hrse"})
+        self.assertNotIn(("vitalharmony/hrse", 1530), queue2,
+                          "a recorded-only belt must not carry an ineligible "
+                          "candidate forward indefinitely")
+        self.assertIn("vitalharmony/hrse#1530 left-queue-for-l3", lines2)
+
+        # Tick 3: a genuine SECOND ready-for-l3 is recorded on the same
+        # issue (e.g. after a fix-and-retest cycle). It must be queued and
+        # emit a line -- not suppressed as a duplicate of the stale marker
+        # that was correctly dropped at tick 2.
+        with patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self._READY}]):
+            queue3, lines3, ok3 = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", queue2, {}, "2026-09-10T00:10:00Z",
+                candidate_pairs={("vitalharmony/hrse", 1530)},
+                recorded_only=True)
+        self.assertEqual(ok3, {"vitalharmony/hrse"})
+        self.assertIn(("vitalharmony/hrse", 1530), queue3)
+        self.assertIn("vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3", lines3,
+                       "a genuine re-post must not be suppressed as a duplicate "
+                       "of a marker that was already dropped from the queue")
+
+    def test_default_recorded_only_false_preserves_worktree_ambiguity(self):
+        """`recorded_only` defaults to `False` -- every existing worktree/
+        `--issues`-derived belt keeps carrying an uninspected candidate
+        forward exactly as before (see the sibling test above this class,
+        `test_a_queued_issue_whose_candidate_disappears_carries_forward_
+        not_retracted`, which asserts the old behavior with no
+        `recorded_only` argument at all)."""
+        last = {("vitalharmony/hrse", 1600): "ready-for-l3"}
+        with patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self._READY}]):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                candidate_pairs=set())
+        self.assertIn(("vitalharmony/hrse", 1600), queue,
+                       "recorded_only=False (the default) must still carry "
+                       "an uninspected worktree-sourced candidate forward")
+        self.assertFalse([l for l in lines if "left-queue" in l])
+
+
 class CommentWatchCycleTests(unittest.TestCase):
     """harmonic-forge#599 preclose finding: every behavior AC1/AC3/AC4/AC6 name
     lived inside `while True:` with no seam, so six mutations of it -- including
