@@ -32,6 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+
+import handoff_owed  # noqa: E402
+
 _BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
 
 
@@ -129,6 +133,57 @@ def normalise_labels(labels: list[str]) -> list[str]:
                 out.append(implied)
             pending.append(implied)
     return out
+
+
+_ISSUE_NUMBER = re.compile(r"/issues/(\d+)\s*$")
+
+
+def _issue_number(issue_url: str) -> int | None:
+    """The issue number from the URL `create_issue()` returns, or `None`.
+
+    `create_issue()` already asks REST for `.html_url` and nothing else, so
+    the number has to come back out of it. An unparseable URL means no
+    obligation is recorded -- the same direction as every other failure in
+    this feature, because a record that names no real issue can only produce
+    a block nobody can discharge.
+    """
+    match = _ISSUE_NUMBER.search(issue_url or "")
+    return int(match.group(1)) if match else None
+
+
+def _discharge_exception(args, issue: int, issue_url: str) -> bool:
+    """Apply an R-0039 filing-bar exception, if one was claimed. True on OK.
+
+    AC3: the reason is posted to the ISSUE and only then is the obligation
+    cleared -- never to local state alone. The ordering is the point. If the
+    comment fails to post, the obligation deliberately stands, so a claimed
+    exception that left no public trace still blocks the turn.
+
+    `argparse` already refuses `--handoff-exception` without a reason, so by
+    the time this runs the pair is either both-absent or both-present.
+    """
+    if not getattr(args, "handoff_exception", None):
+        return True
+    reason = args.handoff_exception_reason
+    comment = (
+        f"## R-0039 filing-bar exception: `{args.handoff_exception}`\n\n"
+        f"No Lane 1 handoff accompanies this filing. R-0039 permits that for "
+        f"this case, and requires the claim to be recorded rather than "
+        f"assumed — this comment is that record (R-0352's deferral shape).\n\n"
+        f"**Reason given at filing time:** {reason}\n"
+    )
+    result = _run(["gh", "api", f"repos/{args.repo}/issues/{issue}/comments",
+                   "-X", "POST", "-f", f"body={comment}"], check=False)
+    if result.returncode != 0:
+        print(f"[GH] ERROR: --handoff-exception was claimed but its reason "
+              f"could not be posted to {issue_url}:\n{result.stderr}\n"
+              f"[GH] The handoff obligation therefore STANDS. Re-run the "
+              f"comment, or post the handoff.", file=sys.stderr)
+        return False
+    handoff_owed.discharge(args.repo, issue)
+    print(f"[GH] R-0039 exception '{args.handoff_exception}' recorded on "
+          f"{issue_url}; no handoff owed.")
+    return True
 
 
 def create_issue(repo: str, title: str, body: str, labels: list[str],
@@ -496,6 +551,20 @@ def main() -> int:
              "live-validated shape as --theme, not hardcoded here.",
     )
     parser.add_argument(
+        "--handoff-exception", default=None, choices=handoff_owed.EXCEPTIONS,
+        help="Claim one of R-0039's three filing-bar exceptions, so this "
+             "filing owes no Lane 1 handoff (harmonic-forge#687). REQUIRES "
+             "--handoff-exception-reason, which is posted to the issue as a "
+             "comment — an exception claimed is an exception recorded "
+             "(R-0352's deferral shape). Not a way to file without a "
+             "handoff: it is a way to state, publicly, which rule permits it.",
+    )
+    parser.add_argument(
+        "--handoff-exception-reason", default=None, metavar="TEXT",
+        help="Why R-0039's exception applies. Free text, mandatory whenever "
+             "--handoff-exception is given, and written to the issue.",
+    )
+    parser.add_argument(
         "--milestone", default=None, metavar="TITLE",
         help="Milestone title, e.g. '2.7' — release membership (harmonic-forge#283). "
              "REQUIRED for a repo that uses milestones; ignored where none exist. "
@@ -504,6 +573,22 @@ def main() -> int:
              "identically to a deliberate 'in no release'.",
     )
     args = parser.parse_args()
+
+    # harmonic-forge#687 AC3. A reasonless exception is refused at the parser,
+    # BEFORE the issue is created -- so the run fails without having filed
+    # anything, rather than filing and then discovering the escape hatch was
+    # malformed. `argparse.error()` exits 2 and prints usage, which is the
+    # same shape every other bad-flag combination here gets.
+    if args.handoff_exception and not (args.handoff_exception_reason or "").strip():
+        parser.error(
+            "--handoff-exception requires --handoff-exception-reason. R-0039's "
+            "exceptions are recorded, not merely claimed: the reason is posted "
+            "to the issue, which is what makes an exception auditable instead "
+            "of an assertion.")
+    if args.handoff_exception_reason and not args.handoff_exception:
+        parser.error(
+            "--handoff-exception-reason without --handoff-exception names no "
+            "rule. Pass one of: " + ", ".join(handoff_owed.EXCEPTIONS))
 
     # harmonic-forge#266: --body-file is the safe path for prose. --body still
     # works for short bodies, but anything with backticks, apostrophes or
@@ -581,6 +666,27 @@ def main() -> int:
     if issue_url is None:
         return 1
 
+    # harmonic-forge#687. R-0039 makes filing and handing off ONE action, and
+    # until this call nothing recorded that the second half was outstanding --
+    # `gh_issue.py` contained zero occurrences of the string "handoff".
+    #
+    # Placed HERE, immediately after creation and BEFORE board resolution,
+    # because every remaining exit below can fail after the issue exists:
+    # the no-board-with-requested-fields branch, and `add_to_board()`. That
+    # is AC4, and it is the observed shape, not a hypothetical -- on hrse#1919
+    # the Theme write was rejected, the issue was created anyway, and the task
+    # exited ERROR. One placement covers all three exits; no try/finally
+    # around the board logic is needed, and the board logic is untouched.
+    #
+    # The `issue_url is None` guard above is also the right one: a failed
+    # creation records nothing, so it cannot leave a record blocking a turn
+    # for an issue that does not exist.
+    issue_number = _issue_number(issue_url)
+    if issue_number is not None:
+        handoff_owed.record(args.repo, issue_number, issue_url)
+        if not _discharge_exception(args, issue_number, issue_url):
+            return 1
+
     # harmonic-forge#107: derive from --repo. An explicit override still wins.
     if args.project_owner and args.project_number:
         project_owner, project_number = args.project_owner, args.project_number
@@ -615,5 +721,33 @@ def main() -> int:
                               args.theme, args.venture) else 1
 
 
+def _print_owed() -> None:
+    """Print this session's outstanding handoffs and how to discharge them.
+
+    harmonic-forge#687 spec step 2: the obligation must be printed on the
+    success path and the board-field-failure path alike. Doing it here, in a
+    wrapper around `main()`, rather than at each `return` is what makes that
+    true of exits nobody has written yet -- `main()` has three post-creation
+    exits today and the one that mattered (hrse#1919's board-field failure)
+    was the one it would have been easiest to forget.
+    """
+    owed = handoff_owed.outstanding(handoff_owed.session_id())
+    if not owed:
+        return
+    print("\n[GH] R-0039: filing and handing off are ONE action. Still owed:",
+          file=sys.stderr)
+    for entry in owed:
+        print(f"[GH]   {entry.get('repo')}#{entry.get('issue')} "
+              f"{entry.get('url', '')}", file=sys.stderr)
+        try:
+            print(f"[GH]     "
+                  f"{handoff_owed.discharge_command(str(entry.get('repo')), int(entry.get('issue')))}",
+                  file=sys.stderr)
+        except (TypeError, ValueError):
+            continue
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    _print_owed()
+    sys.exit(code)
