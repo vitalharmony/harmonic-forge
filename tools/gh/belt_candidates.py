@@ -52,13 +52,25 @@ decides queue membership and kind, exactly as it does for a worktree- or
 worth asking about.
 
 **Injectable path, everywhere (AC4').** Both `record_candidate` and
-`read_candidates` take an explicit `base_dir` -- no test needs to
-monkeypatch a private module constant to stay off the real
-`~/.claude/state/belt/candidates/` directory. `test_belt_candidates.py`'s
-`BeltCandidatesRealDirUntouchedTests` asserts, for this module's own test
-run, that the real directory's on-disk state is byte-identical before and
-after -- so a future test that forgets to pass `base_dir` fails loudly
-instead of quietly writing into the operator's live belt state.
+`read_candidates` take an explicit `base_dir`, and every test in this
+module's own `test_belt_candidates.py` passes one. That alone does not
+cover every *caller* of this module, though -- `l2_post.py`'s recorder
+call (harmonic-forge#691, AC1') passes no `base_dir`, so
+`test_l2_post.py`'s end-to-end drive of `l2_post.main()` would write a
+real file into the operator's live `~/.claude/state/belt/candidates/`
+directory on every test run if nothing redirected the default first. This
+repo is deliberately pytest-free (harmonic-forge#293), so there is no
+conftest.py autouse-fixture choke point the way HRSE2's
+`scripts/conftest.py` provides for its own pytest suite (see companion
+vitalharmony/hrse#1926's `_belt_candidates_real_dir_untouched`); instead
+`tools/run_tests.py`'s `redirected_belt_candidates_dir` context manager
+monkeypatches `DEFAULT_CANDIDATES_DIR` to a per-run tmp dir around the one
+`unittest.TextTestRunner` invocation that `mise run check`/CI actually
+call -- so a future test that forgets to pass `base_dir` writes to a
+scratch dir instead of the operator's real state, whenever it runs through
+that script. It does not cover a test file invoked directly (e.g. `python3
+tools/gh/test_l2_post.py`) -- see that function's docstring for why that
+gap is accepted rather than closed here.
 """
 from __future__ import annotations
 
@@ -167,8 +179,10 @@ def read_candidates(
     of a shared structure a concurrent writer could be appending to (AC3').
     Defaults to `False`: pruning is a real filesystem mutation, and a
     caller that does not explicitly opt in (every test in this repo,
-    notably -- see `BeltCandidatesRealDirUntouchedTests`) must never have
-    it happen as a side effect of merely reading. `watch_lane_posts.py`'s
+    notably -- see `tools/run_tests.py`'s `redirected_belt_candidates_dir`
+    for how the suite keeps itself off the real directory in the first
+    place) must never have it happen as a side effect of merely reading.
+    `watch_lane_posts.py`'s
     own `read_queue_candidates` wrapper, the one caller that runs against
     the real directory in production, opts in explicitly."""
     base = base_dir or DEFAULT_CANDIDATES_DIR

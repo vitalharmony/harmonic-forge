@@ -171,7 +171,10 @@ class ReadCandidatesEligibilityTests(unittest.TestCase):
     def test_a_stale_entry_is_pruned_when_opted_in(self):
         """AC3': pruning a stale entry is a safe, isolated unlink -- never
         a rewrite of a shared structure. Opt-in (`prune=True`), not the
-        default -- see `BeltCandidatesRealDirUntouchedTests` for why."""
+        default -- see `read_candidates`' own docstring, and
+        `tools/run_tests.py`'s `redirected_belt_candidates_dir`, for why a
+        caller that forgets `base_dir` still must not touch the real
+        directory."""
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             bc.record_candidate("vitalharmony/hrse", 1, "handoff", "l1", base_dir=base)

@@ -25,7 +25,9 @@ script rather than each spelling out discovery, so the two cannot drift.
 
 from __future__ import annotations
 
+import contextlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -61,6 +63,58 @@ def _loaded_modules(suite: unittest.TestSuite) -> set[str]:
         else:
             modules.add(type(item).__module__.rsplit(".", 1)[-1])
     return modules
+
+
+@contextlib.contextmanager
+def redirected_belt_candidates_dir(tmp_dir: Path):
+    """harmonic-forge#691 preclose finding: `tools/gh/l2_post.py`'s belt-
+    candidate recorder call (`belt_candidates.record_candidate(...)`, no
+    `base_dir`) always targets `belt_candidates.DEFAULT_CANDIDATES_DIR` --
+    the operator's real `~/.claude/state/belt/candidates/` -- unless a
+    caller redirects it. `tools/gh/test_l2_post.py` drives `l2_post.main()`
+    end to end through a successful post and does not mock this call, so
+    every run of this suite writes a real file into the operator's live
+    belt state unless something redirects the module's default first.
+
+    This repo is deliberately pytest-free (harmonic-forge#293 -- see this
+    file's own module docstring), so there is no conftest.py
+    autouse-fixture choke point the way HRSE2's `scripts/conftest.py`
+    provides for its pytest suite (see the companion vitalharmony/hrse#1926,
+    `_belt_candidates_real_dir_untouched`). `main()` below is this repo's
+    actual single choke point instead -- `build_suite()` already collects
+    every `test_*.py` under every `TEST_DIRS` entry into one
+    `unittest.TestSuite` that runs exactly once here (`mise run check` and
+    CI both call only this script, never a test file directly) -- so
+    patching the one shared `belt_candidates` module object for the
+    duration of that one run covers every current and future test in the
+    suite, whether or not the test itself imports `belt_candidates`.
+
+    Known residual gap, accepted rather than fixed here: invoking a single
+    test file directly (e.g. `python3 tools/gh/test_l2_post.py`, which
+    several files in this suite support via their own
+    `if __name__ == "__main__"`) bypasses this script and is NOT covered --
+    only runs through `tools/run_tests.py` are. Auditing every test file
+    for that case individually is the wrong shape for this fix, the same
+    reasoning the hrse#1926 comment gives for not auditing every caller of
+    `l1_post`/`post_lane_discussion` instead of patching their one shared
+    module.
+
+    Module-attribute patching (not import-time patching of
+    `l2_post.belt_candidates`) because `l2_post.py` imports the module
+    itself (`import belt_candidates`), so `l2_post.belt_candidates` and
+    `sys.modules["belt_candidates"]` are the same object -- patching the
+    one shared attribute here is visible to every alias automatically.
+    """
+    forge_gh = Path(__file__).resolve().parent / "gh"
+    if str(forge_gh) not in sys.path:
+        sys.path.insert(0, str(forge_gh))
+    import belt_candidates
+    original = belt_candidates.DEFAULT_CANDIDATES_DIR
+    belt_candidates.DEFAULT_CANDIDATES_DIR = tmp_dir
+    try:
+        yield
+    finally:
+        belt_candidates.DEFAULT_CANDIDATES_DIR = original
 
 
 def build_suite() -> unittest.TestSuite:
@@ -99,7 +153,9 @@ def main() -> int:
         )
         return 2
 
-    result = unittest.TextTestRunner(verbosity=1).run(suite)
+    with tempfile.TemporaryDirectory() as tmp:
+        with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"):
+            result = unittest.TextTestRunner(verbosity=1).run(suite)
     if not result.wasSuccessful():
         return 1
     print(f"[test] OK — {result.testsRun} tests across {len(files)} files")
