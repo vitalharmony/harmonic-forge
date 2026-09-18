@@ -499,3 +499,10 @@ class TestLeadBlock(unittest.TestCase):
     def test_whitespace_only_lead_values_do_not_count_as_supplied(self):
         with self.assertRaises(SystemExit):
             lp.validate_lead("completion", {"Status": "  ", "Change": "c", "Next": "n"})
+
+
+#: harmonic-forge#691 rescope: the belt-candidate recorder moved to the
+#: shared `belt_candidates.py` module (AC1'), imported by all three
+#: marker-posting tools. Its own unit tests live in
+#: `test_belt_candidates.py`; `test_l2_post_belt_candidate.py` covers the
+#: AC5' integration assertion that THIS tool's `main()` actually calls it.

@@ -76,18 +76,22 @@ mid-issue is not the command to arm:
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
   ```
 
-  **`--queue-for l1` no longer catches a Lane 2 plan with no worktree yet —
-  harmonic-forge#686 open question, not yet resolved.** It used to: a
-  Plan-First issue has *no worktree*, because the branch is created only in
-  response to Lane 1's approval, and the account-wide `search/issues` scan
-  `--queue-for l1` ran was the only thing that saw a plan sitting there.
-  Four plans stalled exactly there once already (harmonic-forge#618). That
-  scan is gone by explicit operator ruling (below) — `--queue-for l1` now
-  only re-checks candidates the belt already holds (a worktree, or an
-  explicit `--issues`), which a fresh Plan-First plan is neither. **This
-  reopens #618's exact symptom** until harmonic-forge#686 lands a
-  replacement source for "an issue with no worktree that Lane 1 still owes
-  a reaction to" — see that issue's thread for the live decision.
+  **`--queue-for l1` catches a Lane 2 plan with no worktree yet through a
+  second, non-scanning source (harmonic-forge#691).** The account-wide
+  `search/issues` scan that used to be the only thing that saw a plan
+  sitting there is gone by explicit operator ruling (below) — a Plan-First
+  issue has *no worktree*, because the branch is created only in response
+  to Lane 1's approval, so a worktree/`--issues`-only candidate set would
+  never see it, reopening the four-stalled-plans symptom (harmonic-forge#618).
+  The replacement is not a scan: `l2_post.py` (the tool that posts the
+  `plan` marker) records `{repo, issue, kind, posted_by}` through the
+  shared `belt_candidates.py` module the moment it posts, and the belt
+  reads that record as an additional candidate source, pre-filtered to
+  what's actually eligible for `l1`'s queue (`kind` in `QUEUE_KINDS["l1"]`
+  and `posted_by` in `QUEUE_POSTERS["l1"]`) — no GitHub call, and a
+  candidate exists only because a session already handed it a number. See
+  `read_queue_candidates` in `watch_lane_posts.py` and `belt_candidates.py`
+  itself.
 
   **A lane's inbound work has no worktree, because the worktree is created in
   response to it.** That is the general property, seen three times now — Lane
@@ -96,12 +100,23 @@ mid-issue is not the command to arm:
   **not** a structural exemption, as this line used to imply. Queue-discovery
   was the same account-wide `search/issues` scan the ruling below forbids,
   running under a different flag name; harmonic-forge#686 removed it for
-  every lane, so no lane discovers by scanning any more. **The difference is
-  that harmonic-forge#686 already made and recorded the "accept the loss"
-  call for Lane 3** (see "Role: Lane 3" below — its idle belt discovering
-  nothing is stated there as intended, not merely observed). The same call
-  has not yet been made for Lane 1 or Lane 2, and until it is, both bullets
-  above describe a real, open regression, not a settled design.
+  every lane, so no lane discovers by scanning any more.
+
+  **Lane 3 is covered by the recorded source too, not excluded from it
+  (harmonic-forge#691, rescoped).** An earlier revision of this file — and
+  of `watch_lane_posts.py`'s own module docstring — called Lane 3's gap an
+  accepted design call, on the reasoning that it has no worktree of its
+  own and posts no candidate-bearing marker either. The second half of
+  that reasoning was wrong: Lane 3's own inbound (`ready-for-l3`, `ae`,
+  `sweep`, `ae-and-sweep`) is posted by `l1_post.py`, which is ALSO the
+  one place every one of those kinds gets written — so once `kind` and
+  `posted_by` are recorded (harmonic-forge#691 AC2'), Lane 3's entries fall
+  straight out of the same file Lane 1 and Lane 2 already read from, at
+  the same near-zero cost, with no special-casing anywhere. What was
+  actually missing was never "Lane 3 has no recordable event" — it was
+  "the recorder didn't yet carry enough to tell Lane 3's `ready-for-l3`
+  apart from Lane 2's `handoff` on the same file." See "Role: Lane 3"
+  below for what this means for Lane 3 in practice.
 
   **Arm it verbatim, from wherever the session already is** — no `cd` first.
   `git worktree list` only ever sees one repository, so the roots the belt
@@ -138,15 +153,16 @@ mid-issue is not the command to arm:
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
-  **`--queue-for l2` no longer catches that inbound handoff —
-  harmonic-forge#686 open question, not yet resolved.** The account-wide
-  scan that used to find a fresh `handoff`/`rework` marker on an issue no
-  worktree exists for yet is gone, by the same operator ruling as Lane 1's
-  bullet above, and `--queue-for l2`'s candidates are now the same
-  worktree/`--issues` set `--all-worktrees` already follows — so this
-  command currently re-checks in-flight work twice rather than catching
-  anything new. This reopens #596's exact symptom until #686 lands a
-  replacement source; see that issue's thread.
+  **`--queue-for l2` catches that inbound handoff through the same
+  non-scanning source as Lane 1's plan, above (harmonic-forge#691).** The
+  account-wide scan that used to find a fresh `handoff`/`rework` marker on
+  an issue no worktree exists for yet is gone, by the same operator ruling
+  as Lane 1's bullet above; `l1_post.py` (the tool that posts `handoff`/
+  `rework`, and every other kind it posts) records `{repo, issue, kind,
+  posted_by}` through the same shared `belt_candidates.py` module the
+  moment it posts, and `--queue-for l2` reads it as an additional candidate
+  source alongside `--all-worktrees`' own set, pre-filtered to what's
+  eligible for `l2`'s queue specifically.
 
 - **Lane 3** — no worktree of its own; watches what is handed to it:
 
@@ -158,20 +174,36 @@ mid-issue is not the command to arm:
   (harmonic-forge#659, operator ruling) and refused at parse time: it
   exhausted the account's shared REST budget twice on 2026-09-14.
 
-  **`--queue-for l3` no longer scans either** (harmonic-forge#686). Retiring
+  **`--queue-for l3` no longer scans** (harmonic-forge#686). Retiring
   `--sweep-for` removed a flag, not the call: `discover_queue` was
   lane-agnostic and kept issuing the same `search/issues` request per repo per
   cycle for every lane, Lane 1 included. The candidate set now comes from what
-  the belt already holds — the issues its own worktrees name, plus any
-  `--repo`/`--issues` a human or another lane handed it.
+  the belt already holds — the issues its own worktrees name (none, for Lane
+  3), any `--repo`/`--issues` a human or another lane handed it, **and, since
+  harmonic-forge#691's rescope, the recorded source too.**
+
+  **Lane 3 reads the same recorded source as Lane 1 and Lane 2, not a
+  narrower one (harmonic-forge#691 AC7').** `l1_post.py` is the one place
+  `ready-for-l3`/`ae`/`sweep`/`ae-and-sweep` are ever posted, and it records
+  every one of them through `belt_candidates.py` exactly as it does
+  `handoff`/`rework` — so `--queue-for l3` picks up a fresh Lane 3 assignment
+  the instant it lands, pre-filtered to `QUEUE_KINDS["l3"]` posted by `l1`,
+  at the same near-zero cost as Lane 1's and Lane 2's own coverage. This
+  reverses what an earlier revision of this file said (that Lane 3's gap was
+  an accepted design call): the loss was never structural, only that the
+  recorder didn't yet carry enough (`kind`, `posted_by`) to tell Lane 3's
+  inbound apart from Lane 2's on the same file. See the Lane 1 bullet above
+  for the same mechanism in more detail.
 
   **What this means for Lane 3 in practice.** Lane 3's worktrees sit on `main`
-  between gates and name no issue, so an idle Lane 3 belt discovers nothing —
-  by design. Work reaches it by being *handed* to it: the operator relays, or
-  Lane 3 is pointed at an issue explicitly. The belt's job is to watch what
-  Lane 3 holds, not to go looking. A lane that finds its own work by scanning
-  is the thing the ruling forbids, and a quieter belt is the correct
-  consequence rather than a regression to fix.
+  between gates and name no issue, so a fresh Lane 3 assignment is now seen
+  through the recorded-candidate source rather than by scanning or by waiting
+  to be told out-of-band — the operator relaying an issue number, or pointing
+  Lane 3 at one explicitly, is still how it gets HANDED a target in the first
+  place, but the belt no longer depends on that alone to notice a `ready-for-l3`
+  that already landed. A lane that finds its own work by scanning is still the
+  thing the ruling forbids; this is a recorded fact from a real post, not a
+  scan.
 
 **A monitor that never printed a status line is not proof it is watching
 anything.** For `--worktrees` — which now includes **Lane 1's belt**, since it
