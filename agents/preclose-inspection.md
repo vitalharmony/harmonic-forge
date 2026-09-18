@@ -101,3 +101,10 @@ restatement of what it does well, no next steps.
 
 > This is an adversarial pre-close check, not a Lane 3 gate. It raises the
 > floor; it does not authorize closure.
+
+## Returning your findings (harmonic-forge#693)
+
+Follow `.claude/agents/_advisory-findings-file-convention.md`: write the
+output above to a file, not directly into your final chat message. Your
+final message states only the file's path and the one-line summary (how
+many findings met the bar / were discarded) — not the findings themselves.

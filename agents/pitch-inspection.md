@@ -158,3 +158,11 @@ them — that class is governed by the platform's verify-live-not-source
 standard, independent of this agent. Do not treat a PROCEED verdict here
 as any assurance about how faithfully later implementation/completion
 claims will match reality.
+
+
+## Returning your findings (harmonic-forge#693)
+
+Follow `.claude/agents/_advisory-findings-file-convention.md`: write your
+full report to a file, not directly into your final chat message. Your
+final message states only the file's path plus your usual one-line
+closing summary/verdict — not the findings themselves.
