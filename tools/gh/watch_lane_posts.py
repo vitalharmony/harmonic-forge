@@ -589,66 +589,82 @@ def queue_qualifiers(repo: str, lane: str) -> str:
     return " ".join(parts)
 
 
-def _search_candidates(repo: str, marker_text: str, qualifiers: str = "") -> set[int]:
-    """Open issues whose comment history contains `marker_text` SOMEWHERE --
-    a coarse, cheap pre-filter. `discover_queue` re-checks each one to see
-    if that marker is still the LATEST classified comment."""
-    # harmonic-forge#518 AC16. This was `gh search issues`, which is
-    # GraphQL-backed — on a polling path, against a 5,000/hour complexity-priced
-    # quota shared with every concurrent lane. `search/issues` is the REST
-    # equivalent and returns the identical result set (verified live: both forms
-    # returned [1271, 1705] for `ready-for-l3` on vitalharmony/hrse).
-    #
-    # The search API carries its own rate limit (30/min authenticated), separate
-    # from both core REST and GraphQL, so this does not contend with either.
-    # `--paginate -f per_page=100` (harmonic-forge#602 preclose finding):
-    # unpaginated, search/issues returns at most 30 items regardless of
-    # `total_count`, with no error and `incomplete_results=false`. Measured
-    # live: `q=repo:vitalharmony/hrse state:closed lane` -> total_count 1193,
-    # items 30. The `l2` handoff search matches every open issue that ever
-    # received a Lane 1 handoff -- a set that only grows -- and stood at 22 on
-    # hrse when this was found, eight short of silently truncating. A queued
-    # issue outside the first page is absent from `candidates`, absent from
-    # `queued`, and reported as success, which is precisely the false
-    # retraction this issue exists to remove. The two siblings here
-    # (`_fetch_all_comments`, `list_open_issues`) already paginate; this was
-    # the one that did not.
-    #
-    # `--jq` emits one number per line ACROSS pages, which is what makes
-    # `--paginate` usable here at all: it returns one JSON object per page,
-    # so a single `json.loads` of the raw body would parse only the first.
-    # `INCOMPLETE` is emitted ahead of the numbers when GitHub reports the
-    # search timed out -- an incomplete result set is a partial answer
-    # presented as a complete one, so it fails closed rather than under-
-    # reporting candidates.
+def _bare_repo(repo: str, issue: int) -> str:
+    """A tick-log ref in the ONE format `belt_report` accepts.
+
+    `repo` is owner-qualified everywhere in this module (`vitalharmony/hrse`),
+    but `belt_mechanics.REF_FORMAT` is `<repo>#<number>` and the reader's regex
+    excludes `/`. Writing the owner-qualified form produces a "malformed entry"
+    finding for every marker and drops it from the per-repo event counts —
+    telemetry that reports zero events for a repo the belt is actively
+    surfacing work in, which is the false-confidence failure this log exists to
+    refuse (harmonic-forge#685 preclose finding).
+    """
+    return f"{repo.rsplit('/', 1)[-1]}#{issue}"
+
+
+_LEADING_REF_RE = re.compile(r"^(?P<repo>[^\s#]+)#(?P<issue>\d+)\s")
+
+
+def _record_line_refs(tick: "TickLog | None", lines: Iterable[str]) -> None:
+    """Record every belt-emitted line as a matched-and-emitted tick ref
+    (harmonic-forge#685 preclose finding 3). `queue_cycle` and
+    `branch_ahead_lines` are the two emit sites `comment_watch_cycle`'s own
+    `record_match`/`record_emit` pair never reached -- both print a
+    `<repo>#<issue> ...` row with no tick call beside it, so every AE/sweep/
+    queued-for-l3/branch-ahead event they surface was invisible to the log
+    `belt_report.py` reads, even on a belt that otherwise ticked correctly.
+
+    A `left-queue-for-<lane>` row is a RETRACTION, not a detection -- it
+    names an issue that dropped out, carrying no marker to record, so it is
+    deliberately skipped here rather than recorded as a match."""
+    if tick is None:
+        return
+    for line in lines:
+        if "left-queue-for-" in line:
+            continue
+        m = _LEADING_REF_RE.match(line)
+        if m is None:
+            continue
+        ref = _bare_repo(m.group("repo"), int(m.group("issue")))
+        tick.record_match(ref)
+        tick.record_emit(ref)
+
+
+#: `_search_candidates` was here. It ran `gh api -X GET search/issues`
+#: once per repo per kind per cycle -- an issue-number-free, account-wide
+#: scan -- and was the last caller of the search API in this file.
+#: Removed by harmonic-forge#686: DESIGN.md's own ruling is that GitHub
+#: enriches and does not discover, "regardless of which pull loop arms
+#: it", and the operator restated it as "You NEVER scan the repo EVER
+#: looking for work." `discover_queue` now takes its candidates from what
+#: the belt already holds. Do not reintroduce a search here: retiring
+#: `--sweep-for l3` (harmonic-forge#659) removed one flag and the same
+#: call simply continued under `--queue-for`, which is how it survived.
+
+def _issue_labels(repo: str, issue: int) -> set[str] | None:
+    """Every label name on `issue`, or `None` if the fetch failed.
+
+    A per-issue, bounded lookup — enrichment on a number `discover_queue`'s
+    caller already holds, never a search. Restores the `queue_qualifiers`
+    filter (`-label:epic`, `-label:tooling-exception` for l2/l3) that
+    `_search_candidates` used to apply as a search qualifier before
+    harmonic-forge#686 removed the search it was a qualifier ON — leaving the
+    filter defined and correct but never called, and an epic or a
+    Lane-1-owned Tooling Exception issue free to land on Lane 2/3's queue the
+    moment its worktree exists."""
     try:
         raw = gh_as(
             _ACCOUNT,
-            ["api", "-X", "GET", "search/issues",
-             "-f", f"q=repo:{repo} state:open {qualifiers} {marker_text}".replace("  ", " "),
-             "--paginate", "-f", "per_page=100",
-             "--jq", 'if .incomplete_results then "INCOMPLETE" else empty end,'
-                     " (.items[].number)"],
+            ["api", "-X", "GET", f"repos/{repo}/issues/{issue}",
+             "--jq", ".labels[].name"],
             counter=_COUNTER,
         )
-    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
-        print(f"[watch_lane_posts] search failed: {exc}", file=sys.stderr)
-        raise SearchUnavailable(str(exc)) from exc
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    if "INCOMPLETE" in lines:
-        print(f"[watch_lane_posts] search returned incomplete_results for {repo} "
-              f"({marker_text}) -- treating as unavailable rather than partial",
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        print(f"[watch_lane_posts] label fetch failed for #{issue}: {exc}",
               file=sys.stderr)
-        raise SearchUnavailable(f"incomplete_results for {repo}")
-    try:
-        return {int(line) for line in lines}
-    except (ValueError, TypeError) as exc:
-        # An unparseable body is "I do not know", not "nothing is queued".
-        # Returning set() here made a malformed response indistinguishable
-        # from a quiet repo, which `queue_cycle` then retracts against.
-        print(f"[watch_lane_posts] search returned an unparseable body for "
-              f"{repo}: {exc}", file=sys.stderr)
-        raise SearchUnavailable(f"unparseable search body for {repo}") from exc
+        return None
+    return {line for line in raw.splitlines() if line}
 
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
@@ -908,7 +924,8 @@ def l3_verdict_sweep_cycle(
     return watching, (now if fetch_ok else l3_since)
 
 
-def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
+def discover_queue(repo: str, lane: str,
+                   candidates_for_repo: set[int]) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
     LATEST classified comment on that issue. Self-clearing: once anything
@@ -925,19 +942,38 @@ def discover_queue(repo: str, lane: str) -> tuple[dict[int, str], bool]:
     exact live reproduction the issue's own AC1 names."""
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
-    candidates: set[int] = set()
-    qualifiers = queue_qualifiers(repo, lane)
-    for kind in kinds:
-        try:
-            candidates |= _search_candidates(repo, f"l1-post v1; kind={kind}", qualifiers)
-        except SearchUnavailable:
-            # `fetch_ok=False`, mirroring `discover_l1_sweep` (harmonic-
-            # forge#579 AC1). The caller must NOT diff this repo's queue
-            # against the previous cycle on a False -- see `queue_cycle`.
-            return {}, False
+    #: harmonic-forge#686. `candidates` was an account-wide `search/issues`
+    #: scan -- one call per repo per kind per cycle, with no worktree and no
+    #: issue number anywhere in it. That is precisely what DESIGN.md's own
+    #: ruling forbids: *"GitHub enriches; it does not discover … never an
+    #: independent, issue-number-free account-wide scan … regardless of which
+    #: pull loop arms it"* (harmonic-forge#640, restated by the operator
+    #: 2026-09-18: *"You NEVER scan the repo EVER looking for work."*)
+    #:
+    #: The ruling was written into the Lane 1 section and the code was
+    #: lane-agnostic, so every lane's belt scanned -- `--sweep-for l3` was
+    #: retired for this in harmonic-forge#659 and the same call simply
+    #: continued under `--queue-for`.
+    #:
+    #: The caller now supplies the candidate set from what it already holds:
+    #: worktree-resolved issue numbers, plus any `--repo/--issues` a human or
+    #: another lane handed it. `_fetch_all_comments` below still enriches each
+    #: one -- enrichment on a known number was never in question.
+    candidates = set(candidates_for_repo)
+    if not candidates:
+        return {}, True
 
+    never_queued = {_NEVER_QUEUED_LABEL}
+    lane_owned = {_LANE1_OWNED_LABEL} if lane in ("l2", "l3") else set()
     queued: dict[int, str] = {}
     for issue in candidates:
+        labels = _issue_labels(repo, issue)
+        if labels is not None and (labels & never_queued or labels & lane_owned):
+            # queue_qualifiers' filter, restored per-issue (harmonic-forge#686
+            # preclose finding): an epic, or -- for l2/l3 -- a Lane-1-owned
+            # Tooling Exception issue, is never queued to this lane even if a
+            # worktree or an explicit --issues handed it in as a candidate.
+            continue
         last_kind: tuple[str, str] | None = None
         comments = _fetch_all_comments(repo, issue)
         if comments is None:
@@ -1149,15 +1185,12 @@ def _manifest_projects(account: str) -> list:
     return selected
 
 
-class SearchUnavailable(Exception):
-    """A `search/issues` call failed (harmonic-forge#596 preclose finding).
-
-    Raised rather than swallowed into an empty result. An empty candidate set
-    and a failed search are the same value but opposite meanings: the first
-    says "nothing is queued", the second says "I do not know". Treating them
-    alike made one repo's rate-limit trip print `left-queue-for-l3` for every
-    issue the OTHER repo had legitimately queued -- a retraction the lane reads
-    as "the ball moved on"."""
+#: `SearchUnavailable` was here. It existed to distinguish "a `search/issues`
+#: call failed" from "nothing is queued" -- meaningful only while
+#: `_search_candidates` could raise it. harmonic-forge#686 removed the last
+#: caller along with the search itself; `discover_queue` now fails closed on
+#: an empty candidate SET (see its own docstring), which is a different
+#: value with a different meaning and needs no exception to carry it.
 
 
 class AccountReposUnavailable(Exception):
@@ -1395,7 +1428,16 @@ def comment_watch_cycle(
             #: telemetry exists to expose, and only the comment's own time can
             #: measure it.
             if tick is not None:
-                tick.record_emit(f"{repo}#{issue}",
+                #: `belt_mechanics.REF_FORMAT` is `<repo>#<number>` and
+                #: `belt_report._REF` is `^[A-Za-z0-9._-]+#\d+$` -- no `/`. An
+                #: owner-qualified `vitalharmony/hrse#1725` is rejected as a
+                #: malformed entry and excluded from the per-repo counts, so a
+                #: repo emitting on every tick would report `events=0` and trip
+                #: the reader's own "silence is not evidence of quiet" alarm.
+                #: `_bare_repo` is the only form the one reader accepts.
+                tick.record_match(_bare_repo(repo, issue),
+                                  posted_at=comment.get("created_at"))
+                tick.record_emit(_bare_repo(repo, issue),
                                  posted_at=comment.get("created_at"))
             lines.append(f"{repo}#{issue} {lane} — {detail}")
         if priming:
@@ -1577,6 +1619,7 @@ def queue_cycle(
     now: str,
     sweep: bool = False,
     batch_state_path: Path | None = None,
+    candidate_pairs: set[tuple[str, int]] | None = None,
 ) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
     """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
 
@@ -1600,6 +1643,12 @@ def queue_cycle(
     - **`l1_since` advances per repo, and only on success** -- a watermark
       moved past a failed cycle silently narrows the next one.
     """
+    #: harmonic-forge#686. The candidate set is now supplied by the caller
+    #: from what it already holds, never discovered by a scan. `None` means
+    #: "nothing in hand", which yields an empty queue rather than falling back
+    #: to a search -- a silent fallback would reinstate the defect the moment
+    #: a caller forgot the argument.
+    candidate_pairs = candidate_pairs or set()
     queue: dict[tuple[str, int], str] = {}
     ok_repos: set[str] = set()
     for repo in repos:
@@ -1630,7 +1679,8 @@ def queue_cycle(
                      for issue, (lane_, detail) in l1_queue.items()}
             lane_label = "l1-sweep"
         else:
-            raw, fetch_ok = discover_queue(repo, lane)
+            raw, fetch_ok = discover_queue(
+                repo, lane, {n for r, n in candidate_pairs if r == repo})
             found = dict(raw)
             lane_label = lane
         if not fetch_ok:
@@ -2215,11 +2265,14 @@ def main() -> int:
     # operator wait an interval to find out is the same failure, deferred.
     while True:
         now = _now()
-        #: harmonic-forge#685. One record per tick, written in a `finally` at
-        #: the bottom of this loop so a quiet tick and a tick that raised are
-        #: both recorded. `DESIGN.md:360`: "a quiet tick that writes nothing is
-        #: indistinguishable from a dead monitor" -- so the write is
-        #: unconditional, while chat output stays governed by `cycle_emitted`.
+        #: harmonic-forge#685. One record per tick, written unconditionally
+        #: near the bottom of this loop body (there is no `finally` -- an
+        #: uncaught exception this cycle skips the write, same as it skips
+        #: everything else below it; this loop has no exception handling to
+        #: hook one onto) so a quiet tick is still recorded even when nothing
+        #: is printed. `DESIGN.md:360`: "a quiet tick that writes nothing is
+        #: indistinguishable from a dead monitor" -- so the write does not
+        #: depend on `cycle_emitted`, while chat output still does.
         #: The class has existed and been tested since harmonic-forge#519 with
         #: no caller; this is the caller.
         tick = TickLog(path=tick_log_path, lane=lane_label, trigger="belt")
@@ -2264,9 +2317,16 @@ def main() -> int:
             label = "sweep-for" if args.sweep_for else "queue-for"
             print(f"[watch_lane_posts] {label}-{mode} scanning "
                   f"{len(repos)} repo(s):", file=sys.stderr)
+            #: harmonic-forge#686. The candidate set is what this belt already
+            #: holds — issues its worktrees currently name, plus any
+            #: `--repo/--issues` handed to it — never a scan. `discovered` is
+            #: re-derived from live branches every cycle just above, so a
+            #: worktree that switches branches changes the set without any
+            #: GitHub call.
             queue, lines, ok_repos = queue_cycle(
                 repos, mode, last_queue, l1_since, now,
-                sweep=bool(args.sweep_for))
+                sweep=bool(args.sweep_for),
+                candidate_pairs=discovered | static_pairs)
             if first_queue_report:
                 # Reports repos that ACTUALLY REPORTED, not len(argv). A run
                 # where every search failed used to print a line byte-identical
@@ -2279,6 +2339,7 @@ def main() -> int:
                 print(line)
                 sys.stdout.flush()
                 cycle_emitted = True
+            _record_line_refs(tick, lines)
             last_queue = queue
 
         # harmonic-forge#599. `SKILL.md` declares dedup as one mechanic with
@@ -2311,10 +2372,12 @@ def main() -> int:
         #: permanently "ahead" (main squash-merged their work). That is why
         #: `resolutions` is filtered through `drop_closed_targets` above --
         #: the filter, not an empty list, is what keeps this honest now.
-        for line in branch_ahead_lines(resolutions, last_ahead):
+        ahead_lines = branch_ahead_lines(resolutions, last_ahead)
+        for line in ahead_lines:
             print(line)
             sys.stdout.flush()
             cycle_emitted = True
+        _record_line_refs(tick, ahead_lines)
 
         # harmonic-forge#638 AC1/AC2/AC3: back off on sustained quiet, reset
         # the moment anything is found -- or the moment anything is merely
@@ -2329,12 +2392,28 @@ def main() -> int:
         #: polled", so a blind poll cannot read as a quiet one in the log the
         #: same way `N/M repo(s) that reported` already keeps it honest on
         #: stderr.
+        quiet = cycle_is_quiet(cycle_emitted, queue, mode, ok_repos, repos,
+                                comment_fetch_failed)
+
+        #: harmonic-forge#685. Written AFTER `cycle_is_quiet`, deliberately.
+        #: An earlier draft wrote before it and labelled the tick from
+        #: `cycle_emitted` alone — so a tick whose comment fetches had all
+        #: failed (`comment_fetch_failed`) printed nothing and was recorded
+        #: byte-identically to a genuinely quiet one. `cycle_is_quiet`'s own
+        #: docstring is that "I do not know" must never read as "nothing
+        #: found", and computing it nine lines after the record was already on
+        #: disk defeated exactly that.
         for _r in repos:
-            tick.repo_result(_ACCOUNT, _r, _r in ok_repos)
+            #: BARE repo: `belt_report` labels rows `<account>/<repo>`, so
+            #: passing the owner-qualified form yields
+            #: `vitalharmony/vitalharmony/hrse` and matches no ref's repo half.
+            tick.repo_result(_ACCOUNT, _r.rsplit("/", 1)[-1], _r in ok_repos)
         tick.counter = CallCounter(
             calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
             calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],
         )
+        if comment_fetch_failed:
+            tick.actions_taken.append("comment-fetch-failed")
         tick.actions_taken.append("emitted" if cycle_emitted else "quiet")
         try:
             tick.write()
@@ -2343,9 +2422,6 @@ def main() -> int:
             #: one failure this protocol cannot tolerate (DESIGN.md).
             print(f"[watch_lane_posts] tick log write failed: {exc}",
                   file=sys.stderr)
-
-        quiet = cycle_is_quiet(cycle_emitted, queue, mode, ok_repos, repos,
-                                comment_fetch_failed)
         quiet_streak = 0 if not quiet else quiet_streak + 1
         polls_this_window += 1
         sleep_for = sleep_before_next_poll(

@@ -403,37 +403,29 @@ class DiscoverQueueTests(unittest.TestCase):
     def _l1(self, kind):
         return f"## Some post\n\n<!-- l1-post v1; kind={kind}; posted-by=LANE1 -->"
 
-    def _mock_gh(self, search_results: dict, comments: dict):
-        """`search_results`: {kind: [issue numbers]}. `comments`: {issue:
-        [comment bodies, in order]}.
+    def _mock_gh(self, comments: dict):
+        """`comments`: {issue: [comment bodies, in order]}.
 
         harmonic-forge#518: every call now goes through
         `belt_mechanics.gh_as`, so the argv shape is
-        `["gh-as", <account>, "gh", ...]` and the search half is REST
-        (`search/issues`, returning `{"items": [...]}`) rather than the
-        GraphQL-backed `gh search issues`. The behaviour asserted below is
-        unchanged — only the call these tests intercept moved.
+        `["gh-as", <account>, "gh", ...]`.
+
+        harmonic-forge#686: there is no longer a `search_results` half. The
+        candidate set is an argument to `discover_queue`, supplied by the
+        caller from what the belt already holds, so a `search/issues` call
+        reaching this mock is itself the regression — it fails loudly below
+        rather than being served, which is what makes these tests evidence
+        for AC1 and not merely compatible with it.
         """
         def run(argv, **kwargs):
             self.assertEqual(argv[0], "gh-as",
                              f"every call must be account-scoped: {argv}")
             gh_argv = argv[3:]  # strip ["gh-as", <account>, "gh"]
-            if gh_argv[:4] == ["api", "-X", "GET", "search/issues"]:
-                # -f q=repo:R state:open <marker text>
-                query = gh_argv[gh_argv.index("-f") + 1]
-                kind = query.rsplit("kind=", 1)[-1]
-                numbers = search_results.get(kind, [])
-                # harmonic-forge#602: the search paginates and reduces with
-                # `--jq`, so the body is one issue number per line across
-                # pages -- NOT a single `{"items": [...]}` object, which
-                # `--paginate` would emit once per page and `json.loads`
-                # would silently read only the first of.
-                self.assertIn("--paginate", gh_argv,
-                              "the candidate search must paginate: unpaginated "
-                              "it caps at 30 items with no error")
-                self.assertIn("per_page=100", gh_argv)
-                return _fake_completed("".join(f"{n}\n" for n in numbers))
-            if "api" in gh_argv:
+            self.assertNotIn(
+                "search/issues", gh_argv,
+                "harmonic-forge#686: no belt path may issue an "
+                f"issue-number-free account-wide scan: {argv}")
+            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
                 # harmonic-forge#570 preclose finding: the comments fetch
                 # must be an explicit GET and must paginate -- assert both
                 # rather than just tolerating whichever shape shows up, so a
@@ -446,44 +438,54 @@ class DiscoverQueueTests(unittest.TestCase):
                 issue = int(path.rsplit("/", 2)[-2])
                 bodies = comments.get(issue, [])
                 return _fake_completed(json.dumps([{"body": b} for b in bodies]))
+            if "api" in gh_argv and "--jq" in gh_argv and ".labels[].name" in gh_argv:
+                # harmonic-forge#686 preclose finding: `_issue_labels`'
+                # single-issue label lookup. Bounded (one issue's own label
+                # list, no pagination needed) -- distinct from the comments
+                # fetch above, which lists an unbounded, growing collection.
+                return _fake_completed("")
             raise AssertionError(f"unexpected gh call: {argv}")
         return run
 
     def test_issue_with_matching_marker_as_latest_comment_is_queued(self):
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
                       comments={1530: [self._l1("handoff"), self._l1("ready-for-l3")]},
                   )):
-            self.assertEqual(discover_queue("vitalharmony/hrse", "l3")[0], {1530: "ready-for-l3"})
+            self.assertEqual(
+                discover_queue("vitalharmony/hrse", "l3", {1530})[0],
+                {1530: "ready-for-l3"})
 
     def test_issue_superseded_by_a_later_comment_is_not_queued(self):
         """The self-clearing property: once Lane 3 (or anyone) posts after
         the marker, the issue drops out with no separate bookkeeping."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [1530], "ae": [], "sweep": []},
                       comments={1530: [self._l1("ready-for-l3"),
                                        "## Lane 3 Gate Results — PASS"]},
                   )):
-            self.assertEqual(discover_queue("vitalharmony/hrse", "l3")[0], {})
+            self.assertEqual(
+                discover_queue("vitalharmony/hrse", "l3", {1530})[0], {})
 
-    def test_no_search_hits_yields_empty_queue(self):
+    def test_no_candidates_yields_empty_queue(self):
+        """harmonic-forge#686: an empty candidate set (nothing the caller
+        already holds names this repo) short-circuits with no `gh` call at
+        all -- there is no search fallback to fall back to."""
         with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(search_results={}, comments={})):
-            self.assertEqual(discover_queue("vitalharmony/hrse", "l3")[0], {})
+                  side_effect=self._mock_gh(comments={})):
+            self.assertEqual(
+                discover_queue("vitalharmony/hrse", "l3", set())[0], {})
 
     def test_issue_found_by_two_kind_searches_is_deduplicated(self):
-        """A search hit is only a candidate; the real classification decides
-        the kind. An issue matching two searches (e.g. it once carried an
-        `ae` marker, later superseded by `ready-for-l3`) must appear once,
-        with whichever kind is actually latest."""
+        """A candidate is only a candidate; the real classification decides
+        the kind. An issue that could match two kinds (e.g. it once carried
+        an `ae` marker, later superseded by `ready-for-l3`) must appear
+        once, with whichever kind is actually latest."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [1530], "ae": [1530], "sweep": []},
                       comments={1530: [self._l1("ae"), self._l1("ready-for-l3")]},
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3", {1530})
             self.assertEqual(queue, {1530: "ready-for-l3"})
 
     def test_two_real_currently_queued_issues_hrse1058_and_1531(self):
@@ -491,7 +493,6 @@ class DiscoverQueueTests(unittest.TestCase):
         its own ready-for-l3 comment, no cross-contamination."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [1058, 1531], "ae": [], "sweep": []},
                       comments={
                           1058: [self._l1("handoff"), "## L2P", "## L2D",
                                  self._l1("ready-for-l3")],
@@ -499,23 +500,20 @@ class DiscoverQueueTests(unittest.TestCase):
                                  self._l1("ready-for-l3")],
                       },
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3", {1058, 1531})
             self.assertEqual(queue, {1058: "ready-for-l3", 1531: "ready-for-l3"})
 
     def test_ae_and_sweep_marker_is_queued_for_l3(self):
         """harmonic-forge#579 AC2 -- live reproduction: `kind=ae-and-sweep`
         is a real, valid Lane 1 choice with 9 live markers already on
-        vitalharmony/hrse. Before this fix, `QUEUE_KINDS["l3"]` did not
-        contain the string at all, so `_search_candidates` never even
-        looked for it and `discover_queue` printed nothing for a real,
-        actionable AE."""
+        vitalharmony/hrse. Before that fix, `QUEUE_KINDS["l3"]` did not
+        contain the string at all, so `discover_queue` printed nothing for a
+        real, actionable AE."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [], "ae": [], "sweep": [],
-                                       "ae-and-sweep": [1725]},
                       comments={1725: [self._l1("ae-and-sweep")]},
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3", {1725})
             self.assertEqual(queue, {1725: "ae-and-sweep"})
 
     def test_l2_finding_after_ready_for_l3_does_not_drop_the_issue(self):
@@ -526,13 +524,12 @@ class DiscoverQueueTests(unittest.TestCase):
         dropped a genuinely queued issue out of the belt."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
                       comments={571: [
                           self._l1("ready-for-l3"),
                           "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
                       ]},
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3", {571})
             self.assertEqual(queue, {571: "ready-for-l3"})
 
     def test_l2_finding_does_not_resurrect_a_superseded_issue(self):
@@ -543,14 +540,13 @@ class DiscoverQueueTests(unittest.TestCase):
         skip predicate at all -- a coarser check than the one below."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
                       comments={571: [
                           self._l1("ready-for-l3"),
                           "## L2 Finding — receipt-backed finding (harmonic-forge#571)",
                           "## Lane 3 Gate Results — PASS",
                       ]},
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3", {571})
             self.assertEqual(queue, {})
 
     def test_a_real_l2_status_transition_still_supersedes_after_a_finding(self):
@@ -568,13 +564,12 @@ class DiscoverQueueTests(unittest.TestCase):
         test fail while leaving every other test in this file green."""
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"handoff": [571], "rework": []},
                       comments={571: [
                           self._l1("handoff"),
                           "## L2D — receipt-backed status (harmonic-forge#371)",
                       ]},
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l2")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l2", {571})
             self.assertEqual(queue, {})
 
     def test_a_real_marker_carrying_finding_still_does_not_drop_the_issue(self):
@@ -590,10 +585,9 @@ class DiscoverQueueTests(unittest.TestCase):
         finding_body = lp.compose_body("finding", [], "diagnosed a defect")
         with patch("belt_mechanics.subprocess.run",
                   side_effect=self._mock_gh(
-                      search_results={"ready-for-l3": [571], "ae": [], "sweep": []},
                       comments={571: [self._l1("ready-for-l3"), finding_body]},
                   )):
-            queue, _ok = discover_queue("vitalharmony/hrse", "l3")
+            queue, _ok = discover_queue("vitalharmony/hrse", "l3", {571})
             self.assertEqual(queue, {571: "ready-for-l3"})
 
 
@@ -1632,18 +1626,16 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
     comment fetch hit a rate limit."""
 
     def test_one_issue_comment_fetch_failure_marks_the_repo_unreliable(self):
-        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=None):
-            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
+        with patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3", {1530})
         self.assertFalse(fetch_ok, "a failed comment fetch must not report success")
         self.assertEqual(queued, {})
 
     def test_a_genuinely_empty_comment_list_still_reports_success(self):
         """`[]` means zero comments and must stay distinguishable from None --
         otherwise the fix trades a false retraction for a stuck queue."""
-        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
+        with patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3", {1530})
         self.assertTrue(fetch_ok)
         self.assertEqual(queued, {})
 
@@ -1656,10 +1648,10 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         against a value the test itself supplied. Patching one level lower, at
         `_fetch_all_comments`, is what connects the two halves."""
         last = {("vitalharmony/hrse", 1530): "ready-for-l3"}
-        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+        with patch("watch_lane_posts._fetch_all_comments", return_value=None):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z")
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(queue, last, "the prior queue must carry forward")
         self.assertEqual(ok, set(), "a failed repo must not be counted as reporting")
         self.assertFalse([line for line in lines if "left-queue" in line],
@@ -1670,54 +1662,15 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         last = {("vitalharmony/hrse", 1530): "ready-for-l3",
                 ("vitalharmony/hrse", 1600): "ready-for-l3"}
         body = ("body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->")
-        with patch("watch_lane_posts._search_candidates", return_value={1530}), \
-             patch("watch_lane_posts._fetch_all_comments",
+        with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": body}]):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z")
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(ok, {"vitalharmony/hrse"})
         self.assertIn(("vitalharmony/hrse", 1530), queue)
         self.assertNotIn(("vitalharmony/hrse", 1600), queue)
         self.assertIn("vitalharmony/hrse#1600 left-queue-for-l3", lines)
-
-
-class SearchCandidatesFailsClosedTests(unittest.TestCase):
-    """harmonic-forge#602 preclose finding 2. `_search_candidates` was the one
-    of this module's three fetches that did not paginate: unpaginated,
-    `search/issues` caps at 30 items with no error and
-    `incomplete_results=false`. Measured live: `state:closed lane` on hrse ->
-    total_count 1193, items 30. The l2 handoff search stood at 22, eight short
-    of silently truncating -- and a truncated candidate set reads as 'that
-    issue is no longer queued'."""
-
-    def test_the_search_is_paginated(self):
-        completed = "1530\n1600\n"
-        with patch("watch_lane_posts.gh_as", return_value=completed) as gh:
-            watch_lane_posts._search_candidates("vitalharmony/hrse", "kind=handoff")
-        argv = gh.call_args.args[1]
-        self.assertIn("--paginate", argv)
-        self.assertIn("per_page=100", argv)
-
-    def test_incomplete_results_fails_closed(self):
-        """A timed-out search is a partial answer presented as a complete one."""
-        with patch("watch_lane_posts.gh_as", return_value="INCOMPLETE\n1530\n"):
-            with self.assertRaises(watch_lane_posts.SearchUnavailable):
-                watch_lane_posts._search_candidates("vitalharmony/hrse", "kind=handoff")
-
-    def test_unparseable_body_fails_closed(self):
-        """"I do not know" must not read as "nothing is queued"."""
-        with patch("watch_lane_posts.gh_as", return_value="not-a-number\n"):
-            with self.assertRaises(watch_lane_posts.SearchUnavailable):
-                watch_lane_posts._search_candidates("vitalharmony/hrse", "kind=handoff")
-
-    def test_search_unavailable_propagates_as_fetch_ok_false(self):
-        """The `SearchUnavailable` branch of `discover_queue` had no test at
-        all -- flipping it to `return {}, True` left all 105 tests green."""
-        with patch("watch_lane_posts._search_candidates",
-                   side_effect=watch_lane_posts.SearchUnavailable("rate limit")):
-            queued, fetch_ok = discover_queue("vitalharmony/hrse", "l3")
-        self.assertFalse(fetch_ok)
-        self.assertEqual(queued, {})
 
 
 class CommentWatchCycleTests(unittest.TestCase):
@@ -1859,10 +1812,9 @@ class Lane1InboundQueueTests(unittest.TestCase):
     HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
 
     def _queue(self, bodies, lane="l1"):
-        with patch("watch_lane_posts._search_candidates", return_value={1383}), \
-             patch("watch_lane_posts._fetch_all_comments",
+        with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": b} for b in bodies]):
-            return discover_queue("vitalharmony/hrse", lane)[0]
+            return discover_queue("vitalharmony/hrse", lane, {1383})[0]
 
     def test_a_lane2_plan_queues_to_lane1(self):
         self.assertEqual(self._queue([self.PLAN]), {1383: "plan"})
@@ -2518,15 +2470,64 @@ class QueueNoiseFilterTests(unittest.TestCase):
         self.assertIn("-label:epic", q)
         self.assertNotIn("tooling-exception", q)
 
-    def test_discover_queue_passes_qualifiers_to_search(self):
-        seen = []
-        def fake_search(repo, marker, qualifiers=""):
-            seen.append(qualifiers)
-            return set()
-        with patch("watch_lane_posts._search_candidates", side_effect=fake_search):
-            discover_queue("vitalharmony/hrse", "l2")
-        self.assertTrue(seen)
-        self.assertTrue(all("-label:tooling-exception" in q and "-label:epic" in q for q in seen))
+    # `test_discover_queue_passes_qualifiers_to_search` was removed by
+    # harmonic-forge#686: `discover_queue` no longer searches, so there are
+    # no qualifiers to pass to one. The filter `queue_qualifiers` used to
+    # express as a search qualifier is restored below as a per-issue label
+    # check instead -- `DiscoverQueueLabelFilterTests`.
+
+
+class DiscoverQueueLabelFilterTests(unittest.TestCase):
+    """harmonic-forge#686 preclose finding: `_search_candidates` applied
+    `queue_qualifiers`' filter as a search qualifier; removing the search
+    left the filter defined but never called, so an epic or a Lane-1-owned
+    Tooling Exception issue could land on Lane 2/3's queue the moment a
+    worktree or `--issues` handed its number in as a candidate."""
+
+    HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
+
+    def test_an_epic_labeled_candidate_is_never_queued(self):
+        with patch("watch_lane_posts._issue_labels", return_value={"epic"}), \
+             patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self.HANDOFF}]):
+            queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+
+    def test_a_tooling_exception_candidate_is_never_queued_for_l2_or_l3(self):
+        with patch("watch_lane_posts._issue_labels",
+                   return_value={"tooling-exception"}), \
+             patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self.HANDOFF}]):
+            for lane in ("l2", "l3"):
+                with self.subTest(lane=lane):
+                    queue, ok = discover_queue("vitalharmony/hrse", lane, {1})
+                    self.assertTrue(ok)
+                    self.assertEqual(queue, {})
+
+    def test_a_tooling_exception_candidate_still_queues_for_l1(self):
+        """Lane 1 owns Tooling Exception issues -- the filter is asymmetric,
+        matching `queue_qualifiers`."""
+        with patch("watch_lane_posts._issue_labels",
+                   return_value={"tooling-exception"}), \
+             patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body":
+                       "## Plan\n\n<!-- l1-post v1; kind=plan; posted-by=LANE2 -->"}]):
+            queue, ok = discover_queue("vitalharmony/hrse", "l1", {1})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {1: "plan"})
+
+    def test_a_label_fetch_failure_does_not_drop_the_repo(self):
+        """Fail open on the filter itself (distinct from a comment-fetch
+        failure, which still fails the repo per `DiscoverQueueFailsClosed
+        PerIssueTests`): an unfetchable label set must not make real,
+        classifiable work disappear."""
+        with patch("watch_lane_posts._issue_labels", return_value=None), \
+             patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": self.HANDOFF}]):
+            queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {1: "handoff"})
 
 
 class DeadlineAwareSleep(unittest.TestCase):
@@ -2631,3 +2632,51 @@ class CapAndLifetimeAgree(unittest.TestCase):
                 break
             self.assertLessEqual(now + sleep_for, MONITOR_LIFETIME_S)
             now += sleep_for
+
+
+class RecordLineRefsTests(unittest.TestCase):
+    """harmonic-forge#685 preclose finding 3. `queue_cycle` and
+    `branch_ahead_lines` are the two emit sites that print a `<repo>#<issue>
+    ...` row to stdout with no matching `tick.record_match`/`record_emit`
+    call beside it -- every AE/sweep/queued-for-l3/branch-ahead event they
+    surface was invisible to the tick log even on a belt that otherwise
+    ticked correctly."""
+
+    def _tick(self):
+        from belt_mechanics import TickLog
+        return TickLog(path=Path(self.tmp.name) / "ticks.jsonl", lane="l3",
+                        trigger="belt")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_queued_for_line_is_recorded_bare(self):
+        tick = self._tick()
+        watch_lane_posts._record_line_refs(
+            tick, ["vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3"])
+        self.assertEqual([e["id"] for e in tick.matched], ["hrse#1530"])
+        self.assertEqual([e["id"] for e in tick.emitted], ["hrse#1530"])
+
+    def test_a_left_queue_retraction_is_not_recorded(self):
+        """A retraction names an issue that dropped out -- there is no
+        marker to record, unlike a genuine detection."""
+        tick = self._tick()
+        watch_lane_posts._record_line_refs(
+            tick, ["vitalharmony/hrse#1600 left-queue-for-l3"])
+        self.assertEqual(tick.matched, [])
+        self.assertEqual(tick.emitted, [])
+
+    def test_a_branch_ahead_line_is_recorded_bare(self):
+        tick = self._tick()
+        watch_lane_posts._record_line_refs(
+            tick, ["vitalharmony/hrse#1530 branch fix/1530-x is 2 commits "
+                   "ahead of origin/main with no completion posted"])
+        self.assertEqual([e["id"] for e in tick.matched], ["hrse#1530"])
+
+    def test_none_tick_is_a_silent_no_op(self):
+        """The belt runs with `tick=None` outside an armed belt (e.g. a
+        `--repo/--issues` one-shot); recording must not require one."""
+        watch_lane_posts._record_line_refs(None, ["vitalharmony/hrse#1 queued-for-l3 kind=ae"])  # no raise

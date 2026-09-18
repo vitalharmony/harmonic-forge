@@ -129,12 +129,12 @@ class QueueCycleEmitsTheNoticeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = _state(tmp, state_payload)
             err = io.StringIO()
-            with patch("watch_lane_posts._search_candidates", return_value={1530}), \
-                 patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
+            with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
                  contextlib.redirect_stderr(err):
                 queue, lines, ok = watch_lane_posts.queue_cycle(
                     ["vitalharmony/hrse"], "l3", {}, {},
-                    "2026-09-10T00:00:00Z", batch_state_path=path)
+                    "2026-09-10T00:00:00Z", batch_state_path=path,
+                    candidate_pairs={("vitalharmony/hrse", 1530)})
             return queue, lines, err.getvalue()
 
     def test_a_live_batch_produces_the_notice_on_stderr(self):

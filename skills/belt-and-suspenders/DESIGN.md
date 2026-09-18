@@ -87,7 +87,11 @@ mid-issue is not the command to arm:
   **A lane's inbound work has no worktree, because the worktree is created in
   response to it.** That is the general property, seen three times now — Lane
   2's handoff (#596), Lane 1's plan (#618). Lane 3 never showed the symptom
-  only because its inbound was queue-discovered from the start.
+  only because its inbound was queue-discovered from the start — which was
+  **not** a structural exemption, as this line used to imply. Queue-discovery
+  was the same account-wide `search/issues` scan the ruling below forbids,
+  running under a different flag name; harmonic-forge#686 removed it for every
+  lane, so no lane discovers by scanning any more.
 
   **Arm it verbatim, from wherever the session already is** — no `cd` first.
   `git worktree list` only ever sees one repository, so the roots the belt
@@ -128,7 +132,7 @@ mid-issue is not the command to arm:
   `--all-worktrees` follows Lane 2's own in-flight work; `--queue-for l2`
   catches inbound `handoff` and `rework` on issues no worktree exists for yet.
 
-- **Lane 3** — no worktree of its own; queue-discover:
+- **Lane 3** — no worktree of its own; watches what is handed to it:
 
   ```
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 300 --deadline-seconds 1800
@@ -137,6 +141,21 @@ mid-issue is not the command to arm:
   Lane 3 no longer arms a repo-wide sweep. `--sweep-for l3` is RETIRED
   (harmonic-forge#659, operator ruling) and refused at parse time: it
   exhausted the account's shared REST budget twice on 2026-09-14.
+
+  **`--queue-for l3` no longer scans either** (harmonic-forge#686). Retiring
+  `--sweep-for` removed a flag, not the call: `discover_queue` was
+  lane-agnostic and kept issuing the same `search/issues` request per repo per
+  cycle for every lane, Lane 1 included. The candidate set now comes from what
+  the belt already holds — the issues its own worktrees name, plus any
+  `--repo`/`--issues` a human or another lane handed it.
+
+  **What this means for Lane 3 in practice.** Lane 3's worktrees sit on `main`
+  between gates and name no issue, so an idle Lane 3 belt discovers nothing —
+  by design. Work reaches it by being *handed* to it: the operator relays, or
+  Lane 3 is pointed at an issue explicitly. The belt's job is to watch what
+  Lane 3 holds, not to go looking. A lane that finds its own work by scanning
+  is the thing the ruling forbids, and a quieter belt is the correct
+  consequence rather than a regression to fix.
 
 **A monitor that never printed a status line is not proof it is watching
 anything.** For `--worktrees` — which now includes **Lane 1's belt**, since it
