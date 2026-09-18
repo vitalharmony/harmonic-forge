@@ -76,18 +76,18 @@ mid-issue is not the command to arm:
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
   ```
 
-  **`--queue-for l1` no longer catches a Lane 2 plan with no worktree yet —
-  harmonic-forge#686 open question, not yet resolved.** It used to: a
-  Plan-First issue has *no worktree*, because the branch is created only in
-  response to Lane 1's approval, and the account-wide `search/issues` scan
-  `--queue-for l1` ran was the only thing that saw a plan sitting there.
-  Four plans stalled exactly there once already (harmonic-forge#618). That
-  scan is gone by explicit operator ruling (below) — `--queue-for l1` now
-  only re-checks candidates the belt already holds (a worktree, or an
-  explicit `--issues`), which a fresh Plan-First plan is neither. **This
-  reopens #618's exact symptom** until harmonic-forge#686 lands a
-  replacement source for "an issue with no worktree that Lane 1 still owes
-  a reaction to" — see that issue's thread for the live decision.
+  **`--queue-for l1` catches a Lane 2 plan with no worktree yet through a
+  second, non-scanning source (harmonic-forge#691).** The account-wide
+  `search/issues` scan that used to be the only thing that saw a plan
+  sitting there is gone by explicit operator ruling (below) — a Plan-First
+  issue has *no worktree*, because the branch is created only in response
+  to Lane 1's approval, so a worktree/`--issues`-only candidate set would
+  never see it, reopening the four-stalled-plans symptom (harmonic-forge#618).
+  The replacement is not a scan: `l2_post.py` (the tool that posts the
+  `plan` marker) records `(repo, issue)` to a shared local file the moment
+  it posts, and the belt reads that file as an additional candidate source
+  — no GitHub call, a candidate exists only because a session already
+  handed it a number. See `read_queue_candidates` in `watch_lane_posts.py`.
 
   **A lane's inbound work has no worktree, because the worktree is created in
   response to it.** That is the general property, seen three times now — Lane
@@ -96,12 +96,11 @@ mid-issue is not the command to arm:
   **not** a structural exemption, as this line used to imply. Queue-discovery
   was the same account-wide `search/issues` scan the ruling below forbids,
   running under a different flag name; harmonic-forge#686 removed it for
-  every lane, so no lane discovers by scanning any more. **The difference is
-  that harmonic-forge#686 already made and recorded the "accept the loss"
-  call for Lane 3** (see "Role: Lane 3" below — its idle belt discovering
-  nothing is stated there as intended, not merely observed). The same call
-  has not yet been made for Lane 1 or Lane 2, and until it is, both bullets
-  above describe a real, open regression, not a settled design.
+  every lane, so no lane discovers by scanning any more. Lane 3's own belt
+  still has no worktree of its own and no `l1_post.py`/`l2_post.py`-recorded
+  candidate source either — that loss was accepted as a deliberate design
+  call (see "Role: Lane 3" below), not fixed the way Lane 1's and Lane 2's
+  were.
 
   **Arm it verbatim, from wherever the session already is** — no `cd` first.
   `git worktree list` only ever sees one repository, so the roots the belt
@@ -138,15 +137,14 @@ mid-issue is not the command to arm:
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
-  **`--queue-for l2` no longer catches that inbound handoff —
-  harmonic-forge#686 open question, not yet resolved.** The account-wide
-  scan that used to find a fresh `handoff`/`rework` marker on an issue no
-  worktree exists for yet is gone, by the same operator ruling as Lane 1's
-  bullet above, and `--queue-for l2`'s candidates are now the same
-  worktree/`--issues` set `--all-worktrees` already follows — so this
-  command currently re-checks in-flight work twice rather than catching
-  anything new. This reopens #596's exact symptom until #686 lands a
-  replacement source; see that issue's thread.
+  **`--queue-for l2` catches that inbound handoff through the same
+  non-scanning source as Lane 1's plan, above (harmonic-forge#691).** The
+  account-wide scan that used to find a fresh `handoff`/`rework` marker on
+  an issue no worktree exists for yet is gone, by the same operator ruling
+  as Lane 1's bullet above; `l1_post.py` (the tool that posts `handoff`/
+  `rework`) records `(repo, issue)` to the same shared local file the
+  moment it posts, and `--queue-for l2` reads it as an additional candidate
+  source alongside `--all-worktrees`' own set.
 
 - **Lane 3** — no worktree of its own; watches what is handed to it:
 

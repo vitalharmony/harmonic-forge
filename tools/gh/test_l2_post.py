@@ -499,3 +499,27 @@ class TestLeadBlock(unittest.TestCase):
     def test_whitespace_only_lead_values_do_not_count_as_supplied(self):
         with self.assertRaises(SystemExit):
             lp.validate_lead("completion", {"Status": "  ", "Change": "c", "Next": "n"})
+
+
+class RecordQueueCandidateTests(unittest.TestCase):
+    """harmonic-forge#691. Same shape as HRSE2's `l1_post.py::
+    record_queue_candidate` -- the belt candidate source that replaces
+    the account-wide scan harmonic-forge#686 removed, for the `plan` kind
+    this tool posts."""
+
+    def test_a_successful_record_appends_one_jsonl_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue-candidates.jsonl"
+            with unittest.mock.patch.object(lp, "_QUEUE_CANDIDATES_PATH", path):
+                lp.record_queue_candidate("vitalharmony/hrse", 1921)
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            entry = json.loads(lines[0])
+            self.assertEqual(entry["repo"], "vitalharmony/hrse")
+            self.assertEqual(entry["issue"], 1921)
+            self.assertIn("posted_at", entry)
+
+    def test_a_write_failure_does_not_raise(self):
+        with unittest.mock.patch.object(
+                lp, "_QUEUE_CANDIDATES_PATH", Path("/nonexistent/dir/x.jsonl")):
+            lp.record_queue_candidate("vitalharmony/hrse", 1)  # must not raise

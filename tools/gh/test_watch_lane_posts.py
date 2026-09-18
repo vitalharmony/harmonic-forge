@@ -2728,3 +2728,76 @@ class RecordLineRefsTests(unittest.TestCase):
         """The belt runs with `tick=None` outside an armed belt (e.g. a
         `--repo/--issues` one-shot); recording must not require one."""
         watch_lane_posts._record_line_refs(None, ["vitalharmony/hrse#1 queued-for-l3 kind=ae"])  # no raise
+
+
+class ReadQueueCandidatesTests(unittest.TestCase):
+    """harmonic-forge#691. The no-worktree-yet replacement for #686's
+    removed scan: `l1_post.py`/`l2_post.py` write, this reads -- no
+    GitHub call on this side, ever."""
+
+    def _write(self, path, *entries):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+
+    def test_a_recent_matching_entry_is_returned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue-candidates.jsonl"
+            self._write(path, {"repo": "vitalharmony/hrse", "issue": 1921,
+                               "posted_at": "2026-09-18T00:00:00Z"})
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/hrse"],
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+        self.assertEqual(got, {("vitalharmony/hrse", 1921)})
+
+    def test_an_entry_for_a_repo_not_in_the_manifest_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue-candidates.jsonl"
+            self._write(path, {"repo": "vitalharmony/other", "issue": 1,
+                               "posted_at": "2026-09-18T00:00:00Z"})
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/hrse"],
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+        self.assertEqual(got, set())
+
+    def test_an_entry_older_than_the_max_age_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue-candidates.jsonl"
+            self._write(path, {"repo": "vitalharmony/hrse", "issue": 1,
+                               "posted_at": "2026-08-01T00:00:00Z"})
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/hrse"],
+                now=dt.datetime(2026, 9, 18, tzinfo=dt.timezone.utc), path=path)
+        self.assertEqual(got, set())
+
+    def test_a_missing_file_returns_empty_not_an_error(self):
+        got = watch_lane_posts.read_queue_candidates(
+            ["vitalharmony/hrse"], path=Path("/nonexistent/x.jsonl"))
+        self.assertEqual(got, set())
+
+    def test_a_malformed_line_is_skipped_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue-candidates.jsonl"
+            path.write_text(
+                "not json at all\n"
+                + json.dumps({"repo": "vitalharmony/hrse", "issue": 5,
+                             "posted_at": "2026-09-18T00:00:00Z"}) + "\n",
+                encoding="utf-8")
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/hrse"],
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+        self.assertEqual(got, {("vitalharmony/hrse", 5)})
+
+    def test_no_gh_call_is_ever_made(self):
+        """The whole point: this reads a local file, never GitHub."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue-candidates.jsonl"
+            self._write(path, {"repo": "vitalharmony/hrse", "issue": 1,
+                               "posted_at": "2026-09-18T00:00:00Z"})
+            with patch("belt_mechanics.subprocess.run",
+                      side_effect=AssertionError("no gh call expected")):
+                got = watch_lane_posts.read_queue_candidates(
+                    ["vitalharmony/hrse"],
+                    now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+        self.assertEqual(got, {("vitalharmony/hrse", 1)})
