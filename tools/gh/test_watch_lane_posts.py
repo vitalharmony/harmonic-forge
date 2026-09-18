@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import belt_candidates
 import watch_lane_posts
 from belt_mechanics import SeenSet, Watermarks, query_since
 from watch_lane_posts import (
@@ -2731,73 +2732,93 @@ class RecordLineRefsTests(unittest.TestCase):
 
 
 class ReadQueueCandidatesTests(unittest.TestCase):
-    """harmonic-forge#691. The no-worktree-yet replacement for #686's
-    removed scan: `l1_post.py`/`l2_post.py` write, this reads -- no
-    GitHub call on this side, ever."""
+    """harmonic-forge#691 (rescoped). The no-worktree-yet replacement for
+    #686's removed scan: `l1_post.py`/`l2_post.py`/`post_lane_discussion.py`
+    write via the shared `belt_candidates` module, this reads -- no GitHub
+    call on this side, ever. `read_queue_candidates` is now a thin wrapper
+    over `belt_candidates.read_candidates` bound to this repo's own
+    `QUEUE_KINDS`/`QUEUE_POSTERS`, so it takes `lane` and filters by
+    kind/poster eligibility (AC2'), not just repo and age."""
 
-    def _write(self, path, *entries):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            for entry in entries:
-                f.write(json.dumps(entry) + "\n")
+    def _record(self, base, repo, issue, kind, posted_by):
+        belt_candidates.record_candidate(repo, issue, kind, posted_by, base_dir=base)
 
-    def test_a_recent_matching_entry_is_returned(self):
+    def test_a_recent_eligible_entry_is_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "queue-candidates.jsonl"
-            self._write(path, {"repo": "vitalharmony/hrse", "issue": 1921,
-                               "posted_at": "2026-09-18T00:00:00Z"})
+            base = Path(tmp)
+            self._record(base, "vitalharmony/hrse", 1921, "handoff", "l1")
             got = watch_lane_posts.read_queue_candidates(
-                ["vitalharmony/hrse"],
-                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+                ["vitalharmony/hrse"], "l2",
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
         self.assertEqual(got, {("vitalharmony/hrse", 1921)})
 
     def test_an_entry_for_a_repo_not_in_the_manifest_is_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "queue-candidates.jsonl"
-            self._write(path, {"repo": "vitalharmony/other", "issue": 1,
-                               "posted_at": "2026-09-18T00:00:00Z"})
+            base = Path(tmp)
+            self._record(base, "vitalharmony/other", 1, "handoff", "l1")
             got = watch_lane_posts.read_queue_candidates(
-                ["vitalharmony/hrse"],
-                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+                ["vitalharmony/hrse"], "l2",
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
         self.assertEqual(got, set())
 
     def test_an_entry_older_than_the_max_age_is_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "queue-candidates.jsonl"
-            self._write(path, {"repo": "vitalharmony/hrse", "issue": 1,
-                               "posted_at": "2026-08-01T00:00:00Z"})
+            base = Path(tmp)
+            self._record(base, "vitalharmony/hrse", 1, "handoff", "l1")
             got = watch_lane_posts.read_queue_candidates(
-                ["vitalharmony/hrse"],
-                now=dt.datetime(2026, 9, 18, tzinfo=dt.timezone.utc), path=path)
+                ["vitalharmony/hrse"], "l2",
+                now=dt.datetime(2026, 10, 18, tzinfo=dt.timezone.utc), base_dir=base)
         self.assertEqual(got, set())
 
-    def test_a_missing_file_returns_empty_not_an_error(self):
-        got = watch_lane_posts.read_queue_candidates(
-            ["vitalharmony/hrse"], path=Path("/nonexistent/x.jsonl"))
-        self.assertEqual(got, set())
-
-    def test_a_malformed_line_is_skipped_not_fatal(self):
+    def test_a_kind_ineligible_for_the_requesting_lane_is_excluded(self):
+        """AC2': the reader returns a candidate only when its newest entry
+        is queue-eligible for the requesting lane -- `discussion` is not in
+        `QUEUE_KINDS` for any lane."""
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "queue-candidates.jsonl"
-            path.write_text(
-                "not json at all\n"
-                + json.dumps({"repo": "vitalharmony/hrse", "issue": 5,
-                             "posted_at": "2026-09-18T00:00:00Z"}) + "\n",
-                encoding="utf-8")
+            base = Path(tmp)
+            self._record(base, "vitalharmony/hrse", 1, "discussion", "l1")
             got = watch_lane_posts.read_queue_candidates(
-                ["vitalharmony/hrse"],
-                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+                ["vitalharmony/hrse"], "l2",
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
+        self.assertEqual(got, set())
+
+    def test_lane3_is_populated_by_l1_post_kinds_ac7(self):
+        """AC7': Lane 3 is included deliberately -- its
+        ready-for-l3/ae/sweep/ae-and-sweep kinds are already
+        `l1_post.py`-posted (posted_by='l1'), which `QUEUE_POSTERS['l3']`
+        already accepts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._record(base, "vitalharmony/hrse", 1530, "ready-for-l3", "l1")
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/hrse"], "l3",
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
+        self.assertEqual(got, {("vitalharmony/hrse", 1530)})
+
+    def test_a_missing_directory_returns_empty_not_an_error(self):
+        got = watch_lane_posts.read_queue_candidates(
+            ["vitalharmony/hrse"], "l2", base_dir=Path("/nonexistent/dir"))
+        self.assertEqual(got, set())
+
+    def test_a_malformed_file_is_skipped_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            base.mkdir(parents=True, exist_ok=True)
+            (base / "vitalharmony__hrse__99.json").write_text("not json at all", encoding="utf-8")
+            self._record(base, "vitalharmony/hrse", 5, "handoff", "l1")
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/hrse"], "l2",
+                now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
         self.assertEqual(got, {("vitalharmony/hrse", 5)})
 
     def test_no_gh_call_is_ever_made(self):
-        """The whole point: this reads a local file, never GitHub."""
+        """The whole point: this reads local files, never GitHub."""
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "queue-candidates.jsonl"
-            self._write(path, {"repo": "vitalharmony/hrse", "issue": 1,
-                               "posted_at": "2026-09-18T00:00:00Z"})
+            base = Path(tmp)
+            self._record(base, "vitalharmony/hrse", 1, "handoff", "l1")
             with patch("belt_mechanics.subprocess.run",
                       side_effect=AssertionError("no gh call expected")):
                 got = watch_lane_posts.read_queue_candidates(
-                    ["vitalharmony/hrse"],
-                    now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), path=path)
+                    ["vitalharmony/hrse"], "l2",
+                    now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
         self.assertEqual(got, {("vitalharmony/hrse", 1)})

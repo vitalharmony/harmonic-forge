@@ -24,11 +24,11 @@ import json
 import re
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from receipt_runner import clear_lock, is_locked, lock_path, strip_ansi, write_receipt  # noqa: E402
+import belt_candidates  # noqa: E402
 
 
 def _sha(text: str) -> str:
@@ -313,34 +313,6 @@ def post(repo: str, issue: int, body: str) -> dict:
     return {"comment_id": comment_id, "body_sha256": _sha(body), "url": posted.get("html_url")}
 
 
-#: harmonic-forge#691. Same mechanism as HRSE2's `l1_post.py::
-#: record_queue_candidate`, and the same file -- `l1_post.py` writes it for
-#: `handoff`/`rework` (what Lane 2's belt needs), this writes it for `plan`
-#: (what Lane 1's belt needs, harmonic-forge#618). The two live in different
-#: repos and share no code, only the file's shape and location.
-_QUEUE_CANDIDATES_PATH = Path.home() / ".claude" / "state" / "belt" / "queue-candidates.jsonl"
-
-
-def record_queue_candidate(repo: str, issue: int) -> None:
-    """Append `{repo, issue, posted_at}` for the belt to pick up later.
-
-    Best-effort, append-only -- see `l1_post.py`'s copy of this docstring
-    (HRSE2) for the full reasoning; kept here rather than imported because
-    the two tools live in different repos."""
-    entry = {
-        "repo": repo,
-        "issue": issue,
-        "posted_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    try:
-        _QUEUE_CANDIDATES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _QUEUE_CANDIDATES_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError as exc:
-        print(f"[l2-post] queue-candidate record failed (non-fatal): {exc}",
-              file=sys.stderr)
-
-
 #: Kinds a standing lock does not block. `blocked` always could.
 #:
 #: `finding` joined it in harmonic-forge#571 AC4 on the reasoning that it's
@@ -449,7 +421,12 @@ def main() -> int:
     validate_lead(args.kind, lead)
     body = compose_body(args.kind, receipts, narrative, lead)
     result = post(args.repo, args.issue, body)
-    record_queue_candidate(args.repo, args.issue)
+    #: harmonic-forge#691 (AC1'). `belt_candidates` is the one module all
+    #: three marker-posting tools call on every successful post --
+    #: `posted_by="l2"` matches this tool's own hardcoded footer
+    #: (`posted-by=LANE2`, see `compose_body` above) rather than deriving
+    #: it from `LANE`, because this tool IS Lane 2's, unconditionally.
+    belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
     print(json.dumps(result))
     return 0
 

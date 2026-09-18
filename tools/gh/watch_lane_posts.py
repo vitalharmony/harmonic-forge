@@ -77,20 +77,38 @@ with no separate "I'm done" bookkeeping anywhere. That per-issue re-check
 is unchanged from before; only the part that used to invent the candidate
 set is gone.
 
-**Lane 1 and Lane 2's no-worktree inbound is covered by a fourth candidate
-source, not lost (harmonic-forge#691).** A Lane 2 handoff and a Lane 1
-Plan-First `plan` are each posted on an issue that, by construction, has no
-worktree yet -- the worktree is created only in response to them -- which
-is the exact gap harmonic-forge#596 and #618 already fixed once, and which
-removing the account-wide search without a replacement would have reopened.
-The replacement is not a scan: `l1_post.py` (HRSE2) and `l2_post.py` (this
-repo) are the only two places any `l1-post v1` marker is ever written, so
-each records `(repo, issue)` to a small shared local file the moment it
-posts one, and `read_queue_candidates` reads it here -- no GitHub call, and
-a candidate exists only because a session already handed it a number by
-posting on it. Lane 3 has neither a worktree of its own nor this recorded
-source; that loss was accepted as a deliberate design call (see "Role: Lane
-3" in DESIGN.md), not something this closes.
+**Every lane's no-worktree inbound is covered by a fourth candidate source,
+not lost -- Lane 3 included (harmonic-forge#691, rescoped).** A Lane 2
+handoff, a Lane 1 Plan-First `plan`, and a Lane 3 `ready-for-l3`/`ae`/
+`sweep`/`ae-and-sweep` are each posted on an issue that, by construction,
+may have no worktree yet -- which is the exact gap harmonic-forge#596 and
+#618 already fixed once, and which removing the account-wide search
+without a replacement would have reopened. The replacement is not a scan:
+`l1_post.py` (HRSE2), `l2_post.py` (this repo), and
+`post_lane_discussion.py` (HRSE2, for the `plan` Lane 2 writes by hand and
+Lane 3's `spec`/`gate-result`) are the only three places any `l1-post v1`
+marker is ever written, so all three call the shared `belt_candidates.py`
+module's `record_candidate(repo, issue, kind, posted_by)` on every
+successful post, and `read_queue_candidates` (a thin wrapper over
+`belt_candidates.read_candidates`, below) reads it -- no GitHub call, and a
+candidate exists only because a session already handed it a number by
+posting on it.
+
+**Kind- and poster-filtered, not just repo and age (harmonic-forge#691
+AC2').** The pre-rescope design recorded only `{repo, issue, posted_at}`,
+so every issue ANY writer had ever touched in 14 days stayed a candidate
+for EVERY lane -- measured at up to ~200 REST calls/tick against this
+script's own ~17.6/tick baseline (`discover_queue` re-checks each
+candidate's full comment history live). Recording `kind` and `posted_by`
+lets `read_queue_candidates` pre-filter to what `discover_queue` would
+accept anyway (`kind` in `QUEUE_KINDS[lane]`, `posted_by` in
+`QUEUE_POSTERS[lane]`) before spending a single REST call, which is what
+brings Lane 3's coverage in at the same near-zero cost as Lane 1's and
+Lane 2's, rather than reopening the over-broad candidate set the kind-less
+version risked. An earlier revision of this note called Lane 3's gap an
+accepted design call; it was not structural, only that the pre-rescope
+recorder didn't carry enough to tell Lane 3's inbound apart from Lane 2's
+on the same file -- see "Role: Lane 3" in DESIGN.md.
 
 Usage
 -----
@@ -109,9 +127,10 @@ Usage
         --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
 
     # The Lane 3 case: Lane 3 has no worktree of its own, so its candidate
-    # set is whatever --repo/--issues names explicitly -- an empty set
-    # yields an empty queue, not a scan. The repo set for --all-worktrees/
-    # --account-repos is still DERIVED, not listed (R-0122):
+    # set is whatever --repo/--issues names explicitly, plus (harmonic-forge#691
+    # AC7') any recent l1_post.py ready-for-l3/ae/sweep/ae-and-sweep posting --
+    # an empty set yields an empty queue, not a scan. The repo set for
+    # --all-worktrees/--account-repos is still DERIVED, not listed (R-0122):
     python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
         --watch l1 --interval 300 --deadline-seconds 1800
 
@@ -170,6 +189,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
 import manifest as onboard_manifest  # noqa: E402
 
 import belt_batch_view  # noqa: E402
+import belt_candidates  # noqa: E402
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
@@ -656,69 +676,40 @@ def _record_line_refs(tick: "TickLog | None", lines: Iterable[str]) -> None:
         tick.record_emit(ref)
 
 
-#: harmonic-forge#691. `l1_post.py` (HRSE2) and `l2_post.py` (this repo)
-#: are the only writers -- see either's `record_queue_candidate` docstring.
-#: No GitHub call on this side; a candidate lands here only because a
-#: session already handed it a number by posting on it.
-_QUEUE_CANDIDATES_PATH = _BELT_STATE / "queue-candidates.jsonl"
-_QUEUE_CANDIDATE_MAX_AGE_DAYS = 14
-
-
 def read_queue_candidates(
     repos: Iterable[str],
+    lane: str,
     *,
     now: "dt.datetime | None" = None,
-    path: Path | None = None,
+    base_dir: Path | None = None,
 ) -> set[tuple[str, int]]:
-    """`(repo, issue)` pairs `l1_post.py`/`l2_post.py` have posted a marker
-    on recently, filtered to `repos` and to entries no older than
-    `_QUEUE_CANDIDATE_MAX_AGE_DAYS` -- this is the replacement source for
-    the no-worktree inbound coverage harmonic-forge#686 removed (a fresh
-    Lane 2 `plan` or Lane 1 `handoff`/`rework` has no worktree until the
-    other side acts on it, harmonic-forge#596/#618).
+    """`(repo, issue)` pairs recorded recently whose newest entry is
+    queue-eligible FOR `lane` (harmonic-forge#691 AC2') -- a thin wrapper
+    over `belt_candidates.read_candidates` bound to THIS repo's live
+    `QUEUE_KINDS`/`QUEUE_POSTERS`, so a candidate this function returns is
+    always a candidate `discover_queue` would also consider eligible on
+    that same tuple's kind/poster, not merely "some kind, some poster,
+    recently."
 
-    Filtering happens HERE, on read, not by pruning the file on write: two
-    independent writers in two different repos append to this file with no
-    lock, and a reader that rewrote it to prune would risk truncating an
-    entry the other writer appended a moment earlier. An unbounded file is
-    the accepted cost of that safety -- modest at this event rate, and
-    `belt_mechanics.CallCounter` has nothing to do with a read that never
-    calls `gh`.
-
-    Malformed lines (a partial write caught mid-append, or a manually edited
-    file) are skipped rather than raising -- one bad line must not blind the
-    belt to every real candidate around it, the same principle `discover_
-    queue` already applies to one issue's failed comment fetch."""
-    now = now or dt.datetime.now(dt.timezone.utc)
-    cutoff = now - dt.timedelta(days=_QUEUE_CANDIDATE_MAX_AGE_DAYS)
-    wanted = set(repos)
-    path = path or _QUEUE_CANDIDATES_PATH
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return set()
-    except OSError as exc:
-        print(f"[watch_lane_posts] queue-candidates read failed: {exc}",
-              file=sys.stderr)
-        return set()
-    candidates: set[tuple[str, int]] = set()
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-            repo = entry["repo"]
-            issue = int(entry["issue"])
-            posted_at = _parse_iso(entry["posted_at"])
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            continue
-        if repo not in wanted:
-            continue
-        if posted_at < cutoff:
-            continue
-        candidates.add((repo, issue))
-    return candidates
+    This is the replacement source for the no-worktree inbound coverage
+    harmonic-forge#686 removed (a fresh Lane 2 `plan`, Lane 1 `handoff`/
+    `rework`/`ready-for-l3`/`ae`/`sweep`, or Lane 3 spec/gate-result has no
+    worktree until the other side acts on it, harmonic-forge#596/#618) --
+    filtered by kind and poster, not just repo and age, which is what
+    keeps the candidate set at single digits per tick instead of the
+    kind-less design's measured ~200-calls/tick risk. No GitHub call on
+    this side, still: `discover_queue`'s own per-issue re-check against the
+    live comment thread is what actually decides membership."""
+    return belt_candidates.read_candidates(
+        repos, lane,
+        queue_kinds=QUEUE_KINDS, queue_posters=QUEUE_POSTERS,
+        now=now, base_dir=base_dir,
+        #: Opt into the safe reader-side unlink (AC3') here, the one real
+        #: call site that runs against the production directory -- a test
+        #: never should (see `belt_candidates.read_candidates`'s own
+        #: docstring on why the default is off).
+        prune=True,
+    )
 
 
 #: `_search_candidates` was here. It ran `gh api -X GET search/issues`
@@ -2424,17 +2415,19 @@ def main() -> int:
             label = "sweep-for" if args.sweep_for else "queue-for"
             print(f"[watch_lane_posts] {label}-{mode} scanning "
                   f"{len(repos)} repo(s):", file=sys.stderr)
-            #: harmonic-forge#686/#691. The candidate set is what this belt
-            #: already holds — issues its worktrees currently name, any
-            #: `--repo/--issues` handed to it, and any `(repo, issue)`
-            #: `l1_post.py`/`l2_post.py` has recently posted a marker on
-            #: (harmonic-forge#691 — the no-worktree-yet replacement for
-            #: #686's removed scan) — never a scan. `discovered` is
-            #: re-derived from live branches every cycle just above, so a
-            #: worktree that switches branches changes the set without any
-            #: GitHub call; `read_queue_candidates` is likewise a local file
-            #: read, never a GitHub call.
-            posted_candidates = read_queue_candidates(repos)
+            #: harmonic-forge#686/#691 (rescoped). The candidate set is what
+            #: this belt already holds — issues its worktrees currently
+            #: name, any `--repo/--issues` handed to it, and any
+            #: `(repo, issue)` any of the three marker-posting tools has
+            #: recently recorded AND whose newest entry is queue-eligible
+            #: for THIS `mode` (harmonic-forge#691 AC2' — the no-worktree-yet
+            #: replacement for #686's removed scan, kind/poster-filtered so
+            #: the set stays at single digits per tick) — never a scan.
+            #: `discovered` is re-derived from live branches every cycle
+            #: just above, so a worktree that switches branches changes the
+            #: set without any GitHub call; `read_queue_candidates` is
+            #: likewise a local file read, never a GitHub call.
+            posted_candidates = read_queue_candidates(repos, mode)
             queue, lines, ok_repos = queue_cycle(
                 repos, mode, last_queue, l1_since, now,
                 sweep=bool(args.sweep_for),
