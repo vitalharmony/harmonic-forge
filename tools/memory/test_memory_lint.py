@@ -392,8 +392,19 @@ class AgingCheckTests(unittest.TestCase):
     delivery. Here a missing field is itself the finding.
     """
 
+    #: harmonic-forge#686 preclose side-finding, same class as F500's own
+    #: `PreCloseRegressionTests.test_fixtures_are_immune_to_the_calendar`
+    #: below: `testdata/aging/*.md` all carry an absolute `first_seen:
+    #: 2026-09-04` with no `promoted:` grandfathering, and this class never
+    #: pinned `today` the way the CLEAN fixture's own gate call does. It
+    #: crossed the same 14-day threshold on 2026-09-18 -- a second copy of
+    #: the exact time bomb F500 already found and fixed once, in a sibling
+    #: fixture set that didn't get the same fix. Pinned to 2 days after
+    #: `first_seen`, matching `feedback_fresh.md`'s own "two days old" text.
+    _TODAY = datetime.date(2026, 9, 6)
+
     def _findings(self, store: Path) -> list[str]:
-        return lint.check_aging(store)
+        return lint.check_aging(store, today=self._TODAY)
 
     def _named(self, store: Path, filename: str) -> list[str]:
         return [f for f in self._findings(store) if f.startswith(filename)]
@@ -408,7 +419,7 @@ class AgingCheckTests(unittest.TestCase):
 
     def test_ac3_the_missing_field_finding_gates(self) -> None:
         """Not merely reported: it must reach exit 1 under `--gate`."""
-        self.assertEqual(lint.run(AGING, gate=True), 1)
+        self.assertEqual(lint.run(AGING, gate=True, today=self._TODAY), 1)
 
     def test_ac4_instances_over_threshold_without_promoted_fails(self) -> None:
         found = self._named(AGING, "feedback_recurred_unpromoted.md")
@@ -444,8 +455,8 @@ class AgingCheckTests(unittest.TestCase):
         without updating that fixture would have turned the repo's own gate
         red on landing -- the same self-inflicted failure harmonic-forge#494
         hit with its README."""
-        self.assertEqual(lint.check_aging(CLEAN), [])
-        self.assertEqual(lint.run(CLEAN, gate=True), 0)
+        self.assertEqual(lint.check_aging(CLEAN, today=self._TODAY), [])
+        self.assertEqual(lint.run(CLEAN, gate=True, today=self._TODAY), 0)
 
     def test_only_feedback_files_are_aged(self) -> None:
         """`project_*`/`reference_*`/`user_*` memories are not lessons and
