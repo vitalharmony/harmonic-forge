@@ -1657,11 +1657,39 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         self.assertFalse([line for line in lines if "left-queue" in line],
                          f"a transient failure must not retract: {lines!r}")
 
-    def test_a_still_queued_issue_is_not_retracted_and_a_gone_one_is(self):
-        """The fix must not buy safety by never retracting anything."""
+    def test_a_still_queued_issue_is_not_retracted_and_a_checked_gone_one_is(self):
+        """The fix must not buy safety by never retracting anything: an
+        issue this cycle actually CHECKED (its number is in candidate_pairs)
+        and found superseded still retracts."""
         last = {("vitalharmony/hrse", 1530): "ready-for-l3",
                 ("vitalharmony/hrse", 1600): "ready-for-l3"}
-        body = ("body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->")
+        queued_body = "body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->"
+        superseded = [
+            {"body": queued_body},
+            {"body": "## Lane 3 Gate Results — PASS"},
+        ]
+        def fake_comments(repo, issue):
+            return [{"body": queued_body}] if issue == 1530 else superseded
+        with patch("watch_lane_posts._fetch_all_comments", side_effect=fake_comments):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                candidate_pairs={("vitalharmony/hrse", 1530),
+                                 ("vitalharmony/hrse", 1600)})
+        self.assertEqual(ok, {"vitalharmony/hrse"})
+        self.assertIn(("vitalharmony/hrse", 1530), queue)
+        self.assertNotIn(("vitalharmony/hrse", 1600), queue)
+        self.assertIn("vitalharmony/hrse#1600 left-queue-for-l3", lines)
+
+    def test_a_queued_issue_whose_candidate_disappears_carries_forward_not_retracted(self):
+        """harmonic-forge#686 preclose finding 2. 1600 was queued last cycle
+        but its worktree (or --issues) no longer names it this cycle -- it
+        is simply not in `candidate_pairs`, so `discover_queue` never looked
+        at it. That must read as "unknown", the same as a failed fetch, not
+        as "verified gone" -- a worktree disappearing must not silently
+        retract a still-live marker."""
+        last = {("vitalharmony/hrse", 1530): "ready-for-l3",
+                ("vitalharmony/hrse", 1600): "ready-for-l3"}
+        body = "body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->"
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": body}]):
             queue, lines, ok = watch_lane_posts.queue_cycle(
@@ -1669,8 +1697,10 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
                 candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(ok, {"vitalharmony/hrse"})
         self.assertIn(("vitalharmony/hrse", 1530), queue)
-        self.assertNotIn(("vitalharmony/hrse", 1600), queue)
-        self.assertIn("vitalharmony/hrse#1600 left-queue-for-l3", lines)
+        self.assertIn(("vitalharmony/hrse", 1600), queue,
+                       "an uninspected candidate must carry forward, not vanish")
+        self.assertFalse([l for l in lines if "left-queue" in l],
+                          f"an uninspected candidate must not retract: {lines!r}")
 
 
 class CommentWatchCycleTests(unittest.TestCase):
@@ -2459,16 +2489,34 @@ class QueueNoiseFilterTests(unittest.TestCase):
     def test_l2_and_l3_exclude_epic_and_tooling_exception(self):
         from watch_lane_posts import queue_qualifiers
         for lane in ("l2", "l3"):
-            q = queue_qualifiers("vitalharmony/hrse", lane)
-            self.assertIn("-label:epic", q)
-            self.assertIn("-label:tooling-exception", q)
-            self.assertNotIn("milestone", q)
+            excluded = queue_qualifiers("vitalharmony/hrse", lane)
+            self.assertIn("epic", excluded)
+            self.assertIn("tooling-exception", excluded)
+            self.assertNotIn("milestone", excluded)
 
     def test_l1_keeps_tooling_exception_issues(self):
         from watch_lane_posts import queue_qualifiers
-        q = queue_qualifiers("vitalharmony/hrse", "l1")
-        self.assertIn("-label:epic", q)
-        self.assertNotIn("tooling-exception", q)
+        excluded = queue_qualifiers("vitalharmony/hrse", "l1")
+        self.assertIn("epic", excluded)
+        self.assertNotIn("tooling-exception", excluded)
+
+    def test_discover_queue_actually_calls_queue_qualifiers(self):
+        """harmonic-forge#686 preclose finding: `discover_queue` used to
+        reimplement this filter inline from the constants directly, leaving
+        `queue_qualifiers` an untested orphan the two tests above exercised
+        in isolation -- a change to one could silently stop matching the
+        other. Patching `queue_qualifiers` itself and asserting it was
+        actually called (not just that its constants happen to still agree)
+        is what ties them back together."""
+        calls = []
+        def spy(repo, lane):
+            calls.append((repo, lane))
+            return frozenset({"epic"})
+        with patch("watch_lane_posts.queue_qualifiers", side_effect=spy), \
+             patch("watch_lane_posts._issue_labels", return_value=set()), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            discover_queue("vitalharmony/hrse", "l3", {1530})
+        self.assertIn(("vitalharmony/hrse", "l3"), calls)
 
     # `test_discover_queue_passes_qualifiers_to_search` was removed by
     # harmonic-forge#686: `discover_queue` no longer searches, so there are

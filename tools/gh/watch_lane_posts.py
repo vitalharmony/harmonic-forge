@@ -59,43 +59,54 @@ standalone from a terminal. Prints ONE line per new comment whose detected
 `lane` (`l1`/`l2`/`l3`) is in `--watch`; every other comment (plain chat,
 a lane not being watched) is silent.
 
-**A worktree only tells you about ONE issue.** Lane 3 has no single
-worktree the way Lane 2 does -- it needs to find WHICHEVER issue is
-currently queued to it, repo-wide, without anyone naming a number.
-`--queue-for l3` answers that: it searches the repo for open issues
-carrying an `l1-post` marker whose `kind` is one of `QUEUE_KINDS["l3"]`
-(`ready-for-l3`, `ae`, `sweep`, or `ae-and-sweep` -- the kinds that hand
-Lane 3 something to do, read from the constant directly rather than
-restated here, since restating it is exactly what let this prose drift
-out of sync with the code once already, harmonic-forge#579), via
-`gh search issues ... "l1-post v1; kind=<kind>"` -- a literal-substring
-search, not a keyword match, so it doesn't pick up unrelated mentions of
-the word (verified live 2026-09-03: zero false positives across all
-kinds on this repo's real history). A search hit only means the marker
-exists SOMEWHERE on the issue, so each candidate's full comment history is
-then re-checked: an issue only counts as currently queued if that marker
-is still the LATEST classified comment -- once Lane 3 (or anyone) posts
-anything after it, the issue drops out of the queue on its own, with no
-separate "I'm done" bookkeeping required anywhere.
+**`--queue-for <lane>` no longer searches (harmonic-forge#686).** It used to
+answer "which issue is currently queued to me, repo-wide, without anyone
+naming a number" via an account-wide `gh api search/issues` call, once per
+repo per `QUEUE_KINDS[lane]` kind, every poll cycle. That is exactly the
+independent, issue-number-free discovery the operator's own ruling forbids
+(harmonic-forge#640, restated 2026-09-18: *"You NEVER scan the repo EVER
+looking for work"*) -- so it is gone, for every lane, not narrowed. What
+`--queue-for` does now: it takes the candidate set the belt already holds
+(worktree-resolved `(repo, issue)` pairs from `--all-worktrees`, plus any
+explicit `--repo`/`--issues`) and, for each, re-checks the full comment
+history to decide whether an `l1-post` marker of an eligible
+`QUEUE_KINDS[lane]` kind is still the LATEST classified comment -- once
+anything is posted after it, the issue drops out of the queue on its own,
+with no separate "I'm done" bookkeeping anywhere. That per-issue re-check
+is unchanged from before; only the part that used to invent the candidate
+set is gone.
+
+**This is a real capability loss for Lane 1 and Lane 2, not merely a
+renamed mechanism, and it is the same gap harmonic-forge#596 and #618
+already fixed once.** A Lane 2 handoff and a Lane 1 Plan-First `plan` are
+each posted on an issue that, by construction, has no worktree yet -- the
+worktree is created only in response to them. The account-wide search used
+to be the only way either belt saw that class of inbound with nothing
+already in hand; removing it without a replacement source means a fresh
+handoff or a stalled plan can once again sit uncaught until a human notices
+-- see harmonic-forge#686's own thread for the open decision on what
+replaces it. Lane 3 already accepted the equivalent loss by design (its
+belt has no worktree of its own to begin with, so "handed to it" was
+always the plan); Lane 1 and Lane 2 have not yet had that same call made.
 
 Usage
 -----
-    # The Lane 1 case: every live worktree, repo-wide, plus the bounded
-    # Plan-First catch (harmonic-forge#618) -- see CANONICAL_BELTS["1"]:
+    # The Lane 1 case: every live worktree, repo-wide, plus --queue-for l1
+    # re-checking any issue a worktree or --issues already names:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
         --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
 
-    # The Lane 2 case: BOTH halves. --all-worktrees follows Lane 2 into its
-    # per-issue /tmp/<repo>-<issue>-impl checkout; --queue-for l2 catches an
-    # inbound handoff on an issue no worktree exists for yet, which is every
-    # inbound handoff (harmonic-forge#596). Worktrees-only misses all of them:
+    # The Lane 2 case: both halves, same candidate-supplied contract.
+    # --all-worktrees follows Lane 2 into its per-issue
+    # /tmp/<repo>-<issue>-impl checkout; --queue-for l2 re-checks whichever
+    # of those (plus any --issues) carry an eligible marker:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
         --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
 
-    # The Lane 3 case: find whatever is queued to me, repo-wide, no
-    # worktree and no issue number needed. The repo set is DERIVED, not
-    # listed (R-0122) -- a new repo is picked up automatically, an archived
-    # one drops out:
+    # The Lane 3 case: Lane 3 has no worktree of its own, so its candidate
+    # set is whatever --repo/--issues names explicitly -- an empty set
+    # yields an empty queue, not a scan. The repo set for --all-worktrees/
+    # --account-repos is still DERIVED, not listed (R-0122):
     python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
         --watch l1 --interval 300 --deadline-seconds 1800
 
@@ -574,19 +585,28 @@ def _mark_retired_tokens(headline: str) -> str:
 
 # Queue-noise filters (operator ruling 2026-09-14, harmonic-forge#663). The belt listed every issue
 # that ever got a handoff marker, including work that is not the lane's to
-# pick up. Applied as search qualifiers, so they cost no extra calls.
+# pick up. Originally applied as search qualifiers (no extra calls); since
+# harmonic-forge#686 removed the search these qualify, `queue_qualifiers`
+# is `discover_queue`'s own label check below, not a second description of
+# it -- the preclose finding was that the two had already drifted apart
+# once the search was deleted: this function kept its old signature and
+# docstring, unused, while `discover_queue` reimplemented the same two
+# labels inline from the constants directly.
 _LANE1_OWNED_LABEL = "tooling-exception"   # Lane 1 implements these
 _NEVER_QUEUED_LABEL = "epic"               # never implemented directly
-def queue_qualifiers(repo: str, lane: str) -> str:
-    """Search qualifiers that keep work that isn't `lane`'s off its queue.
+def queue_qualifiers(repo: str, lane: str) -> frozenset[str]:
+    """Labels that keep work that isn't `lane`'s off its queue -- called
+    from `discover_queue` per candidate issue (harmonic-forge#686; `repo`
+    is accepted for a stable call shape and possible future per-repo
+    exceptions, unused today).
 
     No milestone scoping (operator ruling 2026-09-14): measured live, the
     active resonance-chain workgroup sits in hrse's `3.0`/`Later` milestones,
     so excluding "future" milestones dropped the lane's actual queue."""
-    parts = [f"-label:{_NEVER_QUEUED_LABEL}"]
+    labels = {_NEVER_QUEUED_LABEL}
     if lane in ("l2", "l3"):
-        parts.append(f"-label:{_LANE1_OWNED_LABEL}")
-    return " ".join(parts)
+        labels.add(_LANE1_OWNED_LABEL)
+    return frozenset(labels)
 
 
 def _bare_repo(repo: str, issue: int) -> str:
@@ -963,16 +983,19 @@ def discover_queue(repo: str, lane: str,
     if not candidates:
         return {}, True
 
-    never_queued = {_NEVER_QUEUED_LABEL}
-    lane_owned = {_LANE1_OWNED_LABEL} if lane in ("l2", "l3") else set()
+    excluded = queue_qualifiers(repo, lane)
     queued: dict[int, str] = {}
     for issue in candidates:
         labels = _issue_labels(repo, issue)
-        if labels is not None and (labels & never_queued or labels & lane_owned):
-            # queue_qualifiers' filter, restored per-issue (harmonic-forge#686
+        if labels is not None and labels & excluded:
+            # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
             # preclose finding): an epic, or -- for l2/l3 -- a Lane-1-owned
             # Tooling Exception issue, is never queued to this lane even if a
             # worktree or an explicit --issues handed it in as a candidate.
+            # Called through the shared function rather than reimplemented
+            # from the constants here, so the two cannot drift apart again
+            # (a second preclose finding: this block used to do exactly
+            # that, leaving `queue_qualifiers` itself an untested orphan).
             continue
         last_kind: tuple[str, str] | None = None
         comments = _fetch_all_comments(repo, issue)
@@ -1653,6 +1676,7 @@ def queue_cycle(
     ok_repos: set[str] = set()
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
+        checked: set[int] | None = None
         if sweep and lane == "l3":
             # harmonic-forge#629, Check C. `l1_since` is reused as a plain
             # per-repo watermark dict here, not Lane-1-specific -- only one
@@ -1679,8 +1703,8 @@ def queue_cycle(
                      for issue, (lane_, detail) in l1_queue.items()}
             lane_label = "l1-sweep"
         else:
-            raw, fetch_ok = discover_queue(
-                repo, lane, {n for r, n in candidate_pairs if r == repo})
+            checked = {n for r, n in candidate_pairs if r == repo}
+            raw, fetch_ok = discover_queue(repo, lane, checked)
             found = dict(raw)
             lane_label = lane
         if not fetch_ok:
@@ -1696,6 +1720,19 @@ def queue_cycle(
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
         for issue, marker in found.items():
             queue[(repo, issue)] = marker
+        if checked is not None:
+            #: harmonic-forge#686 preclose finding 2. `checked` is the
+            #: candidate set `discover_queue` actually inspected this cycle
+            #: -- an issue in `prior` but NOT in `checked` was never looked
+            #: at (its worktree is gone, or it was never named to `--issues`),
+            #: not verified absent. Carrying it forward, same as the
+            #: fetch-failed branch above, is what keeps a worktree
+            #: disappearing from reading as "the ball moved on": only an
+            #: issue this cycle actually checked and found unqueued may be
+            #: retracted below.
+            for issue, marker in prior.items():
+                if issue not in checked and issue not in found:
+                    queue[(repo, issue)] = marker
 
     lines: list[str] = []
     for (repo, issue), marker in queue.items():
@@ -2403,18 +2440,39 @@ def main() -> int:
         #: docstring is that "I do not know" must never read as "nothing
         #: found", and computing it nine lines after the record was already on
         #: disk defeated exactly that.
-        for _r in repos:
-            #: BARE repo: `belt_report` labels rows `<account>/<repo>`, so
-            #: passing the owner-qualified form yields
-            #: `vitalharmony/vitalharmony/hrse` and matches no ref's repo half.
-            tick.repo_result(_ACCOUNT, _r.rsplit("/", 1)[-1], _r in ok_repos)
+        if mode:
+            #: harmonic-forge#686 preclose finding 3. `ok_repos` is only ever
+            #: populated inside `if mode:` above -- a comment-watch-only run
+            #: (no `--queue-for`/`--sweep-for`, e.g. `--repo X --issues N
+            #: --watch l1`) never touches it, so recording this loop
+            #: unconditionally wrote `ok=False` for every repo on every tick
+            #: of a belt that made zero failing calls: `repos` is populated
+            #: from `--repo`/`--account-repos` independent of `mode`, but
+            #: "reported" is a queue-cycle-only concept. `belt_report` then
+            #: counted those as `errored` and printed a failure count against
+            #: a repo that never failed anything -- manufactured telemetry,
+            #: the false-confidence failure in the other direction.
+            for _r in repos:
+                #: BARE repo: `belt_report` labels rows `<account>/<repo>`,
+                #: so passing the owner-qualified form yields
+                #: `vitalharmony/vitalharmony/hrse` and matches no ref's
+                #: repo half.
+                tick.repo_result(_ACCOUNT, _r.rsplit("/", 1)[-1], _r in ok_repos)
         tick.counter = CallCounter(
             calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
             calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],
         )
         if comment_fetch_failed:
             tick.actions_taken.append("comment-fetch-failed")
-        tick.actions_taken.append("emitted" if cycle_emitted else "quiet")
+        #: harmonic-forge#686 preclose finding (related to 4): this used to
+        #: read `cycle_emitted` directly, the same "I do not know" vs
+        #: "nothing found" conflation `cycle_is_quiet` exists to fix -- a
+        #: tick with a non-empty unchanged queue, or an under-reporting
+        #: repo, prints nothing (`cycle_emitted=False`) but is not quiet.
+        #: `quiet`, computed just above, is the one value that already
+        #: accounts for all of that; label from it, not from the raw print
+        #: flag it was derived to replace.
+        tick.actions_taken.append("quiet" if quiet else "emitted")
         try:
             tick.write()
         except OSError as exc:
