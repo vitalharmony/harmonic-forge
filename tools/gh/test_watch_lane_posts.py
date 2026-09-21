@@ -1808,12 +1808,25 @@ class CommentWatchCycleTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _cycle(self, comments, now=None):
-        with patch("watch_lane_posts._fetch_comments", return_value=comments):
+    def _cycle(self, comments, now=None, allow_priming=True, promote=True,
+                fetch=None):
+        deferred = []
+        with patch("watch_lane_posts._fetch_comments",
+                   **({"side_effect": fetch} if fetch else {"return_value": comments})):
             lines, _fetch_failed = watch_lane_posts.comment_watch_cycle(
                 self.target, {"l1"}, now or self.NOW,
-                self.wm, self.seen, self.primed)
-            return lines
+                self.wm, self.seen, self.primed, allow_priming=allow_priming,
+                deferred_advances=deferred)
+        if promote:
+            # What `main()` does (harmonic-forge#697): the real delivery path.
+            watch_lane_posts.deliver_comment_lines(
+                lines, self.seen, self.wm, deferred, out=io.StringIO())
+        return lines
+
+    @staticmethod
+    def _announced(lines):
+        """Live announcements only -- not the AC4 'PRIMED at first arm' line."""
+        return [l for l in lines if "PRIMED at first arm" not in l]
 
     def test_a_failed_fetch_reports_fetch_failed_true(self):
         """harmonic-forge#638 preclose finding 2 -- 'I do not know' must never
@@ -1876,7 +1889,7 @@ class CommentWatchCycleTests(unittest.TestCase):
     def test_first_cycle_primes_and_does_not_announce(self):
         """AC4, mutation M5."""
         lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
-        self.assertEqual(lines, [])
+        self.assertEqual(self._announced(lines), [])
         self.assertEqual(self.seen.status("1"), SeenSet.PRIMED)
 
     def test_second_cycle_announces(self):
@@ -1901,7 +1914,8 @@ class CommentWatchCycleTests(unittest.TestCase):
         self._cycle(None)                       # cycle 1 fails for this target
         self.assertNotIn("vitalharmony/hrse#1530", self.primed)
         lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
-        self.assertEqual(lines, [], "the first SUCCESSFUL cycle must still prime")
+        self.assertEqual(self._announced(lines), [],
+                         "the first SUCCESSFUL cycle must still prime")
 
     def test_what_priming_suppressed_is_named_not_counted(self):
         """The overlap window reaches backwards into live work, so priming can
@@ -1913,6 +1927,122 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("SUPPRESSED", out)
         self.assertIn("vitalharmony/hrse#1530", out)
         self.assertIn("delete", out, "the operator needs the recovery path")
+
+    # --- harmonic-forge#697 ------------------------------------------------
+
+    def _new_process(self):
+        """A fresh process on the same on-disk state: what a Monitor re-arm is."""
+        self.seen = SeenSet(self.seen.path)
+        self.primed = set()
+        return watch_lane_posts.priming_allowed(self.seen)
+
+    def test_rearm_emits_a_post_that_landed_between_runs(self):
+        """AC1/AC3: the hrse#1948 spec, primed and never emitted at 20:21:16Z."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])       # run 1, first arm
+        allow = self._new_process()                            # run 2, re-arm
+        self.assertFalse(allow, "a re-arm must never prime")
+        lines = self._cycle([{"id": "1", "body": self.HANDOFF},
+                             {"id": "2", "body": self.HANDOFF}],
+                            allow_priming=allow)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("vitalharmony/hrse#1530", lines[0])
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_a_quiet_first_arm_does_not_make_the_next_arm_prime(self):
+        """Preclose finding 1: a first arm that saw no comment leaves the
+        seen-set empty, so `priming_allowed` is True again on the re-arm.
+        The target's watermark is what stops it priming."""
+        self._cycle([])                                        # quiet first arm
+        allow = self._new_process()
+        self.assertTrue(allow, "the seen-set alone cannot tell")
+        lines = self._cycle([{"id": "2", "body": self.HANDOFF}], allow_priming=allow)
+        self.assertEqual(len(self._announced(lines)), 1, lines)
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_a_pending_emit_survives_a_late_rearm(self):
+        """Preclose finding 2: the watermark advanced before the flush, so a
+        re-arm more than ~11 minutes later queried past the PENDING comment."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])       # primes, mark=12:00
+        self._cycle([{"id": "2", "body": self.HANDOFF,
+                      "created_at": "2026-09-10T12:04:00Z"}],
+                    now="2026-09-10T12:05:00Z", allow_priming=False,
+                    promote=False)                             # killed before flush
+        allow = self._new_process()
+        got = {}
+        def capture(repo, issue, since):
+            got["since"] = since
+            return [{"id": "2", "body": self.HANDOFF}]
+        lines = self._cycle(None, now="2026-09-10T12:30:00Z",
+                            allow_priming=allow, fetch=capture)
+        self.assertLessEqual(got["since"], "2026-09-10T12:04:00Z",
+                             "the late re-arm must still reach the pending comment")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_deliver_prints_before_recording(self):
+        """Preclose finding 3: the print-promote-advance order lives in one
+        tested function, not in `main()`'s untested loop."""
+        self.seen.add("5", SeenSet.PENDING)
+        deferred = [("vitalharmony", self.key,
+                     watch_lane_posts._parse_iso("2026-09-10T12:10:00Z"))]
+        class Killed(Exception):
+            pass
+        class DyingOut:
+            def write(self, _):
+                raise Killed()
+            def flush(self):
+                pass
+        with self.assertRaises(Killed):
+            watch_lane_posts.deliver_comment_lines(
+                ["x"], self.seen, self.wm, deferred, out=DyingOut())
+        self.assertEqual(self.seen.status("5"), SeenSet.PENDING)
+        self.assertIsNone(self.wm.get("vitalharmony", self.key))
+        out = io.StringIO()
+        watch_lane_posts.deliver_comment_lines(["x"], self.seen, self.wm, deferred, out=out)
+        self.assertEqual(out.getvalue(), "x\n")
+        self.assertEqual(self.seen.status("5"), SeenSet.EMITTED)
+        self.assertIsNotNone(self.wm.get("vitalharmony", self.key))
+
+    def test_main_delivers_through_the_tested_function(self):
+        """Preclose finding 3: pin `main()` to the tested seams."""
+        import inspect
+        src = inspect.getsource(watch_lane_posts.main)
+        self.assertIn("allow_priming=allow_priming", src)
+        self.assertIn("deferred_advances=deferred_advances", src)
+        self.assertIn("deliver_comment_lines(comment_lines", src)
+
+    def test_a_run_killed_after_emit_re_emits_on_next_arm(self):
+        """AC2/AC3: the hrse#1902 spec, recorded emitted and never delivered."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])
+        allow = self._new_process()
+        self._cycle([{"id": "2", "body": self.HANDOFF}],
+                    allow_priming=allow, promote=False)        # killed before flush
+        allow = self._new_process()
+        self.assertEqual(self.seen.status("2"), SeenSet.PENDING)
+        lines = self._cycle([{"id": "2", "body": self.HANDOFF}], allow_priming=allow)
+        self.assertEqual(len(lines), 1, "an unconfirmed emit must be re-emitted")
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_a_delivered_emit_is_not_re_emitted_on_next_arm(self):
+        self._cycle([{"id": "1", "body": self.HANDOFF}])
+        allow = self._new_process()
+        self._cycle([{"id": "2", "body": self.HANDOFF}], allow_priming=allow)
+        allow = self._new_process()
+        lines = self._cycle([{"id": "2", "body": self.HANDOFF}], allow_priming=allow)
+        self.assertEqual(lines, [])
+
+    def test_first_arm_suppression_is_named_on_stdout(self):
+        """AC4: stderr goes to a file the lane never reads."""
+        lines = self._cycle([{"id": "1", "body": self.HANDOFF}])
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1, lines)
+        self.assertIn("vitalharmony/hrse#1530", primed[0])
+        self.assertIn("l1", primed[0])
+
+    def test_priming_allowed_only_on_an_empty_seen_set(self):
+        self.assertTrue(watch_lane_posts.priming_allowed(self.seen))
+        self.seen.add("9", SeenSet.PRIMED)
+        self.assertFalse(watch_lane_posts.priming_allowed(self.seen))
 
 
 class Lane1InboundQueueTests(unittest.TestCase):

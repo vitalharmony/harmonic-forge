@@ -300,11 +300,17 @@ class SeenSet:
 
     EMITTED = "emitted"
     PRIMED = "primed"
+    #: harmonic-forge#697. Recorded before the line is printed and promoted to
+    #: EMITTED only after it is flushed. A process killed in between leaves the
+    #: entry PENDING, which a later arm treats as unseen and re-emits. Writing
+    #: EMITTED first made a delivery lost at kill permanently unretryable.
+    PENDING = "pending"
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._state: dict[str, str] = {}
+        self._pending: set[str] = set()
         if self.path.exists():
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
@@ -318,13 +324,31 @@ class SeenSet:
     def status(self, comment_id: str) -> Optional[str]:
         return self._state.get(str(comment_id))
 
+    def settled(self, comment_id: str) -> bool:
+        """Recorded and not merely PENDING: a PENDING id was never confirmed
+        delivered, so it must be emitted again (harmonic-forge#697)."""
+        return self._state.get(str(comment_id)) in (self.EMITTED, self.PRIMED)
+
     def add(self, comment_id: str, how: str) -> None:
-        if how not in (self.EMITTED, self.PRIMED):
-            raise ValueError(f"how must be emitted|primed, got {how!r}")
+        if how not in (self.EMITTED, self.PRIMED, self.PENDING):
+            raise ValueError(f"how must be emitted|primed|pending, got {how!r}")
         cid = str(comment_id)
         self._state[cid] = how
+        if how == self.PENDING:
+            self._pending.add(cid)
+        else:
+            self._pending.discard(cid)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(f"{cid}\t{how}\n")
+
+    def promote_pending(self) -> int:
+        """Mark this process's PENDING ids EMITTED. Call only after their lines
+        are printed and flushed. PENDING entries loaded from an earlier, killed
+        run are not touched: they are promoted once re-emitted."""
+        promoted = sorted(self._pending)
+        for cid in promoted:
+            self.add(cid, self.EMITTED)
+        return len(promoted)
 
     def prime(self, comment_ids: Iterable[str]) -> int:
         """Suppress history before the first poll, so arming does not replay it."""

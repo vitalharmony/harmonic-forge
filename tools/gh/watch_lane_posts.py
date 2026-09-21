@@ -1434,6 +1434,38 @@ def drop_closed_targets(
     return kept
 
 
+def priming_allowed(seen: "SeenSet") -> bool:
+    """Only a belt's genuine first arm primes (harmonic-forge#697 AC1): an
+    empty seen-set. Any recorded entry means an earlier arm already primed,
+    and priming again would suppress the posts that landed between arms."""
+    return not seen._state
+
+
+def deliver_comment_lines(
+    lines: list[str],
+    seen: "SeenSet",
+    watermarks: "Watermarks",
+    deferred_advances: "list[tuple[str, str, dt.datetime]]",
+    out=None,
+) -> None:
+    """Print and flush, THEN record delivery (harmonic-forge#697).
+
+    The order is the whole point: promote PENDING to EMITTED and advance the
+    deferred watermarks only once the lines are flushed. A process killed
+    before this returns leaves the entries PENDING and the watermark behind
+    them, so the next arm re-fetches and re-emits. One function, so the order
+    is tested rather than left to `main()`'s loop (preclose finding 3).
+    """
+    out = out or sys.stdout
+    for line in lines:
+        print(line, file=out)
+        out.flush()
+    seen.promote_pending()
+    for account, key, when in deferred_advances:
+        watermarks.advance(account, key, when)
+    deferred_advances.clear()
+
+
 def comment_watch_cycle(
     targets: list[tuple[str, int]],
     watch: set[str],
@@ -1442,6 +1474,8 @@ def comment_watch_cycle(
     seen: "SeenSet",
     primed_targets: set[str],
     tick: "TickLog | None" = None,
+    allow_priming: bool = True,
+    deferred_advances: "list[tuple[str, str, dt.datetime]] | None" = None,
 ) -> tuple[list[str], bool]:
     """One comment-watch poll over `targets`, returning `(lines, fetch_failed)`.
 
@@ -1464,6 +1498,22 @@ def comment_watch_cycle(
       moments before arming. A count cannot tell the operator that happened;
       the refs can, and the entry is permanent.
 
+    - **Only a genuine first arm primes** (harmonic-forge#697). `main()`
+      passes `allow_priming=False` when the seen-set already holds entries, so
+      a re-arm emits everything unseen in its overlap window instead of
+      suppressing the posts that landed between two monitors.
+    - **A target with a watermark never primes** (harmonic-forge#697
+      preclose finding 1). `allow_priming` alone was not enough: a quiet
+      first arm records nothing in the seen-set, so the next arm looked like
+      a first arm again. A watermark is written on every successful fetch,
+      so its presence proves an earlier arm already read this target.
+    - **Emit is PENDING until printed** (harmonic-forge#697). The caller
+      delivers through `deliver_comment_lines`, which flushes, promotes, and
+      only then advances the watermark of a target that emitted (passed back
+      in `deferred_advances`). An advance written before the flush let the
+      next arm's query start after a still-PENDING comment, so it was never
+      re-fetched (preclose finding 2).
+
     `fetch_failed` (harmonic-forge#638 preclose finding) is `True` if ANY
     target's fetch failed this cycle -- "I do not know" must never read as
     "nothing found" for backoff purposes. A rate-limited belt that also backs
@@ -1485,7 +1535,9 @@ def comment_watch_cycle(
                   "watermark held, window will be re-read", file=sys.stderr)
             fetch_failed = True
             continue
-        priming = target not in primed_targets
+        priming = (allow_priming and mark is None
+                   and target not in primed_targets)
+        emitted_here = False
         suppressed: list[str] = []
         for comment in comments:
             classified = _classify(comment.get("body", ""))
@@ -1495,7 +1547,7 @@ def comment_watch_cycle(
             if lane not in watch:
                 continue
             cid = str(comment.get("id", ""))
-            if cid and cid in seen:
+            if cid and seen.settled(cid):
                 continue
             if priming:
                 if cid:
@@ -1503,7 +1555,7 @@ def comment_watch_cycle(
                 suppressed.append(f"{target} {lane} — {detail}")
                 continue
             if cid:
-                seen.add(cid, SeenSet.EMITTED)
+                seen.add(cid, SeenSet.PENDING)
             #: harmonic-forge#685. `created_at` is the COMMENT's own timestamp,
             #: not this tick's -- that distinction is the whole point of
             #: `record_emit`'s `posted_at` (harmonic-forge#519). A tick
@@ -1524,6 +1576,7 @@ def comment_watch_cycle(
                 tick.record_emit(_bare_repo(repo, issue),
                                  posted_at=comment.get("created_at"))
             lines.append(f"{repo}#{issue} {lane} — {detail}")
+            emitted_here = True
         if priming:
             primed_targets.add(target)
             if suppressed:
@@ -1541,7 +1594,14 @@ def comment_watch_cycle(
                 print(f"[watch_lane_posts]   if one of those is live work, it "
                       f"will NOT be re-announced -- delete {seen.path} to "
                       "replay.", file=sys.stderr)
-        watermarks.advance(account, _wm_key(repo, issue), _parse_iso(now))
+                # harmonic-forge#697 AC4: stderr goes to a file no lane reads,
+                # so suppression is also named on stdout, where the lane sees it.
+                lines.append(f"{target} PRIMED at first arm, not announced: "
+                             + "; ".join(s.split(" ", 1)[1] for s in suppressed))
+        if emitted_here and deferred_advances is not None:
+            deferred_advances.append((account, _wm_key(repo, issue), _parse_iso(now)))
+        else:
+            watermarks.advance(account, _wm_key(repo, issue), _parse_iso(now))
     return lines, fetch_failed
 
 
@@ -2345,6 +2405,10 @@ def main() -> int:
     primed_targets: set[str] = set()
     # A target already in the seen-set was primed by an earlier session, so it
     # must not be primed again -- re-priming would suppress live work.
+    # harmonic-forge#697: this comment was true and nothing enforced it, so
+    # every 30-minute re-arm re-primed and swallowed the gap between monitors.
+    # `allow_priming` is what enforces it now.
+    allow_priming = priming_allowed(seen)
     if seen._state:
         print(f"[watch_lane_posts] resuming: {len(seen._state)} comment(s) "
               f"already recorded in {seen.path.name}", file=sys.stderr)
@@ -2493,12 +2557,15 @@ def main() -> int:
         # window permanently and silently, which is the failure the mechanic
         # exists to prevent, in the file that documents it as mandatory.
         #
+        deferred_advances: list[tuple[str, str, dt.datetime]] = []
         comment_lines, comment_fetch_failed = comment_watch_cycle(
             sorted(discovered | static_pairs), watch,
-            now, watermarks, seen, primed_targets, tick)
-        for line in comment_lines:
-            print(line)
-            sys.stdout.flush()
+            now, watermarks, seen, primed_targets, tick,
+            allow_priming=allow_priming, deferred_advances=deferred_advances)
+        # harmonic-forge#697: flush, then promote, then advance -- in that
+        # order, inside one tested function.
+        deliver_comment_lines(comment_lines, seen, watermarks, deferred_advances)
+        if comment_lines:
             cycle_emitted = True
         since = now
 
