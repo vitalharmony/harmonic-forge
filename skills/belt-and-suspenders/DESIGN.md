@@ -41,11 +41,13 @@ git staleness refusal) — this list states them, it does not implement them.
   never pauses" below). It previously backed off past its own container's
   lifetime and went blind for the last ~20 minutes of every quiet window.
 - **A post landing at any moment is delivered exactly once across arms**
-  (harmonic-forge#697). Only a belt's genuine first arm (an empty seen-set)
-  primes. A re-arm emits everything unseen in its overlap window, so a post
+  (harmonic-forge#697). Only a belt's genuine first arm primes: an empty
+  seen-set **and** no watermark for the target, since a quiet first arm
+  leaves the seen-set empty too. A re-arm emits everything unseen in its overlap window, so a post
   landing between two monitors is announced by the second. An emit is
-  recorded `pending` and promoted to `emitted` only after its line is
-  flushed, so a monitor killed in between re-emits on the next arm. First-arm
+  recorded `pending`. Only after its line is flushed is it promoted to
+  `emitted` and that target's watermark advanced, so a monitor killed in
+  between re-fetches and re-emits on the next arm, however late that is. First-arm
   suppression is named on stdout as well as stderr. Before this, every
   30-minute re-arm re-primed and silently swallowed the gap: two hrse Lane 3
   specs were lost in about 30 seconds.

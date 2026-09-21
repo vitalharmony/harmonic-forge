@@ -1808,14 +1808,19 @@ class CommentWatchCycleTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _cycle(self, comments, now=None, allow_priming=True, promote=True):
-        with patch("watch_lane_posts._fetch_comments", return_value=comments):
+    def _cycle(self, comments, now=None, allow_priming=True, promote=True,
+                fetch=None):
+        deferred = []
+        with patch("watch_lane_posts._fetch_comments",
+                   **({"side_effect": fetch} if fetch else {"return_value": comments})):
             lines, _fetch_failed = watch_lane_posts.comment_watch_cycle(
                 self.target, {"l1"}, now or self.NOW,
-                self.wm, self.seen, self.primed, allow_priming=allow_priming)
+                self.wm, self.seen, self.primed, allow_priming=allow_priming,
+                deferred_advances=deferred)
         if promote:
-            # What `main()` does once the lines are flushed (harmonic-forge#697).
-            self.seen.promote_pending()
+            # What `main()` does (harmonic-forge#697): the real delivery path.
+            watch_lane_posts.deliver_comment_lines(
+                lines, self.seen, self.wm, deferred, out=io.StringIO())
         return lines
 
     @staticmethod
@@ -1943,13 +1948,68 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("vitalharmony/hrse#1530", lines[0])
         self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
 
-    def test_rearm_that_primes_would_swallow_the_gap(self):
-        """The defect itself, kept as the mutation this suite must catch."""
-        self._cycle([{"id": "1", "body": self.HANDOFF}])
-        self._new_process()
-        lines = self._cycle([{"id": "2", "body": self.HANDOFF}], allow_priming=True)
-        self.assertEqual(self._announced(lines), [])
-        self.assertEqual(self.seen.status("2"), SeenSet.PRIMED)
+    def test_a_quiet_first_arm_does_not_make_the_next_arm_prime(self):
+        """Preclose finding 1: a first arm that saw no comment leaves the
+        seen-set empty, so `priming_allowed` is True again on the re-arm.
+        The target's watermark is what stops it priming."""
+        self._cycle([])                                        # quiet first arm
+        allow = self._new_process()
+        self.assertTrue(allow, "the seen-set alone cannot tell")
+        lines = self._cycle([{"id": "2", "body": self.HANDOFF}], allow_priming=allow)
+        self.assertEqual(len(self._announced(lines)), 1, lines)
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_a_pending_emit_survives_a_late_rearm(self):
+        """Preclose finding 2: the watermark advanced before the flush, so a
+        re-arm more than ~11 minutes later queried past the PENDING comment."""
+        self._cycle([{"id": "1", "body": self.HANDOFF}])       # primes, mark=12:00
+        self._cycle([{"id": "2", "body": self.HANDOFF,
+                      "created_at": "2026-09-10T12:04:00Z"}],
+                    now="2026-09-10T12:05:00Z", allow_priming=False,
+                    promote=False)                             # killed before flush
+        allow = self._new_process()
+        got = {}
+        def capture(repo, issue, since):
+            got["since"] = since
+            return [{"id": "2", "body": self.HANDOFF}]
+        lines = self._cycle(None, now="2026-09-10T12:30:00Z",
+                            allow_priming=allow, fetch=capture)
+        self.assertLessEqual(got["since"], "2026-09-10T12:04:00Z",
+                             "the late re-arm must still reach the pending comment")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(self.seen.status("2"), SeenSet.EMITTED)
+
+    def test_deliver_prints_before_recording(self):
+        """Preclose finding 3: the print-promote-advance order lives in one
+        tested function, not in `main()`'s untested loop."""
+        self.seen.add("5", SeenSet.PENDING)
+        deferred = [("vitalharmony", self.key,
+                     watch_lane_posts._parse_iso("2026-09-10T12:10:00Z"))]
+        class Killed(Exception):
+            pass
+        class DyingOut:
+            def write(self, _):
+                raise Killed()
+            def flush(self):
+                pass
+        with self.assertRaises(Killed):
+            watch_lane_posts.deliver_comment_lines(
+                ["x"], self.seen, self.wm, deferred, out=DyingOut())
+        self.assertEqual(self.seen.status("5"), SeenSet.PENDING)
+        self.assertIsNone(self.wm.get("vitalharmony", self.key))
+        out = io.StringIO()
+        watch_lane_posts.deliver_comment_lines(["x"], self.seen, self.wm, deferred, out=out)
+        self.assertEqual(out.getvalue(), "x\n")
+        self.assertEqual(self.seen.status("5"), SeenSet.EMITTED)
+        self.assertIsNotNone(self.wm.get("vitalharmony", self.key))
+
+    def test_main_delivers_through_the_tested_function(self):
+        """Preclose finding 3: pin `main()` to the tested seams."""
+        import inspect
+        src = inspect.getsource(watch_lane_posts.main)
+        self.assertIn("allow_priming=allow_priming", src)
+        self.assertIn("deferred_advances=deferred_advances", src)
+        self.assertIn("deliver_comment_lines(comment_lines", src)
 
     def test_a_run_killed_after_emit_re_emits_on_next_arm(self):
         """AC2/AC3: the hrse#1902 spec, recorded emitted and never delivered."""
