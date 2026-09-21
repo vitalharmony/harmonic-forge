@@ -40,6 +40,15 @@ git staleness refusal) — this list states them, it does not implement them.
   claim: it polls at its armed interval for the whole window (see "The belt
   never pauses" below). It previously backed off past its own container's
   lifetime and went blind for the last ~20 minutes of every quiet window.
+- **A post landing at any moment is delivered exactly once across arms**
+  (harmonic-forge#697). Only a belt's genuine first arm (an empty seen-set)
+  primes. A re-arm emits everything unseen in its overlap window, so a post
+  landing between two monitors is announced by the second. An emit is
+  recorded `pending` and promoted to `emitted` only after its line is
+  flushed, so a monitor killed in between re-emits on the next arm. First-arm
+  suppression is named on stdout as well as stderr. Before this, every
+  30-minute re-arm re-primed and silently swallowed the gap: two hrse Lane 3
+  specs were lost in about 30 seconds.
 
 ## The belt is `watch_lane_posts.py` — copy the command, don't rebuild it
 
@@ -285,7 +294,8 @@ hardcoded list today **by luck**.
 ```
 watermark   per repo, advancing ONLY when that repo's own call succeeded
 overlap     query from min(watermark, now - K) — covers the seam
-seen-set    id<TAB>emitted|primed, primed before the first poll
+seen-set    id<TAB>emitted|primed|pending, primed on a first arm only;
+            pending until the line is flushed, re-emitted if never promoted
 ```
 
 Two of the three lanes lost real work in one session by using only part of this.

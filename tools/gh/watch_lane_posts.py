@@ -1434,6 +1434,13 @@ def drop_closed_targets(
     return kept
 
 
+def priming_allowed(seen: "SeenSet") -> bool:
+    """Only a belt's genuine first arm primes (harmonic-forge#697 AC1): an
+    empty seen-set. Any recorded entry means an earlier arm already primed,
+    and priming again would suppress the posts that landed between arms."""
+    return not seen._state
+
+
 def comment_watch_cycle(
     targets: list[tuple[str, int]],
     watch: set[str],
@@ -1442,6 +1449,7 @@ def comment_watch_cycle(
     seen: "SeenSet",
     primed_targets: set[str],
     tick: "TickLog | None" = None,
+    allow_priming: bool = True,
 ) -> tuple[list[str], bool]:
     """One comment-watch poll over `targets`, returning `(lines, fetch_failed)`.
 
@@ -1464,6 +1472,14 @@ def comment_watch_cycle(
       moments before arming. A count cannot tell the operator that happened;
       the refs can, and the entry is permanent.
 
+    - **Only a genuine first arm primes** (harmonic-forge#697). `main()`
+      passes `allow_priming=False` when the seen-set already holds entries, so
+      a re-arm emits everything unseen in its overlap window instead of
+      suppressing the posts that landed between two monitors.
+    - **Emit is PENDING until printed** (harmonic-forge#697). The caller
+      promotes it with `seen.promote_pending()` after flushing, so a process
+      killed between recording and printing re-emits on the next arm.
+
     `fetch_failed` (harmonic-forge#638 preclose finding) is `True` if ANY
     target's fetch failed this cycle -- "I do not know" must never read as
     "nothing found" for backoff purposes. A rate-limited belt that also backs
@@ -1485,7 +1501,7 @@ def comment_watch_cycle(
                   "watermark held, window will be re-read", file=sys.stderr)
             fetch_failed = True
             continue
-        priming = target not in primed_targets
+        priming = allow_priming and target not in primed_targets
         suppressed: list[str] = []
         for comment in comments:
             classified = _classify(comment.get("body", ""))
@@ -1495,7 +1511,7 @@ def comment_watch_cycle(
             if lane not in watch:
                 continue
             cid = str(comment.get("id", ""))
-            if cid and cid in seen:
+            if cid and seen.settled(cid):
                 continue
             if priming:
                 if cid:
@@ -1503,7 +1519,7 @@ def comment_watch_cycle(
                 suppressed.append(f"{target} {lane} — {detail}")
                 continue
             if cid:
-                seen.add(cid, SeenSet.EMITTED)
+                seen.add(cid, SeenSet.PENDING)
             #: harmonic-forge#685. `created_at` is the COMMENT's own timestamp,
             #: not this tick's -- that distinction is the whole point of
             #: `record_emit`'s `posted_at` (harmonic-forge#519). A tick
@@ -1541,6 +1557,10 @@ def comment_watch_cycle(
                 print(f"[watch_lane_posts]   if one of those is live work, it "
                       f"will NOT be re-announced -- delete {seen.path} to "
                       "replay.", file=sys.stderr)
+                # harmonic-forge#697 AC4: stderr goes to a file no lane reads,
+                # so suppression is also named on stdout, where the lane sees it.
+                lines.append(f"{target} PRIMED at first arm, not announced: "
+                             + "; ".join(s.split(" ", 1)[1] for s in suppressed))
         watermarks.advance(account, _wm_key(repo, issue), _parse_iso(now))
     return lines, fetch_failed
 
@@ -2345,6 +2365,10 @@ def main() -> int:
     primed_targets: set[str] = set()
     # A target already in the seen-set was primed by an earlier session, so it
     # must not be primed again -- re-priming would suppress live work.
+    # harmonic-forge#697: this comment was true and nothing enforced it, so
+    # every 30-minute re-arm re-primed and swallowed the gap between monitors.
+    # `allow_priming` is what enforces it now.
+    allow_priming = priming_allowed(seen)
     if seen._state:
         print(f"[watch_lane_posts] resuming: {len(seen._state)} comment(s) "
               f"already recorded in {seen.path.name}", file=sys.stderr)
@@ -2495,11 +2519,15 @@ def main() -> int:
         #
         comment_lines, comment_fetch_failed = comment_watch_cycle(
             sorted(discovered | static_pairs), watch,
-            now, watermarks, seen, primed_targets, tick)
+            now, watermarks, seen, primed_targets, tick,
+            allow_priming=allow_priming)
         for line in comment_lines:
             print(line)
             sys.stdout.flush()
             cycle_emitted = True
+        # harmonic-forge#697: only now, with the lines flushed, is delivery
+        # recorded. A kill before this line leaves them PENDING for re-emit.
+        seen.promote_pending()
         since = now
 
         #: harmonic-forge#583 AC4 preclose finding: this was gated on `"l2"
