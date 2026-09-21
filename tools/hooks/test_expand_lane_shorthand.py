@@ -257,6 +257,12 @@ class LiveIssueReReadTests(unittest.TestCase):
     trigger a live (uncached) `gh issue view` fetch, injected alongside
     the existing inline-gloss expansion."""
 
+    def setUp(self):
+        # Unfiltered rendering; see LiveIssueLane3Filter for LANE=3.
+        patcher = unittest.mock.patch.dict(m.os.environ, {"LANE": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _issue_json(self, **overrides):
         data = {
             "title": "Some issue title",
@@ -368,6 +374,13 @@ class LiveIssueContextSizeCaps(unittest.TestCase):
     at ~93k characters for one real issue: an unbounded fetch, re-injected
     in full on every continuation trigger, is unbounded context growth."""
 
+    def setUp(self):
+        # These assert unfiltered comment rendering; a LANE=3 session running
+        # the suite would otherwise get the harmonic-forge#698 Lane 3 view.
+        patcher = unittest.mock.patch.dict(m.os.environ, {"LANE": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_long_body_is_truncated_with_explicit_marker(self):
         long_body = "x" * (m._BODY_CHAR_CAP + 500)
         with unittest.mock.patch.object(
@@ -460,6 +473,75 @@ class LiveIssueContextSizeCaps(unittest.TestCase):
         ):
             block = m.fetch_issue_context("vitalharmony/hrse", "1")
         self.assertLess(len(block), 20000)
+
+
+class LiveIssueLane3Filter(unittest.TestCase):
+    """harmonic-forge#698: the live re-read ran before Lane 3 could use
+    `fetch_lane1_context.py`, so every issue-numbered trigger put Lane 2's
+    completion comment into Lane 3's context before spec derivation
+    (R-0163). Two hrse specs were voided for it."""
+
+    HANDOFF = "## Handoff\nscope\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
+    L2D = "## L2D -- receipt-backed status\nLANE2 SECRET RESULT"
+    READY = "## Ready for Lane 3\n\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE1 -->"
+    L2_DISCUSSION = "LANE2 DISCUSSION TEXT\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->"
+    L1_DISCUSSION = "Lane 1 ruling\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+
+    def _block(self, lane, bodies=None):
+        bodies = bodies or [self.HANDOFF, self.L2D, self.L2_DISCUSSION,
+                            self.L1_DISCUSSION, self.READY]
+        comments = [{"author": {"login": "u"}, "createdAt": "2026-01-01T00:00:00Z", "body": b}
+                    for b in bodies]
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "body": "ISSUE BODY", "comments": comments,
+            })),
+        ):
+            return m.fetch_issue_context("vitalharmony/hrse", "1", lane=lane)
+
+    def test_lane3_sees_body_and_lane1_comments_only(self):
+        block = self._block("3")
+        self.assertIn("ISSUE BODY", block)
+        self.assertIn("## Handoff", block)
+        self.assertIn("Ready for Lane 3", block)
+        self.assertIn("Lane 1 ruling", block)
+        self.assertNotIn("LANE2 SECRET RESULT", block)
+        self.assertNotIn("LANE2 DISCUSSION TEXT", block)
+        self.assertIn("3 Lane-1 comment(s) shown, 2 withheld", block)
+
+    def test_lane3_default_reads_LANE_env(self):
+        with unittest.mock.patch.dict(m.os.environ, {"LANE": "3"}):
+            block = self._block(None)
+        self.assertNotIn("LANE2 SECRET RESULT", block)
+
+    def test_other_lanes_unchanged(self):
+        for lane in ("1", "2", ""):
+            with self.subTest(lane=lane):
+                block = self._block(lane)
+                self.assertIn("LANE2 SECRET RESULT", block)
+                self.assertIn("LANE2 DISCUSSION TEXT", block)
+                self.assertNotIn("Lane 3 view", block)
+
+    def test_lane3_stays_filtered_after_its_own_spec_is_posted(self):
+        """DJC 1: the filter does not lift on a Lane 3 spec."""
+        spec = "## Lane 3 test spec\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE3 -->"
+        block = self._block("3", [self.HANDOFF, self.L2D, spec])
+        self.assertNotIn("LANE2 SECRET RESULT", block)
+
+    def test_lane3_filter_load_failure_withholds_everything(self):
+        with unittest.mock.patch.object(m, "_lane1_comment_filter", return_value=None):
+            block = self._block("3")
+        self.assertIn("ISSUE BODY", block)
+        self.assertNotIn("LANE2 SECRET RESULT", block)
+        self.assertNotIn("## Handoff", block)
+        self.assertIn("all 5 comment(s) withheld", block)
+
+    def test_filter_is_imported_not_copied(self):
+        loaded = m._lane1_comment_filter()
+        import fetch_lane1_context  # noqa: PLC0415 -- on sys.path via the call above
+        self.assertIs(loaded, fetch_lane1_context.is_lane1_comment)
 
 
 class LiveIssueAggregateFetchCap(unittest.TestCase):

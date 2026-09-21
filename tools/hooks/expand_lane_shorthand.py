@@ -56,6 +56,7 @@ never fetched -- there is nothing to `gh issue view`. A fetch failure
 and never a blocked prompt.
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -315,13 +316,58 @@ def _truncate(text: str, cap: int) -> str:
     return text[:cap] + f"\n...[truncated, {len(text) - cap} more characters]"
 
 
-def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SECONDS) -> str | None:
+def _lane1_comment_filter():
+    """`fetch_lane1_context.is_lane1_comment`, imported rather than copied
+    (harmonic-forge#698 AC1: one filter, not two). None if it cannot load --
+    the caller then withholds every comment, never shows them unfiltered."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        from fetch_lane1_context import is_lane1_comment  # noqa: PLC0415
+
+        return is_lane1_comment
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _lane3_view(comments: list[dict]) -> tuple[list[dict], str]:
+    """The comments a `LANE=3` session may see, plus a header line saying
+    what was withheld (harmonic-forge#698).
+
+    Lane 3 must not see Lane 2's comments before deriving its spec (R-0163,
+    the hrse#824 exception), and this hook runs before any tool can -- so an
+    unfiltered re-read voided two hrse specs in two minutes. The filter
+    applies for the whole Lane 3 session, not only until its spec is posted
+    (DJC 1): recognizing "Lane 3's spec exists" means classifying a comment
+    Lane 3 writes by hand, and a false positive there re-opens an exposure
+    that cannot be undone, while staying filtered costs one manual
+    full-thread read once gate execution starts.
+    """
+    is_lane1 = _lane1_comment_filter()
+    if is_lane1 is None:
+        return [], (f"Lane 3 view: all {len(comments)} comment(s) withheld -- "
+                    "the Lane-1 filter failed to load (harmonic-forge#698). "
+                    "Use `fetch_lane1_context.py`.")
+    kept = [c for c in comments if is_lane1(c.get("body") or "")]
+    return kept, (f"Lane 3 view (harmonic-forge#698, R-0163): {len(kept)} "
+                  f"Lane-1 comment(s) shown, {len(comments) - len(kept)} "
+                  "withheld (Lane 2/3 posts). After your spec is posted, read "
+                  "the full thread with `gh api repos/OWNER/REPO/issues/N/"
+                  "comments --paginate`.")
+
+
+def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SECONDS,
+                        lane: str | None = None) -> str | None:
     """Live `gh issue view` fetch of one issue's current title/state/body/
     comment list (harmonic-forge#397 AC2 -- "not cached"; bounded per
     harmonic-forge#399's preclose finding, see module-level caps above).
     Returns a formatted block, or None on any failure (network, auth,
     rate-limit, timeout, malformed JSON) -- the caller fails open on None
-    rather than ever blocking the prompt on a fetch problem."""
+    rather than ever blocking the prompt on a fetch problem.
+
+    `lane` defaults to the session's `LANE`; for Lane 3 only Lane-1 comments
+    are shown (harmonic-forge#698, see `_lane3_view`)."""
+    if lane is None:
+        lane = os.environ.get("LANE", "")
     try:
         result = subprocess.run(
             [
@@ -339,10 +385,14 @@ def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SE
     except (json.JSONDecodeError, ValueError):
         return None
     comments = data.get("comments") or []
+    lane_note = None
+    if lane == "3":
+        comments, lane_note = _lane3_view(comments)
     lines = [
         f"### {repo}#{number} -- {data.get('title') or '(no title)'} "
         f"[{data.get('state') or '?'}]",
         f"Updated: {data.get('updatedAt') or '?'} | Comments: {len(comments)}",
+        *([lane_note] if lane_note else []),
         "",
         "Body:",
         _truncate(data.get("body") or "(empty)", _BODY_CHAR_CAP),
