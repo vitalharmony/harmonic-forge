@@ -372,7 +372,7 @@ def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SE
         result = subprocess.run(
             [
                 "gh", "issue", "view", number, "--repo", repo,
-                "--json", "title,state,updatedAt,body,comments",
+                "--json", "title,state,updatedAt,body,comments,url",
             ],
             capture_output=True, text=True, timeout=timeout, check=False,
         )
@@ -385,9 +385,17 @@ def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SE
     except (json.JSONDecodeError, ValueError):
         return None
     comments = data.get("comments") or []
+    body = data.get("body") or "(empty)"
     lane_note = None
     if lane == "3":
-        comments, lane_note = _lane3_view(comments)
+        if "/pull/" in (data.get("url") or ""):
+            # A PR number resolves here too, and a PR body is the
+            # implementer's own report -- withheld whole, not filtered.
+            body, comments = "(withheld in Lane 3 -- pull request body)", []
+            lane_note = ("Lane 3 view (harmonic-forge#698, R-0163): this is a "
+                         "pull request; its body and comments are withheld.")
+        else:
+            comments, lane_note = _lane3_view(comments)
     lines = [
         f"### {repo}#{number} -- {data.get('title') or '(no title)'} "
         f"[{data.get('state') or '?'}]",
@@ -395,17 +403,20 @@ def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SE
         *([lane_note] if lane_note else []),
         "",
         "Body:",
-        _truncate(data.get("body") or "(empty)", _BODY_CHAR_CAP),
+        _truncate(body, _BODY_CHAR_CAP),
     ]
     if comments:
         lines.append("")
         shown = comments[-_MAX_COMMENTS_SHOWN:]
         omitted = len(comments) - len(shown)
         if omitted > 0:
+            # Lane 3 is pointed at the filtered fetch, never the full thread.
+            history = (f"`fetch_lane1_context.py --repo {repo} --issue {number}`"
+                       if lane == "3" else
+                       f"`gh issue view {number} --repo {repo} --comments`")
             lines.append(
                 f"Comments (most recent {len(shown)} of {len(comments)}, "
-                f"{omitted} earlier omitted -- `gh issue view {number} "
-                f"--repo {repo} --comments` for the full history):"
+                f"{omitted} earlier omitted -- {history} for the full history):"
             )
         else:
             lines.append("Comments:")

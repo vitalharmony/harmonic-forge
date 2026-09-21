@@ -538,6 +538,32 @@ class LiveIssueLane3Filter(unittest.TestCase):
         self.assertNotIn("## Handoff", block)
         self.assertIn("all 5 comment(s) withheld", block)
 
+    def test_lane3_omission_line_never_points_at_the_full_thread(self):
+        """preclose finding: more than 8 Lane-1 comments printed the
+        `gh issue view --comments` hint, which returns Lane 2's L2D."""
+        bodies = [self.L1_DISCUSSION] * 9 + [self.L2D]
+        block = self._block("3", bodies)
+        self.assertIn("1 earlier omitted -- `fetch_lane1_context.py", block)
+        self.assertNotIn("--comments`", block)
+        self.assertNotIn("LANE2 SECRET RESULT", block)
+
+    def test_lane3_pull_request_body_and_comments_withheld(self):
+        with unittest.mock.patch.object(
+            m.subprocess, "run",
+            return_value=_fake_gh_result(stdout=json.dumps({
+                "title": "t", "state": "OPEN", "updatedAt": "2026-01-01T00:00:00Z",
+                "url": "https://github.com/vitalharmony/hrse/pull/7",
+                "body": "IMPLEMENTER REPORT",
+                "comments": [{"author": {"login": "u"}, "createdAt": "x", "body": self.HANDOFF}],
+            })),
+        ):
+            block = m.fetch_issue_context("vitalharmony/hrse", "7", lane="3")
+            unfiltered = m.fetch_issue_context("vitalharmony/hrse", "7", lane="1")
+        self.assertNotIn("IMPLEMENTER REPORT", block)
+        self.assertNotIn("## Handoff", block)
+        self.assertIn("pull request", block)
+        self.assertIn("IMPLEMENTER REPORT", unfiltered)
+
     def test_filter_is_imported_not_copied(self):
         loaded = m._lane1_comment_filter()
         import fetch_lane1_context  # noqa: PLC0415 -- on sys.path via the call above
