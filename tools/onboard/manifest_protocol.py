@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass
 from pathlib import Path
 from string import Formatter
 
@@ -20,7 +20,19 @@ class Protocol:
     lane_comment_task: str
     gate_checkout_task: str
     lane3_begin_task: str
+    #: The session boundary's other half (harmonic-forge#730). `lane3_begin_task`
+    #: alone described half a cycle: a repo could declare how a Lane 3 session
+    #: opens and say nothing about how it closes, and the check that reads these
+    #: names would report green having verified four of the five tasks the
+    #: universal minimum actually names.
+    lane3_end_task: str
     runs_lane3: bool
+    #: DJC 2 (harmonic-forge#730). A `runs_lane3` repo either ships
+    #: `.claude/gate-adapter.json` or declares `needs_gate_adapter = false`
+    #: here. `None` means neither, which is the state the check refuses: an
+    #: absent manifest with no declaration is indistinguishable from an
+    #: oversight, and silence is exactly what this issue exists to outlaw.
+    needs_gate_adapter: bool | None = None
 
     def worktree_names(self, checkout: str) -> list[str]:
         lanes = (2, 3) if self.runs_lane3 else (2,)
@@ -53,7 +65,12 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
         raise ManifestError(
             f"{target}: {project} protocol has unknown key(s): "
             f"{', '.join(sorted(unknown))}")
-    missing = known - set(raw)
+    # A field carrying a default is genuinely optional; everything else is
+    # required. Without this split, adding any optional field would make every
+    # existing projects.toml block invalid at once (harmonic-forge#730).
+    optional = {f.name for f in Protocol.__dataclass_fields__.values()
+                if f.default is not MISSING or f.default_factory is not MISSING}
+    missing = known - optional - set(raw)
     if missing:
         raise ManifestError(
             f"{target}: {project} protocol is missing key(s): "
@@ -62,8 +79,12 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
         raise ManifestError(
             f"{target}: {project} protocol.worktree_name must be a string")
     protocol = Protocol(**raw)
+    # A SECOND declaration of the same set as `Protocol`'s fields above, and
+    # the two are not derived from each other -- changing one and not the other
+    # leaves the new field unvalidated while everything still imports and runs
+    # (harmonic-forge#730). Keep them in step.
     task_fields = ("l1_post_task", "lane_comment_task", "gate_checkout_task",
-                   "lane3_begin_task")
+                   "lane3_begin_task", "lane3_end_task")
     for field in task_fields:
         value = getattr(protocol, field)
         if not isinstance(value, str) or not value.strip():

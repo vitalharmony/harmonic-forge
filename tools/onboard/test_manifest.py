@@ -43,6 +43,7 @@ PROTOCOL = """
     lane_comment_task = "lane-comment"
     gate_checkout_task = "gate-checkout"
     lane3_begin_task = "lane3-begin"
+    lane3_end_task = "lane3-end"
     runs_lane3 = true
 """
 
@@ -366,10 +367,19 @@ class LiveManifestTests(unittest.TestCase):
             "lane_comment_task": "lane-comment",
             "gate_checkout_task": "gate-checkout",
             "lane3_begin_task": "lane3-begin",
+            "lane3_end_task": "lane3-end",
         }
+        # Which repos declare they need no gate adapter is itself the assertion
+        # (harmonic-forge#730 DJC 2): hrse ships a real `.claude/gate-adapter.json`
+        # and therefore declares nothing here; the other three own no graph,
+        # database or live service and say so explicitly. A repo that declared
+        # neither would fail `check_gate_adapter`, which is the point.
+        no_adapter = {"harmonic-forge", "cymagraph-infra", "openclaw-projects"}
         self.assertEqual(
             {project.name: project.protocol for project in projects},
-            {name: mf.Protocol(**common, runs_lane3=name not in {"kenekted", "leasepal"})
+            {name: mf.Protocol(**common,
+                               runs_lane3=name not in {"kenekted", "leasepal"},
+                               needs_gate_adapter=False if name in no_adapter else None)
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
                           "openclaw-projects", "kenekted", "leasepal")})
 

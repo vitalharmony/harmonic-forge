@@ -47,11 +47,20 @@ class Base(unittest.TestCase):
 
     def make_repo(self, name: str = "thing", *, git: bool = True,
                   worktrees: bool = True, rules: bool = True,
-                  claude_md: bool = True, hooks: bool = True) -> Path:
+                  claude_md: bool = True, hooks: bool = True,
+                  lane_task_names: tuple[str, ...] | None = None) -> Path:
         repo = self.root / name
         repo.mkdir(parents=True, exist_ok=True)
         if git:
             (repo / ".git").mkdir(exist_ok=True)
+        # A correctly-onboarded repo by default (harmonic-forge#730): these
+        # fixtures exist to exercise the OTHER checks, and a missing task layer
+        # would make every one of them report a lane-tasks failure as noise.
+        # Pass `lane_task_names` to build a repo that is deliberately short.
+        names = (("l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end")
+                 if lane_task_names is None else lane_task_names)
+        (repo / "mise.toml").write_text(
+            "".join(f'[tasks.{n}]\nrun = "true"\n\n' for n in names), encoding="utf-8")
         if claude_md:
             (repo / "CLAUDE.md").write_text("x", encoding="utf-8")
         if rules:
@@ -78,7 +87,11 @@ class Base(unittest.TestCase):
                       worktree_name="{checkout}-lane{lane}",
                       l1_post_task="l1-post", lane_comment_task="lane-comment",
                       gate_checkout_task="gate-checkout", lane3_begin_task="lane3-begin",
-                      runs_lane3=True)}
+                      lane3_end_task="lane3-end", runs_lane3=True,
+                      # These synthetic repos have no gate-adapter.json, and
+                      # check_gate_adapter now refuses silence -- declare it,
+                      # exactly as a real no-graph repo does.
+                      needs_gate_adapter=False)}
         fields.update(kw)
         return mf.Project(**fields)
 
@@ -221,7 +234,9 @@ class ExitCodeTests(Base):
             lane_comment_task = "lane-comment"
             gate_checkout_task = "gate-checkout"
             lane3_begin_task = "lane3-begin"
+            lane3_end_task = "lane3-end"
             runs_lane3 = true
+            needs_gate_adapter = false
         """)
         path = self.root / "projects.toml"
         path.write_text(body, encoding="utf-8")
@@ -593,7 +608,8 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="lane{lane}-{checkout}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", runs_lane3=False))
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                runs_lane3=False))
 
         self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
         with mock.patch.object(fo, "_worktree_is_safe_to_advance",
@@ -601,3 +617,143 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
             checks = fo.advance_stale_worktrees(project, dry_run=True)
         safety.assert_called_once_with(lane2)
         self.assertEqual([check.name for check in checks], [f"worktree {lane2.name}"])
+
+
+class LaneTaskCheckTests(Base):
+    """harmonic-forge#730 — the check that makes the false-claim class unrepeatable.
+
+    `projects.toml` claimed `onboarded = true` / `runs_lane3 = true` for two
+    repos with almost no lane task layer. `check_protocol` passed them both: it
+    only ever confirmed the block existed, never that the task names inside it
+    resolve.
+    """
+
+    def test_a_declared_task_missing_from_mise_toml_fails_and_is_named(self) -> None:
+        repo = self.make_repo(lane_task_names=("l1-post", "lane-comment", "gate-checkout"))
+        check = fo.check_lane_tasks(self.project(repo))
+        self.assertEqual(check.status, fo.FAIL)
+        # Named, not merely counted -- "some tasks missing" sends the reader
+        # back to diff two files by hand.
+        self.assertIn("lane3-begin", check.detail)
+        self.assertIn("lane3-end", check.detail)
+        self.assertIn("lane3_begin_task", check.detail)
+
+    def test_all_five_present_passes(self) -> None:
+        check = fo.check_lane_tasks(self.project(self.make_repo()))
+        self.assertEqual(check.status, fo.OK)
+        self.assertIn("5", check.detail)
+
+    def test_the_check_reads_the_DECLARED_name_not_a_hardcoded_one(self) -> None:
+        """A repo free to rename its tasks is why this reads the manifest."""
+        repo = self.make_repo(lane_task_names=("l1-post", "lane-comment", "gate-checkout",
+                                               "lane3-begin", "session-close"))
+        renamed = self.project(repo, protocol=mf.Protocol(
+            worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+            lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+            lane3_begin_task="lane3-begin", lane3_end_task="session-close",
+            runs_lane3=True, needs_gate_adapter=False))
+        self.assertEqual(fo.check_lane_tasks(renamed).status, fo.OK)
+        # ...and the conventional name is then the one that is missing.
+        self.assertEqual(fo.check_lane_tasks(self.project(repo)).status, fo.FAIL)
+
+    def test_a_richer_task_body_still_passes(self) -> None:
+        """hrse's lane3-begin stamps a pid, runs a port preflight and takes a
+        scheduler lease. A body-match check would have failed it on day one."""
+        repo = self.make_repo()
+        mise = repo / "mise.toml"
+        mise.write_text(mise.read_text(encoding="utf-8").replace(
+            '[tasks.lane3-begin]\nrun = "true"',
+            '[tasks.lane3-begin]\nrun = "echo stamp pid; echo take lease; echo preflight"'),
+            encoding="utf-8")
+        self.assertEqual(fo.check_lane_tasks(self.project(repo)).status, fo.OK)
+
+    def test_no_mise_toml_at_all_fails(self) -> None:
+        repo = self.make_repo()
+        (repo / "mise.toml").unlink()
+        self.assertEqual(fo.check_lane_tasks(self.project(repo)).status, fo.FAIL)
+
+
+class GateAdapterDeclarationTests(Base):
+    """DJC 2: a Lane 3 repo has a manifest or says it needs none. Silence fails."""
+
+    def _protocol(self, **kw):
+        base = dict(worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                    lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                    lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                    runs_lane3=True)
+        base.update(kw)
+        return mf.Protocol(**base)
+
+    def test_silence_fails(self) -> None:
+        project = self.project(self.make_repo(), protocol=self._protocol())
+        check = fo.check_gate_adapter(project)
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("needs_gate_adapter", check.detail)
+
+    def test_an_explicit_declaration_passes(self) -> None:
+        project = self.project(self.make_repo(),
+                               protocol=self._protocol(needs_gate_adapter=False))
+        self.assertEqual(fo.check_gate_adapter(project).status, fo.OK)
+
+    def test_a_real_manifest_passes_without_any_declaration(self) -> None:
+        repo = self.make_repo()
+        adapter = repo / ".claude" / "gate-adapter.json"
+        adapter.parent.mkdir(parents=True, exist_ok=True)
+        adapter.write_text("{}", encoding="utf-8")
+        project = self.project(repo, protocol=self._protocol())
+        self.assertEqual(fo.check_gate_adapter(project).status, fo.OK)
+
+    def test_a_non_lane3_repo_is_skipped_not_failed(self) -> None:
+        project = self.project(self.make_repo(), protocol=self._protocol(runs_lane3=False))
+        self.assertEqual(fo.check_gate_adapter(project).status, fo.SKIP)
+
+
+class LaneTaskGeneratorTests(Base):
+    """The generator writes a FLOOR, and writing it twice changes nothing."""
+
+    def test_apply_adds_only_what_is_missing(self) -> None:
+        repo = self.make_repo(lane_task_names=("gate-checkout",))
+        before = (repo / "mise.toml").read_text(encoding="utf-8")
+        done = fo.apply_lane_tasks(self.project(repo))
+        after = (repo / "mise.toml").read_text(encoding="utf-8")
+        self.assertEqual(done[0].status, fo.OK)
+        # The repo's own gate-checkout is untouched: exactly one remains.
+        self.assertEqual(after.count("[tasks.gate-checkout]"), 1)
+        self.assertIn('run = "true"', after)      # ...and it is still theirs
+        for name in ("l1-post", "lane-comment", "lane3-begin", "lane3-end"):
+            self.assertIn(f"[tasks.{name}]", after)
+        self.assertNotEqual(before, after)
+
+    def test_apply_is_idempotent(self) -> None:
+        repo = self.make_repo(lane_task_names=())
+        fo.apply_lane_tasks(self.project(repo))
+        once = (repo / "mise.toml").read_text(encoding="utf-8")
+        second = fo.apply_lane_tasks(self.project(repo))
+        twice = (repo / "mise.toml").read_text(encoding="utf-8")
+        self.assertEqual(once, twice, "a second --apply changed the file")
+        self.assertEqual(second[0].detail, "already present")
+
+    def test_the_generated_text_is_identical_across_repos(self) -> None:
+        """AC1: sourced from the shared mechanism, not copy-pasted per repo."""
+        first, second = self.make_repo("one", lane_task_names=()), self.make_repo("two", lane_task_names=())
+        for repo in (first, second):
+            fo.apply_lane_tasks(self.project(repo))
+        a = (first / "mise.toml").read_text(encoding="utf-8")
+        b = (second / "mise.toml").read_text(encoding="utf-8")
+        self.assertEqual(a, b)
+
+    def test_the_generated_block_is_valid_toml(self) -> None:
+        import tomllib  # noqa: PLC0415
+        repo = self.make_repo(lane_task_names=())
+        fo.apply_lane_tasks(self.project(repo))
+        parsed = tomllib.loads((repo / "mise.toml").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(parsed["tasks"]),
+                         ["gate-checkout", "l1-post", "lane-comment", "lane3-begin", "lane3-end"])
+
+    def test_no_generated_task_carries_a_repo_relative_platform_path(self) -> None:
+        """The one non-portable line this issue found: a repo-relative
+        `tools/worktree/check_worktree_busy.py` resolves only in the platform."""
+        import lane_tasks as lt  # noqa: PLC0415
+        block = lt.render()
+        self.assertIn("HARMONIC_FORGE_ROOT", block)
+        self.assertNotIn('python3 tools/worktree/', block)
