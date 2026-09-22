@@ -82,6 +82,19 @@ procedure. `check_mergetarget.py` does not clear the bar Exception 1
 clears; it is the case the "it touches the graph" fallacy exists to catch,
 and rejecting it is the demonstration that the test has teeth.
 
+> **Amendment (2026-09-22, harmonic-forge#707 plan review, issuecomment-5779544572).**
+> The verdict's *principle* stands: a single declared query plus a shape
+> assertion is config, not a repo-specific procedure. Its *premise* was wrong.
+> `check_mergetarget.py` is not a merge-target check. It is an uncalled
+> 2026-06-04 one-off diagnostic that prints any Company literally named
+> "MergeTarget". It has no issue or target argument and no pass/fail result,
+> and nothing in either repo calls it (Lane 1 grep-verified). So there is
+> nothing to port. The file is **retired** in harmonic-forge#721. The generic
+> executor (`tools/gate/run_merge_target_check.py`) is still built, with tests,
+> so the capability exists, but HRSE2's manifest declares **no**
+> `merge_target_check` key and no call site is wired until a real check needs
+> one.
+
 ### Exception 3 — `check_lane3_marker.py`'s lease half / `lane3-gate`'s preflight half: **ACCEPTED** (adapter-owned)
 
 Encodes HRSE2's port/process contention model: which ports the dev stack
@@ -234,6 +247,14 @@ identified in Decision 1/4 above:
   "lease": { "module": "scripts/check_lane3_marker.py", "acquire": "acquire_lease", "release": "release_lease", "check_owner": "check_owner" }
 }
 ```
+
+> **Amendment (2026-09-22, harmonic-forge#707).** HRSE2's manifest omits
+> `merge_target_check` (see Exception 2's amendment). The `lease` example's
+> names are kept, but `acquire_lease`/`release_lease` do not exist in
+> `check_lane3_marker.py` today: acquire and release live in
+> `scripts/gate_scheduler_lease.py` (`:189`, `:295`). harmonic-forge#721
+> defines all three names in the marker's adapter half as thin wrappers, so
+> the manifest shape above needs no change.
 
 `merge_target_check` carries no repo-specific code path at all — per
 Exception 2's rejection, it is fully expressed as manifest values consumed
