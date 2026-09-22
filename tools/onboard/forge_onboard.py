@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import lane_tasks  # noqa: E402
 from manifest import (  # noqa: E402
     ManifestError, Project, check_prefix_agreement, load, prefixes,
 )
@@ -127,6 +128,77 @@ def check_protocol(project: Project) -> Check:
         return Check("protocol", FAIL, "missing [project.protocol] in projects.toml")
     state = "Lane 3 enabled" if project.protocol.runs_lane3 else "Lane 3 disabled"
     return Check("protocol", OK, state)
+
+
+def check_lane_tasks(project: Project) -> Check:
+    """Do the lane tasks this repo DECLARES actually exist in its mise.toml?
+
+    `check_protocol` above confirms a `[project.protocol]` block is present. It
+    never confirmed the task names inside it resolve, so `projects.toml` could
+    claim -- and did claim, for two repos -- `onboarded = true` /
+    `runs_lane3 = true` while almost none of the lane task layer existed
+    (harmonic-forge#730). The only signal was a Lane 1 session running
+    `mise run l1-post` and getting "task not found".
+
+    **Resolves the DECLARED name, never a hardcoded one.** A repo is free to
+    call its lane-comment task something else; reading `protocol.<x>_task` is
+    what makes this a check of the repo's own claim rather than of a convention.
+
+    **Verifies existence, never body.** hrse's `lane3-begin` stamps an owner
+    pid, runs a port preflight and takes a scheduler lease; harmonic-forge's
+    touches a file. Both are correct. A body-match check would fail hrse on the
+    day it shipped, which is why the generated block is documented as a floor.
+    """
+    if project.protocol is None:
+        return Check("lane tasks", SKIP, "no [project.protocol]")
+    if project.checkout is None:
+        return Check("lane tasks", SKIP, "no checkout")
+    mise = project.checkout / "mise.toml"
+    if not mise.is_file():
+        return Check("lane tasks", FAIL, f"no mise.toml in {project.checkout}")
+
+    declared = {
+        "l1_post_task": project.protocol.l1_post_task,
+        "lane_comment_task": project.protocol.lane_comment_task,
+        "gate_checkout_task": project.protocol.gate_checkout_task,
+        "lane3_begin_task": project.protocol.lane3_begin_task,
+        "lane3_end_task": project.protocol.lane3_end_task,
+    }
+    present = lane_tasks.task_names(mise.read_text(encoding="utf-8"))
+    missing = {field: name for field, name in declared.items() if name not in present}
+    if missing:
+        detail = ", ".join(f"{name} ({field})" for field, name in sorted(missing.items()))
+        return Check("lane tasks", FAIL, f"declared but absent from mise.toml: {detail}")
+    return Check("lane tasks", OK, f"{len(declared)} declared task(s) resolve")
+
+
+def check_gate_adapter(project: Project) -> Check:
+    """A Lane 3 repo either has an adapter manifest or says it needs none.
+
+    ADR-008's capabilities (`residue_sweep`, `lease`, `merge_target_check`,
+    `tier_w_message`) are graph/database/live-service concepts, and a repo that
+    owns none of those genuinely needs no manifest -- cymagraph-infra
+    provisions infrastructure, openclaw-projects is a prototyping ground.
+
+    What is outlawed is SILENCE (harmonic-forge#730 DJC 2). An absent file with
+    no declaration is indistinguishable from an oversight, which is this
+    issue's own complaint one level up. So a `runs_lane3 = true` repo must
+    carry either the manifest or an explicit `needs_gate_adapter = false`, and
+    a repo with neither fails. An empty manifest would be worse than either --
+    it asserts adapters were considered while declaring nothing.
+    """
+    if project.protocol is None or not project.protocol.runs_lane3:
+        return Check("gate adapter", SKIP, "no Lane 3")
+    if project.checkout is None:
+        return Check("gate adapter", SKIP, "no checkout")
+    manifest_file = project.checkout / ".claude" / "gate-adapter.json"
+    if manifest_file.is_file():
+        return Check("gate adapter", OK, "declared in .claude/gate-adapter.json")
+    if project.protocol.needs_gate_adapter is False:
+        return Check("gate adapter", OK, "declared unnecessary for this repo")
+    return Check("gate adapter", FAIL,
+                 "runs_lane3 = true but no .claude/gate-adapter.json and no "
+                 "needs_gate_adapter = false declaration")
 
 
 def check_directives(project: Project) -> Check:
@@ -453,8 +525,8 @@ def check_board(project: Project) -> Check:
     return Check("board", OK, f"{owner} #{number}")
 
 
-CHECKS = (check_protocol, check_checkout, check_worktrees, check_directives, check_entrypoint,
-          check_hooks, check_memory, check_board)
+CHECKS = (check_protocol, check_lane_tasks, check_gate_adapter, check_checkout, check_worktrees,
+          check_directives, check_entrypoint, check_hooks, check_memory, check_board)
 
 
 def verify(project: Project, manifest: Path | None = None) -> list[Check]:
@@ -537,6 +609,44 @@ def advance_stale_worktrees(project: Project,
     return done
 
 
+def apply_lane_tasks(project: Project, dry_run: bool = False) -> list[Check]:
+    """Append the generated lane-task block to a repo that lacks the tasks.
+
+    Idempotent in the way that matters: the *generated block marker* is not the
+    test -- a repo's own already-present task is. A repo that hand-wrote its
+    `gate-checkout` before this existed (cymagraph-infra did) gets only the
+    tasks it is actually missing, and a second run adds nothing because by then
+    nothing is missing. Keying off the marker alone would re-append the whole
+    block to any repo that had removed it, and keying off nothing would append
+    on every run.
+    """
+    if project.protocol is None or project.checkout is None:
+        return []
+    mise = project.checkout / "mise.toml"
+    if not mise.is_file():
+        return [Check("lane tasks", FAIL, f"no mise.toml in {project.checkout}")]
+
+    text = mise.read_text(encoding="utf-8")
+    present = lane_tasks.task_names(text)
+    declared = {
+        "l1-post": project.protocol.l1_post_task,
+        "lane-comment": project.protocol.lane_comment_task,
+        "gate-checkout": project.protocol.gate_checkout_task,
+        "lane3-begin": project.protocol.lane3_begin_task,
+        "lane3-end": project.protocol.lane3_end_task,
+    }
+    missing = {canon: name for canon, name in declared.items() if name not in present}
+    if not missing:
+        return [Check("lane tasks", OK, "already present")]
+    if dry_run:
+        return [Check("lane tasks", OK,
+                      f"would add {', '.join(sorted(missing.values()))} to {mise}")]
+
+    block = lane_tasks.render_subset(missing)
+    mise.write_text(text.rstrip("\n") + "\n\n" + block, encoding="utf-8")
+    return [Check("lane tasks", OK, f"added {', '.join(sorted(missing.values()))}")]
+
+
 def apply(project: Project, dry_run: bool = False) -> list[Check]:
     """Create what is missing. Idempotent: a second run changes nothing."""
     done: list[Check] = []
@@ -561,6 +671,8 @@ def apply(project: Project, dry_run: bool = False) -> list[Check]:
     # A worktree that EXISTS but carries stale tracked config is invisible to
     # the loop above, which only ever creates missing ones.
     done.extend(advance_stale_worktrees(project, dry_run=dry_run))
+
+    done.extend(apply_lane_tasks(project, dry_run=dry_run))
 
     source = platform_source()
     if source.resolve() != _THIS_CHECKOUT.resolve():

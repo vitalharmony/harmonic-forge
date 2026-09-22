@@ -292,6 +292,7 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = true
 """)
         with patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(manifest)}):
@@ -314,6 +315,7 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = true
 """)
         args = _Args(repo="example/future", issue=1208, head="HEAD",

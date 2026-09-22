@@ -51,8 +51,38 @@
 #   lane_comment_task   Mise task used for ordinary Lane 1 discussion.
 #   gate_checkout_task  Mise task that prepares Lane 3's target checkout.
 #   lane3_begin_task    Mise task that records the Lane 3 session boundary.
+#   lane3_end_task      Mise task that clears it. Declared separately rather
+#                       than derived from lane3_begin_task: a repo may name it
+#                       anything, and a session boundary with no declared close
+#                       is how a worktree reads as Lane 3-active forever
+#                       (harmonic-forge#730).
 #   runs_lane3          Whether the repo owns a Lane 3 worktree at all. This is
 #                       a declared capability, not inferred from today's disk.
+#   needs_gate_adapter  Optional. A `runs_lane3` repo either ships
+#                       `.claude/gate-adapter.json` or sets this to `false`
+#                       with a stated reason. Absent means NEITHER, which
+#                       fails the check: an absent manifest with no
+#                       declaration is indistinguishable from an oversight,
+#                       and silence is what harmonic-forge#730 exists to
+#                       outlaw. Omit it entirely for a repo that ships a real
+#                       manifest (hrse).
+#
+# ## The lane task layer (harmonic-forge#730)
+#
+# The five tasks named above are the UNIVERSAL minimum, required of every
+# onboarded repo whatever its shape. `gate-restart`, `gate-e2e` and
+# `check-worktree-busy` are CONDITIONAL -- they restart and exercise a live
+# running service, so a repo without one does not need them. hrse has them;
+# harmonic-forge, cymagraph-infra and openclaw-projects do not, and that is
+# correct rather than a gap.
+#
+# cymagraph-infra deliberately does NOT clone them (DJC 1). Its nearest
+# equivalents -- `environment-up`, `spin-up`, `tofu-apply` -- provision real
+# cloud infrastructure, which costs money and mutates shared state; a gate that
+# spins real infra breaks the rule that a gate never mutates state it did not
+# create. Its gate-appropriate exercise surface already exists and is
+# read/validate shaped: `test`, `validate-tenants`, `test-control-plane`,
+# `verify-restore`.
 
 [[project]]
 name = "hrse"
@@ -71,6 +101,7 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = true
 
 [[project]]
@@ -91,7 +122,12 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#730 DJC 2): no graph, database
+# or live app service of its own -- its own lane3-end says it plainly:
+# "unlike hrse, this repo has no backend and no lease".
+needs_gate_adapter = false
 
 [[project]]
 name = "cymagraph-infra"
@@ -110,7 +146,13 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#730 DJC 2): provisions
+# infrastructure and owns no graph; ADR-008's capabilities (residue_sweep,
+# lease, merge_target_check, tier_w_message) are all graph/database/live-
+# service concepts.
+needs_gate_adapter = false
 
 [[project]]
 name = "openclaw-projects"
@@ -135,7 +177,12 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#730 DJC 2): a prototyping
+# ground with no graph, database or live service; its Lane 3 scope is static
+# checks.
+needs_gate_adapter = false
 
 [[project]]
 name = "kenekted"
@@ -150,6 +197,7 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = false
 
 [[project]]
@@ -164,4 +212,5 @@ l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
 runs_lane3 = false

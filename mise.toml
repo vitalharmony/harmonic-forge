@@ -413,7 +413,11 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-python3 tools/worktree/check_worktree_busy.py "$(pwd)" || exit 1
+# Absolute via HARMONIC_FORGE_ROOT, not repo-relative: the repo-relative form
+# resolved here only because this repo IS the platform, and the identical text
+# generated into any other repo names a file that is not there
+# (harmonic-forge#730). Same string the generator emits, so the two cannot drift.
+python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/worktree/check_worktree_busy.py" "$(pwd)" || exit 1
 
 git fetch origin "$branch" --quiet || {
   echo "gate-checkout: could not fetch '$branch' from origin" >&2
