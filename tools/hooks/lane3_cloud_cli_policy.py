@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Lane 3 read-only policy for cloud CLIs (`kubectl`, `doctl`) — hrse#327.
+"""Lane 3 read-only policy for cloud CLIs (`kubectl`, `doctl`).
 
 `.devin/agents/lane3-gate/AGENT.md` carries a narrow `Exec(kubectl get)` /
 `Exec(doctl … list)` allow-list, but that is a **Devin-runtime** mechanism.
 This repo's Lane 3 gates actually run under Claude Code or Codex, and a live
-gate on hrse#327 proved the point: `kubectl delete pod <nonexistent>` reached
+gate once proved the point: `kubectl delete pod <nonexistent>` reached
 the real Kubernetes API and came back `NotFound` — refused by the API for
 lack of a target, not by any permission layer. `3-lane-protocol.md:154-158`
 already says a non-Devin Lane 3 tool needs "its own equivalent mechanism";
@@ -70,7 +70,7 @@ SAFE_PREFIXES: tuple[tuple[str, ...], ...] = (
 
 GUARDED_PROGRAMS = frozenset({"kubectl", "doctl"})
 
-# hrse#327 NC2: every one of these parses with the WRAPPER as segment[0], so a
+# NC2: every one of these parses with the WRAPPER as segment[0], so a
 # basename check on segment[0] alone lets the real program through unexamined.
 # All four confirmed live against the real parser:
 #   env KUBECONFIG=x kubectl delete …  ->  ['env', 'KUBECONFIG=x', 'kubectl', …]
@@ -83,7 +83,7 @@ _COMMAND_WRAPPERS = frozenset({
 
 _MALFORMED_DENIAL = (
     "this command could not be parsed, and Lane 3's cloud-CLI policy fails "
-    "closed rather than guessing (hrse#327). Re-issue it as a simple, "
+    "closed rather than guessing. Re-issue it as a simple, "
     "unquoted command if it is a legitimate read-only `kubectl get` / "
     "`doctl … list`."
 )
@@ -131,7 +131,7 @@ def denial_reason(command: str) -> str | None:
     try:
         segments = command_segments(command)
     except (AttributeError, TypeError, ValueError):
-        # hrse#327 NC1: fail closed. Same convention as
+        # NC1: fail closed. Same convention as
         # block_lane1_status_claims.py's own parse guard.
         return _MALFORMED_DENIAL
 
@@ -147,7 +147,7 @@ def denial_reason(command: str) -> str | None:
         if not _is_safe(program, argv):
             return (
                 f"`{' '.join(argv[:4])}` is not on Lane 3's read-only cloud-CLI "
-                f"allow-list (hrse#327). A Lane 3 gate may run only read-only "
+                f"allow-list. A Lane 3 gate may run only read-only "
                 f"{program} commands: "
                 + ", ".join("`" + " ".join(p) + "`" for p in SAFE_PREFIXES if p[0] == program)
                 + ". Lane 3 never mutates infrastructure — report the finding instead."
@@ -158,7 +158,7 @@ def denial_reason(command: str) -> str | None:
 def is_lane3_session(cwd: Path) -> bool:
     """Three-case LANE precedence (harmonic-forge#151), in the shared layer.
 
-    hrse#327 NC3: this deliberately lives here rather than in HRSE2's
+    NC3: this deliberately lives here rather than in HRSE2's
     `gate_codex_tool.py`. A cross-repo shared module importing an HRSE2-local
     helper inverts the dependency direction and cycles the moment
     `gate_codex_tool.py` imports this module — so the probe moves down here
@@ -183,7 +183,7 @@ def main() -> int:
     if payload.get("tool_name") != "Bash":
         return 0
     command = payload.get("tool_input", {}).get("command", "")
-    # hrse#327 NC4: the payload's cwd, never Path.cwd(). A hook runs as a
+    # NC4: the payload's cwd, never Path.cwd(). A hook runs as a
     # subprocess with no guarantee its own cwd matches the session's, and the
     # LANE-unset branch of the probe resolves LANE3_ACTIVE via `git rev-parse`
     # from exactly this path. Same pattern as gate_codex_tool.py:222.
