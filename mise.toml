@@ -397,6 +397,19 @@ else
 fi
 '''
 
+[tasks.preclose-check]
+description = "Plan an adversarial pre-close check panel for Tooling Exception work (harmonic-forge#704 -- the canonical platform copy of what was HRSE2's scripts/preclose_check.py, hrse#1208). Computes panel size from blast radius (primary) and Tier (secondary), and writes a one-pass receipt under the TARGET repo's own .claude/cache/preclose/ (repo_root() anchors to cwd's git toplevel, not to this checkout -- run it from the repo under review). --repo is required and never defaulted (ADR-008 decision 2) -- pass tools/gh/preclose_check.py's own flags verbatim, e.g. `mise run preclose-check -- --repo vitalharmony/harmonic-forge --issue 704 --base origin/main --head HEAD --tier standard`."
+usage = '''
+arg "args" var=#true help="tools/gh/preclose_check.py's own flags verbatim, e.g. --repo owner/name --issue N [--base REF] [--head REF] [--tier fast|standard|deep] [--complete] [--force] [--allow-dirty] [--allow-repo-mismatch]"
+'''
+run = '''
+eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" $usage_args
+'''
+
+[tasks.preclose-test]
+description = "Unit tests for the pre-close check planner (hrse#1208, moved to the platform by harmonic-forge#704) -- panel sizing by blast radius, the one-pass receipt, and the no-PASS-verdict invariant. Separate task for the same reason as l1-post-test: scripts/test_*.py-shaped files are collected by nothing (hrse#964)."
+run = "python3 -m unittest discover -s tools/gh -p 'test_preclose_check.py' -v"
+
 [tasks.hooks-install]
 description = "Point git at .githooks/ so this repo's own .claude/ links are created automatically on checkout and merge (harmonic-forge#542). Run once per CLONE — core.hooksPath is per-repository LOCAL config that no tracked file can set and no clone inherits. The platform repo consumes its own rules, agents and skills exactly as a consuming repo does; five forge checkouts had none of them. Idempotent."
 run = """
