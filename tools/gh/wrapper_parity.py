@@ -129,9 +129,20 @@ _FORGE_ROOT_REF = re.compile(
 )
 
 
+# The prefix is replaced by a word-character placeholder, not the real root:
+# `_SCRIPT_INVOCATION` only matches `[\w./-]`, so substituting a root that
+# contains a space (a valid, quoted shell path) would stop the match there
+# and silently lose the task (cross-family finding, #722). The real root is
+# swapped in only when the matched path is resolved.
+_FORGE_ROOT_TOKEN = "__HARMONIC_FORGE_ROOT__"
+
+
+def _forge_root() -> str:
+    return os.environ.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
+
+
 def _expand_forge_root(run: str) -> str:
-    root = os.environ.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
-    return _FORGE_ROOT_REF.sub(lambda m: root + m.group(1), run)
+    return _FORGE_ROOT_REF.sub(lambda m: _FORGE_ROOT_TOKEN + m.group(1), run)
 
 
 # A whole-line shell comment (optional leading whitespace, then `#`, to end
@@ -253,7 +264,7 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
             continue
         matches = list(_SCRIPT_INVOCATION.finditer(_expand_forge_root(_COMMENT_LINE.sub("", run))))
         for match in reversed(matches):
-            raw = match.group(1)
+            raw = match.group(1).replace(_FORGE_ROOT_TOKEN, _forge_root(), 1)
             path = Path(raw).expanduser()
             if not path.is_absolute():
                 path = (repo_root / path).resolve()

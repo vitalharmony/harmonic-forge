@@ -264,6 +264,17 @@ class DiscoverWrapperTasks(_TmpDirCase):
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(wp.discover_wrapper_tasks(mise), [("t", script)])
 
+    def test_forge_root_containing_a_space_is_still_discovered(self):
+        """Cross-family finding (#722): a root with whitespace is a valid,
+        quoted shell path and must not silently drop the task."""
+        import os
+        from unittest import mock
+        root = self.tmp_path / "my forge"
+        script = self._forge_root_with_script(root)
+        mise = self._write_mise(self._FORGE_FORM)
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": str(root)}):
+            self.assertEqual(wp.discover_wrapper_tasks(mise), [("t", script)])
+
     def test_forge_root_form_that_does_not_resolve_is_still_skipped(self):
         import os
         from unittest import mock
