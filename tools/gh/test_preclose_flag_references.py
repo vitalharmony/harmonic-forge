@@ -24,22 +24,28 @@ def planner_flags() -> set[str]:
 
 
 def named_flags(text: str) -> set[str]:
-    """Flags on lines that invoke or name the planner, plus the lines of any
-    fenced block that does."""
+    """Flags in any paragraph or fenced block that names the planner.
+
+    Paragraph-level, not line-level (harmonic-forge#713 preclose finding): the
+    agent file names the planner in wrapped prose, so a reflow that moved
+    `--gate` onto the next line would otherwise make it invisible here and
+    let the #704 regression pass silently again.
+    """
     named: set[str] = set()
-    in_block, block, block_names_planner = False, [], False
+    chunks: list[list[str]] = [[]]
+    in_block = False
     for line in text.splitlines():
-        if line.strip().startswith("```"):
-            if in_block and block_names_planner:
-                for b in block:
-                    named |= set(_NAMED.findall(b))
-            in_block, block, block_names_planner = not in_block, [], False
+        fence = line.strip().startswith("```")
+        if fence or (not in_block and not line.strip()):
+            chunks.append([])
+            if fence:
+                in_block = not in_block
             continue
-        if in_block:
-            block.append(line)
-            block_names_planner |= "preclose_check.py" in line
-        elif "preclose_check.py" in line:
-            named |= set(_NAMED.findall(line))
+        chunks[-1].append(line)
+    for chunk in chunks:
+        body = "\n".join(chunk)
+        if "preclose_check.py" in body:
+            named |= set(_NAMED.findall(body))
     return named
 
 
@@ -52,14 +58,23 @@ class FlagReferenceTests(unittest.TestCase):
                 self.assertFalse(missing, f"{doc.name} names planner flags that do not exist: {sorted(missing)}")
 
     def test_the_check_sees_the_gate_flags(self) -> None:
-        """Guards against a parser too loose to catch the #704 regression."""
+        """Guards against a parser too loose to catch the #704 regression, in
+        BOTH documents -- AC4 names the agent file specifically."""
         skill = named_flags(DOCS[1].read_text())
         self.assertTrue({"--gate", "--findings", "--complete"} <= skill, skill)
+        agent = named_flags(DOCS[0].read_text())
+        self.assertIn("--gate", agent)
+
+    def test_a_flag_wrapped_onto_the_next_prose_line_is_still_seen(self) -> None:
+        text = ("The planner (`tools/gh/preclose_check.py`) evaluates it; run\n"
+                "`--gate` to check.\n\nAn unrelated paragraph with `--other`.\n")
+        self.assertEqual(named_flags(text), {"--gate"})
 
     def test_it_would_have_caught_the_704_regression(self) -> None:
         pre_701 = PLANNER.read_text().replace('"--gate"', '"--xgate"')
         self.assertNotIn("--gate", set(_DEFINED.findall(pre_701)))
-        self.assertIn("--gate", named_flags(DOCS[1].read_text()))
+        for doc in DOCS:
+            self.assertIn("--gate", named_flags(doc.read_text()), doc.name)
 
 
 if __name__ == "__main__":
