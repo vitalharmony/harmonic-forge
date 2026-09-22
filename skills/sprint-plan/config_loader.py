@@ -1,9 +1,16 @@
-"""Resolve and validate per-engagement sprint-plan configuration (F104)."""
+"""Resolve and validate per-engagement sprint-plan configuration (F104).
+
+The config declares the engagement's GROUP: which repos sprint-plan runs
+across (harmonic-forge#708 AC2). A repo's prefix, board and milestone policy
+are not repeated here; `group()` resolves them from projects.toml, their
+single home (harmonic-forge#498).
+"""
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 CONFIG = Path(".claude/sprint-plan.config.json")
@@ -97,6 +104,13 @@ def _guard(root: Path) -> None:
 
 
 def resolve(cwd: Path | None = None, override: str | None = None) -> dict:
+    return resolve_home(cwd, override)[1]
+
+
+def resolve_home(cwd: Path | None = None, override: str | None = None) -> tuple[Path, dict]:
+    """`(home checkout, home config)`. For a member config the home checkout is
+    the one its local file names, not the member itself (harmonic-forge#708
+    cross-family finding): the group's docs and data live there."""
     cwd = (cwd or Path.cwd()).resolve()
     chosen = override or os.environ.get("SPRINT_PLAN_CONFIG")
     if chosen:
@@ -113,7 +127,7 @@ def resolve(cwd: Path | None = None, override: str | None = None) -> dict:
     root = path.parent.parent
     _guard(root)
     if kind != "member":
-        return value
+        return root, value
     local_path = root / LOCAL
     local = _read(local_path)
     validate(local, local_path)
@@ -127,4 +141,33 @@ def resolve(cwd: Path | None = None, override: str | None = None) -> dict:
         raise _error(home_path, "member home must be a home config")
     if not any(repo["repo"] == value["home_repo"] for repo in result["repos"]):
         raise _error(home_path, "member home_repo is not listed in $.repos")
-    return result
+    return home.resolve(), result
+
+
+def group(config: dict) -> list[dict]:
+    """The config's repos, each enriched with its projects.toml facts.
+
+    An unlisted or un-onboarded repo is refused, never defaulted: the same
+    closed-registry rule every other platform reader of the manifest applies.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "onboard"))
+    from manifest import ManifestError, by_repo  # noqa: PLC0415
+
+    try:
+        registry = by_repo()
+    except ManifestError as exc:
+        raise ConfigError(f"sprint-plan config: {exc}") from exc
+    resolved = []
+    for entry in config["repos"]:
+        project = registry.get(entry["repo"])
+        if project is None or not project.onboarded:
+            raise ConfigError(
+                f"sprint-plan config: {entry['repo']} is not an onboarded project in projects.toml")
+        resolved.append({
+            **entry,
+            "prefix": project.prefix,
+            "board_owner": project.board_owner,
+            "board": int(project.board_number) if project.board_number else None,
+            "milestones": bool(project.milestones),
+        })
+    return resolved
