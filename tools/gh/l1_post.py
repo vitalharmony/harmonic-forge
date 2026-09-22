@@ -812,65 +812,20 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
             fail(f"sweep entries carry no text: item(s) {empty_list}")
 
 
-def _remote_matches_repo(root: Path, repo: str) -> bool:
-    remote = run("git", "remote", "get-url", "origin", cwd=root)
-    if remote.returncode != 0:
-        return False
-    normalized = remote.stdout.strip().rstrip("/").removesuffix(".git")
-    return bool(re.search(rf"github\.com[:/]{re.escape(repo)}$", normalized))
-
-
-def _find_repo_root(repo: str, cwd: Path) -> Path | None:
-    """Locate a local checkout whose own git remote matches `repo`.
-
-    a private-repo incident: cwd is the repo whose sha/branch is being *verified*, which
-    the file's own a private-repo incident fix already establishes may legitimately
-    differ from `repo` (the issue's own GitHub repo, used for gh calls) --
-    see _source_repo_is_hrse's docstring for that precedent. Board lookup
-    must key on `repo`, not cwd, or a --cross-repo handoff checks the
-    wrong project (e.g. every harmonic-forge handoff posted from an
-    HRSE2-mise `mise run l1-post` invocation would silently resolve
-    hrse's own board instead). Checks cwd first (the common same-repo
-    case, no extra git calls), then known sibling checkout locations --
-    every repo this tooling targets lives directly under $HOME or
-    $HOME/Harmonic_Projects.
-    """
-    cwd_root_result = run("git", "rev-parse", "--show-toplevel", cwd=cwd)
-    candidates = [Path(cwd_root_result.stdout.strip())] if cwd_root_result.returncode == 0 else []
-    candidates += sorted(p for p in Path.home().glob("Harmonic_Projects/*") if p.is_dir())
-    candidates += [p for p in Path.home().glob("*") if p.is_dir() and (p / ".git").exists()]
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        if _remote_matches_repo(candidate, repo):
-            return candidate
-    return None
-
-
 def resolve_project_board(repo: str, cwd: Path) -> tuple[str, str] | None:
-    """Read GH_PROJECT_OWNER/GH_PROJECT_NUMBER from `repo`'s own mise.toml.
+    """Resolve the target repo's board from the canonical project manifest.
 
-    Mirrors tools/hooks/model_tier_gate.py's resolve_project_board()
-    (harmonic-forge#202) -- reads the file directly rather than
-    os.environ, since the calling shell's mise env may not match the
-    resolved root (the same cross-repo leak #202 found live: a shell that
-    had activated one repo's mise env leaked its GH_PROJECT_NUMBER into a
-    process whose actual target was a different repo).
+    `cwd` remains in the signature for compatibility with callers and tests,
+    but board identity belongs to the target repo, not to whichever checkout
+    launched the transport. Requiring the onboarded manifest entry also makes
+    a missing checkout distinguishable from a repo that intentionally has no
+    board: checkout location is irrelevant to this decision.
     """
-    root = _find_repo_root(repo, cwd)
-    if root is None:
-        return None
+    del cwd
     try:
-        toml_text = (root / "mise.toml").read_text()
-    except OSError:
-        return None
-    owner_match = re.search(r'^GH_PROJECT_OWNER\s*=\s*"([^"]*)"', toml_text, re.MULTILINE)
-    number_match = re.search(r'^GH_PROJECT_NUMBER\s*=\s*"([^"]*)"', toml_text, re.MULTILINE)
-    owner = owner_match.group(1) if owner_match else None
-    number = number_match.group(1) if number_match else None
-    return (owner, number) if owner and number else None
+        return require_onboarded_repo(repo).board
+    except ManifestError as exc:
+        fail(str(exc))
 
 
 def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) -> str | None:

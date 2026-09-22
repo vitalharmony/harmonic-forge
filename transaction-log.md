@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix: preserve portable transport resolution
+- tools/gh/test_l1_post_hooks.py              | 37 +++++-----------
+- tools/gh/test_l1_post_sweep_cases.py        | 33 +++++++-------
+- tools/gh/test_post_lane_discussion_kinds.py | 23 ++++++++++
+- 5 files changed, 86 insertions(+), 113 deletions(-)
+
 ## feat: move Lane 1 publish transport to platform
 - tools/gh/test_l1_post_sweep_cases.py               |  365 +++++
 - .../gh/test_post_lane_discussion_belt_candidate.py |  124 ++

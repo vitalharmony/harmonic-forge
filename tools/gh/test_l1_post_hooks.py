@@ -419,32 +419,17 @@ class EstimateGateTests(unittest.TestCase):
     board Estimate is unset, and no-op cleanly on a repo with no board."""
 
     def test_resolve_project_board_keys_on_repo_not_cwd(self) -> None:
-        """The real bug this guards against: a --cross-repo handoff run
-        from an HRSE2 mise environment must resolve harmonic-forge's own
-        board, not silently fall back to HRSE2's, even though cwd never
-        changes for the duration of the process. Uses real temp git repos
-        (not mocked Path internals) so the actual git plumbing is exercised."""
-        with tempfile.TemporaryDirectory() as home_dir:
-            home = Path(home_dir)
-            projects = home / "Harmonic_Projects"
-            projects.mkdir()
-            hrse_cwd = projects / "HRSE2"
-            forge_sibling = home / "harmonic-forge"
-            for root, remote in ((hrse_cwd, "vitalharmony/hrse"), (forge_sibling, "vitalharmony/harmonic-forge")):
-                root.mkdir()
-                self.assertEqual(post.run("git", "init", "-q", cwd=root).returncode, 0)
-                self.assertEqual(
-                    post.run("git", "remote", "add", "origin", f"https://github.com/{remote}.git", cwd=root).returncode,
-                    0,
-                )
-
-            with patch.object(Path, "home", return_value=home):
-                root = post._find_repo_root("vitalharmony/harmonic-forge", hrse_cwd)
-            self.assertEqual(root, forge_sibling)
-
-            with patch.object(Path, "home", return_value=home):
-                same = post._find_repo_root("vitalharmony/hrse", hrse_cwd)
-            self.assertEqual(same, hrse_cwd)
+        """A cross-repo post keys board identity on the manifest repo row,
+        independent of the checkout that launched the command."""
+        cwd = Path("/a/different/checkout")
+        self.assertEqual(
+            post.resolve_project_board("vitalharmony/harmonic-forge", cwd),
+            ("vitalharmony", "3"),
+        )
+        self.assertEqual(
+            post.resolve_project_board("vitalharmony/hrse", cwd),
+            ("vitalharmony", "1"),
+        )
 
     # a private-repo incident: `create=True` on these patches is deliberate. `_item_list_cache`
     # resolves to the *installed* ~/harmonic-forge sibling, whose version is not

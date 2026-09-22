@@ -339,3 +339,26 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
             self._post(GATE_PASS, kind="discussion")
         self.assertEqual(seen, ["vitalharmony/harmonic-forge"], "a gate report posted as `discussion` "
                                         "skipped the CI check entirely")
+
+
+class CallerRelativeFileResolutionTests(unittest.TestCase):
+    def test_compatibility_shim_root_wins_over_platform_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            caller = Path(tmp)
+            relative = Path("f706-fixtures") / "comment.md"
+            expected = caller / relative
+            expected.parent.mkdir()
+            expected.write_text("from consumer\n", encoding="utf-8")
+            with mock.patch.dict("os.environ", {"LANE_TRANSPORT_CALLER_ROOT": str(caller)}):
+                self.assertEqual(P.resolve_body_path(relative), expected)
+
+    def test_git_toplevel_is_used_when_no_shim_root_is_declared(self):
+        relative = Path("f706-missing") / "comment.md"
+        completed = __import__("subprocess").CompletedProcess(
+            ("git", "rev-parse"), 0, stdout=str(P._FORGE_ROOT) + "\n", stderr=""
+        )
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch.object(P, "run", return_value=completed):
+            with self.assertRaises(SystemExit) as caught:
+                P.resolve_body_path(relative)
+        self.assertIn(str(P._FORGE_ROOT / relative), str(caught.exception))

@@ -326,25 +326,24 @@ class OtherPatternAuditTests(unittest.TestCase):
         body = "Basis says ### Issue is required.\n\n### Issue\nReal issue context\n"
         self.assertEqual(L.heading_content(body, "Issue"), "Real issue context")
 
-    def test_remote_match_requires_the_normalized_repo_suffix(self):
-        with mock.patch.object(L, "run") as run:
-            run.return_value = mock.Mock(
-                returncode=0, stdout="https://github.com/example/vitalharmony/hrse.git\n")
-            self.assertFalse(L._remote_matches_repo(Path("."), "vitalharmony/hrse"))
-            run.return_value = mock.Mock(
-                returncode=0, stdout="git@github.com:vitalharmony/hrse.git\n")
-            self.assertTrue(L._remote_matches_repo(Path("."), "vitalharmony/hrse"))
-
-    def test_project_config_ignores_toml_looking_text_outside_the_setting_line(self):
+    def test_project_board_comes_from_manifest_without_a_local_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "mise.toml").write_text(
-                '# GH_PROJECT_OWNER = "wrong" is a documentation example\n'
-                'GH_PROJECT_OWNER = "vitalharmony"\n'
-                'GH_PROJECT_NUMBER = "1"\n'
+            manifest = Path(directory) / "projects.toml"
+            manifest.write_text(
+                '[[project]]\nname="example"\nprefix="X"\n'
+                'repo="example/project"\nonboarded=true\n'
+                'board_owner="owner"\nboard_number="7"\n'
+                '[project.protocol]\nworktree_name="{checkout}-lane{lane}"\n'
+                'l1_post_task="l1-post"\nlane_comment_task="lane-comment"\n'
+                'gate_checkout_task="gate-checkout"\nlane3_begin_task="lane3-begin"\n'
+                'runs_lane3=true\n',
+                encoding="utf-8",
             )
-            with mock.patch.object(L, "_find_repo_root", return_value=root):
-                self.assertEqual(L.resolve_project_board("vitalharmony/hrse", root), ("vitalharmony", "1"))
+            with mock.patch.dict("os.environ", {"FORGE_PROJECTS_MANIFEST": str(manifest)}):
+                self.assertEqual(
+                    L.resolve_project_board("example/project", Path("/missing")),
+                    ("owner", "7"),
+                )
 
     def test_comment_target_ignores_issuecomment_text_outside_url_fragment(self):
         with self.assertRaises(SystemExit):

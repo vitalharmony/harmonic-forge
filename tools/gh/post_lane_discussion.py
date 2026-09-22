@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - platform checkout absent
     belt_candidates = None
 
 from l1_post import (
-    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo,
+    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
     validate_lead,
 )
 
@@ -97,6 +97,29 @@ QUOTABLE_MARKERS = re.compile(
     r"|Handoff\b)")
 
 _FENCE = re.compile(r"```.*?```", re.S)
+
+
+def resolve_body_path(path: Path) -> Path:
+    """Resolve a body path against the invoking repo, never the platform repo."""
+    if path.is_file():
+        return path
+    caller_root = os.environ.get("LANE_TRANSPORT_CALLER_ROOT")
+    if caller_root:
+        repo_root = Path(caller_root)
+    else:
+        top = run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd())
+        repo_root = (Path(top.stdout.strip()) if top.returncode == 0 and top.stdout.strip()
+                     else _FORGE_ROOT)
+    candidate = repo_root / path
+    if candidate.is_file():
+        return candidate
+    raise SystemExit(
+        f"--file not found: {path}\n"
+        f"  tried: {path.resolve()}\n"
+        f"     and: {candidate}\n"
+        "Pass an absolute path — the working directory is not stable "
+        "between tool calls."
+    )
 
 
 def _executable(body: str) -> str:
@@ -313,19 +336,7 @@ def main() -> None:
     # session, each a generic mise failure that said nothing about the real
     # cause. Resolve against the repo root when the literal path is not there,
     # and fail with a message that names the file if neither resolves.
-    path = args.file
-    if not path.is_file():
-        candidate = _FORGE_ROOT / path
-        if candidate.is_file():
-            path = candidate
-        else:
-            raise SystemExit(
-                f"--file not found: {args.file}\n"
-                f"  tried: {path.resolve()}\n"
-                f"     and: {candidate}\n"
-                "Pass an absolute path — the working directory is not stable "
-                "between tool calls."
-            )
+    path = resolve_body_path(args.file)
     body = regular_body(path)
     reject_reserved_marker(body)
     validate_kind(args.kind, body)
