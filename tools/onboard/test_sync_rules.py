@@ -411,3 +411,50 @@ class CliSurfaceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleSkillDirTests(unittest.TestCase):
+    """harmonic-forge#708: a skill that moved to the platform leaves an old
+    directory holding only git-ignored files on every checkout that pulls
+    the move. That, and only that, is replaced with the platform link."""
+
+    def setUp(self) -> None:
+        import subprocess
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = Path(self._tmp.name)
+        self.run_git = lambda *a: subprocess.run(["git", "-C", str(self.project), *a],
+                                                 check=True, capture_output=True)
+        self.run_git("init", "-q")
+        (self.project / ".gitignore").write_text("__pycache__/\n")
+        self.skills = self.project / ".claude" / "skills"
+        self.name = sorted(p.name for p in sync_rules.SKILLS_DIR.iterdir()
+                           if (p / "SKILL.md").is_file())[0]
+        self.stale = self.skills / self.name
+        (self.stale / "__pycache__").mkdir(parents=True)
+        (self.stale / "__pycache__" / "x.pyc").write_bytes(b"\0")
+
+    def _link(self) -> bool:
+        return sync_rules._link_skill_dir(sync_rules.SKILLS_DIR, self.skills, [self.name], "skill")
+
+    def test_ignored_only_leftover_is_replaced_with_the_link(self) -> None:
+        self.assertTrue(self._link())
+        self.assertTrue(self.stale.is_symlink())
+        self.assertEqual(self.stale.resolve(), (sync_rules.SKILLS_DIR / self.name).resolve())
+
+    def test_untracked_unignored_file_is_refused(self) -> None:
+        (self.stale / "notes.md").write_text("mine")
+        self.assertFalse(self._link())
+        self.assertTrue((self.stale / "notes.md").is_file())
+
+    def test_tracked_file_is_refused(self) -> None:
+        (self.stale / "SKILL.md").write_text("local")
+        self.run_git("add", "-f", str(self.stale / "SKILL.md"))
+        self.assertFalse(self._link())
+        self.assertTrue((self.stale / "SKILL.md").is_file())
+
+    def test_outside_a_git_work_tree_is_refused(self) -> None:
+        import shutil
+        shutil.rmtree(self.project / ".git")
+        self.assertFalse(self._link())
+        self.assertTrue(self.stale.is_dir() and not self.stale.is_symlink())

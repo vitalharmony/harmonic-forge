@@ -23,6 +23,7 @@ record (harmonic-forge#540/#541).
 import argparse
 import subprocess
 import sys
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -216,6 +217,21 @@ def _verify_dir(source_dir: Path, target_dir: Path, filenames: list[str]) -> boo
     return all_good
 
 
+def _only_ignored_leftovers(path: Path) -> bool:
+    """True when `path` is a real directory inside a git work tree whose every
+    file is git-ignored: nothing tracked, nothing untracked-and-unignored."""
+    if not path.is_dir() or path.is_symlink():
+        return False
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(path.parent), *args, "--", path.name],
+                              capture_output=True, text=True)
+    tracked = git("ls-files")
+    status = git("status", "--porcelain", "--untracked-files=all")
+    if tracked.returncode or status.returncode:
+        return False  # not a git work tree, or git failed: never delete
+    return not tracked.stdout.strip() and not status.stdout.strip()
+
+
 def _link_skill_dir(source_dir: Path, target_dir: Path, skill_names: list[str], label: str) -> bool:
     """Symlinks target_dir/<skill_name> -> source_dir/<skill_name> as whole-directory
     symlinks. Skills are directories (SKILL.md plus optional sibling files like
@@ -264,13 +280,24 @@ def _link_skill_dir(source_dir: Path, target_dir: Path, skill_names: list[str], 
                 ok = False
                 continue
         elif target.exists():
-            print(
-                f"[SKIP] {target} exists as a real directory, not a symlink. "
-                f"Remove or back it up manually, then re-run.",
-                file=sys.stderr,
-            )
-            ok = False
-            continue
+            if _only_ignored_leftovers(target):
+                # harmonic-forge#708: a skill that MOVED to the platform leaves
+                # its old directory behind on every checkout that pulls the
+                # move -- git deletes the tracked files but not ignored ones
+                # (__pycache__, caches). Without this, the link was skipped on
+                # every existing checkout. Only ever removes content git itself
+                # classifies as ignored; anything tracked or untracked-but-not-
+                # ignored is someone's work and still refuses.
+                print(f"[FIX] {target} holds only git-ignored leftovers — replacing with the platform link.")
+                shutil.rmtree(target)
+            else:
+                print(
+                    f"[SKIP] {target} exists as a real directory, not a symlink. "
+                    f"Remove or back it up manually, then re-run.",
+                    file=sys.stderr,
+                )
+                ok = False
+                continue
 
         target.symlink_to(source, target_is_directory=True)
         print(f"[LINK] {target} -> {source}")
