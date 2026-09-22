@@ -42,6 +42,17 @@
 #                 hrse docs/ROADMAP.md. Do not "fix" it.
 # onboarded       Whether the 3-lane apparatus is installed. A projected repo is
 #                 false; a real repo that is false is a backlog item.
+# protocol        Repo-specific scalar inputs to the portable lane procedure.
+#   worktree_name       Basename shape under `worktree_dir`; `{checkout}` and
+#                       `{lane}` are the only placeholders. This cannot be
+#                       derived because HRSE2's checkout basename differs from
+#                       its manifest name and repos may choose another shape.
+#   l1_post_task        Mise task used for Lane 1 protocol artifacts.
+#   lane_comment_task   Mise task used for ordinary Lane 1 discussion.
+#   gate_checkout_task  Mise task that prepares Lane 3's target checkout.
+#   lane3_begin_task    Mise task that records the Lane 3 session boundary.
+#   runs_lane3          Whether the repo owns a Lane 3 worktree at all. This is
+#                       a declared capability, not inferred from today's disk.
 
 [[project]]
 name = "hrse"
@@ -53,6 +64,14 @@ board_owner = "vitalharmony"
 board_number = "1"
 milestones = true
 onboarded = true
+
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = true
 
 [[project]]
 name = "harmonic-forge"
@@ -66,6 +85,14 @@ board_number = "3"
 milestones = false
 onboarded = true
 
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = true
+
 [[project]]
 name = "cymagraph-infra"
 repo = "vitalharmony/cymagraph-infra"
@@ -76,6 +103,14 @@ board_owner = "vitalharmony"
 board_number = "1"
 milestones = true
 onboarded = true
+
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = true
 
 [[project]]
 name = "openclaw-projects"
@@ -94,6 +129,14 @@ board_number = "4"
 milestones = false
 onboarded = true
 
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = true
+
 [[project]]
 name = "kenekted"
 prefix = "K"
@@ -101,8 +144,24 @@ account = "harmonicarchitect"
 milestones = false
 onboarded = false
 
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = false
+
 [[project]]
 name = "leasepal"
 prefix = "P"
 milestones = false
 onboarded = false
+
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = false

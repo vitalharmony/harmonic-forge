@@ -36,6 +36,16 @@ MINIMAL = """
     prefix = "A"
 """
 
+PROTOCOL = """
+    [project.protocol]
+    worktree_name = "{checkout}-lane{lane}"
+    l1_post_task = "l1-post"
+    lane_comment_task = "lane-comment"
+    gate_checkout_task = "gate-checkout"
+    lane3_begin_task = "lane3-begin"
+    runs_lane3 = true
+"""
+
 
 class LoadTests(unittest.TestCase):
     def test_a_minimal_entry_loads(self) -> None:
@@ -127,6 +137,22 @@ class FailLoudlyTests(unittest.TestCase):
             '[[project]]\nname = "a"\nprefix = "A"\nonboarded = true\n',
             "onboarded but declares no repo")
 
+    def test_onboarded_without_protocol_is_rejected(self) -> None:
+        self.assertRaisesManifest(
+            '[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\nonboarded = true\n',
+            "declares no [project.protocol]")
+
+    def test_unknown_protocol_key_is_rejected(self) -> None:
+        self.assertRaisesManifest(MINIMAL + PROTOCOL + 'typo = "x"\n',
+                                  "protocol has unknown key(s): typo")
+
+    def test_worktree_shape_rejects_unknown_or_missing_placeholders(self) -> None:
+        for replacement in ("{checkout}-{repo}-lane{lane}", "{checkout}-lane"):
+            with self.subTest(worktree_name=replacement):
+                self.assertRaisesManifest(
+                    MINIMAL + PROTOCOL.replace("{checkout}-lane{lane}", replacement),
+                    "may use only {checkout} and {lane}")
+
 
 class WorktreeTests(unittest.TestCase):
     def test_worktrees_default_to_the_checkouts_parent(self) -> None:
@@ -168,6 +194,20 @@ class WorktreeTests(unittest.TestCase):
 
     def test_a_projected_repo_has_no_worktrees(self) -> None:
         self.assertEqual(mf.load(write(MINIMAL))[0].worktrees, [])
+
+    def test_protocol_can_disable_lane3(self) -> None:
+        body = MINIMAL + PROTOCOL.replace("runs_lane3 = true", "runs_lane3 = false")
+        body = body.replace('prefix = "A"', 'prefix = "A"\npath = "/srv/alpha"')
+        self.assertEqual([p.name for p in mf.load(write(body))[0].worktrees],
+                         ["alpha-lane2"])
+
+    def test_protocol_worktree_shape_is_consumed(self) -> None:
+        body = MINIMAL + PROTOCOL.replace(
+            'worktree_name = "{checkout}-lane{lane}"',
+            'worktree_name = "lane{lane}-{checkout}"')
+        body = body.replace('prefix = "A"', 'prefix = "A"\npath = "/srv/alpha"')
+        self.assertEqual([p.name for p in mf.load(write(body))[0].worktrees],
+                         ["lane2-alpha", "lane3-alpha"])
 
 
 class ViewTests(unittest.TestCase):
@@ -234,6 +274,39 @@ class ViewTests(unittest.TestCase):
         """The point of listing a projected repo is to RESERVE its letter."""
         self.assertIn("P", mf.prefixes(write(self.BODY)))
 
+    def test_closed_registry_refuses_unlisted_and_not_onboarded(self) -> None:
+        path = write("""
+            [[project]]
+            name = "known"
+            prefix = "K"
+            repo = "o/known"
+            onboarded = false
+        """ + PROTOCOL)
+        with self.assertRaises(mf.ManifestError) as unlisted:
+            mf.require_onboarded_repo("o/missing", path)
+        self.assertIn("projects.toml", str(unlisted.exception))
+        with self.assertRaises(mf.ManifestError) as inactive:
+            mf.require_onboarded_repo("o/known", path)
+        self.assertIn("onboarded = false", str(inactive.exception))
+
+    def test_closed_registry_resolves_urls_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(checkout)
+            path = write(textwrap.dedent(f"""
+                [[project]]
+                name = "known"
+                prefix = "K"
+                repo = "Owner/Known"
+                path = "{alias}"
+                onboarded = true
+            """) + PROTOCOL)
+            project = mf.require_onboarded_repo("https://github.com/owner/known.git", path)
+            self.assertEqual(project.checkout, checkout.resolve())
+
 
 class LiveManifestTests(unittest.TestCase):
     """Two properties that must hold for the shipped file. A fixture cannot
@@ -265,6 +338,12 @@ class LiveManifestTests(unittest.TestCase):
         is CHECKED against it. A letter in one and not the other is how
         `L2B F496` reaches the wrong repo."""
         self.assertEqual(mf.check_prefix_agreement(LIVE), [])
+
+    def test_every_live_project_declares_protocol_inputs(self) -> None:
+        projects = mf.load(LIVE)
+        self.assertTrue(all(project.protocol is not None for project in projects))
+        self.assertTrue(all(project.protocol.worktree_name for project in projects
+                            if project.protocol))
 
     def test_that_agreement_check_can_actually_fail(self) -> None:
         """Otherwise the assertion above is a check that always passes."""

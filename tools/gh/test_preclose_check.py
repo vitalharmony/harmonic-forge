@@ -227,6 +227,34 @@ class RepoMismatchTests(ScratchRepo):
         git("remote", "remove", "origin", cwd=self.repo)
         self.assertIn("refuters:", self.plan(tier="fast", allow_repo_mismatch=True))
 
+    def test_unlisted_repo_is_refused_by_the_manifest(self) -> None:
+        self.commit("scripts/ordinary.py")
+        with self.assertRaises(SystemExit) as caught:
+            self.plan(repo="example/unlisted", tier="fast", allow_repo_mismatch=True)
+        self.assertIn("projects.toml", str(caught.exception))
+
+    def test_not_onboarded_repo_is_refused_by_the_manifest(self) -> None:
+        self.commit("scripts/ordinary.py")
+        manifest = self.repo / "projects.toml"
+        manifest.write_text("""
+[[project]]
+name = "future"
+prefix = "X"
+repo = "example/future"
+onboarded = false
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = true
+""")
+        with patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(manifest)}):
+            with self.assertRaises(SystemExit) as caught:
+                self.plan(repo="example/future", tier="fast", allow_repo_mismatch=True)
+        self.assertIn("onboarded = false", str(caught.exception))
+
 
 class OnePassTests(ScratchRepo):
     """Deliberately NOT patching the receipt location -- patching it to a fixed

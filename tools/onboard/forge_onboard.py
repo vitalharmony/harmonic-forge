@@ -117,7 +117,16 @@ def check_worktrees(project: Project) -> Check:
     if missing:
         return Check("lane worktrees", FAIL,
                      "missing: " + ", ".join(p.name for p in missing))
-    return Check("lane worktrees", OK, "lane2 + lane3 present")
+    lanes = " + ".join(path.name.rsplit("-", 1)[-1] for path in project.worktrees)
+    return Check("lane worktrees", OK, f"{lanes} present")
+
+
+def check_protocol(project: Project) -> Check:
+    """Every declared project carries the inputs portable lane tooling reads."""
+    if project.protocol is None:
+        return Check("protocol", FAIL, "missing [project.protocol] in projects.toml")
+    state = "Lane 3 enabled" if project.protocol.runs_lane3 else "Lane 3 disabled"
+    return Check("protocol", OK, state)
 
 
 def check_directives(project: Project) -> Check:
@@ -443,7 +452,7 @@ def check_board(project: Project) -> Check:
     return Check("board", OK, f"{owner} #{number}")
 
 
-CHECKS = (check_checkout, check_worktrees, check_directives, check_entrypoint,
+CHECKS = (check_protocol, check_checkout, check_worktrees, check_directives, check_entrypoint,
           check_hooks, check_memory, check_board)
 
 
