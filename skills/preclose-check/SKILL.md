@@ -62,7 +62,42 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    stronger filter is wanted, require a majority of the panel to raise the
    same finding.
 
-5. **Post to the issue, verbatim** — via whichever wrapper this repo declares
+5. **Evaluate the cross-family gate** (harmonic-forge#701). Write every
+   finding the panel returned to a JSON list of `{anchor, scenario}` objects,
+   survivors and dismissed alike. Give each one you dismissed a
+   `"dismissed": "<reason>"` field, so it does not count as a survivor.
+   Then run:
+
+   ```
+   python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \
+       --repo <owner/repo> --issue <N> --gate --findings <file>
+   ```
+
+   The script applies the step-4 filter itself and decides. **Silence triggers
+   the branch; findings do not.** That is not a bug to correct: a unanimous
+   no-defect verdict from one model family cannot be told apart from a blind
+   spot that family shares with the implementer, while a panel that found real
+   defects has already given you work, and the clean re-run after the fix is
+   where the gate fires. A high-blast diff (the same patterns as step 2), or
+   the operator asking (`--cross-family`), also triggers it. Tier never does.
+
+   When it triggers, take the branch exactly as
+   `~/harmonic-forge/rules/cross-family-review.md` states. That file is the
+   whole mechanism, and this skill deliberately does not restate it. The
+   branch is part of this **one** pass, not a second round. Record the pass
+   with `--envelope <envelope path>` when the branch ran, or `--not-triggered`
+   when it did not. The script runs `cross_family_provenance.py` itself: there
+   is no flag to type a label. It refuses a label that contradicts the gate,
+   and it refuses a second `--complete` on the same diff. A call that could not
+   run records its `in-family fallback` label, never relabelled.
+
+   ```
+   python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \
+       --repo <owner/repo> --issue <N> --complete \
+       --findings <file> (--envelope <envelope path> | --not-triggered)
+   ```
+
+6. **Post to the issue, verbatim** — via whichever wrapper this repo declares
    for Lane 1 comment posting (HRSE2/cymagraph-infra's `mise run lane-comment`;
    harmonic-forge's own `mise run post-comment`), never a raw `gh` call — see
    your repo's own Lane-1-posting rule for why. Include:
@@ -74,7 +109,7 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    an auditable record. Publishing what you overruled is the whole
    difference.
 
-6. **Act on the survivors**, then hand back to the operator. State plainly
+7. **Act on the survivors**, then hand back to the operator. State plainly
    that the check ran, what it found, and that closure is theirs to call.
 
 ## One pass, then escalate
