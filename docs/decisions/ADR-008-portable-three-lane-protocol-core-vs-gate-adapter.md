@@ -216,8 +216,9 @@ pass.
 `.claude/gate-adapter.json`, validated against a platform-owned JSON
 Schema shipped at `harmonic-forge/schemas/gate-adapter.schema.json`. Absent
 manifest = no adapter registered = platform gate steps that require one are
-skipped with an explicit `BLOCKED` finding (per `rules/testing-gate.md`
-rule 7), never silently no-op'd.
+skipped with an explicit `BLOCKED` finding — same fast-fail posture as a
+genuine external precondition gap (`rules/testing-gate.md` rule 8) — never
+silently no-op'd.
 
 **What the manifest declares**, one key per adapter-owned capability
 identified in Decision 1/4 above:
@@ -226,7 +227,7 @@ identified in Decision 1/4 above:
 {
   "residue_sweep": { "module": "scripts/gate_residue.py", "entrypoint": "sweep" },
   "merge_target_check": {
-    "query": "MATCH (n:Experience {elementId: $id}) RETURN count(n) AS c",
+    "query": "MATCH (n:Experience) WHERE elementId(n) = $id RETURN count(n) AS c",
     "connection_env": "NEO4J_URI",
     "expected_shape": { "field": "c", "op": "gt", "value": 0 }
   },
@@ -249,20 +250,24 @@ is a fixed, platform-defined dict (issue id, target SHA, report-only flag)
 owns everything upstream of it (when it's called, what shape the return
 value must have: `{"status": "pass"|"fail"|"blocked", "evidence": [...]}`).
 
-**What the platform calls, and where.** `lane3-gate`'s existing gate
-lifecycle gains three fixed call sites, each optional per the manifest
-above:
+**What the platform calls, and where.** Three fixed call sites gain a
+manifest-driven adapter hook, each optional per the manifest above. Two
+belong to `lane3-gate`'s own lifecycle; the third belongs to Lane 1, per
+the ownership `rules/testing-gate.md` rule 3 already assigns — this ADR
+does not relocate that ownership, only adds the adapter call inside it:
 
-1. Before Lane 3's first execution attempt (same point as the existing
-   readiness sweep, `rules/testing-gate.md` rule 3) — `merge_target_check`
-   if declared.
+1. **Lane 1's own gate-readiness sweep**, run before Lane 3's first
+   execution attempt and owned by Lane 1 exactly as `rules/testing-gate.md`
+   rule 3 already states ("This is a Lane 1 responsibility, not Lane 3's")
+   — `merge_target_check` if declared, folded into the sweep's own
+   per-case readiness report.
 2. Immediately after Lane 3's PASS/FAIL verdict, before the gate report is
-   posted — `residue_sweep` if declared, its result folded into the same
-   report.
+   posted, inside `lane3-gate` itself — `residue_sweep` if declared, its
+   result folded into the same report.
 3. At `gate-checkout` time, before a branch switch in a shared lane
-   worktree (existing `check_worktree_busy.py` call site) — `lease.acquire`/
-   `check_owner` if declared, in place of (not alongside) the current
-   HRSE2-specific `check_lane3_marker.py` call.
+   worktree (existing `check_worktree_busy.py` call site, also inside
+   `lane3-gate`) — `lease.acquire`/`check_owner` if declared, in place of
+   (not alongside) the current HRSE2-specific `check_lane3_marker.py` call.
 
 No adapter module executes with elevated privilege beyond what the calling
 lane already holds — the platform does not grant a residue-sweep module
