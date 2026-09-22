@@ -908,10 +908,21 @@ def main() -> int:
     # lost in hrse#839's own record, not silently dropped without a trace —
     # if issues start being worked without a recorded rationale again, that
     # is the check to rebuild, against Status rather than Priority.
+    # harmonic-forge#708 preclose finding: with no resolvable config, REPOS is
+    # empty and every doc would report "No stale-closed mentions" having
+    # checked nothing. Re-resolve here and refuse, never report clean.
+    try:
+        repos = _home.repo_names()
+    except _home.config_loader.ConfigError as exc:
+        print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not repos:
+        print("CONFIG ERROR: sprint-plan config declares no repos", file=sys.stderr)
+        return 2
     any_drift = False
     closed_by_repo: dict[str, set[int]] = {}
     open_by_repo: dict[str, set[int]] = {}
-    for repo in REPOS:
+    for repo in repos:
         closed_by_repo[repo] = closed_issues(repo)
         open_by_repo[repo] = open_issues(repo)
 

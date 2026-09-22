@@ -827,3 +827,23 @@ class MergedPrSignalTests(unittest.TestCase):
                 returncode=0, stdout="fix/1-a\tsha1\nfeat/2-b\tsha2\n", stderr="")
             merged = drift_check.merged_pr_head_refs("vitalharmony/hrse")
         self.assertEqual(merged, {"fix/1-a": "sha1", "feat/2-b": "sha2"})
+
+
+class ConfigRefusalTests(unittest.TestCase):
+    """harmonic-forge#708 preclose finding: an unresolvable config must refuse,
+    never fall through to "No stale-closed mentions" having checked nothing."""
+
+    def test_main_refuses_without_a_config(self) -> None:
+        err = drift_check._home.config_loader.ConfigError("no config")
+        with patch.object(drift_check._home, "repo_names", side_effect=err), \
+             patch.object(drift_check, "closed_issues") as closed, \
+             patch("sys.stderr"):
+            self.assertEqual(drift_check.main(), 2)
+        closed.assert_not_called()
+
+    def test_main_refuses_an_empty_repo_group(self) -> None:
+        with patch.object(drift_check._home, "repo_names", return_value=[]), \
+             patch.object(drift_check, "closed_issues") as closed, \
+             patch("sys.stderr"):
+            self.assertEqual(drift_check.main(), 2)
+        closed.assert_not_called()
