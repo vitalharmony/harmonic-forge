@@ -289,11 +289,12 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
             P.require_green_ci("spec", "o/r", "## Lane 2 Plan — H1\n")
         self.assertEqual(len(seen), 1)
 
-    def test_a_missing_platform_checkout_does_not_break_posting(self):
-        """Silent no-op rather than a hard failure: a sibling directory moving
-        must never make a repo unable to report a gate result at all."""
+    def test_an_unavailable_checker_fails_closed(self):
+        """The checker is colocated with this canonical platform script; if
+        it cannot run, a PASS must not be published without verification."""
         with mock.patch.object(P, "check_gate_result", None):
-            P.require_green_ci("gate-result", "o/r", self.PASS_BODY)
+            with self.assertRaises(TypeError):
+                P.require_green_ci("gate-result", "o/r", self.PASS_BODY)
 
 
 class GateCheckIsActuallyWiredTests(unittest.TestCase):

@@ -38,12 +38,7 @@ _FORGE = _FORGE_ROOT / "tools" / "gh"
 if _FORGE.is_dir():
     sys.path.insert(0, str(_FORGE))
 
-try:
-    from gate_ci import check_gate_result
-except ImportError:  # pragma: no cover - platform checkout absent
-    # None, not a raise: a sibling directory moving must never make a repo
-    # unable to report a gate result at all.
-    check_gate_result = None
+from gate_ci import check_gate_result
 
 # harmonic-forge#691 (AC1'). This is the THIRD marker-posting tool -- the
 # one the pre-rescope design missed, despite it being the actual path
@@ -310,8 +305,6 @@ def require_green_ci(kind: str, repo: str, body: str) -> None:
     # `lane_state.py` does, and returns cleanly for anything that is not one;
     # asking it every time means the two can never disagree about what a gate
     # report IS.
-    if check_gate_result is None:
-        return
     ok, message = check_gate_result(repo, body)
     if not ok:
         fail(message)
