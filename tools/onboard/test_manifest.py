@@ -153,6 +153,16 @@ class FailLoudlyTests(unittest.TestCase):
                     MINIMAL + PROTOCOL.replace("{checkout}-lane{lane}", replacement),
                     "may use only {checkout} and {lane}")
 
+    def test_worktree_shape_rejects_a_non_string_without_a_traceback(self) -> None:
+        self.assertRaisesManifest(
+            MINIMAL + PROTOCOL.replace('"{checkout}-lane{lane}"', "7"),
+            "protocol.worktree_name must be a string")
+
+    def test_onboarded_must_be_a_boolean(self) -> None:
+        self.assertRaisesManifest(
+            MINIMAL + 'onboarded = "false"\n' + PROTOCOL,
+            "onboarded must be boolean")
+
 
 class WorktreeTests(unittest.TestCase):
     def test_worktrees_default_to_the_checkouts_parent(self) -> None:
@@ -307,6 +317,15 @@ class ViewTests(unittest.TestCase):
             project = mf.require_onboarded_repo("https://github.com/owner/known.git", path)
             self.assertEqual(project.checkout, checkout.resolve())
 
+    def test_closed_registry_rejects_suffix_aliases(self) -> None:
+        path = write(MINIMAL.replace(
+            'prefix = "A"',
+            'prefix = "A"\nrepo = "vitalharmony/hrse"\nonboarded = true') + PROTOCOL)
+        for value in ("garbage/vitalharmony/hrse",
+                      "https://evil.example/vitalharmony/hrse"):
+            with self.subTest(value=value), self.assertRaises(mf.ManifestError):
+                mf.require_onboarded_repo(value, path)
+
 
 class LiveManifestTests(unittest.TestCase):
     """Two properties that must hold for the shipped file. A fixture cannot
@@ -341,9 +360,18 @@ class LiveManifestTests(unittest.TestCase):
 
     def test_every_live_project_declares_protocol_inputs(self) -> None:
         projects = mf.load(LIVE)
-        self.assertTrue(all(project.protocol is not None for project in projects))
-        self.assertTrue(all(project.protocol.worktree_name for project in projects
-                            if project.protocol))
+        common = {
+            "worktree_name": "{checkout}-lane{lane}",
+            "l1_post_task": "l1-post",
+            "lane_comment_task": "lane-comment",
+            "gate_checkout_task": "gate-checkout",
+            "lane3_begin_task": "lane3-begin",
+        }
+        self.assertEqual(
+            {project.name: project.protocol for project in projects},
+            {name: mf.Protocol(**common, runs_lane3=name not in {"kenekted", "leasepal"})
+             for name in ("hrse", "harmonic-forge", "cymagraph-infra",
+                          "openclaw-projects", "kenekted", "leasepal")})
 
     def test_that_agreement_check_can_actually_fail(self) -> None:
         """Otherwise the assertion above is a check that always passes."""

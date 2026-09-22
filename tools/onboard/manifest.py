@@ -139,6 +139,9 @@ def _validate(projects: list[Project], target: Path) -> None:
     seen_prefix: dict[str, str] = {}
     seen_repo: dict[str, str] = {}
     for project in projects:
+        if not isinstance(project.onboarded, bool):
+            raise ManifestError(
+                f"{target}: {project.name} onboarded must be boolean")
         if len(project.prefix) != 1 or not project.prefix.isalpha():
             raise ManifestError(
                 f"{target}: {project.name} prefix {project.prefix!r} must be a "

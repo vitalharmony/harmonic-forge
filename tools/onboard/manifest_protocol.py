@@ -58,6 +58,9 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
         raise ManifestError(
             f"{target}: {project} protocol is missing key(s): "
             f"{', '.join(sorted(missing))}")
+    if not isinstance(raw["worktree_name"], str):
+        raise ManifestError(
+            f"{target}: {project} protocol.worktree_name must be a string")
     protocol = Protocol(**raw)
     task_fields = ("l1_post_task", "lane_comment_task", "gate_checkout_task",
                    "lane3_begin_task")
@@ -78,13 +81,16 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
 
 def normalize_repo(value: str) -> str:
     """Return a lowercase ``owner/name`` from a repo name or GitHub URL."""
-    text = value.strip().removesuffix(".git")
+    text = value.strip()
     text = re.sub(
-        r"^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)", "", text)
-    parts = [part for part in text.split("/") if part]
-    if len(parts) < 2:
+        r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)",
+        "", text, flags=re.IGNORECASE)
+    text = text.removesuffix(".git")
+    match = re.fullmatch(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", text)
+    if match is None or any(part in {".", ".."} for part in match.groups()):
         raise ManifestError(f"repo {value!r} is not owner/name")
-    return f"{parts[-2].lower()}/{parts[-1].lower()}"
+    owner, repo = match.groups()
+    return f"{owner.lower()}/{repo.lower()}"
 
 
 def lane_shorthand_prefixes(platform_root: Path | None = None) -> dict[str, str]:

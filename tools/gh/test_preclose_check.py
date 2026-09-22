@@ -255,6 +255,30 @@ runs_lane3 = true
                 self.plan(repo="example/future", tier="fast", allow_repo_mismatch=True)
         self.assertIn("onboarded = false", str(caught.exception))
 
+    def test_complete_also_refuses_a_not_onboarded_repo(self) -> None:
+        self.commit("scripts/ordinary.py")
+        manifest = self.repo / "projects.toml"
+        manifest.write_text("""
+[[project]]
+name = "future"
+prefix = "X"
+repo = "example/future"
+onboarded = false
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+runs_lane3 = true
+""")
+        args = _Args(repo="example/future", issue=1208, head="HEAD",
+                     allow_repo_mismatch=True)
+        with patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(manifest)}):
+            with self.assertRaises(SystemExit) as caught:
+                preclose.complete(args)
+        self.assertIn("onboarded = false", str(caught.exception))
+
 
 class OnePassTests(ScratchRepo):
     """Deliberately NOT patching the receipt location -- patching it to a fixed

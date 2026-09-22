@@ -309,12 +309,13 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
     )
     if result.returncode != 0:
         return []
+    declared = {path.resolve() for path in project.worktrees}
     gaps = []
     for line in result.stdout.splitlines():
         if not line.startswith("worktree "):
             continue
         path = Path(line.split(" ", 1)[1])
-        if path == project.checkout:
+        if path.resolve() == project.checkout or path.resolve() not in declared:
             continue
         settings = path / ".claude" / "settings.json"
         if not settings.is_file():
@@ -519,8 +520,9 @@ def advance_stale_worktrees(project: Project,
     changes has the same shape; #560 is just where it became visible.
     """
     done: list[Check] = []
+    declared = {path.name: path for path in project.worktrees}
     for name in stale_worktree_hook_gaps(project):
-        path = project.checkout.parent / name if project.checkout else Path(name)
+        path = declared[name]
         safe, why = _worktree_is_safe_to_advance(path)
         if not safe:
             done.append(Check(f"worktree {name}", FAIL, f"stale, NOT advanced: {why}"))

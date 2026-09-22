@@ -574,3 +574,30 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
         git_dir = Path(self._git("rev-parse", "--absolute-git-dir", cwd=path).stdout.strip())
         (git_dir / "LANE3_ACTIVE").write_text("garbage\n")
         self.assertTrue(fo._worktree_is_safe_to_advance(path)[0])
+
+    def test_reconciliation_uses_declared_path_and_ignores_disabled_lane3(self):
+        lanes = self.root / "lanes"
+        lanes.mkdir()
+        lane2 = lanes / "lane2-repo"
+        lane3 = lanes / "lane3-repo"
+        for path in (lane2, lane3):
+            self._git("worktree", "add", "-q", "--detach", str(path), "HEAD")
+            settings = path / ".claude" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(json.dumps({"hooks": {"SessionStart": [{
+                "matcher": "startup|resume",
+                "hooks": [{"command": "python3 belt_wakeup.py"}],
+            }]}}))
+        project = mf.Project(
+            name="repo", prefix="R", path=str(self.repo), worktree_dir=str(lanes),
+            protocol=mf.Protocol(
+                worktree_name="lane{lane}-{checkout}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", runs_lane3=False))
+
+        self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
+        with mock.patch.object(fo, "_worktree_is_safe_to_advance",
+                               return_value=(True, "safe")) as safety:
+            checks = fo.advance_stale_worktrees(project, dry_run=True)
+        safety.assert_called_once_with(lane2)
+        self.assertEqual([check.name for check in checks], [f"worktree {lane2.name}"])
