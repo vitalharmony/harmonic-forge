@@ -48,6 +48,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+
+from manifest import (  # noqa: E402
+    ManifestError, normalize_repo as normalize_manifest_repo,
+    require_onboarded_repo,
+)
+
 # A change under any of these runs on every session, every commit, or every
 # gate -- so its failure mode is silent and total rather than local.
 HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -116,12 +123,20 @@ def normalize_repo(value: str) -> str:
     Without this, `vitalharmony/HRSE` and a full URL each mint their own
     receipt for the same work, re-arming the one-pass rule for free.
     """
-    text = value.strip().removesuffix(".git")
-    text = re.sub(r"^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)", "", text)
-    parts = [part for part in text.split("/") if part]
-    if len(parts) < 2:
-        raise SystemExit(f"preclose-check: --repo must be owner/name, got {value!r}")
-    return f"{parts[-2].lower()}/{parts[-1].lower()}"
+    try:
+        return normalize_manifest_repo(value)
+    except ManifestError as exc:
+        raise SystemExit(f"preclose-check: {exc}") from exc
+
+
+def registered_repo(value: str) -> str:
+    """Resolve through projects.toml's closed, onboarded-only registry."""
+    try:
+        project = require_onboarded_repo(value)
+    except ManifestError as exc:
+        raise SystemExit(f"preclose-check: {exc}") from exc
+    assert project.repo is not None
+    return project.repo
 
 
 def origin_repo() -> str | None:
@@ -279,7 +294,7 @@ def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
 
 
 def plan(args: argparse.Namespace) -> int:
-    repo = normalize_repo(args.repo)
+    repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     check_one_pass(repo, args.issue, head_sha, args.force)
 
@@ -339,7 +354,7 @@ def complete(args: argparse.Namespace) -> int:
     consumed its one pass without a single refuter running, and the retry was
     then refused with a message asserting a review that never happened.
     """
-    repo = normalize_repo(args.repo)
+    repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     prior = read_receipt(receipt_path(repo, args.issue))
     size = prior.get("refuters", 0) if prior else 0

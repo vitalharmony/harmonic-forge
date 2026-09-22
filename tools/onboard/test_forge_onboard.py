@@ -73,7 +73,12 @@ class Base(unittest.TestCase):
     def project(self, checkout: Path | None, **kw) -> mf.Project:
         fields = {"name": "thing", "prefix": "H", "repo": "o/thing",
                   "account": "vitalharmony", "path": str(checkout) if checkout else None,
-                  "board_owner": "vitalharmony", "board_number": "1"}
+                  "board_owner": "vitalharmony", "board_number": "1",
+                  "protocol": mf.Protocol(
+                      worktree_name="{checkout}-lane{lane}",
+                      l1_post_task="l1-post", lane_comment_task="lane-comment",
+                      gate_checkout_task="gate-checkout", lane3_begin_task="lane3-begin",
+                      runs_lane3=True)}
         fields.update(kw)
         return mf.Project(**fields)
 
@@ -111,6 +116,10 @@ class VerifyTests(Base):
         self.assertNotIn(fo.FAIL, got.values(), got)
         for name in ("checkout", "lane worktrees", "directives", "hooks"):
             self.assertEqual(got[name], fo.SKIP)
+
+    def test_missing_protocol_fails_its_own_check(self) -> None:
+        got = self.statuses(self.project(self.make_repo("noprotocol"), protocol=None))
+        self.assertEqual(got["protocol"], fo.FAIL)
 
     def test_a_settings_file_with_no_hooks_block_fails(self) -> None:
         """AC2 names hooks DRIFT as the expected real-world gap, and the only
@@ -201,9 +210,19 @@ class ExitCodeTests(Base):
             account = "vitalharmony"
             board_owner = "vitalharmony"
             board_number = "1"
+            onboarded = true
         """)
         if repo is not None:
             body += f'path = "{repo}"\n'
+        body += textwrap.dedent("""
+            [project.protocol]
+            worktree_name = "{checkout}-lane{lane}"
+            l1_post_task = "l1-post"
+            lane_comment_task = "lane-comment"
+            gate_checkout_task = "gate-checkout"
+            lane3_begin_task = "lane3-begin"
+            runs_lane3 = true
+        """)
         path = self.root / "projects.toml"
         path.write_text(body, encoding="utf-8")
         return path
@@ -555,3 +574,30 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
         git_dir = Path(self._git("rev-parse", "--absolute-git-dir", cwd=path).stdout.strip())
         (git_dir / "LANE3_ACTIVE").write_text("garbage\n")
         self.assertTrue(fo._worktree_is_safe_to_advance(path)[0])
+
+    def test_reconciliation_uses_declared_path_and_ignores_disabled_lane3(self):
+        lanes = self.root / "lanes"
+        lanes.mkdir()
+        lane2 = lanes / "lane2-repo"
+        lane3 = lanes / "lane3-repo"
+        for path in (lane2, lane3):
+            self._git("worktree", "add", "-q", "--detach", str(path), "HEAD")
+            settings = path / ".claude" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(json.dumps({"hooks": {"SessionStart": [{
+                "matcher": "startup|resume",
+                "hooks": [{"command": "python3 belt_wakeup.py"}],
+            }]}}))
+        project = mf.Project(
+            name="repo", prefix="R", path=str(self.repo), worktree_dir=str(lanes),
+            protocol=mf.Protocol(
+                worktree_name="lane{lane}-{checkout}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", runs_lane3=False))
+
+        self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
+        with mock.patch.object(fo, "_worktree_is_safe_to_advance",
+                               return_value=(True, "safe")) as safety:
+            checks = fo.advance_stale_worktrees(project, dry_run=True)
+        safety.assert_called_once_with(lane2)
+        self.assertEqual([check.name for check in checks], [f"worktree {lane2.name}"])

@@ -3,6 +3,18 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(onboard): address F705 preclose findings
+- tools/onboard/manifest_protocol.py  | 16 +++++++++++-----
+- tools/onboard/test_forge_onboard.py | 27 +++++++++++++++++++++++++++
+- tools/onboard/test_manifest.py      | 34 +++++++++++++++++++++++++++++++---
+- 6 files changed, 100 insertions(+), 10 deletions(-)
+
+## feat(onboard): declare portable protocol config (F705)
+- tools/onboard/manifest_protocol.py  | 108 ++++++++++++++++++++++++++++++++++++
+- tools/onboard/test_forge_onboard.py |  21 ++++++-
+- tools/onboard/test_manifest.py      |  79 ++++++++++++++++++++++++++
+- 9 files changed, 368 insertions(+), 47 deletions(-)
+
 ## fix(hygiene): validate retroactive shipped/shipped-inert determinations on pre-gate phase closures (harmonic-forge#673)
 - tools/gh/repo_hygiene.py      |  6 ++++--
 - tools/gh/test_repo_hygiene.py | 30 ++++++++++++++++++++++++++++++

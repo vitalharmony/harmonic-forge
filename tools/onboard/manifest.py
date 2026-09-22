@@ -22,14 +22,14 @@ and report clean. Both would look like success.
 from __future__ import annotations
 
 import os
-import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-
-class ManifestError(RuntimeError):
-    """The manifest is missing, unparseable, or internally inconsistent."""
+from manifest_protocol import (
+    ManifestError, Protocol, lane_shorthand_prefixes, load_protocol,
+    normalize_repo,
+)
 
 
 def manifest_path() -> Path:
@@ -57,6 +57,7 @@ class Project:
     board_number: str | None = None
     milestones: bool = False
     onboarded: bool = False
+    protocol: Protocol | None = None
 
     @property
     def checkout(self) -> Path | None:
@@ -67,7 +68,7 @@ class Project:
         the loader to drop the row -- dropping it would make a missing checkout
         indistinguishable from a repo nobody onboarded.
         """
-        return Path(self.path).expanduser() if self.path else None
+        return Path(self.path).expanduser().resolve() if self.path else None
 
     @property
     def worktrees(self) -> list[Path]:
@@ -79,9 +80,12 @@ class Project:
         """
         if self.checkout is None:
             return []
-        parent = (Path(self.worktree_dir).expanduser() if self.worktree_dir
+        parent = (Path(self.worktree_dir).expanduser().resolve() if self.worktree_dir
                   else self.checkout.parent)
-        return [parent / f"{self.checkout.name}-lane{n}" for n in (2, 3)]
+        names = (self.protocol.worktree_names(self.checkout.name)
+                 if self.protocol else
+                 [f"{self.checkout.name}-lane{n}" for n in (2, 3)])
+        return [parent / name for name in names]
 
     @property
     def board(self) -> tuple[str, str] | None:
@@ -121,7 +125,11 @@ def load(path: Path | None = None) -> list[Project]:
             raise ManifestError(
                 f"{target}: {entry['name']} has unknown key(s): "
                 f"{', '.join(sorted(unknown))}")
-        projects.append(Project(**entry))
+        if entry.get("repo"):
+            entry["repo"] = normalize_repo(str(entry["repo"]))
+        protocol_entry = entry.pop("protocol", None)
+        protocol = load_protocol(protocol_entry, target, str(entry["name"]))
+        projects.append(Project(**entry, protocol=protocol))
 
     _validate(projects, target)
     return projects
@@ -131,6 +139,9 @@ def _validate(projects: list[Project], target: Path) -> None:
     seen_prefix: dict[str, str] = {}
     seen_repo: dict[str, str] = {}
     for project in projects:
+        if not isinstance(project.onboarded, bool):
+            raise ManifestError(
+                f"{target}: {project.name} onboarded must be boolean")
         if len(project.prefix) != 1 or not project.prefix.isalpha():
             raise ManifestError(
                 f"{target}: {project.name} prefix {project.prefix!r} must be a "
@@ -153,6 +164,26 @@ def _validate(projects: list[Project], target: Path) -> None:
         if project.onboarded and not project.repo:
             raise ManifestError(
                 f"{target}: {project.name} is onboarded but declares no repo")
+        if project.onboarded and project.protocol is None:
+            raise ManifestError(
+                f"{target}: {project.name} is onboarded but declares no [project.protocol]")
+
+
+def require_onboarded_repo(value: str, path: Path | None = None) -> Project:
+    """Resolve one operational repo, refusing an open/defaulting registry."""
+    target = path or manifest_path()
+    repo = normalize_repo(value)
+    project = by_repo(target).get(repo)
+    if project is None:
+        raise ManifestError(
+            f"{target}: no [[project]] entry for {repo}; the registry is closed")
+    if not project.onboarded:
+        raise ManifestError(
+            f"{target}: {repo} is declared with onboarded = false; refusing")
+    if project.protocol is None:
+        raise ManifestError(
+            f"{target}: {repo} has no [project.protocol] declaration")
+    return project
 
 
 def by_repo(path: Path | None = None) -> dict[str, Project]:
@@ -240,34 +271,6 @@ def prefix_repos(path: Path | None = None) -> dict[str, str]:
     map here.
     """
     return {p.prefix.lower(): p.repo for p in load(path) if p.repo}
-
-
-def lane_shorthand_prefixes(platform_root: Path | None = None) -> dict[str, str]:
-    """`{PREFIX: repo-or-name}` as `rules/lane-shorthand.md` states it.
-
-    `expand_lane_shorthand.py` parses that table at runtime and is NOT rewired
-    to the manifest: the doc is prose a human reads and the parser already
-    treats it as the single source. Duplicating it into the manifest would
-    recreate exactly the drift this file exists to end -- so the manifest does
-    not own the prefixes, it is CHECKED against them.
-    """
-    root = platform_root or Path(__file__).resolve().parents[2]
-    text = (root / "rules" / "lane-shorthand.md").read_text(encoding="utf-8")
-    table: dict[str, str] = {}
-    in_section = False
-    for line in text.splitlines():
-        if line.startswith("## "):
-            in_section = line.strip() == "## Repo prefixes"
-            continue
-        if not in_section or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        match = re.match(r"^`([A-Za-z])`$", cells[0])
-        if match:
-            table[match.group(1)] = cells[1].strip("`")
-    return table
 
 
 def check_prefix_agreement(path: Path | None = None,

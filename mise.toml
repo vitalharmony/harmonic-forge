@@ -172,6 +172,10 @@ python3 tools/onboard/forge_onboard.py \\
   ${usage_manifest:+--manifest "$usage_manifest"}
 """
 
+[tasks.manifest-test]
+description = "Unit tests for projects.toml's single accessor and forge-onboard consumers (harmonic-forge#705)."
+run = "python3 -m unittest tools.onboard.test_manifest tools.onboard.test_forge_onboard -v"
+
 [tasks.memory-triage]
 description = "Classify every feedback memory against the rule registries and emit promotion dispositions (harmonic-forge#495). Read-only on the store, both repos and GitHub — it proposes, never edits or files. DUP/LOCAL/STATE are decided mechanically from frontmatter; FOLD rows carry RANKED rule candidates, not a verdict, because no similarity cutoff separates 'already a rule' from 'about the same subject' in a 261-rule single-protocol corpus. The judgment layer is skills/memory-triage/SKILL.md."
 usage = '''
