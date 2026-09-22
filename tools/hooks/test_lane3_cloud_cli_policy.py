@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for hrse#327's Lane 3 cloud-CLI policy.
+"""Tests for Lane 3's cloud-CLI policy.
 
 The live gate that motivated this issue ran `kubectl delete pod <nonexistent>`
 and got `NotFound` back from the real Kubernetes API — i.e. nothing refused
@@ -56,7 +56,7 @@ class MutatingCommandTests(unittest.TestCase):
         reason = policy.denial_reason("kubectl delete pod p")
         self.assertIn("kubectl delete", reason)
         self.assertIn("kubectl get", reason)
-        self.assertIn("hrse#327", reason)
+        self.assertIn("allow-list", reason)
 
 
 class CompoundCommandTests(unittest.TestCase):
@@ -76,7 +76,7 @@ class CompoundCommandTests(unittest.TestCase):
 
 
 class WrapperBypassTests(unittest.TestCase):
-    """hrse#327 NC2 — all four confirmed live against the real parser, each
+    """NC2 — all four confirmed live against the real parser, each
     of which puts the WRAPPER in segment[0] and hides the real program."""
 
     def test_env_assignment_wrapper_is_resolved_through(self):
@@ -103,7 +103,7 @@ class WrapperBypassTests(unittest.TestCase):
 
 
 class FailClosedTests(unittest.TestCase):
-    """hrse#327 NC1 — a safety guard fails closed, unlike the quality guards."""
+    """NC1 — a safety guard fails closed, unlike the quality guards."""
 
     def test_unparseable_command_is_denied(self):
         # An unbalanced quote makes shlex raise; the guard must deny, not crash
@@ -152,7 +152,7 @@ class HookEntryPointTests(unittest.TestCase):
         decision = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(decision["hookEventName"], "PreToolUse")
         self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("hrse#327", decision["permissionDecisionReason"])
+        self.assertIn("allow-list", decision["permissionDecisionReason"])
 
     def test_lane3_allows_a_safe_command_silently(self):
         self.assertEqual(self._run("kubectl get nodes", lane="3").strip(), "")
