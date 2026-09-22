@@ -38,6 +38,12 @@ def git(*args: str, cwd: Path) -> None:
     subprocess.run(("git", *args), cwd=cwd, check=True, capture_output=True)
 
 
+ANCHORED = {"anchor": "scripts/x.py:12", "scenario": "input Y crashes at line 12"}
+CROSS = "Red-team provenance: cross-family (codex / gpt-x) — 2 of 2 assumption(s) checked"
+NOT_TRIGGERED = "Red-team provenance: in-family only (claude-opus-5) — cross-family branch not triggered"
+FALLBACK = "Red-team provenance: in-family fallback (claude-opus-5) — status process-error"
+
+
 class ScratchRepo(unittest.TestCase):
     """A real git repo, because the defects found live in git interaction."""
 
@@ -59,6 +65,19 @@ class ScratchRepo(unittest.TestCase):
         self.cwd = os.getcwd()
         os.chdir(self.repo)
         self.addCleanup(os.chdir, self.cwd)
+        # harmonic-forge#701: labels are computed by the provenance tool, never
+        # typed. A stand-in echoes the envelope's text, or the not-triggered label.
+        tool = self.repo.parent / f"{self.repo.name}-provenance.py"
+        tool.write_text(
+            "import sys\n"
+            "if '--not-triggered' in sys.argv:\n"
+            f"    print({NOT_TRIGGERED!r})\n"
+            "else:\n"
+            "    print(open(sys.argv[sys.argv.index('--envelope') + 1]).read().strip())\n")
+        self.addCleanup(lambda: tool.unlink(missing_ok=True))
+        patcher = patch.object(preclose, "PROVENANCE_TOOL", tool)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def commit(self, relpath: str, body: str = "x\n") -> None:
         target = self.repo / relpath
@@ -66,6 +85,31 @@ class ScratchRepo(unittest.TestCase):
         target.write_text(body)
         git("add", "-A", cwd=self.repo)
         git("commit", "-qm", f"add {relpath}", cwd=self.repo)
+
+    def findings_file(self, findings: list) -> str:
+        path = Path(tempfile.mkdtemp()) / "findings.json"
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        path.write_text(json.dumps(findings))
+        return str(path)
+
+    def complete(self, findings: list | None = None, envelope_label: str | None = CROSS,
+                 not_triggered: bool = False, cross_family: bool = False,
+                 force: bool = False) -> str:
+        """harmonic-forge#701: a completion carries the panel's findings and an
+        envelope (or --not-triggered); the label is computed from it. Default:
+        a silent panel, cross-family taken."""
+        findings = [] if findings is None else findings
+        envelope = None
+        if not not_triggered:
+            envelope = self.findings_file([])[:-len("findings.json")] + "envelope.txt"
+            Path(envelope).write_text(envelope_label or "")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                    findings=self.findings_file(findings), envelope=envelope,
+                                    not_triggered=not_triggered, cross_family=cross_family,
+                                    force=force))
+        return buffer.getvalue()
 
     def plan(self, **overrides) -> str:
         args = {"repo": "vitalharmony/hrse", "issue": 1208, "base": "base", "head": "HEAD",
@@ -297,7 +341,7 @@ class OnePassTests(ScratchRepo):
     def test_a_completed_pass_on_the_same_diff_is_refused(self) -> None:
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
+        self.complete()
         with self.assertRaises(SystemExit) as caught:
             self.plan(tier="fast")
         self.assertIn("escalate", str(caught.exception).lower())
@@ -306,7 +350,7 @@ class OnePassTests(ScratchRepo):
         """The correct response to a finding must not be gated behind --force."""
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
+        self.complete()
         self.commit("scripts/revised.py")
         self.assertIn("refuters:", self.plan(tier="fast"))
 
@@ -314,7 +358,7 @@ class OnePassTests(ScratchRepo):
         """Reproduced by four refuters: `cd scripts` defeated the whole guard."""
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
+        self.complete()
         subdir = self.repo / "scripts"
         os.chdir(subdir)
         with self.assertRaises(SystemExit):
@@ -323,7 +367,7 @@ class OnePassTests(ScratchRepo):
     def test_force_overrides_a_completed_receipt(self) -> None:
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
+        self.complete()
         self.assertIn("refuters:", self.plan(tier="fast", force=True))
 
     def test_a_corrupt_receipt_re_reviews_rather_than_crashing_or_refusing(self) -> None:
@@ -340,7 +384,7 @@ class OnePassTests(ScratchRepo):
     def test_completion_records_the_reviewed_sha_and_status(self) -> None:
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
+        self.complete()
         stored = json.loads(preclose.receipt_path("vitalharmony/hrse", 1208).read_text())
         self.assertEqual(stored["status"], "complete")
         self.assertEqual(stored["reviewed_sha"], self.head())
@@ -357,10 +401,9 @@ class OutputInvariantTests(ScratchRepo):
     def test_no_pass_verdict_in_completion_output(self) -> None:
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
-        self.assertNotRegex(buffer.getvalue(), r"\bPASS\b")
+        out = self.complete()
+        self.assertTrue(out, "the completion output must be captured, or this test is vacuous")
+        self.assertNotRegex(out, r"\bPASS\b")
 
     def test_plan_output_states_it_is_not_a_gate(self) -> None:
         """The half of the AC that carries the design decision."""
@@ -370,10 +413,142 @@ class OutputInvariantTests(ScratchRepo):
     def test_completion_output_states_it_is_not_a_gate(self) -> None:
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="HEAD"))
-        self.assertIn("not a Lane 3 gate", buffer.getvalue())
+        self.assertIn("not a Lane 3 gate", self.complete())
+
+
+
+class CrossFamilyGateTests(unittest.TestCase):
+    """harmonic-forge#701: the gate is evaluated after the panel, and silence
+    triggers while findings do not."""
+
+    def test_zero_survivors_triggers(self) -> None:
+        required, why = preclose.cross_family_gate(0, [], False)
+        self.assertTrue(required)
+        self.assertIn("silence", why)
+
+    def test_survivors_present_do_not_trigger(self) -> None:
+        self.assertFalse(preclose.cross_family_gate(2, [], False)[0])
+
+    def test_blast_radius_triggers_regardless_of_survivors(self) -> None:
+        reasons = preclose.blast_radius(["tools/hooks/x.py"])
+        self.assertTrue(preclose.cross_family_gate(5, reasons, False)[0])
+
+    def test_operator_request_triggers(self) -> None:
+        self.assertTrue(preclose.cross_family_gate(5, [], True)[0])
+
+    def test_tier_is_not_an_input(self) -> None:
+        """The issue forbids Tier as the gate (harmonic-forge#257)."""
+        import inspect
+        self.assertNotIn("tier", inspect.signature(preclose.cross_family_gate).parameters)
+
+    def test_ten_unanchored_findings_are_zero_survivors_and_trigger(self) -> None:
+        """AC4: survivors, not generations."""
+        guesses = [{"anchor": "somewhere in the hook", "scenario": "might break"}] * 5 + \
+                  [{"anchor": "scripts/x.py:3", "scenario": ""}] * 5
+        survivors = preclose.surviving_findings(guesses)
+        self.assertEqual(survivors, [])
+        self.assertTrue(preclose.cross_family_gate(len(survivors), [], False)[0])
+
+    def test_an_anchored_finding_with_a_scenario_survives(self) -> None:
+        self.assertEqual(len(preclose.surviving_findings([ANCHORED, {"anchor": "a.py:1-4", "scenario": "s"}])), 2)
+
+
+class CrossFamilyReceiptTests(ScratchRepo):
+    """AC3/AC5/AC6 on the real entry points."""
+
+    def test_one_pass_with_both_halves_writes_one_receipt_against_one_sha(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([])                                  # silent -> cross-family taken
+        receipts = list((self.repo / ".claude" / "cache" / "preclose").glob("*.json"))
+        self.assertEqual(len(receipts), 1)
+        stored = json.loads(receipts[0].read_text())
+        head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=self.repo, text=True,
+                              capture_output=True).stdout.strip()
+        self.assertEqual(stored["reviewed_sha"], head)
+        self.assertTrue(stored["cross_family_required"])
+        self.assertIn("cross-family (", stored["provenance"])
+        with self.assertRaises(SystemExit):                # still ONE pass per diff
+            self.plan()
+
+    def test_not_triggered_path_still_records_provenance(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([ANCHORED], not_triggered=True)
+        stored = json.loads(next((self.repo / ".claude" / "cache" / "preclose").glob("*.json")).read_text())
+        self.assertFalse(stored["cross_family_required"])
+        self.assertEqual(stored["provenance"], NOT_TRIGGERED)
+
+    def test_required_branch_refuses_a_same_family_label(self) -> None:
+        """AC5: a same-family pass cannot be recorded as two-family, or vice versa."""
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit) as caught:
+            self.complete([], not_triggered=True)
+        self.assertIn("required", str(caught.exception))
+
+    def test_not_triggered_refuses_a_cross_family_label(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit):
+            self.complete([ANCHORED])
+
+    def test_fallback_label_is_accepted_when_the_call_could_not_run(self) -> None:
+        """AC6: loud, non-fatal, never relabelled."""
+        self.commit("scripts/tool.py")
+        self.plan()
+        out = self.complete([], envelope_label=FALLBACK)
+        self.assertIn("in-family fallback", out)
+
+    def test_high_blast_diff_requires_the_branch_even_with_survivors(self) -> None:
+        self.commit("tools/hooks/guard.py")
+        self.plan()
+        with self.assertRaises(SystemExit):
+            self.complete([ANCHORED], not_triggered=True)
+
+    def test_complete_without_findings_or_provenance_is_refused(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit):
+            preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                    findings=None, envelope=None, not_triggered=False,
+                                    cross_family=False, force=False))
+
+    def test_the_recorded_label_is_the_tools_output_not_typed(self) -> None:
+        """Preclose finding B: there is no flag to type a label; what is recorded
+        is exactly what the provenance tool printed for the envelope."""
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([], envelope_label=CROSS + " [from envelope]")
+        stored = json.loads(next((self.repo / ".claude" / "cache" / "preclose").glob("*.json")).read_text())
+        self.assertEqual(stored["provenance"], CROSS + " [from envelope]")
+        self.assertFalse(hasattr(preclose, "PROVENANCE_FLAG"))
+        import argparse, inspect
+        self.assertNotIn("--provenance", inspect.getsource(preclose.main))
+
+    def test_an_envelope_that_classifies_as_in_family_only_cannot_satisfy_a_required_branch(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit):
+            self.complete([], envelope_label=NOT_TRIGGERED)
+
+    def test_a_second_complete_on_the_same_sha_cannot_relabel_the_pass(self) -> None:
+        """Preclose finding C."""
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([])
+        with self.assertRaises(SystemExit) as caught:
+            self.complete([ANCHORED], not_triggered=True)
+        self.assertIn("already covers", str(caught.exception))
+
+    def test_dismissed_findings_are_not_survivors(self) -> None:
+        """Preclose finding A: a pass that dismissed every finding is silence."""
+        dismissed = dict(ANCHORED, dismissed="predates this change")
+        self.assertEqual(preclose.surviving_findings([dismissed] * 3), [])
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit):              # required, so not-triggered is refused
+            self.complete([dismissed], not_triggered=True)
 
 
 if __name__ == "__main__":

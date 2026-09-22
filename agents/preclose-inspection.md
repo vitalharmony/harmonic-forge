@@ -88,7 +88,7 @@ found, not on any one refuter. The trigger, when ANY of these holds:
    findings do not.** A finding that fails the `file:line` bar does not count
    as a finding, so ten unanchored guesses are still silence.
 2. **The diff touches a deny or permission surface**: the same high-blast
-   patterns that size the panel (`scripts/preclose_check.py`
+   patterns that size the panel (`tools/gh/preclose_check.py`
    `blast_radius()`), not a second list.
 3. **The operator asks for it.**
 
@@ -97,7 +97,7 @@ findings count above zero (there is already work to do, and the clean re-run
 after the fix is where criterion 1 fires), or diff size.
 
 The branch is part of the same **one** pass, never a second round.
-`scripts/preclose_check.py --gate` evaluates the trigger, and `--complete`
+`tools/gh/preclose_check.py --gate` evaluates the trigger, and `--complete`
 records both halves in one receipt, under the provenance label.
 
 **The mechanism itself is not described here.** Read

@@ -89,6 +89,27 @@ LENSES: tuple[str, ...] = (
 
 TIER_PANEL = {"fast": 1, "standard": 3, "deep": 5}
 
+# harmonic-forge#701. The file:line anchor a finding must carry to survive the
+# filter. `path:line` or `path:line-line`, the shape the plan output demands.
+_ANCHOR = re.compile(r"\S+:\d+(-\d+)?")
+
+# Prefixes of the labels `cross_family_provenance.py` prints. The label is
+# computed there and pasted here, never composed (rules/cross-family-review.md
+# R-0359). These only CLASSIFY a pasted label; nothing here writes one.
+PROVENANCE_TRIGGERED = ("Red-team provenance: cross-family (",
+                        "Red-team provenance: in-family fallback (")
+PROVENANCE_NOT_TRIGGERED = "Red-team provenance: in-family only ("
+
+# preclose finding (three refuters): a prefix check on a TYPED label let a
+# hand-written "cross-family (" line record a two-family pass that never ran.
+# The label is now computed by running the platform classifier on the
+# envelope itself; there is no flag to type one.
+# Resolved beside this file, not under $HOME (harmonic-forge#713): the
+# planner is platform-owned since #704, and its sibling is the classifier.
+PROVENANCE_TOOL = Path(os.environ.get(
+    "PRECLOSE_PROVENANCE_TOOL",
+    Path(__file__).resolve().parents[1] / "lane" / "cross_family_provenance.py"))
+
 NOT_A_GATE = (
     "This is an adversarial pre-close check, not a Lane 3 gate. It raises the "
     "floor; it does not authorize closure. Closure remains the operator's "
@@ -194,6 +215,134 @@ def panel_size(reasons: list[str], tier: str | None) -> tuple[int, str]:
     return TIER_PANEL["standard"], "Tier unset — defaulting to standard"
 
 
+def surviving_findings(findings: list) -> list[dict]:
+    """The findings that survive the filter the plan output states (AC4).
+
+    A survivor carries a `file:line` anchor AND a concrete failure scenario.
+    Counted here, in code, because criterion 1 turns on this number: a panel
+    that produced ten unanchored guesses has zero survivors, and must trigger
+    exactly as a silent panel does.
+    """
+    kept = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        # preclose finding: a finding Lane 1 dismissed is not a survivor, however
+        # well anchored -- or a pass that dismissed everything never triggers.
+        if str(finding.get("dismissed") or "").strip():
+            continue
+        anchor = str(finding.get("anchor") or "").strip()
+        scenario = str(finding.get("scenario") or "").strip()
+        if _ANCHOR.fullmatch(anchor) and scenario:
+            kept.append(finding)
+    return kept
+
+
+def cross_family_gate(surviving: int, reasons: list[str], requested: bool) -> tuple[bool, str]:
+    """Whether this pass takes the cross-family branch (harmonic-forge#701).
+
+    Evaluated AFTER the panel and its filter, never inside `panel_size()`: that
+    runs before any refuter exists, and criterion 1 depends on what the panel
+    returned.
+
+    **Silence triggers; findings do not.** Counter-intuitive, so stated: a
+    unanimous no-defect verdict from one family is indistinguishable from a
+    blind spot that family shares with the implementer. When the panel already
+    found real defects there is work to do, and a second family only adds
+    latency to a decided outcome -- the clean re-run after the fix is where
+    criterion 1 fires. Tier and diff size are deliberately not inputs.
+    """
+    if requested:
+        return True, "operator requested"
+    if reasons:
+        return True, "high blast radius — a deny or permission surface: " + "; ".join(reasons)
+    if surviving == 0:
+        return True, "zero findings survived the filter — silence is the trigger"
+    return False, f"{surviving} finding(s) survived the filter — rework first, not a second family"
+
+
+def check_provenance(required: bool, label: str) -> None:
+    """The pasted provenance label must agree with the gate (AC5/AC6).
+
+    A required branch accepts `cross-family` or the loud `in-family fallback`
+    (the call could not run; rules/cross-family-review.md R-0360). A
+    not-required one accepts only the not-triggered label. Anything else is a
+    same-family pass being recorded as something it was not.
+    """
+    label = label.strip()
+    if required and not label.startswith(PROVENANCE_TRIGGERED):
+        raise SystemExit(
+            "preclose-check: the cross-family branch is required for this pass, but the provenance "
+            f"label is not a cross-family or in-family-fallback label:\n  {label!r}\n"
+            "Take the branch per rules/cross-family-review.md and paste the label "
+            "cross_family_provenance.py prints for its envelope. If the call could not run, that "
+            "label is the in-family fallback one -- never relabel it.")
+    if not required and not label.startswith(PROVENANCE_NOT_TRIGGERED):
+        raise SystemExit(
+            "preclose-check: the cross-family branch did not trigger, so the provenance label must "
+            f"be the not-triggered one (cross_family_provenance.py --not-triggered), got:\n  {label!r}")
+
+
+def compute_provenance(envelope: str | None, not_triggered: bool) -> str:
+    """Run `cross_family_provenance.py` and return the label it prints."""
+    if not_triggered == bool(envelope):
+        raise SystemExit("preclose-check: pass exactly one of --envelope <path> or --not-triggered.")
+    argv = ["python3", str(PROVENANCE_TOOL), "--envelope", envelope or "/dev/null"]
+    if not_triggered:
+        argv.append("--not-triggered")
+    result = run(*argv)
+    label = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if result.returncode or not label:
+        raise SystemExit(f"preclose-check: {PROVENANCE_TOOL.name} failed ({result.returncode}): "
+                         f"{result.stderr.strip() or 'no label printed'}")
+    return label
+
+
+def load_findings(path: str) -> list:
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"preclose-check: cannot read --findings {path}: {exc}")
+    if not isinstance(data, list):
+        raise SystemExit("preclose-check: --findings must be a JSON list of {anchor, scenario} objects")
+    return data
+
+
+def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
+    findings = load_findings(args.findings)
+    surviving = len(surviving_findings(findings))
+    reasons = blast_radius(changed_files(args.base, args.head))
+    required, why = cross_family_gate(surviving, reasons, args.cross_family)
+    return required, why, surviving, reasons
+
+
+def gate(args: argparse.Namespace) -> int:
+    """Print whether this pass takes the cross-family branch. Writes nothing."""
+    repo = registered_repo(args.repo)
+    required, why, surviving, _ = gate_decision(args)
+    print(f"preclose-check cross-family gate: {'REQUIRED' if required else 'not triggered'}")
+    print(f"  surviving findings: {surviving}")
+    print(f"  reason: {why}")
+    print()
+    if required:
+        print("Take the branch exactly as rules/cross-family-review.md states -- it is the whole")
+        print("mechanism, and nothing here restates it. It is part of this ONE pass, not a second")
+        print("round. Then paste the label cross_family_provenance.py prints for its envelope.")
+    else:
+        print("Record the not-triggered label: cross_family_provenance.py --not-triggered")
+        print("(rules/cross-family-review.md, Provenance).")
+    print()
+    print("Then record the pass with the same --findings. The label is computed from the")
+    print("envelope, never typed:")
+    tail = "--envelope <envelope path>" if required else "--not-triggered"
+    print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
+          f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} {tail}"
+          + (" --cross-family" if args.cross_family else ""))
+    print()
+    print(NOT_A_GATE)
+    return 0
+
+
 def receipt_path(repo: str, issue: int) -> Path:
     return receipt_dir() / f"{repo.replace('/', '_')}_{issue}.json"
 
@@ -235,13 +384,19 @@ def check_one_pass(repo: str, issue: int, head_sha: str, force: bool) -> None:
     )
 
 
-def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str) -> Path:
-    """Atomic, so an interrupted write cannot leave a half-file behind."""
+def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str,
+                  extra: dict | None = None) -> Path:
+    """Atomic, so an interrupted write cannot leave a half-file behind.
+
+    `extra` carries the cross-family half (harmonic-forge#701) in the SAME
+    receipt, under the same key -- one pass is one receipt, whichever families
+    it used (AC3).
+    """
     directory = receipt_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = receipt_path(repo, issue)
     payload = {"repo": repo, "issue": issue, "reviewed_sha": head_sha,
-               "refuters": size, "status": status}
+               "refuters": size, "status": status, **(extra or {})}
     handle = tempfile.NamedTemporaryFile("w", dir=directory, delete=False, suffix=".tmp")
     try:
         json.dump(payload, handle, indent=2)
@@ -338,9 +493,10 @@ def plan(args: argparse.Namespace) -> int:
     print("finding with the reason it was dismissed -- that is what makes this")
     print("auditable by the operator instead of another Lane 1 self-report.")
     print()
-    print(f"When the panel has actually run, record it:\n"
-          f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
-          f"--repo {repo} --issue {args.issue} --complete")
+    print("When the panel has actually run, write its findings to a JSON list of")
+    print("{anchor, scenario} objects and evaluate the cross-family gate:")
+    print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
+          f"--repo {repo} --issue {args.issue} --gate --findings <file>")
     print()
     print(NOT_A_GATE)
     write_receipt(repo, args.issue, head_sha, size, status="planned")
@@ -356,11 +512,30 @@ def complete(args: argparse.Namespace) -> int:
     """
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
+    if not args.findings:
+        raise SystemExit(
+            "preclose-check: --complete needs --findings (the panel's findings, JSON) and one of "
+            "--envelope/--not-triggered -- a pass is not complete until the cross-family gate "
+            "has been evaluated (harmonic-forge#701).")
+    # harmonic-forge#701 preclose finding (two refuters): without this, a
+    # second --complete on the same SHA overwrote the receipt and could
+    # relabel a required two-family pass as in-family only.
+    check_one_pass(repo, args.issue, head_sha, args.force)
+    required, why, surviving, _ = gate_decision(args)
+    provenance = compute_provenance(args.envelope, args.not_triggered)
+    check_provenance(required, provenance)
     prior = read_receipt(receipt_path(repo, args.issue))
     size = prior.get("refuters", 0) if prior else 0
-    path = write_receipt(repo, args.issue, head_sha, size, status="complete")
+    path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
+        "surviving_findings": surviving,
+        "cross_family_required": required,
+        "cross_family_reason": why,
+        "provenance": provenance,
+    })
     print(f"preclose-check: recorded a completed pass for {repo}#{args.issue} at {head_sha[:12]}")
     print(f"  receipt: {path}")
+    print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
+    print(f"  {provenance}")
     print()
     print(NOT_A_GATE)
     return 0
@@ -381,6 +556,16 @@ def main() -> None:
     parser.add_argument("--tier", choices=sorted(TIER_PANEL), help="Board Tier; omit to default to standard.")
     parser.add_argument("--complete", action="store_true",
                         help="Record that the panel actually ran. Planning alone does not.")
+    parser.add_argument("--gate", action="store_true",
+                        help="After the panel: evaluate the cross-family gate (harmonic-forge#701).")
+    parser.add_argument("--findings",
+                        help="JSON list of the panel's findings, each {anchor: 'path:line', scenario}.")
+    parser.add_argument("--envelope",
+                        help="With --complete: the cross-family call's envelope; its label is computed.")
+    parser.add_argument("--not-triggered", action="store_true",
+                        help="With --complete: the gate did not trigger; records the computed label.")
+    parser.add_argument("--cross-family", action="store_true",
+                        help="Operator asked for the cross-family branch (gate criterion 3).")
     parser.add_argument("--force", action="store_true",
                         help="Re-run despite a completed receipt for this same diff. Operator instruction only.")
     parser.add_argument("--allow-dirty", action="store_true",
@@ -388,6 +573,10 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    if args.gate:
+        if not args.findings:
+            parser.error("--gate needs --findings")
+        sys.exit(gate(args))
     sys.exit(complete(args) if args.complete else plan(args))
 
 
