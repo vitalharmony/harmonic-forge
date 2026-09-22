@@ -3,6 +3,29 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test: close F706 preclose coverage gaps
+- tools/gh/test_l1_post_ae_and_sweep.py       |  13 ++
+- tools/gh/test_l1_post_lead_real_corpus.py   | 226 ++++------------------------
+- tools/gh/test_post_lane_discussion_kinds.py |  11 ++
+- 3 files changed, 56 insertions(+), 194 deletions(-)
+
+## fix: fail closed when gate checker is unavailable
+- tools/gh/post_lane_discussion.py            | 9 +--------
+- tools/gh/test_post_lane_discussion_kinds.py | 9 +++++----
+- 2 files changed, 6 insertions(+), 12 deletions(-)
+
+## fix: preserve portable transport resolution
+- tools/gh/test_l1_post_hooks.py              | 37 +++++-----------
+- tools/gh/test_l1_post_sweep_cases.py        | 33 +++++++-------
+- tools/gh/test_post_lane_discussion_kinds.py | 23 ++++++++++
+- 5 files changed, 86 insertions(+), 113 deletions(-)
+
+## feat: move Lane 1 publish transport to platform
+- tools/gh/test_l1_post_sweep_cases.py               |  365 +++++
+- .../gh/test_post_lane_discussion_belt_candidate.py |  124 ++
+- tools/gh/test_post_lane_discussion_kinds.py        |  341 ++++
+- 26 files changed, 6591 insertions(+), 27 deletions(-)
+
 ## fix(onboard): address F705 preclose findings
 - tools/onboard/manifest_protocol.py  | 16 +++++++++++-----
 - tools/onboard/test_forge_onboard.py | 27 +++++++++++++++++++++++++++

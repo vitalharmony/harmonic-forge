@@ -4,7 +4,7 @@ pattern for `_ACCEPT_WRITERS`): `{files in this repo that emit an
 "l1-post v1" footer} == {files in this repo that import belt_candidates}`.
 
 The pre-rescope design instrumented `l2_post.py` as a writer but never
-`post_lane_discussion.py` (in HRSE2) -- a second, undercovered writer that
+`post_lane_discussion.py` -- a second, undercovered writer that
 was silent about being undercovered, exactly the class of drift hrse#1882
 made a test for rather than a third prose reminder. This is that same
 fix, generalized to files rather than a candidate-type dict: an emitter is
@@ -14,10 +14,8 @@ fourth writer in this repo that stamps the footer without importing the
 recorder fails this test the moment it lands, rather than needing a fifth
 prose reminder.
 
-HRSE2 carries the other half of this same registry
-(`test_belt_candidate_registry.py`, HRSE2) for its own two writers
-(`l1_post.py`, `post_lane_discussion.py`) -- each repo checks only the
-files physically inside it, since a writer can only ever live in one.
+F706 moved the two HRSE-owned writers and their registry responsibility here,
+so this one scan now covers all three platform-owned marker emitters.
 
 Run: python3 tools/gh/test_belt_candidate_registry.py
 """
@@ -94,13 +92,14 @@ class BeltCandidateRegistryTests(unittest.TestCase):
             "successful post (harmonic-forge#691 AC1'/AC6')",
         )
 
-    def test_l2_post_is_a_known_emitter_and_importer(self):
+    def test_all_three_platform_writers_are_known_emitters_and_importers(self):
         """Sanity floor: the scan above must not pass vacuously because it
         found zero files on either side."""
         emitters = {p.name for p in _candidate_files() if _is_emitter(p)}
         importers = {p.name for p in _candidate_files() if _imports_belt_candidates(p)}
-        self.assertIn("l2_post.py", emitters)
-        self.assertIn("l2_post.py", importers)
+        for name in ("l1_post.py", "l2_post.py", "post_lane_discussion.py"):
+            self.assertIn(name, emitters)
+            self.assertIn(name, importers)
 
 
 if __name__ == "__main__":

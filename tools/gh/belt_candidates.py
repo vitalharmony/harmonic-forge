@@ -12,11 +12,11 @@ fixed once and which removing the scan without a replacement reopened.
 **One module, three writers, one reader.** Every place any `l1-post v1`
 marker is ever written calls `record_candidate` on every successful post:
 
-    l1_post.py            (HRSE2)         -- handoff/ready-for-l3/sweep/ae/
+    l1_post.py            (this repo)     -- handoff/ready-for-l3/sweep/ae/
                                               ae-and-sweep/rework, posted_by="l1"
     l2_post.py             (this repo)    -- plan/completion/blocked/finding,
                                               posted_by="l2"
-    post_lane_discussion.py (HRSE2)       -- discussion/plan/spec/gate-result,
+    post_lane_discussion.py (this repo)   -- discussion/plan/spec/gate-result,
                                               posted_by=f"l{LANE}" or "unknown"
 
 `watch_lane_posts.py` (this repo) is the one reader: `read_candidates`.
@@ -54,23 +54,14 @@ worth asking about.
 **Injectable path, everywhere (AC4').** Both `record_candidate` and
 `read_candidates` take an explicit `base_dir`, and every test in this
 module's own `test_belt_candidates.py` passes one. That alone does not
-cover every *caller* of this module, though -- `l2_post.py`'s recorder
-call (harmonic-forge#691, AC1') passes no `base_dir`, so
-`test_l2_post.py`'s end-to-end drive of `l2_post.main()` would write a
-real file into the operator's live `~/.claude/state/belt/candidates/`
-directory on every test run if nothing redirected the default first. This
-repo is deliberately pytest-free (harmonic-forge#293), so there is no
-conftest.py autouse-fixture choke point the way HRSE2's
-`scripts/conftest.py` provides for its own pytest suite (see companion
-vitalharmony/hrse#1926's `_belt_candidates_real_dir_untouched`); instead
-`tools/run_tests.py`'s `redirected_belt_candidates_dir` context manager
+cover every *caller* of this module, though -- all three writers' end-to-end
+tests can call the recorder without a `base_dir`. `tools/run_tests.py`'s
+`redirected_belt_candidates_dir` context manager
 monkeypatches `DEFAULT_CANDIDATES_DIR` to a per-run tmp dir around the one
 `unittest.TextTestRunner` invocation that `mise run check`/CI actually
 call -- so a future test that forgets to pass `base_dir` writes to a
-scratch dir instead of the operator's real state, whenever it runs through
-that script. It does not cover a test file invoked directly (e.g. `python3
-tools/gh/test_l2_post.py`) -- see that function's docstring for why that
-gap is accepted rather than closed here.
+scratch dir instead of the operator's real state. F706's focused
+`run_lane1_transport_tests.py` uses the same guard for the standalone task.
 """
 from __future__ import annotations
 
