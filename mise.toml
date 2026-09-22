@@ -268,9 +268,9 @@ arg "command" var=#true help="the command to run, after a literal '--'"
 run = "python3 tools/gh/receipt_runner.py --issue \"$usage_issue\" -- $usage_command"
 
 [tasks.l1-post]
-description = "Post a Lane 1 protocol artifact (handoff/ready-for-l3/sweep/ae/rework) for an issue in THIS repo whose attested --sha also lives in THIS repo's own git history (harmonic-forge#568 AC3). Delegates to HRSE2's scripts/l1_post.py -- the platform's one implementation (AC4); this task does not redeclare its flag surface (which is large, validated, and owned entirely by that script) to avoid the two-copies drift AC4 forbids -- pass l1_post.py's own flags verbatim after the task name, e.g. `mise run l1-post -- --repo vitalharmony/harmonic-forge --issue 568 --kind handoff --sha <sha> --branch main --file body.md --plan-first false`. Correct BECAUSE this task runs from harmonic-forge's own checkout: l1_post.py resolves --sha/--branch against the invoking process's cwd, independent of --repo (see that script's `_source_repo_is_hrse` docstring) -- exactly the contract a forge issue attesting a forge commit needs, with zero change to the script's resolution logic. For a handoff on a forge issue attesting an HRSE2 commit, use HRSE2's own `mise run l1-post` from that checkout instead -- this task does not attempt cross-repo attestation, only the two repos this issue's own AC1/AC3 scope covers. Requires ~/Harmonic_Projects/HRSE2 checked out at that path."
+description = "Post a Lane 1 protocol artifact through the platform-owned transport. The attested --sha/--branch resolve against the invoking checkout, independently of the target --repo; omit --repo to resolve the invoking checkout through projects.toml. The script owns the flag surface, so pass its arguments after `--`."
 usage = '''
-arg "args" var=#true help="scripts/l1_post.py's own flags verbatim, e.g. --repo vitalharmony/harmonic-forge --issue 123 --kind handoff --sha <sha> --branch main --file body.md --plan-first false"
+arg "args" var=#true help="tools/gh/l1_post.py arguments verbatim, e.g. --issue 123 --kind handoff --sha <sha> --branch main --file body.md --plan-first false"
 '''
 run = """
 # harmonic-forge#568 preclose finding: mise single-quotes each multi-word
@@ -284,8 +284,43 @@ run = """
 # behaviour for a different task). Live-verified against a value containing
 # spaces: eval yields ['--ack-overlap', 'a reason with spaces'], not the
 # mangled form.
-eval python3 "${HOME}/Harmonic_Projects/HRSE2/scripts/l1_post.py" $usage_args
+eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/l1_post.py" $usage_args
 """
+
+[tasks.lane-comment]
+description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml."
+usage = '''
+flag "--issue <issue>" help="Issue number" required=#true
+flag "--file <file>" help="Path to the comment body" required=#true
+flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
+flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
+'''
+run = '''
+set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
+[ -n "${usage_repo:-}" ] && set -- "$@" --repo "$usage_repo"
+python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane_discussion.py" "$@"
+'''
+
+[tasks.l1-issue]
+description = "Validate and set a Lane 1 issue body through the platform transport; omit --repo to resolve the invoking checkout through projects.toml."
+usage = '''
+flag "--issue <issue>" help="Issue number" required=#true
+flag "--body-file <path>" help="Path to the substantive issue body" required=#true
+flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
+flag "--amend" help="Force amendment mode"
+flag "--allow-shrink" help="Permit an intentional destructive shrink"
+'''
+run = '''
+set -- --issue "$usage_issue" --body-file "$usage_body_file"
+[ -n "${usage_repo:-}" ] && set -- "$@" --repo "$usage_repo"
+[ "${usage_amend:-false}" = "true" ] && set -- "$@" --amend
+[ "${usage_allow_shrink:-false}" = "true" ] && set -- "$@" --allow-shrink
+python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane1_issue.py" "$@"
+'''
+
+[tasks.lane1-transport-test]
+description = "Run the platform-owned Lane 1 posting transport suite; wired into the full tools test runner and invocable directly."
+run = "python3 tools/gh/run_lane1_transport_tests.py"
 
 [tasks.l2-post]
 description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py."
