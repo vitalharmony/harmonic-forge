@@ -1179,6 +1179,66 @@ def world_checks(
     return ["issue-open", "origin-branch-sha-match", "active-worktree-overlap"], warnings
 
 
+_REMOTE_URL = re.compile(
+    r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    r"(?P<repo>[^/]+/[^/]+?)(?:\.git)?$"
+)
+
+
+def _cwd_repo_from_git(cwd: Path | None) -> str | None:
+    """`owner/name` for the repo `cwd` sits in, from git alone -- no API call.
+
+    harmonic-forge#220's REST-first policy applied to this function's own
+    repo-resolution half. `gh repo view` is a GraphQL call, and GraphQL
+    rate-limits by query POINT COST rather than call count: a session that ran
+    a few expensive Projects V2 / `timelineItems` queries can find EVERY
+    GraphQL call refused while REST keeps working normally (confirmed live,
+    2026-09-22 -- `gh api rate_limit` reported `graphql: used 0, remaining
+    5000` while raw `curl` to the GraphQL endpoint returned HTTP 200 with a
+    `RATE_LIMIT` error body). That took `l1_post.py` down entirely: this check
+    runs before `--ack-no-pr-required` is consulted, so no override reached
+    it, and no AE/sweep/handoff could be posted at all while a Lane 3 sat
+    blocked waiting for one.
+
+    Git is the right source here anyway, not merely the available one. The
+    worktree unreliability the docstring below records is specifically about
+    `gh`'s own implicit repo *detection*; `git remote get-url origin` reads
+    the worktree's shared config directly and has no such ambiguity
+    (confirmed live from two separate worktrees of two different repos).
+    Returns None rather than failing, so the caller can fall back.
+    """
+    remote = run("git", "remote", "get-url", "origin", cwd=cwd)
+    if remote.returncode or not remote.stdout.strip():
+        return None
+    match = _REMOTE_URL.match(remote.stdout.strip())
+    return match.group("repo") if match else None
+
+
+def _open_prs_via_rest(cwd_repo: str, branch: str, cwd: Path | None) -> list[dict] | None:
+    """Open PRs for `branch` against main, over REST. None = the call failed.
+
+    `head` is `owner:branch`, and the owner is taken from `cwd_repo` rather
+    than assumed: a same-repo branch (every case this protocol produces) has
+    the repo's own owner, and passing it explicitly keeps the filter correct
+    rather than relying on GitHub's default.
+    """
+    head = f"{cwd_repo.split('/')[0]}:{branch}"
+    result = run("gh", "api",
+                 f"repos/{cwd_repo}/pulls?head={head}&base=main&state=open",
+                 cwd=cwd)
+    if result.returncode:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    # REST's `state` is lowercase where GraphQL's is upper; normalise to the
+    # caller's existing GraphQL-shaped expectation rather than teaching the
+    # caller two vocabularies.
+    return [{"number": pr.get("number"), "state": str(pr.get("state", "")).upper()}
+            for pr in payload] if isinstance(payload, list) else None
+
+
 def require_open_pr(
     repo: str, branch: str, *, ack_no_pr_required: str | None = None, cwd: Path | None = None,
 ) -> tuple[list[str], list[str]]:
@@ -1214,20 +1274,35 @@ def require_open_pr(
     (mirroring `--ack-overlap`'s a private-repo incident pattern) so an override leaves a
     trace on the thread, never just a CLI argument that leaves none.
     """
-    repo_view = run("gh", "repo", "view", "--json", "nameWithOwner",
-                     "-q", ".nameWithOwner", cwd=cwd)
-    if repo_view.returncode or not repo_view.stdout.strip():
-        fail("cannot resolve the current repo via 'gh repo view': "
-             + (repo_view.stderr.strip() or "empty output"))
-    cwd_repo = repo_view.stdout.strip()
-    result = run("gh", "pr", "list", "--repo", cwd_repo, "--head", branch,
-                 "--base", "main", "--json", "number,state", cwd=cwd)
-    if result.returncode:
-        fail("cannot check for an open PR: " + (result.stderr.strip() or "gh pr list failed"))
-    try:
-        prs = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        fail("gh pr list returned unparseable output")
+    # harmonic-forge#220, REST first, GraphQL only as a fallback. Both halves
+    # of this check -- resolving the repo and listing its PRs -- used to be
+    # GraphQL-backed (`gh repo view`, `gh pr list`), which made the whole
+    # posting transport unusable whenever GraphQL alone was throttled. See
+    # `_cwd_repo_from_git` for the incident.
+    prs: list[dict] | None = None
+    cwd_repo = _cwd_repo_from_git(cwd)
+    if cwd_repo is not None:
+        prs = _open_prs_via_rest(cwd_repo, branch, cwd)
+
+    if prs is None:
+        # Fallback: the original GraphQL path, unchanged. Reached when the
+        # remote is not a recognised github.com URL, or REST itself failed --
+        # never silently, so a genuinely broken check still fails loudly below.
+        repo_view = run("gh", "repo", "view", "--json", "nameWithOwner",
+                         "-q", ".nameWithOwner", cwd=cwd)
+        if repo_view.returncode or not repo_view.stdout.strip():
+            fail("cannot resolve the current repo (git remote unusable, and "
+                 "'gh repo view' failed): "
+                 + (repo_view.stderr.strip() or "empty output"))
+        cwd_repo = repo_view.stdout.strip()
+        result = run("gh", "pr", "list", "--repo", cwd_repo, "--head", branch,
+                     "--base", "main", "--json", "number,state", cwd=cwd)
+        if result.returncode:
+            fail("cannot check for an open PR: " + (result.stderr.strip() or "gh pr list failed"))
+        try:
+            prs = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            fail("gh pr list returned unparseable output")
     if any(pr.get("state") == "OPEN" for pr in prs):
         return ["pr-open"], []
     message = (

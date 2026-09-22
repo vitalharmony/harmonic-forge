@@ -32,13 +32,27 @@ def _repo_view_result(repo: str = "vitalharmony/hrse") -> subprocess.CompletedPr
     return subprocess.CompletedProcess(("gh",), 0, repo + "\n", "")
 
 
+def _git_remote_result(repo: str = "vitalharmony/hrse") -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(("git",), 0, f"https://github.com/{repo}.git\n", "")
+
+
 def _run_returning(pr_list: subprocess.CompletedProcess,
-                    repo: str = "vitalharmony/hrse"):
-    """a private-repo incident: `require_open_pr` now makes two `run()` calls -- `gh repo
-    view` (cwd-based repo resolution) then `gh pr list --repo <that>`.
-    Routes each call to its own canned response by argv shape."""
+                    repo: str = "vitalharmony/hrse",
+                    *, git_remote_fails: bool = False):
+    """harmonic-forge#220: `require_open_pr` resolves the cwd's repo from
+    `git remote get-url origin` (no API at all) and lists PRs over REST
+    (`gh api repos/<repo>/pulls?...`), falling back to the original
+    `gh repo view` + `gh pr list` GraphQL pair only when git cannot answer.
+    Routes each call to its own canned response by argv shape.
+
+    `git_remote_fails=True` forces the fallback path, so the GraphQL branch
+    stays covered rather than becoming dead code nothing exercises."""
     def _run(*args, **kwargs):
         argv = args[0] if args and isinstance(args[0], (list, tuple)) else args
+        if "remote" in argv:
+            if git_remote_fails:
+                return subprocess.CompletedProcess(("git",), 128, "", "not a git repository")
+            return _git_remote_result(repo)
         if "view" in argv:
             return _repo_view_result(repo)
         return pr_list
@@ -109,17 +123,65 @@ class RequireOpenPr(unittest.TestCase):
 
         def _run(*args, **kwargs):
             captured.append(args)
-            argv = args[0] if args and isinstance(args[0], (list, tuple)) else args
-            if "view" in argv:
-                return _repo_view_result("vitalharmony/hrse")
-            return _pr_list_result([{"number": 1, "state": "OPEN"}])
+            return _run_returning(
+                _pr_list_result([{"number": 1, "state": "OPEN"}]),
+                "vitalharmony/hrse")(*args, **kwargs)
 
         with mock.patch.object(L, "run", side_effect=_run):
             L.require_open_pr("vitalharmony/harmonic-forge", "fix/152-gate-codex-tool")
-        pr_list_call = captured[1]
-        self.assertIn("--repo", pr_list_call)
-        self.assertIn("vitalharmony/hrse", pr_list_call)
-        self.assertNotIn("vitalharmony/harmonic-forge", pr_list_call)
+
+        # harmonic-forge#220: the REST path. The query call is the one that
+        # reaches GitHub -- it must name the CWD's repo and never the issue's.
+        # `run()` takes varargs, so each captured entry IS the argv tuple.
+        rest_call = next(c for c in captured if "api" in c)
+        joined = " ".join(str(p) for p in rest_call)
+        self.assertIn("repos/vitalharmony/hrse/pulls", joined)
+        self.assertNotIn("vitalharmony/harmonic-forge", joined)
+        everything = " ".join(str(p) for c in captured for p in c)
+        self.assertNotIn("vitalharmony/harmonic-forge", everything)
+
+    def test_the_rest_path_is_used_and_graphql_is_not_called(self) -> None:
+        """harmonic-forge#220, the reason this function was rewritten: a
+        session whose GraphQL budget is exhausted (point cost, not call
+        count) can still post. `gh repo view` and `gh pr list` are both
+        GraphQL-backed, and this check runs BEFORE --ack-no-pr-required is
+        consulted -- so when they were the only path, no override existed and
+        nothing could be posted at all while a Lane 3 sat blocked."""
+        captured: list[tuple] = []
+
+        def _run(*args, **kwargs):
+            captured.append(args)
+            return _run_returning(
+                _pr_list_result([{"number": 1, "state": "OPEN"}]))(*args, **kwargs)
+
+        with mock.patch.object(L, "run", side_effect=_run):
+            checks, warnings = L.require_open_pr("vitalharmony/hrse", "feat/x")
+
+        self.assertEqual(checks, ["pr-open"])
+        self.assertEqual(warnings, [])
+        self.assertTrue(any("remote" in c for c in captured), "git remote was not consulted")
+        self.assertTrue(any("api" in c for c in captured), "REST was not used")
+        self.assertFalse(any("view" in c for c in captured), "gh repo view (GraphQL) was called")
+        self.assertFalse(any("pr" in c and "list" in c for c in captured),
+                         "gh pr list (GraphQL) was called")
+
+    def test_it_falls_back_to_graphql_when_git_cannot_resolve_the_repo(self) -> None:
+        """The fallback is not dead code: a non-github.com remote, or no git
+        remote at all, still has to reach a verdict rather than fail open."""
+        captured: list[tuple] = []
+
+        def _run(*args, **kwargs):
+            captured.append(args)
+            return _run_returning(
+                _pr_list_result([{"number": 1, "state": "OPEN"}]),
+                git_remote_fails=True)(*args, **kwargs)
+
+        with mock.patch.object(L, "run", side_effect=_run):
+            checks, _ = L.require_open_pr("vitalharmony/hrse", "feat/x")
+
+        self.assertEqual(checks, ["pr-open"])
+        self.assertTrue(any("view" in c for c in captured),
+                        "fallback did not reach gh repo view")
 
     def test_the_remediation_message_does_not_hardcode_the_issue_repo(self) -> None:
         """The printed `gh pr create` command must be runnable as-is from the
