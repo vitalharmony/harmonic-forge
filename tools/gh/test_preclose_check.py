@@ -14,6 +14,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,7 @@ class ScratchRepo(unittest.TestCase):
 
 class _Args:
     def __init__(self, **kwargs):
+        self.allow_repo_mismatch = False  # harmonic-forge#704: complete() now shares plan()'s guard
         self.__dict__.update(kwargs)
 
 
@@ -128,6 +130,21 @@ class RepoNormalizationTests(unittest.TestCase):
             preclose.normalize_repo("hrse")
 
 
+class RequiredRepoFlagTests(unittest.TestCase):
+    """harmonic-forge#704 preclose finding: every other test bypasses argparse
+    by constructing _Args directly, so nothing asserted --repo is required --
+    reverting the default entirely left all of them green."""
+
+    def test_missing_repo_is_an_argument_error_not_a_default(self) -> None:
+        result = subprocess.run(
+            (sys.executable, str(ROOT / "preclose_check.py"), "--issue", "1"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--repo", result.stderr)
+        self.assertIn("required", result.stderr.lower())
+
+
 class DiffReadingTests(ScratchRepo):
     def test_rename_out_of_a_high_blast_directory_is_still_seen(self) -> None:
         """Removing a guard from tools/hooks/ must still read as high blast."""
@@ -170,6 +187,45 @@ class RepoMismatchTests(ScratchRepo):
         self.commit("scripts/ordinary.py")
         self.assertIn("refuters:", self.plan(repo="vitalharmony/harmonic-forge",
                                              tier="fast", allow_repo_mismatch=True))
+
+    def test_complete_also_refuses_a_mismatched_origin(self) -> None:
+        """harmonic-forge#704 preclose finding: complete() originally had no
+        origin check at all, so running the printed --complete command from
+        the wrong checkout minted a receipt for a repo that was never
+        reviewed, leaving the actually-reviewed repo's one-pass rule
+        silently disarmed."""
+        self.commit("scripts/ordinary.py")
+        with self.assertRaises(SystemExit) as caught:
+            preclose.complete(_Args(repo="vitalharmony/harmonic-forge", issue=1208, head="HEAD"))
+        self.assertIn("origin", str(caught.exception))
+
+    def test_complete_also_refuses_an_unresolvable_head(self) -> None:
+        """harmonic-forge#704 preclose finding: an unresolvable --head must
+        not mint a 'status: complete' receipt with an empty reviewed_sha
+        that no later check_one_pass call could ever match."""
+        self.commit("scripts/ordinary.py")
+        with self.assertRaises(SystemExit):
+            preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, head="not-a-real-ref"))
+
+    def test_no_origin_remote_is_refused_not_treated_as_no_objection(self) -> None:
+        """harmonic-forge#704 preclose finding: `if actual and ...` skipped the
+        whole guard when origin_repo() returned None (a fork clone using
+        `upstream`, a worktree off a bare/mirror clone, a renamed-remote CI
+        checkout) -- unreachable while --repo defaulted to vitalharmony/hrse
+        and the script lived only inside HRSE2, but AC4's required --repo
+        plus one platform copy invoked from arbitrary repos makes this
+        ordinary traffic. Cannot-decide must refuse, not pass."""
+        self.commit("scripts/ordinary.py")
+        git("remote", "remove", "origin", cwd=self.repo)
+        git("remote", "add", "upstream", "https://github.com/vitalharmony/cymagraph-infra.git", cwd=self.repo)
+        with self.assertRaises(SystemExit) as caught:
+            self.plan(tier="fast")
+        self.assertIn("no `origin` remote", str(caught.exception))
+
+    def test_no_origin_remote_is_overridable_deliberately(self) -> None:
+        self.commit("scripts/ordinary.py")
+        git("remote", "remove", "origin", cwd=self.repo)
+        self.assertIn("refuters:", self.plan(tier="fast", allow_repo_mismatch=True))
 
 
 class OnePassTests(ScratchRepo):

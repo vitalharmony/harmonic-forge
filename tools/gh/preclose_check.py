@@ -238,20 +238,49 @@ def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str) 
     return path
 
 
-def plan(args: argparse.Namespace) -> int:
-    repo = normalize_repo(args.repo)
+def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
+    """Shared by plan() and complete() -- harmonic-forge#704 preclose finding:
+    complete() originally had neither guard, so a wrong-cwd cross-repo call
+    (a receipt minted under the wrong repo's .claude/cache/preclose/, leaving
+    the actually-reviewed repo's one-pass rule silently disarmed) or an
+    unresolvable --head (a fake sha that no later check could ever match --
+    see the returncode check below) both wrote a confident 'status: complete'
+    receipt anyway. #704 turns this from a latent single-repo bug into a live
+    one by making one script, with --repo required, serve every consuming repo.
+    """
     actual = origin_repo()
-    if actual and actual != repo and not args.allow_repo_mismatch:
+    # harmonic-forge#704 preclose finding: `if actual and ...` treated "no
+    # origin remote at all" (a fork clone using `upstream`, a worktree off a
+    # bare/mirror clone, a renamed-remote CI checkout) as "no objection" and
+    # skipped the check entirely -- unreachable in practice while --repo
+    # defaulted to vitalharmony/hrse and the script lived only inside HRSE2,
+    # but AC4's required --repo plus one platform copy invoked from arbitrary
+    # repos makes an unrecognized-remote checkout ordinary traffic, not an
+    # edge case. Cannot-decide is refused, exactly like a real mismatch --
+    # never silently treated as a pass.
+    if actual != repo and not args.allow_repo_mismatch:
+        reason = (f"this checkout's origin is {actual}" if actual
+                   else "this checkout has no `origin` remote to compare against")
         raise SystemExit(
-            f"preclose-check: --repo says {repo} but this checkout's origin is {actual}.\n"
+            f"preclose-check: --repo says {repo} but {reason}.\n"
             "The diff would be read from this checkout while the receipt was filed under "
             "another repo -- one issue number, two repos, one receipt. Run from the repo "
             "being reviewed, or pass --allow-repo-mismatch deliberately."
         )
-
-    head_sha = run("git", "rev-parse", args.head).stdout.strip()
-    if not head_sha:
+    resolved = run("git", "rev-parse", args.head)
+    head_sha = resolved.stdout.strip()
+    # `git rev-parse <bad-ref>` echoes the literal argument back to stdout even
+    # on failure (exit 128) -- an emptiness check alone never fires, so an
+    # unresolvable --head silently passed through as a fake "sha" (harmonic-forge#704
+    # preclose finding, second-run/fail-direction lenses).
+    if resolved.returncode or not head_sha:
         raise SystemExit(f"preclose-check: cannot resolve --head {args.head!r}")
+    return head_sha
+
+
+def plan(args: argparse.Namespace) -> int:
+    repo = normalize_repo(args.repo)
+    head_sha = _require_repo_and_head(repo, args)
     check_one_pass(repo, args.issue, head_sha, args.force)
 
     files = changed_files(args.base, args.head)
@@ -311,7 +340,7 @@ def complete(args: argparse.Namespace) -> int:
     then refused with a message asserting a review that never happened.
     """
     repo = normalize_repo(args.repo)
-    head_sha = run("git", "rev-parse", args.head).stdout.strip()
+    head_sha = _require_repo_and_head(repo, args)
     prior = read_receipt(receipt_path(repo, args.issue))
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete")
