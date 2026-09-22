@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vitalharmony/harmonic-forge/skills/verification-gate/schema/verification-gate.config.schema.json",
+  "title": "verification-gate per-repo config (harmonic-forge#708)",
+  "description": "The commands a repo's verification gate runs before any committing restart. The platform owns the procedure; each repo owns its commands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["commands"],
+  "properties": {
+    "policy_doc": {
+      "description": "Repo-relative path to the repo's own gate policy (coverage overrides, proof-path rules). Read in full before running the gate.",
+      "type": "string",
+      "minLength": 1
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "cwd", "command"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "cwd": {
+            "description": "Working directory, relative to the repo root. Load-bearing: some tools discover their config only from the right cwd.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^/]"
+          },
+          "command": {"type": "string", "minLength": 1},
+          "when_changed": {
+            "description": "Run only when one of these repo-relative paths changed. Absent means always.",
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "note": {"description": "Why this command is shaped the way it is. Printed with the command.", "type": "string"}
+        }
+      }
+    }
+  }
+}
