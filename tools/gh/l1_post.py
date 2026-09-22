@@ -236,8 +236,25 @@ TEMPLATE_PLACEHOLDER = re.compile(
 RESERVED_MARKER = "<!-- l1-post "
 
 
-def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=False)
+def run(*args: str, cwd: Path | None = None,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+
+
+# The pre-post check must not inherit the ambient temp root. A transient
+# ``.git`` there makes every fixture below it look as though it belongs to an
+# unrelated repository and can cause correct SHAs to be refused.
+CHECK_TMP_BASE = Path.home() / ".cache" / "l1-post-check"
+
+
+def _private_check_tmp() -> tuple[Path, dict[str, str]]:
+    """Return a fresh private temp directory and an environment using it."""
+    CHECK_TMP_BASE.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="check-", dir=CHECK_TMP_BASE))
+    env = dict(os.environ)
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        env[name] = str(root)
+    return root, env
 
 
 def fail(message: str) -> None:
@@ -1302,6 +1319,7 @@ def static_checks(sha: str, branch: str) -> list[str]:
         fail("cannot resolve the source worktree root")
     repo_root = Path(repo_root_result.stdout.strip())
     scratch = Path(tempfile.mkdtemp(prefix="hrse-l1-post-"))
+    check_tmp: Path | None = None
     try:
         added = run("git", "worktree", "add", "--detach", str(scratch), sha)
         if added.returncode:
@@ -1342,7 +1360,8 @@ def static_checks(sha: str, branch: str) -> list[str]:
                     if real.exists():
                         link.unlink()
                         link.symlink_to(real, target_is_directory=True)
-        checked = run("mise", "run", "check", cwd=scratch)
+        check_tmp, check_env = _private_check_tmp()
+        checked = run("mise", "run", "check", cwd=scratch, env=check_env)
         if checked.returncode:
             fail("static verification failed:\n" + checked.stdout + checked.stderr)
         clean = run("git", "status", "--porcelain", cwd=scratch)
@@ -1351,6 +1370,8 @@ def static_checks(sha: str, branch: str) -> list[str]:
     finally:
         run("git", "worktree", "remove", "--force", str(scratch))
         shutil.rmtree(scratch, ignore_errors=True)
+        if check_tmp is not None:
+            shutil.rmtree(check_tmp, ignore_errors=True)
     return ["mise-check", "origin-main-ancestor", "branch-sha-match", "clean-worktree"]
 
 

@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(l1-post): preserve private pre-check temp root (F706)
+- tools/gh/l1_post.py                     | 27 +++++++++--
+- tools/gh/test_l1_post_private_tmpdir.py | 82 +++++++++++++++++++++++++++++++++
+- 2 files changed, 106 insertions(+), 3 deletions(-)
+
 ## test: close F706 preclose coverage gaps
 - tools/gh/test_l1_post_ae_and_sweep.py       |  13 ++
 - tools/gh/test_l1_post_lead_real_corpus.py   | 226 ++++------------------------
