@@ -341,6 +341,17 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
         self.assertEqual(seen, ["vitalharmony/harmonic-forge"], "a gate report posted as `discussion` "
                                         "skipped the CI check entirely")
 
+    def test_main_resolves_an_omitted_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.md"
+            path.write_text("ordinary discussion", encoding="utf-8")
+            argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path)]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(P, "resolve_repo", return_value="vitalharmony/harmonic-forge") as resolve, \
+                 mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
+                P.main()
+        resolve.assert_called_once_with(None)
+
 
 class CallerRelativeFileResolutionTests(unittest.TestCase):
     def test_compatibility_shim_root_wins_over_platform_root(self):

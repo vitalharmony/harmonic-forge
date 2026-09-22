@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test: close F706 preclose coverage gaps
+- tools/gh/test_l1_post_ae_and_sweep.py       |  13 ++
+- tools/gh/test_l1_post_lead_real_corpus.py   | 226 ++++------------------------
+- tools/gh/test_post_lane_discussion_kinds.py |  11 ++
+- 3 files changed, 56 insertions(+), 194 deletions(-)
+
 ## fix: fail closed when gate checker is unavailable
 - tools/gh/post_lane_discussion.py            | 9 +--------
 - tools/gh/test_post_lane_discussion_kinds.py | 9 +++++----

@@ -159,6 +159,19 @@ class MainIntegrationTests(unittest.TestCase):
             post.main()
         self.assertEqual(self.posted_kinds, ["ae", "sweep"], "AE must post strictly before sweep, through main() itself")
 
+    def test_main_resolves_an_omitted_repo(self) -> None:
+        self.ae_file.write_text(AE_BODY)
+        self.sweep_file.write_text(SWEEP_BODY)
+        argv = self._argv()
+        del argv[1:3]
+        with patch.object(post, "resolve_repo", return_value="vitalharmony/harmonic-forge") as resolve, \
+             patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+             patch.object(post, "write_receipt"), \
+             patch.object(sys, "argv", argv):
+            post.main()
+        resolve.assert_called_once_with(None)
+
     def test_malformed_sweep_posts_nothing_through_main(self) -> None:
         """AC3, exercised through main(): a malformed sweep body must reject
         before the AE is posted -- zero comments created."""
