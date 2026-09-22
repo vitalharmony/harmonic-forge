@@ -20,12 +20,10 @@ CONFIG = config_loader.CONFIG
 
 @lru_cache(maxsize=1)
 def _resolved() -> tuple[Path, dict]:
-    config = config_loader.resolve()
-    here = Path.cwd().resolve()
-    root = next((p for p in (here, *here.parents) if (p / CONFIG).is_file()), None)
-    if config.get("repos") and root is not None:
+    root, config = config_loader.resolve_home()
+    if config.get("repos"):
         return root, config
-    raise config_loader.ConfigError(f"sprint-plan config: no home checkout found from {here}")
+    raise config_loader.ConfigError(f"sprint-plan config: {root} declares no repos")
 
 
 def home_root() -> Path:

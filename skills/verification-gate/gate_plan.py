@@ -67,6 +67,9 @@ def load(root: Path) -> dict:
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"{root / CONFIG}: invalid JSON: {exc}") from exc
     _check(config, json.loads(SCHEMA.read_text()), "$")
+    for i, cmd in enumerate(config["commands"]):
+        if not (root / cmd["cwd"]).resolve().is_relative_to(root.resolve()):
+            raise ConfigError(f"$.commands[{i}].cwd escapes the repo: {cmd['cwd']}")
     return config
 
 

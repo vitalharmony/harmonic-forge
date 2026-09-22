@@ -104,6 +104,13 @@ def _guard(root: Path) -> None:
 
 
 def resolve(cwd: Path | None = None, override: str | None = None) -> dict:
+    return resolve_home(cwd, override)[1]
+
+
+def resolve_home(cwd: Path | None = None, override: str | None = None) -> tuple[Path, dict]:
+    """`(home checkout, home config)`. For a member config the home checkout is
+    the one its local file names, not the member itself (harmonic-forge#708
+    cross-family finding): the group's docs and data live there."""
     cwd = (cwd or Path.cwd()).resolve()
     chosen = override or os.environ.get("SPRINT_PLAN_CONFIG")
     if chosen:
@@ -120,7 +127,7 @@ def resolve(cwd: Path | None = None, override: str | None = None) -> dict:
     root = path.parent.parent
     _guard(root)
     if kind != "member":
-        return value
+        return root, value
     local_path = root / LOCAL
     local = _read(local_path)
     validate(local, local_path)
@@ -134,7 +141,7 @@ def resolve(cwd: Path | None = None, override: str | None = None) -> dict:
         raise _error(home_path, "member home must be a home config")
     if not any(repo["repo"] == value["home_repo"] for repo in result["repos"]):
         raise _error(home_path, "member home_repo is not listed in $.repos")
-    return result
+    return home.resolve(), result
 
 
 def group(config: dict) -> list[dict]:

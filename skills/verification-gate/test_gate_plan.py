@@ -55,6 +55,7 @@ class GatePlanTests(unittest.TestCase):
             {},
             {"commands": []},
             {"commands": [{"name": "x", "cwd": "/abs", "command": "y"}]},
+            {"commands": [{"name": "x", "cwd": "../other", "command": "y"}]},
             {"commands": [{"name": "x", "cwd": ".", "command": ""}]},
             {"commands": [{"name": "x", "cwd": ".", "command": "y", "extra": 1}]},
             {"commands": [{"name": "x", "cwd": ".", "command": "y"}], "surprise": 1},

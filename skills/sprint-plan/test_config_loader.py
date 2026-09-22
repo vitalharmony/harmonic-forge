@@ -67,6 +67,10 @@ class LoaderTests(unittest.TestCase):
             self.write(member, {"engagement": "x", "home_repo": "x/hrse"})
             self.write(member, {"home_checkout": str(home)}, ".claude/sprint-plan.local.json")
             self.assertEqual(loader.resolve(member)["engagement"], "x")
+            # harmonic-forge#708 cross-family finding: the group's docs and
+            # data live in the HOME checkout, never the member it was run from.
+            self.assertEqual(loader.resolve_home(member)[0], home.resolve())
+            self.assertEqual(loader.resolve_home(home)[0], home.resolve())
 
     def test_missing_field_names_path(self):
         with tempfile.TemporaryDirectory() as directory:
