@@ -90,6 +90,7 @@ guarding those two flags.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -112,6 +113,26 @@ _MISE_FLAG = re.compile(r"""^\s*flag\s+"(--[\w-]+)""", re.M)
 _SCRIPT_INVOCATION = re.compile(
     r"(?:^|[\s;&|])(?:[\w./~-]*?/)?python3?\s+(~?[\w./-]+\.py)\b"
 )
+
+# harmonic-forge#722: a consumer's wrapper reaches the platform transport as
+# `python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/x.py"`
+# (hrse since #1990). `_SCRIPT_INVOCATION` only matches a literal path, so
+# that form went undiscovered and `--expect` failed for `l1-issue`/`l1-post`.
+# The platform-root prefix is expanded -- honouring HARMONIC_FORGE_ROOT when
+# set, as the shell would -- and its quotes dropped, BEFORE matching. Only
+# this one well-known root is expanded: an arbitrary `$VAR/x.py` stays
+# undiscovered (the self-reference guard for `python3 $PARITY` is unchanged),
+# and the expanded path must still resolve on disk to be discovered.
+_FORGE_ROOT_REF = re.compile(
+    r'"?(?:\$\{HARMONIC_FORGE_ROOT:-(?:\$HOME|\$\{HOME\}|~)/harmonic-forge\}'
+    r'|(?:\$HOME|\$\{HOME\})/harmonic-forge)(/[\w./-]*\.py)"?'
+)
+
+
+def _expand_forge_root(run: str) -> str:
+    root = os.environ.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
+    return _FORGE_ROOT_REF.sub(lambda m: root + m.group(1), run)
+
 
 # A whole-line shell comment (optional leading whitespace, then `#`, to end
 # of line) -- stripped before flag-matching a `run` body (harmonic-forge#368
@@ -230,7 +251,7 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
         run = entry.get("run", "") if isinstance(entry, dict) else ""
         if not isinstance(run, str):
             continue
-        matches = list(_SCRIPT_INVOCATION.finditer(_COMMENT_LINE.sub("", run)))
+        matches = list(_SCRIPT_INVOCATION.finditer(_expand_forge_root(_COMMENT_LINE.sub("", run))))
         for match in reversed(matches):
             raw = match.group(1)
             path = Path(raw).expanduser()
