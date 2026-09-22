@@ -69,6 +69,42 @@ Weight your attention accordingly:
 - **Blast radius.** Does this run on every session, every commit, every gate?
   If so, what is the failure mode when it is wrong — noisy, or silent?
 
+## The cross-family branch — taken by the caller, after the panel (harmonic-forge#701)
+
+You and the implementer are the same model family, and you are told nothing
+about why the implementer chose what it chose. That absence is what makes you
+effective, and it is also why a same-family blind spot is least detectable
+here: there is no stated rationale to push against, only priors you share.
+This check is also the last one before an irreversible merge, with no Lane 3
+gate behind it.
+
+**You do not take this branch; the calling session does**, once the whole
+panel has returned, because its first trigger depends on what the panel
+found, not on any one refuter. The trigger, when ANY of these holds:
+
+1. **Zero findings survived the filter.** This is the primary gate. A
+   unanimous no-defect verdict from one family cannot be told apart from a
+   blind spot that family shares with the implementer. **Silence triggers;
+   findings do not.** A finding that fails the `file:line` bar does not count
+   as a finding, so ten unanchored guesses are still silence.
+2. **The diff touches a deny or permission surface**: the same high-blast
+   patterns that size the panel (`scripts/preclose_check.py`
+   `blast_radius()`), not a second list.
+3. **The operator asks for it.**
+
+**Not the trigger:** `Tier` (a model-routing signal, harmonic-forge#257),
+findings count above zero (there is already work to do, and the clean re-run
+after the fix is where criterion 1 fires), or diff size.
+
+The branch is part of the same **one** pass, never a second round.
+`scripts/preclose_check.py --gate` evaluates the trigger, and `--complete`
+records both halves in one receipt, under the provenance label.
+
+**The mechanism itself is not described here.** Read
+`~/harmonic-forge/rules/cross-family-review.md` for the permitted invocation,
+the brief, the verdicts, the provenance labels, and what happens when the call
+does not run. It is deliberately single-copy (harmonic-forge#598).
+
 ## What you must not do
 
 - **Do not emit a verdict.** No PASS, no APPROVED, no "looks good," no
