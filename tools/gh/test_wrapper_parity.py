@@ -235,6 +235,53 @@ class DiscoverWrapperTasks(_TmpDirCase):
         )
         self.assertEqual(wp.discover_wrapper_tasks(mise), [])
 
+    # harmonic-forge#722: hrse's l1-issue/l1-post reach the platform transport
+    # through the forge-root variable, not a literal path.
+    _FORGE_FORM = ('[tasks.t]\nrun = "python3 \\"${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}'
+                   '/tools/gh/real.py\\" \\"$@\\""\n')
+
+    def _forge_root_with_script(self, root):
+        (root / "tools" / "gh").mkdir(parents=True)
+        script = root / "tools" / "gh" / "real.py"
+        script.write_text("print('hi')\n", encoding="utf-8")
+        return script.resolve()
+
+    def test_forge_root_form_honours_harmonic_forge_root(self):
+        import os
+        from unittest import mock
+        script = self._forge_root_with_script(self.tmp_path / "forge")
+        mise = self._write_mise(self._FORGE_FORM)
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": str(self.tmp_path / "forge")}):
+            self.assertEqual(wp.discover_wrapper_tasks(mise), [("t", script)])
+
+    def test_forge_root_form_falls_back_to_home_harmonic_forge(self):
+        import os
+        from unittest import mock
+        script = self._forge_root_with_script(self.tmp_path / "home" / "harmonic-forge")
+        mise = self._write_mise(self._FORGE_FORM)
+        env = {k: v for k, v in os.environ.items() if k != "HARMONIC_FORGE_ROOT"}
+        env["HOME"] = str(self.tmp_path / "home")
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(wp.discover_wrapper_tasks(mise), [("t", script)])
+
+    def test_forge_root_containing_a_space_is_still_discovered(self):
+        """Cross-family finding (#722): a root with whitespace is a valid,
+        quoted shell path and must not silently drop the task."""
+        import os
+        from unittest import mock
+        root = self.tmp_path / "my forge"
+        script = self._forge_root_with_script(root)
+        mise = self._write_mise(self._FORGE_FORM)
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": str(root)}):
+            self.assertEqual(wp.discover_wrapper_tasks(mise), [("t", script)])
+
+    def test_forge_root_form_that_does_not_resolve_is_still_skipped(self):
+        import os
+        from unittest import mock
+        mise = self._write_mise(self._FORGE_FORM)
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": str(self.tmp_path / "empty")}):
+            self.assertEqual(wp.discover_wrapper_tasks(mise), [])
+
     def test_nonexistent_script_path_is_skipped_not_raised(self):
         mise = self._write_mise(
             '[tasks.t]\nrun = "python3 scripts/does_not_exist.py"\n'
