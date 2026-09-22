@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vitalharmony/harmonic-forge/schemas/gate-adapter.schema.json",
+  "title": "Gate adapter manifest",
+  "description": "A consuming repo's `.claude/gate-adapter.json` (ADR-008 AC4). It declares the gate steps whose behaviour depends on that repo's own runtime. EVERY key is optional: an absent key means no adapter is registered for that capability, and the platform gate step that needs it reports an explicit BLOCKED finding rather than silently passing. An absent manifest means the same for every key.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "description": "Optional pointer to this schema, for editor completion.",
+      "type": "string"
+    },
+    "residue_sweep": {
+      "description": "Sweeps this repo's own test-fixture residue after a Lane 3 verdict. Adapter-owned (ADR-008 Exception 1): the procedure walks the repo's own ontology, so the platform declares only when it runs and what its result must look like.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module",
+        "entrypoint"
+      ],
+      "properties": {
+        "module": {
+          "$ref": "#/$defs/repoRelativeModule"
+        },
+        "entrypoint": {
+          "$ref": "#/$defs/entrypoint"
+        }
+      }
+    },
+    "lease": {
+      "description": "This repo's gate lease: whether another live gate already owns the worktree, and how to take and give back that claim. Adapter-owned (ADR-008 Exception 3): which ports, processes and lockfiles count as 'busy' is the repo's own topology.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module",
+        "check_owner"
+      ],
+      "properties": {
+        "module": {
+          "$ref": "#/$defs/repoRelativeModule"
+        },
+        "check_owner": {
+          "$ref": "#/$defs/entrypoint"
+        },
+        "acquire": {
+          "$ref": "#/$defs/entrypoint"
+        },
+        "release": {
+          "$ref": "#/$defs/entrypoint"
+        }
+      }
+    },
+    "merge_target_check": {
+      "description": "A declared validation query plus the shape its result must have, run by the platform's own executor (`tools/gate/run_merge_target_check.py`). Carries no repo-specific code path at all (ADR-008 Exception 2, REJECTED as an adapter exception): the query text, the connection env var name and the expected shape are values, not a procedure.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query",
+        "connection_env",
+        "expected_shape"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "connection_env": {
+          "description": "The environment variable holding the connection URI. BLOCKED when it is unset -- never a silent pass.",
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_shape": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "field",
+            "op",
+            "value"
+          ],
+          "properties": {
+            "field": {
+              "type": "string",
+              "minLength": 1
+            },
+            "op": {
+              "enum": [
+                "eq",
+                "ne",
+                "gt",
+                "gte",
+                "lt",
+                "lte"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string",
+                "boolean"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "tier_w_message": {
+      "description": "The disposable-graph availability text this repo's readiness check prints (harmonic-forge#720 Q2). It names that repo's container, ports and task names, so it is adapter data rather than platform code. Absent means the readiness check prints no availability line.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "repoRelativeModule": {
+      "description": "Path to the adapter module, relative to the consuming repo's root. Imported in-process by the platform; it runs with exactly the privilege the calling lane already holds.",
+      "type": "string",
+      "pattern": "^[^/][^\\u0000]*\\.py$"
+    },
+    "entrypoint": {
+      "description": "Name of a function in that module. The platform calls it with its own fixed kwargs and requires `{\"status\": \"pass\"|\"fail\"|\"blocked\", \"evidence\": [...]}` back.",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  }
+}

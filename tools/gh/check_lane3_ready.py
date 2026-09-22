@@ -163,29 +163,24 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
     return max(candidates, key=lambda c: c["id"])
 
 
-#: TODO(harmonic-forge#721): adapter data. This message names one consuming
-#: repo's disposable-graph container, ports and mise task; #721 sources it from
-#: that repo's gate-adapter manifest instead of carrying it in platform code.
-#:
-#: Printed on every successful readiness check, which is the
-#: last thing a Lane 3 session runs before a gate — so this reaches the
-#: session at the moment it decides what a spec needs, rather than waiting to
-#: be looked up.
-#:
-#: `mise.toml` carried the harness for three weeks and nobody found it, which
-#: is the whole finding: being present somewhere is not discoverability. The
-#: skill file now says Tier W is available too; this is the push half of that
-#: pair, because a document is only read by someone who already suspects it
-#: has the answer.
-TIER_W_AVAILABILITY = (
-    "[check-lane3-ready] Tier W is AVAILABLE: a gate that must "
-    "mutate pre-existing state runs against a disposable restored copy, not "
-    "production --\n"
-    "    mise run gate-disposable-graph load | status | teardown\n"
-    "    container hrse-graph-w, bolt 27687 / http 27474, ~13s for a real dump.\n"
-    "  Point the gate's NEO4J_URI at 27687; the integration-test guard reads that shape "
-    "as authorised. Never write to production instead."
-)
+def tier_w_availability() -> str | None:
+    """The disposable-graph availability line, from the consuming repo's own
+    gate-adapter manifest (`tier_w_message.text`), or None when it declares
+    none (harmonic-forge#721).
+
+    It names a container, ports and task names, so it is the repo's data, not
+    platform code -- ADR-008 Decision 1 applied to a string. Printed on every
+    successful readiness check, which is the last thing a Lane 3 session runs
+    before a gate, so it reaches the session at the moment it decides what a
+    spec needs rather than waiting to be looked up. A manifest that carried it
+    for weeks with nobody finding it is the whole finding: being present
+    somewhere is not discoverability.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gate"))
+    import adapter  # noqa: PLC0415
+
+    entry = adapter.declared("tier_w_message")
+    return entry.get("text") if entry else None
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -284,7 +279,9 @@ def main(argv: list[str] | None = None) -> None:
         f"[check-lane3-ready] {repo}#{issue}: sweep ({sweep['html_url']}), tier {tier} "
         f"-- ready, authorized for {head_sha} by {authority['html_url']}"
     )
-    print(TIER_W_AVAILABILITY)
+    availability = tier_w_availability()
+    if availability:
+        print(availability)
 
 
 if __name__ == "__main__":

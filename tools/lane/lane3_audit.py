@@ -27,7 +27,7 @@ sibling process calling `git` directly.
 So the record is written from two places, and the second is the one that makes
 AC1's own question ("which session moved HEAD at 11:41:01") answerable:
 
-  * `gate-checkout` and `check_lane3_marker.py` — the sanctioned path, and the
+  * `gate-checkout` and `lane3_marker.py` — the sanctioned path, and the
     only place a REFUSAL can be recorded, since a refused checkout never
     reaches git at all.
   * `.githooks/post-checkout` — every HEAD move in the worktree, whoever
@@ -106,37 +106,15 @@ def _hook_names(cwd: Path | None = None) -> set[str]:
     return {p.name for p in hooks.iterdir() if p.is_file()}
 
 
-def _marker_dirs() -> list[Path]:
-    """Where `check_lane3_marker.py` may live, in precedence order.
-
-    TEMPORARY until harmonic-forge#721 moves the marker's protocol half to the
-    platform. Until then the marker is still the consuming repo's
-    `scripts/check_lane3_marker.py`, so this module (now in harmonic-forge,
-    harmonic-forge#720) must find it there rather than beside itself: both
-    callers below swallow an ImportError and return an empty answer, so a
-    wrong search path would silently drop the owner from every audit record.
-
-      1. `LANE3_MARKER_DIR`, an explicit override;
-      2. `<git toplevel of the cwd>/scripts`, the consuming repo whose hook or
-         gate is running (the common case: the post-checkout wrapper runs in
-         the worktree whose HEAD moved);
-      3. this file's own directory (a repo that vendors the marker beside it).
-    """
-    dirs: list[Path] = []
-    override = os.environ.get("LANE3_MARKER_DIR")
-    if override:
-        dirs.append(Path(override))
-    top = _git("rev-parse", "--show-toplevel")
-    if top:
-        dirs.append(Path(top) / "scripts")
-    dirs.append(Path(__file__).resolve().parent)
-    return dirs
-
-
 def _marker_on_path() -> None:
-    for directory in reversed(_marker_dirs()):
-        if (directory / "check_lane3_marker.py").is_file():
-            sys.path.insert(0, str(directory))
+    """The marker's protocol half is this module's sibling (harmonic-forge#721).
+
+    It was the consuming repo's `scripts/check_lane3_marker.py` until #721 cut
+    the seam; the temporary three-place search that bridged #720 and #721 is
+    gone with it. Both callers below swallow an ImportError and answer empty,
+    so a wrong path here would silently drop the owner from every audit record.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def ancestry_chain(cwd: Path | None = None) -> list[dict]:
@@ -149,7 +127,7 @@ def ancestry_chain(cwd: Path | None = None) -> list[dict]:
     """
     try:
         _marker_on_path()
-        from check_lane3_marker import ancestry, _stat  # noqa: PLC0415
+        from lane3_marker import ancestry, _stat  # noqa: PLC0415
 
         out = []
         for pid in ancestry():
@@ -161,7 +139,7 @@ def ancestry_chain(cwd: Path | None = None) -> list[dict]:
 
 
 def session_owner(cwd: Path | None = None) -> int | None:
-    """The session identity `check_lane3_marker.py` stamps on the marker.
+    """The session identity `lane3_marker.py` stamps on the marker.
 
     Shares that module's transparency list rather than reimplementing it — two
     answers to "who am I" would drift, and the record exists to be compared
@@ -170,7 +148,7 @@ def session_owner(cwd: Path | None = None) -> int | None:
     """
     try:
         _marker_on_path()
-        from check_lane3_marker import _TRANSPARENT, ancestry, _stat  # noqa: PLC0415
+        from lane3_marker import _TRANSPARENT, ancestry, _stat  # noqa: PLC0415
 
         skip = set(_TRANSPARENT) | _hook_names(cwd)
         for pid in ancestry():
