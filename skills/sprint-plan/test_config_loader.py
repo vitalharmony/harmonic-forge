@@ -13,7 +13,7 @@ HOME = {
     "doc_paths": ["docs/PRIORITIES.md"],
     "board_owner": "x",
     "board_fields": {"priority": "Priority", "sequence": "Sequence", "tier": "Tier"},
-    "repos": [{"prefix": "H", "repo": "x/hrse", "short": "hrse", "board": 1, "default": True}],
+    "repos": [{"repo": "x/hrse", "short": "hrse", "default": True}],
 }
 
 
@@ -89,9 +89,9 @@ class LoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bad = dict(HOME)
-            bad["repos"] = [dict(HOME["repos"][0], board=0)]
+            bad["repos"] = [dict(HOME["repos"][0], default="yes")]
             self.write(root, bad)
-            with self.assertRaisesRegex(loader.ConfigError, r"\$\.repos\[0\]\.board"):
+            with self.assertRaisesRegex(loader.ConfigError, r"\$\.repos\[0\]\.default"):
                 loader.resolve(root)
 
     def test_schema_requires_absolute_local_checkout(self):
@@ -113,7 +113,7 @@ class LoaderTests(unittest.TestCase):
             self.write(root, bad)
             with self.assertRaises(loader.ConfigError):
                 loader.resolve(root)
-            bad["repos"] = [dict(HOME["repos"][0]), dict(HOME["repos"][0], prefix="F")]
+            bad["repos"] = [dict(HOME["repos"][0]), dict(HOME["repos"][0], short="forge")]
             self.write(root, bad)
             with self.assertRaises(loader.ConfigError):
                 loader.resolve(root)
@@ -128,6 +128,32 @@ class LoaderTests(unittest.TestCase):
             with self.assertRaises(loader.ConfigError):
                 loader.resolve(Path(directory))
 
+
+
+class GroupTests(unittest.TestCase):
+    """harmonic-forge#708: the group is declared here, its facts live in projects.toml."""
+
+    def test_group_resolves_prefix_and_board_from_the_manifest(self):
+        cfg = dict(HOME, repos=[{"repo": "vitalharmony/hrse", "short": "hrse", "default": True},
+                                {"repo": "vitalharmony/harmonic-forge", "short": "forge", "default": False}])
+        got = {r["repo"]: r for r in loader.group(cfg)}
+        self.assertEqual((got["vitalharmony/hrse"]["prefix"], got["vitalharmony/hrse"]["board"]), ("H", 1))
+        self.assertEqual((got["vitalharmony/harmonic-forge"]["prefix"],
+                          got["vitalharmony/harmonic-forge"]["board"]), ("F", 3))
+        self.assertTrue(got["vitalharmony/hrse"]["milestones"])
+        self.assertFalse(got["vitalharmony/harmonic-forge"]["milestones"])
+
+    def test_an_unregistered_repo_is_refused_not_defaulted(self):
+        cfg = dict(HOME, repos=[{"repo": "vitalharmony/not-a-project", "short": "x", "default": True}])
+        with self.assertRaisesRegex(loader.ConfigError, "not an onboarded project"):
+            loader.group(cfg)
+
+    def test_a_repeated_manifest_fact_is_rejected_by_the_schema(self):
+        """prefix/board belong to projects.toml; a second home is refused."""
+        for extra in ({"prefix": "H"}, {"board": 1}):
+            bad = dict(HOME, repos=[dict(HOME["repos"][0], **extra)])
+            with self.subTest(extra=extra), self.assertRaises(loader.ConfigError):
+                loader.validate(bad, loader.CONFIG)
 
 if __name__ == "__main__":
     unittest.main()
