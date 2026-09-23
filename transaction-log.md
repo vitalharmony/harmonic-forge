@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(tooling): repair feature branch first push (F735)
+- scripts/test_git_commit.py    | 67 +++++++++++++++++++++++++++++++++++++++++++
+- skills/impl-worktree/SKILL.md |  7 ++++-
+- tools/run_tests.py            |  2 +-
+- 4 files changed, 83 insertions(+), 5 deletions(-)
+
 ## test(hooks): close F734 preclose findings
 - tools/hooks/lane3_codex_write_guard.py             | 20 +++++++--
 - tools/hooks/test_lane3_codex_write_guard.py        |  8 +++-
