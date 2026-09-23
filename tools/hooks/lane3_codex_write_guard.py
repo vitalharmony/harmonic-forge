@@ -74,13 +74,29 @@ def _deny(reason: str = DENIAL_MESSAGE) -> dict:
     }
 
 
-def _allow() -> dict:
+def _allow(host: str) -> dict | None:
+    """Explicit allow for hosts that support it; silence everywhere else."""
+    if host != "claude":
+        return None
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
         }
     }
+
+
+def _emit(decision: dict | None) -> None:
+    if decision is not None:
+        print(json.dumps(decision))
+
+
+def _host(argv: list[str]) -> str:
+    """Return an explicitly named host without letting bad args skip denials."""
+    try:
+        return argv[argv.index("--host") + 1]
+    except (ValueError, IndexError):
+        return "unknown"
 
 
 def _resolve(target: str, cwd: Path) -> str | None:
@@ -134,7 +150,7 @@ def apply_patch_targets(command: str) -> list[str] | None:
     return targets
 
 
-def bash_decision(command: str, cwd: Path) -> dict:
+def bash_decision(command: str, cwd: Path, host: str) -> dict | None:
     try:
         segments = command_segments(command)
     except (AttributeError, TypeError, ValueError):
@@ -173,10 +189,12 @@ def bash_decision(command: str, cwd: Path) -> dict:
             resolved = _resolve(raw_target, effective_cwd)
             if resolved is None or lane3_write_outside_testplan(resolved):
                 return _deny()
-    return _allow()
+    return _allow(host)
 
 
 def main() -> int:
+    host = _host(sys.argv[1:])
+
     if os.environ.get("LANE") != "3":
         # harmonic-forge#644 rework: this file's own fail-closed branches
         # below (unparseable command, unresolvable cd + relative write,
@@ -184,57 +202,64 @@ def main() -> int:
         # ever gets called, so they cannot rely on that predicate's own
         # LANE gate. Allow outright here, before any parsing, so a Codex
         # Lane 1/Lane 2 session is never denied by this guard.
-        print(json.dumps(_allow()))
+        _emit(_allow(host))
         return 0
 
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        print(json.dumps(_deny(
+        _emit(_deny(
             "Codex Lane 3 write guard: unparseable PreToolUse payload "
             "(harmonic-forge#644)."
-        )))
+        ))
+        return 0
+
+    if not isinstance(payload, dict):
+        _emit(_deny(
+            "Codex Lane 3 write guard: PreToolUse payload must be a JSON "
+            "object (harmonic-forge#644)."
+        ))
         return 0
 
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input")
     cwd_str = payload.get("cwd")
     if not isinstance(tool_input, dict) or not isinstance(cwd_str, str) or not cwd_str:
-        print(json.dumps(_deny(
+        _emit(_deny(
             "Codex Lane 3 write guard: PreToolUse payload missing cwd or "
             "tool_input (harmonic-forge#644)."
-        )))
+        ))
         return 0
     command = tool_input.get("command")
     if not isinstance(command, str) or not command:
-        print(json.dumps(_deny(
+        _emit(_deny(
             "Codex Lane 3 write guard: PreToolUse payload missing a "
             "command string (harmonic-forge#644)."
-        )))
+        ))
         return 0
     cwd = Path(cwd_str)
 
     if tool_name == "apply_patch":
         targets = apply_patch_targets(command)
         if not targets:
-            print(json.dumps(_deny(
+            _emit(_deny(
                 "Codex Lane 3 write guard: unrecognized apply_patch "
                 "payload shape, denying until parseable (harmonic-forge#644)."
-            )))
+            ))
             return 0
         for target in targets:
             resolved = _resolve(target, cwd)
             if resolved is None or lane3_write_outside_testplan(resolved):
-                print(json.dumps(_deny()))
+                _emit(_deny())
                 return 0
-        print(json.dumps(_allow()))
+        _emit(_allow(host))
         return 0
 
     if tool_name == "Bash":
-        print(json.dumps(bash_decision(command, cwd)))
+        _emit(bash_decision(command, cwd, host))
         return 0
 
-    print(json.dumps(_allow()))
+    _emit(_allow(host))
     return 0
 
 
