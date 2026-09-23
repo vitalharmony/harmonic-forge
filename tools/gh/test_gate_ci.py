@@ -171,14 +171,19 @@ class PassRequiresGreenCiTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("head SHA", msg)
 
-    def test_skipped_and_neutral_are_not_failures(self):
-        """A skipped job is one that correctly decided it had nothing to do —
-        every hrse PR has two, and treating them as red would refuse every
-        legitimate PASS in that repo."""
+    def test_nonrequired_skipped_and_neutral_do_not_poison_required_green(self):
         ok, msg = gate_ci.check_gate_result(
             "o/r", PASS_BODY,
-            run=fake_runs(check("verify"), check("build-and-push", "skipped"), check("lint", "neutral")))
+            run=fake_gh(checks=[check("verify"), check("build-and-push", "skipped"),
+                                check("lint", "neutral")], required={"verify"}))
         self.assertTrue(ok, msg)
+
+    def test_required_skipped_check_refuses_a_pass(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(checks=[check("verify", "skipped")], required={"verify"}))
+        self.assertFalse(ok)
+        self.assertIn("verify:skipped", msg)
 
     def test_one_red_among_many_greens_still_refuses(self):
         ok, _ = gate_ci.check_gate_result(
@@ -382,6 +387,16 @@ class PrecloseRegressionTests(unittest.TestCase):
         state, _ = gate_ci.ci_conclusion("o/r", "abc1234",
                                          run=fake_gh(checks=[old, new]))
         self.assertEqual(state, "green")
+
+    def test_newer_queued_rerun_beats_older_completed_success(self):
+        old = check("verify", "success")
+        old["completed_at"] = "2026-09-01T00:00:00Z"
+        queued = {"name": "verify", "status": "queued", "conclusion": None,
+                  "created_at": "2026-09-02T00:00:00Z"}
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", "abc1234", run=fake_gh(checks=[old, queued]), required={"verify"})
+        self.assertEqual(state, "pending")
+        self.assertIn("verify", detail)
 
     def test_the_check_run_request_paginates(self):
         """The default page is 30 and hrse's `main` tip already carries exactly
