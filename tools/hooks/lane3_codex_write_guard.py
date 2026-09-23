@@ -34,7 +34,6 @@ itself uses the literal markers `codex-apply-patch/src/parser.rs` defines
 at that tag: `*** Add File: `, `*** Update File: `, `*** Delete File: `,
 `*** Move to: `.
 """
-import argparse
 import json
 import os
 import re
@@ -90,6 +89,14 @@ def _allow(host: str) -> dict | None:
 def _emit(decision: dict | None) -> None:
     if decision is not None:
         print(json.dumps(decision))
+
+
+def _host(argv: list[str]) -> str:
+    """Return an explicitly named host without letting bad args skip denials."""
+    try:
+        return argv[argv.index("--host") + 1]
+    except (ValueError, IndexError):
+        return "unknown"
 
 
 def _resolve(target: str, cwd: Path) -> str | None:
@@ -186,9 +193,7 @@ def bash_decision(command: str, cwd: Path, host: str) -> dict | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", choices=("claude", "codex"), default="unknown")
-    host = parser.parse_args().host
+    host = _host(sys.argv[1:])
 
     if os.environ.get("LANE") != "3":
         # harmonic-forge#644 rework: this file's own fail-closed branches
@@ -206,6 +211,13 @@ def main() -> int:
         _emit(_deny(
             "Codex Lane 3 write guard: unparseable PreToolUse payload "
             "(harmonic-forge#644)."
+        ))
+        return 0
+
+    if not isinstance(payload, dict):
+        _emit(_deny(
+            "Codex Lane 3 write guard: PreToolUse payload must be a JSON "
+            "object (harmonic-forge#644)."
         ))
         return 0
 

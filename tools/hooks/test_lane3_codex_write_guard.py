@@ -39,6 +39,10 @@ def run_guard(payload: dict, lane: str | None = "3", host: str | None = None) ->
         env=env,
         check=False,
     )
+    if result.returncode != 0 or result.stderr:
+        raise AssertionError(
+            f"guard failed: exit={result.returncode}, stderr={result.stderr!r}"
+        )
     return result.stdout
 
 
@@ -71,7 +75,7 @@ class ApplyPatchTests(unittest.TestCase):
             "*** Update File: /tmp/some-worktree/x.md\n@@\n-old\n+new\n"
             "*** End Patch"
         )
-        for host in (None, "codex", "claude"):
+        for host in (None, "codex", "claude", "CODEX", "gemini"):
             with self.subTest(host=host):
                 output = run_guard(apply_patch_payload(body), host=host)
                 payload = json.loads(output)["hookSpecificOutput"]
@@ -204,6 +208,8 @@ class LaneGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as worktree:
             cases = {
                 "unparseable_json": ("not json at all", None),
+                "json_list": ("[]", None),
+                "json_null": ("null", None),
                 "missing_cwd_and_input": (json.dumps({"tool_name": "Bash"}), None),
                 "malformed_shell": (
                     json.dumps(bash_payload("echo 'unterminated", worktree)), None
