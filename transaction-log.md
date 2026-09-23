@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): silence Codex pass-through decisions (F734)
+- tools/hooks/lane3_codex_write_guard.py      | 45 +++++++++++++++++---------
+- tools/hooks/test_lane3_codex_write_guard.py | 50 ++++++++++++++++++++---------
+- 2 files changed, 63 insertions(+), 32 deletions(-)
+
 ## fix(l1-post): preserve private pre-check temp root (F706)
 - tools/gh/l1_post.py                     | 27 +++++++++--
 - tools/gh/test_l1_post_private_tmpdir.py | 82 +++++++++++++++++++++++++++++++++

@@ -20,7 +20,7 @@ GUARD = HOOK_DIR / "lane3_codex_write_guard.py"
 TESTPLAN = Path.home() / "Harmonic_Projects" / "testplan"
 
 
-def run_guard(payload: dict, lane: str | None = "3") -> dict:
+def run_guard(payload: dict, lane: str | None = "3", host: str | None = None) -> str:
     env = {}
     import os
     env.update(os.environ)
@@ -28,19 +28,24 @@ def run_guard(payload: dict, lane: str | None = "3") -> dict:
         env.pop("LANE", None)
     else:
         env["LANE"] = lane
+    command = [sys.executable, str(GUARD)]
+    if host is not None:
+        command += ["--host", host]
     result = subprocess.run(
-        [sys.executable, str(GUARD)],
+        command,
         input=json.dumps(payload),
         text=True,
         capture_output=True,
         env=env,
         check=False,
     )
-    return json.loads(result.stdout)
+    return result.stdout
 
 
-def decision(output: dict) -> str:
-    return output["hookSpecificOutput"]["permissionDecision"]
+def decision(output: str) -> str | None:
+    if not output:
+        return None
+    return json.loads(output)["hookSpecificOutput"]["permissionDecision"]
 
 
 def apply_patch_payload(body: str, cwd: str = "/tmp") -> dict:
@@ -58,7 +63,7 @@ class ApplyPatchTests(unittest.TestCase):
             f"*** Add File: {TESTPLAN}/644-probe/x.md\n+hi\n"
             "*** End Patch"
         )
-        self.assertEqual(decision(run_guard(apply_patch_payload(body))), "allow")
+        self.assertIsNone(decision(run_guard(apply_patch_payload(body))))
 
     def test_update_outside_testplan_denied(self):
         body = (
@@ -66,7 +71,16 @@ class ApplyPatchTests(unittest.TestCase):
             "*** Update File: /tmp/some-worktree/x.md\n@@\n-old\n+new\n"
             "*** End Patch"
         )
-        self.assertEqual(decision(run_guard(apply_patch_payload(body))), "deny")
+        for host in (None, "codex", "claude"):
+            with self.subTest(host=host):
+                output = run_guard(apply_patch_payload(body), host=host)
+                payload = json.loads(output)["hookSpecificOutput"]
+                self.assertEqual(payload["permissionDecision"], "deny")
+                self.assertEqual(
+                    payload["permissionDecisionReason"],
+                    "Codex Lane 3 may write only inside "
+                    "~/Harmonic_Projects/testplan/ (harmonic-forge#644).",
+                )
 
     def test_delete_outside_testplan_denied(self):
         body = (
@@ -98,7 +112,7 @@ class ApplyPatchTests(unittest.TestCase):
 class BashTests(unittest.TestCase):
     def test_redirect_into_testplan_allowed(self):
         cmd = f"echo hi > {TESTPLAN}/644-probe/y.md"
-        self.assertEqual(decision(run_guard(bash_payload(cmd, "/tmp"))), "allow")
+        self.assertIsNone(decision(run_guard(bash_payload(cmd, "/tmp"))))
 
     def test_redirect_into_worktree_denied(self):
         with tempfile.TemporaryDirectory() as worktree:
@@ -112,14 +126,14 @@ class BashTests(unittest.TestCase):
 
     def test_cp_into_testplan_allowed(self):
         cmd = f"cp /etc/hostname {TESTPLAN}/644-probe/z.md"
-        self.assertEqual(decision(run_guard(bash_payload(cmd, "/tmp"))), "allow")
+        self.assertIsNone(decision(run_guard(bash_payload(cmd, "/tmp"))))
 
     def test_read_only_command_allowed(self):
-        self.assertEqual(decision(run_guard(bash_payload("git status", "/tmp"))), "allow")
+        self.assertIsNone(decision(run_guard(bash_payload("git status", "/tmp"))))
 
     def test_cd_then_relative_write_into_testplan_allowed(self):
         cmd = f"cd {TESTPLAN}/644-probe && echo hi > z.md"
-        self.assertEqual(decision(run_guard(bash_payload(cmd, "/tmp"))), "allow")
+        self.assertIsNone(decision(run_guard(bash_payload(cmd, "/tmp"))))
 
     def test_cd_then_relative_write_outside_testplan_denied(self):
         with tempfile.TemporaryDirectory() as worktree:
@@ -162,10 +176,14 @@ class LaneGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as worktree:
             cmd = "echo hi > f.txt"
             self.assertEqual(
-                decision(run_guard(bash_payload(cmd, worktree), lane="2")), "allow"
+                decision(run_guard(bash_payload(cmd, worktree), lane="2")), None
             )
 
-    def _run_raw(self, raw_stdin: str, lane: str | None) -> dict:
+    def test_claude_host_keeps_explicit_allow(self):
+        output = run_guard(bash_payload("git status", "/tmp"), host="claude")
+        self.assertEqual(decision(output), "allow")
+
+    def _run_raw(self, raw_stdin: str, lane: str | None) -> str:
         import os
         env = dict(os.environ)
         if lane is None:
@@ -180,7 +198,7 @@ class LaneGateTests(unittest.TestCase):
             env=env,
             check=False,
         )
-        return json.loads(result.stdout)
+        return result.stdout
 
     def test_fail_closed_branches_allow_outside_lane3(self):
         with tempfile.TemporaryDirectory() as worktree:
@@ -203,7 +221,7 @@ class LaneGateTests(unittest.TestCase):
                 for lane in (None, "1", "2"):
                     with self.subTest(case=name, lane=lane):
                         self.assertEqual(
-                            decision(self._run_raw(raw, lane)), "allow")
+                            decision(self._run_raw(raw, lane)), None)
                 with self.subTest(case=name, lane="3"):
                     self.assertEqual(
                         decision(self._run_raw(raw, "3")), "deny")
@@ -238,7 +256,7 @@ class LaneGateTests(unittest.TestCase):
                     input=json.dumps(bash_payload("echo 'unterminated", worktree)),
                     text=True, capture_output=True, env=env, check=False,
                 )
-                mutated_decision = json.loads(result.stdout)
+                mutated_decision = result.stdout
             self.assertEqual(
                 decision(mutated_decision), "deny",
                 "mutating the early return away should restore the bug "
