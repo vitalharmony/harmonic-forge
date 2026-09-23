@@ -29,8 +29,14 @@ LOG_PATH = PROJECT_ROOT / "transaction-log.md"
 
 def execute_git(cmd: list[str], check: bool = True) -> str:
     result = subprocess.run(
-        cmd, cwd=PROJECT_ROOT, capture_output=True, text=True, check=check
+        cmd, cwd=PROJECT_ROOT, capture_output=True, text=True, check=False
     )
+    if check and result.returncode:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=result.stderr
+        )
     return result.stdout.strip()
 
 
@@ -75,7 +81,7 @@ def main() -> int:
 
     if args.push:
         print("[GIT] Pushing to remote...")
-        execute_git(["git", "push"])
+        execute_git(["git", "push", "-u", "origin", "HEAD"])
         print("[GIT] Push complete.")
 
         # Push is this repo's genuine "publish" event (no version bump
@@ -108,7 +114,7 @@ def main() -> int:
             execute_git(["git", "checkout", "main"])
             execute_git(["git", "merge", clear_branch, "--ff-only"])
             execute_git(["git", "branch", "-d", clear_branch])
-            execute_git(["git", "push"])
+            execute_git(["git", "push", "-u", "origin", "HEAD"])
 
     return 0
 

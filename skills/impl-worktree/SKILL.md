@@ -14,7 +14,7 @@ itself, and never by branch-switching inside it either.
 ## Create
 
 ```bash
-git -C <repo>-lane2 worktree add /tmp/<repo>-<issue>-impl -b feat/<issue>-<short-desc> origin/main
+git -C <repo>-lane2 worktree add --no-track /tmp/<repo>-<issue>-impl -b feat/<issue>-<short-desc> origin/main
 ```
 
 - Repo-agnostic path: `/tmp/<repo>-<issue>-impl` (e.g. `/tmp/hrse2-700-impl`,
@@ -23,6 +23,11 @@ git -C <repo>-lane2 worktree add /tmp/<repo>-<issue>-impl -b feat/<issue>-<short
   conflict-resolution prep work against a shared lane worktree).
 - Base the new branch off `origin/main` (fetch first if stale), not off
   whatever the shared `<repo>-lane2/` worktree happens to have checked out.
+- `--no-track` is intentional: a feature branch must not inherit
+  `origin/main` as its upstream. The sanctioned `mise run commit --push`
+  publishes `HEAD` to its own remote branch and establishes that upstream on
+  the first push. Existing branches made with the old command are safe too:
+  that push form repairs their upstream without a manual `git config` step.
 
 ## Provision
 
