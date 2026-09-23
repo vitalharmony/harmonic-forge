@@ -147,11 +147,10 @@ _SHA = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*(?:Head[- ]SHA|Gated[- ]SHA|SHA)"
 
 #: Conclusions GitHub reports for a finished check run that mean "did not pass".
 _BAD = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
-#: Finished and fine. `neutral` and `skipped` are not failures — a skipped job
-#: is one that correctly decided it had nothing to do, and every hrse PR has
-#: two (`build-and-push`, `open-image-bump-pr`), so treating them as red would
-#: refuse every legitimate PASS in that repo.
-_GOOD = {"success", "neutral", "skipped"}
+#: Finished and fine. GitHub accepts `neutral` for required checks: the check
+#: ran and deliberately reported no action. `skipped` is different — it never
+#: vouched for this commit, so it may be ignored only when it is non-required.
+_GOOD = {"success", "neutral"}
 
 
 #: Real reports state the SHA in the HEADING, not as a labelled line:
@@ -215,9 +214,11 @@ def _latest_per_name(runs: list[dict]) -> list[dict]:
     newest: dict[str, dict] = {}
     for entry in runs:
         name = entry.get("name") or ""
-        stamp = entry.get("completed_at") or entry.get("started_at") or ""
+        stamp = (entry.get("completed_at") or entry.get("started_at")
+                 or entry.get("created_at") or "")
         if name not in newest or stamp >= (newest[name].get("completed_at")
-                                           or newest[name].get("started_at") or ""):
+                                           or newest[name].get("started_at")
+                                           or newest[name].get("created_at") or ""):
             newest[name] = entry
     return list(newest.values())
 
