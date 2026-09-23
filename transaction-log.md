@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(lane): link ready claims to open PRs (F741)
+- tools/gh/l1_post.py                 | 32 ++++++++++++++++++++++++++++++++
+- tools/gh/test_l1_post_plan_first.py | 11 +++++++----
+- 2 files changed, 39 insertions(+), 4 deletions(-)
+
 ## fix(gate): require executed current CI checks (F738)
 - tools/gh/gate_ci.py      | 15 ++++++++-------
 - tools/gh/test_gate_ci.py | 25 ++++++++++++++++++++-----

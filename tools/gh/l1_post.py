@@ -1317,6 +1317,36 @@ def require_open_pr(
     return ["pr-open (acknowledged override)"], [f"- {message} -- acknowledged: {ack_no_pr_required}"]
 
 
+def pr_issue_marker(repo: str, issue: int, branch: str, sha: str) -> str:
+    """Versioned, pre-merge PR↔issue provenance for every onboarded repo."""
+    source_repo = _cwd_repo_from_git(None)
+    if source_repo is None:
+        fail("cannot resolve source repo for PR provenance")
+    head = f"{source_repo.split('/')[0]}:{branch}"
+    prs = run("gh", "api", f"repos/{source_repo}/pulls?head={head}&base=main&state=open")
+    if prs.returncode:
+        fail("cannot resolve open PR for provenance: " + prs.stderr.strip())
+    try:
+        matches = json.loads(prs.stdout)
+    except json.JSONDecodeError:
+        fail("open PR provenance response was unparseable")
+    if not isinstance(matches, list) or len(matches) != 1:
+        fail("expected exactly one open PR for provenance")
+    issue_data = run("gh", "api", f"repos/{repo}/issues/{issue}")
+    if issue_data.returncode:
+        fail("cannot resolve issue provenance: " + issue_data.stderr.strip())
+    try:
+        issue_node = json.loads(issue_data.stdout)["node_id"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        fail("issue provenance response lacked node_id")
+    pr = matches[0]
+    if not pr.get("node_id") or not pr.get("number"):
+        fail("open PR provenance response lacked identity")
+    return (f"<!-- lane-pr-link v1; issue-repo={repo}; issue={issue}; "
+            f"issue-node-id={issue_node}; pr-repo={source_repo}; pr={pr['number']}; "
+            f"pr-node-id={pr['node_id']}; head-sha={sha} -->")
+
+
 HRSE_DEPENDENCY_DIRS = ("frontend/node_modules", "backend/.venv")
 
 
@@ -1507,6 +1537,8 @@ def post_kind(
         body = body.rstrip("\n") + "\n\n### Sibling-overlap override (operator-acknowledged)\n" + "\n".join(overlap_warnings) + "\n"
     if pr_warnings:
         body = body.rstrip("\n") + "\n\n### No-open-PR override (operator-acknowledged)\n" + "\n".join(pr_warnings) + "\n"
+    if kind == "ready-for-l3":
+        body = body.rstrip("\n") + "\n\n" + pr_issue_marker(repo, issue, branch, sha) + "\n"
     # a private-repo incident: hash the rstripped body, not the raw one -- `comment_body()`
     # below posts `body.rstrip("\n") + footer`, so hashing `body` unstripped
     # recorded a digest that didn't correspond to what was actually posted
