@@ -111,7 +111,85 @@ def check_checkout(project: Project) -> Check:
     return Check("checkout", OK, str(project.checkout))
 
 
+#: harmonic-forge#746 AC2. Commits behind origin/main a lane worktree may
+#: trail before being flagged stale. Chosen small rather than zero: a
+#: worktree naturally lags by a handful of commits between one merge and the
+#: next lane launch, and zero-tolerance would flag that constantly instead of
+#: the actual failure mode -- drift nobody notices because nothing ever
+#: reports it. Ten is enough headroom for "just merged, not yet relaunched"
+#: while catching real drift (this issue's own live case was 35-90) long
+#: before it compounds into stale hooks/posting guards silently in effect.
+STALE_WORKTREE_BEHIND_THRESHOLD = 10
+
+
+def worktree_commit_currency(path: Path) -> tuple[str, str]:
+    """`(state, detail)` for one worktree's commit currency against
+    `origin/main` (harmonic-forge#746 AC1/AC3/AC4/AC5).
+
+    Caller fetches first (`check_worktrees` does) -- this never fetches
+    itself, so repeated verify runs stay read-only and cheap, matching
+    `_worktree_is_safe_to_advance`'s own read-only contract. This function
+    never writes to the worktree either way; "detected" and "advanced" are
+    two different capabilities on purpose (AC3/AC4 -- see the issue).
+
+    `state` is one of:
+    - `"current"` -- behind the threshold, nothing to report.
+    - `"stale"` -- behind `origin/main` past `STALE_WORKTREE_BEHIND_THRESHOLD`.
+    - `"branch"` -- on a branch, not detached. AC5: behind-main is the wrong
+      predicate for an in-flight feature branch, so this is reported on its
+      own and never scored as stale.
+    - `"detached-orphan"` -- detached HEAD carrying commits no branch (local
+      or remote) contains. AC3's live test case.
+    - `"dirty"` -- uncommitted changes present. Reported, never silently
+      folded into a currency verdict that would suggest it is safe to touch.
+    - `"unreadable"` -- a git command failed; the worktree's state could not
+      be determined at all.
+    """
+    status = _run(["git", "-C", str(path), "status", "--porcelain"])
+    if status[0] != 0:
+        return "unreadable", "could not read status"
+    dirty = bool(status[1].strip())
+
+    head_ref = _run(["git", "-C", str(path), "symbolic-ref", "-q", "HEAD"])
+    if head_ref[0] == 0:
+        branch = head_ref[1].strip().removeprefix("refs/heads/")
+        detail = f"on {branch}" + (", uncommitted changes" if dirty else "")
+        return "branch", detail
+
+    behind = _run(["git", "-C", str(path), "rev-list", "--count", "HEAD..origin/main"])
+    ahead = _run(["git", "-C", str(path), "rev-list", "--count", "origin/main..HEAD"])
+    if behind[0] != 0 or ahead[0] != 0:
+        return "unreadable", "could not compute ahead/behind origin/main"
+    behind_n = int(behind[1].strip() or 0)
+    ahead_n = int(ahead[1].strip() or 0)
+
+    if ahead_n:
+        # `for-each-ref`, not `branch -a --contains`: the latter prints a
+        # `* (no branch)` pseudo-line for the detached HEAD itself on every
+        # detached worktree, which made `contains[1].strip()` non-empty
+        # unconditionally and this branch never fired (caught by this
+        # issue's own test).
+        contains = _run(["git", "-C", str(path), "for-each-ref", "--contains", "HEAD",
+                         "refs/heads", "refs/remotes"])
+        if contains[0] == 0 and not contains[1].strip():
+            detail = f"{ahead_n} ahead, {behind_n} behind, no branch contains HEAD"
+            return "detached-orphan", detail + (", uncommitted changes" if dirty else "")
+
+    if dirty:
+        return "dirty", f"{behind_n} behind origin/main, uncommitted changes"
+    if behind_n > STALE_WORKTREE_BEHIND_THRESHOLD:
+        return "stale", f"{behind_n} behind origin/main"
+    return "current", f"{behind_n} behind origin/main" if behind_n else "current"
+
+
 def check_worktrees(project: Project) -> Check:
+    """harmonic-forge#746 AC6: `<repo>-release` (and any other non-lane
+    worktree) is excluded from this check by construction, not by omission
+    -- `Project.worktrees` only ever names `<repo>-lane{2,3}` (see
+    `manifest.Project.worktrees`/`worktree_names`), the same scope
+    `check_hooks`/`advance_stale_worktrees` already use. A `-release`
+    worktree is not a lane worktree the protocol launches sessions into, so
+    it is out of scope for the same reason the main checkout itself is."""
     if project.checkout is None:
         return Check("lane worktrees", SKIP, "no checkout")
     missing = [p for p in project.worktrees if not p.exists()]
@@ -119,7 +197,26 @@ def check_worktrees(project: Project) -> Check:
         return Check("lane worktrees", FAIL,
                      "missing: " + ", ".join(p.name for p in missing))
     lanes = " + ".join(path.name.rsplit("-", 1)[-1] for path in project.worktrees)
-    return Check("lane worktrees", OK, f"{lanes} present")
+    # harmonic-forge#746 AC1: measure commit currency alongside existence --
+    # a worktree present but 90 commits behind used to read identically to
+    # one that is current. Fetch once, up front, so every worktree's
+    # ahead/behind below is computed against the same origin/main snapshot.
+    _run(["git", "-C", str(project.checkout), "fetch", "-q", "origin", "main"])
+    findings = []
+    failing = False
+    for path in project.worktrees:
+        state, detail = worktree_commit_currency(path)
+        findings.append(f"{path.name}: {detail}")
+        # "unreadable" is reported, not hard-failed: it covers both a
+        # genuinely broken worktree AND a path that is not a real git
+        # worktree at all (this check now shells out to git, where its
+        # predecessor only checked existence) -- conflating "could not
+        # measure" with "confirmed stale" would make a transient git
+        # failure as loud as this issue's own live incident.
+        if state in ("stale", "detached-orphan"):
+            failing = True
+    detail = f"{lanes} present; " + "; ".join(findings)
+    return Check("lane worktrees", FAIL if failing else OK, detail)
 
 
 def check_protocol(project: Project) -> Check:

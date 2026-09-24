@@ -619,6 +619,165 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
         self.assertEqual([check.name for check in checks], [f"worktree {lane2.name}"])
 
 
+class WorktreeCommitCurrencyTests(unittest.TestCase):
+    """harmonic-forge#746: the existing worktree check measured hook drift,
+    not commit drift, so a worktree 90 commits behind origin/main read
+    identically to a current one. Each test here is the live incident's own
+    state, reproduced hermetically."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self._git("init", "-q", "-b", "main")
+        (self.repo / "f.txt").write_text("x")
+        self._git("add", "-A")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one")
+        # A real `origin` remote, so `origin/main` exists to compare against
+        # -- `worktree_commit_currency` reads that ref directly, never a
+        # local `main` branch, matching how `check_worktrees` fetches it.
+        self.origin = self.root / "origin.git"
+        self._git("init", "-q", "--bare", str(self.origin))
+        self._git("remote", "add", "origin", str(self.origin))
+        self._git("push", "-q", "origin", "main")
+
+    def _git(self, *args, cwd=None):
+        return subprocess.run(["git", "-C", str(cwd or self.repo), *args],
+                              capture_output=True, text=True)
+
+    def _worktree(self, name):
+        path = self.root / name
+        self._git("worktree", "add", "-q", "--detach", str(path), "HEAD")
+        return path
+
+    def _commit_to_main(self, n=1):
+        for i in range(n):
+            (self.repo / "f.txt").write_text(f"x{i}")
+            self._git("add", "-A")
+            self._git("-c", "user.email=t@t", "-c", "user.name=t",
+                      "commit", "-qm", f"advance {i}")
+        self._git("push", "-q", "origin", "main")
+
+    def test_current_worktree_reports_current(self):
+        path = self._worktree("wt")
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "current")
+
+    def test_worktree_behind_the_threshold_is_not_stale(self):
+        path = self._worktree("wt")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD)
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "current", detail)
+
+    def test_worktree_past_the_threshold_is_stale(self):
+        """The live incident: 90 commits behind, and the existing check read
+        `ok` because it only ever compared settings.json."""
+        path = self._worktree("wt")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1)
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "stale")
+        self.assertIn(str(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1), detail)
+
+    def test_a_worktree_on_a_branch_is_reported_as_branch_not_stale(self):
+        """AC5: HRSE2-lane3 at 1459ef2c with PR #2022 open was the live
+        case -- behind-main is the wrong predicate for an unmerged feature
+        branch, and advancing it would discard in-flight Lane 2 work."""
+        path = self.root / "onbranch"
+        self._git("worktree", "add", "-q", "-b", "someones-work", str(path), "HEAD")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 50)
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "branch")
+        self.assertIn("someones-work", detail)
+
+    def test_a_detached_orphan_commit_is_reported_never_silently_kept(self):
+        """AC3: harmonic-forge-lane3 was detached with 2 commits no branch
+        contained -- a superseded local copy, not lost work, but the check
+        must say so rather than reading it as merely 'ahead'."""
+        path = self._worktree("orphan")
+        (path / "local.txt").write_text("y")
+        self._git("add", "-A", cwd=path)
+        self._git("-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-qm", "local-only", cwd=path)
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "detached-orphan")
+        self.assertIn("no branch contains HEAD", detail)
+
+    def test_dirty_worktree_is_reported_and_never_conflated_with_stale(self):
+        """AC4: `_worktree_is_safe_to_advance` already refuses to advance a
+        dirty worktree; this check must not blur that into a currency verdict
+        that would read as 'safe, just old'."""
+        path = self._worktree("dirty")
+        (path / "f.txt").write_text("changed")
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "dirty")
+        self.assertIn("uncommitted", detail)
+
+    def test_a_non_git_path_is_unreadable_and_does_not_fail_the_check(self):
+        """The predecessor check only tested existence, and many synthetic
+        test fixtures elsewhere in this suite are a bare directory, not a
+        real git worktree. Shelling out to git against one must report
+        "unreadable", not conflate "could not measure" with "confirmed
+        stale" -- `test_a_fully_set_up_repo_is_all_green` depends on this."""
+        path = self.root / "not-a-worktree"
+        path.mkdir()
+        state, detail = fo.worktree_commit_currency(path)
+        self.assertEqual(state, "unreadable")
+
+    def test_check_worktrees_fails_on_a_stale_lane_worktree(self):
+        lane2 = self._worktree("repo-lane2")
+        lane3 = self._worktree("repo-lane3")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1)
+        project = mf.Project(
+            name="repo", prefix="R", path=str(self.repo), worktree_dir=str(self.root),
+            protocol=mf.Protocol(
+                worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                runs_lane3=True))
+        self.assertEqual(set(project.worktrees), {lane2, lane3})
+        check = fo.check_worktrees(project)
+        self.assertEqual(check.status, fo.FAIL, check.detail)
+        self.assertIn(f"{fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1} behind", check.detail)
+
+    def test_check_worktrees_passes_on_current_lane_worktrees(self):
+        self._worktree("repo-lane2")
+        self._worktree("repo-lane3")
+        project = mf.Project(
+            name="repo", prefix="R", path=str(self.repo), worktree_dir=str(self.root),
+            protocol=mf.Protocol(
+                worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                runs_lane3=True))
+        check = fo.check_worktrees(project)
+        self.assertEqual(check.status, fo.OK, check.detail)
+
+    def test_release_worktree_is_out_of_scope_not_measured(self):
+        """AC6: a `-release` worktree is not named by `Project.worktrees` at
+        all, so it never reaches `worktree_commit_currency` -- excluded by
+        construction, not by a silent gap."""
+        self._worktree("repo-lane2")
+        self._worktree("repo-lane3")
+        release = self._worktree("repo-release")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 90)
+        project = mf.Project(
+            name="repo", prefix="R", path=str(self.repo), worktree_dir=str(self.root),
+            protocol=mf.Protocol(
+                worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                runs_lane3=True))
+        self.assertNotIn(release, project.worktrees)
+
+
 class LaneTaskCheckTests(Base):
     """harmonic-forge#730 — the check that makes the false-claim class unrepeatable.
 
