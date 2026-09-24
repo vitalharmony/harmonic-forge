@@ -98,13 +98,33 @@ class PrIssueMarkerTimingTests(unittest.TestCase):
         self.assertNotEqual(captured["repo"], "some-other-issue-repo/x")
 
     def test_omitting_local_check_leaves_the_marker_byte_for_byte_pre_745_up_to_the_ci_fields(self):
-        """AC4: every pre-#745 field unchanged, same name, same position."""
+        """AC4: every pre-#745 field unchanged, same name, same position --
+        the trailing `;` after `head-sha` is the F745 Lane 3 gate FAIL fix
+        (was missing, corrupting every field after it); it belongs to the
+        delimiter grammar, not to the "byte-for-byte" claim this test
+        actually cares about."""
         with mock.patch.object(L, "run", side_effect=self._fake_run), \
              mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "ok")):
             marker = L.pr_issue_marker("o/r", 1, "br", "abc123")
         pre_745_fields = marker.split(" ci-check-name=")[0]
         self.assertNotIn("local-check-start", pre_745_fields)
-        self.assertTrue(pre_745_fields.endswith("head-sha=abc123"))
+        self.assertTrue(pre_745_fields.endswith("head-sha=abc123;"))
+
+    def test_every_field_round_trips_through_the_reporters_own_parser(self):
+        """The gap the F745 Lane 3 gate FAIL actually caught: the marker
+        looked right field-by-field but never round-tripped through
+        `_parse_marker_fields()`, so a missing delimiter went unnoticed."""
+        import lane_transition_report as ltr
+        with mock.patch.object(L, "run", side_effect=self._fake_run), \
+             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "ok")):
+            marker = L.pr_issue_marker(
+                "o/r", 1, "br", "abc123",
+                local_check=("2026-01-01T00:00:00+00:00", "2026-01-01T00:05:00+00:00"),
+            )
+        fields = ltr._parse_marker_fields(f"<!-- discussion -->\n\n{marker}")
+        self.assertEqual(fields["head-sha"], "abc123")
+        self.assertEqual(fields["local-check-start"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(fields["ci-snapshot-state"], "green")
 
 
 if __name__ == "__main__":

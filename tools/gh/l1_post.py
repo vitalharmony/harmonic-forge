@@ -1372,14 +1372,17 @@ def pr_issue_marker(
     ci_state, _ci_detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
     timing_fields += (f" ci-check-name=verify; ci-snapshot-state={ci_state}; "
                       f"ci-snapshot-at={datetime.now(UTC).isoformat()};")
-    # Byte-for-byte unchanged from the pre-#745 shape only in the (now
-    # untaken) case timing_fields is empty -- AC4's actual promise is that
-    # every field that existed before this issue keeps its name and
-    # position; the CI snapshot is unconditional because AC1 wants it on
-    # every `ready-for-l3` post, this function's only caller.
+    # F745 Lane 3 gate FAIL: `head-sha={sha}{timing_fields}` omitted the `;`
+    # separating `head-sha`'s value from the next field -- `timing_fields`
+    # starts with a space, not `;`, so `head-sha=<sha> local-check-start=...`
+    # parsed as ONE corrupted head-sha value, silently dropping every
+    # timing field behind it and feeding a garbage SHA to the reporter's
+    # re-query (AC2). The semicolon after `head-sha={sha}` is unconditional
+    # -- timing_fields is non-empty on every real call (the CI snapshot
+    # always runs), so this is never a cosmetic trailing `;` in practice.
     return (f"<!-- lane-pr-link v1; issue-repo={repo}; issue={issue}; "
             f"issue-node-id={issue_node}; pr-repo={source_repo}; pr={pr['number']}; "
-            f"pr-node-id={pr['node_id']}; head-sha={sha}{timing_fields} -->")
+            f"pr-node-id={pr['node_id']}; head-sha={sha};{timing_fields} -->")
 
 
 HRSE_DEPENDENCY_DIRS = ("frontend/node_modules", "backend/.venv")
