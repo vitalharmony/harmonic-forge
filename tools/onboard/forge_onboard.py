@@ -122,9 +122,16 @@ def check_checkout(project: Project) -> Check:
 STALE_WORKTREE_BEHIND_THRESHOLD = 10
 
 
-def worktree_commit_currency(path: Path) -> tuple[str, str]:
-    """`(state, detail)` for one worktree's commit currency against
-    `origin/main` (harmonic-forge#746 AC1/AC3/AC4/AC5).
+@dataclass
+class WorktreeCurrency:
+    state: str
+    detail: str
+    failing: bool
+
+
+def worktree_commit_currency(path: Path) -> WorktreeCurrency:
+    """One worktree's commit currency against `origin/main`
+    (harmonic-forge#746 AC1/AC3/AC4/AC5).
 
     Caller fetches first (`check_worktrees` does) -- this never fetches
     itself, so repeated verify runs stay read-only and cheap, matching
@@ -132,38 +139,67 @@ def worktree_commit_currency(path: Path) -> tuple[str, str]:
     never writes to the worktree either way; "detected" and "advanced" are
     two different capabilities on purpose (AC3/AC4 -- see the issue).
 
+    `.failing` is computed here, independently of which descriptive `.state`
+    label applies, specifically because staleness and dirtiness are NOT
+    mutually exclusive (preclose finding: a first version returned `"dirty"`
+    as a terminal state, so a worktree 90 behind with one stray edit read
+    `ok` -- the dirty state silently swallowed the stale one). Both are
+    reported in `.detail` when both apply; `.failing` is true if either is.
+
     `state` is one of:
     - `"current"` -- behind the threshold, nothing to report.
     - `"stale"` -- behind `origin/main` past `STALE_WORKTREE_BEHIND_THRESHOLD`.
-    - `"branch"` -- on a branch, not detached. AC5: behind-main is the wrong
-      predicate for an in-flight feature branch, so this is reported on its
-      own and never scored as stale.
+      Applies on a branch too, if that branch's tip has already merged (or
+      never diverged) -- "on a branch" alone does not exempt a worktree
+      whose branch carries no unmerged commits (preclose finding: the
+      original branch short-circuit exempted every branch worktree from
+      measurement, not just genuinely unmerged ones).
+    - `"branch"` -- on a branch that IS ahead of `origin/main` (genuinely
+      unmerged/in-flight). AC5: behind-main is the wrong predicate for that
+      worktree, so it is never scored as stale -- but the behind-count is
+      still reported in `.detail`, per AC2's "every lane worktree" wording.
     - `"detached-orphan"` -- detached HEAD carrying commits no branch (local
       or remote) contains. AC3's live test case.
-    - `"dirty"` -- uncommitted changes present. Reported, never silently
-      folded into a currency verdict that would suggest it is safe to touch.
-    - `"unreadable"` -- a git command failed; the worktree's state could not
-      be determined at all.
+    - `"dirty"` -- uncommitted changes, and otherwise current. Reported,
+      never silently folded into a verdict that would suggest it is safe to
+      touch.
+    - `"no-git"` -- `path` carries no `.git` at all, i.e. it is not a git
+      worktree. Never failing: this is what many of this suite's own
+      synthetic fixtures look like, and "not a worktree" is `check_worktrees`'
+      existence check's job to catch, not this function's.
+    - `"unreadable"` -- `path` IS a git worktree (`.git` present) but a git
+      command still failed -- a genuinely broken worktree, and failing
+      (preclose finding: an earlier version fail-opened on every
+      "could not measure" case, indistinguishable from `"no-git"`, which
+      would have hidden a real corrupt worktree in production).
     """
+    if not (path / ".git").exists():
+        return WorktreeCurrency("no-git", "not a git worktree", False)
+
     status = _run(["git", "-C", str(path), "status", "--porcelain"])
     if status[0] != 0:
-        return "unreadable", "could not read status"
+        return WorktreeCurrency("unreadable", "could not read status", True)
     dirty = bool(status[1].strip())
 
     head_ref = _run(["git", "-C", str(path), "symbolic-ref", "-q", "HEAD"])
-    if head_ref[0] == 0:
-        branch = head_ref[1].strip().removeprefix("refs/heads/")
-        detail = f"on {branch}" + (", uncommitted changes" if dirty else "")
-        return "branch", detail
+    on_branch = head_ref[0] == 0
+    branch = head_ref[1].strip().removeprefix("refs/heads/") if on_branch else None
 
     behind = _run(["git", "-C", str(path), "rev-list", "--count", "HEAD..origin/main"])
     ahead = _run(["git", "-C", str(path), "rev-list", "--count", "origin/main..HEAD"])
     if behind[0] != 0 or ahead[0] != 0:
-        return "unreadable", "could not compute ahead/behind origin/main"
+        return WorktreeCurrency("unreadable",
+                                "could not compute ahead/behind origin/main", True)
     behind_n = int(behind[1].strip() or 0)
     ahead_n = int(ahead[1].strip() or 0)
+    dirty_suffix = ", uncommitted changes" if dirty else ""
+    where = f"on {branch}, " if branch else ""
 
-    if ahead_n:
+    if on_branch and ahead_n:
+        detail = f"{where}{ahead_n} ahead, {behind_n} behind (unmerged, not scored){dirty_suffix}"
+        return WorktreeCurrency("branch", detail, False)
+
+    if not on_branch and ahead_n:
         # `for-each-ref`, not `branch -a --contains`: the latter prints a
         # `* (no branch)` pseudo-line for the detached HEAD itself on every
         # detached worktree, which made `contains[1].strip()` non-empty
@@ -172,14 +208,21 @@ def worktree_commit_currency(path: Path) -> tuple[str, str]:
         contains = _run(["git", "-C", str(path), "for-each-ref", "--contains", "HEAD",
                          "refs/heads", "refs/remotes"])
         if contains[0] == 0 and not contains[1].strip():
-            detail = f"{ahead_n} ahead, {behind_n} behind, no branch contains HEAD"
-            return "detached-orphan", detail + (", uncommitted changes" if dirty else "")
+            detail = f"{ahead_n} ahead, {behind_n} behind, no branch contains HEAD{dirty_suffix}"
+            return WorktreeCurrency("detached-orphan", detail, True)
 
+    stale = behind_n > STALE_WORKTREE_BEHIND_THRESHOLD
+    if dirty and stale:
+        return WorktreeCurrency(
+            "stale", f"{where}{behind_n} behind origin/main{dirty_suffix}", True)
     if dirty:
-        return "dirty", f"{behind_n} behind origin/main, uncommitted changes"
-    if behind_n > STALE_WORKTREE_BEHIND_THRESHOLD:
-        return "stale", f"{behind_n} behind origin/main"
-    return "current", f"{behind_n} behind origin/main" if behind_n else "current"
+        return WorktreeCurrency(
+            "dirty", f"{where}{behind_n} behind origin/main{dirty_suffix}", False)
+    if stale:
+        return WorktreeCurrency("stale", f"{where}{behind_n} behind origin/main", True)
+    return WorktreeCurrency(
+        "current", f"{where}{behind_n} behind origin/main" if behind_n else f"{where}current",
+        False)
 
 
 def check_worktrees(project: Project) -> Check:
@@ -197,24 +240,32 @@ def check_worktrees(project: Project) -> Check:
         return Check("lane worktrees", FAIL,
                      "missing: " + ", ".join(p.name for p in missing))
     lanes = " + ".join(path.name.rsplit("-", 1)[-1] for path in project.worktrees)
+    functional = _run(["git", "-C", str(project.checkout), "rev-parse", "--git-dir"])
+    if functional[0] != 0:
+        # Not a functional git checkout -- `.git` existing as a bare
+        # directory is not enough proof (this suite's own non-git-backed
+        # synthetic fixtures use exactly that shape: `mkdir`, no `git
+        # init`). Existence is all that can be verified here, same as the
+        # predecessor check.
+        return Check("lane worktrees", OK, f"{lanes} present")
     # harmonic-forge#746 AC1: measure commit currency alongside existence --
     # a worktree present but 90 commits behind used to read identically to
     # one that is current. Fetch once, up front, so every worktree's
     # ahead/behind below is computed against the same origin/main snapshot.
-    _run(["git", "-C", str(project.checkout), "fetch", "-q", "origin", "main"])
+    # The fetch's own exit code is checked (preclose finding: a discarded
+    # fetch failure meant every worktree was silently compared against
+    # whatever origin/main ref happened to already be on disk -- a stale
+    # ref made 90-behind worktrees compute "0 behind" and read green).
+    fetched = _run(["git", "-C", str(project.checkout), "fetch", "-q", "origin", "main"])
+    if fetched[0] != 0:
+        return Check("lane worktrees", FAIL,
+                     f"{lanes} present; could not fetch origin/main: {fetched[1]}")
     findings = []
     failing = False
     for path in project.worktrees:
-        state, detail = worktree_commit_currency(path)
-        findings.append(f"{path.name}: {detail}")
-        # "unreadable" is reported, not hard-failed: it covers both a
-        # genuinely broken worktree AND a path that is not a real git
-        # worktree at all (this check now shells out to git, where its
-        # predecessor only checked existence) -- conflating "could not
-        # measure" with "confirmed stale" would make a transient git
-        # failure as loud as this issue's own live incident.
-        if state in ("stale", "detached-orphan"):
-            failing = True
+        currency = worktree_commit_currency(path)
+        findings.append(f"{path.name}: {currency.detail}")
+        failing = failing or currency.failing
     detail = f"{lanes} present; " + "; ".join(findings)
     return Check("lane worktrees", FAIL if failing else OK, detail)
 

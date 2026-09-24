@@ -663,15 +663,17 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
     def test_current_worktree_reports_current(self):
         path = self._worktree("wt")
         self._git("fetch", "-q", "origin", "main", cwd=path)
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "current")
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "current")
+        self.assertFalse(currency.failing)
 
     def test_worktree_behind_the_threshold_is_not_stale(self):
         path = self._worktree("wt")
         self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD)
         self._git("fetch", "-q", "origin", "main", cwd=path)
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "current", detail)
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "current", currency.detail)
+        self.assertFalse(currency.failing)
 
     def test_worktree_past_the_threshold_is_stale(self):
         """The live incident: 90 commits behind, and the existing check read
@@ -679,21 +681,45 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
         path = self._worktree("wt")
         self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1)
         self._git("fetch", "-q", "origin", "main", cwd=path)
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "stale")
-        self.assertIn(str(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1), detail)
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "stale")
+        self.assertTrue(currency.failing)
+        self.assertIn(str(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1), currency.detail)
 
-    def test_a_worktree_on_a_branch_is_reported_as_branch_not_stale(self):
+    def test_a_worktree_on_an_unmerged_branch_is_reported_as_branch_not_stale(self):
         """AC5: HRSE2-lane3 at 1459ef2c with PR #2022 open was the live
         case -- behind-main is the wrong predicate for an unmerged feature
-        branch, and advancing it would discard in-flight Lane 2 work."""
+        branch, and advancing it would discard in-flight Lane 2 work. The
+        behind-count is still reported, per AC2's "every lane worktree"."""
         path = self.root / "onbranch"
         self._git("worktree", "add", "-q", "-b", "someones-work", str(path), "HEAD")
+        (path / "own.txt").write_text("z")
+        self._git("add", "-A", cwd=path)
+        self._git("-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-qm", "in-flight work", cwd=path)
         self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 50)
         self._git("fetch", "-q", "origin", "main", cwd=path)
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "branch")
-        self.assertIn("someones-work", detail)
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "branch")
+        self.assertFalse(currency.failing)
+        self.assertIn("someones-work", currency.detail)
+        self.assertIn(str(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 50), currency.detail)
+
+    def test_a_worktree_on_a_merged_branch_is_still_scored_as_stale(self):
+        """Preclose finding: the original branch short-circuit exempted
+        EVERY branch worktree from measurement, not just genuinely unmerged
+        ones -- a worktree left on a fully-merged (or never-diverged) local
+        branch reported no behind-count and never failed, which is exactly
+        the 90-behind-and-green failure mode this issue exists to fix, one
+        layer down."""
+        path = self.root / "onbranch"
+        self._git("worktree", "add", "-q", "-b", "stale-branch", str(path), "HEAD")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1)
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "stale")
+        self.assertTrue(currency.failing)
+        self.assertIn(str(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1), currency.detail)
 
     def test_a_detached_orphan_commit_is_reported_never_silently_kept(self):
         """AC3: harmonic-forge-lane3 was detached with 2 commits no branch
@@ -705,9 +731,10 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
         self._git("-c", "user.email=t@t", "-c", "user.name=t",
                   "commit", "-qm", "local-only", cwd=path)
         self._git("fetch", "-q", "origin", "main", cwd=path)
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "detached-orphan")
-        self.assertIn("no branch contains HEAD", detail)
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "detached-orphan")
+        self.assertTrue(currency.failing)
+        self.assertIn("no branch contains HEAD", currency.detail)
 
     def test_dirty_worktree_is_reported_and_never_conflated_with_stale(self):
         """AC4: `_worktree_is_safe_to_advance` already refuses to advance a
@@ -716,20 +743,78 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
         path = self._worktree("dirty")
         (path / "f.txt").write_text("changed")
         self._git("fetch", "-q", "origin", "main", cwd=path)
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "dirty")
-        self.assertIn("uncommitted", detail)
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "dirty")
+        self.assertFalse(currency.failing)
+        self.assertIn("uncommitted", currency.detail)
 
-    def test_a_non_git_path_is_unreadable_and_does_not_fail_the_check(self):
+    def test_a_dirty_stale_worktree_still_fails_dirty_does_not_mask_stale(self):
+        """Preclose finding, the sharpest one: a first version returned
+        `"dirty"` as a TERMINAL state before the stale check ever ran, so
+        the live incident's own shape -- a shared lane worktree 90 behind
+        with one stray uncommitted edit left in it -- read `ok`."""
+        path = self._worktree("dirtystale")
+        self._commit_to_main(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1)
+        self._git("fetch", "-q", "origin", "main", cwd=path)
+        (path / "f.txt").write_text("changed")
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "stale")
+        self.assertTrue(currency.failing)
+        self.assertIn("uncommitted", currency.detail)
+        self.assertIn(str(fo.STALE_WORKTREE_BEHIND_THRESHOLD + 1), currency.detail)
+
+    def test_a_non_git_path_is_no_git_and_does_not_fail_the_check(self):
         """The predecessor check only tested existence, and many synthetic
         test fixtures elsewhere in this suite are a bare directory, not a
-        real git worktree. Shelling out to git against one must report
-        "unreadable", not conflate "could not measure" with "confirmed
-        stale" -- `test_a_fully_set_up_repo_is_all_green` depends on this."""
+        real git worktree. This must report "no-git" and never fail --
+        `test_a_fully_set_up_repo_is_all_green` depends on it -- and stay
+        distinct from "unreadable", which IS a git worktree that broke."""
         path = self.root / "not-a-worktree"
         path.mkdir()
-        state, detail = fo.worktree_commit_currency(path)
-        self.assertEqual(state, "unreadable")
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "no-git")
+        self.assertFalse(currency.failing)
+
+    def test_a_broken_real_worktree_is_unreadable_and_fails(self):
+        """Preclose finding: a REAL worktree whose gitdir link is broken
+        (pruned while the directory survived, or a `.git` file pointing at a
+        removed admin dir) must not read identically to a synthetic
+        no-git fixture -- "could not measure" is not "healthy"."""
+        path = self._worktree("brokengit")
+        git_file = path / ".git"
+        self.assertTrue(git_file.is_file())  # a worktree's .git is a gitdir pointer file
+        git_file.write_text("gitdir: /nonexistent/path\n")
+        currency = fo.worktree_commit_currency(path)
+        self.assertEqual(currency.state, "unreadable")
+        self.assertTrue(currency.failing)
+
+    def test_a_failed_fetch_fails_the_check_rather_than_reading_stale_data(self):
+        """Preclose finding: the fetch's exit code was discarded, so a
+        network/auth failure left every worktree scored against whatever
+        `origin/main` ref already happened to be on disk -- in the live
+        incident, a ref pinned 90 commits stale computed "0 behind" and
+        reported current. `check_worktrees` must fail loudly instead."""
+        lane2 = self._worktree("repo-lane2")
+        lane3 = self._worktree("repo-lane3")
+        project = mf.Project(
+            name="repo", prefix="R", path=str(self.repo), worktree_dir=str(self.root),
+            protocol=mf.Protocol(
+                worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                runs_lane3=True))
+        self.assertEqual(set(project.worktrees), {lane2, lane3})
+        real_run = fo._run
+
+        def failing_fetch(cmd):
+            if "fetch" in cmd:
+                return (1, "fatal: could not read from remote")
+            return real_run(cmd)
+
+        with mock.patch.object(fo, "_run", side_effect=failing_fetch):
+            check = fo.check_worktrees(project)
+        self.assertEqual(check.status, fo.FAIL, check.detail)
+        self.assertIn("could not fetch", check.detail)
 
     def test_check_worktrees_fails_on_a_stale_lane_worktree(self):
         lane2 = self._worktree("repo-lane2")
