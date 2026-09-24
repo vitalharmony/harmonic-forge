@@ -138,12 +138,18 @@ class TheKindIsUnchanged(unittest.TestCase):
 
     def test_static_checks_still_runs_only_for_ready_for_l3(self) -> None:
         """The check's scope must not widen either — this issue tightens
-        timing, it does not change which kinds are validated."""
-        source = SOURCE.read_text(encoding="utf-8")
-        self.assertIn(
-            'static_checks(sha, branch) if kind == "ready-for-l3" else ["body-validation"]',
-            source,
-        )
+        timing, it does not change which kinds are validated.
+
+        harmonic-forge#745 changed `static_checks()`'s return shape from a
+        bare `list[str]` to `(list[str], (started_at, finished_at))`, so the
+        call site is no longer expressible as the single ternary this test
+        used to pin literally -- an if/else with the same gating condition,
+        asserted by structure rather than by exact source text, which is
+        what this test actually cares about."""
+        body = ast.unparse(_fn("post_kind"))
+        self.assertIn("if kind == 'ready-for-l3':", body)
+        self.assertIn("static_checks(sha, branch)", body)
+        self.assertIn("checks = ['body-validation']", body)
 
 
 class TheExistingChecksSurvive(unittest.TestCase):

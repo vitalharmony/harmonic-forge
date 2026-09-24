@@ -31,6 +31,11 @@ try:
 except ImportError:
     _item_list_cache = None
 
+# harmonic-forge#745 AC1: reuse the same CI-conclusion check harmonic-forge#504's
+# gate uses, so the readiness-marker snapshot can never diverge from what
+# Lane 3's own CI-outrun guard already considers authoritative.
+import gate_ci
+
 # harmonic-forge#691 (AC1'). The shared belt-candidate recorder -- this is
 # the one place every `l1-post v1` marker gets written, so it is also the
 # natural place to record that a belt candidate now exists. Same
@@ -1317,8 +1322,24 @@ def require_open_pr(
     return ["pr-open (acknowledged override)"], [f"- {message} -- acknowledged: {ack_no_pr_required}"]
 
 
-def pr_issue_marker(repo: str, issue: int, branch: str, sha: str) -> str:
-    """Versioned, pre-merge PR↔issue provenance for every onboarded repo."""
+def pr_issue_marker(
+    repo: str, issue: int, branch: str, sha: str,
+    *, local_check: tuple[str, str] | None = None,
+) -> str:
+    """Versioned, pre-merge PR↔issue provenance for every onboarded repo.
+
+    `local_check` is `(started_at, finished_at)` from `static_checks()`,
+    additive to the existing `v1` marker shape (AC4): every field that
+    existed before harmonic-forge#745 is unchanged, in the same position,
+    with the same name. Omitting it leaves the marker exactly as it was
+    pre-#745.
+
+    Also takes a single, non-waiting `gate_ci.ci_conclusion()` snapshot of
+    the PR's `verify` check-run (harmonic-forge#745 AC1) -- taken here,
+    after `source_repo`/the PR are already resolved below, rather than
+    re-resolved by the caller. One API call; whatever state comes back
+    (`pending`/`green`/`red`/`absent`/`unknown`) is recorded as-is, never
+    waited on or retried."""
     source_repo = _cwd_repo_from_git(None)
     if source_repo is None:
         fail("cannot resolve source repo for PR provenance")
@@ -1342,9 +1363,26 @@ def pr_issue_marker(repo: str, issue: int, branch: str, sha: str) -> str:
     pr = matches[0]
     if not pr.get("node_id") or not pr.get("number"):
         fail("open PR provenance response lacked identity")
+    timing_fields = ""
+    if local_check is not None:
+        started_at, finished_at = local_check
+        timing_fields += f" local-check-start={started_at}; local-check-end={finished_at};"
+    # harmonic-forge#745 AC1: one snapshot, no wait. `ci_conclusion` itself
+    # makes exactly one `gh api` call and has no internal retry/poll loop.
+    ci_state, _ci_detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
+    timing_fields += (f" ci-check-name=verify; ci-snapshot-state={ci_state}; "
+                      f"ci-snapshot-at={datetime.now(UTC).isoformat()};")
+    # F745 Lane 3 gate FAIL: `head-sha={sha}{timing_fields}` omitted the `;`
+    # separating `head-sha`'s value from the next field -- `timing_fields`
+    # starts with a space, not `;`, so `head-sha=<sha> local-check-start=...`
+    # parsed as ONE corrupted head-sha value, silently dropping every
+    # timing field behind it and feeding a garbage SHA to the reporter's
+    # re-query (AC2). The semicolon after `head-sha={sha}` is unconditional
+    # -- timing_fields is non-empty on every real call (the CI snapshot
+    # always runs), so this is never a cosmetic trailing `;` in practice.
     return (f"<!-- lane-pr-link v1; issue-repo={repo}; issue={issue}; "
             f"issue-node-id={issue_node}; pr-repo={source_repo}; pr={pr['number']}; "
-            f"pr-node-id={pr['node_id']}; head-sha={sha} -->")
+            f"pr-node-id={pr['node_id']}; head-sha={sha};{timing_fields} -->")
 
 
 HRSE_DEPENDENCY_DIRS = ("frontend/node_modules", "backend/.venv")
@@ -1404,7 +1442,13 @@ def refresh_main() -> str:
     return resolved.stdout.strip()
 
 
-def static_checks(sha: str, branch: str) -> list[str]:
+def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str]]:
+    """Returns (check names, (local_check_started_at, local_check_finished_at))
+    -- the second element brackets the `mise run check` call below in UTC
+    ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing. Callers
+    that don't need the timing (there are none today -- only the
+    `kind == "ready-for-l3"` path calls this at all) still get it; the cost
+    is two `datetime.now(UTC)` calls around work already happening."""
     branch_sha = resolve_sha(branch)
     if branch_sha != sha:
         fail(f"branch {branch!r} no longer resolves to the attested SHA")
@@ -1466,7 +1510,12 @@ def static_checks(sha: str, branch: str) -> list[str]:
                         link.unlink()
                         link.symlink_to(real, target_is_directory=True)
         check_tmp, check_env = _private_check_tmp()
+        # harmonic-forge#745 AC1: bracket the local pre-flight in UTC, not
+        # wall-clock local time -- the reporter compares this against GitHub
+        # API timestamps, which are always UTC.
+        local_check_started_at = datetime.now(UTC).isoformat()
         checked = run("mise", "run", "check", cwd=scratch, env=check_env)
+        local_check_finished_at = datetime.now(UTC).isoformat()
         if checked.returncode:
             fail("static verification failed:\n" + checked.stdout + checked.stderr)
         clean = run("git", "status", "--porcelain", cwd=scratch)
@@ -1477,7 +1526,8 @@ def static_checks(sha: str, branch: str) -> list[str]:
         shutil.rmtree(scratch, ignore_errors=True)
         if check_tmp is not None:
             shutil.rmtree(check_tmp, ignore_errors=True)
-    return ["mise-check", "origin-main-ancestor", "branch-sha-match", "clean-worktree"]
+    return (["mise-check", "origin-main-ancestor", "branch-sha-match", "clean-worktree"],
+            (local_check_started_at, local_check_finished_at))
 
 
 def comment_body(repo: str, issue: int, body: str) -> tuple[str, int]:
@@ -1514,7 +1564,11 @@ def post_kind(
     harmonic-forge#381's `ae-and-sweep` (each of its two posts calls this
     once) so the two paths cannot silently diverge in what gets checked or
     recorded."""
-    checks = static_checks(sha, branch) if kind == "ready-for-l3" else ["body-validation"]
+    local_check_timing: tuple[str, str] | None = None
+    if kind == "ready-for-l3":
+        checks, local_check_timing = static_checks(sha, branch)
+    else:
+        checks = ["body-validation"]
     if is_handoff_extra_checks:
         checks.append("tier-set")
     world_check_names, overlap_warnings = world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
@@ -1538,7 +1592,8 @@ def post_kind(
     if pr_warnings:
         body = body.rstrip("\n") + "\n\n### No-open-PR override (operator-acknowledged)\n" + "\n".join(pr_warnings) + "\n"
     if kind == "ready-for-l3":
-        body = body.rstrip("\n") + "\n\n" + pr_issue_marker(repo, issue, branch, sha) + "\n"
+        marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing)
+        body = body.rstrip("\n") + "\n\n" + marker + "\n"
     # a private-repo incident: hash the rstripped body, not the raw one -- `comment_body()`
     # below posts `body.rstrip("\n") + footer`, so hashing `body` unstripped
     # recorded a digest that didn't correspond to what was actually posted
