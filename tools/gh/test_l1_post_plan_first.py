@@ -79,12 +79,13 @@ class FooterFieldTests(unittest.TestCase):
             l1_post.world_checks, l1_post.write_receipt, l1_post.require_open_pr,
             l1_post.pr_issue_marker)
         l1_post.comment_body = fake_comment_body
-        l1_post.static_checks = lambda sha, branch: ["body-validation"]
+        # harmonic-forge#745: static_checks() now returns (checks, timing).
+        l1_post.static_checks = lambda sha, branch: (["body-validation"], ("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00"))
         l1_post.world_checks = lambda *a, **k: ([], [])
         # a private-repo incident: not this file's own concern (Plan-First field placement),
         # so stubbed satisfied exactly like static_checks/world_checks above.
         l1_post.require_open_pr = lambda *a, **k: (["pr-open"], [])
-        l1_post.pr_issue_marker = lambda *a: "<!-- lane-pr-link v1 -->"
+        l1_post.pr_issue_marker = lambda *a, **k: "<!-- lane-pr-link v1 -->"
         l1_post.write_receipt = lambda record: captured.setdefault("receipt", record)
         try:
             l1_post.post_kind("o/r", 1, kind, "body", "abc", "br", plan_first=plan_first)
