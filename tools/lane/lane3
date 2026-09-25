@@ -234,7 +234,10 @@ EOF
   fi
 fi
 
-exec systemd-inhibit \
+# shellcheck source=_lane_cleanup.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_cleanup.sh"
+
+lane_run_with_cleanup systemd-inhibit \
   --what=sleep:idle \
   --who="lane3" \
   --why="Lane 3 (gate) $lane_agent_display session" \

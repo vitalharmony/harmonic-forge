@@ -24,9 +24,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -270,7 +272,7 @@ class RegistryIntegrity(unittest.TestCase):
     def _copy_lane_dir(self, dest: Path) -> Path:
         dest.mkdir()
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                     "_cli_launch.sh", "_agent_registry.sh",
+                     "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                      "_gh_config_dir.sh"):
             (dest / name).write_text((LANE_DIR / name).read_text())
         (dest / "policies").mkdir()
@@ -622,7 +624,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir = tree.root / "lanedir"
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_gh_config_dir.sh"):
+                         "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             registry = (LANE_DIR / "_agent_registry.sh").read_text().replace(
                 '  [gemini:3]=""', '  [gemini:3]="gemini-lane3.toml"')
@@ -661,7 +663,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir = tree.root / "lanedir"
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_agent_registry.sh",
+                         "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                          "_gh_config_dir.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             (lane_dir / "policies").mkdir()  # deliberately empty
@@ -675,7 +677,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir = tree.root / "lanedir"
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_agent_registry.sh",
+                         "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                          "_gh_config_dir.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             (lane_dir / "policies").mkdir()
@@ -1185,19 +1187,207 @@ class PlatformRulesSync(unittest.TestCase):
 
     def test_sync_rules_pull_invoked_before_the_final_exec(self):
         """The call site lives in `_cli_launch.sh`, sourced by every launcher
-        strictly before its own final `exec` line -- grepped directly, the
-        same style `_read_launcher_source` already uses elsewhere in this
-        file to check launcher script text rather than runtime behavior."""
+        strictly before its own final `systemd-inhibit` invocation -- grepped
+        directly, the same style `_read_launcher_source` already uses
+        elsewhere in this file to check launcher script text rather than
+        runtime behavior. harmonic-forge#751 replaced the launchers' `exec
+        systemd-inhibit ...` with `lane_run_with_cleanup systemd-inhibit
+        ...` (a child, not an exec, so the launcher survives to clean up) --
+        this test now locates that final `systemd-inhibit` invocation instead
+        of the retired `exec` keyword, keeping the same assertion intent."""
         source = (LANE_DIR / "_cli_launch.sh").read_text()
         self.assertIn("sync_rules.py", source)
         self.assertIn('--pull', source)
         for lane in ("1", "2", "3"):
             launcher = _code_only(LANE_DIR / f"lane{lane}")
             source_idx = launcher.find("_cli_launch.sh")
-            exec_idx = launcher.rfind("exec systemd-inhibit")
-            self.assertGreater(exec_idx, source_idx,
+            inhibit_idx = launcher.rfind("systemd-inhibit")
+            self.assertGreater(inhibit_idx, source_idx,
                                 f"lane{lane}: _cli_launch.sh must be sourced "
-                                "before the final exec")
+                                "before the final systemd-inhibit invocation")
+
+
+# ---------------------------------------------------------------------------
+# harmonic-forge#751 -- lane launchers clean up on SIGHUP/exit
+# ---------------------------------------------------------------------------
+class LaneCleanupWrapper(unittest.TestCase):
+    """Unit tests for `_lane_cleanup.sh`'s `lane_run_with_cleanup`, run
+    directly with bash -- not through a full launcher, so these don't need a
+    fixture tree. A fake `mise` on PATH records whether `mise run pc-down`
+    was invoked; nothing here starts a real service."""
+
+    CLEANUP_SH = LANE_DIR / "_lane_cleanup.sh"
+
+    def _fake_mise_bin(self, tmp: Path, *, declares_pc_down: bool) -> Path:
+        stub_bin = tmp / "stubbin"
+        stub_bin.mkdir()
+        calls_log = tmp / "mise_run_calls.log"
+        tasks_file = tmp / "tasks_ls_output.txt"
+        tasks_file.write_text("pc-down\n" if declares_pc_down else "check\nrestart\n")
+        mise = stub_bin / "mise"
+        mise.write_text(
+            "#!/usr/bin/env bash\n"
+            f"tasks_file={json.dumps(str(tasks_file))!s}\n"
+            f"calls_log={json.dumps(str(calls_log))!s}\n"
+            "if [ \"$1\" = tasks ] && [ \"$2\" = ls ]; then cat \"$tasks_file\"; exit 0; fi\n"
+            "if [ \"$1\" = run ] && [ \"$2\" = pc-down ]; then "
+            "echo called >> \"$calls_log\"; exit 0; fi\n"
+            "exit 0\n"
+        )
+        mise.chmod(0o755)
+        return stub_bin, calls_log
+
+    def _run_wrapper(self, tmp: Path, stub_bin: Path, lane_name: str,
+                      child_cmd: str) -> subprocess.CompletedProcess:
+        script = tmp / "run.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"_lane_name={lane_name}\n"
+            f"source {json.dumps(str(self.CLEANUP_SH))!s}\n"
+            f"lane_run_with_cleanup bash -c {json.dumps(child_cmd)!s}\n"
+        )
+        script.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
+        return subprocess.run(["bash", str(script)], cwd=tmp, env=env,
+                               capture_output=True, text=True, timeout=30)
+
+    def test_pc_down_runs_for_lane3_when_task_declared(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, calls_log = self._fake_mise_bin(tmp, declares_pc_down=True)
+            proc = self._run_wrapper(tmp, stub_bin, "lane3", "exit 0")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(calls_log.exists(),
+                             "lane3 with a declared pc-down task must run it")
+
+    def test_pc_down_skipped_when_task_not_declared(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, calls_log = self._fake_mise_bin(tmp, declares_pc_down=False)
+            proc = self._run_wrapper(tmp, stub_bin, "lane3", "exit 0")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse(calls_log.exists(),
+                              "no pc-down task declared -- nothing should run")
+
+    def test_pc_down_never_runs_for_lane1_even_when_task_declared(self):
+        """lane1 always runs in the shared main checkout, which on HRSE2
+        legitimately runs the operator's persistent dev stack under the same
+        `pc-down` task name -- see _lane_cleanup.sh's own comment. This is
+        the AC2 guarantee made unconditional rather than "normally" true."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, calls_log = self._fake_mise_bin(tmp, declares_pc_down=True)
+            proc = self._run_wrapper(tmp, stub_bin, "lane1", "exit 0")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse(calls_log.exists(),
+                              "lane1 must never run pc-down, task or not")
+
+    def test_child_exit_status_is_propagated(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, _ = self._fake_mise_bin(tmp, declares_pc_down=False)
+            proc = self._run_wrapper(tmp, stub_bin, "lane3", "exit 7")
+            self.assertEqual(proc.returncode, 7)
+
+    def test_cleanup_runs_exactly_once_on_group_hup(self):
+        """The wrapper never backgrounds its child and never touches job
+        control (see _lane_cleanup.sh's header) specifically so the child
+        stays in the SAME process group as the wrapper -- the group a real
+        terminal hangup signals as a whole. `Popen.send_signal` targets one
+        pid only, which would not exercise that path, so this starts the
+        wrapper in its own session (`start_new_session=True`) and signals
+        the whole process GROUP with `os.killpg`, the way a real hangup
+        does."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, calls_log = self._fake_mise_bin(tmp, declares_pc_down=True)
+            proc = subprocess.Popen(
+                ["bash", "-c",
+                 f"_lane_name=lane3; source {self.CLEANUP_SH}; "
+                 "lane_run_with_cleanup bash -c 'sleep 30'"],
+                cwd=tmp,
+                env={**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+                start_new_session=True,
+            )
+            time.sleep(1)
+            os.killpg(os.getpgid(proc.pid), signal.SIGHUP)
+            proc.wait(timeout=10)
+            # The plain child (`sleep 30`, no HUP handler of its own) dies of
+            # SIGHUP's own default disposition -- the same signal the
+            # wrapper's trap survives long enough to clean up after.
+            self.assertEqual(proc.returncode, 129)
+            self.assertEqual(calls_log.read_text().count("called\n"), 1,
+                              "cleanup must run exactly once, not once per "
+                              "signal plus once on EXIT")
+
+    def test_a_single_group_int_does_not_kill_the_session_early(self):
+        """Regression test for the finding a preclose-inspection pass caught:
+        an earlier design explicitly forwarded INT to the child and then
+        immediately ran cleanup and exited, which would kill a live agent
+        session on its first Ctrl-C (the CLI's normal single-press cancel
+        gesture) instead of letting the CLI handle it. This wrapper does no
+        such forwarding -- the child receives the terminal's SIGINT directly
+        (same process group), and the wrapper's own trap is deferred until
+        the foreground child actually returns. A child that ignores SIGINT
+        entirely (`trap '' INT`, standing in for a CLI absorbing a cancel
+        keypress) must keep running, and pc-down must not have fired yet,
+        for as long as it keeps running after the group signal."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, calls_log = self._fake_mise_bin(tmp, declares_pc_down=True)
+            proc = subprocess.Popen(
+                ["bash", "-c",
+                 f"_lane_name=lane3; source {self.CLEANUP_SH}; "
+                 "lane_run_with_cleanup bash -c "
+                 "'trap \"\" INT; sleep 2; exit 42'"],
+                cwd=tmp,
+                env={**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+                start_new_session=True,
+            )
+            time.sleep(0.5)
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            time.sleep(0.5)
+            self.assertIsNone(proc.poll(),
+                               "a single Ctrl-C must not end the session "
+                               "while the child is still ignoring it and "
+                               "running")
+            self.assertFalse(calls_log.exists(),
+                              "cleanup must not run before the child "
+                              "actually exits")
+            proc.wait(timeout=10)
+            self.assertEqual(proc.returncode, 42,
+                              "the child's own natural exit status, not the "
+                              "wrapper's fixed signal-trap code, since it "
+                              "was never forwarded a terminating signal")
+            self.assertEqual(calls_log.read_text().count("called\n"), 1)
+
+    def test_stdin_is_preserved_without_job_control(self):
+        """The rejected `"$@" &` design lost the child's stdin to /dev/null
+        (bash's documented behaviour for an async command with job control
+        off) -- verified live during review. This wrapper never backgrounds
+        the child at all, so stdin needs no special handling; assert it
+        actually reaches the child."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            stub_bin, _ = self._fake_mise_bin(tmp, declares_pc_down=False)
+            script = tmp / "run.sh"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "_lane_name=lane3\n"
+                f"source {json.dumps(str(self.CLEANUP_SH))!s}\n"
+                "lane_run_with_cleanup cat\n"
+            )
+            script.chmod(0o755)
+            env = dict(os.environ)
+            env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
+            result = subprocess.run(["bash", str(script)], cwd=tmp, env=env,
+                                     input="hello from the terminal\n",
+                                     capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "hello from the terminal\n")
 
 
 if __name__ == "__main__":
