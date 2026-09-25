@@ -43,8 +43,10 @@ export LANE=1
 
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
+# shellcheck source=_lane_cleanup.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_cleanup.sh"
 
-exec systemd-inhibit \
+lane_run_with_cleanup systemd-inhibit \
   --what=sleep:idle \
   --who="lane1" \
   --why="Lane 1 $lane_agent_display session" \
