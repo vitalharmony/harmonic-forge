@@ -369,5 +369,20 @@ class TestDesignRetiresTheLane3Sweep(unittest.TestCase):
         self.assertFalse(armed, f"a runnable sweep command remains: {armed!r}")
 
 
+class TestTickOutputSilence(unittest.TestCase):
+    """harmonic-forge#749: rules 6-8 are pinned so a later edit cannot drop them silently."""
+
+    def test_silence_rules_are_present(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for phrase in (
+            "## Tick output — silence is the default",
+            "**Nothing is owed to this lane → no text at all.**",
+            "**Another lane's event is not this lane's news.**",
+            "**Speak only when this lane acted, or needs the operator.**",
+            "Never relay, restate, or announce another lane's post to the operator.",
+        ):
+            self.assertIn(phrase, text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
