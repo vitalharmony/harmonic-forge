@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## docs(belt): tick output — silence is the default; never relay other lanes' posts (harmonic-forge#749)
+
+Adds the operator-approved rules 6-8 to skills/belt-and-suspenders/SKILL.md,
+wording verbatim, rewrapped to one line per rule so the skill stays within
+its 30-line cap (operator ruling, option a).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+- [docs] Markdown-only commit — no code changes. Files: skills/belt-and-suspenders/SKILL.md
+
 ## feat(telemetry): report slow lane transitions (F742)
 - tools/gh/lane_transition_report.py      | 80 +++++++++++++++++++++++++++++++++
 - tools/gh/test_lane_transition_report.py | 15 +++++++
