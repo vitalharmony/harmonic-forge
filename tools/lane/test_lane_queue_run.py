@@ -101,11 +101,40 @@ class QueueRunTests(unittest.TestCase):
             self.assertEqual(MODULE.run(self.args(), execute=lambda *_a, **_k: SimpleNamespace(returncode=0), home=self.home), 0)
         self.assertEqual(json.loads(self.queue.read_text())["items"][0]["status"], "blocked")
 
+    def test_success_that_returns_item_to_pending_becomes_blocked_not_rerun(self):
+        self.write_queue([self.item()])
+        def execute(*_args, **_kwargs):
+            state = json.loads(self.queue.read_text())
+            state["items"][0]["status"] = "pending"
+            self.queue.write_text(json.dumps(state))
+            return SimpleNamespace(returncode=0)
+        cwd, flags = self.good()
+        with cwd, flags:
+            self.assertEqual(MODULE.run(self.args(), execute=execute, home=self.home), 0)
+        self.assertEqual(json.loads(self.queue.read_text())["items"][0]["status"], "blocked")
+
     def test_max_steps_stops_after_budget(self):
+        self.write_queue([self.item("one"), self.item("two")])
+        calls = []
+        def execute(*_args, **_kwargs):
+            calls.append(1)
+            state = json.loads(self.queue.read_text())
+            next(item for item in state["items"] if item["status"] == "in_progress")["status"] = "done"
+            self.queue.write_text(json.dumps(state))
+            return SimpleNamespace(returncode=0)
+        cwd, flags = self.good()
+        with cwd, flags:
+            self.assertEqual(MODULE.run(self.args("--max-steps", "1"), execute=execute, home=self.home), 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(self.queue.read_text())["items"][1]["status"], "pending")
+        self.assertIn("stopped: max steps 1", next((self.home / ".cache" / "lane-queue-run").glob("*.log")).read_text())
+
+    def test_interrupt_is_a_logged_stop(self):
         self.write_queue([self.item()])
         cwd, flags = self.good()
         with cwd, flags:
-            self.assertEqual(MODULE.run(self.args("--max-steps", "1"), execute=lambda *_a, **_k: SimpleNamespace(returncode=0), home=self.home), 0)
+            self.assertEqual(MODULE.run(self.args(), execute=lambda *_a, **_k: (_ for _ in ()).throw(KeyboardInterrupt()), home=self.home), 130)
+        self.assertIn("stopped: interrupted", next((self.home / ".cache" / "lane-queue-run").glob("*.log")).read_text())
 
     def test_mismatched_cwd_wrong_lane_and_untrusted_repo_refuse_before_resume(self):
         self.write_queue([])
@@ -113,10 +142,21 @@ class QueueRunTests(unittest.TestCase):
             self.assertEqual(MODULE.run(self.args(), home=self.home), 2)
         flags.assert_not_called()
         lane2 = self.root / "project-lane2"
-        lane2.mkdir()
+        (lane2 / ".codex").mkdir(parents=True)
+        (lane2 / ".codex" / "hooks.json").write_text("{}")
+        with (self.home / ".codex" / "config.toml").open("a") as config:
+            config.write(f'\n[projects."{lane2.resolve()}"]\ntrust_level = "trusted"\n')
         with patch.object(MODULE, "session_cwd", return_value=str(lane2)), patch.object(MODULE, "resume_args") as flags:
             self.assertEqual(MODULE.run(["--lane", "1", "--session", "abc", "--queue", str(self.queue), "--repo", str(lane2)], home=self.home), 2)
         flags.assert_not_called()
+
+    def test_rerun_skips_done_item(self):
+        self.write_queue([self.item(status="done")])
+        cwd, flags = self.good()
+        with cwd, flags as flags_mock:
+            self.assertEqual(MODULE.run(self.args(), home=self.home), 0)
+            self.assertEqual(MODULE.run(self.args(), home=self.home), 0)
+        flags_mock.assert_not_called()
         (self.home / ".codex" / "config.toml").write_text("")
         with patch.object(MODULE, "session_cwd", return_value=str(self.repo)), patch.object(MODULE, "resume_args") as flags:
             self.assertEqual(MODULE.run(self.args(), home=self.home), 2)
@@ -124,9 +164,16 @@ class QueueRunTests(unittest.TestCase):
 
     def test_second_driver_for_same_session_is_refused_even_with_other_queue(self):
         self.write_queue([])
-        with MODULE.session_lock("abc", self.home):
+        with MODULE.run_locks("abc", self.queue, self.home):
             with patch.object(MODULE, "session_cwd", return_value=str(self.repo)), patch.object(MODULE, "resume_args") as flags:
                 self.assertEqual(MODULE.run(self.args(), home=self.home), 2)
+        flags.assert_not_called()
+
+    def test_same_queue_is_refused_for_a_different_session(self):
+        self.write_queue([])
+        with MODULE.run_locks("other", self.queue, self.home):
+            with patch.object(MODULE, "session_cwd", return_value=str(self.repo)), patch.object(MODULE, "resume_args") as flags:
+                self.assertEqual(MODULE.run(self.args("--session", "abc"), home=self.home), 2)
         flags.assert_not_called()
 
     def test_real_subprocess_uses_stub_codex_and_records_nonzero_stop(self):

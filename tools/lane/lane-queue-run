@@ -11,7 +11,8 @@ import subprocess
 import sys
 import time
 import tomllib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from hashlib import sha256
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -39,6 +40,12 @@ def _session_ids(session: str, home: Path) -> set[str]:
     except (OSError, ValueError):
         pass
     return ids
+
+
+def session_identity(session: str, home: Path) -> str:
+    """One lock identity whether the operator supplied UUID or thread name."""
+    ids = _session_ids(session, home)
+    return next((ident for ident in ids if ident != session), session)
 
 
 def session_cwd(session: str, home: Path) -> str | None:
@@ -98,8 +105,8 @@ def lane_repo(lane: str, repo: Path) -> Path:
 
 
 @contextmanager
-def session_lock(session: str, home: Path):
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session)
+def resource_lock(name: str, home: Path):
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     path = home / ".cache" / "lane-queue-run" / "locks" / f"{safe}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
@@ -107,6 +114,16 @@ def session_lock(session: str, home: Path):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("session is already running") from exc
+        yield
+
+
+@contextmanager
+def run_locks(session: str, queue: Path, home: Path):
+    """Serialize both the Codex session and its single-writer state file."""
+    queue_key = "queue-" + sha256(str(queue.resolve()).encode()).hexdigest()
+    with ExitStack() as locks:
+        for key in sorted((f"session-{session}", queue_key)):
+            locks.enter_context(resource_lock(key, home))
         yield
 
 
@@ -126,6 +143,7 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
     if args.max_steps < 1:
         parser.error("--max-steps must be positive")
     home = home or Path.home()
+    args.queue = args.queue.resolve()
     try:
         repo = lane_repo(args.lane, args.repo)
     except ValueError as exc:
@@ -137,14 +155,15 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
     if not trusted(repo, home):
         print("lane-queue-run: hook trust is not persisted for lane repo", file=sys.stderr)
         return 2
-    try:
-        state = queue_state.load(args.queue)
-    except ValueError as exc:
-        print(f"lane-queue-run: {exc}", file=sys.stderr)
-        return 2
     log = log_path(args.lane, home)
     try:
-        with session_lock(args.session, home):
+        with run_locks(session_identity(args.session, home), args.queue, home):
+            try:
+                state = queue_state.load(args.queue)
+            except ValueError as exc:
+                print(f"lane-queue-run: {exc}", file=sys.stderr)
+                _log(log, f"stopped: invalid queue: {exc}")
+                return 2
             if queue_state.recover(state):
                 queue_state.save(args.queue, state)
                 _log(log, "stopped: recovery blocker before step 0")
@@ -157,14 +176,25 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
                 if item is None:
                     _log(log, f"stopped: queue empty after {step} steps")
                     return 0
+                try:
+                    command = ["codex", "exec", *resume_args(args.lane), "resume", args.session,
+                               f"{PROMPT} Queue: {args.queue}. Current item: {item['id']}"]
+                except (OSError, ValueError) as exc:
+                    _log(log, f"stopped: cannot construct resume command: {exc}")
+                    return 2
                 item["status"] = "in_progress"
                 queue_state.save(args.queue, state)
-                command = ["codex", "exec", *resume_args(args.lane), "resume", args.session,
-                           f"{PROMPT} Queue: {args.queue}. Current item: {item['id']}"]
                 env = os.environ | {"LANE": args.lane, "LANE_AGENT": "codex",
                                     "TMPDIR": str(home / ".cache" / "codex-lane-tmp" / f"lane{args.lane}"),
                                     "GIT_CEILING_DIRECTORIES": str(repo.parent)}
-                result = execute(command, cwd=repo, env=env, text=True)
+                try:
+                    result = execute(command, cwd=repo, env=env, text=True)
+                except OSError as exc:
+                    item["status"] = "blocked"
+                    item["note"] = f"resume launch failed: {exc}"
+                    queue_state.save(args.queue, state)
+                    _log(log, f"stopped: resume launch failed: {exc}")
+                    return 2
                 _log(log, f"step {step + 1}: {item['id']} exit={result.returncode}")
                 if result.returncode:
                     item["status"] = "blocked"
@@ -174,7 +204,7 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
                     return result.returncode
                 state = queue_state.load(args.queue)
                 current = next(candidate for candidate in state["items"] if candidate["id"] == item["id"])
-                if current["status"] == "in_progress":
+                if current["status"] not in {"done", "blocked"}:
                     current["status"] = "blocked"
                     current["note"] = "resume returned without recording a terminal item status"
                     queue_state.save(args.queue, state)
