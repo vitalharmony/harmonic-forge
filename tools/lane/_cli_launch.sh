@@ -169,8 +169,13 @@ _lane_arg_denied() {
         --config=*) key="${key#--config=}" ;;
         -c?*) key="${key#-c}" ;;
       esac
+      # Only a real `key=value` override counts, and the key must be the
+      # table itself or one of its dotted keys -- so prose that merely
+      # mentions the name (a `-p` value, a prompt) is never refused.
+      case "$key" in *=*) ;; *) return 1 ;; esac
+      key="${key%%=*}"
       case "$key" in
-        "${token%\*}"*) return 0 ;;
+        "${token%\*}"|"${token%\*}".*) return 0 ;;
       esac
       return 1
       ;;
@@ -420,6 +425,10 @@ for _d in "${_lane_add_dirs[@]}"; do
 done
 if [ "$_lane_agent" = codex ]; then
   export TMPDIR="$HOME/.cache/codex-lane-tmp/lane$LANE"
+  # TMPDIR is itself a writable root now, so Codex mounts its empty `.git`
+  # protection there too (preclose finding). The ceiling stops every `git`
+  # discovery from a `mktemp` dir before it reaches `$TMPDIR/.git`.
+  export GIT_CEILING_DIRECTORIES="$TMPDIR${GIT_CEILING_DIRECTORIES:+:$GIT_CEILING_DIRECTORIES}"
   mkdir -p "$TMPDIR" \
     || _lane_launch_die "could not create the Codex lane TMPDIR $TMPDIR -- refusing to launch (harmonic-forge#756)"
 fi

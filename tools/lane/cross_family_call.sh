@@ -326,7 +326,7 @@ invoke_claude() {
 invoke_codex() {
   local posture="$1" brief="$2" cwd="$3"
   local sandbox="read-only"
-  local cd_args=() config_args=() model_args=() search_args=()
+  local cd_args=() config_args=() model_args=() search_args=() env_args=()
   # harmonic-forge#483: `--skip-git-repo-check` on BOTH branches that set
   # `-C`. `codex exec` refuses to run outside a git repository, and `probe`'s
   # own contract is "an isolated scratch directory the caller creates" -- a
@@ -357,6 +357,11 @@ invoke_codex() {
     # is its own `--cwd` scratch dir.
     config_args=(-c sandbox_workspace_write.exclude_slash_tmp=true
                  -c sandbox_workspace_write.exclude_tmpdir_env_var=true)
+    # With `/tmp` read-only, a TMPDIR left there makes every `mktemp` in the
+    # probe fail (preclose finding). Point it inside the writable `--cwd`,
+    # with a git ceiling so discovery stops before `$cwd/.git`.
+    mkdir -p "$cwd/.tmp"
+    env_args=(env TMPDIR="$cwd/.tmp" "GIT_CEILING_DIRECTORIES=$cwd/.tmp")
   elif [ "$posture" = verify ]; then
     cd_args=(-C "$cwd" --skip-git-repo-check)
     model_args=(--ignore-user-config -m "$VERIFY_MODEL")
@@ -367,7 +372,7 @@ invoke_codex() {
     # stays read-only; the search runs on OpenAI's side, not the shell.
     search_args=(--search)
   fi
-  codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
+  "${env_args[@]}" codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
     --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief")" </dev/null
 }
 

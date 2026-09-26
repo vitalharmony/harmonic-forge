@@ -238,10 +238,14 @@ declare -A AGENT_SYSTEM_PROMPT_FLAG=(
 # ending in `*` is a PREFIX match on the config key, applied to the `-c
 # key=value` / `--config key=value` value word and to the glued
 # `-ckey=value` / `--config=key=value` forms (`_lane_arg_denied` in
-# `_cli_launch.sh`). `sandbox_workspace_write` (no `*`) catches a whole-table
-# override `-c sandbox_workspace_write={...}`. Not covered, recorded rather
+# `_cli_launch.sh`). The one prefix `sandbox_workspace_write*` covers the
+# whole table: both exclude keys, `writable_roots` (which could re-add `/tmp`,
+# preclose finding) and a whole-table `-c sandbox_workspace_write={...}`.
+# Not covered, recorded rather
 # than claimed: a quoted TOML key (`-c 'sandbox_workspace_write."exclude_slash_tmp"=false'`)
-# and a `-p/--profile` pointing at an on-disk profile -- the same launcher-
+# a `-p/--profile` pointing at an on-disk profile, and a caller's own
+# `--add-dir /tmp` (`--add-dir` is repeatable and never denied, see
+# AGENT_LANE_ADD_DIR below) -- the same launcher-
 # denylist ceiling lane3_safety_additions.txt records for `--sandbox read-only`.
 declare -A AGENT_SESSION_FLAGS=(
   [claude]=""
@@ -250,7 +254,7 @@ declare -A AGENT_SESSION_FLAGS=(
 )
 declare -A AGENT_SESSION_DENIED=(
   [claude]=""
-  [codex]="--no-daemon --remote sandbox_workspace_write sandbox_workspace_write.exclude_*"
+  [codex]="--no-daemon --remote sandbox_workspace_write*"
   [gemini]=""
 )
 

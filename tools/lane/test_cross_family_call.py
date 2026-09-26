@@ -1204,6 +1204,7 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
         stub.write_text(
             '#!/usr/bin/env bash\n'
             f'printf "%s\\n" "$@" > "{self.argv_file}"\n'
+            f'printf "%s\\n" "$TMPDIR" "$GIT_CEILING_DIRECTORIES" > "{self.argv_file}.env"\n'
             'echo \'{"type":"item.completed","item":{"type":"agent_message",'
             '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[],\\"assumptions\\":[]}"}}\'\n'
         )
@@ -1253,6 +1254,16 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(argv.count(key), 1)
                 self.assertEqual(argv[argv.index(key) - 1], "-c")
+
+    def test_probe_posture_gets_a_writable_tmpdir_with_a_git_ceiling(self) -> None:
+        """Preclose finding: with `/tmp` read-only, the probe needs a TMPDIR
+        inside its writable `--cwd`, and discovery must stop above it."""
+        self.codex_argv("--caller", "claude", "--families", "2",
+                        "--posture", "probe", "--cwd", self.tmp.name)
+        tmpdir, ceiling = Path(f"{self.argv_file}.env").read_text().splitlines()[:2]
+        self.assertEqual(tmpdir, f"{self.tmp.name}/.tmp")
+        self.assertTrue(Path(tmpdir).is_dir())
+        self.assertEqual(ceiling, tmpdir)
 
     def test_read_only_and_verify_postures_do_not_get_the_keys(self) -> None:
         """They run `--sandbox read-only`, which has no writable roots."""

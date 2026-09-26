@@ -130,8 +130,11 @@
 # `_agent_registry.sh`'s AGENT_SESSION_FLAGS / AGENT_LANE_ADD_DIR and
 # `_cli_launch.sh` steps 4b/4c).  Lanes 1-2 codex baseline cells were
 # regenerated for this; Lane 3's were NOT (NC3), so the tokens below are what
-# justifies the Lane 3 difference -- and `baseline_capture.compare()` now
-# accepts only ADDED tokens from this list, never a listed one going missing.
+# justifies the Lane 3 difference.  `baseline_capture.compare()` accepts only
+# ADDED tokens from this list, so a token already in a baseline cell cannot
+# silently disappear.  These four are NOT in Lane 3's baseline cells, so
+# compare() alone would not notice one going missing (preclose finding);
+# `test_lane_launchers.py`'s Codex lane-tmp tests are what require them.
 #
 # Same kind as `--no-daemon` above: enforcement, and un-removable --
 # AGENT_SESSION_DENIED refuses a passthrough `-c`/`--config` override of any

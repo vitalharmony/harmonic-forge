@@ -1185,7 +1185,7 @@ class CodexLaneTmp(unittest.TestCase):
     SENTINEL_TMPDIR = "/nonexistent/caller-tmpdir"
 
     def _run(self, tree, lane, args):
-        return tree.run(lane, args, LANE_CAPTURE_EXTRA_ENV="TMPDIR",
+        return tree.run(lane, args, LANE_CAPTURE_EXTRA_ENV="TMPDIR,GIT_CEILING_DIRECTORIES",
                         TMPDIR=self.SENTINEL_TMPDIR)
 
     def test_codex_carries_both_keys_each_add_dir_and_a_private_tmpdir(self):
@@ -1212,6 +1212,10 @@ class CodexLaneTmp(unittest.TestCase):
                         self.assertEqual(tmpdir, f"{tree.home}/.cache/codex-lane-tmp/lane{lane}")
                         self.assertIn(tmpdir, granted, "TMPDIR must be a writable root")
                         self.assertNotEqual(tmpdir, self.SENTINEL_TMPDIR)
+                        # Codex mounts its empty `.git` at every writable root,
+                        # TMPDIR included: discovery must stop above it.
+                        self.assertEqual(
+                            (cell["extra_env"]["GIT_CEILING_DIRECTORIES"] or "").split(":")[0], tmpdir)
 
     def test_claude_and_gemini_are_unchanged_and_keep_the_callers_tmpdir(self):
         """TC7: no key, no add-dir, and TMPDIR is not overridden."""
@@ -1242,6 +1246,8 @@ class CodexLaneTmp(unittest.TestCase):
             ["-c", "sandbox_workspace_write.exclude_some_future_key=false"],
             ["-c", "sandbox_workspace_write={exclude_slash_tmp=false}"],
             ["--config=sandbox_workspace_write={}"],
+            ["-c", 'sandbox_workspace_write.writable_roots=["/tmp"]'],
+            ["--config=sandbox_workspace_write.network_access=true"],
             ["exec", "-c", "sandbox_workspace_write.exclude_slash_tmp=false", "true"],
         )
         with _FixtureTree() as tree:
@@ -1277,7 +1283,7 @@ class CodexLaneTmp(unittest.TestCase):
                  f'source "{LANE_DIR}/_agent_registry.sh" && '
                  'registry_lane_denied_tokens codex 2'],
                 cwd=tree.main, capture_output=True, text=True, check=True).stdout
-            self.assertIn("sandbox_workspace_write.exclude_*", out.split())
+            self.assertIn("sandbox_workspace_write*", out.split())
             self.assertNotIn("sandbox_workspace_write.exclude_decoy", out)
 
     def test_lane3_compare_rejects_a_listed_token_going_missing(self):
