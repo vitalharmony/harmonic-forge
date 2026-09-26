@@ -221,14 +221,36 @@ declare -A AGENT_SYSTEM_PROMPT_FLAG=(
 # error ("cannot be used multiple times"), and `--remote` routes the TUI to an
 # app server this launcher did not start -- it parses silently alongside
 # `--no-daemon` (verified), so it is refused rather than left to precedence.
+#
+# harmonic-forge#756: the two `sandbox_workspace_write.exclude_*` keys stop
+# Codex's `workspace-write` policy from making `/tmp` and `$TMPDIR` writable
+# roots. Codex protects `<root>/.git` of every writable root with a tmpfs
+# mount, and for a root with no `.git` bwrap creates that mount point ON THE
+# HOST -- an empty `/tmp/.git` that every `git` discovery under /tmp then
+# walked into (verified live, codex-cli 0.157.0). `sandbox_mode =
+# "workspace-write"` is global in ~/.codex/config.toml, so this applies at
+# every lane, not only the lanes that pass `--sandbox`. Each Codex lane gets
+# a private TMPDIR instead (AGENT_LANE_ADD_DIR, `_cli_launch.sh` step 4b).
+#
+# `-c` is last-wins and these are injected before passthrough, so a caller's
+# `-c sandbox_workspace_write.exclude_slash_tmp=false` would silently undo
+# them (pitch-inspection NC4). The deny entries below refuse that: a token
+# ending in `*` is a PREFIX match on the config key, applied to the `-c
+# key=value` / `--config key=value` value word and to the glued
+# `-ckey=value` / `--config=key=value` forms (`_lane_arg_denied` in
+# `_cli_launch.sh`). `sandbox_workspace_write` (no `*`) catches a whole-table
+# override `-c sandbox_workspace_write={...}`. Not covered, recorded rather
+# than claimed: a quoted TOML key (`-c 'sandbox_workspace_write."exclude_slash_tmp"=false'`)
+# and a `-p/--profile` pointing at an on-disk profile -- the same launcher-
+# denylist ceiling lane3_safety_additions.txt records for `--sandbox read-only`.
 declare -A AGENT_SESSION_FLAGS=(
   [claude]=""
-  [codex]="--no-daemon"
+  [codex]="--no-daemon -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true"
   [gemini]=""
 )
 declare -A AGENT_SESSION_DENIED=(
   [claude]=""
-  [codex]="--no-daemon --remote"
+  [codex]="--no-daemon --remote sandbox_workspace_write sandbox_workspace_write.exclude_*"
   [gemini]=""
 )
 
@@ -263,7 +285,8 @@ declare -A AGENT_LANE_POLICY=(
 # AGENT_LANE_ADD_DIR / AGENT_LANE_SANDBOX -- harmonic-forge#644.
 #
 # Same NC7 pattern as AGENT_LANE_POLICY above: every agent:lane slot is
-# declared, populated only at [codex:3]. Two tables, not one, because their
+# declared; the sandbox is populated only at [codex:3] (the add-dir list at
+# every Codex lane since harmonic-forge#756). Two tables, not one, because their
 # live-verified Codex flag semantics differ (harmonic-forge#644 Plan,
 # Delegated Judgment 1): `--add-dir` is repeatable, so it is injected
 # unconditionally below and never denied -- a caller's own `--add-dir` still
@@ -272,9 +295,23 @@ declare -A AGENT_LANE_POLICY=(
 # "inject unless given" without risking a silent override to
 # `danger-full-access`; it goes on the deny list instead, the same mechanism
 # that makes `--admin-policy` un-removable for `gemini:3`.
+#
+# harmonic-forge#756: each slot is a SPACE-SEPARATED LIST of paths relative to
+# $HOME (empty still means "none"); `_cli_launch.sh` step 4b `mkdir -p`s each
+# and injects one `--add-dir` per entry. Every Codex lane gets its private
+# TMPDIR root `.cache/codex-lane-tmp/lane<N>` (the launcher also exports
+# TMPDIR there), because `/tmp` and `$TMPDIR` are no longer writable roots
+# (AGENT_SESSION_FLAGS above). Lane 2 gains `Harmonic_Projects/.worktrees`,
+# the per-issue worktree root that replaced `/tmp/<repo>-<N>-impl`. Lanes 2
+# and 3 gain `.cache/cymagraph`, where HRSE2's `mise run restart`/`pc-up`/
+# `gate-restart` keep the host-wide launch lock and process-compose log
+# (hrse PR-A of harmonic-forge#756). Lane 1 is Claude in practice; its Codex
+# slot still gets the private TMPDIR so Codex never falls back to `/tmp`.
 declare -A AGENT_LANE_ADD_DIR=(
   [claude:1]="" [claude:2]="" [claude:3]=""
-  [codex:1]=""  [codex:2]=""  [codex:3]="Harmonic_Projects/testplan"
+  [codex:1]=".cache/codex-lane-tmp/lane1"
+  [codex:2]="Harmonic_Projects/.worktrees .cache/codex-lane-tmp/lane2 .cache/cymagraph"
+  [codex:3]="Harmonic_Projects/testplan .cache/codex-lane-tmp/lane3 .cache/cymagraph"
   [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
 )
 declare -A AGENT_LANE_SANDBOX=(
@@ -422,9 +459,13 @@ registry_lane_denied_tokens() {
   sandbox="$(registry_lookup AGENT_LANE_SANDBOX "$agent:$lane")"
   [ -n "$sandbox" ] && printf '%s\n' "--sandbox"
   # harmonic-forge#754: whatever would undo AGENT_SESSION_FLAGS, every lane.
+  # `read -ra`, not an unquoted `for token in $denied`: a prefix token ends
+  # in `*` and must never be glob-expanded against the cwd (harmonic-forge#756).
   local denied token
+  local -a denied_tokens=()
   denied="$(registry_lookup AGENT_SESSION_DENIED "$agent")"
-  for token in $denied; do
+  read -ra denied_tokens <<<"$denied"
+  for token in "${denied_tokens[@]}"; do
     printf '%s\n' "$token"
   done
   return 0

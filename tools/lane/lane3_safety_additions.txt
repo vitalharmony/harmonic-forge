@@ -124,3 +124,31 @@
 # this amendment unenforced. This amendment was added by hand after a
 # preclose-inspection caught the omission (harmonic-forge#754).
 --no-daemon
+
+# AMENDMENT 6 -- harmonic-forge#756, 2026-09-25.  Codex gains two `-c`
+# sandbox keys at every lane, and two more `--add-dir` grants at Lane 3 (see
+# `_agent_registry.sh`'s AGENT_SESSION_FLAGS / AGENT_LANE_ADD_DIR and
+# `_cli_launch.sh` steps 4b/4c).  Lanes 1-2 codex baseline cells were
+# regenerated for this; Lane 3's were NOT (NC3), so the tokens below are what
+# justifies the Lane 3 difference -- and `baseline_capture.compare()` now
+# accepts only ADDED tokens from this list, never a listed one going missing.
+#
+# Same kind as `--no-daemon` above: enforcement, and un-removable --
+# AGENT_SESSION_DENIED refuses a passthrough `-c`/`--config` override of any
+# `sandbox_workspace_write.exclude_*` key or of the whole table (NC4).
+#
+# The flag that carries a Codex config override.  Reason: the two keys below.
+-c
+# Reason: stops `workspace-write` from making `/tmp` a writable root, whose
+# `.git` protection mount otherwise creates an empty host `/tmp/.git`.
+sandbox_workspace_write.exclude_slash_tmp=true
+# Reason: the same for `$TMPDIR`, which would re-add `/tmp` via the caller's
+# environment and create the same synthetic `.git` there.
+sandbox_workspace_write.exclude_tmpdir_env_var=true
+# Reason: Lane 3's private TMPDIR root.  With `/tmp` read-only in the sandbox,
+# the launcher exports TMPDIR here, and it must be writable for `mktemp`.
+<HOME>/.cache/codex-lane-tmp/lane3
+# Reason: HRSE2's host-wide launch lock and process-compose log moved to
+# `$HOME/.cache/cymagraph/` (hrse PR-A of #756); Lane 3's `gate-restart`
+# takes that lock, so the directory must be a writable root.
+<HOME>/.cache/cymagraph

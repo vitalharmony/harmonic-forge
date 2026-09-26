@@ -349,6 +349,14 @@ invoke_codex() {
   if [ "$posture" = probe ]; then
     sandbox="workspace-write"
     [ -n "$cwd" ] && cd_args=(-C "$cwd" --skip-git-repo-check)
+    # harmonic-forge#756: `workspace-write` makes `/tmp` and `$TMPDIR`
+    # writable roots, and Codex's `.git` protection then bind-mounts a tmpfs
+    # at `<root>/.git` -- creating an empty `/tmp/.git` on the host for the
+    # life of every command. Same two keys the lane launcher injects
+    # (`_agent_registry.sh` AGENT_SESSION_FLAGS); the probe's writable root
+    # is its own `--cwd` scratch dir.
+    config_args=(-c sandbox_workspace_write.exclude_slash_tmp=true
+                 -c sandbox_workspace_write.exclude_tmpdir_env_var=true)
   elif [ "$posture" = verify ]; then
     cd_args=(-C "$cwd" --skip-git-repo-check)
     model_args=(--ignore-user-config -m "$VERIFY_MODEL")

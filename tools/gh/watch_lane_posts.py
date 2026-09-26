@@ -30,7 +30,7 @@ is two different mechanisms depending on which lane posted:
 This is the correct signal for "did another lane just do something I need
 to react to". Local git state (a shared worktree's `git log`) is NOT that
 signal by itself -- a lane frequently works in a disposable per-issue
-worktree (`/tmp/hrse2-<N>-impl`) and never pushes until its counterpart
+worktree (`~/Harmonic_Projects/.worktrees/hrse2-<N>-impl`) and never pushes until its counterpart
 reviews, so a bare commit-watch can sit silent through a real completion
 (this happened live on hrse#1530 -- the trigger for this script).
 
@@ -120,7 +120,7 @@ Usage
 
     # The Lane 2 case: both halves, same candidate-supplied contract.
     # --all-worktrees follows Lane 2 into its per-issue
-    # /tmp/<repo>-<issue>-impl checkout; --queue-for l2 re-checks whichever
+    # ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl checkout; --queue-for l2 re-checks whichever
     # of those (plus any --issues, plus a recent l1_post.py `handoff`/
     # `rework` posting) carry an eligible marker:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
@@ -1291,7 +1291,7 @@ def enumerate_worktrees(cwd: str | None = None) -> list[str]:
     """Every live worktree of the repo containing `cwd`, via `git worktree list`.
 
     harmonic-forge#590: Lane 1's belt is worktrees-first, and the set of
-    worktrees is not static -- `/tmp/<repo>-<issue>-impl` checkouts appear and
+    worktrees is not static -- `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` checkouts appear and
     vanish per issue. A hardcoded `--worktrees` list therefore narrows the belt
     silently, which is the failure mode this protocol exists to avoid.
 
@@ -1389,8 +1389,8 @@ def enumerate_repo_roots(roots: list[str]) -> list[str]:
 
 
 #: Session cache of issues seen closed, keyed `(repo, issue)`. A closed issue's
-#: abandoned `/tmp/<repo>-<issue>-impl` checkout lingers indefinitely -- nothing
-#: prunes it -- and its branch reads as "ahead of origin/main" forever, because
+#: abandoned `<repo>-<issue>-impl` checkout lingers until something prunes
+#: it -- and its branch reads as "ahead of origin/main" forever, because
 #: main took the work as a squash merge. Without this the belt offers six such
 #: ghosts on this machine right now (harmonic-forge#590 preclose finding).
 #: Cached because re-asking every cycle for a state that essentially never goes
@@ -2196,7 +2196,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="enumerate every live worktree of each named repo via `git "
                              "worktree list` and watch all of them -- harmonic-forge#590. "
                              "A hardcoded --worktrees list goes stale the moment an "
-                             "ephemeral /tmp/<repo>-<issue>-impl worktree is created or "
+                             "ephemeral ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl worktree is created or "
                              "removed, and a narrowed belt is silent, not loud. `git "
                              "worktree list` sees ONE repository, so name a path in each "
                              "repo the belt should span -- that is what lets one belt cover "

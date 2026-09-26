@@ -136,7 +136,19 @@ BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
 HINTED_BRANCH_ISSUE_RE = re.compile(
     r"^[\w.-]+/(?P<hint>hrse|harmonic-forge|forge|h|f)-?(?P<number>\d+)-"
 )
-WORKTREE_ISSUE_RE = re.compile(r"^/tmp/hrse2-(?P<number>\d+)-impl$")
+# harmonic-forge#756: per-issue worktrees moved from `/tmp` to
+# `~/Harmonic_Projects/.worktrees/` (a Codex lane can no longer write `/tmp`).
+# Both roots are accepted during the migration; `/tmp` is the legacy one. The
+# home root is matched both as written and resolved, because the cwd below is
+# `realpath`-ed and $HOME may itself be a symlink.
+_WORKTREE_ROOTS = tuple(dict.fromkeys((
+    "/tmp",
+    str(Path.home() / "Harmonic_Projects" / ".worktrees"),
+    os.path.realpath(Path.home() / "Harmonic_Projects" / ".worktrees"),
+)))
+WORKTREE_ISSUE_RE = re.compile(
+    r"^(?:" + "|".join(re.escape(root) for root in _WORKTREE_ROOTS)
+    + r")/hrse2-(?P<number>\d+)-impl$")
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),
     "harmonic-forge": ("vitalharmony/harmonic-forge", "3"),

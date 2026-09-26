@@ -52,7 +52,7 @@ confirmed via a live restart (lint/build/mypy gate + `db_connected: true`).
 
 **RESOLVED (harmonic-forge#209) — the symlinks are no longer committed at
 all.** The absolute-path symlinks `sync_rules.py` creates are still
-absolute by design (a relative link would break every `/tmp/hrse2-N-impl`
+absolute by design (a relative link would break every `~/Harmonic_Projects/.worktrees/hrse2-N-impl`
 disposable worktree, confirmed live — a net regression, not a portability
 fix) — the actual bug was committing the resulting symlink to git in the
 first place, dangling for any developer whose home directory isn't
