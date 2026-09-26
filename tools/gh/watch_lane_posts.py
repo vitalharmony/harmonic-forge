@@ -1312,8 +1312,12 @@ def enumerate_worktrees(cwd: str | None = None) -> list[str]:
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return []
-    return [line.split(" ", 1)[1].strip()
-            for line in out.splitlines() if line.startswith("worktree ")]
+    # harmonic-forge#762: Lane 1's fixed `*-l1-tools` worktrees are detached
+    # at origin/main by design and name no issue. Skip them silently, so they
+    # never add an "unresolved" line to a belt tick.
+    return [path for path in (line.split(" ", 1)[1].strip()
+                              for line in out.splitlines() if line.startswith("worktree "))
+            if not os.path.basename(path.rstrip("/")).endswith("-l1-tools")]
 
 
 def _git_common_dir(cwd: str | None = None) -> str | None:

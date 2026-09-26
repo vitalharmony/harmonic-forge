@@ -169,6 +169,10 @@ actually merged. See `universal-claude.md`'s Tool-use safeguards for the
 concrete commands and the specific `l1_post.py` friction this prevents.
 <!-- /R-0094 -->
 
+Lane 1 never opens a worktree by hand to post from: the posting tasks run
+from two fixed `origin/main` worktrees that `tools/gh/l1_tools_env.sh`
+creates and refreshes on every call (harmonic-forge#762).
+
 ## Doc-only merges wait for the open implementation branches (hrse, 2026-08-14)
 
 **Lane 1's own doc merges invalidate other lanes' finished work.** Every
