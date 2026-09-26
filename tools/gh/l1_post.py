@@ -1018,6 +1018,38 @@ def issue_is_open(repo: str, issue: int) -> None:
         fail(f"issue {repo}#{issue} is not open")
 
 
+#: Same loose match as gh_issue.py's own filing-time check (harmonic-forge
+#: #778 AC1) -- a false positive costs one extra `--add-label`, a false
+#: negative reproduces #769/#772/#774.
+_TOOLING_EXCEPTION_MENTION = re.compile(r"\btooling[\s,]+exception\b", re.IGNORECASE)
+
+
+def validate_tooling_exception_labelled(body: str, repo: str, issue: int) -> None:
+    """harmonic-forge#778 AC1, second half: `gh_issue.py` catches this at
+    FILING time; this catches the case gh_issue#769/#772/#774 actually were
+    -- a Tooling Exception handoff posted onto an issue filed some other way
+    (by hand, by a different tool, or before this check existed) that never
+    picked up the label. `block_missing_preclose_inspection.py`'s merge-time
+    gate is the backstop of last resort; this is the earliest point a lane
+    can catch the same gap, before any implementation work starts."""
+    match = re.search(LEAD_LABEL.format(label="Next"), lead_region(body))
+    next_field = match.group("text") if match else ""
+    if not _TOOLING_EXCEPTION_MENTION.search(next_field):
+        return
+    result = run("gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name")
+    if result.returncode:
+        fail(f"cannot read labels on {repo}#{issue} to verify the Tooling Exception arming label")
+    labels = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    if "tooling-exception" not in labels:
+        fail(
+            f"this handoff's Next line declares Tooling Exception but "
+            f"{repo}#{issue} does not carry the tooling-exception label "
+            f"(harmonic-forge#778) -- that label is what arms the "
+            f"pre-close merge gate. Add it first:\n"
+            f"  gh issue edit {issue} --repo {repo} --add-label tooling-exception"
+        )
+
+
 # a private-repo incident: files whose presence in two branches carries no information about
 # merge risk.
 #   - `transaction-log.md` is a GENERATED VIEW, regenerated from `git log` by
@@ -1827,6 +1859,7 @@ def main() -> None:
         validate_plan_first_spec(body, args.plan_first == "true")
         validate_tier_set(repo, args.issue)
         validate_milestone_set(repo, args.issue)
+        validate_tooling_exception_labelled(body, repo, args.issue)
     validate_lead(args.kind, body)
     if args.kind == "sweep":
         spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")

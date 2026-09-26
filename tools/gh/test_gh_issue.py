@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -869,3 +870,79 @@ class TestToolingImplicationCliWiring(unittest.TestCase):
              patch("gh_issue.add_to_board", return_value=True):
             gh_issue.main()
         self.assertEqual(created.call_args[0][3], ["feature"])
+
+
+class ToolingExceptionRequiresTheLabelTests(unittest.TestCase):
+    """harmonic-forge#778 AC1. #769, #772 and #774 each declared Tooling
+    Exception in the body and never carried the arming label -- so
+    block_missing_preclose_inspection.py's opt-in gate never armed, and #774
+    merged (harmonic-forge#775) with no pre-close pass. Checked before
+    create_issue(), like every other parser.error() path -- see
+    TestHalfOverrideValidatedBeforeCreate above for the same shape."""
+
+    def _main(self, argv):
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             contextlib.redirect_stderr(stderr):
+            try:
+                return gh_issue.main(), created, stderr.getvalue()
+            except SystemExit as exc:
+                return exc, created, stderr.getvalue()
+
+    def test_tooling_exception_body_without_the_label_is_refused(self):
+        result, created, stderr = self._main([
+            "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+            "--body", "Tooling, so Lane 1 handles it under the Tooling Exception.",
+            "--labels", "bug",
+        ])
+        self.assertIsInstance(result, SystemExit)
+        self.assertIn("tooling-exception", stderr)
+        created.assert_not_called()
+
+    def test_tooling_exception_body_with_the_label_succeeds(self):
+        with patch("gh_issue.add_to_board", return_value=True):
+            result, created, _ = self._main([
+                "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+                "--body", "Tooling Exception: Lane 1 implements.",
+                "--labels", "bug,tooling-exception",
+            ])
+        self.assertEqual(result, 0)
+        created.assert_called_once()
+
+    def test_case_insensitive_and_comma_phrasing_is_still_caught(self):
+        result, created, stderr = self._main([
+            "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+            "--body", "TOOLING, EXCEPTION: no Lane 2 trigger.",
+            "--labels", "bug",
+        ])
+        self.assertIsInstance(result, SystemExit)
+        created.assert_not_called()
+
+    def test_a_body_with_no_tooling_exception_mention_is_unaffected(self):
+        with patch("gh_issue.add_to_board", return_value=True):
+            result, created, _ = self._main([
+                "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+                "--body", "A plain feature request.", "--labels", "feature",
+            ])
+        self.assertEqual(result, 0)
+        created.assert_called_once()
+
+    def test_body_file_is_checked_too_not_just_inline_body(self):
+        """--body-file is the preferred path (harmonic-forge#266); the check
+        must run on the resolved body, after the file is read, not on the
+        raw --body-file argument."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as fh:
+            fh.write("This is filed under the Tooling Exception.")
+            path = fh.name
+        try:
+            result, created, stderr = self._main([
+                "gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
+                "--body-file", path, "--labels", "bug",
+            ])
+        finally:
+            os.unlink(path)
+        self.assertIsInstance(result, SystemExit)
+        self.assertIn("tooling-exception", stderr)
+        created.assert_not_called()

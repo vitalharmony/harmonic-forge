@@ -103,6 +103,15 @@ def fetch_milestones(repo: str) -> dict[str, int]:
 #: at the point of use.
 _IMPLIED_LABELS = {"tooling-exception": "tooling"}
 
+#: harmonic-forge#778 AC1. Matches the two phrasings the issue body names as
+#: examples ("Tooling Exception", "Tooling, so Lane 1 handles it") plus the
+#: bare noun phrase on its own line, case-insensitive -- a body that
+#: self-declares the exception without the arming label is exactly #769/
+#: #772/#774's failure mode. Deliberately loose (word boundary, not an exact
+#: phrase set): the goal is catching every real declaration, and a false
+#: positive here costs one extra `--labels` word, not a silent gap.
+_TOOLING_EXCEPTION_BODY_RE = re.compile(r"\btooling[\s,]+exception\b", re.IGNORECASE)
+
 
 def normalise_labels(labels: list[str]) -> list[str]:
     """Add every label another label implies, transitively.
@@ -658,10 +667,26 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    print(f"[GH] Creating issue in {args.repo}")
-
     labels = normalise_labels(
         [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()])
+
+    # harmonic-forge#778 AC1. #769, #772 and #774 each said Tooling Exception
+    # in the body and never carried the arming label, so
+    # block_missing_preclose_inspection.py's opt-in gate never armed and
+    # #774 merged with no pre-close pass at all. Checked BEFORE
+    # create_issue() -- like every other parser.error() above -- so a
+    # missing label fails the run without having filed anything, rather than
+    # leaving a live, unarmed issue behind a confusing later refusal.
+    if _TOOLING_EXCEPTION_BODY_RE.search(body) and "tooling-exception" not in labels:
+        parser.error(
+            "the body declares Tooling Exception but --labels lacks "
+            "tooling-exception (harmonic-forge#778) -- add "
+            "--labels tooling-exception (plus whatever else you already "
+            "passed); that label is what arms the pre-close merge gate."
+        )
+
+    print(f"[GH] Creating issue in {args.repo}")
+
     issue_url = create_issue(args.repo, args.title, body, labels, milestone_number)
     if issue_url is None:
         return 1
