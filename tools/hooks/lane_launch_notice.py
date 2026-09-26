@@ -59,9 +59,16 @@ def build_notice(env: dict) -> str | None:
         elif status == "skipped-dirty":
             lines.append("Lane launcher: tracked changes were present, so the checkout was NOT updated -- it may be stale.")
         elif status == "skipped-diverged":
-            lines.append("Lane launcher: HEAD was not a clean refs/heads/main, so the checkout was NOT updated -- it may be stale.")
+            lines.append("Lane launcher: the checkout could not be moved safely (not a clean refs/heads/main, or a branch with unpushed commits), so it was NOT updated -- it may be stale.")
         elif status == "fetch-failed":
             lines.append("Lane launcher: could not reach or resolve origin/main, so the checkout was NOT updated -- it may be stale.")
+        elif status == "checkout-failed":
+            lines.append("Lane launcher: the fetch succeeded but the checkout failed, so the checkout was NOT updated -- it may be stale.")
+        elif status == "skipped-busy":
+            lines.append("Lane launcher: another process was running in this worktree, so the checkout was NOT updated -- it may be stale.")
+    detail = env.get("LANE_REFRESH_DETAIL", "")
+    if detail and status != "current":
+        lines.append(f"Launcher detail: {detail}")
 
     env_status = env.get("LANE_REFRESH_ENV", "")
     if env_status == "relinked":
@@ -73,10 +80,19 @@ def build_notice(env: dict) -> str | None:
         if any(p.startswith("backend/") or p.startswith("frontend/") for p in changed):
             lines.append("backend/frontend code changed in this update.")
     elif lane == "3":
+        # Preclose finding: only `current` may produce "was current". Every
+        # other status (including --ack-stale and a missing record) must be
+        # reported as what it is, never collapsed into a clean precondition.
         if status == "updated":
             lines.append(f"Gate report must state: worktree was behind and was updated at launch from {from_sha[:12]} to {to_sha[:12]}.")
-        else:
+        elif status == "current":
             lines.append("Gate report must state: worktree was current at launch.")
+        elif status == "ack-stale":
+            lines.append(f"Gate report must state: worktree was NOT updated at launch (--ack-stale); it is at {from_sha[:12]}, which may be behind origin/main.")
+        elif status:
+            lines.append(f"Gate report must state: worktree was NOT updated at launch (launcher status: {status}); it is at {from_sha[:12]}, which may be behind origin/main.")
+        else:
+            lines.append("Gate report must state: the launch refresh record is missing from this session, so whether the worktree was current is unknown.")
 
     if not lines:
         return None

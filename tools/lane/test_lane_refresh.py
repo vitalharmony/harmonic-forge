@@ -169,6 +169,100 @@ class Lane2DetachedMode(unittest.TestCase):
             self.assertNotIn("lane2: checkout", cell["stderr"])
 
 
+
+class PrecloseFindings(unittest.TestCase):
+    """harmonic-forge#761 preclose: each finding's scenario, driven through
+    the real launchers."""
+
+    KEYS3 = KEYS + ",LANE_REFRESH_DETAIL,LANE_REFRESH_ENV"
+
+    def _run(self, tree, lane, args=()):
+        return tree.run(lane, list(args), LANE_CLI="claude",
+                        LANE_CAPTURE_EXTRA_ENV=self.KEYS3,
+                        LANE_REFRESH_LOG_DIR=str(tree.root / "refresh-log"))
+
+    def test_a_pushed_branch_is_detached_and_named(self):
+        """H1: no silent detach -- the branch is named in the record."""
+        with _FixtureTree() as tree:
+            _git(tree.lane3, "checkout", "-q", "-b", "gated")
+            _git(tree.lane3, "push", "-q", "origin", "gated")
+            remote_sha = _advance(tree)
+            cell = self._run(tree, "3")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(_git(tree.lane3, "rev-parse", "HEAD"), remote_sha)
+            self.assertIn("gated", cell["extra_env"]["LANE_REFRESH_DETAIL"])
+            self.assertIn("gated", cell["stderr"])
+
+    def test_a_branch_with_unpushed_commits_refuses_and_stays(self):
+        """H1: never detach away from work no remote has."""
+        for lane, wt in (("2", "lane2"), ("3", "lane3")):
+            with self.subTest(lane=lane), _FixtureTree() as tree:
+                path = getattr(tree, wt)
+                _git(path, "checkout", "-q", "-b", "local-work")
+                (path / "WORK.md").write_text("w\n")
+                _git(path, "add", "WORK.md")
+                _git(path, "-c", "user.email=w@example.invalid", "-c", "user.name=W",
+                     "commit", "-q", "-m", "work")
+                before = _git(path, "rev-parse", "HEAD")
+                _advance(tree)
+                cell = self._run(tree, lane)
+                self.assertFalse(cell["launched"])
+                self.assertIn("local-work", cell["stderr"])
+                self.assertEqual(_git(path, "rev-parse", "HEAD"), before)
+                self.assertEqual(_git(path, "symbolic-ref", "--short", "HEAD"), "local-work")
+
+    def test_a_failed_checkout_is_named_not_called_a_fetch_failure(self):
+        """M1: an untracked file in the way of origin/main's new file."""
+        for lane, wt in (("2", "lane2"), ("3", "lane3")):
+            with self.subTest(lane=lane), _FixtureTree() as tree:
+                _advance(tree)  # adds ELSEWHERE.md on origin/main
+                (getattr(tree, wt) / "ELSEWHERE.md").write_text("in the way\n")
+                cell = self._run(tree, lane)
+                self.assertFalse(cell["launched"])
+                self.assertIn("checkout --detach", cell["stderr"])
+                self.assertIn("ELSEWHERE.md", cell["stderr"])
+                self.assertNotIn("could not determine or reach", cell["stderr"])
+                self.assertNotIn("cannot determine whether", cell["stderr"])
+
+    def test_a_busy_worktree_is_not_moved(self):
+        """M3: a live process with its cwd in the worktree."""
+        with _FixtureTree() as tree:
+            before = _git(tree.lane3, "rev-parse", "HEAD")
+            _advance(tree)
+            proc = subprocess.Popen(["sleep", "60"], cwd=tree.lane3)
+            try:
+                cell = self._run(tree, "3")
+            finally:
+                proc.kill(); proc.wait()
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(_git(tree.lane3, "rev-parse", "HEAD"), before)
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "skipped-busy")
+            self.assertIn("NOT updated", cell["stderr"])
+
+    def test_a_real_env_file_is_kept_aside_not_deleted(self):
+        """M2."""
+        with _FixtureTree(with_backend_env=True) as tree:
+            (tree.lane3 / "backend").mkdir()
+            (tree.lane3 / "backend" / ".env").write_text("KEY=only-copy\n")
+            cell = self._run(tree, "3")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
+            kept = list((tree.lane3 / "backend").glob(".env.pre-relink-*"))
+            self.assertEqual(len(kept), 1)
+            self.assertEqual(kept[0].read_text(), "KEY=only-copy\n")
+
+    def test_lane3_notice_never_claims_current_unless_current(self):
+        """H2."""
+        for status in ("ack-stale", "skipped-busy", "skipped-dirty",
+                       "skipped-diverged", "fetch-failed", "checkout-failed", ""):
+            with self.subTest(status=status):
+                text = notice.build_notice({"LANE": "3", "LANE_REFRESH_STATUS": status,
+                                            "LANE_REFRESH_FROM": "a" * 40})
+                self.assertNotIn("was current at launch", text)
+                self.assertIn("Gate report must state", text)
+        self.assertIn("was current at launch",
+                      notice.build_notice({"LANE": "3", "LANE_REFRESH_STATUS": "current"}))
+
 class LaunchNotice(unittest.TestCase):
     """TC6, TC7."""
 

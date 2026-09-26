@@ -96,23 +96,44 @@ EOF
 # shellcheck source=_lane_refresh.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"
 lane_refresh detached
-export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
+export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO LANE_REFRESH_DETAIL
 
-if [ "$LANE_REFRESH_STATUS" = "fetch-failed" ]; then
-  _lane3_stale_refuse \
-    "cannot determine whether this worktree is stale" \
-    "\`git ls-remote origin refs/heads/main\` or the subsequent fetch failed. The remote may be unreachable, origin may not have a main branch, or the fetched tip is missing from the object store. An undetermined staleness state is treated as drift, not as its absence."
-elif [ "$LANE_REFRESH_STATUS" = "skipped-dirty" ]; then
-  _lane3_stale_refuse \
-    "this worktree has tracked changes" \
-    "Refusing to check out origin/main over them. Commit or move them first -- an untracked backend/.env alone never blocks this."
-elif [ "$LANE_REFRESH_STATUS" = "ack-stale" ]; then
-  echo "lane3: staleness acknowledged by the operator -- \"$lane_ack_stale\"" >&2
-elif [ "$LANE_REFRESH_STATUS" = "updated" ]; then
-  echo "lane3: worktree was behind and was updated at launch, $LANE_REFRESH_FROM -> $LANE_REFRESH_TO" >&2
-else
-  echo "lane3: worktree is current at $LANE_REFRESH_TO" >&2
-fi
+case "$LANE_REFRESH_STATUS" in
+  fetch-failed)
+    _lane3_stale_refuse \
+      "cannot determine whether this worktree is stale" \
+      "\`git ls-remote origin refs/heads/main\` or the subsequent fetch failed. The remote may be unreachable, origin may not have a main branch, or the fetched tip is missing from the object store. An undetermined staleness state is treated as drift, not as its absence."
+    ;;
+  checkout-failed)
+    _lane3_stale_refuse \
+      "the fetch succeeded but \`git checkout --detach\` failed" \
+      "git said: $LANE_REFRESH_DETAIL"
+    ;;
+  skipped-dirty)
+    _lane3_stale_refuse \
+      "this worktree has tracked changes" \
+      "Refusing to check out origin/main over them. Commit or move them first -- an untracked backend/.env alone never blocks this."
+    ;;
+  skipped-diverged)
+    _lane3_stale_refuse \
+      "$LANE_REFRESH_DETAIL" \
+      "Refusing to detach this worktree away from unpushed work. Push it or move it off this worktree first."
+    ;;
+  skipped-busy)
+    echo "lane3: WARNING -- another process is running in this worktree, so it was NOT updated and may be stale; the gate report must say so:" >&2
+    printf '%s\n' "$LANE_REFRESH_DETAIL" | sed 's/^/  /' >&2
+    ;;
+  ack-stale)
+    echo "lane3: staleness acknowledged by the operator -- \"$lane_ack_stale\"" >&2
+    ;;
+  updated)
+    echo "lane3: worktree was behind and was updated at launch, $LANE_REFRESH_FROM -> $LANE_REFRESH_TO" >&2
+    [ -n "$LANE_REFRESH_DETAIL" ] && echo "lane3: $LANE_REFRESH_DETAIL" >&2
+    ;;
+  *)
+    echo "lane3: worktree is current at $LANE_REFRESH_TO" >&2
+    ;;
+esac
 
 # backend/.env: operator ruling 2026-09-26 -- lane3 now relinks automatically,
 # the same repair `lane3-provision` performs by hand (harmonic-forge#264).
@@ -127,6 +148,13 @@ if [ -f "$main_root/backend/.env" ]; then
   target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
   if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
     mkdir -p "$target/backend"
+    # Preclose finding: `ln -sfn` over a real file deletes it. Keep the only
+    # copy aside (never read or printed) before replacing it with the link.
+    if [ -f "$target/backend/.env" ] && [ ! -L "$target/backend/.env" ]; then
+      _lane3_env_backup="$target/backend/.env.pre-relink-$(date -u +%Y%m%dT%H%M%SZ)"
+      mv "$target/backend/.env" "$_lane3_env_backup"
+      echo "lane3: kept the previous backend/.env file as $_lane3_env_backup" >&2
+    fi
     ln -sfn "$main_env_real" "$target/backend/.env"
     LANE_REFRESH_ENV="relinked"
     echo "lane3: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2

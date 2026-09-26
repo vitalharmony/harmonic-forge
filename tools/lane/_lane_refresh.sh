@@ -19,7 +19,11 @@
 # Every call sets these variables in the caller's shell (never exported here
 # -- the caller, `_cli_launch.sh`, exports what it needs onward):
 #   LANE_REFRESH_STATUS   updated | current | skipped-dirty | skipped-diverged
-#                         | fetch-failed | ack-stale
+#                         | skipped-busy | fetch-failed | checkout-failed
+#                         | ack-stale
+#   LANE_REFRESH_DETAIL   a human-readable reason for any status but
+#                         `current` (git's own error, the busy report, the
+#                         branch that was detached); empty otherwise
 #   LANE_REFRESH_FROM     HEAD SHA before this call
 #   LANE_REFRESH_TO       HEAD SHA after this call (== FROM unless updated)
 #   LANE_REFRESH_ENV      relinked | ok | n/a (backend/.env; lane3 only, set by
@@ -37,6 +41,7 @@
 lane_refresh() {
   local mode="$1"
   LANE_REFRESH_STATUS=""
+  LANE_REFRESH_DETAIL=""
   LANE_REFRESH_FROM="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   LANE_REFRESH_TO="$LANE_REFRESH_FROM"
 
@@ -92,11 +97,46 @@ lane_refresh() {
       _lane_refresh_log "$mode" "$LANE_REFRESH_STATUS" "$LANE_REFRESH_FROM" "$LANE_REFRESH_TO"
       return 0
     fi
-    if git checkout -q --detach "$remote_sha" 2>/dev/null; then
+    # Preclose finding: a worktree with a branch checked out must not be
+    # detached silently. Commits no remote has are never left behind a
+    # detach (they would survive on the branch ref, but a session resuming
+    # there would be on the wrong commit with no signal) -- refuse instead.
+    local branch=""
+    branch="$(git symbolic-ref -q --short HEAD 2>/dev/null || true)"
+    if [ -n "$branch" ]; then
+      local unpushed=0
+      unpushed="$(git rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)"
+      if [ "$unpushed" -gt 0 ]; then
+        LANE_REFRESH_STATUS="skipped-diverged"
+        LANE_REFRESH_DETAIL="branch '$branch' has $unpushed commit(s) no remote has"
+        _lane_refresh_log "$mode" "$LANE_REFRESH_STATUS" "$LANE_REFRESH_FROM" "$LANE_REFRESH_TO"
+        return 0
+      fi
+    fi
+    # Preclose finding: never move a shared worktree out from under a live
+    # process (a still-open session, a preview stack). LANE is unset for the
+    # check so a previous session of this same lane counts as busy rather
+    # than being excluded as "our own session".
+    local busy_check busy_out=""
+    busy_check="$(dirname "${BASH_SOURCE[0]}")/../worktree/check_worktree_busy.py"
+    if [ -f "$busy_check" ] \
+       && ! busy_out="$(env -u LANE python3 "$busy_check" . 2>&1)"; then
+      LANE_REFRESH_STATUS="skipped-busy"
+      LANE_REFRESH_DETAIL="$busy_out"
+      _lane_refresh_log "$mode" "$LANE_REFRESH_STATUS" "$LANE_REFRESH_FROM" "$LANE_REFRESH_TO"
+      return 0
+    fi
+    local checkout_err=""
+    if checkout_err="$(git checkout -q --detach "$remote_sha" 2>&1)"; then
       LANE_REFRESH_TO="$remote_sha"
       LANE_REFRESH_STATUS="updated"
+      [ -n "$branch" ] && LANE_REFRESH_DETAIL="was on branch '$branch' (kept; every commit is on a remote), now detached at origin/main"
     else
-      LANE_REFRESH_STATUS="fetch-failed"
+      # Preclose finding: not `fetch-failed` -- the fetch succeeded. Carry
+      # git's own reason (an untracked file in the way, a stale index.lock)
+      # so the refusal names the real cause.
+      LANE_REFRESH_STATUS="checkout-failed"
+      LANE_REFRESH_DETAIL="$checkout_err"
     fi
     _lane_refresh_log "$mode" "$LANE_REFRESH_STATUS" "$LANE_REFRESH_FROM" "$LANE_REFRESH_TO"
     return 0
