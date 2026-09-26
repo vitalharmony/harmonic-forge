@@ -26,17 +26,12 @@ from watch_lane_posts import (
     branch_ahead_lines,
     branch_ahead_without_completion,
     discover_from_worktree,
-    discover_l1_sweep,
-    discover_l3_unanswered_verdicts,
     discover_queue,
     drop_closed_targets,
     RootNotARepo,
     cycle_is_quiet,
     enumerate_repo_roots,
     enumerate_worktrees,
-    l1_sweep_cycle,
-    l3_verdict_sweep_cycle,
-    list_open_issues,
     next_poll_interval,
     sleep_before_next_poll,
     MONITOR_LIFETIME_S,
@@ -768,461 +763,6 @@ class ClassifyFencedBlockTests(unittest.TestCase):
             self.assertIn("no completion posted", report)
 
 
-class L1SweepTests(unittest.TestCase):
-    """harmonic-forge#570 AC1/AC8 -- Lane 1's repo-wide newest-marker sweep,
-    given a runnable form. Every `gh` call mocked, no network."""
-
-    def _mock_gh(self, open_issues: list[int] | Exception, comments: dict,
-                 issue_states: dict | None = None):
-        issue_states = issue_states or {}
-
-        def run(argv, **kwargs):
-            self.assertEqual(argv[0], "gh-as")
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                if isinstance(open_issues, Exception):
-                    raise open_issues
-                # harmonic-forge#570 preclose finding: `gh api` promotes a
-                # call with `-f` params to POST unless told otherwise, and a
-                # POST here is issue *creation* -- assert the explicit GET
-                # so a regression back to an implicit POST fails this test
-                # rather than silently returning nothing in production.
-                self.assertIn("-X", gh_argv, f"issues list must be explicit GET: {gh_argv}")
-                self.assertEqual(gh_argv[gh_argv.index("-X") + 1], "GET")
-                return _fake_completed("\n".join(str(n) for n in open_issues))
-            if "api" in gh_argv:
-                # A single-issue state check (`_issue_is_open`,
-                # harmonic-forge#579 AC4) has no `/comments` suffix -- a
-                # comments-list call does. Distinguish on that before
-                # falling through to the single-issue-state branch.
-                comments_paths = [a for a in gh_argv if a.startswith("repos/") and "/comments" in a]
-                if comments_paths:
-                    path = comments_paths[0]
-                    issue = int(path.rsplit("/", 2)[-2])
-                    bodies = comments.get(issue, [])
-                    return _fake_completed(json.dumps([{"body": b} for b in bodies]))
-                single_issue_paths = [a for a in gh_argv
-                                       if a.startswith("repos/") and "/issues/" in a]
-                if single_issue_paths:
-                    issue = int(single_issue_paths[0].rsplit("/", 1)[-1])
-                    state = issue_states.get(issue, "open")
-                    return _fake_completed(state)
-            raise AssertionError(f"unexpected gh call: {argv}")
-        return run
-
-    def test_list_open_issues_parses_numbers(self):
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh([12, 34, 56], {})):
-            self.assertEqual(list_open_issues("vitalharmony/hrse"), [12, 34, 56])
-
-    def test_list_open_issues_passes_since_as_query_param(self):
-        captured = []
-
-        def run(argv, **kwargs):
-            captured.append(argv[3:])
-            return _fake_completed("")
-        with patch("belt_mechanics.subprocess.run", side_effect=run):
-            list_open_issues("vitalharmony/hrse", since="2026-09-01T00:00:00Z")
-        self.assertIn("-f", captured[0])
-        self.assertIn("since=2026-09-01T00:00:00Z", captured[0])
-
-    def test_list_open_issues_returns_none_on_fetch_failure(self):
-        """harmonic-forge#579 AC1: `None` (fetch failed) is distinguishable
-        from `[]` (fetch succeeded, genuinely zero open issues)."""
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(RuntimeError("502"), {})):
-            self.assertIsNone(list_open_issues("vitalharmony/hrse"))
-
-    def test_l1_sweep_still_checks_a_stale_already_queued_issue(self):
-        """harmonic-forge#570 preclose finding: `since` must not drop an
-        issue that stopped receiving updates but was never resolved -- it
-        must stay in the candidate set via `extra_issues`."""
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(
-                      [],  # nothing NEW since the watermark
-                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
-                  )):
-            queue, fetch_ok = discover_l1_sweep(
-                "vitalharmony/hrse", since="2026-09-01T00:00:00Z", extra_issues=[1530])
-            self.assertEqual(list(queue), [1530])
-            self.assertTrue(fetch_ok)
-
-    def test_issue_whose_newest_comment_is_lane2_needs_l1(self):
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(
-                      [1530],
-                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
-                  )):
-            queue, fetch_ok = discover_l1_sweep("vitalharmony/hrse")
-            self.assertEqual(list(queue), [1530])
-            lane, detail = queue[1530]
-            self.assertEqual(lane, "l2")
-            self.assertTrue(fetch_ok)
-
-    def test_issue_whose_newest_comment_is_lane1s_own_is_not_queued(self):
-        body = "## Some post\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh([1530], {1530: [body]})):
-            queue, _fetch_ok = discover_l1_sweep("vitalharmony/hrse")
-            self.assertEqual(queue, {})
-
-    def test_issue_with_no_classified_comment_carries_no_ball(self):
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh([1530], {1530: ["just chat, no heading"]})):
-            queue, _fetch_ok = discover_l1_sweep("vitalharmony/hrse")
-            self.assertEqual(queue, {})
-
-    def test_issue_with_zero_comments_carries_no_ball(self):
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh([1530], {})):
-            queue, _fetch_ok = discover_l1_sweep("vitalharmony/hrse")
-            self.assertEqual(queue, {})
-
-    def test_fetch_failure_reports_fetch_ok_false(self):
-        """harmonic-forge#579 AC1 reproduction: a failed `list_open_issues`
-        call must surface `fetch_ok=False` so the caller (`main()`) knows
-        not to advance its watermark. `extra_issues` (already-queued issues)
-        must still be checked even when the fresh fetch failed."""
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(
-                      RuntimeError("secondary rate limit"),
-                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
-                  )):
-            queue, fetch_ok = discover_l1_sweep(
-                "vitalharmony/hrse", since="2026-09-01T00:00:00Z", extra_issues=[1530])
-            self.assertFalse(fetch_ok)
-            self.assertEqual(list(queue), [1530])
-
-    def test_closed_extra_issue_is_dropped_from_the_queue(self):
-        """harmonic-forge#579 AC4 reproduction: an issue only present via
-        `extra_issues` (not returned by the fresh `state=open` fetch) that
-        has since been closed must not be re-queued."""
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(
-                      [],
-                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
-                      issue_states={1530: "closed"},
-                  )):
-            queue, _fetch_ok = discover_l1_sweep(
-                "vitalharmony/hrse", since="2026-09-01T00:00:00Z", extra_issues=[1530])
-            self.assertEqual(queue, {})
-
-    def test_open_extra_issue_is_kept_in_the_queue(self):
-        """The open-state re-check (AC4) must not falsely drop a still-open
-        stale issue -- only a genuinely closed one."""
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(
-                      [],
-                      {1530: ["## L2D — receipt-backed status (harmonic-forge#371)"]},
-                      issue_states={1530: "open"},
-                  )):
-            queue, _fetch_ok = discover_l1_sweep(
-                "vitalharmony/hrse", since="2026-09-01T00:00:00Z", extra_issues=[1530])
-            self.assertEqual(list(queue), [1530])
-
-    def test_comment_fetch_failure_falls_back_to_previous_classification(self):
-        """harmonic-forge#579 preclose finding: the open-state re-check
-        alone was not enough -- `_fetch_all_comments` failing separately
-        for the same issue dropped it right back out. A `Mapping`
-        `extra_issues` carrying the previous `(lane, detail)` must be used
-        as the fallback when this cycle's comment fetch for that issue
-        fails, so a transient outage does not read as `left-queue-for-l1`."""
-        def run(argv, **kwargs):
-            self.assertEqual(argv[0], "gh-as")
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                return _fake_completed("")  # nothing new since the watermark
-            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
-                raise RuntimeError("secondary rate limit")
-            raise AssertionError(f"unexpected gh call: {argv}")
-        with patch("belt_mechanics.subprocess.run", side_effect=run):
-            queue, fetch_ok = discover_l1_sweep(
-                "vitalharmony/hrse", since="2026-09-01T00:00:00Z",
-                extra_issues={1530: ("l2", "## L2D — receipt-backed status (harmonic-forge#371)")},
-            )
-            self.assertTrue(fetch_ok)
-            self.assertEqual(queue, {1530: ("l2", "## L2D — receipt-backed status (harmonic-forge#371)")})
-
-    def test_comment_fetch_failure_with_no_previous_value_is_excluded(self):
-        """A freshly-discovered issue (no prior classification to fall back
-        to) whose comment fetch fails is excluded, same as before this
-        fix -- not a regression, just no `TypeError` from iterating `None`."""
-        def run(argv, **kwargs):
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                return _fake_completed("1530")
-            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
-                raise RuntimeError("502")
-            raise AssertionError(f"unexpected gh call: {argv}")
-        with patch("belt_mechanics.subprocess.run", side_effect=run):
-            queue, fetch_ok = discover_l1_sweep("vitalharmony/hrse")
-            self.assertTrue(fetch_ok)
-            self.assertEqual(queue, {})
-
-
-class L1SweepCycleTests(unittest.TestCase):
-    """harmonic-forge#579 AC1, preclose finding: `main()`'s own watermark
-    gate (`if fetch_ok: l1_since = now`) was unexercised by any test --
-    reverting it to unconditional left the full suite green. Factored into
-    `l1_sweep_cycle` specifically so this is directly testable."""
-
-    def _mock_gh(self, open_issues_or_exc):
-        def run(argv, **kwargs):
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                if isinstance(open_issues_or_exc, Exception):
-                    raise open_issues_or_exc
-                return _fake_completed("\n".join(str(n) for n in open_issues_or_exc))
-            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
-                return _fake_completed("[]")
-            raise AssertionError(f"unexpected gh call: {argv}")
-        return run
-
-    def test_successful_cycle_advances_the_watermark(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh([])):
-            _queue, new_since = l1_sweep_cycle(
-                "vitalharmony/hrse", "2026-09-01T00:00:00Z", {}, "2026-09-09T00:00:00Z")
-        self.assertEqual(new_since, "2026-09-09T00:00:00Z")
-
-    def test_failed_cycle_does_not_advance_the_watermark(self):
-        """The exact reproduction AC1 names: a failed fetch must leave
-        `l1_since` where it was, not silently narrow the next window."""
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(RuntimeError("502"))):
-            _queue, new_since = l1_sweep_cycle(
-                "vitalharmony/hrse", "2026-09-01T00:00:00Z", {}, "2026-09-09T00:00:00Z")
-        self.assertEqual(new_since, "2026-09-01T00:00:00Z")
-
-    def test_last_queue_string_form_round_trips_through_the_cycle(self):
-        """`main()`'s `last_queue` is `{issue: "lane:detail"}` -- confirm
-        `l1_sweep_cycle` splits it back into the tuple form
-        `discover_l1_sweep` expects, using it as the stale-issue fallback."""
-        def run(argv, **kwargs):
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                return _fake_completed("")
-            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
-                raise RuntimeError("rate limit")
-            raise AssertionError(f"unexpected gh call: {argv}")
-        with patch("belt_mechanics.subprocess.run", side_effect=run):
-            queue, _new_since = l1_sweep_cycle(
-                "vitalharmony/hrse", "2026-09-01T00:00:00Z",
-                {1530: "l2:## L2D — receipt-backed status (harmonic-forge#371)"},
-                "2026-09-09T00:00:00Z",
-            )
-        self.assertEqual(queue, {1530: ("l2", "## L2D — receipt-backed status (harmonic-forge#371)")})
-
-
-def _gate_result(verdict: str) -> str:
-    return (f"## Lane 3 Gate Results — hrse#0000\n\n**Verdict:** {verdict}\n\n"
-            "<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=x -->")
-
-
-class L3UnansweredVerdictTests(unittest.TestCase):
-    """harmonic-forge#629, Check C -- the regression hrse#1771 produced live:
-    a FAIL gate-result got a real Lane 1 ruling, posted as `kind=discussion`,
-    that neither Check A/B nor `discover_queue` ever surfaced because a
-    `discussion` marker carries no queue membership."""
-
-    def _mock_gh(self, open_issues, comments: dict, issue_states: dict | None = None):
-        """`comments`: {issue: [(body, created_at), ...]}, oldest first --
-        matches the real GitHub REST ordering `_fetch_all_comments` relies
-        on."""
-        issue_states = issue_states or {}
-
-        def run(argv, **kwargs):
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                if isinstance(open_issues, Exception):
-                    raise open_issues
-                return _fake_completed("\n".join(str(n) for n in open_issues))
-            if "api" in gh_argv:
-                comments_paths = [a for a in gh_argv if a.startswith("repos/") and "/comments" in a]
-                if comments_paths:
-                    issue = int(comments_paths[0].rsplit("/", 2)[-2])
-                    rows = comments.get(issue, [])
-                    return _fake_completed(json.dumps(
-                        [{"body": b, "created_at": c} for b, c in rows]))
-                single_issue_paths = [a for a in gh_argv
-                                       if a.startswith("repos/") and "/issues/" in a]
-                if single_issue_paths:
-                    issue = int(single_issue_paths[0].rsplit("/", 1)[-1])
-                    return _fake_completed(issue_states.get(issue, "open"))
-            raise AssertionError(f"unexpected gh call: {argv}")
-        return run
-
-    def test_a_fail_verdict_with_a_later_reply_is_watched(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1771], {1771: [
-                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
-                    ("## L1 ruling\n\nsome text", "2026-09-11T03:35:20Z"),
-                ]})):
-            watching, fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {1771: "FAIL"})
-        self.assertTrue(fetch_ok)
-
-    def test_a_blocked_verdict_with_a_later_reply_is_watched(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1792], {1792: [
-                    (_gate_result("BLOCKED"), "2026-09-11T00:41:39Z"),
-                    ("some later reply, no marker at all", "2026-09-11T00:50:00Z"),
-                ]})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {1792: "BLOCKED"})
-
-    def test_a_pass_verdict_never_fires_even_with_a_later_reply(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1663], {1663: [
-                    (_gate_result("PASS"), "2026-09-11T01:21:10Z"),
-                    ("merged", "2026-09-11T01:21:30Z"),
-                ]})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {})
-
-    def test_a_fail_verdict_with_no_later_comment_does_not_fire_yet(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1771], {1771: [(_gate_result("FAIL"), "2026-09-11T01:34:14Z")]})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {})
-
-    def test_an_issue_with_no_gate_result_at_all_is_excluded(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1530], {1530: [("just chat, no marker", "2026-09-11T00:00:00Z")]})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {})
-
-    def test_only_the_last_gate_result_matters_a_prior_fail_superseded_by_a_pass_does_not_fire(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1000], {1000: [
-                    (_gate_result("FAIL"), "2026-09-01T00:00:00Z"),
-                    ("fix pushed", "2026-09-01T01:00:00Z"),
-                    (_gate_result("PASS"), "2026-09-01T02:00:00Z"),
-                    ("merged", "2026-09-01T03:00:00Z"),
-                ]})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {})
-
-    def test_the_reply_kind_is_irrelevant_a_discussion_marker_still_fires(self):
-        """The regression's own shape: the reply carries `kind=discussion`,
-        which `discover_queue` would never treat as queue membership -- but
-        Check C does not classify the reply at all, only its timestamp."""
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [1771], {1771: [
-                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
-                    ("## L1 ruling\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
-                     "2026-09-11T03:35:20Z"),
-                ]})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts("vitalharmony/hrse")
-        self.assertEqual(watching, {1771: "FAIL"})
-
-    def test_fetch_failure_reports_fetch_ok_false(self):
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(RuntimeError("502"), {})):
-            watching, fetch_ok = discover_l3_unanswered_verdicts(
-                "vitalharmony/hrse", since="2026-09-01T00:00:00Z", extra_issues=[1771])
-            self.assertFalse(fetch_ok)
-
-    def test_extra_issues_keeps_a_stale_watched_issue_in_the_candidate_set(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [],  # nothing NEW since the watermark
-                {1771: [
-                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
-                    ("a reply", "2026-09-11T03:35:20Z"),
-                ]})):
-            watching, fetch_ok = discover_l3_unanswered_verdicts(
-                "vitalharmony/hrse", since="2026-09-11T02:00:00Z", extra_issues=[1771])
-        self.assertEqual(watching, {1771: "FAIL"})
-        self.assertTrue(fetch_ok)
-
-    def test_a_closed_extra_issue_is_dropped(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                [], {1771: [
-                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
-                    ("a reply", "2026-09-11T03:35:20Z"),
-                ]}, issue_states={1771: "closed"})):
-            watching, _fetch_ok = discover_l3_unanswered_verdicts(
-                "vitalharmony/hrse", since="2026-09-11T02:00:00Z", extra_issues=[1771])
-        self.assertEqual(watching, {})
-
-
-class L3VerdictSweepCycleTests(unittest.TestCase):
-    """Mirrors `L1SweepCycleTests` -- the watermark discipline is identical."""
-
-    def _mock_gh(self, open_issues_or_exc):
-        def run(argv, **kwargs):
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                if isinstance(open_issues_or_exc, Exception):
-                    raise open_issues_or_exc
-                return _fake_completed("\n".join(str(n) for n in open_issues_or_exc))
-            if "api" in gh_argv and any("/comments" in a for a in gh_argv):
-                return _fake_completed("[]")
-            raise AssertionError(f"unexpected gh call: {argv}")
-        return run
-
-    def test_successful_cycle_advances_the_watermark(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh([])):
-            _watching, new_since = l3_verdict_sweep_cycle(
-                "vitalharmony/hrse", "2026-09-01T00:00:00Z", {}, "2026-09-09T00:00:00Z")
-        self.assertEqual(new_since, "2026-09-09T00:00:00Z")
-
-    def test_failed_cycle_does_not_advance_the_watermark(self):
-        with patch("belt_mechanics.subprocess.run",
-                  side_effect=self._mock_gh(RuntimeError("502"))):
-            _watching, new_since = l3_verdict_sweep_cycle(
-                "vitalharmony/hrse", "2026-09-01T00:00:00Z", {}, "2026-09-09T00:00:00Z")
-        self.assertEqual(new_since, "2026-09-01T00:00:00Z")
-
-
-class QueueCycleL3SweepTests(unittest.TestCase):
-    """`queue_cycle(..., sweep=True)` dispatches to Check C when `lane ==
-    "l3"`, producing the `needs-l1-response` line shape -- distinct from
-    `needs-l1` (Check A's own l1-sweep line), so an operator or a Monitor
-    parsing belt output can tell the two backstops apart."""
-
-    def _mock_gh(self, comments: dict):
-        def run(argv, **kwargs):
-            gh_argv = argv[3:]
-            if any(a == "repos/vitalharmony/hrse/issues" for a in gh_argv):
-                return _fake_completed("\n".join(str(n) for n in comments))
-            if "api" in gh_argv:
-                comments_paths = [a for a in gh_argv if a.startswith("repos/") and "/comments" in a]
-                if comments_paths:
-                    issue = int(comments_paths[0].rsplit("/", 2)[-2])
-                    rows = comments.get(issue, [])
-                    return _fake_completed(json.dumps(
-                        [{"body": b, "created_at": c} for b, c in rows]))
-            raise AssertionError(f"unexpected gh call: {argv}")
-        return run
-
-    def test_needs_l1_response_line_is_emitted_for_a_new_fail_verdict(self):
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                {1771: [
-                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
-                    ("## L1 ruling\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
-                     "2026-09-11T03:35:20Z"),
-                ]})):
-            queue, lines, ok_repos = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", {}, {}, "2026-09-11T04:00:00Z", sweep=True)
-        self.assertEqual(queue[("vitalharmony/hrse", 1771)], "l3verdict:FAIL")
-        self.assertIn("vitalharmony/hrse#1771 needs-l1-response last-verdict=FAIL", lines)
-        self.assertIn("vitalharmony/hrse", ok_repos)
-
-    def test_an_already_known_verdict_produces_no_duplicate_line(self):
-        """Self-clearing, same as every other queue: a verdict already
-        reported on a previous cycle does not re-print every tick."""
-        with patch("belt_mechanics.subprocess.run", side_effect=self._mock_gh(
-                {1771: [
-                    (_gate_result("FAIL"), "2026-09-11T01:34:14Z"),
-                    ("a reply", "2026-09-11T03:35:20Z"),
-                ]})):
-            _queue, lines, _ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3",
-                {("vitalharmony/hrse", 1771): "l3verdict:FAIL"}, {},
-                "2026-09-11T04:00:00Z", sweep=True)
-        self.assertEqual(lines, [])
-
-
 class BeltSkillDocSyncTests(unittest.TestCase):
     """harmonic-forge#579 AC3, preclose finding: the doc-vs-code drift this
     AC exists to fix was previously checkable only by eyeballing --
@@ -1385,13 +925,14 @@ class BeltLane1IsWorktreesFirstTests(unittest.TestCase):
                          "Lane 1; no command arming it may remain anywhere in "
                          f"SKILL.md, found: {armed!r}")
 
-    def test_discover_l1_sweep_is_kept_not_deleted(self):
-        """harmonic-forge#640: retired from Lane 1's own practice, not deleted
-        as a tool -- Lane 3's Check C reuses its shape (`discover_l3_
-        unanswered_verdicts`), so the function and the doc's mention of it
-        both survive."""
-        self.assertTrue(callable(discover_l1_sweep))
-        self.assertIn("discover_l1_sweep", _SKILL_MD.read_text(encoding="utf-8"))
+    def test_discover_l1_sweep_is_actually_deleted(self):
+        """harmonic-forge#766: supersedes #640's "retired, not deleted" call
+        -- a retired command kept as a refusing stub, or a function kept
+        alive only for a doc's own sake, still exposes the retired flag as
+        something callable/spelled. Both are gone now; `SweepForFlagIs
+        UnrecognizedTests` covers the flag itself being unrecognized."""
+        self.assertNotIn("discover_l1_sweep", dir(watch_lane_posts))
+        self.assertNotIn("discover_l1_sweep", _SKILL_MD.read_text(encoding="utf-8"))
 
 
 class DropClosedTargetsTests(unittest.TestCase):
@@ -1671,7 +1212,7 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         last = {("vitalharmony/hrse", 1530): "ready-for-l3"}
         with patch("watch_lane_posts._fetch_all_comments", return_value=None):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(queue, last, "the prior queue must carry forward")
         self.assertEqual(ok, set(), "a failed repo must not be counted as reporting")
@@ -1693,7 +1234,7 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
             return [{"body": queued_body}] if issue == 1530 else superseded
         with patch("watch_lane_posts._fetch_all_comments", side_effect=fake_comments):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530),
                                  ("vitalharmony/hrse", 1600)})
         self.assertEqual(ok, {"vitalharmony/hrse"})
@@ -1714,7 +1255,7 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": body}]):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(ok, {"vitalharmony/hrse"})
         self.assertIn(("vitalharmony/hrse", 1530), queue)
@@ -1751,7 +1292,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue1, lines1, ok1 = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)},
                 recorded_only=True)
         self.assertEqual(ok1, {"vitalharmony/hrse"})
@@ -1763,7 +1304,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue2, lines2, ok2 = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", queue1, {}, "2026-09-10T00:05:00Z",
+                ["vitalharmony/hrse"], "l3", queue1, "2026-09-10T00:05:00Z",
                 candidate_pairs=set(),
                 recorded_only=True)
         self.assertEqual(ok2, {"vitalharmony/hrse"})
@@ -1779,7 +1320,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue3, lines3, ok3 = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", queue2, {}, "2026-09-10T00:10:00Z",
+                ["vitalharmony/hrse"], "l3", queue2, "2026-09-10T00:10:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)},
                 recorded_only=True)
         self.assertEqual(ok3, {"vitalharmony/hrse"})
@@ -1799,7 +1340,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs=set())
         self.assertIn(("vitalharmony/hrse", 1600), queue,
                        "recorded_only=False (the default) must still carry "
@@ -2125,87 +1666,27 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
                 self.assertIn(lane, watch_lane_posts.QUEUE_KINDS)
                 self.assertIn(lane, watch_lane_posts.QUEUE_POSTERS)
 
-    def test_sweep_true_reaches_the_unbounded_sweep(self):
-        """harmonic-forge#618 preclose finding: dropping `sweep=` at the call
-        site made `--sweep-for l1` route to the BOUNDED queue, so the suspenders
-        silently covered the same narrow set as the belt -- and the whole suite
-        stayed green. This is the mutation the flag exists to prevent."""
-        with patch("watch_lane_posts.l1_sweep_cycle",
-                   return_value=({1: ("l2", "x")}, "2026-09-10T12:00:00Z")) as sweep, \
-             patch("watch_lane_posts.discover_queue",
+    def test_queue_cycle_always_uses_the_bounded_discover_queue(self):
+        """harmonic-forge#766: `queue_cycle` no longer has an unbounded-sweep
+        branch at all -- superseding harmonic-forge#618's mutation-guard
+        (which tested that a `sweep=` kwarg routed correctly) now that there
+        is no such kwarg to route on."""
+        with patch("watch_lane_posts.discover_queue",
                    return_value=({}, True)) as bounded:
-            watch_lane_posts.queue_cycle(["o/r"], "l1", {}, {},
-                                         "2026-09-10T12:00:00Z", sweep=True)
-        sweep.assert_called_once()
-        bounded.assert_not_called()
-
-    def test_sweep_false_reaches_the_bounded_queue(self):
-        with patch("watch_lane_posts.l1_sweep_cycle") as sweep, \
-             patch("watch_lane_posts.discover_queue",
-                   return_value=({}, True)) as bounded:
-            watch_lane_posts.queue_cycle(["o/r"], "l1", {}, {},
+            watch_lane_posts.queue_cycle(["o/r"], "l1", {},
                                          "2026-09-10T12:00:00Z")
         bounded.assert_called_once()
-        sweep.assert_not_called()
-
-    # `test_main_passes_sweep_true_for_the_sweep_flag` was removed by
-    # harmonic-forge#659: with `--sweep-for l1` (#640) and `--sweep-for l3`
-    # (#659) both refused at parse time, no invocation of `main()` reaches
-    # `queue_cycle(..., sweep=True)` any more. The refusal itself is asserted
-    # in `SweepForL1IsRetiredTests` / `SweepForL3IsRetiredTests` below.
-
-    def test_main_passes_sweep_false_for_the_queue_flag(self):
-        seen = {}
-        def capture(*a, **kw):
-            seen["sweep"] = kw.get("sweep", False)
-            raise KeyboardInterrupt
-        # LANE=3's plain belt entry (--queue-for, no --all-worktrees) --
-        # avoids a real `--all-worktrees` enumeration of every worktree on
-        # this machine, which is what made this test (LANE=1's canonical
-        # argv, previously used here) take ~15s of real I/O.
-        argv = ["watch_lane_posts.py",
-                *watch_lane_posts.CANONICAL_BELTS["3"][0]["argv"]]
-        with patch.object(sys, "argv", argv), \
-             patch.dict(os.environ, {"LANE": "3"}), \
-             patch("watch_lane_posts.assert_identity"), \
-             patch("watch_lane_posts._check_git_staleness"), \
-             patch("watch_lane_posts._acquire_belt_lock"), \
-             patch("watch_lane_posts.queue_cycle", side_effect=capture), \
-             patch("watch_lane_posts.time.sleep"):
-            with self.assertRaises(KeyboardInterrupt):
-                watch_lane_posts.main()
-        self.assertFalse(seen["sweep"])
-
-    def test_arming_both_the_belt_and_the_sweep_is_refused(self):
-        """Collapsing two deliberately independent mechanisms into one process
-        is harmonic-forge#590's regression.
-
-        In-process, not a subprocess: `assert_identity` runs before argument
-        validation and shells out to `gh-as`, which does not exist on CI. The
-        subprocess form of this test passed locally and failed in CI with
-        `FileNotFoundError: 'gh-as'` -- a test that only runs on one machine."""
-        with patch.object(sys, "argv", ["watch_lane_posts.py", "--queue-for", "l1",
-                                        "--sweep-for", "l1", "--repo", "o/r",
-                                        "--watch", "l2"]), \
-             patch("watch_lane_posts.assert_identity"), \
-             patch("sys.stderr", new_callable=io.StringIO) as err:
-            with self.assertRaises(SystemExit) as caught:
-                watch_lane_posts.main()
-        self.assertEqual(caught.exception.code, 2)
-        self.assertIn("belt and the suspenders", err.getvalue())
 
 
-class SweepForL1IsRetiredTests(unittest.TestCase):
-    """harmonic-forge#640 AC6, added on the live issue thread after preclose
-    found a doc-only fix leaves `--sweep-for l1` fully callable: a session
-    that finds the flag in an old transcript or a stale SKILL.md copy could
-    still run the retired mechanism. Refused at parse time instead. `l3` was
-    a separate mechanism sharing the flag; it is now retired too
-    (harmonic-forge#659, see `SweepForL3IsRetiredTests`)."""
+class SweepForFlagIsUnrecognizedTests(unittest.TestCase):
+    """harmonic-forge#766: supersedes #640/#659's parse-time REFUSAL (which
+    still spelled the flag back in its own error message, teaching the exact
+    command it forbade). The flag no longer exists in the parser at all, so
+    both former mechanisms (Lane 1's newest-marker sweep, Lane 3's repo-wide
+    Check C sweep) now fail identically, with argparse's own generic
+    "unrecognized arguments" -- never a message that echoes the token."""
 
-    def test_sweep_for_l1_is_refused_at_parse_time(self):
-        """Mutation-checked per the issue thread's own instruction: with this
-        guard reverted, `--sweep-for l1` must run rather than refuse."""
+    def test_sweep_for_l1_is_unrecognized(self):
         with patch.object(sys, "argv", ["watch_lane_posts.py", "--sweep-for", "l1",
                                         "--repo", "o/r", "--watch", "l2"]), \
              patch("watch_lane_posts.assert_identity"), \
@@ -2213,43 +1694,34 @@ class SweepForL1IsRetiredTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 watch_lane_posts.main()
         self.assertEqual(caught.exception.code, 2)
-        self.assertIn("RETIRED", err.getvalue())
-        self.assertIn("harmonic-forge#640", err.getvalue())
-        self.assertIn("--queue-for l1", err.getvalue())
+        self.assertIn("unrecognized arguments", err.getvalue())
+        self.assertNotIn("RETIRED", err.getvalue())
 
-
-
-class SweepForL3IsRetiredTests(unittest.TestCase):
-    """harmonic-forge#659 AC1, operator ruling: the Lane 3 repo-wide sweep
-    exhausted the shared REST budget twice on 2026-09-14 and is retired
-    exactly as `--sweep-for l1` was (#640) -- refused at parse time, before
-    any canonical-table check, lock, or poll."""
-
-    def test_sweep_for_l3_is_refused_at_parse_time(self):
-        """With the guard reverted, the former canonical sweep argv under
-        LANE=3 must no longer refuse this way."""
+    def test_sweep_for_l3_is_unrecognized(self):
         argv = ["watch_lane_posts.py", "--sweep-for", "l3",
                 "--account-repos", "vitalharmony", "--interval", "300"]
         with patch.object(sys, "argv", argv), \
              patch.dict(os.environ, {"LANE": "3"}), \
              patch("watch_lane_posts.assert_identity"), \
-             patch("watch_lane_posts._check_git_staleness"), \
-             patch("watch_lane_posts._acquire_belt_lock"), \
-             patch("watch_lane_posts.queue_cycle") as cycle, \
-             patch("watch_lane_posts.time.sleep"), \
              patch("sys.stderr", new_callable=io.StringIO) as err:
             with self.assertRaises(SystemExit) as caught:
                 watch_lane_posts.main()
         self.assertEqual(caught.exception.code, 2)
-        self.assertIn("--sweep-for l3 is RETIRED", err.getvalue())
-        self.assertIn("harmonic-forge#659", err.getvalue())
-        cycle.assert_not_called()
+        self.assertIn("unrecognized arguments", err.getvalue())
+        self.assertNotIn("RETIRED", err.getvalue())
 
     def test_lane3_table_holds_only_the_queue_belt(self):
         entries = watch_lane_posts.CANONICAL_BELTS["3"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["lock"], "belt-lane3.lock")
         self.assertNotIn("--sweep-for", entries[0]["argv"])
+
+    def test_help_output_does_not_contain_the_retired_flag(self):
+        with patch.object(sys, "argv", ["watch_lane_posts.py", "--help"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            with self.assertRaises(SystemExit):
+                watch_lane_posts.main()
+        self.assertNotIn("--sweep-for", out.getvalue())
 
 
 class BeltDedupMechanicTests(unittest.TestCase):

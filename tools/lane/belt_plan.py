@@ -4,8 +4,8 @@
 
 On 2026-09-14 a lane armed the protocol wrong for the second time after the
 canonical table existed (#651): it paraphrased the `/loop` prompt, froze it into
-a `CronCreate` job, and armed the repo-wide `--sweep-for l3` the skill's own
-prose told it to. Every one of those was a lane re-deriving a call from prose.
+a `CronCreate` job, and armed the retired account-wide repo-wide sweep the
+skill's own prose told it to. Every one of those was a lane re-deriving a call from prose.
 So the calls are no longer prose. This script prints them for `$LANE`, the
 skill says "make exactly these calls", and `tools/hooks/enforce_belt_arming.py`
 denies any other arming call, quoting this script's output.

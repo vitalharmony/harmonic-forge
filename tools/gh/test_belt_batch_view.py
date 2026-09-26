@@ -132,7 +132,7 @@ class QueueCycleEmitsTheNoticeTests(unittest.TestCase):
             with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
                  contextlib.redirect_stderr(err):
                 queue, lines, ok = watch_lane_posts.queue_cycle(
-                    ["vitalharmony/hrse"], "l3", {}, {},
+                    ["vitalharmony/hrse"], "l3", {},
                     "2026-09-10T00:00:00Z", batch_state_path=path,
                     candidate_pairs={("vitalharmony/hrse", 1530)})
             return queue, lines, err.getvalue()

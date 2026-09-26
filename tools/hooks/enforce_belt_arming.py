@@ -12,7 +12,7 @@ WHY A HOOK
 ----------
 On 2026-09-14 Lane 3 armed the protocol wrong after the canonical table (#651)
 already existed: a multi-paragraph `/loop` prompt it wrote itself, frozen into a
-`CronCreate` job, and the repo-wide `--sweep-for l3` sweep that exhausted the
+`CronCreate` job, and the repo-wide account-wide belt sweep that exhausted the
 shared REST budget twice that day. The literal strings were in context. Prose
 was not enough; `watch_lane_posts.py` validates its own argv but nothing saw the
 tool calls. This does.

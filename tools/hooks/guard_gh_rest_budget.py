@@ -118,7 +118,7 @@ _RAW_HTTP_TO_GITHUB = re.compile(
 
 _WATCH_LANE_POSTS_PATTERN = re.compile(r"watch_lane_posts\.py")
 _INTERVAL_VALUE_PATTERN = re.compile(r"--interval[= ](\d+)")
-_BELT_MODE_FLAGS = ("--queue-for", "--watch", "--all-worktrees", "--sweep-for")
+_BELT_MODE_FLAGS = ("--queue-for", "--watch", "--all-worktrees")
 
 _MIN_INTERVAL_SECONDS = 300
 

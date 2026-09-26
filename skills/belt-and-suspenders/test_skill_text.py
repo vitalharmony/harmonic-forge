@@ -231,12 +231,15 @@ class TestRunnableBeltCommandPerLane(unittest.TestCase):
             self.assertNotIn(claim, self._filter_block())
 
     def test_the_sweep_keeps_the_claim_that_is_true_of_it(self):
-        """`discover_l1_sweep` really does filter nothing -- executed:
-        `[handoff, L2 Finding]` puts the issue IN the sweep. Deleting this
-        sentence would lose a true statement, which #607's first attempt did."""
+        """The retired sweep really did filter nothing -- executed:
+        `[handoff, L2 Finding]` put the issue IN the sweep. Deleting this
+        sentence would lose a true statement, which #607's first attempt did.
+        harmonic-forge#766 deleted the `discover_l1_sweep` function itself and
+        its spelled name from this doc, so this no longer checks for the name
+        -- only the substantive claim."""
         text = DESIGN.read_text(encoding="utf-8")
         self.assertIn("no precedence table, no exclusion list", text)
-        self.assertIn("discover_l1_sweep", text)
+        self.assertNotIn("discover_l1_sweep", text)
 
     def test_each_filter_row_cites_its_incident(self):
         """A filter with no recorded reason reads as accretion, and this repo

@@ -134,9 +134,8 @@ Usage
     python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
         --watch l1 --interval 300 --deadline-seconds 1800
 
-    # No lane arms a repo-wide sweep. `--sweep-for l1` is retired
-    # (harmonic-forge#640) and `--sweep-for l3` is retired
-    # (harmonic-forge#659); both are refused at parse time.
+    # No lane arms the retired account-wide belt sweep
+    # (harmonic-forge#640/#659); the flag no longer exists.
 
 **There is no manual-override / one-shot form any more (harmonic-forge#651
 AC1, pitch-inspection override).** Every invocation -- Bash, Monitor,
@@ -148,8 +147,8 @@ against `CANONICAL_BELTS[os.environ["LANE"]]` and refused verbatim
 `--repo OWNER/REPO --issues N --watch ...` debugging command that predates
 this issue is no longer runnable this way -- there is no flag combination
 exempt from the LANE/canonical-argv gate. Every lane has exactly one
-table entry, its belt; Lane 3's former repo-wide sweep (`--sweep-for l3`)
-is retired (harmonic-forge#659) and no longer in the table.
+table entry, its belt; Lane 3's former repo-wide sweep is the retired
+account-wide belt sweep (harmonic-forge#659) and no longer in the table.
 
 The exact tool calls a lane makes to arm (this Monitor command, plus the
 `/loop` suspenders) are printed by `tools/lane/belt_plan.py`, and a
@@ -181,7 +180,7 @@ import sys
 import time
 from time import monotonic as _monotonic
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -545,32 +544,6 @@ def _classify(body: str) -> tuple[str, str] | None:
     return None
 
 
-#: harmonic-forge#629. A Lane 3 `kind=gate-result` comment states its own
-#: verdict as `**Verdict:** PASS|FAIL|BLOCKED|...` -- confirmed live against
-#: the hrse#1792/#1771/#1798 gate-result comments this issue's own
-#: regression case involved. `_classify` only reports the marker's `kind`
-#: (`gate-result`), never this -- a second, narrower regex, because the
-#: verdict is meaningful only for this one kind and nothing else in this
-#: file needs it.
-_VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*(\w+)")
-
-#: FAIL/BLOCKED are the two verdicts Check C watches for -- both mean the
-#: gate did not close the issue, so Lane 1 owes the thread a response, same
-#: as the two closest analogues (`R-0354`'s BLOCKED handling and a plain
-#: gate FAIL). PASS, and any other verdict, never triggers this check.
-_UNANSWERED_VERDICTS = frozenset({"FAIL", "BLOCKED"})
-
-
-def _gate_verdict(body: str) -> str | None:
-    """A Lane 3 gate-result comment's own stated verdict, or `None` if the
-    body carries no `**Verdict:**` line (a comment classified `("l3",
-    "gate-result")` by marker but written before this convention, or by a
-    tool that doesn't follow it, still returns `None` here -- Check C's
-    caller treats that as "nothing to watch," not an error)."""
-    match = _VERDICT_RE.search(body)
-    return match.group(1) if match else None
-
-
 #: Retired lane tokens, and what replaced them. Read from the same registry
 #: `gh_issue.py` checks issue bodies against (harmonic-forge#379) rather than
 #: restated -- a second list is the drift this repo keeps paying for.
@@ -720,8 +693,8 @@ def read_queue_candidates(
 #: it", and the operator restated it as "You NEVER scan the repo EVER
 #: looking for work." `discover_queue` now takes its candidates from what
 #: the belt already holds. Do not reintroduce a search here: retiring
-#: `--sweep-for l3` (harmonic-forge#659) removed one flag and the same
-#: call simply continued under `--queue-for`, which is how it survived.
+#: the account-wide sweep (harmonic-forge#659) removed one flag and the
+#: same call simply continued under `--queue-for`, which is how it survived.
 
 def _issue_labels(repo: str, issue: int) -> set[str] | None:
     """Every label name on `issue`, or `None` if the fetch failed.
@@ -757,11 +730,12 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     harmonic-forge issues already exceed 30 comments.
 
     `None` (harmonic-forge#579 preclose finding) is distinct from `[]`
-    for the same reason `list_open_issues` distinguishes them: a caller
+    for the same reason `discover_queue`'s own fetch-failure return
+    distinguishes them: a caller
     that can't tell "this issue genuinely has zero comments" from "the
     call raised" cannot decide whether it's safe to conclude the issue
-    carries no ball to pick up. Without this, `discover_l1_sweep`'s own
-    fail-open re-check of a stale queued issue's open-state
+    carries no ball to pick up. Without this, the retired account-wide
+    sweep's fail-open re-check of a stale queued issue's open-state
     (`_issue_is_open`) was defeated eight lines later: the state check
     correctly kept a rate-limited issue as a candidate, but this function
     still silently returned `[]` for it, so it was excluded from `queued`
@@ -788,55 +762,12 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
         return None
 
 
-def list_open_issues(repo: str, *, since: str | None = None) -> list[int] | None:
-    """Every open issue number in `repo`, PRs excluded -- the candidate set
-    for Lane 1's repo-wide newest-marker sweep (harmonic-forge#570 AC1/AC8).
-    No marker search can pre-filter this the way `discover_queue` does:
-    Lane 1 needs the newest comment on EVERY open issue, not just ones
-    already carrying a specific marker, because the ball is with Lane 1
-    whenever the newest classified comment is simply not its own.
-
-    `since` (an ISO-8601 timestamp) narrows to issues updated at or after
-    it -- the watermark `main()` threads through on every cycle after the
-    first, so a steady-state Lane 1 sweep is bounded by recent activity
-    rather than re-scanning every open issue's full comment history every
-    poll (preclose finding: 155 open issues * one comments call each, every
-    5 minutes, against a 5,000/hour shared quota).
-
-    `-X GET` is required (preclose finding): `gh api` switches a request
-    with `-f` parameters to POST unless told otherwise, and a POST to this
-    endpoint is issue *creation*, which 422s with no `title` and is
-    swallowed into an empty result -- reading as "no work," silently.
-
-    Returns `None` -- distinct from `[]` -- when the fetch itself failed
-    (network/auth/rate-limit), never a bare empty list (harmonic-forge#579
-    AC1). A caller that can't tell "genuinely zero open issues" from "the
-    call raised" cannot decide whether it's safe to advance a `since`
-    watermark describing what this call covered; conflating the two is
-    what let a transient failure silently narrow the next cycle's window
-    and drop any issue updated during the lost window off Lane 1's belt
-    for good.
-    """
-    args = ["api", "-X", "GET", f"repos/{repo}/issues", "--paginate",
-            "-f", "state=open", "-f", "per_page=100"]
-    if since:
-        args += ["-f", f"since={since}"]
-    args += ["--jq", ".[] | select(.pull_request == null) | .number"]
-    try:
-        raw = gh_as(_ACCOUNT, args, counter=_COUNTER)
-    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
-        print(f"[watch_lane_posts] list_open_issues failed: {exc}", file=sys.stderr)
-        return None
-    try:
-        return [int(line) for line in raw.splitlines() if line.strip()]
-    except ValueError:
-        return None
 
 
 def _issue_is_open(repo: str, issue: int) -> bool:
     """Live open/closed check for one issue (harmonic-forge#579 AC4) --
-    used only for `extra_issues` candidates that `list_open_issues`'s own
-    `state=open` filter didn't already vouch for. On fetch failure, treat
+    used only for `extra_issues` candidates a caller cannot otherwise vouch
+    for as open. On fetch failure, treat
     the issue as still open (fail toward keeping it queued, not toward
     silently dropping it -- the same fail-safe direction as the rest of
     this module's error handling)."""
@@ -848,161 +779,6 @@ def _issue_is_open(repo: str, issue: int) -> bool:
         print(f"[watch_lane_posts] _issue_is_open failed for #{issue}: {exc}", file=sys.stderr)
         return True
     return raw.strip() != "closed"
-
-
-def discover_l1_sweep(
-    repo: str, *, since: str | None = None,
-    extra_issues: Mapping[int, tuple[str, str]] | Iterable[int] = (),
-) -> tuple[dict[int, tuple[str, str]], bool]:
-    """`({issue: (lane, detail)}, fetch_ok)` for every open issue whose newest
-    classified comment is NOT Lane 1's own -- Lane 1's repo-wide newest-marker
-    sweep, the mechanic named in prose under "Role: Lane 1" and given a
-    runnable form here (harmonic-forge#570). An issue with no classified
-    comment at all carries no ball to pick up and is excluded, not reported
-    as queued.
-
-    `since` bounds the *discovery* of NEW candidates to recently-updated
-    issues -- see `list_open_issues`. Pass `None` (the default, and what the
-    first cycle of any run must use) for a full scan. `extra_issues` must
-    carry every issue the caller already believes is queued: an issue that
-    stops receiving updates does not stop being queued, and dropping it
-    from the candidate set the moment `since` excludes it would silently
-    misreport it as resolved (`left-queue-for-l1`) rather than leave it
-    queued, which is the opposite of what actually happened -- UNLESS the
-    issue has actually been closed in the meantime, in which case it must
-    drop out (harmonic-forge#579 AC4): each `extra_issues` candidate not
-    already vouched for by `list_open_issues`'s own `state=open` filter is
-    re-checked live via `_issue_is_open` before being kept.
-
-    Pass a `{issue: (lane, detail)}` mapping (the caller's previously-
-    queued classification) rather than a bare iterable of issue numbers
-    when one is available -- it is the fallback used below when this
-    cycle's own comment fetch for that issue fails, so a transient outage
-    does not masquerade as "resolved" (harmonic-forge#579 preclose
-    finding: the open-state re-check alone was not enough, because
-    `_fetch_all_comments` failing separately for the same issue dropped it
-    right back out on the very next step). A bare `Iterable[int]` still
-    works (no fallback value on a failed comment fetch) for a caller with
-    nothing to fall back to.
-
-    `fetch_ok` is `False` when the underlying `list_open_issues` call itself
-    failed (harmonic-forge#579 AC1) -- distinct from a fetch that succeeded
-    and simply found nothing new. The caller must not advance a `since`
-    watermark on a `False` result: doing so silently narrows the next
-    cycle's window past whatever activity happened during the failed one."""
-    extra_previous: dict[int, tuple[str, str]] = (
-        dict(extra_issues) if isinstance(extra_issues, Mapping) else {}
-    )
-    extra_numbers = set(extra_previous) if extra_previous else set(extra_issues)
-    fresh = list_open_issues(repo, since=since)
-    fetch_ok = fresh is not None
-    fresh_set = set(fresh or ())
-    open_extra = {issue for issue in extra_numbers
-                  if issue in fresh_set or _issue_is_open(repo, issue)}
-    candidates = fresh_set | open_extra
-    queued: dict[int, tuple[str, str]] = {}
-    for issue in candidates:
-        comments = _fetch_all_comments(repo, issue)
-        if comments is None:
-            # This cycle's comment fetch for `issue` failed -- fall back to
-            # its previously-known classification rather than silently
-            # excluding it, which would read identically to the issue
-            # actually having been resolved (harmonic-forge#579 preclose
-            # finding). No fallback value means no entry, matching this
-            # function's behavior before that finding.
-            previous = extra_previous.get(issue)
-            if previous is not None:
-                queued[issue] = previous
-            continue
-        last: tuple[str, str] | None = None
-        for comment in comments:
-            classified = _classify(comment.get("body", ""))
-            if classified is not None:
-                last = classified
-        if last is not None and last[0] != "l1":
-            queued[issue] = last
-    return queued, fetch_ok
-
-
-def discover_l3_unanswered_verdicts(
-    repo: str, *, since: str | None = None,
-    extra_issues: Mapping[int, str] | Iterable[int] = (),
-) -> tuple[dict[int, str], bool]:
-    """`({issue: verdict}, fetch_ok)` for every open issue whose LAST Lane-3
-    `gate-result` comment stated `FAIL` or `BLOCKED`, AND has at least one
-    later comment of any kind on the thread -- harmonic-forge#629, Check C.
-
-    Structurally identical to `discover_l1_sweep` (this issue's own Design
-    Alternatives section names it as the pattern to reuse) — same `since`/
-    `extra_issues` split, same fetch-failure and closed-issue handling — but
-    answers a different question: not "whose newest classified comment is
-    not this lane's own" (that is `discover_queue`'s "still queued" check
-    and `discover_l1_sweep`'s "needs Lane 1" check), but "did a FAIL/BLOCKED
-    gate result ever get a reply, of ANY kind, classified or not."
-
-    That "any kind" is the point (harmonic-forge#629's own regression case):
-    hrse#1771's Lane 1 ruling after a FAIL gate-result was posted as
-    `kind=discussion` — a real, substantive reply that neither Check A/B nor
-    `discover_queue` (which only tracks `QUEUE_KINDS` markers) would ever
-    surface, because a `discussion` marker carries no queue membership by
-    design (harmonic-forge#570 measurement). Check C does not classify the
-    reply at all — it only asks whether ANY comment landed after the
-    FAIL/BLOCKED gate-result, timestamp-only, so a reply's `kind` (or
-    absence of one) can never suppress it.
-
-    An issue whose last Lane-3 gate-result was PASS, or that has no
-    Lane-3 gate-result at all, or whose FAIL/BLOCKED gate-result has no
-    later comment yet, carries no ball to watch and is excluded — same
-    "excluded, not reported as queued" posture `discover_l1_sweep` states
-    for an issue with no classified comment at all.
-    """
-    extra_numbers = set(extra_issues)
-    fresh = list_open_issues(repo, since=since)
-    fetch_ok = fresh is not None
-    fresh_set = set(fresh or ())
-    open_extra = {issue for issue in extra_numbers
-                  if issue in fresh_set or _issue_is_open(repo, issue)}
-    candidates = fresh_set | open_extra
-    watching: dict[int, str] = {}
-    for issue in candidates:
-        comments = _fetch_all_comments(repo, issue)
-        if comments is None:
-            # Same fallback shape as `discover_l1_sweep`: a failed fetch
-            # falls back to the previous cycle's classification rather than
-            # silently reading as resolved.
-            if isinstance(extra_issues, Mapping) and issue in extra_issues:
-                watching[issue] = extra_issues[issue]
-            continue
-        last_gate_result: dict | None = None
-        for comment in comments:
-            if _classify(comment.get("body", "")) == ("l3", "gate-result"):
-                last_gate_result = comment
-        if last_gate_result is None:
-            continue
-        verdict = _gate_verdict(last_gate_result.get("body", ""))
-        if verdict not in _UNANSWERED_VERDICTS:
-            continue
-        gate_time = last_gate_result.get("created_at", "")
-        answered = any(
-            comment.get("created_at", "") > gate_time
-            for comment in comments if comment is not last_gate_result
-        )
-        if answered:
-            watching[issue] = verdict
-    return watching, fetch_ok
-
-
-def l3_verdict_sweep_cycle(
-    repo: str, l3_since: str | None, last_queue: dict[int, str], now: str,
-) -> tuple[dict[int, str], str | None]:
-    """One Check C poll cycle's core logic — mirrors `l1_sweep_cycle`
-    exactly (same factoring rationale: directly unit-testable rather than
-    only reachable through `main()`'s infinite loop). Returns
-    `(watching, new_l3_since)`; `new_l3_since` advances to `now` only on a
-    successful fetch, same watermark discipline as `l1_sweep_cycle`."""
-    watching, fetch_ok = discover_l3_unanswered_verdicts(
-        repo, since=l3_since, extra_issues=last_queue)
-    return watching, (now if fetch_ok else l3_since)
 
 
 def discover_queue(repo: str, lane: str,
@@ -1032,9 +808,9 @@ def discover_queue(repo: str, lane: str,
     #: 2026-09-18: *"You NEVER scan the repo EVER looking for work."*)
     #:
     #: The ruling was written into the Lane 1 section and the code was
-    #: lane-agnostic, so every lane's belt scanned -- `--sweep-for l3` was
-    #: retired for this in harmonic-forge#659 and the same call simply
-    #: continued under `--queue-for`.
+    #: lane-agnostic, so every lane's belt scanned -- the account-wide
+    #: sweep was retired for this in harmonic-forge#659 and the same
+    #: call simply continued under `--queue-for`.
     #:
     #: The caller now supplies the candidate set from what it already holds:
     #: worktree-resolved issue numbers, plus any `--repo/--issues` a human or
@@ -1156,8 +932,7 @@ def branch_ahead_lines(
 ) -> list[str]:
     """One poll cycle's worth of AC4 output lines, factored out of `main()`
     (harmonic-forge#583 preclose finding) so this is directly unit-testable
-    rather than only reachable through argv -- the exact factoring
-    `l1_sweep_cycle` below already uses for the same reason.
+    rather than only reachable through argv.
 
     Takes EVERY resolved worktree unconditionally, with no dependence on
     `--watch` -- the preclose finding this exists to fix was a `"l2" in
@@ -1179,29 +954,6 @@ def branch_ahead_lines(
                 lines.append(report)
             last_ahead[path] = report
     return lines
-
-
-def l1_sweep_cycle(
-    repo: str, l1_since: str | None, last_queue: dict[int, str], now: str,
-) -> tuple[dict[int, tuple[str, str]], str | None]:
-    """One Lane 1 sweep poll cycle's core logic -- factored out of `main()`
-    (harmonic-forge#579 preclose finding) so AC1's watermark-gating
-    behavior is directly unit-testable rather than only reachable through
-    `main()`'s infinite polling loop, where no test exercised it (a
-    reverted `if fetch_ok:` gate left the full suite green).
-
-    Returns `(l1_queue, new_l1_since)`. `new_l1_since` is `now` only when
-    `discover_l1_sweep`'s own fetch succeeded (AC1); otherwise it is
-    `l1_since` unchanged, so the next cycle re-covers whatever window this
-    one failed to see.
-
-    `last_queue` holds `{issue: "lane:detail"}` (`main()`'s on-disk-free
-    in-memory queue shape) -- split back into `{issue: (lane, detail)}`
-    before passing to `discover_l1_sweep`, which uses it as its per-issue
-    comment-fetch-failure fallback (harmonic-forge#579 preclose finding)."""
-    previous = {issue: tuple(marker.split(":", 1)) for issue, marker in last_queue.items()}
-    l1_queue, fetch_ok = discover_l1_sweep(repo, since=l1_since, extra_issues=previous)
-    return l1_queue, (now if fetch_ok else l1_since)
 
 
 def manifest_repos(account: str) -> list[str]:
@@ -1738,7 +1490,7 @@ def cycle_is_quiet(
     Finding 1 -- `queue_cycle` only emits a line on a queue-marker CHANGE, so
     real unpicked work sitting in `queue` unchanged across cycles would let
     the belt back off to 10x while it waits. `mode and queue` catches that:
-    a non-empty queue in queue-for/sweep-for mode is never quiet, regardless
+    a non-empty queue in queue-for mode is never quiet, regardless
     of whether this cycle printed anything about it.
 
     Finding 1 (repo-fetch half) -- a repo that failed to report this cycle
@@ -1763,9 +1515,7 @@ def queue_cycle(
     repos: list[str],
     lane: str,
     last_queue: dict[tuple[str, int], str],
-    l1_since: dict[str, str | None],
     now: str,
-    sweep: bool = False,
     batch_state_path: Path | None = None,
     candidate_pairs: set[tuple[str, int]] | None = None,
     recorded_only: bool = False,
@@ -1780,17 +1530,15 @@ def queue_cycle(
     cannot be tested, and a guard suite that reads only doc text is not a
     substitute.
 
-    Three properties this function exists to hold:
+    Two properties this function exists to hold:
 
     - **Keys are `(repo, issue)`.** hrse#570 and harmonic-forge#570 both
       exist; a bare `int` key lets one evict the other.
-    - **A repo whose fetch failed is not diffed.** `discover_queue` and
-      `l1_sweep_cycle` both distinguish "nothing queued" from "I do not
-      know", and only the first may produce `left-queue-for-*`. Retracting a
+    - **A repo whose fetch failed is not diffed.** `discover_queue`
+      distinguishes "nothing queued" from "I do not know", and only the
+      former may produce `left-queue-for-*`. Retracting a
       queued issue because a search hit a rate limit tells the lane the ball
       moved on when it did not.
-    - **`l1_since` advances per repo, and only on success** -- a watermark
-      moved past a failed cycle silently narrows the next one.
     """
     #: harmonic-forge#686. The candidate set is now supplied by the caller
     #: from what it already holds, never discovered by a scan. `None` means
@@ -1802,37 +1550,9 @@ def queue_cycle(
     ok_repos: set[str] = set()
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
-        checked: set[int] | None = None
-        if sweep and lane == "l3":
-            # harmonic-forge#629, Check C. `l1_since` is reused as a plain
-            # per-repo watermark dict here, not Lane-1-specific -- only one
-            # `--sweep-for` value runs per process, so there is never a
-            # collision between the two sweep types sharing it. `prior`'s
-            # values are this mode's own `"l3verdict:{verdict}"` markers
-            # from the previous cycle (set below); strip the prefix back to
-            # a bare verdict before handing them to `l3_verdict_sweep_cycle`
-            # as its `extra_issues` fallback map.
-            prior_verdicts = {issue: marker.removeprefix("l3verdict:") for issue, marker in prior.items()}
-            l3_queue, since = l3_verdict_sweep_cycle(repo, l1_since.get(repo), prior_verdicts, now)
-            fetch_ok = since == now
-            l1_since[repo] = since
-            found = {issue: f"l3verdict:{verdict}" for issue, verdict in l3_queue.items()}
-            lane_label = "l3-sweep"
-        elif sweep:
-            l1_queue, since = l1_sweep_cycle(repo, l1_since.get(repo), prior, now)
-            # `l1_sweep_cycle` encodes fetch_ok by whether it advanced the
-            # watermark to `now` -- it returns the OLD `since` unchanged on a
-            # failed fetch, precisely so the next cycle re-covers the window.
-            fetch_ok = since == now
-            l1_since[repo] = since
-            found = {issue: f"{lane_}:{detail}"
-                     for issue, (lane_, detail) in l1_queue.items()}
-            lane_label = "l1-sweep"
-        else:
-            checked = {n for r, n in candidate_pairs if r == repo}
-            raw, fetch_ok = discover_queue(repo, lane, checked)
-            found = dict(raw)
-            lane_label = lane
+        checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}
+        raw, fetch_ok = discover_queue(repo, lane, checked)
+        found = dict(raw)
         if not fetch_ok:
             # Carry this repo's previous queue forward untouched, and keep it
             # OUT of `ok_repos` so the retraction pass below cannot see it.
@@ -1887,14 +1607,7 @@ def queue_cycle(
     for (repo, issue), marker in queue.items():
         if last_queue.get((repo, issue)) == marker:
             continue
-        if marker.startswith("l3verdict:"):
-            verdict = marker.removeprefix("l3verdict:")
-            lines.append(f"{repo}#{issue} needs-l1-response last-verdict={verdict}")
-        elif sweep:
-            last_lane, _, detail = marker.partition(":")
-            lines.append(f"{repo}#{issue} needs-l1 last={last_lane} — {detail}")
-        else:
-            lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
+        lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
     for repo, issue in set(last_queue) - set(queue):
         if repo in ok_repos:
             lines.append(f"{repo}#{issue} left-queue-for-{lane}")
@@ -1925,8 +1638,8 @@ def queue_cycle(
 #: exactly what the 2026-09-14 incident routed around. Interval 300
 #: throughout (harmonic-forge#650 companion sets the same floor for the `gh`
 #: shim/hook). One entry per lane. Lane 3's second entry, its repo-wide
-#: sweep (`--sweep-for l3`), is retired (harmonic-forge#659): that sweep
-#: exhausted the shared REST budget twice on 2026-09-14. `tools/lane/
+#: sweep, is the retired account-wide belt sweep (harmonic-forge#659):
+#: it exhausted the shared REST budget twice on 2026-09-14. `tools/lane/
 #: belt_plan.py` builds the Monitor command from this table -- never retype it.
 CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
     "1": [
@@ -2207,22 +1920,6 @@ def _build_parser() -> argparse.ArgumentParser:
                              "hrse and harmonic-forge, and naming them makes the command "
                              "correct from any directory (harmonic-forge#594). With no "
                              "paths, enumerates the repo containing CWD.")
-    parser.add_argument("--sweep-for", choices=("l1", "l3"), metavar="LANE",
-                        help="RETIRED for every value -- both are refused at parse "
-                             "time. `l3` (harmonic-forge#659, operator ruling: it "
-                             "exhausted the shared REST budget twice on 2026-09-14) was "
-                             "the unanswered-verdict watch (`discover_l3_unanswered_"
-                             "verdicts`, harmonic-forge#629 Check C) -- every open "
-                             "issue whose last Lane 3 gate-result was FAIL/BLOCKED and "
-                             "has since received ANY reply, classified or not (a "
-                             "`kind=discussion` ruling included -- that gap is exactly "
-                             "what Check C exists to close). Unbounded by design -- "
-                             "structurally what the belt cannot see. `l1` is a listed "
-                             "choice but REFUSED at parse time (harmonic-forge#640, "
-                             "operator ruling): Lane 1's newest-marker sweep "
-                             "(`discover_l1_sweep`) is retired, and its bounded "
-                             "replacement is `--queue-for l1` (harmonic-forge#618), "
-                             "not this flag.")
     parser.add_argument("--account-repos", metavar="ACCOUNT",
                         help="derive the repo set from projects.toml, the onboarded-repo "
                              "manifest, for ACCOUNT -- R-0122 and this protocol's design "
@@ -2248,7 +1945,8 @@ def _build_parser() -> argparse.ArgumentParser:
                              "harmonic-forge#618: an issue queues only when its newest "
                              "classified comment is of a kind in QUEUE_KINDS[lane] AND was "
                              "posted by a lane in QUEUE_POSTERS[lane]. The unbounded "
-                             "newest-marker sweep is a DIFFERENT flag, --sweep-for.")
+                             "newest-marker sweep is the retired account-wide belt "
+                             "sweep (harmonic-forge#640/#659).")
     parser.add_argument("--watch", action="append", default=[],
                         choices=["l1", "l2", "l3"],
                         help="lane whose posts to surface on watched issues -- l1, l2, "
@@ -2286,27 +1984,8 @@ def main() -> int:
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")
-    if (args.queue_for or args.sweep_for) and not (args.repo or args.account_repos):
-        parser.error("--queue-for/--sweep-for requires --repo or --account-repos")
-    if args.queue_for and args.sweep_for:
-        parser.error("--queue-for and --sweep-for are the belt and the suspenders "
-                     "respectively; arming both in one process collapses two "
-                     "deliberately independent mechanisms (harmonic-forge#590)")
-    if args.sweep_for == "l1":
-        parser.error("--sweep-for l1 is RETIRED (harmonic-forge#640, operator "
-                      "ruling). Lane 1 discovery is worktree-bounded: --all-worktrees "
-                      "for the belt, plus the bounded --queue-for l1 Plan-First catch. "
-                      "GitHub enriches an issue a worktree already named; it is never "
-                      "asked to name candidates. If you found this command in an old "
-                      "transcript or SKILL.md copy, that copy is stale.")
-    if args.sweep_for == "l3":
-        parser.error("--sweep-for l3 is RETIRED (harmonic-forge#659, operator "
-                      "ruling): the repo-wide sweep exhausted the account's shared "
-                      "REST budget twice on 2026-09-14 (19:33 and 21:32 UTC). No lane "
-                      "runs a repo-wide sweep. Lane 3's only belt is --queue-for l3; "
-                      "run `python3 ~/harmonic-forge/tools/lane/belt_plan.py` for the "
-                      "exact arming calls. If you found this command in an old "
-                      "transcript or SKILL.md copy, that copy is stale.")
+    if args.queue_for and not (args.repo or args.account_repos):
+        parser.error("--queue-for requires --repo or --account-repos")
     _belt_lock_entry = _enforce_canonical_belt(parser, args)
     _check_git_staleness(parser)
     _belt_lock_handle = _acquire_belt_lock(_belt_lock_entry["lock"])  # noqa: F841
@@ -2340,10 +2019,10 @@ def main() -> int:
             parser.error(str(exc))
         print(f"[watch_lane_posts] --all-worktrees enumerated "
               f"{len(args.worktrees)} live worktree(s)", file=sys.stderr)
-    if not args.worktrees and not args.issues and not (args.queue_for or args.sweep_for):
+    if not args.worktrees and not args.issues and not args.queue_for:
         parser.error("give at least one of --worktrees, --repo/--issues, "
                      "--all-worktrees, or --queue-for")
-    if not args.watch and not (args.queue_for or args.sweep_for):
+    if not args.watch and not args.queue_for:
         parser.error("--watch is required unless --queue-for is given")
 
     watch = set(args.watch)
@@ -2391,8 +2070,6 @@ def main() -> int:
     belt_id = "-".join(sorted(watch)) or "none"
     if args.queue_for:
         belt_id += f"+q{args.queue_for}"
-    if args.sweep_for:
-        belt_id += f"+s{args.sweep_for}"
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
     #: harmonic-forge#685. Keyed by `belt_id` for the same reason the seen-set
@@ -2431,16 +2108,6 @@ def main() -> int:
     #: report" value, not "not yet checked" -- see `report != last_ahead.get`
     #: below, which only reprints on an actual state CHANGE.
     last_ahead: dict[str, str | None] = {}
-    #: harmonic-forge#570 preclose finding: an unbounded full-repo comment
-    #: scan every cycle (155 open issues on vitalharmony/hrse today) burns
-    #: quota fast enough to exhaust it, and quota exhaustion is swallowed
-    #: into an empty result -- which reads as "no work," the exact failure
-    #: this protocol exists to refuse. `l1_since` narrows *new*-candidate
-    #: discovery to issues updated since the last cycle; `last_queue`'s keys
-    #: are always re-checked regardless (see `discover_l1_sweep`'s
-    #: `extra_issues`), so an already-queued issue is never dropped just
-    #: because it went quiet.
-    l1_since: dict[str, str | None] = {}
     #: A queue-for mode reports its queued count once at the first
     #: evaluation, even if it is zero -- silence and "confirmed watching
     #: nothing" must not look the same (harmonic-forge#570 preclose finding:
@@ -2488,7 +2155,7 @@ def main() -> int:
         #: reads it as a real measurement.
         _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql)
         #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
-        #: line at all, across every source below (queue-for/sweep-for,
+        #: line at all, across every source below (queue-for,
         #: comment-watch, branch-ahead). Drives `quiet_streak`.
         cycle_emitted = False
 
@@ -2514,11 +2181,11 @@ def main() -> int:
             _report_resolutions(resolutions)
             last_discovered = discovered
 
-        mode = args.queue_for or args.sweep_for
+        mode = args.queue_for
         queue: dict = last_queue
         ok_repos: set[str] = set()
         if mode:
-            label = "sweep-for" if args.sweep_for else "queue-for"
+            label = "queue-for"
             print(f"[watch_lane_posts] {label}-{mode} scanning "
                   f"{len(repos)} repo(s):", file=sys.stderr)
             #: harmonic-forge#686/#691 (rescoped). The candidate set is what
@@ -2535,8 +2202,7 @@ def main() -> int:
             #: likewise a local file read, never a GitHub call.
             posted_candidates = read_queue_candidates(repos, mode)
             queue, lines, ok_repos = queue_cycle(
-                repos, mode, last_queue, l1_since, now,
-                sweep=bool(args.sweep_for),
+                repos, mode, last_queue, now,
                 candidate_pairs=discovered | static_pairs | posted_candidates,
                 recorded_only=recorded_only)
             if first_queue_report:
@@ -2621,7 +2287,7 @@ def main() -> int:
         if mode:
             #: harmonic-forge#686 preclose finding 3. `ok_repos` is only ever
             #: populated inside `if mode:` above -- a comment-watch-only run
-            #: (no `--queue-for`/`--sweep-for`, e.g. `--repo X --issues N
+            #: (no `--queue-for`, e.g. `--repo X --issues N
             #: --watch l1`) never touches it, so recording this loop
             #: unconditionally wrote `ok=False` for every repo on every tick
             #: of a belt that made zero failing calls: `repos` is populated
