@@ -601,45 +601,48 @@ there.
 <!-- /R-0186 -->
 
 <!-- R-0187 -->
-#### `lane3` performs zero mutations — and `lane3-provision`
+#### `lane3` repairs and records — and `lane3-provision`
 
-The gate launcher used to `git fetch origin main` and `ln -sf` the
-worktree's `backend/.env` before starting the session. It no longer does
-either (harmonic-forge#322 AC5), for one reason: **a gate that repairs its
-own preconditions cannot report on them.** A worktree silently brought up to
-date at launch is indistinguishable, in the gate's own report, from one that
-was never stale.
+The gate launcher brings its worktree to `origin/main` and relinks
+`backend/.env` at launch (harmonic-forge#761, operator ruling 2026-09-26).
+It previously refused instead (harmonic-forge#322 AC5), on the reasoning
+that a gate that repairs its own preconditions cannot report on them. That
+goal is kept by a different means: **the repair is recorded, never silent.**
+`LANE_REFRESH_STATUS`, `_FROM`, `_TO` and `_ENV` are exported into the
+session, appended to `~/.local/state/lanes/refresh.log`, and surfaced by
+the SessionStart launch notice, and the gate report states whether the
+worktree was updated. The refuse-and-repair-by-hand design had already
+failed twice as a control (lane worktrees found 46 and 63 commits behind).
 
-Both protections survive as **checks** — neither was dropped (AC6):
+Both protections survive — neither was dropped:
 
 <!-- /R-0187 -->
 <!-- R-0188 -->
-| drift | detected how | on drift |
+| drift | detected how | at launch |
 |---|---|---|
-| worktree behind `origin/main` (harmonic-forge#255) | `git ls-remote origin refs/heads/main`, which writes no refs; then `git cat-file -e` on the returned SHA, then an ancestry comparison against that SHA — never against the stale local `origin/main` ref | **refuse**, with `--ack-stale "<reason>"` as the escape hatch |
-| `backend/.env` not linked to the main checkout's (harmonic-forge#264) | symlink target comparison; never reads the file's contents | **refuse, no escape hatch** |
+| worktree behind `origin/main` (harmonic-forge#255) | `git ls-remote origin refs/heads/main`, never the stale local `origin/main` ref; then a fetch and an ancestry comparison against that SHA | **update and record**; refuse on tracked changes or an undeterminable remote; `--ack-stale "<reason>"` skips the update |
+| `backend/.env` not linked to the main checkout's (harmonic-forge#264) | symlink target comparison; never reads the file's contents | **relink and record**, including under `--ack-stale` |
 
 The asymmetry is deliberate. A Lane 3 session gating a deliberately-older
-target branch is not behind by mistake, so staleness has a legitimate form
-and the operator states it once, in writing (an empty reason is rejected,
-following `l1_post.py`'s `--ack-overlap` precedent). `backend/.env` has no
-legitimate per-worktree divergence at all, so there is nothing to
-acknowledge — and a gate run against a stale env silently loses its live
-HTTP/auth test surface (hrse#792).
+target is not behind by mistake, so staleness has a legitimate form and the
+operator states it once, in writing (an empty reason is rejected, following
+`l1_post.py`'s `--ack-overlap` precedent). `backend/.env` has no legitimate
+per-worktree divergence at all, so it is always relinked — a gate run
+against a stale env silently loses its live HTTP/auth test surface
+(hrse#792).
 <!-- /R-0188 -->
 
 <!-- R-0189 -->
-Both mutations now live in **`lane3-provision`**, run deliberately and
-separately:
+**`lane3-provision`** remains the manual form of the same two repairs,
+runnable without starting a session:
 
 ```bash
 lane3-provision   # fetch + check out origin/main, relink backend/.env
-lane3             # then start the gate
 ```
 
-Not a `--provision` flag on `lane3`, because a flag means the same script
-both mutates and does not, decided by an argument — which reintroduces the
-hazard the moment it reaches an alias, a shell history, or muscle memory.
+There is no `--provision` flag on `lane3`: the update is unconditional
+unless `--ack-stale`, so no mutate-or-not argument exists to reach an
+alias, a shell history, or muscle memory.
 <!-- /R-0189 -->
 
 <!-- R-0190 -->

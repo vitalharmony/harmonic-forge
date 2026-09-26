@@ -15,20 +15,13 @@
 # command itself is built by the shared tools/lane/_cli_launch.sh.
 # See those files and 3-lane-protocol.md's "Per-CLI launch wiring".
 #
-## THIS LAUNCHER PERFORMS ZERO MUTATIONS (harmonic-forge#322 AC5)
+## THIS LAUNCHER REPAIRS ITS PRECONDITIONS AND RECORDS THEM (harmonic-forge#761)
 #
-# It previously did two: `git fetch origin main` (harmonic-forge#255) and an
-# `ln -sf` repair of backend/.env (harmonic-forge#264). Both are gone from here,
-# and both protections survive as CHECKS -- neither was dropped (AC6). The
-# reasoning is one sentence: a gate that repairs its own preconditions cannot
-# report on them. A worktree silently brought up to date at launch is
-# indistinguishable, in the gate's own report, from one that was never stale.
-#
-# The two mutations now live in `tools/lane/lane3-provision`, a separate,
-# deliberate act -- not a `--provision` flag on this script, because a flag
-# means the same script both mutates and does not, decided by an argument, and
-# that reintroduces exactly this hazard the moment the flag reaches an alias,
-# a shell history, or muscle memory.
+# It brings the worktree to origin/main and relinks backend/.env at launch,
+# replacing harmonic-forge#322 AC5's refuse-only design by operator ruling
+# (2026-09-26). The repair is always recorded -- see the block after
+# `export LANE=3` -- so the gate can still report on its preconditions.
+# `tools/lane/lane3-provision` remains the manual form of the same repairs.
 set -euo pipefail
 
 _lane_name="lane3"

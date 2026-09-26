@@ -1575,31 +1575,31 @@ hooks = []
 [[rule]]
 id = "R-0187"
 file = "3-lane-protocol.md"
-anchor = "lane3 performs zero mutations — and lane3-provision"
-statement = "The gate launcher performs zero mutations, because a gate that repairs its own preconditions cannot report on them."
-text_sha = "bc8f9f45f8e3c168"
+anchor = "lane3 repairs and records — and lane3-provision"
+statement = "The gate launcher repairs its worktree and backend/.env at launch and records every outcome, so a repaired precondition is never silent."
+text_sha = "42eb8614c211188c"
 hooks = []
 
 [[rule]]
 id = "R-0188"
 file = "3-lane-protocol.md"
-anchor = "lane3 performs zero mutations — and lane3-provision"
-statement = "Worktree staleness refuses with --ack-stale as the escape hatch; an unlinked backend/.env refuses with no escape hatch."
-text_sha = "420a291605d6d4af"
+anchor = "lane3 repairs and records — and lane3-provision"
+statement = "At launch, worktree staleness is updated and recorded (refusing on tracked changes or an undeterminable remote; --ack-stale skips the update), and an unlinked backend/.env is always relinked and recorded."
+text_sha = "af7a9a2518573492"
 hooks = []
 
 [[rule]]
 id = "R-0189"
 file = "3-lane-protocol.md"
-anchor = "lane3 performs zero mutations — and lane3-provision"
-statement = "The gate launcher's mutations live in a separate lane3-provision command, never a --provision flag on lane3."
-text_sha = "c941706254ed4297"
+anchor = "lane3 repairs and records — and lane3-provision"
+statement = "lane3-provision remains the manual form of the same repairs; there is no --provision flag on lane3."
+text_sha = "4a340264919a6b33"
 hooks = []
 
 [[rule]]
 id = "R-0190"
 file = "3-lane-protocol.md"
-anchor = "lane3 performs zero mutations — and lane3-provision"
+anchor = "lane3 repairs and records — and lane3-provision"
 statement = "The Gemini launcher's GOOGLE_API_KEY/GEMINI_API_KEY unsets are load-bearing, and GOOGLE_CLOUD_PROJECT is required for the Workspace-managed account."
 text_sha = "4f4ee008ef5b6edc"
 hooks = []
@@ -1607,7 +1607,7 @@ hooks = []
 [[rule]]
 id = "R-0191"
 file = "3-lane-protocol.md"
-anchor = "lane3 performs zero mutations — and lane3-provision"
+anchor = "lane3 repairs and records — and lane3-provision"
 statement = "A passing gemini -p is not evidence the OAuth path works unless the keys were explicitly unset for that run."
 text_sha = "6ab062eb74c58a21"
 hooks = []
