@@ -434,7 +434,8 @@ def read_tier(repo: str, issue_number: int, project_number: str, run=None,
         return LOOKUP_FAILED, f"board read timed out after {exc.timeout}s"
 
 
-def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None):
+def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None,
+                 ttl: float = _CACHE_TTL):
     """Return the issue's Tier (harmonic-forge#257).
 
     harmonic-forge#250: reads *one issue* rather than fetching the whole
@@ -465,7 +466,7 @@ def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None):
         if repo is None:
             return None
         _owner, number = board
-    tier = read_tier(repo, issue_number, number, run=timed_run)[0]
+    tier = read_tier(repo, issue_number, number, run=timed_run, ttl=ttl)[0]
     # A branch naming a number GitHub has no issue for carries no Tier: the
     # same allow as "no Tier set", never a LOOKUP_FAILED deny.
     return None if tier is NOT_AN_ISSUE else tier

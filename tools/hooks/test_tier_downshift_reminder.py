@@ -15,7 +15,8 @@ class DownshiftReminderTests(unittest.TestCase):
     payload = {"transcript_path": "/transcript", "cwd": "/cwd"}
 
     def run_hook(self, *, lane="2", model="claude-opus-5", branch=False, posted=False):
-        with patch.object(reminder, "_is_deep_branch", return_value=branch), \
+        with patch.object(reminder.os.path, "isfile", return_value=True), \
+             patch.object(reminder, "_is_deep_branch", return_value=branch), \
              patch.object(reminder, "_posted_deep", return_value=posted):
             return reminder.run(self.payload, env={"LANE": lane} if lane else {}, model=model)
 
@@ -38,37 +39,56 @@ class DownshiftReminderTests(unittest.TestCase):
         self.assertIsNone(self.run_hook(lane=""))
 
     def test_board_failure_is_silent(self):
-        with patch.object(reminder, "_is_deep_branch",
+        with patch.object(reminder.os.path, "isfile", return_value=True), \
+             patch.object(reminder, "_is_deep_branch",
                           side_effect=RuntimeError("board unavailable")):
             self.assertIsNone(reminder.run(self.payload, env={"LANE": "2"},
                                             model="claude-opus-5"))
 
     def test_post_lookup_failure_is_silent(self):
-        with patch.object(reminder, "_is_deep_branch", return_value=False), \
+        with patch.object(reminder.os.path, "isfile", return_value=True), \
+             patch.object(reminder, "_is_deep_branch", return_value=False), \
              patch.object(reminder, "_posted_deep", side_effect=RuntimeError("board unavailable")):
             self.assertIsNone(reminder.run(self.payload, env={"LANE": "2"},
                                             model="claude-opus-5"))
 
+    def test_missing_transcript_is_silent(self):
+        self.assertIsNone(reminder.run(self.payload, env={"LANE": "2"},
+                                        model="claude-opus-5"))
+
     def test_posted_deep_uses_backstop_posts_and_target_lookup(self):
         calls = []
-        with patch.object(reminder.backstop, "turn_posts", return_value=[("post", None, "a")]), \
+        with patch.object(reminder.backstop, "scan_turn", return_value=([("post", None, "a")], False)), \
              patch.object(reminder.backstop, "posted_targets",
                           return_value=[("vitalharmony/hrse", 1)]), \
              patch.object(reminder.tier_model_trigger_check, "_boards", return_value={}), \
              patch.object(reminder.tier_model_trigger_check, "lookup_tier",
                           side_effect=lambda repo, issue, boards: (calls.append((repo, issue)) or ("deep", None))):
-            self.assertTrue(reminder._posted_deep("/transcript"))
+            self.assertTrue(reminder._posted_deep("/transcript", "/cwd"))
         self.assertEqual(calls, [("vitalharmony/hrse", 1)])
 
     def test_posted_board_failure_raises_for_quiet_caller(self):
-        with patch.object(reminder.backstop, "turn_posts", return_value=[("post", None, "a")]), \
+        with patch.object(reminder.backstop, "scan_turn", return_value=([("post", None, "a")], False)), \
              patch.object(reminder.backstop, "posted_targets",
                           return_value=[("vitalharmony/hrse", 1)]), \
              patch.object(reminder.tier_model_trigger_check, "_boards", return_value={}), \
              patch.object(reminder.tier_model_trigger_check, "lookup_tier",
                           return_value=(model_tier_gate.LOOKUP_FAILED, "403")):
             with self.assertRaises(RuntimeError):
-                reminder._posted_deep("/transcript")
+                reminder._posted_deep("/transcript", "/cwd")
+
+    def test_truncated_turn_scan_raises_for_quiet_caller(self):
+        with patch.object(reminder.backstop, "scan_turn", return_value=([], True)):
+            with self.assertRaises(RuntimeError):
+                reminder._posted_deep("/transcript", "/cwd")
+
+    def test_post_cap_raises_for_quiet_caller(self):
+        calls = [(f"post{i}", None, str(i)) for i in range(reminder._MAX_POST_TIER_READS + 1)]
+        with patch.object(reminder.backstop, "scan_turn", return_value=(calls, False)), \
+             patch.object(reminder.backstop, "posted_targets",
+                          side_effect=lambda command, cwd_repo: [("vitalharmony/hrse", int(command[4:]))]):
+            with self.assertRaises(RuntimeError):
+                reminder._posted_deep("/transcript", "/cwd")
 
 
 if __name__ == "__main__":
