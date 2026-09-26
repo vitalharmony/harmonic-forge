@@ -31,6 +31,25 @@ class GateCodexToolTests(unittest.TestCase):
             self.assertEqual(MODULE.blocked_reason(["git", "commit", "-m", "x"], True), "git commit is not allowed")
         self.assertEqual(MODULE.blocked_reason(["bash", "-c", "git commit"], False), "shell -c indirection is not allowed")
 
+    def test_interpreter_c_detection_is_limited_to_interpreter_options(self) -> None:
+        for args, reason in (
+            (["python3", "-c", "x"], "python -c indirection is not allowed"),
+            (["python3", "-Bc", "x"], "python -c indirection is not allowed"),
+            (["bash", "-c", "x"], "shell -c indirection is not allowed"),
+            (["bash", "-lc", "x"], "shell -c indirection is not allowed"),
+            (["bash", "--command", "x"], "shell -c indirection is not allowed"),
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(MODULE.blocked_reason(args, False), reason)
+        for args in (
+            ["python3", "build_cross_family_brief.py", "--artifact", "a.md"],
+            ["python3", "script.py", "--check"],
+            ["python3", "-m", "pytest", "-c", "cfg"],
+            ["bash", "run.sh", "-c", "x"],
+        ):
+            with self.subTest(args=args):
+                self.assertIsNone(MODULE.blocked_reason(args, False))
+
     def test_allows_git_mutation_when_not_lane3(self) -> None:
         self.assertIsNone(MODULE.blocked_reason(["git", "commit", "-m", "x"], False))
         self.assertIsNone(MODULE.blocked_reason(["git", "checkout", "--", "file"], False))

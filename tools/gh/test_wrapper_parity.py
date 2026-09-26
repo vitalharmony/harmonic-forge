@@ -282,6 +282,23 @@ class DiscoverWrapperTasks(_TmpDirCase):
         with mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": str(self.tmp_path / "empty")}):
             self.assertEqual(wp.discover_wrapper_tasks(mise), [])
 
+    # harmonic-forge#762: HRSE2's l1-post/l1-issue/lane-comment tasks reach
+    # the script through the l1-tools-env worktree, not $HARMONIC_FORGE_ROOT.
+    _L1_TOOLS_FORGE_FORM = ('[tasks.t]\nrun = "python3 \\"$L1_TOOLS_FORGE'
+                            '/tools/gh/real.py\\" \\"$@\\""\n')
+
+    def test_l1_tools_forge_form_honours_harmonic_forge_root(self):
+        """The worktree l1_tools_env.sh exports is a checkout of THIS repo,
+        so discovery resolves it the same way it resolves $HARMONIC_FORGE_ROOT
+        -- against the real forge root, not the (nonexistent, in CI) worktree
+        path itself."""
+        import os
+        from unittest import mock
+        script = self._forge_root_with_script(self.tmp_path / "forge")
+        mise = self._write_mise(self._L1_TOOLS_FORGE_FORM)
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": str(self.tmp_path / "forge")}):
+            self.assertEqual(wp.discover_wrapper_tasks(mise), [("t", script)])
+
     def test_nonexistent_script_path_is_skipped_not_raised(self):
         mise = self._write_mise(
             '[tasks.t]\nrun = "python3 scripts/does_not_exist.py"\n'

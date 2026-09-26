@@ -452,17 +452,40 @@ def ae_sweep_self_post_denial(command: str, cwd: Path) -> str | None:
     return result.get("hookSpecificOutput", {}).get("permissionDecisionReason")
 
 
+def _interpreter_options(args: list[str]) -> list[str]:
+    """Interpreter flags preceding its script or module target only."""
+    options: list[str] = []
+    index = 1
+    while index < len(args):
+        argument = args[index]
+        if argument == "--" or not argument.startswith("-") or argument == "-":
+            break
+        options.append(argument)
+        if args[0] in {"python", "python3"} and argument == "-m":
+            break
+        if args[0] in {"bash", "sh", "zsh"} and argument == "-o":
+            index += 1
+        index += 1
+    return options
+
+
+def _has_short_c(options: list[str]) -> bool:
+    return any(option.startswith("-") and not option.startswith("--") and "c" in option[1:]
+               for option in options)
+
+
 def blocked_reason(args: list[str], is_lane3: bool) -> str | None:
     if not args:
         return None
     program = args[0]
     if program == "sudo":
         return "sudo is not allowed"
-    if program in {"bash", "sh", "zsh"} and any(arg in {"-c", "--command"} for arg in args):
-        return "shell -c indirection is not allowed"
-    if program in {"python", "python3"} and any(
-        argument.startswith("-") and "c" in argument for argument in args[1:4]
+    options = _interpreter_options(args)
+    if program in {"bash", "sh", "zsh"} and (
+        "--command" in options or _has_short_c(options)
     ):
+        return "shell -c indirection is not allowed"
+    if program in {"python", "python3"} and _has_short_c(options):
         return "python -c indirection is not allowed"
     if program in {"npm", "pip", "pip3"} and any(
         argument in {"install", "uninstall", "ci"} for argument in args[1:]

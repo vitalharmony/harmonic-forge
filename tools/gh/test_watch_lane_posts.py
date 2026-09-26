@@ -1278,6 +1278,26 @@ class EnumerateWorktreesTests(unittest.TestCase):
         with patch("watch_lane_posts.subprocess.run", return_value=completed):
             self.assertIn("/tmp/hrse2-1676-impl", enumerate_worktrees())
 
+    def test_l1_tools_worktrees_are_skipped_silently(self):
+        """harmonic-forge#762 AC8 / TC11: Lane 1's fixed tools worktrees are
+        detached by design and name no issue, so they never reach resolution
+        or a per-tick "unresolved" line."""
+        porcelain = self._PORCELAIN + (
+            "worktree /home/u/Harmonic_Projects/.worktrees/hrse2-l1-tools\n"
+            "HEAD aaa111\n"
+            "detached\n"
+            "\n"
+            "worktree /home/u/Harmonic_Projects/.worktrees/harmonic-forge-l1-tools\n"
+            "HEAD bbb222\n"
+            "detached\n"
+            "\n")
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=porcelain, stderr="")
+        with patch("watch_lane_posts.subprocess.run", return_value=completed):
+            paths = enumerate_worktrees()
+        self.assertEqual(paths, ["/home/u/harmonic-forge", "/tmp/hrse2-1676-impl",
+                                 "/home/u/HRSE2-lane3"])
+
     def test_returns_empty_on_git_failure_rather_than_raising(self):
         for exc in (subprocess.CalledProcessError(128, "git"),
                     subprocess.TimeoutExpired("git", 15),

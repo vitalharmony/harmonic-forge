@@ -125,7 +125,16 @@ _SCRIPT_INVOCATION = re.compile(
 # and the expanded path must still resolve on disk to be discovered.
 _FORGE_ROOT_REF = re.compile(
     r'"?(?:\$\{HARMONIC_FORGE_ROOT:-(?:\$HOME|\$\{HOME\}|~)/harmonic-forge\}'
-    r'|(?:\$HOME|\$\{HOME\})/harmonic-forge)(/[\w./-]*\.py)"?'
+    r'|(?:\$HOME|\$\{HOME\})/harmonic-forge'
+    # harmonic-forge#762: `l1_tools_env.sh` exports `$L1_TOOLS_FORGE`, a
+    # worktree checked out to `origin/main` of THIS repo -- by construction
+    # it carries the identical `tools/gh/*.py` files as `_forge_root()`, so
+    # a task that reaches its script through `$L1_TOOLS_FORGE` is exactly as
+    # discoverable as one going through `$HARMONIC_FORGE_ROOT`. Resolving
+    # to `_forge_root()` (not the real, session-specific worktree path,
+    # which does not exist in CI) is correct: the check's job is asserting
+    # wrapper/script flag parity, not that a particular worktree exists.
+    r'|\$L1_TOOLS_FORGE)(/[\w./-]*\.py)"?'
 )
 
 
