@@ -352,7 +352,7 @@ unset -f _lane_inject_default
 _lane_system_prompt_flag="$(registry_lookup AGENT_SYSTEM_PROMPT_FLAG "$_lane_agent")"
 if [ -n "$_lane_system_prompt_flag" ]; then
   cli_args+=("$_lane_system_prompt_flag" \
-    "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time.")
+    "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing.")
 fi
 unset _lane_system_prompt_flag
 

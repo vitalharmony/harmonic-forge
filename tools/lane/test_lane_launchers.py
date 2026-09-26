@@ -1640,3 +1640,23 @@ class LaneCleanupWrapper(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeferredToolsLaunchPrompt(unittest.TestCase):
+    """harmonic-forge#765: every Claude lane's launch prompt tells the session
+    to load deferred MCP tools with ToolSearch before calling one unavailable
+    (hrse#1392's root cause); Codex and Gemini launches are unchanged."""
+
+    SENTENCE = ('load them with ToolSearch("select:<names>") before concluding a tool is '
+                'unavailable, and never report a browser or tool as unavailable from a '
+                'names-only listing.')
+
+    def test_every_claude_lane_carries_the_sentence(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for agent in ("claude", "codex", "gemini"):
+                    with self.subTest(lane=lane, agent=agent):
+                        cell = tree.run(lane, ["--agent", agent])
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        carried = any(self.SENTENCE in a for a in _agent_args(cell))
+                        self.assertEqual(carried, agent == "claude")
