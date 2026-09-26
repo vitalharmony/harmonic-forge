@@ -588,7 +588,7 @@ adjudicate every observation — that just moves the triage cost rather than
 removing it.
 <!-- /R-0044 -->
 
-## STANDING-RULE VIOLATIONS GET FILED, NOT FIXED, NOT JUST MENTIONED
+## STANDING-RULE VIOLATIONS ARE SURFACED AND FILED, NOT FIXED, NOT JUST MENTIONED
 
 **Gated by the filing bar above — run those three tests first.** This section
 governs *how* a violation is recorded once it clears the bar, and is not
