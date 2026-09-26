@@ -78,6 +78,19 @@ class ScratchRepo(unittest.TestCase):
         patcher = patch.object(preclose, "PROVENANCE_TOOL", tool)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # harmonic-forge#778: receipt_dir() is now user-level (Path.home()),
+        # not repo-anchored -- point HOME at this scratch repo's own tree
+        # (never patch receipt_dir()/Path.home() directly: OnePassTests
+        # deliberately runs the real function to prove it does NOT vary with
+        # cwd, and a mocked-out home would hide that the same way a mocked
+        # repo_root() once hid the pre-#778 cwd bug this class was written
+        # against). This still isolates every test from the real operator's
+        # ~/.claude/state/preclose/.
+        self.home_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home_tmp.cleanup)
+        home_patcher = patch.dict(os.environ, {"HOME": self.home_tmp.name})
+        home_patcher.start()
+        self.addCleanup(home_patcher.stop)
 
     def commit(self, relpath: str, body: str = "x\n") -> None:
         target = self.repo / relpath
@@ -327,8 +340,11 @@ runs_lane3 = true
 
 
 class OnePassTests(ScratchRepo):
-    """Deliberately NOT patching the receipt location -- patching it to a fixed
-    tmpdir is what hid the cwd-dependence the panel found."""
+    """Deliberately NOT patching `receipt_dir()`/`Path.home()` directly --
+    only `HOME` (via `ScratchRepo.setUp`) -- so the real function runs and
+    proves what it actually does. Patching it to a fixed tmpdir is what hid
+    the cwd-dependence the original panel found; harmonic-forge#778 moved
+    the receipt from repo-anchored to user-level for exactly that reason."""
 
     def head(self) -> str:
         return subprocess.run(("git", "rev-parse", "HEAD"), cwd=self.repo,
@@ -382,6 +398,49 @@ class OnePassTests(ScratchRepo):
         self.commit("scripts/ordinary.py")
         self.plan(tier="fast")
         self.assertEqual(list(preclose.receipt_dir().glob("*.tmp")), [])
+
+    def test_writes_go_to_the_user_level_store_not_the_repo(self) -> None:
+        """harmonic-forge#778 AC3: the receipt must outlive the worktree that
+        wrote it, so it has to live somewhere a disposable Lane 1 impl
+        worktree's own deletion can't take it with it."""
+        self.commit("scripts/ordinary.py")
+        self.plan(tier="fast")
+        self.complete()
+        self.assertTrue(
+            str(preclose.receipt_dir()).startswith(str(Path(self.home_tmp.name))),
+            f"receipt_dir() must resolve under HOME, got {preclose.receipt_dir()}")
+        self.assertFalse(
+            (self.repo / ".claude" / "cache" / "preclose").exists(),
+            "nothing should write to the old repo-anchored location any more")
+
+    def test_a_legacy_repo_anchored_receipt_is_still_found(self) -> None:
+        """One release's fallback (harmonic-forge#778): a receipt written
+        just before this change, under the old repo-anchored path, must
+        still be found -- never a second write target, only a read
+        fallback."""
+        self.commit("scripts/ordinary.py")
+        legacy_dir = preclose.legacy_receipt_dir()
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        legacy_path = legacy_dir / "vitalharmony_hrse_1208.json"
+        legacy_path.write_text(json.dumps({
+            "repo": "vitalharmony/hrse", "issue": 1208,
+            "reviewed_sha": self.head(), "refuters": 3, "status": "complete",
+        }))
+        found = preclose.find_receipt("vitalharmony/hrse", 1208)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["reviewed_sha"], self.head())
+
+    def test_a_user_level_receipt_is_preferred_over_a_legacy_one(self) -> None:
+        self.commit("scripts/ordinary.py")
+        legacy_dir = preclose.legacy_receipt_dir()
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "vitalharmony_hrse_1208.json").write_text(json.dumps({
+            "reviewed_sha": "old-sha", "refuters": 1, "status": "complete"}))
+        preclose.receipt_dir().mkdir(parents=True, exist_ok=True)
+        preclose.receipt_path("vitalharmony/hrse", 1208).write_text(json.dumps({
+            "reviewed_sha": "new-sha", "refuters": 2, "status": "complete"}))
+        found = preclose.find_receipt("vitalharmony/hrse", 1208)
+        self.assertEqual(found["reviewed_sha"], "new-sha")
 
     def test_completion_records_the_reviewed_sha_and_status(self) -> None:
         self.commit("scripts/ordinary.py")
@@ -462,7 +521,7 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.commit("scripts/tool.py")
         self.plan()
         self.complete([])                                  # silent -> cross-family taken
-        receipts = list((self.repo / ".claude" / "cache" / "preclose").glob("*.json"))
+        receipts = list(preclose.receipt_dir().glob("*.json"))
         self.assertEqual(len(receipts), 1)
         stored = json.loads(receipts[0].read_text())
         head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=self.repo, text=True,
@@ -477,7 +536,7 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.commit("scripts/tool.py")
         self.plan()
         self.complete([ANCHORED], not_triggered=True)
-        stored = json.loads(next((self.repo / ".claude" / "cache" / "preclose").glob("*.json")).read_text())
+        stored = json.loads(next(preclose.receipt_dir().glob("*.json")).read_text())
         self.assertFalse(stored["cross_family_required"])
         self.assertEqual(stored["provenance"], NOT_TRIGGERED)
 
@@ -494,6 +553,35 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.plan()
         with self.assertRaises(SystemExit):
             self.complete([ANCHORED])
+
+    def test_receipt_lookup_is_case_insensitive_to_the_repo_slug(self) -> None:
+        """Preclose finding: `receipt_path()` keyed the filesystem name on the
+        `repo` string verbatim. `preclose_check.py --repo` always goes
+        through the manifest's fixed casing, but a merge-time reader can
+        resolve `repo` from a raw `--repo` flag or `gh repo view`'s own
+        casing -- a mismatch there silently keyed two different receipt
+        files for the same repo, producing a permanent deny loop."""
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([])
+        self.assertIsNotNone(preclose.find_receipt("VitalHarmony/HRSE", 1208))
+        self.assertIsNotNone(preclose.find_receipt("vitalharmony/hrse", 1208))
+
+    def test_unresolvable_fake_sha_is_refused_not_written(self) -> None:
+        """Preclose finding (chief): a string that merely LOOKS like a full
+        40-hex SHA is a valid `git rev-parse` argument -- it is echoed back
+        verbatim with exit 0 even when no such object exists. Without a
+        real existence check, `--complete --head <fake sha>` minted a
+        'complete' receipt for a commit that was never read, authorizing a
+        merge with zero refuters and no diff review."""
+        self.commit("scripts/tool.py")
+        fake_sha = "d" * 40
+        with self.assertRaises(SystemExit) as caught:
+            preclose._require_repo_and_head(
+                "vitalharmony/hrse",
+                _Args(repo="vitalharmony/hrse", issue=1208, base="base", head=fake_sha,
+                      tier=None, force=False, allow_dirty=False, allow_repo_mismatch=False))
+        self.assertIn("does not resolve to a commit", str(caught.exception))
 
     def test_fallback_label_is_accepted_when_the_call_could_not_run(self) -> None:
         """AC6: loud, non-fatal, never relabelled."""
@@ -522,7 +610,7 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.commit("scripts/tool.py")
         self.plan()
         self.complete([], envelope_label=CROSS + " [from envelope]")
-        stored = json.loads(next((self.repo / ".claude" / "cache" / "preclose").glob("*.json")).read_text())
+        stored = json.loads(next(preclose.receipt_dir().glob("*.json")).read_text())
         self.assertEqual(stored["provenance"], CROSS + " [from envelope]")
         self.assertFalse(hasattr(preclose, "PROVENANCE_FLAG"))
         import argparse, inspect

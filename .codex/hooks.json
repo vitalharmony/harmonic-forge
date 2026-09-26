@@ -34,6 +34,24 @@
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/lane3_codex_write_guard.py\"",
             "timeout": 5,
             "statusMessage": "Checking Lane 3 write scope (harmonic-forge#644)"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_missing_preclose_inspection.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking pre-close inspection (harmonic-forge#778)"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking BATCH authorization (harmonic-forge#778)"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/gh/block_closing_keywords.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking closing-keyword gate (harmonic-forge#778)"
           }
         ]
       },

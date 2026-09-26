@@ -11,6 +11,7 @@ that; `PublishedExampleIsNotACredentialTests` below is the regression guard
 for the specific bypasses it found.
 """
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -198,6 +199,92 @@ class DecisionTests(unittest.TestCase):
             with self.subTest(label=near):
                 self.assertTrue(self._denied(self._decide(
                     self.CMD, labels={hook.TOOLING_EXCEPTION_LABEL, near})))
+
+
+class PrShaBindingTests(unittest.TestCase):
+    """harmonic-forge#778 AC3: a merge with `preclose-inspected` still needs
+    a completed receipt naming the PR's CURRENT head as reviewed. The label
+    alone says a review happened once; it says nothing about which diff --
+    new commits landing after the label was added is exactly harmonic-forge
+    #774's failure mode."""
+
+    CMD = f"gh pr merge 1486 -R {REPO} --squash"
+
+    def _decide(self, head_sha: str | None, receipt_ok: bool,
+                labels: set[str] | None = None, command: str | None = None) -> dict:
+        if labels is None:
+            labels = {hook.TOOLING_EXCEPTION_LABEL, hook.PRECLOSE_LABEL}
+        with mock.patch.object(hook, "resolve_repo", return_value=REPO), \
+             mock.patch.object(hook, "labels_for", return_value=labels), \
+             mock.patch.object(hook, "issues_closed_by_pr", return_value=["1476"]), \
+             mock.patch.object(hook, "_pr_head_sha", return_value=head_sha), \
+             mock.patch.object(hook, "_preclose_receipt_ok", return_value=receipt_ok), \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(command or self.CMD)), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        return json.loads(printed.call_args[0][0])
+
+    def _denied(self, payload: dict) -> bool:
+        return (payload.get("hookSpecificOutput") or {}).get(
+            "permissionDecision") == "deny"
+
+    def test_labelled_and_receipt_matches_head_allows(self):
+        self.assertFalse(self._denied(self._decide("abc123", True)))
+
+    def test_labelled_but_receipt_stale_denies(self):
+        """A receipt exists but names an OLDER sha, or none exists at all --
+        `_preclose_receipt_ok` returning False covers both."""
+        self.assertTrue(self._denied(self._decide("abc123", False)))
+
+    def test_head_sha_unresolvable_fails_closed(self):
+        """Unlike a `_gh` read used only to DECIDE whether to check further
+        (which fails open elsewhere in this hook), this point is reached only
+        once the issue is already confirmed tooling-exception AND
+        preclose-inspected labelled -- a SHA-bound receipt is required, and
+        "cannot determine the head SHA" is indistinguishable from "not
+        reviewed" for that purpose. Preclose finding: this previously fell
+        through to allow, which meant an unresolvable head SHA authorized a
+        merge with zero verification instead of blocking it."""
+        self.assertTrue(self._denied(self._decide(None, True)))
+        self.assertTrue(self._denied(self._decide(None, False)))
+
+    def test_stale_receipt_denial_names_preclose_check_and_the_head_sha(self):
+        payload = self._decide("abc123def456", False)
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("preclose_check.py", reason)
+        self.assertIn("abc123def456"[:12], reason)
+
+    def test_stale_receipt_denial_names_the_pr_and_issue_too(self):
+        payload = self._decide("abc123", False)
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("1486", reason)
+        self.assertIn("1476", reason)
+
+    def test_without_the_preclose_label_the_older_denial_fires_first(self):
+        """The label check still comes first -- an unlabelled PR gets the
+        original hrse#1487 message, not a SHA-binding message with nothing
+        to bind (no receipt is even looked for)."""
+        with mock.patch.object(hook, "_pr_head_sha") as head_sha_mock:
+            payload = self._decide(
+                "abc123", True, labels={hook.TOOLING_EXCEPTION_LABEL})
+        head_sha_mock.assert_not_called()
+        self.assertTrue(self._denied(payload))
+
+    def test_bare_issue_close_is_unaffected_by_sha_binding(self):
+        """AC5: `block_closing_keywords.py` is unchanged, and this hook's own
+        close path stays label-only too -- no SHA exists for a bare close."""
+        with mock.patch.object(hook, "resolve_repo", return_value=REPO), \
+             mock.patch.object(hook, "labels_for", return_value={
+                 hook.TOOLING_EXCEPTION_LABEL, hook.PRECLOSE_LABEL}), \
+             mock.patch.object(hook, "_pr_head_sha") as head_sha_mock, \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load",
+                       return_value=bash(f"gh issue close 1476 --repo {REPO}")), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        head_sha_mock.assert_not_called()
+        self.assertFalse(self._denied(json.loads(printed.call_args[0][0])))
 
 
 class PublishedExampleIsNotACredentialTests(unittest.TestCase):
@@ -407,6 +494,48 @@ class ApiMergeFormTests(unittest.TestCase):
             batch_auth.classify_pr_merge(
                 ["gh", "api", "-X", "PUT", "repos/o/r/pulls/7/merge"]),
             ("o/r", 7))
+
+
+class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
+    """`_preclose_receipt_ok` against the REAL `preclose_check.find_receipt`
+    -- `PrShaBindingTests` above mocks it out entirely, which proves the
+    hook's own branching but not that the two modules actually agree on a
+    receipt's shape. Isolated to a temp HOME, same reasoning as
+    `test_preclose_check.py`'s `ScratchRepo` (harmonic-forge#778)."""
+
+    def setUp(self):
+        import tempfile
+        self.home_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home_tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HOME": self.home_tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_check
+        self.preclose_check = preclose_check
+
+    def _write_receipt(self, repo, issue, sha, status="complete"):
+        directory = self.preclose_check.receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        self.preclose_check.receipt_path(repo, issue).write_text(json.dumps({
+            "repo": repo, "issue": issue, "reviewed_sha": sha,
+            "refuters": 3, "status": status,
+        }))
+
+    def test_matching_complete_receipt_is_ok(self):
+        self._write_receipt(REPO, 1476, "deadbeef")
+        self.assertTrue(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
+
+    def test_receipt_for_a_different_sha_is_not_ok(self):
+        self._write_receipt(REPO, 1476, "old-sha")
+        self.assertFalse(hook._preclose_receipt_ok(REPO, "1476", "new-sha"))
+
+    def test_no_receipt_at_all_is_not_ok(self):
+        self.assertFalse(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
+
+    def test_incomplete_status_is_not_ok(self):
+        self._write_receipt(REPO, 1476, "deadbeef", status="planned")
+        self.assertFalse(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
 
 
 if __name__ == "__main__":

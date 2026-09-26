@@ -387,6 +387,54 @@ def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
     )
 
 
+def _pr_head_sha(repo: str, pr: str) -> str | None:
+    out = _gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid",
+              "--jq", ".headRefOid")
+    return out.strip() if out and out.strip() else None
+
+
+def _preclose_receipt_ok(repo: str, issue: str, head_sha: str) -> bool:
+    """harmonic-forge#778 AC3. `True` only when a `status: complete`
+    receipt for `repo`#`issue` names `head_sha` as its `reviewed_sha`.
+
+    Fails CLOSED (returns `False`, which denies) on any resolution failure
+    -- unlike the rest of this hook's fail-open style. Everywhere else, a
+    read failure means "cannot tell if GitHub state warrants a block," and
+    the honest answer is "don't block on a guess." Here, "cannot read the
+    receipt" and "no reviewed diff is on file for this SHA" are the SAME
+    fact, and that fact is exactly what AC3 exists to deny on -- fail-open
+    here would let the label alone (already known stale-able, per the
+    issue's Cause 3) stand in for a receipt that binds to nothing.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        from preclose_check import find_receipt  # noqa: PLC0415
+    except Exception:
+        return False
+    try:
+        receipt = find_receipt(repo, int(issue))
+    except Exception:
+        return False
+    if not receipt:
+        return False
+    return receipt.get("status") == "complete" and receipt.get("reviewed_sha") == head_sha
+
+
+def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    return (
+        f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, carries "
+        f"{PRECLOSE_LABEL!r} but no completed pre-close receipt names its "
+        f"current head {head_sha[:12]} as reviewed (harmonic-forge#778 "
+        f"AC3). The label says a review happened once; it says nothing "
+        f"about which diff -- new commits can land after the label was "
+        f"added, exactly as they did on harmonic-forge#774.\n\n"
+        f"Run the pre-close pass against this head and record it:\n"
+        f"  python3 ~/harmonic-forge/tools/gh/preclose_check.py "
+        f"--repo {repo} --issue {issue} --head {head_sha} --complete ...\n\n"
+        f"See preclose_check.py --help for the full plan/complete flow."
+    )
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -428,8 +476,6 @@ def main() -> None:
                 continue
             if TOOLING_EXCEPTION_LABEL not in labels:
                 continue  # opt-in: not scoped to the Tooling Exception
-            if PRECLOSE_LABEL in labels:
-                continue
 
             # harmonic-forge#509: pass the acting key so the annotation can
             # name THIS issue rather than listing the batch. "stopped on F509"
@@ -442,8 +488,41 @@ def main() -> None:
                 _acting = issue_key(repo, issue)
             except Exception:
                 _acting = None
-            _deny(_deny_message(repo, issue, via_pr), target_key=_acting)
-            return
+
+            if PRECLOSE_LABEL not in labels:
+                _deny(_deny_message(repo, issue, via_pr), target_key=_acting)
+                return
+
+            # harmonic-forge#778 AC3/AC5: the label alone says a review
+            # happened once, never which diff. Binding to the head SHA is
+            # meaningful only for a merge (a PR has a head that can move
+            # after labelling) -- a bare `gh issue close` has no SHA to bind
+            # to, so it stays label-only, exactly as before.
+            if kind == "pr":
+                head_sha = _pr_head_sha(repo, number)
+                # Preclose finding: this is NOT the same "cannot read GitHub"
+                # case the fail-open rationale elsewhere in this file covers.
+                # By this point the issue is confirmed tooling-exception AND
+                # preclose-inspected labelled -- a SHA-bound receipt is
+                # required, and "cannot determine the head SHA" and "the
+                # receipt doesn't match" are the same fact for this purpose:
+                # nothing proves this diff was reviewed. Fail CLOSED, per the
+                # same fail-closed precedent the receipt-match check below
+                # already follows.
+                if head_sha is None:
+                    _deny(
+                        f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, carries "
+                        f"{PRECLOSE_LABEL!r}, but this PR's current head SHA could not "
+                        f"be determined (harmonic-forge#778 AC3). A SHA-bound receipt is "
+                        f"required once an issue is labelled -- cannot verify and not "
+                        f"reviewed are the same fact here. Re-run this once GitHub is "
+                        f"reachable.",
+                        target_key=_acting)
+                    return
+                if not _preclose_receipt_ok(repo, issue, head_sha):
+                    _deny(_stale_receipt_message(repo, issue, via_pr, head_sha),
+                          target_key=_acting)
+                    return
 
     _allow()
 

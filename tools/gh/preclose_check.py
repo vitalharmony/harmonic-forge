@@ -135,6 +135,26 @@ def repo_root() -> Path:
 
 
 def receipt_dir() -> Path:
+    """User-level, shared across every checkout of every repo -- the same
+    model `BATCH_STATE_PATH` already uses (harmonic-forge#778 AC3).
+
+    Before this, the receipt lived under `repo_root()`, usually a disposable
+    Lane 1 impl worktree: a merging session (a different worktree, or the
+    same one after the review worktree was removed) could not see it at all,
+    so `block_missing_preclose_inspection.py` could only check the
+    `preclose-inspected` LABEL, which says a review happened once, never
+    which diff it covered. Binding the merge-time check to a specific
+    `reviewed_sha` (`check_one_pass`'s own key) needs the receipt to
+    outlive the worktree that wrote it.
+    """
+    return Path.home() / ".claude" / "state" / "preclose"
+
+
+def legacy_receipt_dir() -> Path:
+    """The pre-#778 repo-anchored location. `read_receipt`'s caller checks
+    this only when the user-level store has nothing -- one release's fallback
+    for a receipt written just before this change, never a second write
+    target (see `find_receipt`)."""
     return repo_root() / ".claude" / "cache" / "preclose"
 
 
@@ -343,8 +363,22 @@ def gate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repo_key(repo: str) -> str:
+    """Normalize `repo` to the SAME filesystem-key form regardless of
+    casing. GitHub repo slugs are case-insensitive, but nothing upstream of
+    this function guarantees a caller always passes the manifest's
+    canonical casing -- `preclose_check.py --repo` goes through
+    `registered_repo()`'s fixed casing, but a merge-time reader can resolve
+    `repo` from a raw `--repo` flag or `gh repo view`'s own casing.
+    Preclose finding: without this, a case mismatch between the write and
+    read paths silently keys two different receipt files for the same
+    repo, producing a permanent deny loop -- the receipt exists, but never
+    under the name the reader looks for."""
+    return repo.strip().lower().replace("/", "_")
+
+
 def receipt_path(repo: str, issue: int) -> Path:
-    return receipt_dir() / f"{repo.replace('/', '_')}_{issue}.json"
+    return receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
 
 
 def read_receipt(path: Path) -> dict | None:
@@ -361,6 +395,22 @@ def read_receipt(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def find_receipt(repo: str, issue: int) -> dict | None:
+    """The user-level receipt for `repo`#`issue`, or the pre-#778
+    repo-anchored one if the user-level store has nothing -- one release's
+    fallback, never a second write target: every write still goes only to
+    `receipt_dir()` (`write_receipt`), so this fallback drains on its own as
+    old receipts age out rather than needing a migration step."""
+    receipt = read_receipt(receipt_path(repo, issue))
+    if receipt is not None:
+        return receipt
+    try:
+        legacy_path = legacy_receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
+    except SystemExit:
+        return None
+    return read_receipt(legacy_path)
+
+
 def check_one_pass(repo: str, issue: int, head_sha: str, force: bool) -> None:
     """One pass per diff, then escalate -- the rule pitch-inspection carries.
 
@@ -370,7 +420,7 @@ def check_one_pass(repo: str, issue: int, head_sha: str, force: bool) -> None:
     """
     if force:
         return
-    prior = read_receipt(receipt_path(repo, issue))
+    prior = find_receipt(repo, issue)
     if not prior or prior.get("status") != "complete":
         return
     if prior.get("reviewed_sha") != head_sha:
@@ -445,6 +495,20 @@ def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
     # preclose finding, second-run/fail-direction lenses).
     if resolved.returncode or not head_sha:
         raise SystemExit(f"preclose-check: cannot resolve --head {args.head!r}")
+    # harmonic-forge#778 preclose finding: a string that merely LOOKS like a
+    # full 40-hex SHA is a valid `git rev-parse` argument -- it is echoed back
+    # verbatim with exit 0 even when no such object exists in this repo. The
+    # check above only rejects an unresolvable ref/short-hash; it never
+    # confirmed the resolved SHA is a real, reachable commit. `--complete
+    # --head <any 40 hex chars>` would otherwise mint a "complete" receipt for
+    # a commit that was never read, let alone reviewed -- a merge authorized
+    # with zero refuters and no diff.
+    verified = run("git", "cat-file", "-e", f"{head_sha}^{{commit}}")
+    if verified.returncode:
+        raise SystemExit(
+            f"preclose-check: {head_sha!r} does not resolve to a commit object "
+            f"in this checkout -- refusing to write a receipt for a SHA that "
+            f"was never actually read.")
     return head_sha
 
 
@@ -524,7 +588,7 @@ def complete(args: argparse.Namespace) -> int:
     required, why, surviving, _ = gate_decision(args)
     provenance = compute_provenance(args.envelope, args.not_triggered)
     check_provenance(required, provenance)
-    prior = read_receipt(receipt_path(repo, args.issue))
+    prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
         "surviving_findings": surviving,

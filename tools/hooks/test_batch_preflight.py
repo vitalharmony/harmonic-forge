@@ -60,7 +60,11 @@ class PrecloseCheckTests(unittest.TestCase):
         self.assertIn("--add-label preclose-inspected", f.detail)
 
     def test_armed_and_satisfied_is_ok(self) -> None:
-        f = self._check(issue(["tooling-exception", "preclose-inspected"]))
+        """harmonic-forge#778 AC4: the label alone isn't the whole check any
+        more, so this isolates the label-only path with `_stale_preclose_
+        receipt` mocked fresh -- the staleness half gets its own tests below."""
+        with mock.patch.object(bp, "_stale_preclose_receipt", return_value=None):
+            f = self._check(issue(["tooling-exception", "preclose-inspected"]))
         self.assertEqual(f.status, bp.OK)
 
     def test_not_armed_is_ok(self) -> None:
@@ -93,6 +97,66 @@ class PrecloseCheckTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("preclose-inspected", source)
         self.assertIn("tooling-exception", source)
+
+
+class StalePrecloseReceiptTests(unittest.TestCase):
+    """harmonic-forge#778 AC4. `_gh` is mocked per-argv here (a `side_effect`
+    dispatching on the command tail) rather than globally, because this
+    function makes a SECOND `gh` call (`pr list`) beyond the label read the
+    rest of this file's tests mock as a single string."""
+
+    def _pr_list(self, prs: list[dict]) -> str:
+        return json.dumps(prs)
+
+    def _check(self, prs_json: str | None, receipt: dict | None) -> str | None:
+        with mock.patch.object(bp, "_gh", return_value=prs_json), \
+             mock.patch("sys.path"), \
+             mock.patch.dict(
+                 sys.modules, {"preclose_check": mock.MagicMock(
+                     find_receipt=mock.Mock(return_value=receipt))}):
+            return bp._stale_preclose_receipt("vitalharmony/hrse", "1476")
+
+    def test_no_open_pr_for_the_issue_is_not_stale(self) -> None:
+        """Nothing merging yet -- nothing to be stale about."""
+        result = self._check(self._pr_list([]), receipt=None)
+        self.assertIsNone(result)
+
+    def test_matching_receipt_is_not_stale(self) -> None:
+        prs = [{"number": 1486, "headRefName": "fix/1476-x", "headRefOid": "deadbeef"}]
+        receipt = {"status": "complete", "reviewed_sha": "deadbeef"}
+        self.assertIsNone(self._check(self._pr_list(prs), receipt))
+
+    def test_missing_receipt_is_stale(self) -> None:
+        prs = [{"number": 1486, "headRefName": "fix/1476-x", "headRefOid": "deadbeef"}]
+        result = self._check(self._pr_list(prs), receipt=None)
+        self.assertIsNotNone(result)
+        self.assertIn("1486", result)
+        self.assertIn("deadbeef"[:12], result)
+
+    def test_receipt_for_an_older_sha_is_stale(self) -> None:
+        prs = [{"number": 1486, "headRefName": "fix/1476-x", "headRefOid": "newsha123"}]
+        receipt = {"status": "complete", "reviewed_sha": "oldsha456"}
+        result = self._check(self._pr_list(prs), receipt)
+        self.assertIsNotNone(result)
+
+    def test_unrelated_open_pr_is_ignored(self) -> None:
+        """A PR for a DIFFERENT issue must not be matched by branch name."""
+        prs = [{"number": 999, "headRefName": "fix/2000-other", "headRefOid": "x"}]
+        self.assertIsNone(self._check(self._pr_list(prs), receipt=None))
+
+    def test_unreadable_pr_list_fails_open(self) -> None:
+        self.assertIsNone(self._check(None, receipt=None))
+
+    def test_check_preclose_reports_stale_as_unmet(self) -> None:
+        with mock.patch.object(bp, "_stale_preclose_receipt",
+                              return_value="stale message naming PR #1486"):
+            f = self._run_check_preclose(issue(["tooling-exception", "preclose-inspected"]))
+        self.assertEqual(f.status, bp.UNMET)
+        self.assertIn("1486", f.detail)
+
+    def _run_check_preclose(self, payload: str) -> bp.Finding:
+        with mock.patch.object(bp, "_gh", return_value=payload):
+            return bp.check_preclose("H1476")
 
 
 class AuthorizationCheckTests(unittest.TestCase):

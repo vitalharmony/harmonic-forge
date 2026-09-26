@@ -22,9 +22,11 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
 1. **Commit the work first.** The refuters review a finished diff, not a
    working tree.
 
-2. **Plan the panel**, run from the repo under review (its `.claude/cache/preclose/`
-   receipt anchors to `git rev-parse --show-toplevel`, not to where the script
-   itself lives — harmonic-forge#704):
+2. **Plan the panel**, run from the repo under review (the receipt is written
+   to a user-level store, `~/.claude/state/preclose/`, shared across
+   checkouts the way `BATCH_STATE_PATH` already is — harmonic-forge#778 —
+   still keyed by which repo/issue you resolve to, so run it from the repo
+   under review):
 
    ```
    python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \

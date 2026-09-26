@@ -118,14 +118,81 @@ def check_preclose(key: str) -> Finding:
     if PRECLOSE_LABEL not in labels:
         return Finding(key, "preclose-inspection", OK,
                        f"not labelled {PRECLOSE_LABEL}; guard does not arm")
-    if PRECLOSE_SATISFIED_LABEL in labels:
-        return Finding(key, "preclose-inspection", OK,
-                       f"{PRECLOSE_SATISFIED_LABEL} present")
-    return Finding(
-        key, "preclose-inspection", UNMET,
-        f"labelled {PRECLOSE_LABEL} without {PRECLOSE_SATISFIED_LABEL} — the "
-        f"close WILL halt. Run preclose-inspection, then: gh issue edit "
-        f"{number} --repo {repo} --add-label {PRECLOSE_SATISFIED_LABEL}")
+    if PRECLOSE_SATISFIED_LABEL not in labels:
+        return Finding(
+            key, "preclose-inspection", UNMET,
+            f"labelled {PRECLOSE_LABEL} without {PRECLOSE_SATISFIED_LABEL} — "
+            f"the close WILL halt. Run preclose-inspection, then: gh issue "
+            f"edit {number} --repo {repo} --add-label {PRECLOSE_SATISFIED_LABEL}")
+
+    # harmonic-forge#778 AC4. The label alone says a review happened once,
+    # not which diff -- new commits can land on the merging PR after the
+    # label was added (harmonic-forge#774's exact failure mode). Mirroring
+    # block_missing_preclose_inspection.py's own AC3 SHA-binding check here
+    # means a BATCH halts on this ONCE, up front, rather than N times
+    # mid-run when the merge-time hook denies each stale item in turn --
+    # exactly the "N halts" problem this preflight module exists to prevent
+    # (see the module's own docstring).
+    stale = _stale_preclose_receipt(repo, number)
+    if stale is not None:
+        return Finding(key, "preclose-inspection", UNMET, stale)
+    return Finding(key, "preclose-inspection", OK,
+                   f"{PRECLOSE_SATISFIED_LABEL} present, receipt matches current head")
+
+
+#: Same branch-naming convention `block_missing_preclose_inspection.py`'s
+#: `issues_closed_by_pr` already relies on -- `feat/1476-...`, `fix/1429-...`.
+_BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)[-/]")
+
+
+def _stale_preclose_receipt(repo: str, issue: str) -> str | None:
+    """`None` when this issue's merging PR (if any) has a completed
+    receipt naming its current head, or when no open PR is found for it at
+    all (fails open, same as the rest of this module -- an issue with no
+    open PR yet has nothing to be stale about). A message otherwise.
+
+    Preclose finding: when TWO open PRs both match this issue's branch
+    prefix (an abandoned duplicate alongside the real one -- branch
+    hygiene discipline discourages this but nothing here enforces it),
+    this picks whichever `gh pr list` returns first, which need not be the
+    PR a subsequent `gh pr merge <N>` will actually target. This module's
+    own docstring already scopes this: "It reports. It does not satisfy."
+    The real merge-time gate (`block_missing_preclose_inspection.py`)
+    re-resolves per the ACTUAL PR number in the merge command and is what
+    is authoritative -- a preflight miss here means one extra mid-run halt
+    in the rare duplicate-branch case, never a wrongly-authorized merge.
+    """
+    raw = _gh("pr", "list", "--repo", repo, "--state", "open",
+             "--json", "number,headRefName,headRefOid")
+    if raw is None:
+        return None  # fail open: cannot resolve, don't report a false halt
+    try:
+        prs = json.loads(raw)
+    except ValueError:
+        return None
+    pr_number = head_sha = None
+    for pr in prs:
+        match = _BRANCH_ISSUE.match(pr.get("headRefName") or "")
+        if match and match.group(1) == str(issue):
+            pr_number, head_sha = pr.get("number"), pr.get("headRefOid")
+            break
+    if not pr_number or not head_sha:
+        return None
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        from preclose_check import find_receipt  # noqa: PLC0415
+
+        receipt = find_receipt(repo, int(issue))
+    except Exception:
+        return None  # fail open, consistent with every other lookup here
+    if receipt and receipt.get("status") == "complete" \
+            and receipt.get("reviewed_sha") == head_sha:
+        return None
+    return (
+        f"{PRECLOSE_SATISFIED_LABEL} present, but PR #{pr_number}'s current "
+        f"head {head_sha[:12]} has no completed preclose receipt (harmonic-"
+        f"forge#778 AC3) — the merge WILL halt. Re-run preclose_check.py "
+        f"against this head before batching.")
 
 
 def check_authorization(key: str) -> Finding:
