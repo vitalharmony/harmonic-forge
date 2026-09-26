@@ -5,8 +5,9 @@ skill no longer tells lanes to read it: arming is `python3
 ~/harmonic-forge/tools/lane/belt_plan.py` plus exactly the calls it prints, and
 `tools/hooks/enforce_belt_arming.py` denies any other arming call. This file is
 the reasoning behind the mechanics, for people changing them. The only edits
-made in the move retire Lane 3's repo-wide sweep (`--sweep-for l3`,
-harmonic-forge#659), which exhausted the shared REST budget twice on 2026-09-14.
+made in the move retire Lane 3's repo-wide sweep -- the retired
+account-wide belt sweep (harmonic-forge#659), which exhausted the shared
+REST budget twice on 2026-09-14.
 
 Two independent ways to discover work, so a handoff cannot be missed because one
 of them failed. `LANE` selects the role; everything else here is shared.
@@ -32,9 +33,9 @@ git staleness refusal) — this list states them, it does not implement them.
   copy. Lane 3's second entry, its sweep, is retired (harmonic-forge#659).
 - **A duplicate exits 4 by design.** A second arm for a lane already armed
   is not a bug to investigate; it is the mechanism working.
-- **Never convert a sweep into a Monitor.** `--sweep-for` is the suspenders'
-  one-shot backstop. Arming it as a persistent `Monitor` is
-  harmonic-forge#590's regression, not a stronger belt.
+- **Never convert a sweep into a Monitor.** The retired account-wide belt
+  sweep was the suspenders' one-shot backstop. Arming it as a persistent
+  `Monitor` is harmonic-forge#590's regression, not a stronger belt.
 - **Never ask the operator whether to stop.** The belt never pauses, ever —
   and since harmonic-forge#680 that is true in practice and not only as a
   claim: it polls at its armed interval for the whole window (see "The belt
@@ -139,8 +140,9 @@ mid-issue is not the command to arm:
   **GitHub enriches; it does not discover.** Every `gh`-backed check Lane 1
   runs takes an issue number a worktree, or the bounded Plan-First catch
   above, has already produced — never an independent, issue-number-free
-  account-wide scan. The old unbounded repo-wide sweep (`discover_l1_sweep`)
-  is retired for Lane 1 entirely, by explicit operator ruling
+  account-wide scan. The old unbounded repo-wide sweep -- the retired
+  account-wide belt sweep -- is retired for Lane 1 entirely, by explicit
+  operator ruling
   (harmonic-forge#640): *"the design is to start with the worktrees and only
   use gh for enrichment."* An unbounded scan with no worktree in hand fails
   that framing regardless of which pull loop arms it — see "Role: Lane 1"
@@ -181,12 +183,13 @@ mid-issue is not the command to arm:
   python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
-  Lane 3 no longer arms a repo-wide sweep. `--sweep-for l3` is RETIRED
-  (harmonic-forge#659, operator ruling) and refused at parse time: it
+  Lane 3 no longer arms a repo-wide sweep. It is the retired account-wide
+  belt sweep (harmonic-forge#659, operator ruling; harmonic-forge#766
+  deleted the flag rather than keep it refused at parse time): it
   exhausted the account's shared REST budget twice on 2026-09-14.
 
   **`--queue-for l3` no longer scans** (harmonic-forge#686). Retiring
-  `--sweep-for` removed a flag, not the call: `discover_queue` was
+  the account-wide sweep removed a flag, not the call: `discover_queue` was
   lane-agnostic and kept issuing the same `search/issues` request per repo per
   cycle for every lane, Lane 1 included. The candidate set now comes from what
   the belt already holds — the issues its own worktrees name (none, for Lane
@@ -465,7 +468,7 @@ has already named — it is not the place candidates come from.
 (harmonic-forge#590) put one in the suspenders' pull loop as a backstop for
 exactly what the belt structurally cannot see — handoffs that predate it,
 anything its filter misses, issues whose state changed with no new comment —
-and harmonic-forge#618 gave it its own flag (`--sweep-for l1`) once
+and harmonic-forge#618 gave it its own flag once
 `--queue-for l1` came to mean the same bounded thing it means for every other
 lane. **That backstop is retired by explicit operator ruling (harmonic-forge#640):**
 an account-wide scan with no worktree or queued-plan in hand is exactly the
@@ -478,7 +481,7 @@ only a silent state change. A `gate-result` FAIL/BLOCKED, a `## L2 Finding`, an
 `l2.done`, or a `discussion` on such an issue goes unseen by Lane 1's belt
 until something else surfaces it (the operator, a different lane's own belt,
 or Lane 1 re-arming after noticing); it is not compensated for with a wider
-scan. `discover_l1_sweep`
+scan. The retired sweep
 really does filter nothing — no precedence table, no exclusion list, newest
 wins outright — which is exactly the property that makes it too broad to run
 unbounded.
@@ -578,9 +581,9 @@ its own separately.
 - **Check B — execute ready.** `mise run gate-checkout <branch>` **first**, never
   assumed still-current from a prior tick.
 - **Check C — did a FAIL/BLOCKED verdict ever get a response?**
-  (`discover_l3_unanswered_verdicts`, harmonic-forge#629). Structurally
-  identical in shape to `discover_l1_sweep` (retired for Lane 1, harmonic-forge#640)
-  (`--sweep-for l3` ran it, same `since`/`extra_issues`/watermark shape; that
+  (harmonic-forge#629). Structurally identical in shape to the sweep
+  retired for Lane 1 (harmonic-forge#640) — the retired account-wide sweep
+  ran it, same `since`/`extra_issues`/watermark shape; that
   sweep is itself retired by harmonic-forge#659, so Check C is now a per-tick
   check on issues already in hand, never a repo-wide scan): every open issue whose LAST Lane 3
   `gate-result` comment stated `FAIL` or `BLOCKED`, that has since received

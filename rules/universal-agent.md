@@ -588,6 +588,18 @@ adjudicate every observation — that just moves the triage cost rather than
 removing it.
 <!-- /R-0044 -->
 
+<!-- R-0365 -->
+**A retired command or flag is deleted, never kept as a refusing stub**
+(harmonic-forge#766). A parse-time refusal that quotes the command back, a
+`--help` line that still lists it, a skill/rule/memory line that spells its
+invocation — each keeps the retired string available as something a session
+can find and run, which is exactly what happened twelve days after
+harmonic-forge#640/#659 retired the account-wide belt sweep by "refuse, don't
+remove." Rules, skills, help text, refusal messages, and memory describe a
+retired mechanism by its function and issue number, and never spell its
+invocation.
+<!-- /R-0365 -->
+
 ## STANDING-RULE VIOLATIONS ARE SURFACED AND FILED, NOT FIXED, NOT JUST MENTIONED
 
 **Gated by the filing bar above — run those three tests first.** This section

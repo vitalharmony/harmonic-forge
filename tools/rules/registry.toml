@@ -2392,3 +2392,11 @@ anchor = "tool-use-safeguards"
 statement = "Every GitHub-touching subagent prompt states the named-issues-only/no-list-or-search constraint, and the dispatching session estimates call count before launching any GitHub-touching subagent fan-out."
 text_sha = "d35dabf21c8a9386"
 hooks = []
+
+[[rule]]
+id = "R-0365"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar-three-tests-in-order-hrse-2026-08-14"
+statement = "A retired command or flag is deleted, never kept as a refusing stub -- rules, skills, help text, refusal messages, and memory describe a retired mechanism by its function and issue number, and never spell its invocation."
+text_sha = "1398f2d878e854c2"
+hooks = ["tools/hooks/deny_retired_belt_sweep.py"]
