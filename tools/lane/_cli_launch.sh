@@ -156,7 +156,7 @@ if [ "${#_lane_denied[@]}" -gt 0 ]; then
   for _arg in "${lane_passthrough[@]}"; do
     for _token in "${_lane_denied[@]}"; do
       if [ "$_arg" = "$_token" ] || [ "${_arg%%=*}" = "$_token" ]; then
-        _lane_launch_die "'$_token' is supplied by the launcher for $_lane_agent at lane $LANE and cannot be set, removed, or contradicted through passthrough arguments (harmonic-forge#322 AC4, ADR-007 § 9). Nothing was launched."
+        _lane_launch_die "'$_token' is supplied or excluded by the launcher for $_lane_agent at lane $LANE and cannot be set, removed, or contradicted through passthrough arguments (harmonic-forge#322 AC4, ADR-007 § 9). Nothing was launched."
       fi
     done
   done
@@ -373,6 +373,18 @@ if [ -n "$_lane_add_dir" ]; then
   cli_args+=("--add-dir" "$HOME/$_lane_add_dir")
 fi
 unset _lane_add_dir
+
+# 4c. The agent's session flags, at every lane (harmonic-forge#754). For Codex
+#     this is `--no-daemon`: without it the TUI runs every tool command, hook
+#     and MCP server inside a shared app-server daemon that never saw LANE, so
+#     every LANE-keyed guard is silently off. Unconditional, before passthrough
+#     so an `exec`/`resume` subcommand still receives it, and un-removable: the
+#     AC4 deny check above already refused any AGENT_SESSION_DENIED token.
+_lane_session_flags="$(registry_lookup AGENT_SESSION_FLAGS "$_lane_agent")"
+for _word in $_lane_session_flags; do
+  cli_args+=("$_word")
+done
+unset _lane_session_flags _word
 
 # 5. The caller's own arguments, last.
 cli_args+=("${lane_passthrough[@]}")

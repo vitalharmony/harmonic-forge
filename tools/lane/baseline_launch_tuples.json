@@ -111,6 +111,7 @@
         "--why=Lane 1 Claude Code session",
         "--mode=block",
         "codex",
+        "--no-daemon",
         "--permission-mode",
         "plan"
       ],
@@ -132,6 +133,7 @@
         "--why=Lane 1 Claude Code session",
         "--mode=block",
         "codex",
+        "--no-daemon",
         "*.md"
       ],
       "cwd": "<ROOT>/proj",
@@ -151,7 +153,8 @@
         "--who=lane1",
         "--why=Lane 1 Claude Code session",
         "--mode=block",
-        "codex"
+        "codex",
+        "--no-daemon"
       ],
       "cwd": "<ROOT>/proj",
       "env": {
@@ -171,6 +174,7 @@
         "--why=Lane 1 Claude Code session",
         "--mode=block",
         "codex",
+        "--no-daemon",
         "-p",
         "two words here"
       ],
@@ -424,6 +428,7 @@
         "--why=Lane 2 (implementer) Claude Code session",
         "--mode=block",
         "codex",
+        "--no-daemon",
         "--permission-mode",
         "plan"
       ],
@@ -445,6 +450,7 @@
         "--why=Lane 2 (implementer) Claude Code session",
         "--mode=block",
         "codex",
+        "--no-daemon",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane2",
@@ -464,7 +470,8 @@
         "--who=lane2",
         "--why=Lane 2 (implementer) Claude Code session",
         "--mode=block",
-        "codex"
+        "codex",
+        "--no-daemon"
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
@@ -484,6 +491,7 @@
         "--why=Lane 2 (implementer) Claude Code session",
         "--mode=block",
         "codex",
+        "--no-daemon",
         "-p",
         "two words here"
       ],
@@ -741,6 +749,7 @@
         "workspace-write",
         "--add-dir",
         "<HOME>/Harmonic_Projects/testplan",
+        "--no-daemon",
         "--permission-mode",
         "plan"
       ],
@@ -766,6 +775,7 @@
         "workspace-write",
         "--add-dir",
         "<HOME>/Harmonic_Projects/testplan",
+        "--no-daemon",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane3",
@@ -789,7 +799,8 @@
         "--sandbox",
         "workspace-write",
         "--add-dir",
-        "<HOME>/Harmonic_Projects/testplan"
+        "<HOME>/Harmonic_Projects/testplan",
+        "--no-daemon"
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
@@ -813,6 +824,7 @@
         "workspace-write",
         "--add-dir",
         "<HOME>/Harmonic_Projects/testplan",
+        "--no-daemon",
         "-p",
         "two words here"
       ],

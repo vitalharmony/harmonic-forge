@@ -1569,7 +1569,7 @@ id = "R-0186"
 file = "3-lane-protocol.md"
 anchor = "Per-CLI launch wiring — laneN --agent"
 statement = "Agent minimum versions are floored at the minor, not the patch."
-text_sha = "d3f916f7a0097911"
+text_sha = "9c1d9b82f8b64a81"
 hooks = []
 
 [[rule]]

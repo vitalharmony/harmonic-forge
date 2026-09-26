@@ -570,7 +570,7 @@ slot, an operator-facing display name, a default flag. An unrecognized
 |---|---|---|
 | `claude` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly); `--model sonnet` (override with `LANE_DEFAULT_MODEL`, or pass `--model`); `--effort <level>` only when `LANE_DEFAULT_EFFORT` is set (or pass `--effort`). Refuses to launch while `CLAUDE_CODE_EFFORT_LEVEL` or `ANTHROPIC_MODEL` is set. `LANE_MODEL` is a tier-hook bypass and is never read here | harmonic-forge#179, #665 |
 | `gemini` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421 …`, plus `--admin-policy` at Lanes 1 and 2 | harmonic-forge#318, #362 |
-| `codex` | nothing — bare passthrough | flag injection broke Codex's own argument parsing (harmonic-forge#179) |
+| `codex` | `--no-daemon` at every lane, before any subcommand (a top-level flag); a passthrough `--no-daemon` or `--remote` is refused | Codex >= 0.157 otherwise runs tool commands in a shared app-server daemon with no `LANE`, disabling every LANE-keyed guard (harmonic-forge#754). Earlier flag injection broke Codex's argument parsing only because it was placed after the subcommand (harmonic-forge#179) |
 
 <!-- R-0185 -->
 `LANE_AGENT` is exported alongside `LANE`, and both are fixed for the
@@ -591,9 +591,10 @@ and no version floor.
 
 <!-- R-0186 -->
 **Minimum versions** (AC9) are floored at the *minor*, not the patch:
-`claude >= 2.1`, `codex >= 0.150`, `gemini >= 0.56`, recorded against the
-exact patch versions each was qualified at (`2.1.250` / `0.150.1` /
-`0.56.0`). A patch-pinned floor would false-alarm on every routine `npm -g`
+`claude >= 2.1`, `codex >= 0.157`, `gemini >= 0.56`, recorded against the
+exact patch versions each was qualified at (`2.1.250` / `0.157.0` /
+`0.56.0`). The Codex floor moved from 0.150 to 0.157 in harmonic-forge#754:
+the launcher's `--no-daemon` injection is verified only there. A patch-pinned floor would false-alarm on every routine `npm -g`
 update while duplicating the parity suite's own version bookkeeping
 (harmonic-forge#325); ADR-007 already handles version-specific qualification
 there.

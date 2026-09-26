@@ -104,3 +104,23 @@
 # last held, which `/model` and `/effort` rewrite whenever confirmed with Enter.
 --model
 --effort
+
+# AMENDMENT 5 -- harmonic-forge#754, 2026-09-26.  Codex gains `--no-daemon` at
+# every lane, Lane 3 included (see `_agent_registry.sh`'s AGENT_SESSION_FLAGS /
+# AGENT_SESSION_DENIED and `_cli_launch.sh` step 4c).
+#
+# Same kind as `--sandbox` above: an enforcement flag, not directive text.
+# Without it, Codex 0.157's interactive TUI hands tool execution to a shared
+# app-server daemon started with no LANE, so every LANE-keyed hook -- Lane 3's
+# write scoping included -- saw LANE unset (measured live, harmonic-forge#754).
+# Its un-removability is real: AGENT_SESSION_DENIED refuses a passthrough
+# `--no-daemon` (a duplicate is a hard CLI error) and `--remote` (which would
+# route the session to an app server this launcher did not start).
+#
+# Known gap, recorded rather than silently inherited: this file is only a gate
+# while `baseline_launch_tuples.json` is NOT regenerated in the same commit
+# that adds a flag -- `test_lane3_launch_flags_match_the_committed_closed_list`
+# compares against the committed baseline, so a same-commit regeneration makes
+# this amendment unenforced. This amendment was added by hand after a
+# preclose-inspection caught the omission (harmonic-forge#754).
+--no-daemon

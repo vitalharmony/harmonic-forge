@@ -181,14 +181,16 @@ class NineCombinations(unittest.TestCase):
         with _FixtureTree() as tree:
             cell = tree.run("1", ["--agent", "codex", "--", "-p", "hello"])
             self.assertTrue(cell["launched"], cell.get("stderr"))
-            self.assertEqual(_agent_args(cell), ["codex", "-p", "hello"])
+            self.assertEqual(_agent_args(cell),
+                             ["codex", "--no-daemon", "-p", "hello"])
 
     def test_double_dash_protects_a_literal_agent_argument(self):
         """The escape hatch, if an agent CLI ever grows its own --agent."""
         with _FixtureTree() as tree:
             cell = tree.run("1", ["--agent", "codex", "--", "--agent", "x"])
             self.assertTrue(cell["launched"], cell.get("stderr"))
-            self.assertEqual(_agent_args(cell), ["codex", "--agent", "x"])
+            self.assertEqual(_agent_args(cell),
+                             ["codex", "--no-daemon", "--agent", "x"])
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +581,8 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         not only the bare form above. `resume`/`--last` are passthrough
         (step 5), injected after the launcher's own flags (step 4b), so the
         result is `codex --sandbox workspace-write --add-dir <testplan>
-        resume --last`, never the injection moved after the subcommand."""
+        --no-daemon resume --last` (harmonic-forge#754 added the step-4c
+        `--no-daemon`), never the injection moved after the subcommand."""
         with _FixtureTree() as tree:
             cell = tree.run("3", ["resume", "--last"], LANE_CLI="codex")
             self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -589,7 +592,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                 ["codex", "--sandbox", "workspace-write", "--add-dir",
                  args[4]])
             self.assertTrue(args[4].endswith("Harmonic_Projects/testplan"))
-            self.assertEqual(args[5:], ["resume", "--last"])
+            self.assertEqual(args[5:], ["--no-daemon", "resume", "--last"])
 
     def test_codex_lane3_caller_sandbox_denied(self):
         """A caller-supplied `--sandbox` at codex:3 is refused outright and
@@ -1093,6 +1096,64 @@ class LaunchDefaultModelAndEffort(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# harmonic-forge#754 -- Codex runs in-process, so LANE reaches its commands
+# ---------------------------------------------------------------------------
+class CodexSessionFlags(unittest.TestCase):
+    """Codex 0.157's TUI hands tool execution to a shared app-server daemon
+    that never saw LANE. The launcher injects `--no-daemon` at every lane, and
+    refuses the passthrough that would undo it. The LIVE proof (AC1/AC3) is in
+    the issue's PR -- these assert the launch tuple the canary relied on."""
+
+    SHAPES = ([], ["-p", "hi"], ["resume", "--last"], ["exec", "printenv LANE"])
+
+    def test_codex_gets_no_daemon_at_every_lane_before_any_subcommand(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for shape in self.SHAPES:
+                    with self.subTest(lane=lane, shape=shape):
+                        cell = tree.run(lane, ["--agent", "codex", "--", *shape])
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        args = _agent_args(cell)
+                        self.assertEqual(args.count("--no-daemon"), 1, args)
+                        # Top-level flag: must precede the caller's args, or
+                        # clap rejects it after `exec` (verified live).
+                        self.assertEqual(args[len(args) - len(shape):], shape)
+                        self.assertLess(args.index("--no-daemon"),
+                                        len(args) - len(shape))
+
+    def test_other_agents_get_no_session_flag(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for agent in ("claude", "gemini"):
+                    with self.subTest(lane=lane, agent=agent):
+                        cell = tree.run(lane, ["--agent", agent])
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        self.assertNotIn("--no-daemon", _agent_args(cell))
+
+    def test_passthrough_that_would_reach_a_daemon_is_refused(self):
+        refused = (["--no-daemon"], ["--remote", "unix://"],
+                   ["--remote=ws://127.0.0.1:1"], ["--", "--remote", "unix://"])
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for args in refused:
+                    with self.subTest(lane=lane, args=args):
+                        passthrough = args if args[0] == "--" else ["--", *args]
+                        cell = tree.run(lane, ["--agent", "codex", *passthrough])
+                        self.assertFalse(cell["launched"])
+                        self.assertIn("cannot be set, removed, or contradicted",
+                                      cell["stderr"])
+
+    def test_session_flags_are_a_required_registry_attribute(self):
+        """NC5: an agent missing the declaration is a launch refusal, never an
+        agent that silently gets no session flags."""
+        source = (LANE_DIR / "_agent_registry.sh").read_text()
+        required = source.split("_REGISTRY_REQUIRED_ATTRS=(", 1)[1].split(")", 1)[0]
+        for attr in ("AGENT_SESSION_FLAGS", "AGENT_SESSION_DENIED"):
+            with self.subTest(attr=attr):
+                self.assertIn(attr, required.split())
+
+
+# ---------------------------------------------------------------------------
 # TC8 -- the AC8 regression baseline
 # ---------------------------------------------------------------------------
 class RegressionBaseline(unittest.TestCase):
@@ -1127,7 +1188,7 @@ class VersionFloors(unittest.TestCase):
 
     def test_a_version_below_the_floor_is_rejected(self):
         below = {"claude": "2.0.999 (Claude Code)",
-                 "codex": "codex-cli 0.149.0",
+                 "codex": "codex-cli 0.156.9",
                  "gemini": "0.55.9"}
         with _FixtureTree(versions=below) as tree:
             for agent in ("claude", "codex", "gemini"):
@@ -1159,7 +1220,7 @@ class VersionFloors(unittest.TestCase):
         genuinely too-old CLI; the qualified patch version keeps the parity
         suite's claim (harmonic-forge#325) precise."""
         source = (LANE_DIR / "_agent_registry.sh").read_text()
-        for version in ("2.1.250", "0.150.1", "0.56.0"):
+        for version in ("2.1.250", "0.157.0", "0.56.0"):
             with self.subTest(version=version):
                 self.assertIn(version, source)
 
