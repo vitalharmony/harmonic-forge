@@ -514,8 +514,8 @@ hooks = []
 id = "R-0058"
 file = "rules/universal-agent.md"
 anchor = "shared-working-directory"
-statement = "Every change to a tracked repo file happens in a dedicated per-issue worktree and lands via a PR; never write while a checkout sits on main, and work never ends in /tmp."
-text_sha = "7ab6e69b22d3dc86"
+statement = "Every change to a tracked repo file happens in a dedicated per-issue worktree and lands via a PR; never write while a checkout sits on main, and work never ends outside the per-issue worktree."
+text_sha = "805bc04b99b3b6d5"
 hooks = []
 
 [[rule]]
@@ -1675,8 +1675,8 @@ hooks = []
 id = "R-0199"
 file = "3-lane-protocol.md"
 anchor = "Per-Issue Implementation Worktree"
-statement = "Lane 2's implementation work for a given issue happens in a disposable /tmp/<repo>-<issue>-impl worktree created fresh per issue, never directly in <repo>-lane2/."
-text_sha = "b702da68290c270c"
+statement = "Lane 2's implementation work for a given issue happens in a disposable ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl worktree created fresh per issue, never directly in <repo>-lane2/."
+text_sha = "ed179086cfe1cd0e"
 hooks = [
   { script = "block_lane1_status_claims.py", events = ["PreToolUse"], wired_in = ["HRSE2/.claude/settings.json", "HRSE2-lane2/.claude/settings.json", "HRSE2-lane3/.claude/settings.json"] },
 ]
@@ -1694,7 +1694,7 @@ id = "R-0201"
 file = "3-lane-protocol.md"
 anchor = "Per-Lane Worktree Reuse Across Issues"
 statement = "Before switching branches in a shared per-lane worktree, check for live processes with cwd inside it — always use mise run gate-checkout, never a bare git checkout/rebase."
-text_sha = "c7b5e9085a4b527b"
+text_sha = "a54ef32afbe00046"
 hooks = []
 
 [[rule]]

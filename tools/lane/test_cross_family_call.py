@@ -1204,6 +1204,7 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
         stub.write_text(
             '#!/usr/bin/env bash\n'
             f'printf "%s\\n" "$@" > "{self.argv_file}"\n'
+            f'printf "%s\\n" "$TMPDIR" "$GIT_CEILING_DIRECTORIES" > "{self.argv_file}.env"\n'
             'echo \'{"type":"item.completed","item":{"type":"agent_message",'
             '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[],\\"assumptions\\":[]}"}}\'\n'
         )
@@ -1240,6 +1241,38 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
                                "--posture", "probe", "--cwd", self.tmp.name)
         self.assertNotIn("--search", argv)
         self.assertEqual(argv[0], "exec")
+
+    def test_probe_posture_excludes_tmp_and_tmpdir_as_writable_roots(self) -> None:
+        """harmonic-forge#756 TC8: `probe` runs `--sandbox workspace-write`,
+        whose `.git` protection would otherwise create an empty host
+        `/tmp/.git`. Both keys, each as a `-c` pair, before the prompt."""
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "probe", "--cwd", self.tmp.name)
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
+        for key in ("sandbox_workspace_write.exclude_slash_tmp=true",
+                    "sandbox_workspace_write.exclude_tmpdir_env_var=true"):
+            with self.subTest(key=key):
+                self.assertEqual(argv.count(key), 1)
+                self.assertEqual(argv[argv.index(key) - 1], "-c")
+
+    def test_probe_posture_gets_a_writable_tmpdir_with_a_git_ceiling(self) -> None:
+        """Preclose finding: with `/tmp` read-only, the probe needs a TMPDIR
+        inside its writable `--cwd`, and discovery must stop above it."""
+        self.codex_argv("--caller", "claude", "--families", "2",
+                        "--posture", "probe", "--cwd", self.tmp.name)
+        tmpdir, ceiling = Path(f"{self.argv_file}.env").read_text().splitlines()[:2]
+        self.assertEqual(tmpdir, f"{self.tmp.name}/.tmp")
+        self.assertTrue(Path(tmpdir).is_dir())
+        self.assertEqual(ceiling, tmpdir)
+
+    def test_read_only_and_verify_postures_do_not_get_the_keys(self) -> None:
+        """They run `--sandbox read-only`, which has no writable roots."""
+        for posture in ("read-only", "verify"):
+            with self.subTest(posture=posture):
+                extra = ["--cwd", self.tmp.name] if posture == "verify" else []
+                argv = self.codex_argv("--caller", "claude", "--families", "2",
+                                       "--posture", posture, *extra)
+                self.assertFalse(any("sandbox_workspace_write" in a for a in argv))
 
 
 class TestStderrIsCapturedNotDiscarded(unittest.TestCase):

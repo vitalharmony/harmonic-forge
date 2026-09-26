@@ -79,7 +79,7 @@ mid-issue is not the command to arm:
 
 - **Lane 1** — **worktrees first.** Lane 1 has no worktree *on an issue branch*,
   but it can see every worktree there is, and that set is what is actually in
-  flight. Enumerate them rather than listing them: `/tmp/<repo>-<issue>-impl`
+  flight. Enumerate them rather than listing them: `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl`
   checkouts appear and vanish per issue, so a hardcoded list narrows the belt
   silently (harmonic-forge#590).
 
@@ -149,12 +149,12 @@ mid-issue is not the command to arm:
 - **Lane 2** — **both halves, in one command.** Naming the shared
   `HRSE2-lane2` checkout does not work: between issues it sits on a detached
   HEAD (`0/1 resolved`), and *during* an issue Lane 2 is required to work in
-  `/tmp/<repo>-<issue>-impl`, never the shared checkout — so the one path a
+  `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl`, never the shared checkout — so the one path a
   static list can name is the one path Lane 2 may not work in.
 
   But worktrees-**only** is just as wrong, and less obviously so: **Lane 2's
   inbound work has no worktree by construction.** Lane 2 creates
-  `/tmp/<repo>-<issue>-impl` *after* it picks an issue up, so a fresh handoff
+  `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` *after* it picks an issue up, so a fresh handoff
   is always in the no-worktree state — this was the belt's entire job for
   this lane (harmonic-forge#596). Lane 1's belt can be worktrees-only because
   other lanes' worktrees *are* what Lane 1 needs to see; that asymmetry is
@@ -255,7 +255,7 @@ declared checkout that is not present is reported and skipped, not fatal: not
 everything is cloned.
 
 **A worktree is evidence work was started, not that it is live.** Abandoned
-`/tmp/<repo>-<issue>-impl` checkouts are never pruned, and their branches read
+`~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` (or legacy `/tmp/…`) checkouts are never pruned, and their branches read
 as ahead of `origin/main` forever once main takes the work as a squash merge.
 Targets whose issue is closed are therefore dropped and named as dropped —
 without that, worktrees-first fails permissively in its own smaller way.

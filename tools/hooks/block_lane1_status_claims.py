@@ -204,7 +204,7 @@ def protected_checkout_roots(cwd: Path) -> list[Path]:
     1. **`--git-common-dir`'s parent, when cwd is a LINKED worktree.** This is
        the shared main working tree by construction, and it is the signal the
        old derivation lacked. Stripping a `-lane<N>` suffix was the only rule,
-       so a `/tmp/<repo>-<issue>-impl` worktree — the working directory the
+       so a `<repo>-<issue>-impl` worktree — the working directory the
        protocol REQUIRES a Lane 2 session to use — matched nothing, kept its
        own basename, and was returned as its own main checkout. Every shell
        write a Lane 2 session made inside its own impl worktree was then denied
@@ -805,7 +805,7 @@ def branch_advice(target: str, cwd: Path) -> str:
     into the checkout the session is actually sitting in -- then branching that
     checkout is precisely the fix. When the target lives in a DIFFERENT worktree
     that happens to have `main` checked out (the shape that bit: a Lane 2
-    session correctly scoped to its own `/tmp/<repo>-<issue>-impl` worktree,
+    session correctly scoped to its own `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` worktree,
     reaching out to a path in the shared main checkout), branching does nothing
     -- the session is already on the branch it should be on, and the fix is to
     write inside its own worktree instead. Telling it to branch sent it looking
@@ -865,7 +865,7 @@ def protected_write_denial(
                 "violation as an `Edit` here (harmonic-forge#142): Lane 2 work "
                 "belongs in its own dedicated worktree. Re-run it against the "
                 "project's -lane2 worktree or a fresh "
-                "/tmp/<project>-<issue>-impl worktree."
+                "~/Harmonic_Projects/.worktrees/<project>-<issue>-impl worktree."
             )
         if lane3_write_outside_testplan(target):
             return denial(
@@ -1127,7 +1127,7 @@ def main() -> None:
                 "and is writing directly into the main checkout "
                 "(harmonic-forge#142). Lane 2 work belongs in its own "
                 "dedicated worktree — restart in the project's -lane2 "
-                "worktree or a fresh /tmp/<project>-<issue>-impl worktree, "
+                "worktree or a fresh ~/Harmonic_Projects/.worktrees/<project>-<issue>-impl worktree, "
                 "not the main checkout."
             )))
             return

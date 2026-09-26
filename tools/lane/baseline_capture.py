@@ -90,6 +90,11 @@ payload = {
     "cwd": os.getcwd(),
     "env": {k: os.environ.get(k) for k in %(keys)r},
 }
+# Opt-in extra keys (harmonic-forge#756 asserts TMPDIR). Recorded OUTSIDE
+# "env" and only when asked, so a baseline capture's cells are unchanged.
+_extra = os.environ.get("LANE_CAPTURE_EXTRA_ENV", "")
+if _extra:
+    payload["extra_env"] = {k: os.environ.get(k) for k in _extra.split(",") if k}
 with open(os.environ["LANE_CAPTURE_OUT"], "w") as fh:
     json.dump(payload, fh)
 """
@@ -321,6 +326,23 @@ def _apply_declared_deltas(cell: dict, agent: str) -> dict:
     return updated
 
 
+def _only_listed_additions(actual: list[str], expected: list[str],
+                           allowed: set[str]) -> bool:
+    """True when `expected` is an in-order subsequence of `actual` and every
+    token of `actual` outside that subsequence is in `allowed`."""
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def fits(i: int, j: int) -> bool:
+        if i == len(actual):
+            return j == len(expected)
+        if j < len(expected) and actual[i] == expected[j] and fits(i + 1, j + 1):
+            return True
+        return actual[i] in allowed and fits(i + 1, j)
+
+    return fits(0, 0)
+
+
 def compare(captured: dict, fixture: dict, lane3_additions: list[str]) -> list[str]:
     """Return AC8 differences.
 
@@ -356,11 +378,22 @@ def compare(captured: dict, fixture: dict, lane3_additions: list[str]) -> list[s
             continue
         # A Lane 3 cell may differ by tokens on the committed closed list, and
         # by nothing else.
+        #
+        # harmonic-forge#756: "differ by" means ADDED tokens only -- the
+        # baseline argv must survive as an in-order subsequence of the
+        # captured one, and every extra token must be on the list. The old
+        # check stripped listed tokens from the captured argv alone, which
+        # only worked while no listed token was already in the baseline: once
+        # `--add-dir`/`--sandbox`/`--no-daemon` were (harmonic-forge#644/#754),
+        # stripping them removed the baseline's own copies too. Stripping from
+        # both sides instead would let a listed safety flag silently DISAPPEAR,
+        # which is the regression this gate exists to catch.
         if key.startswith("lane3/") and lane3_additions:
-            stripped = dict(actual)
-            stripped["argv"] = [a for a in actual["argv"]
-                                if a not in lane3_additions]
-            if stripped == expected:
+            rest_actual = {k: v for k, v in actual.items() if k != "argv"}
+            rest_expected = {k: v for k, v in expected.items() if k != "argv"}
+            if rest_actual == rest_expected and _only_listed_additions(
+                    actual.get("argv", []), expected.get("argv", []),
+                    set(lane3_additions)):
                 continue
         diffs.append(
             f"{key}:\n    expected: {json.dumps(expected, sort_keys=True)}"

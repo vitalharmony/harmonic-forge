@@ -799,11 +799,11 @@ of the same root cause in one session — this is a pattern, not bad luck.
 
 <!-- R-0058 -->
 **Every change to a tracked repo file happens in a dedicated per-issue
-worktree and lands via a PR; work ends in the lane worktree, never
-`/tmp`.** Never write while a checkout sits on `main` — branch or use a
+worktree and lands via a PR; work never ends outside the per-issue
+worktree.** Never write while a checkout sits on `main` — branch or use a
 worktree first, not after. Both halves are mechanism-backed where the
 repo has it: a write outside the impl worktree while a lane is set is
-denied at the tool-call level, and a stranded `/tmp` commit is detected
+denied at the tool-call level, and a stranded worktree commit is detected
 after the fact — where the repo doesn't have either yet, the discipline
 above is what stands in.
 <!-- /R-0058 -->

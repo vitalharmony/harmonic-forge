@@ -842,7 +842,7 @@ children.
 
 <!-- R-0199 -->
 Lane 2's actual *implementation work for a given issue* happens in a
-separate, disposable `/tmp/<repo>-<issue>-impl` worktree, created fresh
+separate, disposable `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` worktree, created fresh
 per issue from the fixed `<repo>-lane2/` session worktree above — never
 implemented directly in `<repo>-lane2/` itself. Full create/provision/
 work/cleanup procedure: see the `impl-worktree` skill.
@@ -879,7 +879,7 @@ refuses the checkout if anything other than the caller's own process tree
 is running there — always use `mise run gate-checkout <branch>` for this,
 never a bare `git checkout`/`git rebase` in a shared lane worktree. If it
 refuses: wait, ask the operator, or do prep work (rebase, conflict
-resolution) in a disposable scratch worktree (e.g. `/tmp/<repo>-<issue>-prep`)
+resolution) in a disposable scratch worktree (e.g. `~/Harmonic_Projects/.worktrees/<repo>-<issue>-prep`)
 instead, only touching the shared lane worktree once it's confirmed idle.
 <!-- /R-0201 -->
 

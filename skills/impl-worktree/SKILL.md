@@ -1,6 +1,6 @@
 ---
 name: impl-worktree
-description: Create and manage the disposable per-issue implementation worktree (/tmp/<repo>-<issue>-impl) Lane 2 uses for actual code changes — distinct from the fixed <repo>-lane2/ session worktree. Use when starting implementation work on a specific issue, before making any edit.
+description: Create and manage the disposable per-issue implementation worktree (~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl) Lane 2 uses for actual code changes — distinct from the fixed <repo>-lane2/ session worktree. Use when starting implementation work on a specific issue, before making any edit.
 ---
 
 # impl-worktree
@@ -14,13 +14,21 @@ itself, and never by branch-switching inside it either.
 ## Create
 
 ```bash
-git -C <repo>-lane2 worktree add --no-track /tmp/<repo>-<issue>-impl -b feat/<issue>-<short-desc> origin/main
+git -C <repo>-lane2 worktree add --no-track ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl -b feat/<issue>-<short-desc> origin/main
 ```
 
-- Repo-agnostic path: `/tmp/<repo>-<issue>-impl` (e.g. `/tmp/hrse2-700-impl`,
-  `/tmp/harmonic-forge-207-impl`) — never a repo-hardcoded shape. Consistent
-  with the sibling `/tmp/<repo>-<issue>-prep` convention (used for rebase/
-  conflict-resolution prep work against a shared lane worktree).
+- Repo-agnostic path: `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` (e.g.
+  `~/Harmonic_Projects/.worktrees/hrse2-700-impl`, `~/Harmonic_Projects/.worktrees/harmonic-forge-207-impl`) — never a
+  repo-hardcoded shape. Consistent with the sibling
+  `~/Harmonic_Projects/.worktrees/<repo>-<issue>-prep` convention (used for rebase/conflict-resolution
+  prep work against a shared lane worktree).
+- **Not `/tmp`** (harmonic-forge#756). A Codex lane launches with `/tmp`
+  read-only, because Codex's sandbox otherwise creates an empty `/tmp/.git`
+  on the host that every `git` discovery under `/tmp` walks into. The lane
+  launcher grants Codex Lane 2 `~/Harmonic_Projects/.worktrees` as a writable root instead. Legacy
+  `/tmp/<repo>-<issue>-impl` worktrees are still recognized by the hooks and
+  by `worktree-gc`, but a Codex lane cannot write them — finish one in a
+  Claude lane, or recreate it under `~/Harmonic_Projects/.worktrees`.
 - Base the new branch off `origin/main` (fetch first if stale), not off
   whatever the shared `<repo>-lane2/` worktree happens to have checked out.
 - `--no-track` is intentional: a feature branch must not inherit
@@ -45,8 +53,8 @@ own `CLAUDE.md`/README for its exact install commands.
 HRSE2 concretely (two ecosystems, both required):
 
 ```bash
-(cd /tmp/<repo>-<issue>-impl/frontend && npm ci)
-(cd /tmp/<repo>-<issue>-impl/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt)
+(cd ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl/frontend && npm ci)
+(cd ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt)
 ```
 
 **This ruling was superseded for HRSE2 by hrse#1356/#1375 — read below
@@ -98,7 +106,7 @@ stands: install per worktree and accept the seconds.
 
 ## Work
 
-Make every edit inside `/tmp/<repo>-<issue>-impl` — never in `<repo>-lane2/`.
+Make every edit inside `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` — never in `<repo>-lane2/`.
 
 **`git checkout`/`git rebase` in a *shared* worktree drags every
 uncommitted tracked-file change along regardless of target branch** — this
@@ -109,7 +117,7 @@ exists to make that safe, but it is **Lane 3's tool**, for the fixed
 for any other `LANE` value) — not something a Lane 2 session reaches for.
 If you find yourself wanting `gate-checkout`, that's the signal you're
 about to branch-switch in the wrong (shared) worktree; create a fresh
-`/tmp/.../impl` worktree instead.
+`~/Harmonic_Projects/.worktrees/.../impl` worktree instead.
 
 `tools/worktree/check_worktree_busy.py` guards a different, narrower
 problem: sequential reuse of the *fixed* `<repo>-lane2/3` worktrees across
@@ -131,12 +139,15 @@ Once the issue's work is committed and reported, the worktree should be
 removed — not left indefinitely:
 
 ```bash
-git -C <repo>-lane2 worktree remove /tmp/<repo>-<issue>-impl
+git -C <repo>-lane2 worktree remove ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl
 git -C <repo>-lane2 worktree prune
 ```
 
-`/tmp` does not survive reboot, but that alone does not clear
-`.git/worktrees/`'s administrative record for a worktree whose directory
-is already gone — `worktree prune` is what actually reconciles that.
+The worktree lives on persistent disk, so uncommitted work survives a
+reboot — and nothing removes a forgotten one for you. Remove it here, or
+let the repo's `worktree-gc` task (where it has one, e.g. HRSE2's `mise run
+worktree-gc`) list and reclaim eligible ones from both the current root and
+the legacy `/tmp` root. `worktree prune` reconciles `.git/worktrees/`'s
+administrative record for any worktree whose directory is already gone.
 An impl worktree is disposable by design: never a place to leave unpushed,
 uncommitted, or unreported work long-term.

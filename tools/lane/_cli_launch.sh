@@ -152,10 +152,51 @@ while IFS= read -r _token; do
   [ -n "$_token" ] && _lane_denied+=("$_token")
 done < <(registry_lane_denied_tokens "$_lane_agent" "$LANE")
 
+# _lane_arg_denied <arg> <token> -- does one passthrough word hit one token?
+#
+# A plain token matches the word exactly or as `<token>=value`. A token that
+# ends in `*` (harmonic-forge#756 NC4) is a PREFIX match on a Codex `-c` config
+# KEY: it is tested against the word itself (the value word of `-c key=v` or
+# `--config key=v`) and against the key inside the glued `-ckey=v`, `-c=key=v` and
+# `--config=key=v` forms. The comparison is a quoted-prefix `case`, so the
+# `*` is never a glob and a token never matches a path on disk.
+_lane_arg_denied() {
+  local arg="$1" token="$2" key
+  case "$token" in
+    *\*)
+      key="$arg"
+      case "$key" in
+        --config=*) key="${key#--config=}" ;;
+        -c=*) key="${key#-c=}" ;;
+        -c?*) key="${key#-c}" ;;
+      esac
+      # Only a real `key=value` override counts, and the key must be the
+      # table itself or one of its dotted keys -- so prose that merely
+      # mentions the name (a `-p` value, a prompt) is never refused.
+      case "$key" in *=*) ;; *) return 1 ;; esac
+      key="${key%%=*}"
+      case "$key" in
+        "${token%\*}"|"${token%\*}".*) return 0 ;;
+      esac
+      return 1
+      ;;
+  esac
+  [ "$arg" = "$token" ] || [ "${arg%%=*}" = "$token" ] && return 0
+  # The glued config forms, so `sandbox_workspace_write` (a whole-table
+  # override) is refused however the `-c` is spelled.
+  case "$arg" in
+    --config=*) key="${arg#--config=}" ;;
+    -c=*) key="${arg#-c=}" ;;
+    -c?*) key="${arg#-c}" ;;
+    *) return 1 ;;
+  esac
+  [ "${key%%=*}" = "$token" ]
+}
+
 if [ "${#_lane_denied[@]}" -gt 0 ]; then
   for _arg in "${lane_passthrough[@]}"; do
     for _token in "${_lane_denied[@]}"; do
-      if [ "$_arg" = "$_token" ] || [ "${_arg%%=*}" = "$_token" ]; then
+      if _lane_arg_denied "$_arg" "$_token"; then
         _lane_launch_die "'$_token' is supplied or excluded by the launcher for $_lane_agent at lane $LANE and cannot be set, removed, or contradicted through passthrough arguments (harmonic-forge#322 AC4, ADR-007 § 9). Nothing was launched."
       fi
     done
@@ -368,11 +409,32 @@ if [ -n "$_lane_sandbox" ]; then
   cli_args+=("--sandbox" "$_lane_sandbox")
 fi
 unset _lane_sandbox
+#
+#     harmonic-forge#756: the slot is a space-separated LIST relative to $HOME.
+#     Each directory is created first (Codex refuses an `--add-dir` that does
+#     not exist), then granted. For Codex, TMPDIR is pointed at the lane's
+#     private temp root -- one of those add-dirs -- because
+#     AGENT_SESSION_FLAGS removes `/tmp` and `$TMPDIR` as writable roots; a
+#     TMPDIR left at `/tmp` would make every `mktemp` in the session fail.
+#     Claude and Gemini keep the caller's TMPDIR untouched.
 _lane_add_dir="$(registry_lookup AGENT_LANE_ADD_DIR "$_lane_agent:$LANE")"
-if [ -n "$_lane_add_dir" ]; then
-  cli_args+=("--add-dir" "$HOME/$_lane_add_dir")
+_lane_add_dirs=()
+read -ra _lane_add_dirs <<<"$_lane_add_dir"
+for _d in "${_lane_add_dirs[@]}"; do
+  mkdir -p "$HOME/$_d" \
+    || _lane_launch_die "could not create the lane add-dir $HOME/$_d -- refusing to launch (harmonic-forge#756)"
+  cli_args+=("--add-dir" "$HOME/$_d")
+done
+if [ "$_lane_agent" = codex ]; then
+  export TMPDIR="$HOME/.cache/codex-lane-tmp/lane$LANE"
+  # TMPDIR is itself a writable root now, so Codex mounts its empty `.git`
+  # protection there too (preclose finding). The ceiling stops every `git`
+  # discovery from a `mktemp` dir before it reaches `$TMPDIR/.git`.
+  export GIT_CEILING_DIRECTORIES="$TMPDIR${GIT_CEILING_DIRECTORIES:+:$GIT_CEILING_DIRECTORIES}"
+  mkdir -p "$TMPDIR" \
+    || _lane_launch_die "could not create the Codex lane TMPDIR $TMPDIR -- refusing to launch (harmonic-forge#756)"
 fi
-unset _lane_add_dir
+unset _lane_add_dir _lane_add_dirs _d
 
 # 4c. The agent's session flags, at every lane (harmonic-forge#754). For Codex
 #     this is `--no-daemon`: without it the TUI runs every tool command, hook
