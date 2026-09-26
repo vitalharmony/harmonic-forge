@@ -281,7 +281,7 @@ class RegistryIntegrity(unittest.TestCase):
         dest.mkdir()
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                     "_gh_config_dir.sh"):
+                     "_gh_config_dir.sh", "_lane_refresh.sh"):
             (dest / name).write_text((LANE_DIR / name).read_text())
         (dest / "policies").mkdir()
         for policy in (LANE_DIR / "policies").glob("*.toml"):
@@ -640,7 +640,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir = tree.root / "lanedir"
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh"):
+                         "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh", "_lane_refresh.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             registry = (LANE_DIR / "_agent_registry.sh").read_text().replace(
                 '  [gemini:3]=""', '  [gemini:3]="gemini-lane3.toml"')
@@ -680,7 +680,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                          "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                         "_gh_config_dir.sh"):
+                         "_gh_config_dir.sh", "_lane_refresh.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             (lane_dir / "policies").mkdir()  # deliberately empty
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
@@ -694,7 +694,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                          "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                         "_gh_config_dir.sh"):
+                         "_gh_config_dir.sh", "_lane_refresh.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             (lane_dir / "policies").mkdir()
             (lane_dir / "policies" / "gemini-lane1.toml").write_text(
@@ -708,10 +708,15 @@ class SafetyFlagsUnremovable(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # TC6 / TC7 -- lane3 is check-only
 # ---------------------------------------------------------------------------
-class Lane3IsCheckOnly(unittest.TestCase):
-    """AC5 and AC6.  Both harmonic-forge#255's staleness protection and #264's
-    env-sync guarantee survive -- as checks.  Neither was dropped, and lane3
-    performs zero mutations either way."""
+class Lane3RefreshesAtLaunch(unittest.TestCase):
+    """harmonic-forge#761, replacing #322 AC5's check-only design by operator
+    ruling (2026-09-26): lane3 brings its worktree to origin/main and relinks
+    backend/.env at launch, and RECORDS the outcome, so a repaired
+    precondition stays distinguishable from one that never needed repair.
+    It still refuses when the remote state cannot be determined, or when a
+    checkout would carry tracked changes."""
+
+    REFRESH_KEYS = "LANE_REFRESH_STATUS,LANE_REFRESH_FROM,LANE_REFRESH_TO,LANE_REFRESH_ENV"
 
     @staticmethod
     def _advance_origin(tree: _FixtureTree) -> str:
@@ -758,59 +763,88 @@ class Lane3IsCheckOnly(unittest.TestCase):
                               check=True, capture_output=True,
                               text=True).stdout.strip()
 
-    def test_lane3_refuses_on_staleness_and_mutates_nothing(self):
-        """TC6 + TC7.  Assert no fetch occurred, not merely that a message
-        printed: the remote-tracking ref must be byte-identical afterwards."""
+    def _run3(self, tree, args=()):
+        return tree.run("3", list(args), LANE_CLI="claude",
+                        LANE_CAPTURE_EXTRA_ENV=self.REFRESH_KEYS,
+                        LANE_REFRESH_LOG_DIR=str(tree.root / "refresh-log"))
+
+    @staticmethod
+    def _head(path):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=path,
+                              check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    def test_lane3_updates_a_stale_worktree_and_records_it(self):
+        """TC1 (lane3 path) and AC4."""
         with _FixtureTree() as tree:
-            self._advance_origin(tree)
-            before = subprocess.run(
-                ["git", "rev-parse", "origin/main"], cwd=tree.lane3,
-                capture_output=True, text=True).stdout.strip()
+            before = self._head(tree.lane3)
+            remote_sha = self._advance_origin(tree)
+            cell = self._run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(self._head(tree.lane3), remote_sha)
+            env = cell["extra_env"]
+            self.assertEqual(env["LANE_REFRESH_STATUS"], "updated")
+            self.assertEqual(env["LANE_REFRESH_FROM"], before)
+            self.assertEqual(env["LANE_REFRESH_TO"], remote_sha)
+            self.assertIn("updated at launch", cell["stderr"])
+            log = (tree.root / "refresh-log" / "refresh.log").read_text().splitlines()
+            self.assertEqual(len(log), 1)
+            self.assertIn("\tupdated\t", log[0])
 
-            cell = tree.run("3", [], LANE_CLI="claude")
-            self.assertFalse(cell["launched"])
-            self.assertIn("REFUSING TO START", cell["stderr"])
-            self.assertIn("commit(s) behind origin/main", cell["stderr"])
-            self.assertIn("lane3-provision", cell["stderr"])
-
-            after = subprocess.run(
-                ["git", "rev-parse", "origin/main"], cwd=tree.lane3,
-                capture_output=True, text=True).stdout.strip()
-            self.assertEqual(before, after,
-                             "lane3 fetched -- AC5 requires zero mutations")
-
-    def test_lane3_catches_a_tip_it_has_never_fetched(self):
-        """DJC3 stage 1.  Strictly MORE staleness is caught than before, with
-        zero mutations: the old check fetched the object first, so it could
-        never observe this state."""
+    def test_lane3_fetches_a_tip_it_has_never_seen(self):
+        """The old check could only refuse here; the tip is fetched now."""
         with _FixtureTree() as tree:
             remote_sha = self._advance_origin_from_elsewhere(tree)
-            self.assertNotEqual(
-                subprocess.run(["git", "cat-file", "-e", remote_sha],
-                               cwd=tree.lane3, capture_output=True).returncode,
-                0, "fixture invalid: the tip is already in the object store")
+            cell = self._run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(self._head(tree.lane3), remote_sha)
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "updated")
 
-            cell = tree.run("3", [], LANE_CLI="claude")
-            self.assertFalse(cell["launched"])
-            self.assertIn("never fetched", cell["stderr"])
-            self.assertIn(remote_sha, cell["stderr"])
-
-            # Still no fetch: the object must remain absent afterwards.
-            self.assertNotEqual(
-                subprocess.run(["git", "cat-file", "-e", remote_sha],
-                               cwd=tree.lane3, capture_output=True).returncode,
-                0, "lane3 fetched -- AC5 requires zero mutations")
-
-    def test_lane3_escape_hatch_starts_the_session(self):
-        """TC7.  The original code's reason for warning-only was that a session
-        legitimately gating an older target branch is not behind by mistake.
-        That case is preserved -- the operator states it, in writing, once."""
+    def test_lane3_refuses_on_tracked_changes_and_moves_nothing(self):
+        """TC2 (lane3 path)."""
         with _FixtureTree() as tree:
+            before = self._head(tree.lane3)
             self._advance_origin(tree)
-            cell = tree.run("3", ["--ack-stale", "gating PR #123's branch"],
-                            LANE_CLI="claude")
+            (tree.lane3 / "README.md").write_text("locally modified\n")
+            cell = self._run3(tree)
+            self.assertFalse(cell["launched"])
+            self.assertIn("tracked changes", cell["stderr"])
+            self.assertIn("README.md", cell["stderr"])
+            self.assertEqual(self._head(tree.lane3), before)
+
+    def test_an_untracked_backend_env_alone_never_blocks(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            self._advance_origin(tree)
+            (tree.lane3 / "backend").mkdir()
+            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            cell = self._run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_lane3_leaves_a_worktree_ahead_of_origin_alone(self):
+        """TC8: HEAD already contains the remote tip (a gate on a Lane 2
+        branch) records `current` and does not move."""
+        with _FixtureTree() as tree:
+            (tree.lane3 / "AHEAD.md").write_text("ahead\n")
+            for cmd in (["git", "add", "AHEAD.md"],
+                        ["git", "-c", "user.email=a@example.invalid",
+                         "-c", "user.name=A", "commit", "-q", "-m", "ahead"]):
+                subprocess.run(cmd, cwd=tree.lane3, check=True, capture_output=True)
+            ahead = self._head(tree.lane3)
+            cell = self._run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(self._head(tree.lane3), ahead)
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "current")
+
+    def test_lane3_escape_hatch_skips_the_update(self):
+        """TC5."""
+        with _FixtureTree() as tree:
+            before = self._head(tree.lane3)
+            self._advance_origin(tree)
+            cell = self._run3(tree, ["--ack-stale", "gating PR #123's branch"])
             self.assertTrue(cell["launched"], cell.get("stderr"))
             self.assertIn("staleness acknowledged", cell["stderr"])
+            self.assertEqual(self._head(tree.lane3), before)
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "ack-stale")
 
     def test_lane3_escape_hatch_rejects_an_empty_reason(self):
         """Following HRSE2/scripts/l1_post.py:810's --ack-overlap precedent and
@@ -824,82 +858,79 @@ class Lane3IsCheckOnly(unittest.TestCase):
                     self.assertFalse(cell["launched"])
                     self.assertIn("non-empty reason", cell["stderr"])
 
-    def test_lane3_starts_when_not_stale(self):
+    def test_lane3_starts_when_current(self):
         with _FixtureTree() as tree:
-            cell = tree.run("3", [], LANE_CLI="claude")
+            cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "current")
 
     def test_lane3_refuses_when_the_remote_cannot_be_reached(self):
-        """NC3.  'Cannot determine' is treated as drift, not as its absence --
-        an undetermined staleness state is exactly the state the original
-        incident occurred in."""
+        """TC4 (lane3 path).  'Cannot determine' is treated as drift, not as
+        its absence."""
         with _FixtureTree() as tree:
             subprocess.run(["git", "remote", "set-url", "origin",
                             str(tree.root / "does-not-exist.git")],
                            cwd=tree.main, check=True, capture_output=True)
-            cell = tree.run("3", [], LANE_CLI="claude")
+            cell = self._run3(tree)
             self.assertFalse(cell["launched"])
             self.assertIn("cannot determine", cell["stderr"])
 
-    def test_lane3_uses_the_fully_qualified_ref(self):
+    def test_the_refresh_uses_the_fully_qualified_ref(self):
         """NC4.  `git ls-remote origin main` returns two lines on a real repo
         (refs/heads/main and refs/remotes/origin/main); the qualified form
         returns exactly one."""
-        source = _code_only(LANE_DIR / "lane3")
+        source = _code_only(LANE_DIR / "_lane_refresh.sh")
         self.assertIn("ls-remote origin refs/heads/main", source)
         self.assertNotIn("ls-remote origin main", source)
 
-    def test_lane3_never_reads_the_stale_remote_tracking_ref(self):
-        """NC2.  `git rev-parse origin/main` reads the stale local ref, which
-        is precisely what this redesign exists to stop trusting.  Every
-        comparison must use the SHA ls-remote returned."""
-        source = _code_only(LANE_DIR / "lane3")
-        self.assertNotIn("rev-parse origin/main", source)
+    def test_nothing_reads_the_stale_remote_tracking_ref(self):
+        """NC2.  The update target is the SHA ls-remote returned, never the
+        local remote-tracking ref."""
+        for name in ("lane3", "_lane_refresh.sh"):
+            with self.subTest(file=name):
+                self.assertNotIn("rev-parse origin/main",
+                                 _code_only(LANE_DIR / name))
 
-    def test_lane3_performs_no_mutating_git_or_filesystem_operation(self):
-        """AC5, asserted against the source as well as against behavior: the
-        behavioral test above can only catch the mutations it thought to look
-        for."""
-        source = _code_only(LANE_DIR / "lane3")
-        for mutation in ("git fetch", "ln -sf", "git checkout", "git pull",
-                         "git reset"):
-            with self.subTest(mutation=mutation):
-                self.assertNotIn(mutation, source)
+    def test_no_launcher_pulls_resets_or_pushes(self):
+        """AC8: the only mutations are the recorded checkout and the .env
+        relink."""
+        for name in ("lane1", "lane2", "lane3", "_lane_refresh.sh"):
+            source = _code_only(LANE_DIR / name)
+            for mutation in ("git pull", "git reset", "git push", "reset --hard"):
+                with self.subTest(file=name, mutation=mutation):
+                    self.assertNotIn(mutation, source)
 
-    def test_lane3_refuses_on_env_drift_with_no_escape_hatch(self):
-        """AC6 -- harmonic-forge#264's protection, preserved as a check.  The
-        asymmetry with staleness is deliberate: backend/.env has no legitimate
-        per-worktree divergence at all, so there is nothing to acknowledge."""
+    def test_lane3_relinks_a_drifted_env_and_records_it(self):
+        """TC12, AC6."""
         with _FixtureTree(with_backend_env=True) as tree:
             (tree.lane3 / "backend").mkdir()
             (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            cell = self._run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            link = tree.lane3 / "backend" / ".env"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), (tree.main / "backend" / ".env").resolve())
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
 
-            cell = tree.run("3", [], LANE_CLI="claude")
-            self.assertFalse(cell["launched"])
-            self.assertIn("backend/.env is not linked", cell["stderr"])
-            self.assertIn("no acknowledgement flag", cell["stderr"])
-
-            # TC6: the drifted file is REPORTED, not repaired.
-            self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
-            self.assertEqual(
-                (tree.lane3 / "backend" / ".env").read_text(), "KEY=stale\n")
-
-    def test_ack_stale_does_not_bypass_the_env_check(self):
+    def test_ack_stale_still_relinks_the_env(self):
+        """--ack-stale skips only the checkout; backend/.env has no
+        legitimate per-worktree divergence."""
         with _FixtureTree(with_backend_env=True) as tree:
             (tree.lane3 / "backend").mkdir()
             (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
-            cell = tree.run("3", ["--ack-stale", "deliberate"],
-                            LANE_CLI="claude")
-            self.assertFalse(cell["launched"])
-            self.assertIn("backend/.env is not linked", cell["stderr"])
+            cell = self._run3(tree, ["--ack-stale", "deliberate"])
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
 
-    def test_lane3_starts_when_the_env_symlink_is_correct(self):
+    def test_lane3_records_a_correct_env_link_as_ok(self):
         with _FixtureTree(with_backend_env=True) as tree:
             (tree.lane3 / "backend").mkdir()
             (tree.lane3 / "backend" / ".env").symlink_to(
                 tree.main / "backend" / ".env")
-            cell = tree.run("3", [], LANE_CLI="claude")
+            cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "ok")
 
 
 class Lane3Provision(unittest.TestCase):
@@ -909,7 +940,7 @@ class Lane3Provision(unittest.TestCase):
         with _FixtureTree(with_backend_env=True) as tree:
             (tree.lane3 / "backend").mkdir()
             (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
-            Lane3IsCheckOnly._advance_origin(tree)
+            Lane3RefreshesAtLaunch._advance_origin(tree)
 
             proc = tree.run_script("lane3-provision")
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -921,7 +952,7 @@ class Lane3Provision(unittest.TestCase):
 
     def test_provision_refuses_to_clobber_uncommitted_work(self):
         with _FixtureTree() as tree:
-            Lane3IsCheckOnly._advance_origin(tree)
+            Lane3RefreshesAtLaunch._advance_origin(tree)
             (tree.lane3 / "README.md").write_text("locally modified\n")
             proc = tree.run_script("lane3-provision")
             self.assertNotEqual(proc.returncode, 0)

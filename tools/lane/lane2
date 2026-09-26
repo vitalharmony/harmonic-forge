@@ -47,6 +47,25 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_args.sh" "$@"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=2
 
+# shellcheck source=_lane_refresh.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"
+lane_refresh detached
+export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
+case "$LANE_REFRESH_STATUS" in
+  skipped-dirty)
+    echo "lane2: refusing to start -- tracked changes in $target would be silently carried into the refreshed checkout; commit or move them first" >&2
+    exit 1
+    ;;
+  fetch-failed)
+    echo "lane2: refusing to start -- could not determine or reach origin/main for $target" >&2
+    exit 1
+    ;;
+esac
+# Silent when already current: the record is in LANE_REFRESH_* and the log,
+# and a no-op line ahead of every launch is noise.
+[ "$LANE_REFRESH_STATUS" = "current" ] \
+  || echo "lane2: checkout $LANE_REFRESH_STATUS ($LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
+
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 

@@ -57,45 +57,41 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_args.sh" "$@"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=3
 
-## Check 1 -- staleness (harmonic-forge#255, preserved as a check)
+## Checks 1 & 2 -- staleness and backend/.env sync (harmonic-forge#761)
 #
-# Original incident, retained because it is the rationale: this worktree can sit
-# detached at an old commit indefinitely, and nothing previously checked. A
-# session silently read stale skill/protocol files (.devin/, harmonic-forge
-# rules) straight out of this worktree with no signal anything was wrong -- it
-# was detached 2+ days behind origin/main, still carrying the pre-fix "read the
-# full issue thread" instruction harmonic-forge#253 had already replaced on
-# main, causing exactly the Lane 3 spec-derivation contamination that fix
-# existed to prevent.
+# harmonic-forge#322 AC5's original design refused rather than repaired, on the
+# theory that "a gate that repairs its own preconditions cannot report on
+# them." The operator ruling of 2026-09-26 replaces that with the opposite
+# design for the SAME reason, stated the other way round: a manual repair step
+# that has to be remembered has already failed twice as a control (measured:
+# HRSE2-lane3's sibling worktrees drifted 63 and 46 commits behind on
+# 2026-09-21 and 09-26). So lane3 now repairs unconditionally -- both the
+# checkout and backend/.env, exactly what `lane3-provision` did by hand -- and
+# makes the repair REPORTED rather than forbidding it: every outcome is
+# recorded in `LANE_REFRESH_STATUS`/`LANE_REFRESH_ENV`, exported into the
+# session, logged to `~/.local/state/lanes/refresh.log`, and (for a Claude
+# session) surfaced in the gate report by the SessionStart notice hook. A
+# repaired precondition is now distinguishable from one that never needed
+# repair -- it just isn't invisible any more.
 #
-# What changed, and why it is now a REFUSAL rather than the original warning:
-# the original comment's reason for warning-only was that "a Lane 3 session
-# legitimately gating a specific older target branch is not behind by mistake,
-# and this script has no way to distinguish that from genuine staleness." That
-# is still true -- so the script does not try to distinguish it. It refuses, and
-# the operator distinguishes it, once, in writing: `--ack-stale "<reason>"`.
-# A non-empty reason is required, following this codebase's own precedent for an
-# escape hatch that must not degrade into a boolean
-# (HRSE2/scripts/l1_post.py:810's --ack-overlap, and its
-# test_empty_ack_overlap_reason_is_rejected_at_the_cli).
+# `--ack-stale "<reason>"` still exists, for a gate deliberately run against a
+# target other than current origin/main (e.g. gating an older commit on
+# purpose). It skips the checkout update only; backend/.env is still relinked,
+# because backend/.env has no legitimate per-worktree divergence at all.
 #
-# How staleness is detected WITHOUT a fetch: `git ls-remote` is a read-only
-# query that writes no refs -- verified live, origin/main byte-identical before
-# and after. Only `git fetch`'s ref-store write violates AC5.
+# The undetermined-remote-state refusal survives unchanged in spirit: an
+# unreachable or ambiguous origin is drift, not its absence, and lane3 still
+# refuses to start rather than guess. `lane_refresh`'s `fetch-failed` status is
+# exactly that case.
 #
-# Deliberately NOT `git rev-parse origin/main` anywhere below (NC2): that reads
-# the stale local remote-tracking ref, which is precisely what this redesign
-# exists to stop trusting. Every comparison uses the SHA ls-remote returned.
+# `lane3-provision` remains, unchanged, as the manual repair command --
+# something to run without starting a session.
 _lane3_stale_refuse() {
   cat >&2 <<EOF
 lane3: REFUSING TO START -- $1
 
   This worktree: $target
   $2
-
-  The gate launcher performs no mutations (harmonic-forge#322 AC5): it will not
-  silently bring this worktree up to date, because a gate that repairs its own
-  preconditions cannot report on them.
 
   To repair:   lane3-provision
   To proceed anyway (e.g. deliberately gating an older target branch):
@@ -104,107 +100,49 @@ EOF
   exit 1
 }
 
-# NC3: this now runs synchronously ahead of every gate launch, so an unreachable
-# remote must not hang it -- GIT_TERMINAL_PROMPT=0 suppresses credential
-# prompts, and the timeout bounds it. "Cannot determine" is treated as drift,
-# not as absence of drift: an undetermined staleness state is exactly the state
-# the original incident occurred in.
-# NC4: refs/heads/main, not bare `main` -- the bare form matches both
-# refs/heads/main and refs/remotes/origin/main on a real repo and returns two
-# lines.
-_lane3_remote_out=""
-_lane3_remote_rc=0
-_lane3_remote_out="$(GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote origin refs/heads/main 2>/dev/null)" \
-  || _lane3_remote_rc=$?
+# shellcheck source=_lane_refresh.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"
+lane_refresh detached
+export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
 
-if [ "$_lane3_remote_rc" -ne 0 ] || [ -z "$_lane3_remote_out" ]; then
-  if [ -z "$lane_ack_stale" ]; then
-    _lane3_stale_refuse \
-      "cannot determine whether this worktree is stale" \
-      "\`git ls-remote origin refs/heads/main\` failed (rc=$_lane3_remote_rc). The remote may be unreachable, or origin may not have a main branch. An undetermined staleness state is treated as drift, not as its absence."
-  fi
-elif [ "$(printf '%s\n' "$_lane3_remote_out" | wc -l)" -ne 1 ]; then
-  if [ -z "$lane_ack_stale" ]; then
-    _lane3_stale_refuse \
-      "ambiguous remote main" \
-      "\`git ls-remote origin refs/heads/main\` returned $(printf '%s\n' "$_lane3_remote_out" | wc -l) refs; exactly one was expected."
-  fi
-else
-  _lane3_remote_sha="${_lane3_remote_out%%$'\t'*}"
-  _lane3_head="$(git rev-parse HEAD 2>/dev/null || true)"
-  if [ -n "$_lane3_head" ] && [ "$_lane3_head" != "$_lane3_remote_sha" ]; then
-    # Stage 1: without the fetch, a remote tip we have never fetched is simply
-    # not in the local object store, and the ancestry math cannot run. That is
-    # UNAMBIGUOUS staleness -- strictly more than the old check caught, because
-    # the old check fetched the object first and so could never observe it.
-    # The "N commits behind" count is not computable here; say so rather than
-    # printing a `?`.
-    if ! git cat-file -e "$_lane3_remote_sha" 2>/dev/null; then
-      if [ -z "$lane_ack_stale" ]; then
-        _lane3_stale_refuse \
-          "this worktree has never fetched origin/main's current tip" \
-          "Remote tip $_lane3_remote_sha is not in this repository's object store, so this worktree is definitively behind. How far behind is not computable without fetching, which this launcher will not do."
-      fi
-    # Stage 2: the tip is local, so run the original ancestry comparison --
-    # against the ls-remote SHA, never against the local remote-tracking ref.
-    elif ! git merge-base --is-ancestor "$_lane3_remote_sha" "$_lane3_head" 2>/dev/null; then
-      if [ -z "$lane_ack_stale" ]; then
-        _lane3_stale_refuse \
-          "this worktree is $(git rev-list --count "$_lane3_head".."$_lane3_remote_sha" 2>/dev/null || echo '?') commit(s) behind origin/main" \
-          "Skill/protocol files (.devin/, harmonic-forge rules) read from this worktree may be stale -- the exact condition that produced harmonic-forge#255."
-      fi
-    fi
-  fi
-fi
-
-if [ -n "$lane_ack_stale" ]; then
+if [ "$LANE_REFRESH_STATUS" = "fetch-failed" ]; then
+  _lane3_stale_refuse \
+    "cannot determine whether this worktree is stale" \
+    "\`git ls-remote origin refs/heads/main\` or the subsequent fetch failed. The remote may be unreachable, origin may not have a main branch, or the fetched tip is missing from the object store. An undetermined staleness state is treated as drift, not as its absence."
+elif [ "$LANE_REFRESH_STATUS" = "skipped-dirty" ]; then
+  _lane3_stale_refuse \
+    "this worktree has tracked changes" \
+    "Refusing to check out origin/main over them. Commit or move them first -- an untracked backend/.env alone never blocks this."
+elif [ "$LANE_REFRESH_STATUS" = "ack-stale" ]; then
   echo "lane3: staleness acknowledged by the operator -- \"$lane_ack_stale\"" >&2
+elif [ "$LANE_REFRESH_STATUS" = "updated" ]; then
+  echo "lane3: worktree was behind and was updated at launch, $LANE_REFRESH_FROM -> $LANE_REFRESH_TO" >&2
+else
+  echo "lane3: worktree is current at $LANE_REFRESH_TO" >&2
 fi
-unset _lane3_remote_out _lane3_remote_rc
 
-## Check 2 -- backend/.env sync (harmonic-forge#264, preserved as a check)
-#
-# Original incident, retained because it is the rationale: hrse#792's Lane 3
-# gate lost the entire live HTTP/auth-endpoint test surface to a stale
-# backend/.env -- main had gained KEYCLOAK_AGENT_CLIENT_ID/_SECRET, this
-# worktree's own plain-file copy hadn't, and the drift check
-# (env-sync-check-drift, wired into gate-restart) correctly caught it, but only
-# after Lane 3 had already done most of a gate's worth of work around it.
-#
-# NO ESCAPE HATCH, unlike staleness above, and the asymmetry is deliberate:
-# backend/.env has no legitimate per-worktree divergence at all
-# (check_worktree_env_sync.py's own comparison logic already treats every key as
-# required to match main exactly), so there is nothing a copy is preserving that
-# a live reference doesn't already provide correctly. Staleness has a legitimate
-# form; this does not.
-#
-# Never reads or prints the file's contents -- only where it lives on disk, so
+# backend/.env: operator ruling 2026-09-26 -- lane3 now relinks automatically,
+# the same repair `lane3-provision` performs by hand (harmonic-forge#264).
+# Never reads or prints the file's contents, only where it lives on disk, so
 # this never touches secret values. Silently skipped for a project with no
-# backend/.env at all (harmonic-forge itself, or any non-HRSE2-shaped project):
-# conditional on the structure already existing in the main checkout, not a new
-# convention this script invents.
+# backend/.env at all (harmonic-forge itself, or any non-HRSE2-shaped
+# project).
 main_root="$parent/$base"
+LANE_REFRESH_ENV="n/a"
 if [ -f "$main_root/backend/.env" ]; then
   main_env_real="$(readlink -f "$main_root/backend/.env")"
   target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
   if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
-    cat >&2 <<EOF
-lane3: REFUSING TO START -- backend/.env is not linked to the main checkout's
-
-  This worktree: $target
-  Expected:      $target/backend/.env -> $main_env_real
-  Found:         ${target_env_real:-<missing>}
-
-  backend/.env has no legitimate per-worktree divergence, so this is drift, not
-  a choice -- and a gate run against a stale env silently loses its live
-  HTTP/auth test surface (hrse#792). There is no acknowledgement flag for this
-  one, on purpose.
-
-  To repair:   lane3-provision
-EOF
-    exit 1
+    mkdir -p "$target/backend"
+    ln -sfn "$main_env_real" "$target/backend/.env"
+    LANE_REFRESH_ENV="relinked"
+    echo "lane3: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2
+  else
+    LANE_REFRESH_ENV="ok"
   fi
 fi
+export LANE_REFRESH_ENV
+
 
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
