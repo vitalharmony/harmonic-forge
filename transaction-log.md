@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane): harden queue driver safety and coverage (F774)
+- tools/lane/queue_resume_args.sh   |   7 +-
+- tools/lane/queue_state.py         |   9 +-
+- tools/lane/test_lane_queue_run.py | 124 +++++++++++++++++++++-----
+- 4 files changed, 240 insertions(+), 78 deletions(-)
+
 ## feat(lane): add durable Codex queue driver (F774)
 - tools/lane/queue_state.py                  |  51 +++++++++++++
 - tools/lane/test_lane_queue_run.py          |  73 +++++++++++++++++++

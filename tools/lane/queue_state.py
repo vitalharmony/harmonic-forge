@@ -17,12 +17,13 @@ def load(path: Path) -> dict:
     if not isinstance(items, list):
         raise ValueError("queue must contain an items list")
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            raise ValueError("every item needs a string id")
+        if not isinstance(item, dict):
+            raise ValueError("every item must be an object")
+        for field in ("id", "kind", "status", "note"):
+            if not isinstance(item.get(field), str):
+                raise ValueError(f"every item needs a string {field}")
         if item.get("status") not in STATUSES:
             raise ValueError(f"item {item['id']} has invalid status")
-        item.setdefault("kind", "work")
-        item.setdefault("note", "")
     return state
 
 
