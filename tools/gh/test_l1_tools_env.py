@@ -87,6 +87,22 @@ class L1ToolsEnv(unittest.TestCase):
                              _git(t.forge, "rev-parse", "origin/main"))
             self.assertEqual(t.provisioned.read_text().splitlines(), [str(t.project_wt)])
 
+    def test_a_call_from_a_linked_worktree_uses_the_repository_name(self):
+        """Smoke-test finding: a call from `hrse2-762-impl` must still use
+        `hrse2-l1-tools`, never `hrse2-762-impl-l1-tools`."""
+        with _Tree() as t:
+            linked = t.root / "hrse2-762-impl"
+            _git(t.project, "worktree", "add", "-q", "--detach", str(linked), "HEAD")
+            env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                       L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                       L1_TOOLS_PROVISION_CMD="true")
+            proc = subprocess.run(
+                ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{linked}" && echo "P=$L1_TOOLS_PROJECT"'],
+                env=env, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"P={t.project_wt}", proc.stdout)
+            self.assertFalse((t.wt_root / "hrse2-762-impl-l1-tools").exists())
+
     def test_a_new_origin_main_moves_both(self):
         """TC2."""
         with _Tree() as t:

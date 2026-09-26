@@ -37,11 +37,15 @@ l1_tools_env() {
   local project_root="${1:?l1_tools_env: project root required}"
   local forge_root="${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"
   local wt_root="${L1_TOOLS_WORKTREE_ROOT:-$HOME/Harmonic_Projects/.worktrees}"
-  local project_top name
+  local project_top common name
   project_top="$(git -C "$project_root" rev-parse --show-toplevel 2>/dev/null)" \
     || { echo "l1_tools_env: $project_root is not inside a git repository" >&2; return 1; }
-  name="$(basename "$project_top" | tr '[:upper:]' '[:lower:]')"
-  name="${name%-lane[0-9]}"
+  # Named after the REPOSITORY (its main checkout, the parent of the common
+  # .git dir), never after whichever worktree the caller ran from -- or a
+  # call from hrse2-762-impl would create hrse2-762-impl-l1-tools.
+  common="$(git -C "$project_top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || { echo "l1_tools_env: cannot resolve the git common dir of $project_top" >&2; return 1; }
+  name="$(basename "$(dirname "$common")" | tr '[:upper:]' '[:lower:]')"
   mkdir -p "$wt_root" || return 1
 
   _l1_tools_ensure "$project_top" "$wt_root/${name}-l1-tools" provision || return 1
