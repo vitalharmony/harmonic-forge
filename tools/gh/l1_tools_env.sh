@@ -115,8 +115,17 @@ _l1_tools_ensure() {
   # and provisions again instead of reusing an unprovisioned one.
   if [ -n "$created" ] && [ -n "$provision" ]; then
     if ! ( cd "$path" && eval "${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}" ) >/dev/null 2>&1; then
+      # A failed `worktree remove` here (locked, transient) must not leave a
+      # registered-but-unprovisioned worktree at $path: the next call's
+      # `[ -e "$path/.git" ]` would then be true and take the checkout
+      # branch, which never re-provisions (cross-family verify, F762). Move
+      # it aside unconditionally and prune the now-dangling registration, so
+      # the next call always finds nothing at $path and creates fresh.
+      if ! git -C "$src" worktree remove --force "$path" >/dev/null 2>&1; then
+        mv "$path" "$path.stale-$(date +%Y%m%d%H%M%S)-unprovisioned" 2>/dev/null || true
+        git -C "$src" worktree prune >/dev/null 2>&1 || true
+      fi
       echo "l1_tools_env: provisioning $path failed -- removed it; the next call retries" >&2
-      git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 || true
       exec {fd}>&-; return 1
     fi
   fi
