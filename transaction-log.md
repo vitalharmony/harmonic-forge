@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(hooks): remind high-tier lanes to downshift (F769)
+- .claude/settings.json                       |  5 ++
+- tools/hooks/test_tier_downshift_reminder.py | 75 +++++++++++++++++++++++++++
+- tools/hooks/tier_downshift_reminder.py      | 80 +++++++++++++++++++++++++++++
+- 3 files changed, 160 insertions(+)
+
 ## docs(belt): rule 6 keeps the step-4 re-arm on Monitor expiry (harmonic-forge#749)
 
 Preclose finding 1: rule 6 could be read as ending an expiry turn without
