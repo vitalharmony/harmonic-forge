@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): scope interpreter -c detection (F772)
+- tools/hooks/gate_codex_tool.py      | 31 +++++++++++++++++++++++++++----
+- tools/hooks/test_gate_codex_tool.py | 19 +++++++++++++++++++
+- 2 files changed, 46 insertions(+), 4 deletions(-)
+
 ## docs(belt): rule 6 keeps the step-4 re-arm on Monitor expiry (harmonic-forge#749)
 
 Preclose finding 1: rule 6 could be read as ending an expiry turn without
