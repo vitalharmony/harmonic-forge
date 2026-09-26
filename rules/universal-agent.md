@@ -588,7 +588,7 @@ adjudicate every observation — that just moves the triage cost rather than
 removing it.
 <!-- /R-0044 -->
 
-## STANDING-RULE VIOLATIONS GET FILED, NOT FIXED, NOT JUST MENTIONED
+## STANDING-RULE VIOLATIONS ARE SURFACED AND FILED, NOT FIXED, NOT JUST MENTIONED
 
 **Gated by the filing bar above — run those three tests first.** This section
 governs *how* a violation is recorded once it clears the bar, and is not
@@ -600,11 +600,12 @@ If Lane 2 (implementing) or Lane 3 (testing/style pass) encounters a
 violation of any standing rule — modularity, type safety, security/DB
 patterns, cloud-native/12-factor, observability, multi-tenancy, any rule in
 this file or the project's own rule files — in a file already being touched
-for the current issue, it must file a new, separate tracked issue describing
-the violation (file, line, rule violated) rather than fixing it inline or
-only mentioning it in a gate comment. A gate comment closes with its parent
-issue and the finding is lost; a filed issue persists and can be prioritized
-independently. This extends the existing report-only/no-self-fix discipline
+for the current issue, it surfaces the violation (file, line, rule violated)
+in its status comment as a finding addressed to Lane 1, and stops — it does
+not fix it inline and does not file it. Lane 1 files it as a new, separate
+tracked issue, subject to R-0039's three tests. A gate comment closes with its
+parent issue and the finding is lost; Lane 1's filed issue is what persists
+and can be prioritized independently. This extends the existing report-only/no-self-fix discipline
 (the style-pass rule above, and the incidents that produced it) to *all*
 standing-rule categories, not just the 300-line cap.
 <!-- /R-0045 -->
