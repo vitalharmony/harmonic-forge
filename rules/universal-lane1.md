@@ -169,9 +169,12 @@ actually merged. See `universal-claude.md`'s Tool-use safeguards for the
 concrete commands and the specific `l1_post.py` friction this prevents.
 <!-- /R-0094 -->
 
-Lane 1 never opens a worktree by hand to post from: the posting tasks run
-from two fixed `origin/main` worktrees that `tools/gh/l1_tools_env.sh`
-creates and refreshes on every call (harmonic-forge#762).
+Lane 1 never opens a worktree by hand to post from: HRSE2's posting tasks
+(`l1-post`, `lane-comment`, `l1-issue`) run from two fixed `origin/main`
+worktrees that `tools/gh/l1_tools_env.sh` creates and refreshes on every
+call, so post from HRSE2 even for a harmonic-forge issue (`--repo
+vitalharmony/harmonic-forge`); this repo's own same-named tasks still run
+from its main checkout (harmonic-forge#762).
 
 ## Doc-only merges wait for the open implementation branches (hrse, 2026-08-14)
 

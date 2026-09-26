@@ -136,6 +136,36 @@ class L1ToolsEnv(unittest.TestCase):
                 th.join()
             self.assertEqual([r.returncode for r in results], [0, 0],
                              [r.stderr for r in results])
+            self.assertEqual(t.provisioned.read_text().splitlines(), [str(t.project_wt)],
+                             "exactly one creation+provision under contention")
+
+    def test_an_in_flight_run_holds_off_a_concurrent_refresh(self):
+        """Preclose silent-bypass F2/F3: the lock spans the caller's use of the
+        worktree, not just the ensure step -- an exclusive request fails while
+        a consumer is still running, and succeeds once it exits."""
+        with _Tree() as t:
+            ready, release = t.root / "ready", t.root / "release"
+            env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                       L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                       L1_TOOLS_PROVISION_CMD="true")
+            consumer = subprocess.Popen(
+                ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{t.project}" '
+                               f'&& touch "{ready}" && while [ ! -e "{release}" ]; do sleep 0.05; done'],
+                env=env)
+            try:
+                for _ in range(200):
+                    if ready.exists():
+                        break
+                    threading.Event().wait(0.05)
+                self.assertTrue(ready.exists())
+                lock = t.wt_root / ".hrse2-l1-tools.lock"
+                held = subprocess.run(["flock", "-n", "-x", str(lock), "true"])
+                self.assertNotEqual(held.returncode, 0, "exclusive lock granted mid-run")
+            finally:
+                release.write_text("")
+                consumer.wait(timeout=30)
+            free = subprocess.run(["flock", "-n", "-x", str(lock), "true"])
+            self.assertEqual(free.returncode, 0)
 
     def test_the_tools_worktrees_are_detached(self):
         """TC9: no `branch refs/heads/` line, so l1_post.py's overlap check
@@ -163,6 +193,49 @@ class L1ToolsEnv(unittest.TestCase):
             proc = t.run()
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("git fetch failed", proc.stderr)
+
+    def test_a_failed_provision_is_retried_on_the_next_call(self):
+        """Preclose fail-direction F1: a failed provision must not leave a
+        created-but-unprovisioned worktree that later calls silently reuse."""
+        with _Tree() as t:
+            flag = t.root / "fail-once"
+            flag.write_text("")
+            env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                       L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                       L1_TOOLS_PROVISION_CMD=(
+                           f"sh -c 'if [ -e {flag} ]; then rm {flag}; exit 1; fi; "
+                           f"pwd >> {t.provisioned}'"))
+            cmd = ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{t.project}"']
+            first = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertNotEqual(first.returncode, 0)
+            self.assertFalse((t.project_wt / ".git").exists())
+            second = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(t.provisioned.read_text().splitlines(), [str(t.project_wt)])
+
+    def test_a_non_worktree_directory_at_the_path_is_set_aside(self):
+        """Preclose fail-direction F2: a plain directory at the path must not
+        wedge every later call; it is moved aside, never deleted."""
+        with _Tree() as t:
+            t.project_wt.mkdir(parents=True)
+            (t.project_wt / "leftover.txt").write_text("keep me\n")
+            proc = t.run()
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((t.project_wt / ".git").exists())
+            aside = [p for p in t.wt_root.iterdir() if p.name.startswith("hrse2-l1-tools.stale-")]
+            self.assertEqual(len(aside), 1)
+            self.assertEqual((aside[0] / "leftover.txt").read_text(), "keep me\n")
+
+    def test_untracked_residue_blocking_the_checkout_forces_a_recreate(self):
+        """Preclose fail-direction F3."""
+        with _Tree() as t:
+            t.run()
+            (t.project_wt / "NEXT.md").write_text("untracked residue\n")
+            sha = _advance(t.project)  # origin/main now adds NEXT.md
+            proc = t.run()
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(_git(t.project_wt, "rev-parse", "HEAD"), sha)
+            self.assertEqual((t.project_wt / "NEXT.md").read_text(), "next\n")
 
     def test_the_main_checkouts_are_never_touched(self):
         """AC7."""

@@ -34,6 +34,9 @@
 # L1_TOOLS_PROVISION_CMD (default `mise run worktree-provision`).
 
 l1_tools_env() {
+  # One call per shell: this shell already holds shared locks, and a second
+  # exclusive request from it would wait on itself.
+  if [ -n "${L1_TOOLS_PROJECT:-}" ] && [ -n "${_L1_TOOLS_LOCKED:-}" ]; then return 0; fi
   local project_root="${1:?l1_tools_env: project root required}"
   local forge_root="${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"
   local wt_root="${L1_TOOLS_WORKTREE_ROOT:-$HOME/Harmonic_Projects/.worktrees}"
@@ -52,6 +55,7 @@ l1_tools_env() {
   _l1_tools_ensure "$forge_root" "$wt_root/harmonic-forge-l1-tools" "" || return 1
   export L1_TOOLS_PROJECT="$wt_root/${name}-l1-tools"
   export L1_TOOLS_FORGE="$wt_root/harmonic-forge-l1-tools"
+  _L1_TOOLS_LOCKED=1
 }
 
 # _l1_tools_ensure <source-repo> <worktree-path> <provision|""> -- create,
@@ -79,26 +83,50 @@ _l1_tools_ensure() {
     echo "l1_tools_env: $path had tracked changes -- re-creating it clean" >&2
     git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 || rc=$?
   fi
+  # A checkout that refuses (e.g. untracked residue in the way of a file
+  # origin/main now adds) falls through to re-creation rather than wedging
+  # every later call.
+  if [ -e "$path/.git" ] && ! git -C "$path" checkout -q --detach origin/main 2>/dev/null; then
+    echo "l1_tools_env: could not move $path to origin/main -- re-creating it" >&2
+    git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 || rc=$?
+  fi
   if [ ! -e "$path/.git" ]; then
     git -C "$src" worktree prune >/dev/null 2>&1 || true
-    if ! git -C "$src" worktree add -q --detach "$path" origin/main 2>/dev/null; then
-      echo "l1_tools_env: could not create $path" >&2
+    # A directory here with no .git is not a worktree (an interrupted add or
+    # remove): nothing legitimate lives in it, so set it aside, never delete.
+    if [ -e "$path" ]; then
+      local aside
+      aside="$path.stale-$(date +%Y%m%d%H%M%S)"
+      mv "$path" "$aside" \
+        || { echo "l1_tools_env: $path is not a worktree and could not be moved aside" >&2; exec {fd}>&-; return 1; }
+      echo "l1_tools_env: $path was not a worktree -- moved it to $aside" >&2
+    fi
+    local add_err
+    if ! add_err="$(git -C "$src" worktree add -q --detach "$path" origin/main 2>&1)"; then
+      echo "l1_tools_env: could not create $path: $add_err" >&2
       exec {fd}>&-; return 1
     fi
     created=1
-  elif ! git -C "$path" checkout -q --detach origin/main 2>/dev/null; then
-    echo "l1_tools_env: could not move $path to origin/main" >&2
-    exec {fd}>&-; return 1
   fi
 
   # Provision on every creation: an unprovisioned project tools worktree fails
-  # every Tier 1 run at l1_post.py's dependency-directory check.
+  # every Tier 1 run at l1_post.py's dependency-directory check. A failed
+  # provision removes the worktree it just created, so the next call creates
+  # and provisions again instead of reusing an unprovisioned one.
   if [ -n "$created" ] && [ -n "$provision" ]; then
     if ! ( cd "$path" && eval "${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}" ) >/dev/null 2>&1; then
-      echo "l1_tools_env: provisioning $path failed" >&2
+      echo "l1_tools_env: provisioning $path failed -- removed it; the next call retries" >&2
+      git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 || true
       exec {fd}>&-; return 1
     fi
   fi
-  exec {fd}>&-
-  return "$rc"
+  # Downgrade to a SHARED lock and keep the fd open for the caller's lifetime
+  # (inherited by the tool it runs): a concurrent call's exclusive refresh
+  # then waits until this run is done, instead of re-checking-out or removing
+  # the worktree under a minutes-long l1_post.py Tier 1 run.
+  if [ "$rc" -ne 0 ] || ! flock -s "$fd"; then
+    exec {fd}>&-
+    return "${rc:-1}"
+  fi
+  return 0
 }
