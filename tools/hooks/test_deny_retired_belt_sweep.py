@@ -101,6 +101,15 @@ class DecisionTests(unittest.TestCase):
         )
         self.assertTrue(_is_denied(result))
 
+    def test_newline_separated_command_is_still_denied(self):
+        """Preclose finding, round 4: a bare `\\n` is a command separator too
+        -- a leading read-only line must not exempt a later line in the same
+        multi-line command string that actually runs the retired mechanism."""
+        result = m.decision(
+            "grep foo bar\npython3 tools/gh/watch_lane_posts.py --sweep-for l1"
+        )
+        self.assertTrue(_is_denied(result))
+
 
 class MainTests(unittest.TestCase):
     def _run(self, payload: dict) -> dict:

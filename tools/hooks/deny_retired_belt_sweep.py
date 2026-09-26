@@ -62,7 +62,13 @@ _READ_ONLY_LEADING = re.compile(
 #: deny-list backstop, not a sandbox -- but splitting on the operators that
 #: actually chain independent commands is what makes the per-segment
 #: exemption above sound rather than a whole-string escape hatch.
-_SEGMENT_SPLIT = re.compile(r"[;&|]+")
+#:
+#: Preclose finding, round 4: a bare newline is also a command separator in
+#: bash (and in a `$'...'`-quoted or heredoc argument), and was missing from
+#: this class -- `grep foo\npython3 watch_lane_posts.py --sweep-for l1` was
+#: read as a SINGLE segment starting with `grep`, so the read-only exemption
+#: covered the second line's actual execution of the retired mechanism.
+_SEGMENT_SPLIT = re.compile(r"[;&|\n]+")
 
 _MESSAGE = (
     "The account-wide belt sweep is retired (harmonic-forge#640/#659). Arm "
