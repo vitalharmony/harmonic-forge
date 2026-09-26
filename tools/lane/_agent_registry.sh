@@ -200,8 +200,11 @@ declare -A AGENT_SYSTEM_PROMPT_FLAG=(
 
 # AGENT_SESSION_FLAGS / AGENT_SESSION_DENIED -- harmonic-forge#754.
 #
-# Flags injected at EVERY lane so the session's tool commands, hooks and MCP
-# servers run in the launcher's own process tree and inherit LANE/LANE_AGENT.
+# Flags injected at EVERY lane so the session's tool commands and hooks run in
+# the launcher's own process tree and inherit LANE/LANE_AGENT. MCP servers do
+# NOT inherit LANE even in-process -- Codex builds their environment explicitly
+# (measured live, harmonic-forge#754). The guards are hooks and shell commands,
+# so they are covered; an MCP tool that shells out or posts is not.
 # Codex 0.157's interactive TUI otherwise hands execution to a shared
 # `codex app-server --managed-daemon` that `systemd --user` started with no
 # LANE at all (measured live via /proc/<pid>/environ: the CLI had LANE=2, the

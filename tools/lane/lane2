@@ -9,9 +9,10 @@
 # session's lifetime.
 #
 # Scope note: the LANE env-var signal, and the HRSE2 hook that reads it
-# (scripts/block_lane1_status_claims.py), only cover Claude-Code-based
-# Lane 2 sessions. A Codex Lane 2 session is unaffected -- Codex's own
-# hook mechanism (.codex/hooks.json) is a separate concern.
+# (scripts/block_lane1_status_claims.py), reach a Codex Lane 2 session's
+# commands and hooks (.codex/hooks.json) only because the launcher passes
+# `--no-daemon` (harmonic-forge#754): Codex >= 0.157 otherwise runs tool
+# commands in a shared app-server daemon that never saw LANE.
 #
 # Which agent runs is chosen with `--agent claude|codex|gemini` against the
 # closed registry in tools/lane/_agent_registry.sh; native CLI arguments follow,
