@@ -410,8 +410,8 @@ hooks = []
 id = "R-0045"
 file = "rules/universal-agent.md"
 anchor = "standing-rule-violations"
-statement = "A standing-rule violation found in a file being touched is filed as a separate tracked issue, not fixed inline and not only mentioned in a gate comment."
-text_sha = "c45832629be006df"
+statement = "A standing-rule violation Lane 2 or Lane 3 finds in a file being touched is surfaced to Lane 1 in its status comment and not fixed inline; Lane 1 files it as a separate tracked issue, subject to R-0039."
+text_sha = "52ed656f0bda549e"
 hooks = []
 
 [[rule]]
