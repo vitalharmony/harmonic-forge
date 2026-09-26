@@ -66,15 +66,20 @@ declare -A AGENT_DISPLAY=(
   [gemini]="Gemini"
 )
 
+# codex floor 0.157 (harmonic-forge#754): the launcher now injects
+# `--no-daemon` (AGENT_SESSION_FLAGS below), verified live on 0.157.0 and not
+# verified on anything older. An older CLI that lacks the flag would refuse it
+# loudly as an unknown argument, never launch unguarded -- the floor turns that
+# opaque clap error into a named launcher refusal.
 declare -A AGENT_VERSION_MIN=(
   [claude]="2.1"
-  [codex]="0.150"
+  [codex]="0.157"
   [gemini]="0.56"
 )
 
 declare -A AGENT_VERSION_QUALIFIED=(
   [claude]="2.1.250"
-  [codex]="0.150.1"
+  [codex]="0.157.0"
   [gemini]="0.56.0"
 )
 
@@ -193,6 +198,37 @@ declare -A AGENT_SYSTEM_PROMPT_FLAG=(
   [gemini]=""
 )
 
+# AGENT_SESSION_FLAGS / AGENT_SESSION_DENIED -- harmonic-forge#754.
+#
+# Flags injected at EVERY lane so the session's tool commands, hooks and MCP
+# servers run in the launcher's own process tree and inherit LANE/LANE_AGENT.
+# Codex 0.157's interactive TUI otherwise hands execution to a shared
+# `codex app-server --managed-daemon` that `systemd --user` started with no
+# LANE at all (measured live via /proc/<pid>/environ: the CLI had LANE=2, the
+# daemon and the MCP servers it spawned for that session had none), silently
+# disabling every LANE-keyed guard. `--no-daemon` ("Run without the shared
+# background server, even if it is already running", `codex --help`, 0.157.0)
+# makes that structurally impossible regardless of what daemon is running, so
+# the launcher neither restarts nor trusts one. `codex exec` already ran
+# in-process on 0.157.0 (verified live); the flag is top-level, so it still
+# applies to an `exec`/`resume`/`fork` subcommand in the passthrough.
+#
+# AGENT_SESSION_DENIED is the passthrough that would undo it, refused by the
+# same AC4 deny check as `--sandbox`: a second `--no-daemon` is a hard clap
+# error ("cannot be used multiple times"), and `--remote` routes the TUI to an
+# app server this launcher did not start -- it parses silently alongside
+# `--no-daemon` (verified), so it is refused rather than left to precedence.
+declare -A AGENT_SESSION_FLAGS=(
+  [claude]=""
+  [codex]="--no-daemon"
+  [gemini]=""
+)
+declare -A AGENT_SESSION_DENIED=(
+  [claude]=""
+  [codex]="--no-daemon --remote"
+  [gemini]=""
+)
+
 declare -A AGENT_POLICY_FLAG=(
   [claude]=""
   [codex]=""
@@ -258,6 +294,7 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_MODEL_FLAG AGENT_MODEL_FLAG_ENV AGENT_MODEL_FLAG_VALUE
   AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
   AGENT_EFFORT_LEVELS AGENT_LAUNCH_REFUSED_ENV
+  AGENT_SESSION_FLAGS AGENT_SESSION_DENIED
 )
 
 _registry_die() {
@@ -381,4 +418,11 @@ registry_lane_denied_tokens() {
   # outright instead, same mechanism as `--admin-policy`.
   sandbox="$(registry_lookup AGENT_LANE_SANDBOX "$agent:$lane")"
   [ -n "$sandbox" ] && printf '%s\n' "--sandbox"
+  # harmonic-forge#754: whatever would undo AGENT_SESSION_FLAGS, every lane.
+  local denied token
+  denied="$(registry_lookup AGENT_SESSION_DENIED "$agent")"
+  for token in $denied; do
+    printf '%s\n' "$token"
+  done
+  return 0
 }

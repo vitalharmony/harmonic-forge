@@ -109,7 +109,7 @@ exit 0
 # separately, with deliberately-low stubs.
 STUB_VERSIONS = {
     "claude": "2.1.250 (Claude Code)",
-    "codex": "codex-cli 0.150.1",
+    "codex": "codex-cli 0.157.0",
     "gemini": "0.56.0",
 }
 
