@@ -79,8 +79,15 @@ part is yours to hold.
 ### `--evidence-run` — builder-executed, allowlisted network evidence (harmonic-forge#648)
 
 `verify` runs under `--sandbox read-only` with `--ignore-user-config`, so the
-reviewer has no network access at all — it cannot reach `api.github.com` or
-`registry.npmjs.org` to check a GitHub- or npm-shaped assumption itself. The
+reviewer has **no shell network** — it cannot reach `api.github.com` or
+`registry.npmjs.org` to check a GitHub- or npm-shaped assumption itself. It
+**does** have codex's hosted web search (`--search`, harmonic-forge#757): it can
+retrieve and cite public web pages, and a URL-cited verdict counts only when
+the run actually performed a search. **Search queries leave the machine**, and
+the model composes them from the brief, so do not put anything in a verify
+brief that must not reach OpenAI's search backend: credentials, customer names
+or unpublished confidential text. Private GitHub state still belongs in
+pre-executed evidence, below. The
 brief builder closes that gap by running a narrow, allowlisted read command
 **itself**, mechanically, before the brief is written — never by asking the
 model to run it, which would just re-introduce the confabulation risk one

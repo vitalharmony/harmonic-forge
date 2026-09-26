@@ -207,6 +207,35 @@ class TestVerifyEnvelopeNormalization(unittest.TestCase):
         self.assertEqual(env["status"], "ok")
         self.assertEqual(env["report"]["assumptions"][0]["verdict"], "confirmed")
 
+    WEB_EVENT = json.dumps({"type": "item.completed",
+                            "item": {"id": "ws_0", "type": "web_search", "query": "q"}}) + "\n"
+    URL_EVIDENCE = 'https://www.python.org/downloads/release/python-3130/ — "Release date: Oct. 7, 2024"'
+
+    def _url_verdict(self, native: str) -> str:
+        env = emit_envelope("codex", "verify", 0, native)
+        self.assertEqual(env["status"], "ok")
+        return env["report"]["assumptions"][0]["verdict"]
+
+    def _url_report(self, evidence: str) -> str:
+        return codex_native({"summary": "s", "findings": [], "assumptions": [
+            {"assumption": "a", "verdict": "confirmed", "evidence": evidence}]})
+
+    def test_url_evidence_with_a_web_search_event_survives(self):
+        """harmonic-forge#757 AC2: retrieved-page evidence counts as executed."""
+        self.assertEqual(self._url_verdict(self.WEB_EVENT + self._url_report(self.URL_EVIDENCE)),
+                         "confirmed")
+
+    def test_url_evidence_without_any_web_search_downgrades(self):
+        """harmonic-forge#757 preclose: a cited page with no retrieval behind
+        it is the same confabulation as empty evidence."""
+        self.assertEqual(self._url_verdict(self._url_report(self.URL_EVIDENCE)), "uncheckable")
+
+    def test_command_output_containing_a_url_is_not_touched(self):
+        """Anchored at the start: a command's output that merely contains a
+        URL (e.g. an `html_url` field) is not web evidence."""
+        evidence = '$ gh api repos/o/r/issues/1 --jq .html_url\nhttps://github.com/o/r/issues/1'
+        self.assertEqual(self._url_verdict(self._url_report(evidence)), "confirmed")
+
     def test_refuted_with_evidence_survives(self):
         env = emit_envelope("codex", "verify", 0, codex_native({
             "summary": "checked", "findings": [],
@@ -373,10 +402,23 @@ class TestVerifyContractCarriesReadOnlyBoundary(unittest.TestCase):
                 self.assertIn(command, self.contract)
 
     def test_verify_contract_still_permits_reads(self):
-        """The reviewer's whole purpose is running read commands — an
-        over-broad prohibition would make every assumption uncheckable."""
-        self.assertIn("gh issue view", self.contract)
-        self.assertIn("use them freely", self.contract)
+        """The reviewer's whole purpose is reading — an over-broad prohibition
+        would make every assumption uncheckable. harmonic-forge#757: local
+        reads and web search, but no longer `gh` reads, which have never been
+        able to connect from this posture's shell."""
+        self.assertIn("git log/show/diff", self.contract)
+        self.assertIn("web search", self.contract)
+
+    def test_verify_contract_states_no_shell_network(self):
+        """harmonic-forge#757 AC3: the old "use them freely" sentence told the
+        reviewer to run `gh` reads that always fail to connect."""
+        self.assertNotIn("use them freely", self.contract)
+        self.assertIn("no shell network", self.contract)
+        self.assertIn("Pre-executed evidence", self.contract)
+
+    def test_verify_contract_accepts_a_retrieved_url_as_evidence(self):
+        """harmonic-forge#757 AC2."""
+        self.assertIn("a URL you retrieved with web search", self.contract)
 
     def test_mutation_requiring_assumption_routes_to_uncheckable(self):
         self.assertIn("uncheckable", self.contract.split("READ-ONLY reviewer")[1])
@@ -1147,6 +1189,57 @@ class TestCodexGitRepoCheck(unittest.TestCase):
         self.assertIn("trust_level", branch, "verify still carries it for its own reason")
         verify = branch[branch.index('elif [ "$posture" = verify ]'):]
         self.assertIn("--skip-git-repo-check", verify)
+
+
+class TestVerifyWebSearchArgv(unittest.TestCase):
+    """harmonic-forge#757 AC4 — executed, not read from source: a stub `codex`
+    records the argv the script really passes, one argument per line."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = make_stub_path(self.tmp.name)
+        self.argv_file = Path(self.tmp.name) / "codex.argv"
+        stub = Path(self.tmp.name) / "stubbin" / "codex"
+        stub.write_text(
+            '#!/usr/bin/env bash\n'
+            f'printf "%s\\n" "$@" > "{self.argv_file}"\n'
+            'echo \'{"type":"item.completed","item":{"type":"agent_message",'
+            '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[],\\"assumptions\\":[]}"}}\'\n'
+        )
+        stub.chmod(0o755)
+        self.brief = Path(self.tmp.name) / "brief.md"
+        self.brief.write_text("a cold brief\n")
+
+    def codex_argv(self, *args: str) -> list[str]:
+        run_script(*args, "--brief", str(self.brief), path=self.path)
+        self.assertTrue(self.argv_file.exists(), "codex was never invoked")
+        return self.argv_file.read_text().splitlines()
+
+    def test_verify_passes_search_before_exec_and_keeps_every_flag(self) -> None:
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "verify", "--cwd", self.tmp.name)
+        self.assertIn("--search", argv)
+        self.assertIn("exec", argv)
+        self.assertLess(argv.index("--search"), argv.index("exec"),
+                        "`codex exec --search` exits 2; the flag must precede `exec`")
+        self.assertIn("--ignore-user-config", argv)
+        sandbox = argv.index("--sandbox")
+        self.assertEqual(argv[sandbox + 1], "read-only")
+        model = argv.index("-m")
+        self.assertTrue(argv[model + 1], "the verify model stays pinned")
+
+    def test_read_only_posture_gets_no_search(self) -> None:
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "read-only")
+        self.assertNotIn("--search", argv)
+        self.assertEqual(argv[0], "exec")
+
+    def test_probe_posture_gets_no_search(self) -> None:
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "probe", "--cwd", self.tmp.name)
+        self.assertNotIn("--search", argv)
+        self.assertEqual(argv[0], "exec")
 
 
 class TestStderrIsCapturedNotDiscarded(unittest.TestCase):
