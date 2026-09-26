@@ -41,6 +41,16 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_args.sh" "$@"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=1
 
+# shellcheck source=_lane_refresh.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"
+lane_refresh branch
+export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
+# Operator ruling 2026-09-26: lane1 always reminds -- the dev backend (:8002)
+# and frontend (:5173) run from this main checkout, and a fast-forward here
+# can move code out from under them. Printed for every --agent (Codex/Gemini
+# have no SessionStart hook, so this terminal line is their only carrier).
+echo "lane1: after the session starts, run \`mise run restart --no-bump --no-git\` ($LANE_REFRESH_STATUS: $LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
+
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 # shellcheck source=_lane_cleanup.sh

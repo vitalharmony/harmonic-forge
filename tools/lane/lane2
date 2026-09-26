@@ -47,6 +47,40 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_args.sh" "$@"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
 export LANE=2
 
+# shellcheck source=_lane_refresh.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"
+lane_refresh detached
+export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO LANE_REFRESH_DETAIL
+case "$LANE_REFRESH_STATUS" in
+  skipped-dirty)
+    echo "lane2: refusing to start -- tracked changes in $target would be silently carried into the refreshed checkout; commit or move them first" >&2
+    exit 1
+    ;;
+  fetch-failed)
+    echo "lane2: refusing to start -- could not determine or reach origin/main for $target" >&2
+    exit 1
+    ;;
+  checkout-failed)
+    echo "lane2: refusing to start -- the fetch succeeded but \`git checkout --detach\` failed in $target:" >&2
+    printf '%s\n' "$LANE_REFRESH_DETAIL" | sed 's/^/  /' >&2
+    exit 1
+    ;;
+  skipped-diverged)
+    echo "lane2: refusing to start -- $LANE_REFRESH_DETAIL in $target; push it or move it off this worktree first" >&2
+    exit 1
+    ;;
+  skipped-busy)
+    echo "lane2: WARNING -- another process is running in $target, so the checkout was NOT updated and may be stale:" >&2
+    printf '%s\n' "$LANE_REFRESH_DETAIL" | sed 's/^/  /' >&2
+    ;;
+esac
+# Silent when already current: the record is in LANE_REFRESH_* and the log,
+# and a no-op line ahead of every launch is noise.
+if [ "$LANE_REFRESH_STATUS" != "current" ] && [ "$LANE_REFRESH_STATUS" != "skipped-busy" ]; then
+  echo "lane2: checkout $LANE_REFRESH_STATUS ($LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
+  [ -n "$LANE_REFRESH_DETAIL" ] && echo "lane2: $LANE_REFRESH_DETAIL" >&2
+fi
+
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 
