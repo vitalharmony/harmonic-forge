@@ -13,7 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
-LANES = ("lane1", "lane2", "lane3")
+LANES = ("lane1", "lane2", "lane3", "lane-queue-run")
 def check(
     expected_root: Path | None = None,
     bin_dir: Path | None = None,
