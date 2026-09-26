@@ -1242,6 +1242,8 @@ class CodexLaneTmp(unittest.TestCase):
             ["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=false"],
             ["--config", "sandbox_workspace_write.exclude_slash_tmp=false"],
             ["-csandbox_workspace_write.exclude_slash_tmp=false"],
+            # cross-family verify: codex also accepts `-c=key=value`.
+            ["-c=sandbox_workspace_write.exclude_slash_tmp=false"],
             ["--config=sandbox_workspace_write.exclude_tmpdir_env_var=false"],
             ["-c", "sandbox_workspace_write.exclude_some_future_key=false"],
             ["-c", "sandbox_workspace_write={exclude_slash_tmp=false}"],

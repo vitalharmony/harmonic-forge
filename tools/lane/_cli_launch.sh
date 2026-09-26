@@ -157,7 +157,7 @@ done < <(registry_lane_denied_tokens "$_lane_agent" "$LANE")
 # A plain token matches the word exactly or as `<token>=value`. A token that
 # ends in `*` (harmonic-forge#756 NC4) is a PREFIX match on a Codex `-c` config
 # KEY: it is tested against the word itself (the value word of `-c key=v` or
-# `--config key=v`) and against the key inside the glued `-ckey=v` and
+# `--config key=v`) and against the key inside the glued `-ckey=v`, `-c=key=v` and
 # `--config=key=v` forms. The comparison is a quoted-prefix `case`, so the
 # `*` is never a glob and a token never matches a path on disk.
 _lane_arg_denied() {
@@ -167,6 +167,7 @@ _lane_arg_denied() {
       key="$arg"
       case "$key" in
         --config=*) key="${key#--config=}" ;;
+        -c=*) key="${key#-c=}" ;;
         -c?*) key="${key#-c}" ;;
       esac
       # Only a real `key=value` override counts, and the key must be the
@@ -185,6 +186,7 @@ _lane_arg_denied() {
   # override) is refused however the `-c` is spelled.
   case "$arg" in
     --config=*) key="${arg#--config=}" ;;
+    -c=*) key="${arg#-c=}" ;;
     -c?*) key="${arg#-c}" ;;
     *) return 1 ;;
   esac
