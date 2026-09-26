@@ -573,32 +573,27 @@ its own separately.
 
 ## Role: Lane 3
 
-**Three checks, every tick, unconditionally — none gates any other:**
+**Two checks, every tick, unconditionally — neither gates the other:**
 
 - **Check A — spec owed.** Newest `kind=ready-for-l3` with no spec of mine after
   it on the thread means a spec is owed *now*. Do not wait for a sweep or an AE;
   neither exists until the spec does.
 - **Check B — execute ready.** `mise run gate-checkout <branch>` **first**, never
   assumed still-current from a prior tick.
-- **Check C — did a FAIL/BLOCKED verdict ever get a response?**
-  (harmonic-forge#629). Structurally identical in shape to the sweep
-  retired for Lane 1 (harmonic-forge#640) — the retired account-wide sweep
-  ran it, same `since`/`extra_issues`/watermark shape; that
-  sweep is itself retired by harmonic-forge#659, so Check C is now a per-tick
-  check on issues already in hand, never a repo-wide scan): every open issue whose LAST Lane 3
-  `gate-result` comment stated `FAIL` or `BLOCKED`, that has since received
-  ANY comment — classified or not. The "any kind" is the point: hrse#1771's
-  real Lane 1 ruling after a FAIL landed as `kind=discussion`, which neither
-  Check A nor Check B, nor `discover_queue`'s own `QUEUE_KINDS` tracking, ever
-  surfaced — a gate-result FAIL/BLOCKED is not itself a `QUEUE_KINDS["l3"]`
-  member, so the issue had already left every mechanism that was watching it.
-  Check C classifies nothing about the reply; it only asks whether a later
-  comment exists at all, timestamp-only, so no reply shape can suppress it.
 
-B and C both run regardless of what A found: a spec posted on an earlier tick
-can have its AE and sweep land on any later tick, and only B sees that; a
-verdict posted on an earlier tick can get its Lane 1 response on any later
-one, and only C sees that.
+**Check C (harmonic-forge#629) — did a FAIL/BLOCKED verdict ever get a
+response? — is retired (harmonic-forge#766), not merely undocumented.** Its
+only implementation (the repo-wide unanswered-verdict scan) was the same
+retired account-wide sweep mechanism as Lane 1's (harmonic-forge#640/#659),
+and harmonic-forge#766 deleted it rather than keep a per-tick stub with
+nothing behind it. A `FAIL`/`BLOCKED` verdict with no later reply is now
+caught only by whatever surfaces it through `--queue-for l3` or a human
+noticing — there is no belt-tick backstop for it. If this gap matters again,
+file a fresh issue for a bounded replacement; do not hand-roll the repo-wide
+scan this same retirement exists to prevent.
+
+B runs regardless of what A found: a spec posted on an earlier tick can have
+its AE and sweep land on any later tick, and only B sees that.
 
 **Lane 3 takes the session lock** — its belt and loop both run `gate-checkout` in
 one shared worktree, so two ticks landing together corrupt a checkout. One lock

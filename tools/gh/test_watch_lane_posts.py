@@ -32,7 +32,6 @@ from watch_lane_posts import (
     cycle_is_quiet,
     enumerate_repo_roots,
     enumerate_worktrees,
-    list_open_issues,
     next_poll_interval,
     sleep_before_next_poll,
     MONITOR_LIFETIME_S,
@@ -1213,7 +1212,7 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         last = {("vitalharmony/hrse", 1530): "ready-for-l3"}
         with patch("watch_lane_posts._fetch_all_comments", return_value=None):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(queue, last, "the prior queue must carry forward")
         self.assertEqual(ok, set(), "a failed repo must not be counted as reporting")
@@ -1235,7 +1234,7 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
             return [{"body": queued_body}] if issue == 1530 else superseded
         with patch("watch_lane_posts._fetch_all_comments", side_effect=fake_comments):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530),
                                  ("vitalharmony/hrse", 1600)})
         self.assertEqual(ok, {"vitalharmony/hrse"})
@@ -1256,7 +1255,7 @@ class DiscoverQueueFailsClosedPerIssueTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": body}]):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)})
         self.assertEqual(ok, {"vitalharmony/hrse"})
         self.assertIn(("vitalharmony/hrse", 1530), queue)
@@ -1293,7 +1292,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue1, lines1, ok1 = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)},
                 recorded_only=True)
         self.assertEqual(ok1, {"vitalharmony/hrse"})
@@ -1305,7 +1304,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue2, lines2, ok2 = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", queue1, {}, "2026-09-10T00:05:00Z",
+                ["vitalharmony/hrse"], "l3", queue1, "2026-09-10T00:05:00Z",
                 candidate_pairs=set(),
                 recorded_only=True)
         self.assertEqual(ok2, {"vitalharmony/hrse"})
@@ -1321,7 +1320,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue3, lines3, ok3 = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", queue2, {}, "2026-09-10T00:10:00Z",
+                ["vitalharmony/hrse"], "l3", queue2, "2026-09-10T00:10:00Z",
                 candidate_pairs={("vitalharmony/hrse", 1530)},
                 recorded_only=True)
         self.assertEqual(ok3, {"vitalharmony/hrse"})
@@ -1341,7 +1340,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self._READY}]):
             queue, lines, ok = watch_lane_posts.queue_cycle(
-                ["vitalharmony/hrse"], "l3", last, {}, "2026-09-10T00:00:00Z",
+                ["vitalharmony/hrse"], "l3", last, "2026-09-10T00:00:00Z",
                 candidate_pairs=set())
         self.assertIn(("vitalharmony/hrse", 1600), queue,
                        "recorded_only=False (the default) must still carry "
@@ -1674,7 +1673,7 @@ class SweepFlagIsSeparateTests(unittest.TestCase):
         is no such kwarg to route on."""
         with patch("watch_lane_posts.discover_queue",
                    return_value=({}, True)) as bounded:
-            watch_lane_posts.queue_cycle(["o/r"], "l1", {}, {},
+            watch_lane_posts.queue_cycle(["o/r"], "l1", {},
                                          "2026-09-10T12:00:00Z")
         bounded.assert_called_once()
 

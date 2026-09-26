@@ -36,10 +36,6 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\""
-          },
-          {
-            "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\""
           },
           {
@@ -97,6 +93,10 @@
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
           }
         ]
       },

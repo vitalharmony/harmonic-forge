@@ -180,7 +180,7 @@ import sys
 import time
 from time import monotonic as _monotonic
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -544,32 +544,6 @@ def _classify(body: str) -> tuple[str, str] | None:
     return None
 
 
-#: harmonic-forge#629. A Lane 3 `kind=gate-result` comment states its own
-#: verdict as `**Verdict:** PASS|FAIL|BLOCKED|...` -- confirmed live against
-#: the hrse#1792/#1771/#1798 gate-result comments this issue's own
-#: regression case involved. `_classify` only reports the marker's `kind`
-#: (`gate-result`), never this -- a second, narrower regex, because the
-#: verdict is meaningful only for this one kind and nothing else in this
-#: file needs it.
-_VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*(\w+)")
-
-#: FAIL/BLOCKED are the two verdicts Check C watches for -- both mean the
-#: gate did not close the issue, so Lane 1 owes the thread a response, same
-#: as the two closest analogues (`R-0354`'s BLOCKED handling and a plain
-#: gate FAIL). PASS, and any other verdict, never triggers this check.
-_UNANSWERED_VERDICTS = frozenset({"FAIL", "BLOCKED"})
-
-
-def _gate_verdict(body: str) -> str | None:
-    """A Lane 3 gate-result comment's own stated verdict, or `None` if the
-    body carries no `**Verdict:**` line (a comment classified `("l3",
-    "gate-result")` by marker but written before this convention, or by a
-    tool that doesn't follow it, still returns `None` here -- Check C's
-    caller treats that as "nothing to watch," not an error)."""
-    match = _VERDICT_RE.search(body)
-    return match.group(1) if match else None
-
-
 #: Retired lane tokens, and what replaced them. Read from the same registry
 #: `gh_issue.py` checks issue bodies against (harmonic-forge#379) rather than
 #: restated -- a second list is the drift this repo keeps paying for.
@@ -756,7 +730,8 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     harmonic-forge issues already exceed 30 comments.
 
     `None` (harmonic-forge#579 preclose finding) is distinct from `[]`
-    for the same reason `list_open_issues` distinguishes them: a caller
+    for the same reason `discover_queue`'s own fetch-failure return
+    distinguishes them: a caller
     that can't tell "this issue genuinely has zero comments" from "the
     call raised" cannot decide whether it's safe to conclude the issue
     carries no ball to pick up. Without this, the retired account-wide
@@ -787,55 +762,12 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
         return None
 
 
-def list_open_issues(repo: str, *, since: str | None = None) -> list[int] | None:
-    """Every open issue number in `repo`, PRs excluded -- the candidate set
-    for Lane 1's repo-wide newest-marker sweep (harmonic-forge#570 AC1/AC8).
-    No marker search can pre-filter this the way `discover_queue` does:
-    Lane 1 needs the newest comment on EVERY open issue, not just ones
-    already carrying a specific marker, because the ball is with Lane 1
-    whenever the newest classified comment is simply not its own.
-
-    `since` (an ISO-8601 timestamp) narrows to issues updated at or after
-    it -- the watermark `main()` threads through on every cycle after the
-    first, so a steady-state Lane 1 sweep is bounded by recent activity
-    rather than re-scanning every open issue's full comment history every
-    poll (preclose finding: 155 open issues * one comments call each, every
-    5 minutes, against a 5,000/hour shared quota).
-
-    `-X GET` is required (preclose finding): `gh api` switches a request
-    with `-f` parameters to POST unless told otherwise, and a POST to this
-    endpoint is issue *creation*, which 422s with no `title` and is
-    swallowed into an empty result -- reading as "no work," silently.
-
-    Returns `None` -- distinct from `[]` -- when the fetch itself failed
-    (network/auth/rate-limit), never a bare empty list (harmonic-forge#579
-    AC1). A caller that can't tell "genuinely zero open issues" from "the
-    call raised" cannot decide whether it's safe to advance a `since`
-    watermark describing what this call covered; conflating the two is
-    what let a transient failure silently narrow the next cycle's window
-    and drop any issue updated during the lost window off Lane 1's belt
-    for good.
-    """
-    args = ["api", "-X", "GET", f"repos/{repo}/issues", "--paginate",
-            "-f", "state=open", "-f", "per_page=100"]
-    if since:
-        args += ["-f", f"since={since}"]
-    args += ["--jq", ".[] | select(.pull_request == null) | .number"]
-    try:
-        raw = gh_as(_ACCOUNT, args, counter=_COUNTER)
-    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
-        print(f"[watch_lane_posts] list_open_issues failed: {exc}", file=sys.stderr)
-        return None
-    try:
-        return [int(line) for line in raw.splitlines() if line.strip()]
-    except ValueError:
-        return None
 
 
 def _issue_is_open(repo: str, issue: int) -> bool:
     """Live open/closed check for one issue (harmonic-forge#579 AC4) --
-    used only for `extra_issues` candidates that `list_open_issues`'s own
-    `state=open` filter didn't already vouch for. On fetch failure, treat
+    used only for `extra_issues` candidates a caller cannot otherwise vouch
+    for as open. On fetch failure, treat
     the issue as still open (fail toward keeping it queued, not toward
     silently dropping it -- the same fail-safe direction as the rest of
     this module's error handling)."""
@@ -1583,7 +1515,6 @@ def queue_cycle(
     repos: list[str],
     lane: str,
     last_queue: dict[tuple[str, int], str],
-    l1_since: dict[str, str | None],
     now: str,
     batch_state_path: Path | None = None,
     candidate_pairs: set[tuple[str, int]] | None = None,
@@ -1599,7 +1530,7 @@ def queue_cycle(
     cannot be tested, and a guard suite that reads only doc text is not a
     substitute.
 
-    Three properties this function exists to hold:
+    Two properties this function exists to hold:
 
     - **Keys are `(repo, issue)`.** hrse#570 and harmonic-forge#570 both
       exist; a bare `int` key lets one evict the other.
@@ -1608,8 +1539,6 @@ def queue_cycle(
       former may produce `left-queue-for-*`. Retracting a
       queued issue because a search hit a rate limit tells the lane the ball
       moved on when it did not.
-    - **`l1_since` advances per repo, and only on success** -- a watermark
-      moved past a failed cycle silently narrows the next one.
     """
     #: harmonic-forge#686. The candidate set is now supplied by the caller
     #: from what it already holds, never discovered by a scan. `None` means
@@ -2179,16 +2108,6 @@ def main() -> int:
     #: report" value, not "not yet checked" -- see `report != last_ahead.get`
     #: below, which only reprints on an actual state CHANGE.
     last_ahead: dict[str, str | None] = {}
-    #: harmonic-forge#570 preclose finding: an unbounded full-repo comment
-    #: scan every cycle (155 open issues on vitalharmony/hrse today) burns
-    #: quota fast enough to exhaust it, and quota exhaustion is swallowed
-    #: into an empty result -- which reads as "no work," the exact failure
-    #: this protocol exists to refuse. `l1_since` narrows *new*-candidate
-    #: discovery to issues updated since the last cycle; `last_queue`'s keys
-    #: are always re-checked regardless, so an already-queued issue is
-    #: never dropped just
-    #: because it went quiet.
-    l1_since: dict[str, str | None] = {}
     #: A queue-for mode reports its queued count once at the first
     #: evaluation, even if it is zero -- silence and "confirmed watching
     #: nothing" must not look the same (harmonic-forge#570 preclose finding:
@@ -2283,7 +2202,7 @@ def main() -> int:
             #: likewise a local file read, never a GitHub call.
             posted_candidates = read_queue_candidates(repos, mode)
             queue, lines, ok_repos = queue_cycle(
-                repos, mode, last_queue, l1_since, now,
+                repos, mode, last_queue, now,
                 candidate_pairs=discovered | static_pairs | posted_candidates,
                 recorded_only=recorded_only)
             if first_queue_report:
