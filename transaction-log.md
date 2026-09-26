@@ -3,6 +3,17 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): fail quiet on indeterminate deep work (F769)
+- tools/hooks/model_tier_gate.py              |  5 +++--
+- tools/hooks/test_tier_downshift_reminder.py | 34 +++++++++++++++++++++++------
+- tools/hooks/tier_downshift_reminder.py      | 27 ++++++++++++++++++-----
+- 3 files changed, 51 insertions(+), 15 deletions(-)
+
+## feat(hooks): remind high-tier lanes to downshift (F769)
+- .claude/settings.json                       |  5 ++
+- tools/hooks/test_tier_downshift_reminder.py | 75 +++++++++++++++++++++++++++
+- tools/hooks/tier_downshift_reminder.py      | 80 +++++++++++++++++++++++++++++
+- 3 files changed, 160 insertions(+)
 ## fix(hooks): scope interpreter -c detection (F772)
 - tools/hooks/gate_codex_tool.py      | 31 +++++++++++++++++++++++++++----
 - tools/hooks/test_gate_codex_tool.py | 19 +++++++++++++++++++
