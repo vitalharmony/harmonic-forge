@@ -207,6 +207,35 @@ class TestVerifyEnvelopeNormalization(unittest.TestCase):
         self.assertEqual(env["status"], "ok")
         self.assertEqual(env["report"]["assumptions"][0]["verdict"], "confirmed")
 
+    WEB_EVENT = json.dumps({"type": "item.completed",
+                            "item": {"id": "ws_0", "type": "web_search", "query": "q"}}) + "\n"
+    URL_EVIDENCE = 'https://www.python.org/downloads/release/python-3130/ — "Release date: Oct. 7, 2024"'
+
+    def _url_verdict(self, native: str) -> str:
+        env = emit_envelope("codex", "verify", 0, native)
+        self.assertEqual(env["status"], "ok")
+        return env["report"]["assumptions"][0]["verdict"]
+
+    def _url_report(self, evidence: str) -> str:
+        return codex_native({"summary": "s", "findings": [], "assumptions": [
+            {"assumption": "a", "verdict": "confirmed", "evidence": evidence}]})
+
+    def test_url_evidence_with_a_web_search_event_survives(self):
+        """harmonic-forge#757 AC2: retrieved-page evidence counts as executed."""
+        self.assertEqual(self._url_verdict(self.WEB_EVENT + self._url_report(self.URL_EVIDENCE)),
+                         "confirmed")
+
+    def test_url_evidence_without_any_web_search_downgrades(self):
+        """harmonic-forge#757 preclose: a cited page with no retrieval behind
+        it is the same confabulation as empty evidence."""
+        self.assertEqual(self._url_verdict(self._url_report(self.URL_EVIDENCE)), "uncheckable")
+
+    def test_command_output_containing_a_url_is_not_touched(self):
+        """Anchored at the start: a command's output that merely contains a
+        URL (e.g. an `html_url` field) is not web evidence."""
+        evidence = '$ gh api repos/o/r/issues/1 --jq .html_url\nhttps://github.com/o/r/issues/1'
+        self.assertEqual(self._url_verdict(self._url_report(evidence)), "confirmed")
+
     def test_refuted_with_evidence_survives(self):
         env = emit_envelope("codex", "verify", 0, codex_native({
             "summary": "checked", "findings": [],

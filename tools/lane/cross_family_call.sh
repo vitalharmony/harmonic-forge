@@ -539,22 +539,33 @@ emit_envelope() {
   #   * any verdict token outside the closed set becomes `uncheckable`;
   #   * a missing or non-array `assumptions` key under `verify` makes the
   #     whole report `invalid-report`, because a verify pass that returned no
-  #     verdicts produced nothing.
+  #     verdicts produced nothing;
+  #   * harmonic-forge#757: a `confirmed`/`refuted` verdict whose `evidence`
+  #     STARTS with a URL (the contract's web-evidence form) becomes
+  #     `uncheckable` unless the native stream holds a completed `web_search`
+  #     item. A cited page with no retrieval behind it is the same
+  #     confabulation as an empty `evidence`. Anchored at the start so a
+  #     command's output that merely contains a URL is not touched.
   #
   # Nothing here can upgrade a verdict, so a malformed report can only ever
   # come out weaker than the model claimed, never stronger.
-  # The jq PROGRAM below is unchanged -- only its input moved from argv to a
-  # file. These three downgrades are load-bearing (harmonic-forge#448) and
-  # nothing here may weaken them.
+  # The jq program's input is a file, not argv. These downgrades are
+  # load-bearing (harmonic-forge#448, #757) and nothing here may weaken them;
+  # #757 added one more downgrade, never an upgrade.
   if [ "$posture" = verify ] && [ "$status" = "ok" ]; then
     if jq -e '.assumptions | type == "array"' "$report_file" >/dev/null 2>&1; then
-      jq -c '
+      local web_search_seen
+      web_search_seen="$(jq -s '[.[] | select(type == "object" and .type == "item.completed" and .item.type? == "web_search")] | length > 0' \
+        "$native_file" 2>/dev/null || echo false)"
+      [ "$web_search_seen" = true ] || web_search_seen=false
+      jq -c --argjson web "$web_search_seen" '
         .assumptions = [
           .assumptions[]
           | .evidence = (.evidence // "")
           | .verdict = (
               if (.verdict | IN("confirmed", "refuted", "uncheckable")) | not then "uncheckable"
               elif (.verdict != "uncheckable") and ((.evidence | gsub("^\\s+|\\s+$"; "")) == "") then "uncheckable"
+              elif (.verdict != "uncheckable") and ($web | not) and (.evidence | test("^\\s*https?://")) then "uncheckable"
               else .verdict end
             )
         ]' "$report_file" >"$report_tmp" && mv "$report_tmp" "$report_file"
