@@ -237,11 +237,17 @@ class PrShaBindingTests(unittest.TestCase):
         `_preclose_receipt_ok` returning False covers both."""
         self.assertTrue(self._denied(self._decide("abc123", False)))
 
-    def test_head_sha_unresolvable_fails_open(self):
-        """Same fail-open rationale as every other `_gh` call in this hook:
-        cannot tell if GitHub state warrants a block -> don't guess."""
-        self.assertFalse(self._denied(self._decide(None, True)))
-        self.assertFalse(self._denied(self._decide(None, False)))
+    def test_head_sha_unresolvable_fails_closed(self):
+        """Unlike a `_gh` read used only to DECIDE whether to check further
+        (which fails open elsewhere in this hook), this point is reached only
+        once the issue is already confirmed tooling-exception AND
+        preclose-inspected labelled -- a SHA-bound receipt is required, and
+        "cannot determine the head SHA" is indistinguishable from "not
+        reviewed" for that purpose. Preclose finding: this previously fell
+        through to allow, which meant an unresolvable head SHA authorized a
+        merge with zero verification instead of blocking it."""
+        self.assertTrue(self._denied(self._decide(None, True)))
+        self.assertTrue(self._denied(self._decide(None, False)))
 
     def test_stale_receipt_denial_names_preclose_check_and_the_head_sha(self):
         payload = self._decide("abc123def456", False)

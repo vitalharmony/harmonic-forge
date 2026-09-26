@@ -363,8 +363,22 @@ def gate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repo_key(repo: str) -> str:
+    """Normalize `repo` to the SAME filesystem-key form regardless of
+    casing. GitHub repo slugs are case-insensitive, but nothing upstream of
+    this function guarantees a caller always passes the manifest's
+    canonical casing -- `preclose_check.py --repo` goes through
+    `registered_repo()`'s fixed casing, but a merge-time reader can resolve
+    `repo` from a raw `--repo` flag or `gh repo view`'s own casing.
+    Preclose finding: without this, a case mismatch between the write and
+    read paths silently keys two different receipt files for the same
+    repo, producing a permanent deny loop -- the receipt exists, but never
+    under the name the reader looks for."""
+    return repo.strip().lower().replace("/", "_")
+
+
 def receipt_path(repo: str, issue: int) -> Path:
-    return receipt_dir() / f"{repo.replace('/', '_')}_{issue}.json"
+    return receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
 
 
 def read_receipt(path: Path) -> dict | None:
@@ -391,7 +405,7 @@ def find_receipt(repo: str, issue: int) -> dict | None:
     if receipt is not None:
         return receipt
     try:
-        legacy_path = legacy_receipt_dir() / f"{repo.replace('/', '_')}_{issue}.json"
+        legacy_path = legacy_receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
     except SystemExit:
         return None
     return read_receipt(legacy_path)
@@ -481,6 +495,20 @@ def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
     # preclose finding, second-run/fail-direction lenses).
     if resolved.returncode or not head_sha:
         raise SystemExit(f"preclose-check: cannot resolve --head {args.head!r}")
+    # harmonic-forge#778 preclose finding: a string that merely LOOKS like a
+    # full 40-hex SHA is a valid `git rev-parse` argument -- it is echoed back
+    # verbatim with exit 0 even when no such object exists in this repo. The
+    # check above only rejects an unresolvable ref/short-hash; it never
+    # confirmed the resolved SHA is a real, reachable commit. `--complete
+    # --head <any 40 hex chars>` would otherwise mint a "complete" receipt for
+    # a commit that was never read, let alone reviewed -- a merge authorized
+    # with zero refuters and no diff.
+    verified = run("git", "cat-file", "-e", f"{head_sha}^{{commit}}")
+    if verified.returncode:
+        raise SystemExit(
+            f"preclose-check: {head_sha!r} does not resolve to a commit object "
+            f"in this checkout -- refusing to write a receipt for a SHA that "
+            f"was never actually read.")
     return head_sha
 
 

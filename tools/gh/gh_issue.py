@@ -110,7 +110,7 @@ _IMPLIED_LABELS = {"tooling-exception": "tooling"}
 #: #772/#774's failure mode. Deliberately loose (word boundary, not an exact
 #: phrase set): the goal is catching every real declaration, and a false
 #: positive here costs one extra `--labels` word, not a silent gap.
-_TOOLING_EXCEPTION_BODY_RE = re.compile(r"\btooling[\s,]+exception\b", re.IGNORECASE)
+_TOOLING_EXCEPTION_BODY_RE = re.compile(r"\btooling[\s,-]+exception\b", re.IGNORECASE)
 
 
 def normalise_labels(labels: list[str]) -> list[str]:

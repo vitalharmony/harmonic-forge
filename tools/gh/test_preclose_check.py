@@ -554,6 +554,35 @@ class CrossFamilyReceiptTests(ScratchRepo):
         with self.assertRaises(SystemExit):
             self.complete([ANCHORED])
 
+    def test_receipt_lookup_is_case_insensitive_to_the_repo_slug(self) -> None:
+        """Preclose finding: `receipt_path()` keyed the filesystem name on the
+        `repo` string verbatim. `preclose_check.py --repo` always goes
+        through the manifest's fixed casing, but a merge-time reader can
+        resolve `repo` from a raw `--repo` flag or `gh repo view`'s own
+        casing -- a mismatch there silently keyed two different receipt
+        files for the same repo, producing a permanent deny loop."""
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([])
+        self.assertIsNotNone(preclose.find_receipt("VitalHarmony/HRSE", 1208))
+        self.assertIsNotNone(preclose.find_receipt("vitalharmony/hrse", 1208))
+
+    def test_unresolvable_fake_sha_is_refused_not_written(self) -> None:
+        """Preclose finding (chief): a string that merely LOOKS like a full
+        40-hex SHA is a valid `git rev-parse` argument -- it is echoed back
+        verbatim with exit 0 even when no such object exists. Without a
+        real existence check, `--complete --head <fake sha>` minted a
+        'complete' receipt for a commit that was never read, authorizing a
+        merge with zero refuters and no diff review."""
+        self.commit("scripts/tool.py")
+        fake_sha = "d" * 40
+        with self.assertRaises(SystemExit) as caught:
+            preclose._require_repo_and_head(
+                "vitalharmony/hrse",
+                _Args(repo="vitalharmony/hrse", issue=1208, base="base", head=fake_sha,
+                      tier=None, force=False, allow_dirty=False, allow_repo_mismatch=False))
+        self.assertIn("does not resolve to a commit", str(caught.exception))
+
     def test_fallback_label_is_accepted_when_the_call_could_not_run(self) -> None:
         """AC6: loud, non-fatal, never relabelled."""
         self.commit("scripts/tool.py")

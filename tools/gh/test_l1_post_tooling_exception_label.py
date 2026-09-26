@@ -66,6 +66,16 @@ class ValidateToolingExceptionLabelledTests(unittest.TestCase):
                 post.validate_tooling_exception_labelled(
                     _handoff("TOOLING, EXCEPTION: no Lane 2 trigger."), "o/r", 778)
 
+    def test_hyphenated_phrasing_is_still_caught(self):
+        """Preclose finding: `[\\s,]+` didn't include a hyphen, so
+        "Tooling-Exception" -- a real phrasing, not a contrived one --
+        bypassed the check entirely."""
+        with mock.patch.object(post, "run",
+                              return_value=self._labels_result(["bug"])):
+            with self.assertRaises(SystemExit):
+                post.validate_tooling_exception_labelled(
+                    _handoff("Tooling-Exception -- Lane 1 implements."), "o/r", 778)
+
     def test_unreadable_labels_fails_loud_not_open(self):
         """Unlike the merge-time hook's fail-open style, a handoff-time
         check that cannot verify the label must not silently let a real

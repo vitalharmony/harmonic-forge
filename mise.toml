@@ -441,7 +441,7 @@ fi
 '''
 
 [tasks.preclose-check]
-description = "Plan an adversarial pre-close check panel for Tooling Exception work (harmonic-forge#704 -- the canonical platform copy of what was HRSE2's scripts/preclose_check.py, hrse#1208). Computes panel size from blast radius (primary) and Tier (secondary), and writes a one-pass receipt under the TARGET repo's own .claude/cache/preclose/ (repo_root() anchors to cwd's git toplevel, not to this checkout -- run it from the repo under review). --repo is required and never defaulted (ADR-008 decision 2) -- pass tools/gh/preclose_check.py's own flags verbatim, e.g. `mise run preclose-check -- --repo vitalharmony/harmonic-forge --issue 704 --base origin/main --head HEAD --tier standard`."
+description = "Plan an adversarial pre-close check panel for Tooling Exception work (harmonic-forge#704 -- the canonical platform copy of what was HRSE2's scripts/preclose_check.py, hrse#1208). Computes panel size from blast radius (primary) and Tier (secondary), and writes a one-pass receipt to a user-level store, ~/.claude/state/preclose/ (harmonic-forge#778 -- shared across checkouts, survives a disposable worktree's deletion; still keyed by --repo/--issue, so run from the repo under review). --repo is required and never defaulted (ADR-008 decision 2) -- pass tools/gh/preclose_check.py's own flags verbatim, e.g. `mise run preclose-check -- --repo vitalharmony/harmonic-forge --issue 704 --base origin/main --head HEAD --tier standard`."
 usage = '''
 arg "args" var=#true help="tools/gh/preclose_check.py's own flags verbatim, e.g. --repo owner/name --issue N [--base REF] [--head REF] [--tier fast|standard|deep] [--complete] [--force] [--allow-dirty] [--allow-repo-mismatch]"
 '''

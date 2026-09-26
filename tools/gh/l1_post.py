@@ -1021,7 +1021,7 @@ def issue_is_open(repo: str, issue: int) -> None:
 #: Same loose match as gh_issue.py's own filing-time check (harmonic-forge
 #: #778 AC1) -- a false positive costs one extra `--add-label`, a false
 #: negative reproduces #769/#772/#774.
-_TOOLING_EXCEPTION_MENTION = re.compile(r"\btooling[\s,]+exception\b", re.IGNORECASE)
+_TOOLING_EXCEPTION_MENTION = re.compile(r"\btooling[\s,-]+exception\b", re.IGNORECASE)
 
 
 def validate_tooling_exception_labelled(body: str, repo: str, issue: int) -> None:

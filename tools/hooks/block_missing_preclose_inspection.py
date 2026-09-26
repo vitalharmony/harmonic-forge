@@ -500,8 +500,25 @@ def main() -> None:
             # to, so it stays label-only, exactly as before.
             if kind == "pr":
                 head_sha = _pr_head_sha(repo, number)
-                if head_sha is None:  # fail-open: cannot resolve, same as _gh elsewhere
-                    continue
+                # Preclose finding: this is NOT the same "cannot read GitHub"
+                # case the fail-open rationale elsewhere in this file covers.
+                # By this point the issue is confirmed tooling-exception AND
+                # preclose-inspected labelled -- a SHA-bound receipt is
+                # required, and "cannot determine the head SHA" and "the
+                # receipt doesn't match" are the same fact for this purpose:
+                # nothing proves this diff was reviewed. Fail CLOSED, per the
+                # same fail-closed precedent the receipt-match check below
+                # already follows.
+                if head_sha is None:
+                    _deny(
+                        f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, carries "
+                        f"{PRECLOSE_LABEL!r}, but this PR's current head SHA could not "
+                        f"be determined (harmonic-forge#778 AC3). A SHA-bound receipt is "
+                        f"required once an issue is labelled -- cannot verify and not "
+                        f"reviewed are the same fact here. Re-run this once GitHub is "
+                        f"reachable.",
+                        target_key=_acting)
+                    return
                 if not _preclose_receipt_ok(repo, issue, head_sha):
                     _deny(_stale_receipt_message(repo, issue, via_pr, head_sha),
                           target_key=_acting)
