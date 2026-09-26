@@ -224,30 +224,45 @@ EOF
 # executed evidence is normalized DOWN to `uncheckable` by `emit_envelope`.
 # The model cannot talk its way past that check, because the check is on the
 # presence of the evidence field, not on the persuasiveness of the argument.
+#
+# Network posture (harmonic-forge#757): hosted web search ON, shell network
+# OFF. `invoke_codex` passes codex's top-level `--search`, so the reviewer can
+# retrieve and cite web pages (the tool runs on OpenAI's side; the local
+# sandbox stays read-only). The shell has no network under this posture --
+# measured live, `gh api` GET fails to connect even with the read-only
+# network config overrides -- so the contract no longer tells the reviewer to
+# run `gh` reads; GitHub state arrives via the brief's pre-executed evidence
+# (harmonic-forge#648). A URL-plus-quote evidence string is non-empty, so
+# `emit_envelope`'s presence check keeps it with no change.
 read -r -d '' VERIFY_CONTRACT <<'EOF' || true
 
 Additionally, the object MUST carry an "assumptions" key: one entry per
 asserted assumption listed in the brief, in the same order, shaped
-{"assumption": "<restated in your own words>", "verdict": "confirmed"|"refuted"|"uncheckable", "evidence": "<the exact output of a command you actually ran, or the exact quoted file text you actually read>"}
+{"assumption": "<restated in your own words>", "verdict": "confirmed"|"refuted"|"uncheckable", "evidence": "<the exact output of a command you actually ran, the exact quoted file text you actually read, or a URL you retrieved with web search plus the exact text you quoted from it>"}
 Rules for "verdict":
-  confirmed  - you executed something that proves it true.
-  refuted    - you executed something that proves it false.
+  confirmed  - you executed or retrieved something that proves it true.
+  refuted    - you executed or retrieved something that proves it false.
   uncheckable - you could not reach the evidence from here.
 "evidence" must be output you actually obtained. Do NOT reason from the
 brief's own text and report "confirmed" -- if you did not run or read
 something, the verdict is "uncheckable". A confirmed/refuted verdict with an
 empty "evidence" will be discarded and recorded as "uncheckable".
 A verbatim quote from the brief's 'Pre-executed evidence' section is executed
-evidence; cite the command it came from. A confirmed or refuted verdict must
-quote text from that section or from a command you ran yourself; quoting the
+evidence; cite the command it came from. A web page you retrieved with web
+search is executed evidence too: cite its URL and quote the exact text you
+relied on. A confirmed or refuted verdict must quote text from that section,
+from a command you ran yourself, or from a page you retrieved; quoting the
 artifact or assumptions sections is not evidence.
+
+You have web search but no shell network: `gh`, `curl` and similar commands
+will fail to connect. GitHub and repo state reach you only through the brief's
+'Pre-executed evidence' section; local reads (`git log/show/diff`, reading
+files) still work.
 
 You are a READ-ONLY reviewer. Do not mutate anything, on GitHub or on disk.
 Specifically: no `gh issue close`, `gh pr merge`, `gh issue comment`, `gh api`
 with a write method, no commits, pushes, branch or label changes, and no file
-writes. Read commands (`gh issue view`, `gh api` GET, `git log/show/diff`,
-reading files) are exactly what you are here to run -- use them freely. If
-answering an assumption would require a mutation, the verdict is
+writes. If answering an assumption would require a mutation, the verdict is
 "uncheckable"; say so rather than performing it. Report back; you are not the
 actor.
 EOF
@@ -311,7 +326,7 @@ invoke_claude() {
 invoke_codex() {
   local posture="$1" brief="$2" cwd="$3"
   local sandbox="read-only"
-  local cd_args=() config_args=() model_args=()
+  local cd_args=() config_args=() model_args=() search_args=()
   # harmonic-forge#483: `--skip-git-repo-check` on BOTH branches that set
   # `-C`. `codex exec` refuses to run outside a git repository, and `probe`'s
   # own contract is "an isolated scratch directory the caller creates" -- a
@@ -338,8 +353,13 @@ invoke_codex() {
     cd_args=(-C "$cwd" --skip-git-repo-check)
     model_args=(--ignore-user-config -m "$VERIFY_MODEL")
     config_args=(-c "projects.\"$cwd\".trust_level=\"trusted\"")
+    # harmonic-forge#757: hosted web search, so the reviewer can check web
+    # claims. `--search` is a TOP-LEVEL flag: it must precede `exec`
+    # (`codex exec --search` exits 2, "unexpected argument"). The sandbox
+    # stays read-only; the search runs on OpenAI's side, not the shell.
+    search_args=(--search)
   fi
-  codex exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
+  codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
     --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief")" </dev/null
 }
 
