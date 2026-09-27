@@ -3,6 +3,16 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(lane): baseline capture uses a fixture HOME, not the operator's (harmonic-forge#783)
+
+Passed locally only because the real ~/Harmonic_Projects/HRSE2/.codex/hooks.json
+satisfied the Codex hook-registration guard; failed on CI.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XjpjYr12xvKi66tfUAsM9y
+- tools/lane/baseline_capture.py | 29 ++++++++++++++++++-----------
+- 1 file changed, 18 insertions(+), 11 deletions(-)
+
 ## fix(preclose): guard plan() too; test the write-denied dir (harmonic-forge#783 preclose findings)
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
