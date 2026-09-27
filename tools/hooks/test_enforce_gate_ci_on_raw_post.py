@@ -316,6 +316,20 @@ class RoundApprovalTests(unittest.TestCase):
         result, _ = self._decide(ROUND_PASS, UNAPPROVED, command)
         self.assertTrue(_is_denied(result))
 
+    def test_a_stdin_body_is_read_from_the_command_text(self):
+        """Cross-family finding: `-F -` read nothing and skipped both checks."""
+        command = (f"printf '%s' '{ROUND_PASS}' | gh issue comment 999 "
+                   "-R vitalharmony/hrse -F -")
+        result, calls = self._decide(ROUND_PASS, UNAPPROVED, command)
+        self.assertTrue(_is_denied(result))
+        self.assertEqual(calls, [("vitalharmony/hrse", 999)])
+
+    def test_a_non_gate_stdin_comment_is_untouched(self):
+        result, calls = self._decide(ROUND_PASS, UNAPPROVED,
+                                     "echo hi | gh issue comment 999 -R vitalharmony/hrse -F -")
+        self.assertFalse(_is_denied(result))
+        self.assertEqual(calls, [])
+
     def test_a_pass_with_no_head_sha_is_denied(self):
         body = "## Lane 3 Gate Results — H999\n\n**Verdict:** PASS\n"
         ok, message = m.round_approval("vitalharmony/hrse", 999, body)

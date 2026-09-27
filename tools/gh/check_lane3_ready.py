@@ -204,22 +204,22 @@ def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dic
     return min(found, key=lambda c: c["id"]) if found else None
 
 
-def _tc_rework_after(comments: list[dict], authority: dict) -> dict | None:
+def _round_artifact_after(comments: list[dict], authority: dict) -> dict | None:
     """The oldest test-case-changing `rework` posted after `authority`, or
     None (harmonic-forge#792 preclose finding). The carry window only covers a
     new SHA; a rework amending test cases with no new push reuses the
-    authority's own SHA and was never examined. Reworks only: an unrelated
-    later spec must not refuse this gate (hrse#2095, see above)."""
-    found = [c for c in comments
-             if c["id"] > authority["id"]
-             and (m := FOOTER_KIND.search(c.get("body", ""))) and m.group(1).lower() == "rework"
-             and _is_round_artifact(c)]
+    authority's own SHA and was never examined. Cross-family finding: a new
+    handoff or spec at the same SHA is the same hole, so any round artifact
+    counts. hrse#2095's interleaved spec is unaffected -- that gate ran on the
+    carry path, which stays window-scoped."""
+    found = [c for c in comments if c["id"] > authority["id"] and _is_round_artifact(c)]
     return min(found, key=lambda c: c["id"]) if found else None
 
 
 def _rework_message(authority: dict, rework: dict) -> str:
-    return (f"rework ({rework['html_url']}) after {authority['html_url']} may change test "
-            "cases and does not declare `**Test cases:** unchanged` -- a fresh AE is required")
+    return (f"a new round artifact ({rework['html_url']}) was posted after {authority['html_url']} "
+            "-- a fresh AE is required (a rework that changes no test cases can say "
+            "`**Test cases:** unchanged`)")
 
 
 def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict | None:
@@ -280,7 +280,7 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
         if ae_sha is None:
             return None, f"AE comment ({ae['html_url']}) has no parseable sha= marker"
         if same_sha(ae_sha, head_sha):
-            if (rework := _tc_rework_after(comments, ae)) is not None:
+            if (rework := _round_artifact_after(comments, ae)) is not None:
                 return None, _rework_message(ae, rework)
             return ae, f"authorized for {head_sha} by {ae['html_url']}"
         carry = carry_forward(comments, ae, head_sha)
@@ -305,7 +305,7 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     if sweep_sha is None:
         return None, f"sweep ({sweep['html_url']}) has no parseable sha= marker"
     if same_sha(sweep_sha, head_sha):
-        if (rework := _tc_rework_after(comments, sweep)) is not None:
+        if (rework := _round_artifact_after(comments, sweep)) is not None:
             return None, _rework_message(sweep, rework)
         return sweep, f"authorized for {head_sha} by {sweep['html_url']}"
     carry = carry_forward(comments, sweep, head_sha)

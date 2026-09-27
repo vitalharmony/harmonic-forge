@@ -123,7 +123,11 @@ def find_repo_flag(args: list[str]) -> str | None:
 
 
 def _read_file(file_arg: str, cwd: Path) -> str | None:
-    """Resolved against cwd if relative. None (fail-open) if unreadable."""
+    """Resolved against cwd if relative. None (fail-open) if unreadable.
+    `-` is stdin, which a PreToolUse hook cannot read; the caller substitutes
+    the command text (harmonic-forge#792 cross-family finding)."""
+    if file_arg == "-":
+        return STDIN
     path = Path(file_arg).expanduser()
     if not path.is_absolute():
         path = cwd / path
@@ -131,6 +135,10 @@ def _read_file(file_arg: str, cwd: Path) -> str | None:
         return path.read_text(encoding="utf-8")
     except OSError:
         return None
+
+
+#: Sentinel body for `--body-file -`/`-F -`/`--file -`.
+STDIN = "\0stdin"
 
 
 def _mise_task_and_rest(args: list[str]) -> tuple[str | None, list[str]]:
@@ -317,6 +325,13 @@ def decision(command: object, cwd: Path, check=None, round_check=None) -> dict:
         if found is None:
             continue
         body, repo = found
+        if body == STDIN:
+            # The body arrives on stdin (a pipe or heredoc), invisible here.
+            # The command text carries it for a heredoc or printf pipe; a
+            # `cat file |` pipe stays unchecked (accepted gap, like `gh api`).
+            # Every token on its own line, so a quoted body's heading starts
+            # a line the way `looks_like_a_gate_report` requires.
+            body = "\n".join(token for seg in segments for token in seg) + "\n" + command
         if not gate_ci.looks_like_a_gate_report(body):
             continue
         if repo is None:

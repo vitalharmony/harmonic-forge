@@ -669,6 +669,12 @@ class ReworkRoundBoundaryTests(unittest.TestCase):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
             self._main(self._same_sha_thread(""))
 
+    def test_a_new_spec_after_an_ae_at_the_same_sha_is_refused(self):
+        """Cross-family finding: a new spec at the AE's own SHA is a new round."""
+        thread = self._same_sha_thread("**Test cases:** unchanged\n")[:3] + [_comment(13, "spec", self.T, sha="-")]
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(thread)
+
     def test_an_unchanged_rework_after_an_ae_at_the_same_sha_is_fine(self):
         self._main(self._same_sha_thread("**Test cases:** unchanged\n"))
 
