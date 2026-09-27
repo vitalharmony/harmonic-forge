@@ -62,7 +62,7 @@ class FindBodyAndRepoTests(unittest.TestCase):
         """Never guesses a repo -- a credential-isolation-sensitive check
         must not act on an unresolved repo (mirrors batch_auth._repo_flag)."""
         args = ["gh", "issue", "comment", "9", "--body-file", str(self.file)]
-        self.assertIsNone(m.find_body_and_repo(args, self.cwd))
+        self.assertEqual(m.find_body_and_repo(args, self.cwd), (PASS_BODY, None))
 
     def test_post_comment_py_bare(self):
         args = ["post_comment.py", "--repo", "vitalharmony/harmonic-forge",
@@ -179,12 +179,16 @@ class DecisionTests(unittest.TestCase):
         result = self._decide(cmd, check=boom)
         self.assertFalse(_is_denied(result))
 
-    def test_no_repo_skips_the_check_rather_than_denying(self):
-        """An unresolved repo means this check cannot run -- fails toward
-        allow, matching #504's own posture for an unreadable input."""
+    def test_a_pass_with_no_repo_is_denied(self):
+        """harmonic-forge#792 preclose finding: skipping let it past both checks."""
         cmd = f'gh issue comment 9 --body "{PASS_BODY}"'
-        result = self._decide(cmd, check=refuse_check)
-        self.assertFalse(_is_denied(result))
+        result = self._decide(cmd, check=ok_check)
+        self.assertTrue(_is_denied(result))
+        self.assertIn("--repo", result["systemMessage"])
+
+    def test_a_fail_with_no_repo_still_posts(self):
+        cmd = f'gh issue comment 9 --body "{FAIL_BODY}"'
+        self.assertFalse(_is_denied(self._decide(cmd, check=refuse_check)))
 
     def test_an_unrelated_command_is_allowed(self):
         result = self._decide("git status", check=refuse_check)
@@ -290,6 +294,11 @@ class RoundApprovalTests(unittest.TestCase):
         result, _ = self._decide(ROUND_PASS, APPROVED)
         self.assertFalse(_is_denied(result))
 
+    def test_an_abbreviated_head_sha_still_matches_the_full_footer(self):
+        """Preclose finding: real reports state 8-char SHAs; the footer is full."""
+        result, _ = self._decide(ROUND_PASS.replace(SHA, SHA[:8]), APPROVED)
+        self.assertFalse(_is_denied(result))
+
     def test_a_fail_is_never_checked(self):
         result, calls = self._decide(ROUND_FAIL, UNAPPROVED)
         self.assertFalse(_is_denied(result))
@@ -315,6 +324,13 @@ class RoundApprovalTests(unittest.TestCase):
 
     def test_an_unresolved_issue_is_denied(self):
         ok, message = m.round_approval("vitalharmony/hrse", None, ROUND_PASS)
+        self.assertFalse(ok)
+
+    def test_a_missing_gh_binary_is_denied(self):
+        """Preclose finding: FileNotFoundError is not SystemExit."""
+        with mock.patch.object(m.check_lane3_ready, "fetch_comments",
+                               side_effect=FileNotFoundError("gh")):
+            ok, _ = m.round_approval("vitalharmony/hrse", 999, ROUND_PASS)
         self.assertFalse(ok)
 
     def test_a_failed_fetch_is_denied(self):

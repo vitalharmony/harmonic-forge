@@ -647,11 +647,30 @@ class ReworkRoundBoundaryTests(unittest.TestCase):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
             self._main(self._thread("**Test cases:** TC3 added.\n"))
 
+    def test_a_qualified_unchanged_still_breaks_the_carry(self):
+        """Preclose finding: "unchanged except TC3" changes a test case."""
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(self._thread("**Test cases:** unchanged except TC3 is new\n"))
+
     def test_a_rework_with_test_cases_unchanged_keeps_the_carry(self):
         self._main(self._thread("**Test cases:** unchanged\n"))
 
     def test_the_declaration_is_read_in_its_plain_spelling_too(self):
         self._main(self._thread("Test cases: unchanged\n"))
+
+    def _same_sha_thread(self, lead: str) -> list[dict]:
+        """Preclose finding: the rework lands after the AE with no new push."""
+        rework = self._rework(lead)
+        rework["body"] = rework["body"].replace("sha=1111111", "sha=2222222")
+        ae = _comment(11, "ae", self.T, sha="2222222")
+        return [self.APPROVED[0], ae, _comment(12, "sweep", self.T, sha="2222222"), rework]
+
+    def test_a_tc_rework_after_an_ae_at_the_same_sha_is_refused(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(self._same_sha_thread(""))
+
+    def test_an_unchanged_rework_after_an_ae_at_the_same_sha_is_fine(self):
+        self._main(self._same_sha_thread("**Test cases:** unchanged\n"))
 
     def test_a_rework_before_the_ae_is_outside_the_window(self):
         rework = self._rework("")

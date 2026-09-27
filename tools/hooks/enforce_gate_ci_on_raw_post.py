@@ -67,11 +67,10 @@ was already written to close for a different guard:
 it's present, use it -- never guess a repo from cwd for a credential-
 isolation-sensitive check (batch_auth.py's own `_repo_flag` makes the
 identical choice, for the identical reason). When `--repo` is absent, this
-hook does NOT invent one: an unresolved repo means this check cannot run, so
-the segment is skipped (fails toward "allow", matching #504's own posture
-that an unreadable input degrades the check rather than blocking the world
--- `gate_ci.py`'s `required_checks()`/`ci_conclusion()` return `None`/
-`"unknown"` rather than raising, for the same reason).
+hook does NOT invent one. A PASS gate report with no `--repo` is refused
+and told to name it (harmonic-forge#792: skipping it let an unapproved-round
+PASS through both checks, via `gh`'s own repo-from-cwd default). Anything
+else without a repo is skipped, as before.
 
 ## Never denies FAIL or BLOCKED (AC3)
 
@@ -170,7 +169,7 @@ def _body_from_flags(args: list[str], cwd: Path) -> str | None:
     return None
 
 
-def _find_body_and_repo_inner(args: list[str], cwd: Path) -> tuple[str, str] | None:
+def _find_body_and_repo_inner(args: list[str], cwd: Path) -> tuple[str, str | None] | None:
     """`(body, repo)` for one command segment that posts a comment body via
     one of the two open routes, or None if this segment isn't one of them,
     or the body/repo can't be resolved. Assumes any `gh-as`/mise wrapper has
@@ -188,17 +187,17 @@ def _find_body_and_repo_inner(args: list[str], cwd: Path) -> tuple[str, str] | N
         rest = args[1:] if is_python_post_comment_py else args
         repo = find_repo_flag(rest)
         body = _body_from_flags(rest, cwd)
-        return (body, repo) if body is not None and repo else None
+        return (body, repo) if body is not None else None
 
     if len(args) >= 3 and args[0] == "gh" and args[1] == "issue" and args[2] == "comment":
         repo = find_repo_flag(args)
         body = _body_from_flags(args, cwd)
-        return (body, repo) if body is not None and repo else None
+        return (body, repo) if body is not None else None
 
     return None
 
 
-def find_body_and_repo(args: list[str], cwd: Path) -> tuple[str, str] | None:
+def find_body_and_repo(args: list[str], cwd: Path) -> tuple[str, str | None] | None:
     """Wraps `_find_body_and_repo_inner` with the two wrapper forms this
     house's `gh`/mise invocations actually use:
 
@@ -219,7 +218,7 @@ def find_body_and_repo(args: list[str], cwd: Path) -> tuple[str, str] | None:
         rest = [token for token in rest if token != "--"]
         repo = find_repo_flag(rest)
         body = _body_from_flags(rest, cwd)
-        return (body, repo) if body is not None and repo else None
+        return (body, repo) if body is not None else None
 
     return _find_body_and_repo_inner(args, cwd)
 
@@ -275,7 +274,7 @@ def round_approval(repo: str, issue: int | None, body: str) -> tuple[bool, str]:
         return False, "[GATE] REFUSED: a PASS must state the head SHA it gated -- cannot check round approval"
     try:
         comments = check_lane3_ready.fetch_comments(repo, issue)
-    except SystemExit:
+    except (SystemExit, Exception):  # noqa: BLE001 -- e.g. no `gh` on the hook's PATH
         return False, f"[GATE] REFUSED: cannot fetch {repo}#{issue}'s comments -- cannot check round approval"
     authority, message = check_lane3_ready.resolve_gate_authority(comments, sha)
     if authority is None:
@@ -319,6 +318,16 @@ def decision(command: object, cwd: Path, check=None, round_check=None) -> dict:
             continue
         body, repo = found
         if not gate_ci.looks_like_a_gate_report(body):
+            continue
+        if repo is None:
+            # harmonic-forge#792 preclose finding: skipping here let a PASS
+            # through both checks. A FAIL/BLOCKED still posts freely.
+            if gate_ci.verdict_of(body) == "PASS":
+                return denial(
+                    "[GATE] REFUSED: a PASS gate report must name its repo with "
+                    "--repo/-R so CI and round approval can be checked "
+                    "(harmonic-forge#792)."
+                )
             continue
         ok, message = check(repo, body)
         if not ok:

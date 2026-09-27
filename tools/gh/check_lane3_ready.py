@@ -174,7 +174,16 @@ ROUND_KINDS = ("handoff", "spec")
 #: prose, so it's declared: a rework is a round boundary UNLESS its body
 #: states `**Test cases:** unchanged`. Fails closed. A rework that forgets the
 #: line costs one extra AE; it can never carry an old AE over new cases.
-TC_UNCHANGED = re.compile(r"(?im)^[ \t]*\**[ \t]*Test cases[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*unchanged\b")
+TC_UNCHANGED = re.compile(r"(?im)^[ \t]*\**[ \t]*Test cases[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*unchanged\.?[ \t]*$")
+
+
+def same_sha(a: str | None, b: str | None) -> bool:
+    """Prefix equality, 7+ hex (harmonic-forge#792 preclose finding): a gate
+    report may state an abbreviated SHA while `l1_post`'s footer records it
+    in full, and exact equality refused an approved PASS for that alone."""
+    if not a or not b or min(len(a), len(b)) < 7:
+        return False
+    return a.startswith(b) or b.startswith(a)
 
 
 def _is_round_artifact(comment: dict) -> bool:
@@ -195,6 +204,24 @@ def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dic
     return min(found, key=lambda c: c["id"]) if found else None
 
 
+def _tc_rework_after(comments: list[dict], authority: dict) -> dict | None:
+    """The oldest test-case-changing `rework` posted after `authority`, or
+    None (harmonic-forge#792 preclose finding). The carry window only covers a
+    new SHA; a rework amending test cases with no new push reuses the
+    authority's own SHA and was never examined. Reworks only: an unrelated
+    later spec must not refuse this gate (hrse#2095, see above)."""
+    found = [c for c in comments
+             if c["id"] > authority["id"]
+             and (m := FOOTER_KIND.search(c.get("body", ""))) and m.group(1).lower() == "rework"
+             and _is_round_artifact(c)]
+    return min(found, key=lambda c: c["id"]) if found else None
+
+
+def _rework_message(authority: dict, rework: dict) -> str:
+    return (f"rework ({rework['html_url']}) after {authority['html_url']} may change test "
+            "cases and does not declare `**Test cases:** unchanged` -- a fresh AE is required")
+
+
 def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict | None:
     """A Lane 1 `ready-for-l3` posted after the authorizing
     comment, naming the commit actually being gated, extends that
@@ -213,7 +240,7 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
         if comment["id"] > authority["id"]
         and (match := FOOTER_KIND.search(comment.get("body", "")))
         and match.group(1).lower() == "ready-for-l3"
-        and footer_sha(comment) == head_sha
+        and same_sha(footer_sha(comment), head_sha)
         and _round_artifact_between(comments, authority["id"], comment["id"]) is None
     ]
     if not candidates:
@@ -252,7 +279,9 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
         ae_sha = footer_sha(ae)
         if ae_sha is None:
             return None, f"AE comment ({ae['html_url']}) has no parseable sha= marker"
-        if ae_sha == head_sha:
+        if same_sha(ae_sha, head_sha):
+            if (rework := _tc_rework_after(comments, ae)) is not None:
+                return None, _rework_message(ae, rework)
             return ae, f"authorized for {head_sha} by {ae['html_url']}"
         carry = carry_forward(comments, ae, head_sha)
         if carry is None:
@@ -275,7 +304,9 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     sweep_sha = footer_sha(sweep)
     if sweep_sha is None:
         return None, f"sweep ({sweep['html_url']}) has no parseable sha= marker"
-    if sweep_sha == head_sha:
+    if same_sha(sweep_sha, head_sha):
+        if (rework := _tc_rework_after(comments, sweep)) is not None:
+            return None, _rework_message(sweep, rework)
         return sweep, f"authorized for {head_sha} by {sweep['html_url']}"
     carry = carry_forward(comments, sweep, head_sha)
     if carry is None:

@@ -8,6 +8,11 @@ round-approval fix protected consumer repos (HRSE2 wires it into its own
 behaviour is tested in `tools/gh/test_check_lane3_ready.py`; this pins only
 the wiring, which no other test sees.
 """
+import json
+import os
+import shutil
+import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -33,6 +38,53 @@ class Lane3BeginWiringTests(unittest.TestCase):
 
     def test_the_issue_flag_is_passed_through(self) -> None:
         self.assertIn('--issue "$usage_issue"', _run_body())
+
+
+STUB = """import json, os, sys
+open(os.environ["STUB_ARGV"], "w").write(json.dumps(sys.argv[1:]))
+sys.exit(int(os.environ["STUB_EXIT"]))
+"""
+
+
+def _toml_str(value: str) -> str:
+    return "\'\'\'\n" + value + "\'\'\'"
+
+
+@unittest.skipUnless(shutil.which("mise"), "mise not installed")
+class Lane3BeginEndToEndTests(unittest.TestCase):
+    """Preclose finding: the greps above cannot tell "the flag is spelled in
+    the script" from "the flag reaches the script". This runs the real task
+    body through mise, with a stub in place of the readiness check."""
+
+    def _run(self, stub_exit: int) -> tuple[int, list, bool]:
+        task = tomllib.loads(MISE_TOML.read_text(encoding="utf-8"))["tasks"]["lane3-begin"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "tools" / "gh").mkdir(parents=True)
+            (root / "tools" / "gh" / "check_lane3_ready.py").write_text(STUB)
+            (root / "mise.toml").write_text(
+                "[tasks.lane3-begin]\n"
+                f"usage = {_toml_str(task['usage'])}\n"
+                f"run = {_toml_str(task['run'])}\n")
+            argv_file = root / "argv.json"
+            env = {**os.environ, "STUB_ARGV": str(argv_file), "STUB_EXIT": str(stub_exit),
+                   "MISE_TRUSTED_CONFIG_PATHS": str(root)}
+            result = subprocess.run(["mise", "run", "lane3-begin", "--issue", "792"],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            argv = json.loads(argv_file.read_text()) if argv_file.exists() else None
+            return result.returncode, argv, (root / ".git" / "LANE3_ACTIVE").exists()
+
+    def test_a_refusal_leaves_no_marker(self):
+        code, argv, marked = self._run(1)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(marked)
+
+    def test_the_issue_flag_reaches_the_check_and_success_marks(self):
+        code, argv, marked = self._run(0)
+        self.assertEqual(code, 0)
+        self.assertEqual(argv, ["--issue", "792"])
+        self.assertTrue(marked)
 
 
 if __name__ == "__main__":
