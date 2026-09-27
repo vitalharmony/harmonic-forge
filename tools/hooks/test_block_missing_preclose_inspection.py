@@ -74,6 +74,11 @@ class FindTargetsTests(unittest.TestCase):
             f"/bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed'",
             (REPO, "1476", "issue"))
 
+    def test_compound_shell_with_launcher_prefixes_is_gated(self) -> None:
+        payload = f"echo ok && gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed"
+        for prefix in ("env /bin/bash -lc", "command /bin/bash -lc", "nohup /bin/bash -lc"):
+            self.assert_target(f"{prefix} '{payload}'", (REPO, "1476", "issue"))
+
     def test_api_method_long_flag(self) -> None:
         self.assert_target(
             f"gh api --method PATCH repos/{REPO}/issues/1476 -f state=closed",
