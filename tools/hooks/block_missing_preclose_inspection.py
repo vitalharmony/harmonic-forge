@@ -296,6 +296,13 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
 
     targets: list[tuple[str | None, str, str]] = []
     for raw_tokens in segments:
+        if (len(raw_tokens) >= 3 and Path(raw_tokens[0]).name in {"bash", "sh", "zsh"}
+                and raw_tokens[1] in {"-c", "-lc", "--command"}):
+            nested_targets = find_gated_targets(raw_tokens[2])
+            if nested_targets is None:
+                return None
+            targets.extend(nested_targets)
+            continue
         tokens = strip_invocation_prefix(raw_tokens)
         if not tokens:
             continue

@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## close compound wrapper and registration bypasses
+- tools/hooks/block_missing_preclose_inspection.py      | 7 +++++++
+- tools/hooks/test_block_missing_preclose_inspection.py | 5 +++++
+- 2 files changed, 12 insertions(+)
+
 ## fix F774 gate evidence and hook registration
 - tools/hooks/verify_codex_registration.py      | 17 ++++++++++++++---
 - tools/lane/_cli_launch.sh                     |  2 ++
