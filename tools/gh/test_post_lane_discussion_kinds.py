@@ -213,7 +213,7 @@ class EndToEnd(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "3"}), \
                  mock.patch.object(P, "check_gate_result",
-                                   lambda repo, body: (True, "[GATE] stubbed")), \
+                                   lambda repo, body, ack_no_pr_required=None: (True, "[GATE] stubbed")), \
                  mock.patch.object(P, "comment_body", fake_comment_body):
                 P.main()
         return captured["text"]
@@ -274,8 +274,9 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
         gate comments carry no `kind=gate-result` footer."""
         seen = []
         with mock.patch.object(P, "check_gate_result",
-                               lambda repo, body: (seen.append(kind_marker := repo),
-                                                   (True, "ok"))[1]):
+                               lambda repo, body, ack_no_pr_required=None: (
+                                   seen.append(kind_marker := repo),
+                                   (True, "ok"))[1]):
             P.require_green_ci("discussion", "o/r", self.PASS_BODY)
         self.assertEqual(seen, ["o/r"])
 
@@ -285,7 +286,8 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
         thing to drift; a non-report returns cleanly from the checker."""
         seen = []
         with mock.patch.object(P, "check_gate_result",
-                               lambda repo, body: (seen.append(body), (True, "ok"))[1]):
+                               lambda repo, body, ack_no_pr_required=None: (
+                                   seen.append(body), (True, "ok"))[1]):
             P.require_green_ci("spec", "o/r", "## Lane 2 Plan — H1\n")
         self.assertEqual(len(seen), 1)
 
@@ -333,7 +335,7 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
         check must key on the BODY, not on the flag the author chose."""
         seen = []
 
-        def spy(repo, body):
+        def spy(repo, body, ack_no_pr_required=None):
             seen.append(repo)
             return True, "ok"
         with mock.patch.object(P, "check_gate_result", spy):
@@ -374,3 +376,113 @@ class CallerRelativeFileResolutionTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 P.resolve_body_path(relative)
         self.assertIn(str(P._FORGE_ROOT / relative), str(caught.exception))
+
+
+class NoPrRequiredOverrideTests(unittest.TestCase):
+    """harmonic-forge#788: the hrse#2095 live incident, replayed at the
+    posting layer. `require_green_ci` now returns whether the override was
+    the reason a PASS went through, and `main()`/`footer()` must record it
+    only in that case -- never when the flag was passed but unused (CI was
+    genuinely green, or a real PR made the override inapplicable)."""
+
+    PASS_BODY = ("## Lane 3 Gate Results — H2095 — PASS\n\n"
+                 "**Verdict:** PASS\n**Head-SHA:** af35ca95\n"
+                 "**Finding:** none.\n**Next:** merge.\n")
+
+    def test_ack_no_pr_required_rejects_an_empty_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.md"
+            path.write_text(self.PASS_BODY)
+            argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path),
+                    "--kind", "gate-result", "--ack-no-pr-required", "   "]
+            with mock.patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    P.main()
+
+    def test_ack_no_pr_required_rejects_a_reason_that_escapes_the_footer(self):
+        """Preclose finding: `-->` in the reason ended the HTML footer early
+        and leaked the rest into the rendered comment."""
+        for reason in ("backfill --> see thread", "a <!-- b", "two\nlines"):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "body.md"
+                path.write_text(self.PASS_BODY)
+                argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path),
+                        "--kind", "gate-result", "--ack-no-pr-required", reason]
+                posted = []
+                with mock.patch.object(sys, "argv", argv), \
+                     mock.patch.object(P, "comment_body",
+                                       side_effect=lambda *a: posted.append(a) or ("u", 1)):
+                    with self.assertRaises(SystemExit):
+                        P.main()
+                self.assertEqual(posted, [])
+
+    def test_require_green_ci_returns_true_when_the_override_fired(self):
+        with mock.patch.object(P, "check_gate_result",
+                               return_value=(True, "[GATE] no-pr-override: af35ca95 is the tip")):
+            self.assertTrue(
+                P.require_green_ci("gate-result", "o/r", self.PASS_BODY, "no PR for a migration"))
+
+    def test_require_green_ci_returns_false_when_ci_was_genuinely_green(self):
+        """The override flag can be passed defensively on every gate-result
+        post; it must only be RECORDED when it was actually load-bearing."""
+        with mock.patch.object(P, "check_gate_result",
+                               return_value=(True, "[GATE] CI green for af35ca95")):
+            self.assertFalse(
+                P.require_green_ci("gate-result", "o/r", self.PASS_BODY, "should not matter"))
+
+    def test_footer_records_the_reason_only_when_used(self):
+        with_override = P.footer("gate-result", self.PASS_BODY, "LANE1",
+                                  ack_no_pr_required="hrse#2095 production backfill, no PR")
+        self.assertIn("ack-no-pr-required=hrse#2095 production backfill, no PR", with_override)
+        without_override = P.footer("gate-result", self.PASS_BODY, "LANE1")
+        self.assertNotIn("ack-no-pr-required", without_override)
+
+    def test_end_to_end_records_the_override_in_the_posted_footer(self):
+        """Replays hrse#2095 exactly: a main-tip SHA with no PR, `--kind
+        gate-result`, `--ack-no-pr-required` given."""
+        captured = {}
+
+        def fake_comment_body(repo, issue, text):
+            captured["text"] = text
+            return f"https://github.com/{repo}/issues/{issue}#issuecomment-1", 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.md"
+            path.write_text(self.PASS_BODY)
+            argv = ["post_lane_discussion.py", "--issue", "2095", "--file", str(path),
+                    "--kind", "gate-result", "--ack-no-pr-required",
+                    "data-migration on main, no PR"]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict("os.environ", {"LANE": "1"}), \
+                 mock.patch.object(P, "check_gate_result",
+                                   return_value=(True, "[GATE] no-pr-override: af35ca95 is the tip")), \
+                 mock.patch.object(P, "comment_body", fake_comment_body):
+                P.main()
+        self.assertIn("ack-no-pr-required=data-migration on main, no PR", captured["text"])
+
+    def test_end_to_end_omits_the_footer_when_a_real_pr_makes_the_override_moot(self):
+        """AC1's absolute, at the posting layer: passing the flag when a PR
+        genuinely exists (and check_gate_result therefore refuses/passes on
+        its own merits, never via the override) must not stamp a footer
+        claiming the override did the work."""
+        captured = {}
+
+        def fake_comment_body(repo, issue, text):
+            captured["text"] = text
+            return f"https://github.com/{repo}/issues/{issue}#issuecomment-1", 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.md"
+            path.write_text(self.PASS_BODY)
+            argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path),
+                    "--kind", "gate-result", "--ack-no-pr-required", "irrelevant"]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(P, "check_gate_result",
+                                   return_value=(True, "[GATE] CI green for af35ca95 (verify:success)")), \
+                 mock.patch.object(P, "comment_body", fake_comment_body):
+                P.main()
+        self.assertNotIn("ack-no-pr-required", captured["text"])
+
+
+if __name__ == "__main__":
+    unittest.main()

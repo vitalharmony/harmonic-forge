@@ -314,11 +314,63 @@ def stale_against_pr(repo: str, sha: str, run=None) -> tuple[bool, str]:
     return False, "SHA is current for its PR"
 
 
-def check_gate_result(repo: str, body: str, run=None) -> tuple[bool, str]:
+def sha_is_current_main_tip(repo: str, sha: str, run=None) -> bool | None:
+    """Is `sha` the current tip of `main`? `None` if the lookup itself failed.
+
+    harmonic-forge#788: the predicate the no-PR override actually needs is
+    NOT "has any PR ever touched this commit" -- every commit on `main` has
+    one, including the merge commit of the PR that landed it, so that
+    signal never distinguishes a data-migration's reference SHA from an
+    ordinary code change. `verify` is gated `if: github.event_name ==
+    'pull_request'` (confirmed live, HRSE2 `.github/workflows/ci.yml:82`),
+    so it structurally never runs on a bare push to `main` -- what actually
+    marks "there is no PR pending for this SHA and none is coming" is that
+    the SHA already IS the tip of `main` itself, not that it lacks a PR
+    history.
+    """
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/branches/main", "--jq", ".commit.sha"])
+    if code != 0:
+        return None
+    tip = out.strip()
+    return bool(tip) and (tip == sha or tip.startswith(sha) or sha.startswith(tip))
+
+
+def open_prs_containing(repo: str, sha: str, run=None) -> list[dict] | None:
+    """OPEN PRs associated with `sha`; `None` if the lookup failed."""
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/pulls"])
+    if code != 0:
+        return None
+    try:
+        pulls = json.loads(out or "[]")
+    except ValueError:
+        return None
+    if not isinstance(pulls, list):
+        return None
+    return [p for p in pulls if str(p.get("state", "")).lower() == "open"]
+
+
+def check_gate_result(
+    repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
+) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
     Refuses only a PASS. FAIL and BLOCKED are reports of a problem and must
     always be publishable.
+
+    harmonic-forge#788: `ack_no_pr_required` is a narrow override for the one
+    case `l1_post.py`'s own `--ack-no-pr-required` already covers on its side
+    of this same protocol -- a `main`-branch action (a data-migration script,
+    e.g. hrse#2095's live backfill) that never has a PR at all, so CI can
+    never run for its SHA no matter how long anyone waits. It is consulted
+    ONLY at the final "CI has not completed" branch below, and ONLY when
+    `open_prs_for_sha` confirms zero PRs -- open OR closed -- contain the SHA.
+    A SHA that belongs to a real PR (open, pending CI, or even already
+    closed/merged) never reaches this branch via the override: the normal
+    stale/red/pending checks above still decide it, exactly as before this
+    change. This is deliberately not "was --ack-no-pr-required passed", to
+    match AC1's "never as a way to skip the check when a PR does exist".
     """
     verdict = verdict_of(body)
     if verdict == "CONFLICT":
@@ -373,7 +425,27 @@ def check_gate_result(repo: str, body: str, run=None) -> tuple[bool, str]:
             "to survive. Post FAIL, or fix the failure and re-gate.")
     # pending / absent / unknown all land here, and all mean the same thing:
     # the second signal has not been read yet. AC3 says waiting is the correct
-    # behaviour, not a judgment call.
+    # behaviour, not a judgment call -- UNLESS no PR (open or closed) exists
+    # for this SHA at all, in which case there is no "yet" to wait for.
+    # Preclose finding: only `absent` -- the required check was never asked
+    # to run -- is the "CI structurally cannot run" case. `pending` is a run
+    # in flight and `unknown` is a failed or unreadable lookup; neither is
+    # evidence CI cannot exist, and letting the override through on them
+    # published "cannot run" over a build that was running, or unread.
+    if ack_no_pr_required is not None and state == "absent":
+        is_tip = sha_is_current_main_tip(repo, sha, run=run)
+        # AC1: never when an OPEN PR contains this SHA. A main-tip commit's
+        # own merge PR is closed, so only a genuinely pending PR refuses.
+        prs = open_prs_containing(repo, sha, run=run)
+        if is_tip and prs == []:
+            return True, (
+                f"[GATE] no-pr-override: {sha[:8]} is the current tip of "
+                f"main -- no PR is pending for it and `verify` is gated to "
+                f"pull_request events, so CI structurally cannot run for "
+                f"it. Acknowledged: {ack_no_pr_required}")
+        # Otherwise -- main moved past this SHA, an open PR contains it, or
+        # either lookup failed (None) -- fall through to the normal refusal.
+        # A failed lookup is never read as "confirmed no PR".
     return False, (
         f"[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
         f"  {sha[:8]}: {state} — {detail}\n"
