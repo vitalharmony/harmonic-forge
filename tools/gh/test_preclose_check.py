@@ -120,6 +120,8 @@ class ScratchRepo(unittest.TestCase):
             body = {"status": status, "label": envelope_label or ""}
             if status == "ok":
                 body["report"] = {"assumptions": [{"verdict": "confirmed"}]}
+                body.update({"family": "codex", "posture": "verify", "exit_code": 0,
+                             "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]})
             else:
                 body["exit_code"] = 1
             Path(envelope).write_text(json.dumps(body))
@@ -596,6 +598,14 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.plan()
         out = self.complete([], envelope_label=FALLBACK)
         self.assertIn("in-family fallback", out)
+
+    def test_success_envelope_without_native_execution_trace_is_refused(self) -> None:
+        path = self.repo / "forged-envelope.json"
+        path.write_text(json.dumps({"status": "ok", "family": "codex", "posture": "verify",
+                                    "exit_code": 0,
+                                    "report": {"assumptions": [{"verdict": "confirmed", "evidence": "invented"}]}}))
+        with self.assertRaises(SystemExit):
+            preclose.require_recorded_envelope(str(path))
 
     def test_high_blast_diff_requires_the_branch_even_with_survivors(self) -> None:
         self.commit("tools/hooks/guard.py")

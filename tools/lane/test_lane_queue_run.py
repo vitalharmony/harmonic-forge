@@ -24,7 +24,9 @@ class QueueRunTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / "project"
         (self.repo / ".codex").mkdir(parents=True)
-        (self.repo / ".codex" / "hooks.json").write_text("{}")
+        (self.repo / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+            {"command": f"python3 {name}"} for name in MODULE.verify_codex_registration.REQUIRED_HOOKS
+        ]}]}}))
         self.home = self.root / "home"
         (self.home / ".codex").mkdir(parents=True)
         (self.home / ".codex" / "config.toml").write_text(
@@ -181,6 +183,12 @@ class QueueRunTests(unittest.TestCase):
         index.write_text(json.dumps({"thread_name": "thread", "id": "uuid"}) + "\n")
         self.assertEqual(MODULE.session_identity("thread", self.home), "uuid")
         self.assertEqual(MODULE.session_identity("uuid", self.home), "uuid")
+
+    def test_empty_hook_registration_is_not_trusted(self):
+        hooks = self.repo / ".codex" / "hooks.json"
+        hooks.parent.mkdir(exist_ok=True)
+        hooks.write_text('{"hooks": {"PreToolUse": []}}')
+        self.assertFalse(MODULE.trusted(self.repo, self.home))
 
     def test_duplicate_thread_entries_canonicalize_old_uuid_to_latest(self):
         index = self.home / ".codex" / "session_index.jsonl"

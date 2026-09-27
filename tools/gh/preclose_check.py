@@ -352,6 +352,15 @@ def require_recorded_envelope(path: str) -> None:
             if not isinstance(report, dict) or not isinstance(report.get("assumptions"), list) or not report["assumptions"]:
                 valid = False
                 break
+            native = item.get("native")
+            if (item.get("family") != "codex" or item.get("posture") != "verify"
+                    or item.get("exit_code") != 0 or not isinstance(native, list)
+                    or not any(record.get("type") == "thread.started" for record in native if isinstance(record, dict))
+                    or not any(isinstance(record, dict) and record.get("type") == "item.completed"
+                               and isinstance(record.get("item"), dict)
+                               and record["item"].get("type") == "agent_message" for record in native)):
+                valid = False
+                break
         elif not isinstance(item.get("exit_code"), int):
             valid = False
             break

@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## bind queue trust and cross-family evidence
+- tools/gh/test_preclose_check.py   | 10 ++++++++++
+- tools/lane/lane-queue-run         |  5 ++++-
+- tools/lane/test_lane_queue_run.py | 10 +++++++++-
+- 4 files changed, 32 insertions(+), 2 deletions(-)
+
 ## cover prefixed compound shell gate bypass
 - tools/hooks/block_missing_preclose_inspection.py      | 9 ++++++---
 - tools/hooks/test_block_missing_preclose_inspection.py | 5 +++++

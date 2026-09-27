@@ -16,7 +16,9 @@ from hashlib import sha256
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "hooks"))
 import queue_state
+import verify_codex_registration
 
 PROMPT = ("Read the queue state file and work every pending item in order. Before "
           "each item set it in_progress; after it set it done. If blocked, set its "
@@ -97,7 +99,8 @@ def trusted(repo: Path, home: Path) -> bool:
     except (OSError, ValueError):
         return False
     project = data.get("projects", {}).get(str(repo.resolve()), {})
-    return hooks.is_file() and isinstance(project, dict) and project.get("trust_level") == "trusted"
+    registered, _ = verify_codex_registration.verify(hooks)
+    return registered and isinstance(project, dict) and project.get("trust_level") == "trusted"
 
 
 def resume_args(lane: str, *, execute=subprocess.run) -> list[str]:
