@@ -34,7 +34,7 @@ class Lane3BeginWiringTests(unittest.TestCase):
         `set -e` has to make its failure stop the task."""
         body = _run_body()
         self.assertIn("set -e", body)
-        self.assertLess(body.index("check_lane3_ready.py"), body.index("LANE3_ACTIVE"))
+        self.assertLess(body.index("check_lane3_ready.py"), body.index('touch "$git_dir/LANE3_ACTIVE"'))
 
     def test_the_issue_flag_is_passed_through(self) -> None:
         self.assertIn('--issue "$usage_issue"', _run_body())
@@ -56,11 +56,13 @@ class Lane3BeginEndToEndTests(unittest.TestCase):
     the script" from "the flag reaches the script". This runs the real task
     body through mise, with a stub in place of the readiness check."""
 
-    def _run(self, stub_exit: int) -> tuple[int, list, bool]:
+    def _run(self, stub_exit: int, stale_marker: bool = False) -> tuple[int, list, bool]:
         task = tomllib.loads(MISE_TOML.read_text(encoding="utf-8"))["tasks"]["lane3-begin"]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
+            if stale_marker:
+                (root / ".git" / "LANE3_ACTIVE").touch()
             (root / "tools" / "gh").mkdir(parents=True)
             (root / "tools" / "gh" / "check_lane3_ready.py").write_text(STUB)
             (root / "mise.toml").write_text(
@@ -77,6 +79,11 @@ class Lane3BeginEndToEndTests(unittest.TestCase):
 
     def test_a_refusal_leaves_no_marker(self):
         code, argv, marked = self._run(1)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(marked)
+
+    def test_a_refusal_clears_a_marker_left_by_an_earlier_gate(self):
+        code, _, marked = self._run(1, stale_marker=True)
         self.assertNotEqual(code, 0)
         self.assertFalse(marked)
 

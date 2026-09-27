@@ -377,12 +377,14 @@ flag "--issue <issue>" help="Validate this issue number directly instead of deri
 '''
 run = '''
 set -e
+git_dir="$(git rev-parse --absolute-git-dir)"
+# A marker left by an earlier gate must not survive a refusal (harmonic-forge#792).
+rm -f "$git_dir/LANE3_ACTIVE"
 if [ -n "$usage_issue" ]; then
   python3 tools/gh/check_lane3_ready.py --issue "$usage_issue"
 else
   python3 tools/gh/check_lane3_ready.py
 fi
-git_dir="$(git rev-parse --absolute-git-dir)"
 touch "$git_dir/LANE3_ACTIVE"
 echo "lane3-begin: $(pwd) marked Lane 3-active"
 '''
