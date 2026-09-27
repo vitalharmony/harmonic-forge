@@ -1468,6 +1468,7 @@ class PlatformRulesSync(unittest.TestCase):
         source = (LANE_DIR / "_cli_launch.sh").read_text()
         self.assertIn('"$_lane_agent" = codex', source)
         self.assertIn("verify_codex_registration.py", source)
+        self.assertIn('--path "$PWD/.codex/hooks.json"', source)
         self.assertIn("refusing to start an unguarded session", source)
 
 
