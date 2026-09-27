@@ -627,6 +627,9 @@ def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
 
 
 def plan(args: argparse.Namespace) -> int:
+    # F783 preclose finding: plan is the first step and its output is the
+    # instruction to spend a panel, so it must refuse before printing any.
+    require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     check_one_pass(repo, args.issue, head_sha, args.force)
