@@ -353,12 +353,11 @@ def require_recorded_envelope(path: str) -> None:
                 valid = False
                 break
             native = item.get("native")
-            if (item.get("family") != "codex" or item.get("posture") != "verify"
-                    or item.get("exit_code") != 0 or not isinstance(native, list)
-                    or not any(record.get("type") == "thread.started" for record in native if isinstance(record, dict))
-                    or not any(isinstance(record, dict) and record.get("type") == "item.completed"
-                               and isinstance(record.get("item"), dict)
-                               and record["item"].get("type") == "agent_message" for record in native)):
+            if (item.get("posture") != "verify" or item.get("exit_code") != 0
+                    or item.get("caller_family") == item.get("target_family")
+                    or item.get("target_family") != item.get("family")
+                    or not ((item.get("family") == "codex" and _codex_verify_trace(native))
+                            or (item.get("family") == "claude" and _claude_verify_trace(native, item.get("verify_model"))))):
                 valid = False
                 break
         elif not isinstance(item.get("exit_code"), int):
@@ -366,6 +365,50 @@ def require_recorded_envelope(path: str) -> None:
             break
     if not envelopes or not valid:
         raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+
+
+def _codex_verify_trace(native: object) -> bool:
+    return (isinstance(native, list)
+            and any(record.get("type") == "thread.started" for record in native if isinstance(record, dict))
+            and any(isinstance(record, dict) and record.get("type") == "item.completed"
+                    and isinstance(record.get("item"), dict)
+                    and record["item"].get("type") == "agent_message" for record in native))
+
+
+def _claude_blocks(event: dict, kind: str) -> list[dict]:
+    blocks = event.get("content")
+    if not isinstance(blocks, list):
+        message = event.get("message")
+        blocks = message.get("content") if isinstance(message, dict) else []
+    return [block for block in blocks if isinstance(block, dict) and block.get("type") == kind]
+
+
+def _claude_verify_trace(native: object, verify_model: object) -> bool:
+    if not isinstance(native, list) or not isinstance(verify_model, str):
+        return False
+    init = next((event for event in native if isinstance(event, dict)
+                 and event.get("type") == "system" and event.get("subtype") == "init"), None)
+    if not isinstance(init, dict) or set(init.get("tools", [])) != {"Read", "Grep", "Glob"} \
+            or len(init.get("tools", [])) != 3 or init.get("mcp_servers") != [] \
+            or init.get("model") != verify_model:
+        return False
+    uses: set[str] = set()
+    results: set[str] = set()
+    for event in native:
+        if not isinstance(event, dict):
+            continue
+        use_blocks = ([event] if event.get("type") == "tool_use" else []) + _claude_blocks(event, "tool_use")
+        for block in use_blocks:
+            if block.get("name") in {"Read", "Grep", "Glob"} and isinstance(block.get("id"), str):
+                uses.add(block["id"])
+        result_blocks = ([event] if event.get("type") == "tool_result" else []) + _claude_blocks(event, "tool_result")
+        for block in result_blocks:
+            ident = block.get("tool_use_id") or block.get("id")
+            if isinstance(ident, str) and not block.get("is_error", False):
+                results.add(ident)
+    return bool(uses & results) and any(isinstance(event, dict) and event.get("type") == "result"
+                                        and event.get("subtype") == "success"
+                                        and isinstance(event.get("result"), str) for event in native)
 
 
 def load_findings(path: str) -> list:

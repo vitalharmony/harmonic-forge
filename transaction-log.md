@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## add restricted Claude verify posture for F774
+- tools/lane/cross_family_provenance.py      |  6 ++--
+- tools/lane/test_cross_family_call.py       | 39 ++++++++++++++++-----
+- tools/lane/test_cross_family_provenance.py |  5 +++
+- 6 files changed, 147 insertions(+), 26 deletions(-)
+
 ## validate codex hooks in active lane worktree
 - tools/lane/_cli_launch.sh         | 2 +-
 - tools/lane/test_lane_launchers.py | 1 +

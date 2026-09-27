@@ -121,6 +121,7 @@ class ScratchRepo(unittest.TestCase):
             if status == "ok":
                 body["report"] = {"assumptions": [{"verdict": "confirmed"}]}
                 body.update({"family": "codex", "posture": "verify", "exit_code": 0,
+                             "caller_family": "claude", "target_family": "codex",
                              "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]})
             else:
                 body["exit_code"] = 1
@@ -604,6 +605,33 @@ class CrossFamilyReceiptTests(ScratchRepo):
         path.write_text(json.dumps({"status": "ok", "family": "codex", "posture": "verify",
                                     "exit_code": 0,
                                     "report": {"assumptions": [{"verdict": "confirmed", "evidence": "invented"}]}}))
+        with self.assertRaises(SystemExit):
+            preclose.require_recorded_envelope(str(path))
+
+    def test_claude_verify_requires_exact_init_and_executed_read(self) -> None:
+        path = self.repo / "claude-envelope.json"
+        envelope = {"family": "claude", "caller_family": "codex", "target_family": "claude",
+                    "verify_model": "claude-opus-5-5", "posture": "verify", "status": "ok", "exit_code": 0,
+                    "report": {"assumptions": [{"verdict": "confirmed", "evidence": "Read x"}]},
+                    "native": [
+                        {"type": "system", "subtype": "init", "tools": ["Read", "Grep", "Glob"], "mcp_servers": [], "model": "claude-opus-5-5"},
+                        {"type": "tool_use", "id": "read-1", "name": "Read"},
+                        {"type": "tool_result", "tool_use_id": "read-1"},
+                        {"type": "result", "subtype": "success", "result": "{}"},
+                    ]}
+        path.write_text(json.dumps(envelope))
+        preclose.require_recorded_envelope(str(path))
+        envelope["native"][0]["tools"].append("Bash")
+        path.write_text(json.dumps(envelope))
+        with self.assertRaises(SystemExit):
+            preclose.require_recorded_envelope(str(path))
+
+    def test_same_family_envelope_is_refused(self) -> None:
+        path = self.repo / "same-family-envelope.json"
+        path.write_text(json.dumps({"status": "ok", "family": "codex", "caller_family": "codex",
+                                    "target_family": "codex", "posture": "verify", "exit_code": 0,
+                                    "report": {"assumptions": [{"verdict": "confirmed"}]},
+                                    "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
         with self.assertRaises(SystemExit):
             preclose.require_recorded_envelope(str(path))
 

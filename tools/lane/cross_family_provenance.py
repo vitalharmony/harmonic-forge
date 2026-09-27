@@ -56,7 +56,7 @@ def _redact(text: str) -> str:
             start = lowered.find(marker)
     return flat
 
-CROSS_FAMILY = "Red-team provenance: cross-family (codex / {model})"
+CROSS_FAMILY = "Red-team provenance: cross-family ({family} / {model})"
 FALLBACK = "Red-team provenance: in-family fallback ({own_model}) — {reason}"
 NOT_TRIGGERED = (
     "Red-team provenance: in-family only ({own_model}) — cross-family branch "
@@ -124,7 +124,9 @@ def classify(envelope: dict, model: str, own_model: str) -> str:
                    f"scratch directory",
         )
 
-    label = CROSS_FAMILY.format(model=model)
+    family = envelope.get("family")
+    reviewer_model = envelope.get("verify_model") if family == "claude" else model
+    label = CROSS_FAMILY.format(family=family, model=reviewer_model)
     unchecked = len(assumptions) - len(checked)
     return (f"{label} — {len(checked)} of {len(assumptions)} assumption(s) "
             f"checked with executed evidence"

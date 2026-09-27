@@ -28,7 +28,8 @@
 # which denies that one tool; Gemini's file tools enforce the workspace
 # bound themselves, even under `--yolo`.
 #
-# `verify` posture (harmonic-forge#448) is Codex-only and deterministic:
+# `verify` posture is deterministic for Codex and, under the operator's F774
+# ruling, Claude with an even narrower read-tools-only boundary.
 # `--ignore-user-config` means the reviewer inherits NOTHING from
 # `~/.codex/config.toml` -- no ambient model, no trust levels, and critically
 # no `[mcp_servers.*]` (the live user config grants Gmail/Drive/Docs/Sheets/
@@ -46,8 +47,8 @@ Usage: cross_family_call.sh --caller claude|codex|gemini --families 2|3 \
   --caller    which CLI is making this call (determines target order)
   --families  2 (caller's primary sibling only) or 3 (both siblings)
   --posture   read-only (centralized deny boundary), probe (--yolo,
-              requires --cwd), or verify (Codex-only, --ignore-user-config,
-              read-only sandbox, requires --cwd)
+              requires --cwd), or verify (Codex or restricted Claude,
+              requires --cwd)
   --brief     path to a self-contained cold-brief file (no memories, no
               conversation -- see ADR-007)
   --cwd       isolated scratch directory; required for probe and verify
@@ -118,7 +119,8 @@ if [ "$families" = 3 ]; then
   targets+=("${order[1]}")
 fi
 
-# `verify` is Codex-only, and this is enforced on the RESOLVED TARGET LIST
+# `verify` is implemented for Codex and Claude. Gemini has no equivalent
+# constrained stream contract, so it remains refused.
 # rather than on `--caller`/`--families` separately (harmonic-forge#448).
 # `invoke_claude` takes no posture argument at all and `invoke_gemini` maps
 # every non-`probe` posture to its read-only admin policy, so an unguarded
@@ -128,10 +130,13 @@ fi
 # security posture is the failure mode worth being loud about, so this exits
 # non-zero and names the offending family.
 if [ "$posture" = verify ]; then
+  if [ "$caller" = gemini ]; then
+    abort_preflight "--posture verify is unavailable for Gemini callers"
+  fi
   for family in "${targets[@]}"; do
-    if [ "$family" != codex ]; then
-      echo "cross_family_call: --posture verify is Codex-only; --caller $caller --families $families resolves to target '$family'" >&2
-      abort_preflight "--posture verify is Codex-only; target '$family' is not Codex"
+    if [ "$family" = gemini ]; then
+      echo "cross_family_call: --posture verify is unavailable for Gemini; --caller $caller --families $families resolves to target '$family'" >&2
+      abort_preflight "--posture verify is unavailable for Gemini"
     fi
   done
 fi
@@ -302,7 +307,14 @@ invoke_claude() {
   local posture="$1" brief="$2" cwd="$3"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
-    claude -p "$(prompt_text "$posture" "$brief")" --output-format json </dev/null
+    if [ "$posture" = verify ]; then
+      claude -p "$(prompt_text "$posture" "$brief")" \
+        --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
+        --model "${CLAUDE_VERIFY_MODEL:-claude-opus-5-5}" \
+        --no-session-persistence --output-format stream-json --verbose </dev/null
+    else
+      claude -p "$(prompt_text "$posture" "$brief")" --output-format json </dev/null
+    fi
   )
 }
 
@@ -527,8 +539,13 @@ emit_envelope() {
   # envelope, which is strictly better than the old behaviour on that path.
   case "$family" in
     claude)
-      jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-      jq -r '.result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+      if [ "$posture" = verify ]; then
+        jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+        jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+      else
+        jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+        jq -r '.[0].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+      fi
       ;;
     codex)
       jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
@@ -672,6 +689,9 @@ for family in "${targets[@]}"; do
   envelope_out="$(mktemp)"
   envelope_err="$(mktemp)"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
+       | jq -c --arg caller "$caller" --arg target "$family" \
+           --arg verify_model "${CLAUDE_VERIFY_MODEL:-claude-opus-5-5}" \
+           '. + {caller_family:$caller, target_family:$target, verify_model:$verify_model}' \
        >"$envelope_out" 2>"$envelope_err"; then
     cat "$envelope_out" >>"$result_tmp"
     cat "$envelope_out"

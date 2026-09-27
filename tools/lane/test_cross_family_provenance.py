@@ -35,6 +35,11 @@ class ClassifyTests(unittest.TestCase):
     def test_refuted_counts_as_checked(self):
         self.assertIn("cross-family", m.classify(_ok([_a("refuted")]), _MODEL, _OWN))
 
+    def test_claude_verify_label_uses_the_recorded_pinned_model(self):
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5"}
+        label = m.classify(envelope, _MODEL, _OWN)
+        self.assertIn("claude / claude-opus-5-5", label)
+
     def test_all_uncheckable_does_not_earn_the_cross_family_label(self):
         """The state the prose had no name for: exit 0, `status: ok`, and no
         checking whatsoever."""
