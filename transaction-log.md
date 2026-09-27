@@ -3,6 +3,22 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(preclose): Codex Lane 1 can write pre-close receipts (harmonic-forge#783)
+
+- [codex:1] AGENT_LANE_ADD_DIR gains .claude/state/preclose (AC1)
+- preclose_check --gate/--complete fail fast (exit 2) when receipt_dir()
+  is unwritable, naming the dir and the add-dir fix (AC2)
+- tests for both (AC3); launcher fixture now registers the three Codex
+  gates #782 made mandatory, which had broken 91 launcher tests on main;
+  lane1/codex baseline cells carry the new --add-dir
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XjpjYr12xvKi66tfUAsM9y
+- tools/lane/baseline_capture.py         | 23 +++++++++++++++++++++++
+- tools/lane/baseline_launch_tuples.json |  8 ++++++++
+- tools/lane/test_lane_launchers.py      | 17 +++++++----------
+- 6 files changed, 88 insertions(+), 12 deletions(-)
+
 ## resolve final F774 Claude review findings
 - tools/hooks/test_verify_codex_registration.py |  6 +++---
 - tools/hooks/verify_codex_registration.py      |  2 ++

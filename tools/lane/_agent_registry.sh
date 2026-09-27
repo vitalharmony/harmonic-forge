@@ -313,7 +313,7 @@ declare -A AGENT_LANE_POLICY=(
 # slot still gets the private TMPDIR so Codex never falls back to `/tmp`.
 declare -A AGENT_LANE_ADD_DIR=(
   [claude:1]="" [claude:2]="" [claude:3]=""
-  [codex:1]=".cache/codex-lane-tmp/lane1"
+  [codex:1]=".cache/codex-lane-tmp/lane1 .claude/state/preclose"
   [codex:2]="Harmonic_Projects/.worktrees .cache/codex-lane-tmp/lane2 .cache/cymagraph"
   [codex:3]="Harmonic_Projects/testplan .cache/codex-lane-tmp/lane3 .cache/cymagraph"
   [gemini:1]=""  [gemini:2]=""  [gemini:3]=""

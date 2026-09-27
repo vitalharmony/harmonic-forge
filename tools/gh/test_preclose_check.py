@@ -409,6 +409,38 @@ class OnePassTests(ScratchRepo):
         self.plan(tier="fast")
         self.assertEqual(list(preclose.receipt_dir().glob("*.tmp")), [])
 
+    def _block_receipt_dir(self) -> Path:
+        """F783: make the real receipt_dir() unwritable by occupying its
+        parent with a file -- HOME only, never patching receipt_dir() (see
+        this class's docstring)."""
+        state = Path(os.environ["HOME"]) / ".claude" / "state"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("blocked\n")
+        return preclose.receipt_dir()
+
+    def test_complete_fails_fast_when_receipt_dir_is_unwritable(self) -> None:
+        """F783: an inaccessible receipt store must fail before any work
+        and must not leave a partial receipt."""
+        blocked = self._block_receipt_dir()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            self.complete()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(str(blocked), err.getvalue())
+        self.assertIn("AGENT_LANE_ADD_DIR", err.getvalue())
+        self.assertEqual(list(Path(os.environ["HOME"]).rglob("*.tmp")), [])
+        self.assertEqual(list(self.repo.rglob("*.tmp")), [])
+
+    def test_gate_fails_before_processing_when_receipt_dir_is_unwritable(self) -> None:
+        """F783: --gate refuses before reading findings or calling a reviewer
+        (a missing findings file would otherwise be the first error)."""
+        blocked = self._block_receipt_dir()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            preclose.gate(_Args(repo="not/onboarded", issue=1208, findings="missing.json"))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(str(blocked), err.getvalue())
+
     def test_writes_go_to_the_user_level_store_not_the_repo(self) -> None:
         """harmonic-forge#778 AC3: the receipt must outlive the worktree that
         wrote it, so it has to live somewhere a disposable Lane 1 impl

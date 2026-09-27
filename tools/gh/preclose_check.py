@@ -154,6 +154,19 @@ def receipt_dir() -> Path:
     return Path.home() / ".claude" / "state" / "preclose"
 
 
+def require_writable(directory: Path) -> None:
+    """Fail before review work when this session cannot record its receipt."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=directory):
+            pass
+    except OSError as exc:
+        print(f"preclose-check: receipt dir {directory} is not writable from this session; "
+              "add it to the lane sandbox (AGENT_LANE_ADD_DIR, harmonic-forge#783)",
+              file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def legacy_receipt_dir() -> Path:
     """The pre-#778 repo-anchored location. `read_receipt`'s caller checks
     this only when the user-level store has nothing -- one release's fallback
@@ -435,7 +448,9 @@ def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
 
 
 def gate(args: argparse.Namespace) -> int:
-    """Print whether this pass takes the cross-family branch. Writes nothing."""
+    """Print whether this pass takes the cross-family branch. Writes nothing
+    beyond the receipt-dir writability probe, which leaves no file."""
+    require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     required, why, surviving, _ = gate_decision(args)
     print(f"preclose-check cross-family gate: {'REQUIRED' if required else 'not triggered'}")
@@ -673,6 +688,7 @@ def complete(args: argparse.Namespace) -> int:
     consumed its one pass without a single refuter running, and the retry was
     then refused with a message asserting a review that never happened.
     """
+    require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     if not args.findings:

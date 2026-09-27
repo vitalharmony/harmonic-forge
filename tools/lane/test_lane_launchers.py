@@ -55,15 +55,10 @@ class _FixtureTree:
         self.main, self.stub_bin = bc.build_fixture_tree(
             self.root, versions=self._versions)
         self.home = self.root / "home"
-        required_hooks = {"hooks": {"PreToolUse": [{"hooks": [
-            {"command": "block_missing_preclose_inspection.py"},
-            {"command": "batch_gate.py"},
-            {"command": "block_closing_keywords.py"},
-        ]}]}}
-        for installed in (self.home / "harmonic-forge" / ".codex" / "hooks.json",
-                          self.home / "Harmonic_Projects" / "HRSE2" / ".codex" / "hooks.json"):
-            installed.parent.mkdir(parents=True, exist_ok=True)
-            installed.write_text(json.dumps(required_hooks))
+        # build_fixture_tree registers the Codex gates in each lane checkout;
+        # this tree's HOME differs from capture_cell's default, so HRSE2's
+        # copy is written here too.
+        bc.write_codex_hooks(self.home / "Harmonic_Projects" / "HRSE2")
         extension_record = self.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
         extension_record.parent.mkdir(parents=True)
         extension_record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
@@ -194,6 +189,7 @@ class NineCombinations(unittest.TestCase):
             self.assertEqual(_agent_args(cell),
                              ["codex", "--add-dir",
                               f"{tree.home}/.cache/codex-lane-tmp/lane1",
+                              "--add-dir", f"{tree.home}/.claude/state/preclose",
                               "--no-daemon", *CodexLaneTmp.KEYS, "-p", "hello"])
 
     def test_double_dash_protects_a_literal_agent_argument(self):
@@ -205,6 +201,7 @@ class NineCombinations(unittest.TestCase):
             self.assertEqual(_agent_args(cell),
                              ["codex", "--add-dir",
                               f"{tree.home}/.cache/codex-lane-tmp/lane1",
+                              "--add-dir", f"{tree.home}/.claude/state/preclose",
                               "--no-daemon", *CodexLaneTmp.KEYS, "--agent", "x"])
 
 
@@ -1216,7 +1213,7 @@ class CodexLaneTmp(unittest.TestCase):
     KEYS = ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
             "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
     ADD_DIRS = {
-        "1": [".cache/codex-lane-tmp/lane1"],
+        "1": [".cache/codex-lane-tmp/lane1", ".claude/state/preclose"],
         "2": ["Harmonic_Projects/.worktrees", ".cache/codex-lane-tmp/lane2",
               ".cache/cymagraph"],
         "3": ["Harmonic_Projects/testplan", ".cache/codex-lane-tmp/lane3",
