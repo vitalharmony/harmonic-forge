@@ -158,24 +158,46 @@ class TestVerifyPostureGuards(unittest.TestCase):
                             "--posture", "verify", "--brief", str(self.brief),
                             "--cwd", self.tmp.name)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Codex-only", result.stderr)
+        self.assertIn("unavailable for Gemini", result.stderr)
         self.assertIn("gemini", result.stderr)
 
-    def test_verify_rejects_codex_caller(self):
-        """A codex caller's primary sibling is claude, whose `invoke_claude`
-        takes no posture argument at all."""
+    def test_verify_permits_codex_caller(self):
+        """F774 ruling: Codex's verify reviewer is restricted Claude."""
         result = run_script("--caller", "codex", "--families", "2",
                             "--posture", "verify", "--brief", str(self.brief),
                             "--cwd", self.tmp.name)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("claude", result.stderr)
+        self.assertNotIn("unavailable", result.stderr)
+
+    def test_codex_verify_routes_to_claude_with_restricted_read_only_argv(self):
+        args_file = Path(self.tmp.name) / "claude-argv.bin"
+        stub = Path(self.tmp.name) / "stubbin" / "claude"
+        stub.write_text(
+            '#!/usr/bin/env bash\n'
+            'printf "%s\\0" "$@" > "$CLAUDE_ARGS"\n'
+            'printf "%s\\n" \'{"type":"system","subtype":"init","tools":["Glob","Grep","Read"],"mcp_servers":[],"model":"claude-opus-5-5"}\'\n'
+            'printf "%s\\n" \'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"u1","name":"Read"}]}}\'\n'
+            'printf "%s\\n" \'{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u1"}]}}\'\n'
+            'printf "%s\\n" \'{"type":"result","subtype":"success","result":"{\\"summary\\":\\"ok\\",\\"findings\\":[],\\"assumptions\\":[{\\"assumption\\":\\"a\\",\\"verdict\\":\\"confirmed\\",\\"evidence\\":\\"Read x\\"}]}"}\'\n'
+        )
+        stub.chmod(0o755)
+        env = dict(os.environ, PATH=self.path, CLAUDE_ARGS=str(args_file))
+        result = subprocess.run(["bash", str(SCRIPT), "--caller", "codex", "--families", "2",
+                                 "--posture", "verify", "--brief", str(self.brief), "--cwd", self.tmp.name],
+                                capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = args_file.read_bytes().split(b"\0")[:-1]
+        self.assertEqual(argv[argv.index(b"--tools") + 1], b"Read,Grep,Glob")
+        for flag in (b"--restricted", b"--strict-mcp-config", b"--no-session-persistence",
+                     b"--output-format", b"stream-json", b"--verbose"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index(b"--model") + 1], b"claude-opus-5-5")
 
     def test_verify_rejects_gemini_caller(self):
         result = run_script("--caller", "gemini", "--families", "2",
                             "--posture", "verify", "--brief", str(self.brief),
                             "--cwd", self.tmp.name)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Codex-only", result.stderr)
+        self.assertIn("unavailable for Gemini", result.stderr)
 
     def test_existing_postures_still_accepted(self):
         """#448 must not narrow the two postures that already worked."""
@@ -899,7 +921,8 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         env = parse_envelopes(result.stdout)[-1]
         self.assertEqual(env["status"], "ok")
         self.assertEqual(sorted(env),
-                         ["exit_code", "family", "native", "posture", "report", "status"])
+                         ["caller_family", "exit_code", "family", "native", "posture", "report",
+                          "status", "target_family"])
 
     def test_one_family_failing_does_not_abort_the_others(self):
         """TC4. Before this, `set -e` killed the loop at the first failure:

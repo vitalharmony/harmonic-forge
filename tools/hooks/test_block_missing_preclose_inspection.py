@@ -59,6 +59,26 @@ class FindTargetsTests(unittest.TestCase):
             f"gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed",
             (REPO, "1476", "issue"))
 
+    def test_gh_as_wrapper_is_gated(self) -> None:
+        self.assert_target(
+            f"gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed",
+            (REPO, "1476", "issue"))
+
+    def test_wrapped_bash_login_shell_is_gated(self) -> None:
+        self.assert_target(
+            f"/bin/bash -lc 'gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed'",
+            (REPO, "1476", "issue"))
+
+    def test_compound_wrapped_bash_login_shell_is_gated(self) -> None:
+        self.assert_target(
+            f"/bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed'",
+            (REPO, "1476", "issue"))
+
+    def test_compound_shell_with_launcher_prefixes_is_gated(self) -> None:
+        payload = f"echo ok && gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed"
+        for prefix in ("env /bin/bash -lc", "command /bin/bash -lc", "nohup /bin/bash -lc"):
+            self.assert_target(f"{prefix} '{payload}'", (REPO, "1476", "issue"))
+
     def test_api_method_long_flag(self) -> None:
         self.assert_target(
             f"gh api --method PATCH repos/{REPO}/issues/1476 -f state=closed",

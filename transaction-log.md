@@ -3,6 +3,74 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## resolve final F774 Claude review findings
+- tools/hooks/test_verify_codex_registration.py |  6 +++---
+- tools/hooks/verify_codex_registration.py      |  2 ++
+- tools/lane/test_cross_family_call.py          |  2 +-
+- 6 files changed, 18 insertions(+), 14 deletions(-)
+
+## apply F774 receipt ruling trace requirements
+- tools/lane/cross_family_call.sh       |  4 ++--
+- tools/lane/cross_family_provenance.py |  4 ++++
+- tools/lane/test_cross_family_call.py  |  4 ++--
+- 5 files changed, 21 insertions(+), 14 deletions(-)
+
+## tighten F774 Claude contract and hook commands
+- tools/hooks/test_verify_codex_registration.py | 15 +++++++++++++++
+- tools/hooks/verify_codex_registration.py      | 11 +++++------
+- tools/lane/cross_family_call.sh               |  4 +++-
+- 3 files changed, 23 insertions(+), 7 deletions(-)
+
+## harden F774 Claude trace and hook registration
+- tools/lane/lane-queue-run                     |  4 ++++
+- tools/lane/test_cross_family_call.py          |  2 +-
+- tools/lane/test_lane_queue_run.py             | 10 ++++++---
+- 7 files changed, 58 insertions(+), 28 deletions(-)
+
+## add restricted Claude verify posture for F774
+- tools/lane/cross_family_provenance.py      |  6 ++--
+- tools/lane/test_cross_family_call.py       | 39 ++++++++++++++++-----
+- tools/lane/test_cross_family_provenance.py |  5 +++
+- 6 files changed, 147 insertions(+), 26 deletions(-)
+
+## validate codex hooks in active lane worktree
+- tools/lane/_cli_launch.sh         | 2 +-
+- tools/lane/test_lane_launchers.py | 1 +
+- 2 files changed, 2 insertions(+), 1 deletion(-)
+
+## bind queue trust and cross-family evidence
+- tools/gh/test_preclose_check.py   | 10 ++++++++++
+- tools/lane/lane-queue-run         |  5 ++++-
+- tools/lane/test_lane_queue_run.py | 10 +++++++++-
+- 4 files changed, 32 insertions(+), 2 deletions(-)
+
+## cover prefixed compound shell gate bypass
+- tools/hooks/block_missing_preclose_inspection.py      | 9 ++++++---
+- tools/hooks/test_block_missing_preclose_inspection.py | 5 +++++
+- 2 files changed, 11 insertions(+), 3 deletions(-)
+
+## canonicalize duplicate session aliases
+- tools/lane/lane-queue-run         | 16 ++++++++++------
+- tools/lane/test_lane_queue_run.py | 10 ++++++++++
+- 2 files changed, 20 insertions(+), 6 deletions(-)
+
+## close compound wrapper and registration bypasses
+- tools/hooks/block_missing_preclose_inspection.py      | 7 +++++++
+- tools/hooks/test_block_missing_preclose_inspection.py | 5 +++++
+- 2 files changed, 12 insertions(+)
+
+## fix F774 gate evidence and hook registration
+- tools/hooks/verify_codex_registration.py      | 17 ++++++++++++++---
+- tools/lane/_cli_launch.sh                     |  2 ++
+- tools/lane/cross_family_call.sh               |  9 +++++++--
+- 6 files changed, 56 insertions(+), 7 deletions(-)
+
+## fix(F774): close lock and gate enforcement gaps
+- tools/lane/lane-queue-run                          | 28 ++++++++++--
+- tools/lane/test_lane_launchers.py                  | 16 +++++++
+- tools/lane/test_lane_queue_run.py                  | 17 +++++++
+- 10 files changed, 160 insertions(+), 31 deletions(-)
+
 ## fix(lane): serialize queue state and prove stop behavior (F774)
 - tools/lane/lane-queue-run         | 56 ++++++++++++++++++++++++++++++---------
 - tools/lane/queue_state.py         |  4 +++

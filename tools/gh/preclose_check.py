@@ -35,6 +35,10 @@ Its one *enforced* invariant is "one pass, then escalate", and that is a gate
 in miniature: an unreadable or corrupt receipt is therefore treated as **no
 prior pass** (review again) rather than as a refusal, and never as a crash.
 The receipt records completion, not intent -- see `complete_receipt`.
+
+Receipts are an honesty mechanism against mistakes, not an authentication
+boundary: same-account forgery is out of scope (operator ruling 2026-09-27,
+F774).
 """
 
 from __future__ import annotations
@@ -318,6 +322,100 @@ def compute_provenance(envelope: str | None, not_triggered: bool) -> str:
     return label
 
 
+def require_recorded_envelope(path: str) -> None:
+    """A required branch may use fallback only with a real failure record."""
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SystemExit(f"preclose-check: required cross-family envelope is unreadable: {exc}")
+    if not text:
+        raise SystemExit("preclose-check: required cross-family envelope is empty")
+    decoder = json.JSONDecoder()
+    envelopes = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            value, index = decoder.raw_decode(text, index)
+        except ValueError:
+            raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+        if not isinstance(value, dict):
+            raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+        envelopes.append(value)
+    valid = True
+    for item in envelopes:
+        status = item.get("status")
+        if not isinstance(status, str):
+            valid = False
+            break
+        if status == "ok":
+            report = item.get("report")
+            if not isinstance(report, dict) or not isinstance(report.get("assumptions"), list) or not report["assumptions"]:
+                valid = False
+                break
+            native = item.get("native")
+            if (item.get("posture") != "verify" or item.get("exit_code") != 0
+                    or item.get("caller_family") == item.get("target_family")
+                    or item.get("target_family") != item.get("family")
+                    or not ((item.get("family") == "codex" and _codex_verify_trace(native))
+                            or (item.get("family") == "claude" and _claude_verify_trace(native, item.get("verify_model"))))):
+                valid = False
+                break
+        elif not isinstance(item.get("exit_code"), int):
+            valid = False
+            break
+    if not envelopes or not valid:
+        raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+
+
+def _codex_verify_trace(native: object) -> bool:
+    return (isinstance(native, list)
+            and any(record.get("type") == "thread.started" for record in native if isinstance(record, dict))
+            and any(isinstance(record, dict) and record.get("type") == "item.completed"
+                    and isinstance(record.get("item"), dict)
+                    and record["item"].get("type") == "agent_message" for record in native))
+
+
+def _claude_blocks(event: dict, kind: str) -> list[dict]:
+    message = event.get("message")
+    blocks = message.get("content") if isinstance(message, dict) else []
+    return [block for block in blocks if isinstance(block, dict) and block.get("type") == kind] if isinstance(blocks, list) else []
+
+
+def _claude_verify_trace(native: object, verify_model: object) -> bool:
+    expected_model = "claude-opus-5-5"
+    if not isinstance(native, list) or verify_model != expected_model:
+        return False
+    inits = [event for event in native if isinstance(event, dict)
+             and event.get("type") == "system" and event.get("subtype") == "init"]
+    if len(inits) != 1:
+        return False
+    init = inits[0]
+    if (not isinstance(init.get("tools"), list) or init["tools"] != ["Glob", "Grep", "Read"]
+            or init.get("mcp_servers") != [] or init.get("model") != verify_model):
+        return False
+    uses: set[str] = set()
+    results: set[str] = set()
+    for event in native:
+        if not isinstance(event, dict):
+            continue
+        use_blocks = _claude_blocks(event, "tool_use")
+        for block in use_blocks:
+            if block.get("name") in {"Read", "Grep"} and isinstance(block.get("id"), str):
+                uses.add(block["id"])
+        result_blocks = _claude_blocks(event, "tool_result")
+        for block in result_blocks:
+            ident = block.get("tool_use_id")
+            if isinstance(ident, str) and not block.get("is_error", False):
+                results.add(ident)
+    return bool(uses & results) and any(isinstance(event, dict) and event.get("type") == "result"
+                                        and event.get("subtype") == "success"
+                                        and isinstance(event.get("result"), str) for event in native)
+
+
 def load_findings(path: str) -> list:
     try:
         data = json.loads(Path(path).read_text())
@@ -348,6 +446,7 @@ def gate(args: argparse.Namespace) -> int:
         print("Take the branch exactly as rules/cross-family-review.md states -- it is the whole")
         print("mechanism, and nothing here restates it. It is part of this ONE pass, not a second")
         print("round. Then paste the label cross_family_provenance.py prints for its envelope.")
+        print("The cross-family command MUST use --out <envelope path>; stdout alone is not a receipt.")
     else:
         print("Record the not-triggered label: cross_family_provenance.py --not-triggered")
         print("(rules/cross-family-review.md, Provenance).")
@@ -586,6 +685,8 @@ def complete(args: argparse.Namespace) -> int:
     # relabel a required two-family pass as in-family only.
     check_one_pass(repo, args.issue, head_sha, args.force)
     required, why, surviving, _ = gate_decision(args)
+    if required and args.envelope:
+        require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, args.not_triggered)
     check_provenance(required, provenance)
     prior = find_receipt(repo, args.issue)

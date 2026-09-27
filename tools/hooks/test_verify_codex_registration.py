@@ -13,13 +13,15 @@ import verify_codex_registration as vcr
 
 
 def _write(tmp: Path, hooks: list[str]) -> Path:
+    for hook in hooks:
+        (tmp / hook).write_text("# stub\n", encoding="utf-8")
     path = tmp / "hooks.json"
     config = {
         "hooks": {
             "PreToolUse": [
                 {"matcher": "^Bash$", "hooks": [
                     {"type": "command",
-                     "command": f'python3 "${{HOME}}/harmonic-forge/tools/hooks/{h}"'}
+                     "command": f'python3 "{tmp / h}"'}
                     for h in hooks
                 ]}
             ]
@@ -72,23 +74,50 @@ class VerifyTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(set(missing), set(vcr.REQUIRED_HOOKS))
 
-    def test_hook_named_only_in_a_different_matcher_block_still_counts(self):
-        """Registration anywhere under PreToolUse counts -- this check is
-        about repo coverage, not which specific matcher block it lives in."""
+    def test_hook_in_a_non_bash_matcher_does_not_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "hooks.json"
+            for hook in vcr.REQUIRED_HOOKS:
+                (Path(tmp) / hook).write_text("# stub\n")
             path.write_text(json.dumps({"hooks": {"PreToolUse": [
                 {"matcher": "^Bash$", "hooks": [
-                    {"type": "command", "command": "python3 batch_gate.py"}]},
+                    {"type": "command", "command": f"python3 {Path(tmp) / 'batch_gate.py'}"}]},
                 {"matcher": "^apply_patch$", "hooks": [
                     {"type": "command",
-                     "command": "python3 block_missing_preclose_inspection.py"},
+                     "command": f"python3 {Path(tmp) / 'block_missing_preclose_inspection.py'}"},
                     {"type": "command",
-                     "command": "python3 block_closing_keywords.py"}]},
+                     "command": f"python3 {Path(tmp) / 'block_closing_keywords.py'}"}]},
             ]}}), encoding="utf-8")
             ok, missing = vcr.verify(path)
-        self.assertTrue(ok)
-        self.assertEqual(missing, [])
+        self.assertFalse(ok)
+        self.assertEqual(set(missing), {"block_missing_preclose_inspection.py", "block_closing_keywords.py"})
+
+    def test_filename_in_echo_is_not_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hooks.json"
+            path.write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": "echo block_missing_preclose_inspection.py"},
+                {"type": "command", "command": "python3 batch_gate.py"},
+                {"type": "command", "command": "python3 block_closing_keywords.py"},
+            ]}]}}), encoding="utf-8")
+            ok, missing = vcr.verify(path)
+        self.assertFalse(ok)
+        self.assertEqual(set(missing), set(vcr.REQUIRED_HOOKS))
+
+    def test_shell_wrapped_python_is_not_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for hook in vcr.REQUIRED_HOOKS:
+                (root / hook).write_text("# stub\n")
+            path = root / "hooks.json"
+            path.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+                {"type": "command", "command": f"python3 {root / 'block_missing_preclose_inspection.py'} || true"},
+                {"type": "command", "command": f"python3 {root / 'batch_gate.py'}"},
+                {"type": "command", "command": f"python3 {root / 'block_closing_keywords.py'}"},
+            ]}]}}))
+            ok, missing = vcr.verify(path)
+        self.assertFalse(ok)
+        self.assertEqual(missing, ["block_missing_preclose_inspection.py"])
 
 
 class MainTests(unittest.TestCase):

@@ -16,7 +16,9 @@ from hashlib import sha256
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "hooks"))
 import queue_state
+import verify_codex_registration
 
 PROMPT = ("Read the queue state file and work every pending item in order. Before "
           "each item set it in_progress; after it set it done. If blocked, set its "
@@ -44,8 +46,24 @@ def _session_ids(session: str, home: Path) -> set[str]:
 
 def session_identity(session: str, home: Path) -> str:
     """One lock identity whether the operator supplied UUID or thread name."""
-    ids = _session_ids(session, home)
-    return next((ident for ident in ids if ident != session), session)
+    index = home / ".codex" / "session_index.jsonl"
+    by_name: dict[str, str] = {}
+    by_id: dict[str, str] = {}
+    try:
+        for line in index.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            ident = entry.get("id")
+            name = entry.get("thread_name")
+            if isinstance(ident, str) and isinstance(name, str):
+                by_name[name] = ident
+                by_id[ident] = name
+    except (OSError, ValueError):
+        pass
+    if session in by_name:
+        return by_name[session]
+    if session in by_id:
+        return by_name.get(by_id[session], session)
+    return session
 
 
 def session_cwd(session: str, home: Path) -> str | None:
@@ -81,7 +99,8 @@ def trusted(repo: Path, home: Path) -> bool:
     except (OSError, ValueError):
         return False
     project = data.get("projects", {}).get(str(repo.resolve()), {})
-    return hooks.is_file() and isinstance(project, dict) and project.get("trust_level") == "trusted"
+    registered, _ = verify_codex_registration.verify(hooks)
+    return registered and isinstance(project, dict) and project.get("trust_level") == "trusted"
 
 
 def resume_args(lane: str, *, execute=subprocess.run) -> list[str]:
@@ -169,6 +188,10 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
                 _log(log, "stopped: recovery blocker before step 0")
                 return 0
             for step in range(args.max_steps):
+                if not trusted(repo, home):
+                    print("lane-queue-run: hook trust is not persisted for lane repo", file=sys.stderr)
+                    _log(log, f"stopped: hook registration lost before step {step}")
+                    return 2
                 if queue_state.is_blocked(state):
                     _log(log, f"stopped: blocker after {step} steps")
                     return 0
@@ -202,8 +225,16 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
                     queue_state.save(args.queue, state)
                     _log(log, f"stopped: resume exit {result.returncode}")
                     return result.returncode
-                state = queue_state.load(args.queue)
-                current = next(candidate for candidate in state["items"] if candidate["id"] == item["id"])
+                try:
+                    next_state = queue_state.load(args.queue)
+                    current = next(candidate for candidate in next_state["items"] if candidate["id"] == item["id"])
+                    state = next_state
+                except (OSError, ValueError, StopIteration) as exc:
+                    item["status"] = "blocked"
+                    item["note"] = f"cannot read post-resume queue state: {exc}"
+                    queue_state.save(args.queue, state)
+                    _log(log, f"stopped: post-resume queue state failure: {exc}")
+                    return 2
                 if current["status"] not in {"done", "blocked"}:
                     current["status"] = "blocked"
                     current["note"] = "resume returned without recording a terminal item status"

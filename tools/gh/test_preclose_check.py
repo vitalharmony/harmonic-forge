@@ -66,14 +66,15 @@ class ScratchRepo(unittest.TestCase):
         os.chdir(self.repo)
         self.addCleanup(os.chdir, self.cwd)
         # harmonic-forge#701: labels are computed by the provenance tool, never
-        # typed. A stand-in echoes the envelope's text, or the not-triggered label.
+        # typed. A stand-in reads a structurally valid envelope.
         tool = self.repo.parent / f"{self.repo.name}-provenance.py"
         tool.write_text(
             "import sys\n"
             "if '--not-triggered' in sys.argv:\n"
             f"    print({NOT_TRIGGERED!r})\n"
             "else:\n"
-            "    print(open(sys.argv[sys.argv.index('--envelope') + 1]).read().strip())\n")
+            "    import json\n"
+            "    print(json.load(open(sys.argv[sys.argv.index('--envelope') + 1]))['label'])\n")
         self.addCleanup(lambda: tool.unlink(missing_ok=True))
         patcher = patch.object(preclose, "PROVENANCE_TOOL", tool)
         patcher.start()
@@ -115,7 +116,16 @@ class ScratchRepo(unittest.TestCase):
         envelope = None
         if not not_triggered:
             envelope = self.findings_file([])[:-len("findings.json")] + "envelope.txt"
-            Path(envelope).write_text(envelope_label or "")
+            status = "process-error" if envelope_label == FALLBACK else "ok"
+            body = {"status": status, "label": envelope_label or ""}
+            if status == "ok":
+                body["report"] = {"assumptions": [{"verdict": "confirmed"}]}
+                body.update({"family": "codex", "posture": "verify", "exit_code": 0,
+                             "caller_family": "claude", "target_family": "codex",
+                             "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]})
+            else:
+                body["exit_code"] = 1
+            Path(envelope).write_text(json.dumps(body))
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
@@ -589,6 +599,41 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.plan()
         out = self.complete([], envelope_label=FALLBACK)
         self.assertIn("in-family fallback", out)
+
+    def test_success_envelope_without_native_execution_trace_is_refused(self) -> None:
+        path = self.repo / "forged-envelope.json"
+        path.write_text(json.dumps({"status": "ok", "family": "codex", "posture": "verify",
+                                    "exit_code": 0,
+                                    "report": {"assumptions": [{"verdict": "confirmed", "evidence": "invented"}]}}))
+        with self.assertRaises(SystemExit):
+            preclose.require_recorded_envelope(str(path))
+
+    def test_claude_verify_requires_exact_init_and_executed_read(self) -> None:
+        path = self.repo / "claude-envelope.json"
+        envelope = {"family": "claude", "caller_family": "codex", "target_family": "claude",
+                    "verify_model": "claude-opus-5-5", "posture": "verify", "status": "ok", "exit_code": 0,
+                    "report": {"assumptions": [{"verdict": "confirmed", "evidence": "Read x"}]},
+                    "native": [
+                        {"type": "system", "subtype": "init", "tools": ["Glob", "Grep", "Read"], "mcp_servers": [], "model": "claude-opus-5-5"},
+                        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read-1", "name": "Read"}]}},
+                        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read-1"}]}},
+                        {"type": "result", "subtype": "success", "result": "{}"},
+                    ]}
+        path.write_text(json.dumps(envelope))
+        preclose.require_recorded_envelope(str(path))
+        envelope["native"][0]["tools"].append("Bash")
+        path.write_text(json.dumps(envelope))
+        with self.assertRaises(SystemExit):
+            preclose.require_recorded_envelope(str(path))
+
+    def test_same_family_envelope_is_refused(self) -> None:
+        path = self.repo / "same-family-envelope.json"
+        path.write_text(json.dumps({"status": "ok", "family": "codex", "caller_family": "codex",
+                                    "target_family": "codex", "posture": "verify", "exit_code": 0,
+                                    "report": {"assumptions": [{"verdict": "confirmed"}]},
+                                    "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
+        with self.assertRaises(SystemExit):
+            preclose.require_recorded_envelope(str(path))
 
     def test_high_blast_diff_requires_the_branch_even_with_survivors(self) -> None:
         self.commit("tools/hooks/guard.py")

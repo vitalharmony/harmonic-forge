@@ -24,7 +24,13 @@ class QueueRunTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / "project"
         (self.repo / ".codex").mkdir(parents=True)
-        (self.repo / ".codex" / "hooks.json").write_text("{}")
+        hooks_dir = self.root / "hooks"
+        hooks_dir.mkdir()
+        for name in MODULE.verify_codex_registration.REQUIRED_HOOKS:
+            (hooks_dir / name).write_text("# stub\n")
+        (self.repo / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+            {"command": f"python3 {hooks_dir / name}"} for name in MODULE.verify_codex_registration.REQUIRED_HOOKS
+        ]}]}}))
         self.home = self.root / "home"
         (self.home / ".codex").mkdir(parents=True)
         (self.home / ".codex" / "config.toml").write_text(
@@ -147,7 +153,7 @@ class QueueRunTests(unittest.TestCase):
         with (self.home / ".codex" / "config.toml").open("a") as config:
             config.write(f'\n[projects."{lane2.resolve()}"]\ntrust_level = "trusted"\n')
         with patch.object(MODULE, "session_cwd", return_value=str(lane2)), patch.object(MODULE, "resume_args") as flags:
-            self.assertEqual(MODULE.run(["--lane", "1", "--session", "abc", "--queue", str(self.queue), "--repo", str(lane2)], home=self.home), 2)
+            self.assertEqual(MODULE.run(["--lane", "2", "--session", "abc", "--queue", str(self.queue), "--repo", str(lane2)], home=self.home), 2)
         flags.assert_not_called()
 
     def test_rerun_skips_done_item(self):
@@ -175,6 +181,39 @@ class QueueRunTests(unittest.TestCase):
             with patch.object(MODULE, "session_cwd", return_value=str(self.repo)), patch.object(MODULE, "resume_args") as flags:
                 self.assertEqual(MODULE.run(self.args("--session", "abc"), home=self.home), 2)
         flags.assert_not_called()
+
+    def test_thread_name_and_uuid_share_canonical_lock_identity(self):
+        index = self.home / ".codex" / "session_index.jsonl"
+        index.write_text(json.dumps({"thread_name": "thread", "id": "uuid"}) + "\n")
+        self.assertEqual(MODULE.session_identity("thread", self.home), "uuid")
+        self.assertEqual(MODULE.session_identity("uuid", self.home), "uuid")
+
+    def test_empty_hook_registration_is_not_trusted(self):
+        hooks = self.repo / ".codex" / "hooks.json"
+        hooks.parent.mkdir(exist_ok=True)
+        hooks.write_text('{"hooks": {"PreToolUse": []}}')
+        self.assertFalse(MODULE.trusted(self.repo, self.home))
+
+    def test_duplicate_thread_entries_canonicalize_old_uuid_to_latest(self):
+        index = self.home / ".codex" / "session_index.jsonl"
+        index.write_text("\n".join([
+            json.dumps({"thread_name": "thread", "id": "uuid-old"}),
+            json.dumps({"thread_name": "thread", "id": "uuid-new"}),
+        ]) + "\n")
+        self.assertEqual(MODULE.session_identity("thread", self.home), "uuid-new")
+        self.assertEqual(MODULE.session_identity("uuid-old", self.home), "uuid-new")
+        self.assertEqual(MODULE.session_identity("uuid-new", self.home), "uuid-new")
+
+    def test_post_resume_state_failure_blocks_and_logs(self):
+        self.write_queue([self.item()])
+        cwd, flags = self.good()
+        def execute(*_args, **_kwargs):
+            self.queue.write_text("not-json")
+            return SimpleNamespace(returncode=0)
+        with cwd, flags:
+            self.assertEqual(MODULE.run(self.args(), execute=execute, home=self.home), 2)
+        state = json.loads(self.queue.read_text())
+        self.assertEqual(state["items"][0]["status"], "blocked")
 
     def test_real_subprocess_uses_stub_codex_and_records_nonzero_stop(self):
         self.write_queue([self.item()])

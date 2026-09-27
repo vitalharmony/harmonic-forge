@@ -18,6 +18,9 @@ or a wiring CI check.
 from __future__ import annotations
 
 import json
+import os
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -33,8 +36,25 @@ REQUIRED_HOOKS = (
 
 def _registered_hooks(config: dict, needle: str) -> bool:
     for block in (config.get("hooks") or {}).get("PreToolUse") or []:
+        matcher = block.get("matcher")
+        try:
+            fires_for_bash = isinstance(matcher, str) and re.search(matcher, "Bash") is not None
+        except re.error:
+            fires_for_bash = False
+        if not fires_for_bash:
+            continue
         for hook in block.get("hooks") or []:
-            if needle in (hook.get("command") or ""):
+            if hook.get("type") != "command":
+                continue
+            command = hook.get("command") or ""
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                continue
+            if len(tokens) != 2 or Path(tokens[0]).name not in {"python", "python3"}:
+                continue
+            script = Path(os.path.expandvars(tokens[1]))
+            if Path(tokens[1]).name == needle and script.is_file():
                 return True
     return False
 
@@ -53,7 +73,11 @@ def verify(hooks_json_path: Path) -> tuple[bool, list[str]]:
 
 
 def main() -> int:
-    targets = [
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", action="append", dest="paths")
+    args = parser.parse_args()
+    targets = [Path(p) for p in args.paths] if args.paths else [
         Path.home() / "harmonic-forge" / ".codex" / "hooks.json",
         Path.home() / "Harmonic_Projects" / "HRSE2" / ".codex" / "hooks.json",
     ]

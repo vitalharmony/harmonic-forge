@@ -28,7 +28,8 @@
 # which denies that one tool; Gemini's file tools enforce the workspace
 # bound themselves, even under `--yolo`.
 #
-# `verify` posture (harmonic-forge#448) is Codex-only and deterministic:
+# `verify` posture is deterministic for Codex and, under the operator's F774
+# ruling, Claude with an even narrower read-tools-only boundary.
 # `--ignore-user-config` means the reviewer inherits NOTHING from
 # `~/.codex/config.toml` -- no ambient model, no trust levels, and critically
 # no `[mcp_servers.*]` (the live user config grants Gmail/Drive/Docs/Sheets/
@@ -41,21 +42,22 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage: cross_family_call.sh --caller claude|codex|gemini --families 2|3 \
-         --posture read-only|probe|verify --brief PATH [--cwd PATH]
+         --posture read-only|probe|verify --brief PATH [--cwd PATH] [--out PATH]
 
   --caller    which CLI is making this call (determines target order)
   --families  2 (caller's primary sibling only) or 3 (both siblings)
   --posture   read-only (centralized deny boundary), probe (--yolo,
-              requires --cwd), or verify (Codex-only, --ignore-user-config,
-              read-only sandbox, requires --cwd)
+              requires --cwd), or verify (Codex or restricted Claude,
+              requires --cwd)
   --brief     path to a self-contained cold-brief file (no memories, no
               conversation -- see ADR-007)
   --cwd       isolated scratch directory; required for probe and verify
+  --out       atomically write the complete JSON-lines envelope to PATH
 EOF
   exit 2
 }
 
-caller="" families="" posture="" brief="" cwd=""
+caller="" families="" posture="" brief="" cwd="" out=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --caller) caller="${2:-}"; shift 2 ;;
@@ -63,31 +65,45 @@ while [ $# -gt 0 ]; do
     --posture) posture="${2:-}"; shift 2 ;;
     --brief) brief="${2:-}"; shift 2 ;;
     --cwd) cwd="${2:-}"; shift 2 ;;
+    --out) out="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "cross_family_call: unrecognized argument: $1" >&2; usage ;;
   esac
 done
 
+write_process_error() {
+  [ -n "$out" ] || return 0
+  mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
+  local tmp
+  tmp="$(mktemp "${out}.tmp.XXXXXX")" || return 0
+  printf '{"status":"process-error","exit_code":2}\n' >"$tmp"
+  mv -f "$tmp" "$out"
+}
+
+abort_preflight() {
+  echo "cross_family_call: $1" >&2
+  write_process_error
+  exit 2
+}
+
 case "$caller" in
   claude|codex|gemini) ;;
-  *) echo "cross_family_call: --caller must be claude, codex, or gemini" >&2; exit 2 ;;
+  *) abort_preflight "--caller must be claude, codex, or gemini" ;;
 esac
 case "$families" in
   2|3) ;;
-  *) echo "cross_family_call: --families must be 2 or 3" >&2; exit 2 ;;
+  *) abort_preflight "--families must be 2 or 3" ;;
 esac
 case "$posture" in
   read-only|probe|verify) ;;
-  *) echo "cross_family_call: --posture must be read-only, probe, or verify" >&2; exit 2 ;;
+  *) abort_preflight "--posture must be read-only, probe, or verify" ;;
 esac
 if [ -z "$brief" ] || [ ! -f "$brief" ]; then
-  echo "cross_family_call: --brief PATH must name an existing file" >&2
-  exit 2
+  abort_preflight "--brief PATH must name an existing file"
 fi
 if [ "$posture" = probe ] || [ "$posture" = verify ]; then
   if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
-    echo "cross_family_call: --cwd PATH is required and must be an existing directory for $posture posture" >&2
-    exit 2
+    abort_preflight "--cwd PATH is required and must be an existing directory for $posture posture"
   fi
 fi
 
@@ -103,7 +119,8 @@ if [ "$families" = 3 ]; then
   targets+=("${order[1]}")
 fi
 
-# `verify` is Codex-only, and this is enforced on the RESOLVED TARGET LIST
+# `verify` is implemented for Codex and Claude. Gemini has no equivalent
+# constrained stream contract, so it remains refused.
 # rather than on `--caller`/`--families` separately (harmonic-forge#448).
 # `invoke_claude` takes no posture argument at all and `invoke_gemini` maps
 # every non-`probe` posture to its read-only admin policy, so an unguarded
@@ -113,10 +130,13 @@ fi
 # security posture is the failure mode worth being loud about, so this exits
 # non-zero and names the offending family.
 if [ "$posture" = verify ]; then
+  if [ "$caller" = gemini ]; then
+    abort_preflight "--posture verify is unavailable for Gemini callers"
+  fi
   for family in "${targets[@]}"; do
-    if [ "$family" != codex ]; then
-      echo "cross_family_call: --posture verify is Codex-only; --caller $caller --families $families resolves to target '$family'" >&2
-      exit 2
+    if [ "$family" = gemini ]; then
+      echo "cross_family_call: --posture verify is unavailable for Gemini; --caller $caller --families $families resolves to target '$family'" >&2
+      abort_preflight "--posture verify is unavailable for Gemini"
     fi
   done
 fi
@@ -145,7 +165,7 @@ for policy_file in "$readonly_policy" "$probe_policy"; do
     echo "  --admin-policy -- it warns on stderr and runs unprotected, so this" >&2
     echo "  check is the only thing standing between a missing file and an" >&2
     echo "  unbounded session (harmonic-forge#432)." >&2
-    exit 2
+    abort_preflight "admin policy file missing: $policy_file"
   fi
 done
 
@@ -267,10 +287,24 @@ writes. If answering an assumption would require a mutation, the verdict is
 actor.
 EOF
 
+read -r -d '' CLAUDE_VERIFY_CONTRACT <<'EOF' || true
+
+You have only Read, Grep, and Glob. You have no shell, web search, MCP, or
+write tools. Read the named local artifacts and quote exact text as evidence;
+if an assumption requires any unavailable capability, return "uncheckable".
+You are a READ-ONLY reviewer. Return only the required JSON report, including
+an "assumptions" array with one verdict object for every asserted assumption
+in the brief, in the same order.
+EOF
+
 prompt_text() {
-  local posture="$1" brief="$2"
+  local posture="$1" brief="$2" family="${3:-}"
   if [ "$posture" = verify ]; then
-    printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
+    if [ "$family" = claude ]; then
+      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
+    else
+      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
+    fi
   else
     printf '%s%s' "$(cat "$brief")" "$REPORT_CONTRACT"
   fi
@@ -278,16 +312,18 @@ prompt_text() {
 
 # --- per-family invocation, native stdout on fd 1, native stderr discarded ---
 
-# Takes `posture` only to thread it into `prompt_text`; it deliberately does
-# NOT branch on it. Claude has no posture-specific invocation here, and
-# `verify` can never reach this function -- the target-list guard above exits
-# non-zero first. Threading the real value (rather than hardcoding a
-# placeholder) keeps that guarantee checkable instead of assumed.
 invoke_claude() {
   local posture="$1" brief="$2" cwd="$3"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
-    claude -p "$(prompt_text "$posture" "$brief")" --output-format json </dev/null
+    if [ "$posture" = verify ]; then
+      claude -p "$(prompt_text "$posture" "$brief" claude)" \
+        --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
+        --model "claude-opus-5-5" \
+        --no-session-persistence --output-format stream-json --verbose </dev/null
+    else
+      claude -p "$(prompt_text "$posture" "$brief" claude)" --output-format json </dev/null
+    fi
   )
 }
 
@@ -373,7 +409,7 @@ invoke_codex() {
     search_args=(--search)
   fi
   "${env_args[@]}" codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
-    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief")" </dev/null
+    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief" codex)" </dev/null
 }
 
 invoke_gemini() {
@@ -449,7 +485,7 @@ SETTINGS
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
-        -p "$(prompt_text "$posture" "$brief")" -o json </dev/null
+        -p "$(prompt_text "$posture" "$brief" gemini)" -o json </dev/null
   )
 }
 
@@ -512,8 +548,13 @@ emit_envelope() {
   # envelope, which is strictly better than the old behaviour on that path.
   case "$family" in
     claude)
-      jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-      jq -r '.result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+      if [ "$posture" = verify ]; then
+        jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+        jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+      else
+        jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+        jq -r '.[0].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+      fi
       ;;
     codex)
       jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
@@ -625,6 +666,7 @@ emit_envelope() {
 overall_status=0
 preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
+result_tmp="$(mktemp)"
 for family in "${targets[@]}"; do
   tmp_out="$(mktemp)"
   # harmonic-forge#483: captured here rather than discarded inside each
@@ -656,7 +698,12 @@ for family in "${targets[@]}"; do
   envelope_out="$(mktemp)"
   envelope_err="$(mktemp)"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
+       | jq -c --arg caller "$caller" --arg target "$family" \
+           --arg verify_model "claude-opus-5-5" \
+           '. + {caller_family:$caller, target_family:$target} +
+            (if $target == "claude" and .posture == "verify" then {verify_model:$verify_model} else {} end)' \
        >"$envelope_out" 2>"$envelope_err"; then
+    cat "$envelope_out" >>"$result_tmp"
     cat "$envelope_out"
     rm -f "$tmp_out"
   else
@@ -688,8 +735,10 @@ for family in "${targets[@]}"; do
     # needed, which is this issue's entire complaint one level down. Only two
     # values are interpolated and both are escaped; `family` and `posture` are
     # closed token sets validated long before dispatch.
-    printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s"}\n' \
-      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")"
+    failure_record="$(printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s"}\n' \
+      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")")"
+    printf '%s' "$failure_record" >>"$result_tmp"
+    printf '%s' "$failure_record"
     # `tmp_out` is deliberately NOT removed when preservation failed: the
     # message above points at it, and the incident this issue records was
     # recovered only because such a file happened to survive. Luck is now a
@@ -705,5 +754,18 @@ for family in "${targets[@]}"; do
   # reason `tmp_out` survives a failed preservation does not apply here.
   rm -f "$envelope_out" "$envelope_err" "$tmp_err"
 done
+
+if [ -n "$out" ]; then
+  mkdir -p "$(dirname "$out")"
+  tmp_out_record="$(mktemp "${out}.tmp.XXXXXX")"
+  if cp "$result_tmp" "$tmp_out_record" && mv -f "$tmp_out_record" "$out"; then
+    :
+  else
+    rm -f "$tmp_out_record"
+    write_process_error 2 >"$out"
+    exit 2
+  fi
+fi
+rm -f "$result_tmp"
 
 exit "$overall_status"
