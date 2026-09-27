@@ -74,7 +74,7 @@ def command_segments(command: str) -> list[list[str]]:
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def strip_invocation_prefix(tokens: list[str]) -> list[str]:
+def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> list[str]:
     """Remove shell wrappers before the invoked program.
 
     Also strips both house-mandated account-scoping wrappers for `gh`
@@ -121,7 +121,10 @@ def strip_invocation_prefix(tokens: list[str]) -> list[str]:
             index += 2
         elif Path(token).name == "gha" and index + 1 < len(working):
             working = working[:index] + ["gh"] + working[index + 2:]
-        elif (Path(token).name in {"bash", "sh", "zsh"}
+        # harmonic-forge#785: write guards pass unwrap_shells=False -- they must
+        # still see the nested shell, or their nested-shell rules never fire.
+        elif (unwrap_shells
+              and Path(token).name in {"bash", "sh", "zsh"}
               and index + 2 < len(working)
               and working[index + 1] in {"-c", "-lc", "--command"}):
             try:

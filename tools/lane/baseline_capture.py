@@ -194,9 +194,9 @@ def build_fixture_tree(
             stub.chmod(0o755)
 
     # `_cli_launch.sh` checks `$PWD` (each lane's checkout) and
-    # `$HOME/Harmonic_Projects/HRSE2`; `capture_cell` defaults HOME to `main`.
-    for checkout in (main, root / f"{project}-lane2", root / f"{project}-lane3",
-                     main / "Harmonic_Projects" / "HRSE2"):
+    # `$HOME/Harmonic_Projects/HRSE2`; the caller owns HOME, so it writes that
+    # one (see `capture_all`).
+    for checkout in (main, root / f"{project}-lane2", root / f"{project}-lane3"):
         write_codex_hooks(checkout)
 
     return main, stub_bin
@@ -249,22 +249,24 @@ def capture_cell(
         return payload
 
 
-def _normalize(cell: dict, root: Path, lane_dir: Path) -> dict:
+def _normalize(cell: dict, root: Path, lane_dir: Path,
+               home: Path | None = None) -> dict:
     """Replace fixture-specific absolute paths with stable placeholders.
 
     Without this the fixture would record a `/tmp/xxxx` that differs on every
     run, and the AC8 diff would be pure noise.
     """
-    home = os.environ.get("HOME", "")
+    home = str(home) if home else os.environ.get("HOME", "")
 
     def sub(value):
         if isinstance(value, str):
-            value = (value
-                     .replace(str(lane_dir), "<LANEDIR>")
-                     .replace(str(root), "<ROOT>"))
+            value = value.replace(str(lane_dir), "<LANEDIR>")
             # GH_CONFIG_DIR is $HOME-derived; leaving the operator's real home
             # in a committed fixture would make it unusable on any other machine.
-            return value.replace(home, "<HOME>") if home else value
+            # Before <ROOT>: `capture_all`'s fixture home lives under root.
+            if home:
+                value = value.replace(home, "<HOME>")
+            return value.replace(str(root), "<ROOT>")
         if isinstance(value, list):
             return [sub(v) for v in value]
         if isinstance(value, dict):
@@ -280,15 +282,24 @@ def capture_all(lane_dir: Path) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp).resolve()
         main, stub_bin = build_fixture_tree(root)
+        # A fixture HOME, never the operator's: the Codex hook-registration
+        # guard reads $HOME/Harmonic_Projects/HRSE2, and the real one made
+        # this pass locally while failing on CI (harmonic-forge#783).
+        home = root / "home"
+        write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
+        # Lane 3 Gemini refuses to start without this record (same as the test fixture).
+        record = home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps({"source": str(lane_dir.parent / "gemini" / "lane3-context"), "type": "link"}))
         for lane in LANES:
             for agent in AGENTS:
                 for shape, args in ARG_SHAPES.items():
                     key = f"lane{lane}/{agent}/{shape}"
                     cell = capture_cell(
                         lane_dir, main, stub_bin, lane, args,
-                        env_overrides={"LANE_CLI": agent},
+                        env_overrides={"LANE_CLI": agent, "HOME": str(home)},
                     )
-                    cells[key] = _normalize(cell, root, lane_dir)
+                    cells[key] = _normalize(cell, root, lane_dir, home)
     return {"schema": 1, "cells": cells}
 
 
