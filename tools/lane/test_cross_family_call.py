@@ -174,7 +174,7 @@ class TestVerifyPostureGuards(unittest.TestCase):
         stub.write_text(
             '#!/usr/bin/env bash\n'
             'printf "%s\\0" "$@" > "$CLAUDE_ARGS"\n'
-            'printf "%s\\n" \'{"type":"system","subtype":"init","tools":["Read","Grep","Glob"],"mcp_servers":[],"model":"claude-opus-5-5"}\'\n'
+            'printf "%s\\n" \'{"type":"system","subtype":"init","tools":["Glob","Grep","Read"],"mcp_servers":[],"model":"claude-opus-5-5"}\'\n'
             'printf "%s\\n" \'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"u1","name":"Read"}]}}\'\n'
             'printf "%s\\n" \'{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u1"}]}}\'\n'
             'printf "%s\\n" \'{"type":"result","subtype":"success","result":"{\\"summary\\":\\"ok\\",\\"findings\\":[],\\"assumptions\\":[{\\"assumption\\":\\"a\\",\\"verdict\\":\\"confirmed\\",\\"evidence\\":\\"Read x\\"}]}"}\'\n'

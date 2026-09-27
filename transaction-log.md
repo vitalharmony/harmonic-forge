@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## resolve final F774 Claude review findings
+- tools/hooks/test_verify_codex_registration.py |  6 +++---
+- tools/hooks/verify_codex_registration.py      |  2 ++
+- tools/lane/test_cross_family_call.py          |  2 +-
+- 6 files changed, 18 insertions(+), 14 deletions(-)
+
 ## apply F774 receipt ruling trace requirements
 - tools/lane/cross_family_call.sh       |  4 ++--
 - tools/lane/cross_family_provenance.py |  4 ++++

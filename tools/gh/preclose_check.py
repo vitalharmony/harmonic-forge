@@ -389,11 +389,13 @@ def _claude_verify_trace(native: object, verify_model: object) -> bool:
     expected_model = "claude-opus-5-5"
     if not isinstance(native, list) or verify_model != expected_model:
         return False
-    init = next((event for event in native if isinstance(event, dict)
-                 and event.get("type") == "system" and event.get("subtype") == "init"), None)
-    if not isinstance(init, dict) or set(init.get("tools", [])) != {"Read", "Grep", "Glob"} \
-            or len(init.get("tools", [])) != 3 or init.get("mcp_servers") != [] \
-            or init.get("model") != verify_model:
+    inits = [event for event in native if isinstance(event, dict)
+             and event.get("type") == "system" and event.get("subtype") == "init"]
+    if len(inits) != 1:
+        return False
+    init = inits[0]
+    if (not isinstance(init.get("tools"), list) or init["tools"] != ["Glob", "Grep", "Read"]
+            or init.get("mcp_servers") != [] or init.get("model") != verify_model):
         return False
     uses: set[str] = set()
     results: set[str] = set()
@@ -406,7 +408,7 @@ def _claude_verify_trace(native: object, verify_model: object) -> bool:
                 uses.add(block["id"])
         result_blocks = _claude_blocks(event, "tool_result")
         for block in result_blocks:
-            ident = block.get("tool_use_id") or block.get("id")
+            ident = block.get("tool_use_id")
             if isinstance(ident, str) and not block.get("is_error", False):
                 results.add(ident)
     return bool(uses & results) and any(isinstance(event, dict) and event.get("type") == "result"

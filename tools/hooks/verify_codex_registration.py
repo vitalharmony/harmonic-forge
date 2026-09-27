@@ -44,6 +44,8 @@ def _registered_hooks(config: dict, needle: str) -> bool:
         if not fires_for_bash:
             continue
         for hook in block.get("hooks") or []:
+            if hook.get("type") != "command":
+                continue
             command = hook.get("command") or ""
             try:
                 tokens = shlex.split(command)
