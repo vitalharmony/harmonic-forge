@@ -372,6 +372,12 @@ class TestF787PrefixAndShellGaps(_BashWriteSurface):
         self.assertTrue(self.denied(f"nice tee {self.protected}"))
         self.assertTrue(self.denied(f'nice bash -c "echo x > {self.protected}"'))
 
+    def test_nice_attached_flag_and_double_dash_writes_are_denied(self):
+        """Preclose finding: `nice -n5 <verb>` and `nice -- <verb>` both
+        slipped through an earlier draft's single-token option peek."""
+        self.assertTrue(self.denied(f"nice -n5 tee {self.protected}"))
+        self.assertTrue(self.denied(f"nice -- tee {self.protected}"))
+
     def test_stdbuf_prefixed_write_is_denied(self):
         self.assertTrue(self.denied(f"stdbuf -oL tee {self.protected}"))
 

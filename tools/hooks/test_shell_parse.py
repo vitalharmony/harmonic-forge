@@ -76,6 +76,14 @@ class TimeoutNiceStdbufTests(unittest.TestCase):
             strip_invocation_prefix(["nice", "--adjustment=10", "tee", "y"]), ["tee", "y"]
         )
 
+    def test_nice_attached_n_value_and_double_dash(self):
+        """Preclose finding (4 of 5 refuters converged on this): `-n10` is a
+        valid getopt attached-value form, and `--` is nice's own end-of-options
+        marker. Both slipped past a single-token peek in an earlier draft."""
+        self.assertEqual(strip_invocation_prefix(["nice", "-n10", "tee", "y"]), ["tee", "y"])
+        self.assertEqual(strip_invocation_prefix(["nice", "-n-5", "tee", "y"]), ["tee", "y"])
+        self.assertEqual(strip_invocation_prefix(["nice", "--", "tee", "y"]), ["tee", "y"])
+
     def test_stdbuf_combined_and_separate_flags(self):
         self.assertEqual(strip_invocation_prefix(["stdbuf", "-oL", "tee", "y"]), ["tee", "y"])
         self.assertEqual(
@@ -96,6 +104,26 @@ class TimeoutNiceStdbufTests(unittest.TestCase):
     def test_negatives_unaffected(self):
         # A bare cat/tee with no prefix at all is untouched.
         self.assertEqual(strip_invocation_prefix(["cat", "/tmp/x"]), ["cat", "/tmp/x"])
+
+    def test_wrapped_commands_own_flags_survive_intact(self):
+        """test-honesty finding: a negative that never runs the new
+        timeout/nice/stdbuf branches at all (e.g. a bare `cat`) stays green
+        under any mutation of those branches and proves nothing about them.
+        This one does exercise them: it fails if the option-stripping loop
+        over-consumes into the WRAPPED command's own flags, not just the
+        wrapper's."""
+        self.assertEqual(
+            strip_invocation_prefix(["timeout", "5", "tee", "-a", "/tmp/x"]),
+            ["tee", "-a", "/tmp/x"],
+        )
+        self.assertEqual(
+            strip_invocation_prefix(["nice", "-n5", "sed", "-i", "s/a/b/", "/tmp/x"]),
+            ["sed", "-i", "s/a/b/", "/tmp/x"],
+        )
+        self.assertEqual(
+            strip_invocation_prefix(["stdbuf", "-oL", "cp", "-r", "/tmp/a", "/tmp/x"]),
+            ["cp", "-r", "/tmp/a", "/tmp/x"],
+        )
 
 
 if __name__ == "__main__":

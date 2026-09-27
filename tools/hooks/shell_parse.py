@@ -146,14 +146,24 @@ def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> li
                 index += 1
         elif Path(token).name == "nice":
             index += 1
-            if index < len(working):
+            # Looped, not a single peek: a preclose refuter reproduced
+            # `nice -n5 tee <protected>` and `nice -- tee <protected>` both
+            # slipping past a single-token check. `-n` (getopt allows the
+            # value attached: `-n5`) and the bare `-NUM` short form both fall
+            # to the generic branch below, matching timeout/stdbuf's own
+            # permissive consume-any-dash-token style -- an unrecognized
+            # flag is consumed rather than left standing in front of the
+            # write verb, which would otherwise hide it from every rule below.
+            while index < len(working) and working[index].startswith("-") and working[index] != "--":
                 opt = working[index]
                 if opt in ("-n", "--adjustment"):
                     index += 1
                     if index < len(working):
                         index += 1
-                elif opt.startswith("--adjustment=") or re.match(r"^-\d+$", opt):
+                else:
                     index += 1
+            if index < len(working) and working[index] == "--":
+                index += 1
         elif Path(token).name == "stdbuf":
             index += 1
             while index < len(working) and working[index].startswith("-"):
