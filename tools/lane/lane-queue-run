@@ -6,50 +6,130 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import tomllib
+from contextlib import ExitStack, contextmanager
+from hashlib import sha256
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import queue_state
 
-PROMPT = ("Read the queue state file, work exactly the first pending item, mark it "
-          "in_progress before work and done after, then continue to the next pending item. "
-          "Report only when the queue is empty or an item is blocked.")
+PROMPT = ("Read the queue state file and work every pending item in order. Before "
+          "each item set it in_progress; after it set it done. If blocked, set its "
+          "status to blocked with the reason. Report only when empty or blocked.")
 
 
 def log_path(lane: str, root: Path) -> Path:
     directory = root / ".cache" / "lane-queue-run"
     directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"{lane}-{int(time.time())}.log"
+    return directory / f"{lane}-{int(time.time() * 1000)}.log"
 
 
-def session_cwd(session_id: str, home: Path) -> str | None:
-    for path in (home / ".codex" / "sessions").rglob(f"rollout-*-{session_id}.jsonl"):
-        for line in path.read_text(encoding="utf-8").splitlines():
+def _session_ids(session: str, home: Path) -> set[str]:
+    ids = {session}
+    index = home / ".codex" / "session_index.jsonl"
+    try:
+        for line in index.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            if entry.get("thread_name") == session and isinstance(entry.get("id"), str):
+                ids.add(entry["id"])
+    except (OSError, ValueError):
+        pass
+    return ids
+
+
+def session_identity(session: str, home: Path) -> str:
+    """One lock identity whether the operator supplied UUID or thread name."""
+    ids = _session_ids(session, home)
+    return next((ident for ident in ids if ident != session), session)
+
+
+def session_cwd(session: str, home: Path) -> str | None:
+    """Read cwd from rollout session_meta, never from the insufficient index."""
+    ids = _session_ids(session, home)
+    sessions = home / ".codex" / "sessions"
+    if not sessions.is_dir():
+        return None
+    for path in sessions.rglob("rollout-*.jsonl"):
+        if not any(path.name.endswith(f"-{ident}.jsonl") for ident in ids):
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
             try:
                 entry = json.loads(line)
             except ValueError:
                 continue
             meta = entry.get("session_meta", entry)
             if isinstance(meta, dict) and isinstance(meta.get("cwd"), str):
-                return meta["cwd"]
+                return str(Path(meta["cwd"]).resolve())
     return None
 
 
 def trusted(repo: Path, home: Path) -> bool:
-    config = home / ".codex" / "config.toml"
+    """Codex hook trust is persisted per project in config.toml."""
     hooks = repo / ".codex" / "hooks.json"
-    return hooks.is_file() and config.is_file() and str(hooks.resolve()) in config.read_text(encoding="utf-8")
+    config = home / ".codex" / "config.toml"
+    try:
+        data = tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    project = data.get("projects", {}).get(str(repo.resolve()), {})
+    return hooks.is_file() and isinstance(project, dict) and project.get("trust_level") == "trusted"
 
 
 def resume_args(lane: str, *, execute=subprocess.run) -> list[str]:
     helper = Path(__file__).with_name("queue_resume_args.sh")
-    result = execute([str(helper), lane], capture_output=True, text=True)
+    result = execute([str(helper), lane], capture_output=True)
     if result.returncode:
         raise ValueError("cannot resolve lane resume flags")
-    return [line for line in result.stdout.splitlines() if line]
+    return [token.decode() for token in result.stdout.split(b"\0") if token]
+
+
+def lane_repo(lane: str, repo: Path) -> Path:
+    """Refuse a caller-selected sibling: the named launcher owns this cwd."""
+    repo = repo.resolve()
+    match = re.fullmatch(r"(.+)-lane([23])", repo.name)
+    if lane == "1":
+        if match:
+            raise ValueError("lane 1 must use the main checkout")
+    elif not match or match.group(2) != lane:
+        raise ValueError(f"lane {lane} must use its -lane{lane} worktree")
+    return repo
+
+
+@contextmanager
+def resource_lock(name: str, home: Path):
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    path = home / ".cache" / "lane-queue-run" / "locks" / f"{safe}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("session is already running") from exc
+        yield
+
+
+@contextmanager
+def run_locks(session: str, queue: Path, home: Path):
+    """Serialize both the Codex session and its single-writer state file."""
+    queue_key = "queue-" + sha256(str(queue.resolve()).encode()).hexdigest()
+    with ExitStack() as locks:
+        for key in sorted((f"session-{session}", queue_key)):
+            locks.enter_context(resource_lock(key, home))
+        yield
+
+
+def _log(log: Path, text: str) -> None:
+    with log.open("a", encoding="utf-8") as out:
+        out.write(text + "\n")
 
 
 def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) -> int:
@@ -60,50 +140,84 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
     parser.add_argument("--max-steps", type=int, default=50)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
+    if args.max_steps < 1:
+        parser.error("--max-steps must be positive")
     home = home or Path.home()
-    repo = args.repo.resolve()
-    actual_cwd = session_cwd(args.session, home)
-    if actual_cwd != str(repo):
+    args.queue = args.queue.resolve()
+    try:
+        repo = lane_repo(args.lane, args.repo)
+    except ValueError as exc:
+        print(f"lane-queue-run: {exc}", file=sys.stderr)
+        return 2
+    if session_cwd(args.session, home) != str(repo):
         print("lane-queue-run: session cwd does not match named lane repo", file=sys.stderr)
         return 2
     if not trusted(repo, home):
         print("lane-queue-run: hook trust is not persisted for lane repo", file=sys.stderr)
         return 2
-    state = queue_state.load(args.queue)
-    if queue_state.recover(state):
-        queue_state.save(args.queue, state)
     log = log_path(args.lane, home)
-    lock = args.queue.with_suffix(args.queue.suffix + ".lock")
-    with lock.open("w") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("lane-queue-run: queue is already running", file=sys.stderr)
-            return 2
-        for step in range(args.max_steps):
-            if queue_state.is_blocked(state):
-                log.write_text(f"stopped: blocker after {step} steps\n")
-                return 0
-            item = queue_state.next_item(state)
-            if item is None:
-                log.write_text(f"stopped: queue empty after {step} steps\n")
-                return 0
-            item["status"] = "in_progress"
-            queue_state.save(args.queue, state)
-            command = ["codex", "exec", *resume_args(args.lane), "resume", args.session,
-                       f"{PROMPT} Queue: {args.queue}. Current item: {item['id']}"]
-            result = execute(command, cwd=repo, text=True)
-            with log.open("a") as out:
-                out.write(f"step {step + 1}: {item['id']} exit={result.returncode}\n")
-            if result.returncode:
-                item["status"] = "blocked"
-                item["note"] = f"resume exited {result.returncode}"
+    try:
+        with run_locks(session_identity(args.session, home), args.queue, home):
+            try:
+                state = queue_state.load(args.queue)
+            except ValueError as exc:
+                print(f"lane-queue-run: {exc}", file=sys.stderr)
+                _log(log, f"stopped: invalid queue: {exc}")
+                return 2
+            if queue_state.recover(state):
                 queue_state.save(args.queue, state)
-                return result.returncode
-            state = queue_state.load(args.queue)
-        with log.open("a") as out:
-            out.write(f"stopped: max steps {args.max_steps}\n")
-    return 0
+                _log(log, "stopped: recovery blocker before step 0")
+                return 0
+            for step in range(args.max_steps):
+                if queue_state.is_blocked(state):
+                    _log(log, f"stopped: blocker after {step} steps")
+                    return 0
+                item = queue_state.next_item(state)
+                if item is None:
+                    _log(log, f"stopped: queue empty after {step} steps")
+                    return 0
+                try:
+                    command = ["codex", "exec", *resume_args(args.lane), "resume", args.session,
+                               f"{PROMPT} Queue: {args.queue}. Current item: {item['id']}"]
+                except (OSError, ValueError) as exc:
+                    _log(log, f"stopped: cannot construct resume command: {exc}")
+                    return 2
+                item["status"] = "in_progress"
+                queue_state.save(args.queue, state)
+                env = os.environ | {"LANE": args.lane, "LANE_AGENT": "codex",
+                                    "TMPDIR": str(home / ".cache" / "codex-lane-tmp" / f"lane{args.lane}"),
+                                    "GIT_CEILING_DIRECTORIES": str(repo.parent)}
+                try:
+                    result = execute(command, cwd=repo, env=env, text=True)
+                except OSError as exc:
+                    item["status"] = "blocked"
+                    item["note"] = f"resume launch failed: {exc}"
+                    queue_state.save(args.queue, state)
+                    _log(log, f"stopped: resume launch failed: {exc}")
+                    return 2
+                _log(log, f"step {step + 1}: {item['id']} exit={result.returncode}")
+                if result.returncode:
+                    item["status"] = "blocked"
+                    item["note"] = f"resume exited {result.returncode}"
+                    queue_state.save(args.queue, state)
+                    _log(log, f"stopped: resume exit {result.returncode}")
+                    return result.returncode
+                state = queue_state.load(args.queue)
+                current = next(candidate for candidate in state["items"] if candidate["id"] == item["id"])
+                if current["status"] not in {"done", "blocked"}:
+                    current["status"] = "blocked"
+                    current["note"] = "resume returned without recording a terminal item status"
+                    queue_state.save(args.queue, state)
+                    _log(log, f"stopped: missing terminal status after {step + 1} steps")
+                    return 0
+            _log(log, f"stopped: max steps {args.max_steps}")
+            return 0
+    except KeyboardInterrupt:
+        _log(log, "stopped: interrupted")
+        return 130
+    except ValueError as exc:
+        print(f"lane-queue-run: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
