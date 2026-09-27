@@ -457,5 +457,160 @@ class L1PostDigestRoundTripTests(unittest.TestCase):
         self.assertTrue(self._round_trip("Write tier R throughout.\n\n"))
 
 
+class RoundWindowScopingTests(unittest.TestCase):
+    """harmonic-forge#791: hrse#2101's real protocol-post sequence, replayed
+    by comment id, kind and sha. Round 1's AE carried forward through a
+    round-2 handoff and then a round-2 spec, and Lane 3 gated round 2 twice
+    with no AE for it.
+
+    `carry_forward` is fixed WINDOW-scoped (only a handoff/spec strictly
+    between the authority and the candidate `ready-for-l3` breaks the carry),
+    not thread-globally -- a preclose refuter reproduced live, against
+    hrse#2095's real thread, that a thread-global "any newer spec/handoff
+    anywhere" check false-refuses a legitimate carry-forward whenever an
+    UNRELATED spec for separate work sits on the same issue after the
+    candidate `ready-for-l3`. `InterleavedWorkstreamTests` below is that
+    replay.
+    """
+
+    T = "2026-09-27T00:00:00Z"
+    ROUND_1 = [
+        _comment(5851011782, "handoff", T, sha="cf097489"),
+        _comment(5851858894, "handoff", T, sha="cf097489"),
+        _comment(5852328795, "ready-for-l3", T, sha="85564917"),
+        _comment(5852444586, "rework", T, sha="85564917"),
+        _comment(5852649394, "ready-for-l3", T, sha="829f8e54"),
+        _comment(5852721664, "spec", T, sha="-"),
+        _comment(5852764884, "ae", T, sha="829f8e54"),
+        _comment(5852765265, "sweep", T, sha="829f8e54"),
+    ]
+    REBASE = [_comment(5853299906, "ready-for-l3", T, sha="524ef3c7")]
+    ROUND_2 = [
+        _comment(5853949813, "handoff", T, sha="17e7630b"),
+        _comment(5854113886, "rework", T, sha="1aca6444"),
+        _comment(5854339981, "ready-for-l3", T, sha="21e587db"),
+    ]
+    ROUND_2_SPEC = [_comment(5857537661, "spec", T, sha="-")]
+    ROUND_2_AE = [
+        _comment(5857586993, "ae", T, sha="21e587db"),
+        _comment(5857587454, "sweep", T, sha="21e587db"),
+    ]
+
+    def _run(self, comments, head_sha):
+        with mock.patch.object(c, "current_branch", return_value="fix/2101-x"), \
+             mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "issue_for_branch", return_value=2101), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value=head_sha), \
+             mock.patch.object(c, "tier_w_availability", return_value=None):
+            c.main([])
+
+    def _refused(self, comments, head_sha):
+        err = __import__("io").StringIO()
+        with mock.patch("sys.stderr", err), self.assertRaises(SystemExit):
+            self._run(comments, head_sha)
+        return err.getvalue()
+
+    def test_the_rebase_carry_forward_still_passes(self):
+        """5853299906: a rebase-only ready-for-l3 under round 1's AE, with
+        nothing between the AE and it. The case carry-forward exists for --
+        it must keep working."""
+        self._run(self.ROUND_1 + self.REBASE, "524ef3c7")
+
+    def test_round_2_gate_1_is_refused_a_handoff_sits_in_the_carry_window(self):
+        """The state Lane 3 gated at 5854445232: the round-2 handoff sits
+        strictly between round 1's AE and the ready-for-l3 that would carry
+        it to 21e587db."""
+        msg = self._refused(self.ROUND_1 + self.REBASE + self.ROUND_2, "21e587db")
+        self.assertIn("authorizes sha=829f8e54", msg)
+        self.assertIn("21e587db", msg)
+
+    def test_round_2_gate_2_is_also_refused_a_spec_now_sits_in_the_window_too(self):
+        """The state Lane 3 gated at 5857564292, three minutes after its
+        spec. The spec's id is still less than the ready-for-l3's, so it is
+        still inside the (AE, ready-for-l3) window."""
+        self._refused(self.ROUND_1 + self.REBASE + self.ROUND_2 + self.ROUND_2_SPEC, "21e587db")
+
+    def test_a_handoff_is_recognized_by_heading_even_with_the_wrong_kind_footer(self):
+        """Preclose finding: a spec/handoff posted via `--kind discussion`
+        (the sanctioned-transport default) must still count -- 74 of 98 real
+        gate reports in this house carry no matching kind footer either."""
+        mis_kinded_handoff = _comment(5853949813, "discussion", self.T, sha="17e7630b")
+        mis_kinded_handoff["body"] = "## Handoff: something new\n\n" + mis_kinded_handoff["body"]
+        comments = self.ROUND_1 + self.REBASE + [mis_kinded_handoff] + [
+            _comment(5854113886, "rework", self.T, sha="1aca6444"),
+            _comment(5854339981, "ready-for-l3", self.T, sha="21e587db"),
+        ]
+        self._refused(comments, "21e587db")
+
+    def test_round_2_passes_once_its_own_ae_and_sweep_exist(self):
+        self._run(self.ROUND_1 + self.REBASE + self.ROUND_2 + self.ROUND_2_SPEC + self.ROUND_2_AE,
+                  "21e587db")
+
+    #: No `ae` comment at all -- isolates the no-AE tier-R fallback path.
+    #: AE always takes precedence when present (main()'s original,
+    #: unmodified behaviour: an AE that exists but does not cover head_sha
+    #: is a hard failure, it never falls through to tier-R), so a fixture
+    #: containing an AE would pass or fail these tests for the wrong
+    #: reason -- exactly what made the first draft of these three vacuous.
+    NO_AE = [_comment(5853949813, "handoff", "2026-09-27T00:00:00Z", sha="17e7630b")]
+
+    def test_a_tier_r_sweep_authorizes_without_an_ae(self):
+        """The existing no-AE tier-R path still works."""
+        comments = self.NO_AE + [_comment(5857600000, "sweep", self.T, sha="21e587db", tier="R")]
+        self._run(comments, "21e587db")
+
+    def test_a_tampered_tier_r_sweep_is_refused(self):
+        """Preclose finding (4 of 5 lenses, independently): the tier-R branch
+        must apply the SAME body-sha256 tamper check the gate-start path
+        always has -- not a second, weaker copy. The recorded digest is for
+        the tier-W body this sweep originally announced; the body was then
+        edited to say tier R without updating the digest."""
+        digest = c.hashlib.sha256(b"Write tier W throughout.\n\nbody text").hexdigest()
+        tampered = _comment(5857600001, "sweep", self.T, sha="21e587db", tier="R",
+                            body_sha256=digest)
+        self._refused(self.NO_AE + [tampered], "21e587db")
+
+    def test_a_tier_w_sweep_never_authorizes(self):
+        """Preclose finding: the tier check must actually discriminate --
+        mutating it to accept any tier must be caught."""
+        comments = self.NO_AE + [_comment(5857600002, "sweep", self.T, sha="21e587db", tier="W")]
+        self._refused(comments, "21e587db")
+
+
+class InterleavedWorkstreamTests(unittest.TestCase):
+    """harmonic-forge#791 preclose finding, reproduced against hrse#2095's
+    REAL thread (fetched live): a carry-forward for one piece of work must
+    not be defeated by an unrelated spec, posted for SEPARATE work on the
+    same issue, that has no AE yet simply because its own approval hasn't
+    arrived. Window-scoping (RoundWindowScopingTests above) is immune to
+    this by construction -- this is the regression test proving it."""
+
+    T = "2026-09-27T00:00:00Z"
+    # hrse#2095, comment ids and kinds exactly as fetched live; sha values
+    # abbreviated consistently with this file's other fixtures.
+    THREAD = [
+        _comment(5851088617, "ae", T, sha="4e24ef11"),
+        _comment(5852171416, "sweep", T, sha="4e24ef11"),
+        _comment(5852951693, "ready-for-l3", T, sha="7b201aad"),
+        # Unrelated work: the production-backfill spec, posted on the same
+        # issue while the embedding-fallback fix above is still awaiting its
+        # own gate. No AE for it yet -- its AE (5853318698) arrives only
+        # after the PASS below.
+        _comment(5852952053, "spec", T, sha="-"),
+        _comment(5852978732, "spec", T, sha="-"),
+    ]
+
+    def test_an_unrelated_later_spec_does_not_block_this_carry_forward(self):
+        with mock.patch.object(c, "current_branch", return_value="fix/2095-x"), \
+             mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "issue_for_branch", return_value=2095), \
+             mock.patch.object(c, "fetch_comments", return_value=self.THREAD), \
+             mock.patch.object(c, "current_head_sha", return_value="7b201aad"), \
+             mock.patch.object(c, "tier_w_availability", return_value=None):
+            c.main([])  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()
+

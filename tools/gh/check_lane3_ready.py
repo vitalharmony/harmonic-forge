@@ -27,6 +27,13 @@ from pathlib import Path
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
+#: harmonic-forge#791: a spec/handoff is recognized by its OWN heading too,
+#: not only its `kind=` footer -- `require_green_ci`'s docstring records that
+#: 74 of 98 real gate reports carry no matching kind footer, and the same
+#: mis-kinding is reachable here (`mise run lane-comment` with no `--kind`
+#: stamps `discussion` regardless of what the body says). Headings mirrored
+#: from `post_lane_discussion.KIND_HEADING`, not re-derived.
+ROUND_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*(?:Lane 3 Test Spec|Handoff)\b")
 FOOTER_SHA = re.compile(r"<!--\s*l1-post\s+v1;.*?\bsha=([0-9a-f]{7,40})\b", re.I)
 FOOTER_BODY_SHA = re.compile(r"<!--\s*l1-post\s+v1;.*?\bbody-sha256=([0-9a-f]{64})\b", re.I)
 FOOTER_MARKER = re.compile(r"\n\n<!--\s*l1-post\s+v1;.*?-->\s*\Z", re.I | re.DOTALL)
@@ -141,11 +148,47 @@ def current_head_sha() -> str:
     return result.stdout.strip()
 
 
+#: harmonic-forge#791. A Lane 1 `handoff` is new scope and a Lane 3 `spec` is
+#: an unapproved test plan; either one landing BETWEEN an authority and the
+#: `ready-for-l3` it would extend to means that `ready-for-l3` covers a round
+#: the authority never approved -- exactly hrse#2101's round 2, where the
+#: AE at `829f8e54` carried forward to `ready-for-l3` at `21e587db` straight
+#: through an intervening handoff and spec for that same round.
+#:
+#: Scoped to the (authority, candidate) WINDOW, not the whole thread. A
+#: preclose refuter reproduced why that scoping matters, live, against
+#: hrse#2095's real thread: an unrelated spec for a SEPARATE piece of work
+#: (the production-backfill spec, posted while an earlier fix's AE was still
+#: carrying forward to its own PASS) is not between that AE and the
+#: `ready-for-l3` it authorizes -- so a thread-wide "any newer spec/handoff
+#: anywhere" check refused a gate that had no round problem at all. Window
+#: scoping is naturally immune: it only looks at what actually sits between
+#: the two comments in THIS chain.
+ROUND_KINDS = ("handoff", "spec")
+
+
+def _is_round_artifact(comment: dict) -> bool:
+    body = comment.get("body", "")
+    kind_match = FOOTER_KIND.search(body)
+    if kind_match and kind_match.group(1).lower() in ROUND_KINDS:
+        return True
+    return bool(ROUND_HEADING.search(body))
+
+
+def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dict | None:
+    """The oldest `handoff`/`spec` with `lo_id < id < hi_id`, or None."""
+    found = [c for c in comments if lo_id < c["id"] < hi_id and _is_round_artifact(c)]
+    return min(found, key=lambda c: c["id"]) if found else None
+
+
 def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict | None:
     """A Lane 1 `ready-for-l3` posted after the authorizing
     comment, naming the commit actually being gated, extends that
     authorization to a new SHA without requiring a fresh one for the
-    routine fix-and-repush cycle.
+    routine fix-and-repush cycle -- UNLESS a handoff or spec sits between
+    the authority and that `ready-for-l3` (harmonic-forge#791): that means
+    new scope or a new, unapproved test plan landed before the carry, and
+    the carry must not paper over it.
 
     Generalized from `ae`-only to any authorizing comment --
     parameter rename only, same body (it only ever read `authority["id"]`,
@@ -157,10 +200,94 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
         and (match := FOOTER_KIND.search(comment.get("body", "")))
         and match.group(1).lower() == "ready-for-l3"
         and footer_sha(comment) == head_sha
+        and _round_artifact_between(comments, authority["id"], comment["id"]) is None
     ]
     if not candidates:
         return None
     return max(candidates, key=lambda c: c["id"])
+
+
+#: harmonic-forge#791. A Lane 1 `handoff` is new scope and a Lane 3 `spec` is
+#: an unapproved test plan; either one posted after an authorization opens a
+#: new round that the older authorization never approved. `carry_forward`
+#: exists for the fix-and-repush cycle WITHIN one approved spec, which posts
+#: neither. Without this, hrse#2101's round-1 AE carried forward through a
+#: round-2 handoff and then a round-2 spec, and Lane 3 gated round 2 twice
+#: with no AE for it.
+ROUND_KINDS = ("handoff", "spec")
+
+
+def newest_round_artifact(comments: list[dict]) -> dict | None:
+    """The newest `handoff` or `spec` on the thread, or None."""
+    found = [c for c in comments
+             if (m := FOOTER_KIND.search(c.get("body", ""))) and m.group(1).lower() in ROUND_KINDS]
+    return max(found, key=lambda c: c["id"]) if found else None
+
+
+def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | None, str]:
+    """Does an AE or tier-R sweep authorize executing `head_sha`? `(authority,
+    message)` -- `authority` is None exactly when `message` is a refusal
+    reason; otherwise `message` is a human-readable success line.
+
+    The single decision `main()` and `post_lane_discussion.require_round_
+    approval` both act on (harmonic-forge#791) -- the gate cannot start, and
+    a PASS cannot be posted, on two different definitions of "approved". This
+    mirrors `main`'s own AE-then-tier-R-fallback precedence exactly (an AE
+    that exists but does not (even via carry-forward) cover `head_sha` is
+    still a hard failure -- it does NOT fall through to the tier-R path,
+    matching the pre-#791 behaviour this refactor must not change) and
+    applies `carry_forward`'s round-window check identically to both the AE
+    and the tier-R branch, so a tampered tier-R sweep is caught here exactly
+    as `verify_body_sha256` already caught it inline in `main` before this
+    was factored out.
+    """
+    sweep = latest_by_kind(comments, "sweep")
+    if sweep is None:
+        return None, "no gate-readiness sweep"
+    tier = parse_write_tier(sweep.get("body", ""))
+    if tier is None:
+        return None, f"sweep ({sweep['html_url']}) {NO_TIER_MESSAGE}"
+
+    ae = latest_by_kind(comments, "ae")
+    if ae is not None:
+        if sweep["id"] <= ae["id"]:
+            return None, f"no gate-readiness sweep posted after the most recent AE ({ae['html_url']})"
+        ae_sha = footer_sha(ae)
+        if ae_sha is None:
+            return None, f"AE comment ({ae['html_url']}) has no parseable sha= marker"
+        if ae_sha == head_sha:
+            return ae, f"authorized for {head_sha} by {ae['html_url']}"
+        carry = carry_forward(comments, ae, head_sha)
+        if carry is None:
+            return None, (
+                f"AE ({ae['html_url']}) authorizes sha={ae_sha}, but the target is "
+                f"{head_sha} -- post a Lane 1 ready-for-l3 naming {head_sha}, or a "
+                "fresh AE at this commit"
+            )
+        return carry, f"authorized for {head_sha} by {carry['html_url']}"
+
+    if tier != "R":
+        return None, f"no AE comment and its sweep declares tier {tier} -- an AE is required above tier R"
+
+    if not verify_body_sha256(sweep):
+        return None, (
+            f"sweep ({sweep['html_url']}) body does not match its recorded body-sha256 -- it "
+            "may have been edited since posting; a tier-R gate cannot start on an "
+            "unverifiable authorization anchor"
+        )
+    sweep_sha = footer_sha(sweep)
+    if sweep_sha is None:
+        return None, f"sweep ({sweep['html_url']}) has no parseable sha= marker"
+    if sweep_sha == head_sha:
+        return sweep, f"authorized for {head_sha} by {sweep['html_url']}"
+    carry = carry_forward(comments, sweep, head_sha)
+    if carry is None:
+        return None, (
+            f"sweep ({sweep['html_url']}) authorizes sha={sweep_sha}, but the target is "
+            f"{head_sha} -- post a Lane 1 ready-for-l3 naming {head_sha}, or a fresh "
+            "sweep at this commit"
+        )
+    return carry, f"authorized for {head_sha} by {carry['html_url']}"
 
 
 def tier_w_availability() -> str | None:
@@ -204,81 +331,16 @@ def main(argv: list[str] | None = None) -> None:
     else:
         issue = issue_for_branch(current_branch())
     comments = fetch_comments(repo, issue)
-
-    sweep = latest_by_kind(comments, "sweep")
-    if sweep is None:
-        fail(
-            f"{repo}#{issue} has no gate-readiness sweep -- post one via "
-            "`mise run l1-post --kind sweep --spec-comment <id>` before starting "
-            "a Lane 3 gate"
-        )
-
-    tier = parse_write_tier(sweep.get("body", ""))
-    if tier is None:
-        fail(f"{repo}#{issue}'s sweep ({sweep['html_url']}) {NO_TIER_MESSAGE}")
-
-    ae = latest_by_kind(comments, "ae")
     head_sha = current_head_sha()
 
-    # An AE means HITL consent to execute, valid at any tier --
-    # check for one first, exactly as before, untouched. Only
-    # when none exists does tier R get its own fallback authorization path;
-    # above tier R, no AE is still a hard failure.
-    if ae is not None:
-        if sweep["id"] <= ae["id"]:
-            fail(
-                f"{repo}#{issue} has no gate-readiness sweep posted after its most "
-                f"recent AE ({ae['html_url']}) -- post one via "
-                "`mise run l1-post --kind sweep --spec-comment <id>` before starting "
-                "a Lane 3 gate"
-            )
-        ae_sha = footer_sha(ae)
-        authority = ae
-        if ae_sha is None:
-            fail(f"{repo}#{issue}'s AE comment ({ae['html_url']}) has no parseable sha= marker")
-        elif ae_sha != head_sha:
-            carry = carry_forward(comments, ae, head_sha)
-            if carry is None:
-                fail(
-                    f"{repo}#{issue}'s AE ({ae['html_url']}) authorizes sha={ae_sha}, but "
-                    f"the checked-out HEAD is {head_sha} -- post a Lane 1 ready-for-l3 "
-                    f"naming {head_sha} (`mise run l1-post --kind ready-for-l3`), or a "
-                    "fresh AE at this commit, before starting a Lane 3 gate"
-                )
-            authority = carry
-    elif tier == "R":
-        if not verify_body_sha256(sweep):
-            fail(
-                f"{repo}#{issue}'s sweep ({sweep['html_url']}) body does not match its "
-                "recorded body-sha256 -- it may have been edited since posting; a "
-                "tier-R gate cannot start on an unverifiable authorization anchor"
-            )
-        sweep_sha = footer_sha(sweep)
-        authority = sweep
-        if sweep_sha is None:
-            fail(f"{repo}#{issue}'s sweep ({sweep['html_url']}) has no parseable sha= marker")
-        elif sweep_sha != head_sha:
-            carry = carry_forward(comments, sweep, head_sha)
-            if carry is None:
-                fail(
-                    f"{repo}#{issue}'s sweep ({sweep['html_url']}) authorizes "
-                    f"sha={sweep_sha}, but the checked-out HEAD is {head_sha} -- post "
-                    f"a Lane 1 ready-for-l3 naming {head_sha} (`mise run l1-post "
-                    "--kind ready-for-l3`), or a fresh sweep at this commit, before "
-                    "starting a Lane 3 gate"
-                )
-            authority = carry
-    else:
-        fail(
-            f"{repo}#{issue} has no AE comment and its sweep declares tier {tier} -- "
-            "an AE is required above tier R; post one via `mise run l1-post --kind ae` "
-            "before starting a Lane 3 gate"
-        )
+    authority, message = resolve_gate_authority(comments, head_sha)
+    if authority is None:
+        fail(f"{repo}#{issue}: {message} -- before starting a Lane 3 gate")
 
-    print(
-        f"[check-lane3-ready] {repo}#{issue}: sweep ({sweep['html_url']}), tier {tier} "
-        f"-- ready, authorized for {head_sha} by {authority['html_url']}"
-    )
+    sweep = latest_by_kind(comments, "sweep")
+    tier = parse_write_tier(sweep.get("body", "")) if sweep else None
+    print(f"[check-lane3-ready] {repo}#{issue}: sweep ({sweep['html_url']}), tier {tier} "
+          f"-- ready, {message}")
     availability = tier_w_availability()
     if availability:
         print(availability)

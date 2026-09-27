@@ -238,10 +238,6 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(posted, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GateResultRequiresGreenCiTests(unittest.TestCase):
     """harmonic-forge#504: a PASS may not outrun the PR's own CI.
 
@@ -482,6 +478,123 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
                  mock.patch.object(P, "comment_body", fake_comment_body):
                 P.main()
         self.assertNotIn("ack-no-pr-required", captured["text"])
+
+
+
+
+# harmonic-forge#791: `main()` now also fetches the issue's comments for a
+# genuine gate-report PASS (`require_round_approval`, scoped by
+# `looks_like_a_gate_report` -- see RoundApprovalTests.test_a_non_gate_
+# report_pass_is_never_gated below). Every posting-path test above stubs
+# `check_gate_result` so it cannot reach GitHub; this does the same for the
+# new check, module-wide, so none of them perform live GitHub I/O (a
+# preclose refuter reproduced exactly that when this stub previously lived
+# below an `if __name__ == "__main__": unittest.main()` guard and so never
+# ran when the file was executed directly -- `unittest.main()` calls
+# `sys.exit()`, so nothing after it in the file executes on that path.
+# `setUpModule`/`tearDownModule` below MUST be the only such guard-adjacent
+# code, and MUST come before the file's real, single `__main__` block at the
+# true end of the file).
+_REAL_REQUIRE_ROUND_APPROVAL = P.require_round_approval
+_round_patcher = mock.patch.object(P, "require_round_approval")
+
+
+def setUpModule():
+    _round_patcher.start()
+
+
+def tearDownModule():
+    _round_patcher.stop()
+
+
+class RoundApprovalTests(unittest.TestCase):
+    """harmonic-forge#791: a PASS gate-result needs this round's approval,
+    via `check_lane3_ready.resolve_gate_authority` -- the SAME function
+    `lane3-begin` uses, not a second definition."""
+
+    PASS = ("## Lane 3 Gate Results — H2101 — PASS\n\n**Verdict:** PASS\n"
+            "**Head-SHA:** 21e587db\n**Finding:** none.\n**Next:** merge.\n")
+
+    @staticmethod
+    def _c(cid, kind, sha="21e587db", tier="W"):
+        prefix = f"Write tier {tier} throughout.\n\n" if kind == "sweep" else ""
+        return {"id": cid, "html_url": f"https://x/issues/1#issuecomment-{cid}",
+                "body": f"{prefix}b\n\n<!-- l1-post v1; kind={kind}; sha={sha} -->"}
+
+    def _check(self, comments, body=None):
+        # Patch the module object `post_lane_discussion` actually holds, not
+        # `import check_lane3_ready`: test_check_lane3_ready.py replaces the
+        # sys.modules entry, so in a combined run the two differ and the stub
+        # would miss, sending a real fetch to GitHub.
+        with mock.patch.object(P.check_lane3_ready, "fetch_comments", return_value=comments):
+            _REAL_REQUIRE_ROUND_APPROVAL("vitalharmony/hrse", 2101, body or self.PASS)
+
+    def test_a_pass_after_an_unapproved_round_is_refused(self):
+        """hrse#2101's 5857564292: round-1 AE, round-2 handoff and spec sit
+        inside the carry window, no new AE."""
+        comments = [self._c(1, "handoff"), self._c(2, "spec"), self._c(3, "ae", "829f8e54"),
+                    self._c(4, "sweep", "829f8e54")]
+        with self.assertRaises(SystemExit) as caught:
+            self._check(comments)
+        self.assertIn("21e587db", str(caught.exception))
+
+    def test_a_pass_with_this_rounds_ae_posts(self):
+        comments = [self._c(1, "handoff"), self._c(2, "ae"), self._c(3, "sweep")]
+        self._check(comments)
+
+    def test_a_pass_under_a_tampered_tier_r_sweep_is_refused(self):
+        """Preclose finding, independently reported by 4 of 5 lenses: the
+        tier-R branch must apply the same body-sha256 check the gate-start
+        path always has, reached through the ONE shared function."""
+        digest = __import__("hashlib").sha256(b"Write tier W throughout.\n\nb").hexdigest()
+        tampered = {"id": 2, "html_url": "https://x/issues/1#issuecomment-2",
+                    "body": f"Write tier R throughout.\n\nb\n\n<!-- l1-post v1; kind=sweep; "
+                            f"sha=21e587db; body-sha256={digest} -->"}
+        comments = [self._c(1, "spec"), tampered]
+        with self.assertRaises(SystemExit):
+            self._check(comments)
+
+    def test_a_pass_under_a_genuine_tier_r_sweep_posts(self):
+        comments = [self._c(1, "spec"), self._c(2, "sweep", tier="R")]
+        self._check(comments)
+
+    def test_fail_and_blocked_are_never_gated(self):
+        unapproved = [self._c(1, "handoff"), self._c(2, "spec")]
+        for verdict in ("FAIL", "BLOCKED"):
+            with self.subTest(verdict=verdict):
+                self._check(unapproved, self.PASS.replace("PASS", verdict))
+
+    def test_a_non_gate_report_pass_is_never_gated(self):
+        """Preclose finding: `verdict_of` reads a PASS-shaped verdict out of
+        ANY body whose lead block starts a line with 'Result:'/'Verdict:',
+        including a `ready-for-l3`. Only a genuine `## Lane 3 Gate Results`
+        body may be checked -- everything else must post regardless of
+        thread state. `verdict_of` confirmed PASS on this exact body first,
+        so the test cannot be vacuous the way the first draft's was."""
+        no_protocol_at_all: list[dict] = []
+        ready_for_l3_body = ("## Ready for Lane 3 — H2101\n\n**Target:** x\n"
+                             "**Result:** PASS on every one.\n"
+                             "**Next:** Lane 3 gates it.\n")
+        import gate_ci
+        self.assertEqual(gate_ci.verdict_of(ready_for_l3_body), "PASS")
+        self._check(no_protocol_at_all, ready_for_l3_body)  # must not raise
+
+    def test_main_calls_the_round_check(self):
+        """Wiring: deleting the call from `main()` must fail a test, the lesson
+        `GateCheckIsActuallyWiredTests` records for the CI check."""
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.md"
+            path.write_text(GATE_PASS, encoding="utf-8")
+            argv = ["post_lane_discussion.py", "--repo", "vitalharmony/hrse", "--issue", "2101",
+                    "--file", str(path), "--kind", "gate-result"]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(P, "check_gate_result", return_value=(True, "[GATE] CI green")), \
+                 mock.patch.object(P, "require_round_approval",
+                                   side_effect=lambda repo, issue, body: seen.append((repo, issue))), \
+                 mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
+                P.main()
+        self.assertEqual(seen, [("vitalharmony/hrse", 2101)])
 
 
 if __name__ == "__main__":
