@@ -459,3 +459,89 @@ class L1PostDigestRoundTripTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewRoundBreaksCarryForwardTests(unittest.TestCase):
+    """harmonic-forge#791: hrse#2101's real protocol-post sequence, replayed
+    by comment id, kind and sha. Round 1's AE carried forward through a
+    round-2 handoff and then a round-2 spec, and Lane 3 gated round 2 twice
+    with no AE for it."""
+
+    T = "2026-09-27T00:00:00Z"
+    ROUND_1 = [
+        _comment(5851011782, "handoff", T, sha="cf097489"),
+        _comment(5851858894, "handoff", T, sha="cf097489"),
+        _comment(5852328795, "ready-for-l3", T, sha="85564917"),
+        _comment(5852444586, "rework", T, sha="85564917"),
+        _comment(5852649394, "ready-for-l3", T, sha="829f8e54"),
+        _comment(5852721664, "spec", T, sha="-"),
+        _comment(5852764884, "ae", T, sha="829f8e54"),
+        _comment(5852765265, "sweep", T, sha="829f8e54"),
+    ]
+    REBASE = [_comment(5853299906, "ready-for-l3", T, sha="524ef3c7")]
+    ROUND_2 = [
+        _comment(5853949813, "handoff", T, sha="17e7630b"),
+        _comment(5854113886, "rework", T, sha="1aca6444"),
+        _comment(5854339981, "ready-for-l3", T, sha="21e587db"),
+    ]
+    ROUND_2_SPEC = [_comment(5857537661, "spec", T, sha="-")]
+    ROUND_2_AE = [
+        _comment(5857586993, "ae", T, sha="21e587db"),
+        _comment(5857587454, "sweep", T, sha="21e587db"),
+    ]
+
+    def _run(self, comments, head_sha):
+        with mock.patch.object(c, "current_branch", return_value="fix/2101-x"), \
+             mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "issue_for_branch", return_value=2101), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value=head_sha), \
+             mock.patch.object(c, "tier_w_availability", return_value=None):
+            c.main([])
+
+    def _refused(self, comments, head_sha):
+        err = __import__("io").StringIO()
+        with mock.patch("sys.stderr", err), self.assertRaises(SystemExit):
+            self._run(comments, head_sha)
+        return err.getvalue()
+
+    def test_the_rebase_carry_forward_still_passes(self):
+        """5853299906: a rebase-only ready-for-l3 under round 1's AE. The case
+        carry-forward exists for -- it must keep working."""
+        self._run(self.ROUND_1 + self.REBASE, "524ef3c7")
+
+    def test_round_2_gate_1_is_refused_naming_the_new_handoff(self):
+        """The state Lane 3 gated at 5854445232."""
+        msg = self._refused(self.ROUND_1 + self.REBASE + self.ROUND_2, "21e587db")
+        self.assertIn("handoff", msg)
+        self.assertIn("issuecomment-5853949813", msg)
+        self.assertIn("fresh `ae`", msg)
+
+    def test_round_2_gate_2_is_refused_naming_the_unapproved_spec(self):
+        """The state Lane 3 gated at 5857564292, three minutes after its spec."""
+        msg = self._refused(self.ROUND_1 + self.REBASE + self.ROUND_2 + self.ROUND_2_SPEC, "21e587db")
+        self.assertIn("spec", msg)
+        self.assertIn("issuecomment-5857537661", msg)
+
+    def test_a_spec_newer_than_the_ae_refuses_even_at_the_ae_sha(self):
+        """AC2: with no carry-forward involved at all (HEAD is the AE's own
+        sha), a newer spec is still unapproved."""
+        comments = self.ROUND_1 + [_comment(5852800001, "spec", self.T, sha="-")]
+        msg = self._refused(comments, "829f8e54")
+        self.assertIn("issuecomment-5852800001", msg)
+
+    def test_round_2_passes_once_its_own_ae_and_sweep_exist(self):
+        self._run(self.ROUND_1 + self.REBASE + self.ROUND_2 + self.ROUND_2_SPEC + self.ROUND_2_AE,
+                  "21e587db")
+
+    def test_a_tier_r_sweep_after_the_new_spec_authorizes_without_an_ae(self):
+        """The existing no-AE tier-R path still works for a new round, even
+        with an older AE on the thread."""
+        comments = self.ROUND_1 + self.ROUND_2 + self.ROUND_2_SPEC + [
+            _comment(5857600000, "sweep", self.T, sha="21e587db", tier="R")]
+        self._run(comments, "21e587db")
+
+    def test_a_tier_r_sweep_older_than_the_new_spec_does_not(self):
+        comments = self.ROUND_1 + self.ROUND_2 + [
+            _comment(5857500000, "sweep", self.T, sha="21e587db", tier="R")] + self.ROUND_2_SPEC
+        self._refused(comments, "21e587db")

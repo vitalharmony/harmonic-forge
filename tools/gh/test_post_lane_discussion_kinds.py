@@ -486,3 +486,83 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# harmonic-forge#791: `main()` now also fetches the issue's comments for a
+# PASS (`require_round_approval`). Every posting-path test above stubs
+# `check_gate_result` so it cannot reach GitHub; this does the same for the
+# new check, module-wide. `RoundApprovalTests` below exercises the real
+# function through `_REAL_REQUIRE_ROUND_APPROVAL`, and the wiring test proves
+# `main()` calls it.
+_REAL_REQUIRE_ROUND_APPROVAL = P.require_round_approval
+_round_patcher = mock.patch.object(P, "require_round_approval")
+
+
+def setUpModule():
+    _round_patcher.start()
+
+
+def tearDownModule():
+    _round_patcher.stop()
+
+
+class RoundApprovalTests(unittest.TestCase):
+    """harmonic-forge#791: a PASS gate-result needs this round's approval --
+    an AE (or a tier-R sweep) newer than the newest handoff/spec. Same rule as
+    `lane3-begin`, via `check_lane3_ready.round_authority`."""
+
+    PASS = ("## Lane 3 Gate Results — H2101 — PASS\n\n**Verdict:** PASS\n"
+            "**Head-SHA:** 21e587db\n**Finding:** none.\n**Next:** merge.\n")
+
+    @staticmethod
+    def _c(cid, kind, sha="21e587db", tier="W"):
+        prefix = f"Write tier {tier} throughout.\n\n" if kind == "sweep" else ""
+        return {"id": cid, "html_url": f"https://x/issues/1#issuecomment-{cid}",
+                "body": f"{prefix}b\n\n<!-- l1-post v1; kind={kind}; sha={sha} -->"}
+
+    def _check(self, comments, body=None):
+        # Patch the module object `post_lane_discussion` actually holds, not
+        # `import check_lane3_ready`: test_check_lane3_ready.py replaces the
+        # sys.modules entry, so in a combined run the two differ and the stub
+        # would miss, sending a real fetch to GitHub.
+        with mock.patch.object(P.check_lane3_ready, "fetch_comments", return_value=comments):
+            _REAL_REQUIRE_ROUND_APPROVAL("vitalharmony/hrse", 2101, body or self.PASS)
+
+    def test_a_pass_after_an_unapproved_spec_is_refused(self):
+        """hrse#2101's 5857564292: round-1 AE, round-2 handoff and spec, no new AE."""
+        comments = [self._c(1, "spec"), self._c(2, "ae", "829f8e54"), self._c(3, "sweep", "829f8e54"),
+                    self._c(4, "handoff"), self._c(5, "spec")]
+        with self.assertRaises(SystemExit) as caught:
+            self._check(comments)
+        self.assertIn("issuecomment-5", str(caught.exception))
+
+    def test_a_pass_with_this_rounds_ae_posts(self):
+        comments = [self._c(1, "spec"), self._c(2, "ae"), self._c(3, "sweep")]
+        self._check(comments)
+
+    def test_a_pass_under_a_tier_r_sweep_after_the_spec_posts(self):
+        comments = [self._c(1, "spec"), self._c(2, "sweep", tier="R")]
+        self._check(comments)
+
+    def test_fail_and_blocked_are_never_gated(self):
+        unapproved = [self._c(1, "handoff"), self._c(2, "spec")]
+        for verdict in ("FAIL", "BLOCKED"):
+            with self.subTest(verdict=verdict):
+                self._check(unapproved, self.PASS.replace("PASS", verdict))
+
+    def test_main_calls_the_round_check(self):
+        """Wiring: deleting the call from `main()` must fail a test, the lesson
+        `GateCheckIsActuallyWiredTests` records for the CI check."""
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.md"
+            path.write_text(GATE_PASS, encoding="utf-8")
+            argv = ["post_lane_discussion.py", "--repo", "vitalharmony/hrse", "--issue", "2101",
+                    "--file", str(path), "--kind", "gate-result"]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(P, "check_gate_result", return_value=(True, "[GATE] CI green")), \
+                 mock.patch.object(P, "require_round_approval",
+                                   side_effect=lambda repo, issue, body: seen.append((repo, issue))), \
+                 mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
+                P.main()
+        self.assertEqual(seen, [("vitalharmony/hrse", 2101)])

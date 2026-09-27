@@ -163,6 +163,53 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
     return max(candidates, key=lambda c: c["id"])
 
 
+#: harmonic-forge#791. A Lane 1 `handoff` is new scope and a Lane 3 `spec` is
+#: an unapproved test plan; either one posted after an authorization opens a
+#: new round that the older authorization never approved. `carry_forward`
+#: exists for the fix-and-repush cycle WITHIN one approved spec, which posts
+#: neither. Without this, hrse#2101's round-1 AE carried forward through a
+#: round-2 handoff and then a round-2 spec, and Lane 3 gated round 2 twice
+#: with no AE for it.
+ROUND_KINDS = ("handoff", "spec")
+
+
+def newest_round_artifact(comments: list[dict]) -> dict | None:
+    """The newest `handoff` or `spec` on the thread, or None."""
+    found = [c for c in comments
+             if (m := FOOTER_KIND.search(c.get("body", ""))) and m.group(1).lower() in ROUND_KINDS]
+    return max(found, key=lambda c: c["id"]) if found else None
+
+
+def round_authority(comments: list[dict]) -> tuple[dict | None, str | None]:
+    """The comment that authorizes executing the CURRENT round, and why not.
+
+    An AE newer than the newest handoff/spec authorizes at any tier. Failing
+    that, a tier-R sweep newer than it authorizes (the existing no-AE tier-R
+    path). Returns `(authority, None)` or `(None, reason)`. Shared with
+    `post_lane_discussion.py`, so the gate cannot start and a PASS cannot be
+    posted on different definitions of "approved".
+    """
+    round_art = newest_round_artifact(comments)
+    floor = round_art["id"] if round_art else -1
+    ae = latest_by_kind(comments, "ae")
+    if ae is not None and ae["id"] > floor:
+        return ae, None
+    sweep = latest_by_kind(comments, "sweep")
+    if (sweep is not None and sweep["id"] > floor
+            and parse_write_tier(sweep.get("body", "")) == "R"):
+        return sweep, None
+    if round_art is not None and ae is not None:
+        kind = FOOTER_KIND.search(round_art["body"]).group(1).lower()
+        return None, (f"{kind} {round_art['html_url']} is newer than the latest AE "
+                      f"({ae['html_url']}): it opens a new round that AE never approved -- "
+                      "a fresh `ae` is required on this thread (harmonic-forge#791)")
+    if round_art is not None:
+        kind = FOOTER_KIND.search(round_art["body"]).group(1).lower()
+        return None, (f"no AE (or tier-R sweep) posted after {kind} {round_art['html_url']} "
+                      "-- this round has not been approved (harmonic-forge#791)")
+    return None, "no AE (or tier-R sweep) on this thread"
+
+
 def tier_w_availability() -> str | None:
     """The disposable-graph availability line, from the consuming repo's own
     gate-adapter manifest (`tier_w_message.text`), or None when it declares
@@ -217,8 +264,18 @@ def main(argv: list[str] | None = None) -> None:
     if tier is None:
         fail(f"{repo}#{issue}'s sweep ({sweep['html_url']}) {NO_TIER_MESSAGE}")
 
-    ae = latest_by_kind(comments, "ae")
     head_sha = current_head_sha()
+
+    # harmonic-forge#791: the authorization must postdate the newest handoff
+    # or spec. An older AE is not this round's, so it is neither used nor
+    # carried forward below.
+    # With no handoff/spec on the thread at all, `round_authority` adds
+    # nothing, and the branches below decide exactly as before.
+    approved, why_not = round_authority(comments)
+    if approved is None and newest_round_artifact(comments) is not None:
+        fail(f"{repo}#{issue}: {why_not}")
+    ae = (approved if approved is not None
+          and FOOTER_KIND.search(approved["body"]).group(1).lower() == "ae" else None)
 
     # An AE means HITL consent to execute, valid at any tier --
     # check for one first, exactly as before, untouched. Only
