@@ -123,6 +123,23 @@ def _run(args: list[str], cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
 
 
+def write_codex_hooks(checkout: Path) -> None:
+    """Register the three gates `_cli_launch.sh` requires before it will start
+    a Codex lane (harmonic-forge#778), in the shape
+    `verify_codex_registration.py` accepts, pointing at this checkout's real
+    hook files."""
+    tools = Path(__file__).resolve().parent.parent
+    scripts = (tools / "hooks" / "block_missing_preclose_inspection.py",
+               tools / "hooks" / "batch_gate.py",
+               tools / "gh" / "block_closing_keywords.py")
+    config = {"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+        {"type": "command", "command": f"python3 {script}"} for script in scripts
+    ]}]}}
+    hooks_json = checkout / ".codex" / "hooks.json"
+    hooks_json.parent.mkdir(parents=True, exist_ok=True)
+    hooks_json.write_text(json.dumps(config))
+
+
 def build_fixture_tree(
     root: Path,
     project: str = "proj",
@@ -175,6 +192,12 @@ def build_fixture_tree(
             stub = stub_bin / binary
             stub.write_text(_STUB_AGENT % {"name": binary, "version": version})
             stub.chmod(0o755)
+
+    # `_cli_launch.sh` checks `$PWD` (each lane's checkout) and
+    # `$HOME/Harmonic_Projects/HRSE2`; `capture_cell` defaults HOME to `main`.
+    for checkout in (main, root / f"{project}-lane2", root / f"{project}-lane3",
+                     main / "Harmonic_Projects" / "HRSE2"):
+        write_codex_hooks(checkout)
 
     return main, stub_bin
 

@@ -409,6 +409,62 @@ class OnePassTests(ScratchRepo):
         self.plan(tier="fast")
         self.assertEqual(list(preclose.receipt_dir().glob("*.tmp")), [])
 
+    def _block_receipt_dir(self) -> Path:
+        """F783: make the real receipt_dir() unwritable by occupying its
+        parent with a file -- HOME only, never patching receipt_dir() (see
+        this class's docstring)."""
+        state = Path(os.environ["HOME"]) / ".claude" / "state"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("blocked\n")
+        return preclose.receipt_dir()
+
+    def test_complete_fails_fast_when_receipt_dir_is_unwritable(self) -> None:
+        """F783: an inaccessible receipt store must fail before any work."""
+        blocked = self._block_receipt_dir()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            self.complete()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(str(blocked), err.getvalue())
+        self.assertIn("AGENT_LANE_ADD_DIR", err.getvalue())
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory mode bits")
+    def test_complete_on_a_present_but_write_denied_dir_leaves_nothing(self) -> None:
+        """F783 preclose finding: the Codex sandbox case is a directory that
+        exists but refuses writes (EACCES/EROFS), not a missing one. The probe
+        must catch it and leave no file of any name behind."""
+        store = preclose.receipt_dir()
+        store.mkdir(parents=True)
+        store.chmod(0o500)
+        self.addCleanup(store.chmod, 0o700)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.complete()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(list(store.iterdir()), [])
+
+    def test_plan_refuses_before_printing_a_panel(self) -> None:
+        """F783 preclose finding (4 of 5 refuters): plan is the first step,
+        and its stdout is the instruction to spawn the panel."""
+        self.commit("scripts/ordinary.py")
+        self._block_receipt_dir()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as caught:
+            preclose.plan(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                tier="fast", force=False, allow_dirty=False))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_gate_fails_before_processing_when_receipt_dir_is_unwritable(self) -> None:
+        """F783: --gate refuses before reading findings or calling a reviewer
+        (a missing findings file would otherwise be the first error)."""
+        blocked = self._block_receipt_dir()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            preclose.gate(_Args(repo="not/onboarded", issue=1208, findings="missing.json"))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(str(blocked), err.getvalue())
+
     def test_writes_go_to_the_user_level_store_not_the_repo(self) -> None:
         """harmonic-forge#778 AC3: the receipt must outlive the worktree that
         wrote it, so it has to live somewhere a disposable Lane 1 impl
