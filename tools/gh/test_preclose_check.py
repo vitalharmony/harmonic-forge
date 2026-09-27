@@ -615,8 +615,8 @@ class CrossFamilyReceiptTests(ScratchRepo):
                     "report": {"assumptions": [{"verdict": "confirmed", "evidence": "Read x"}]},
                     "native": [
                         {"type": "system", "subtype": "init", "tools": ["Read", "Grep", "Glob"], "mcp_servers": [], "model": "claude-opus-5-5"},
-                        {"type": "tool_use", "id": "read-1", "name": "Read"},
-                        {"type": "tool_result", "tool_use_id": "read-1"},
+                        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read-1", "name": "Read"}]}},
+                        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read-1"}]}},
                         {"type": "result", "subtype": "success", "result": "{}"},
                     ]}
         path.write_text(json.dumps(envelope))

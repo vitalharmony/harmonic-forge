@@ -21,6 +21,10 @@ uncheckable verdict beside a confirmed one is the mechanism working: the
 reviewer said what it could not reach instead of confabulating. A report where
 nothing at all was reached is indistinguishable in content from no call having
 been made, so it gets the label that says so.
+
+Receipts are an honesty mechanism against mistakes, not an authentication
+boundary: same-account forgery is out of scope (operator ruling 2026-09-27,
+F774).
 """
 
 from __future__ import annotations

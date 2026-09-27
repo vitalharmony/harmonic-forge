@@ -35,6 +35,10 @@ Its one *enforced* invariant is "one pass, then escalate", and that is a gate
 in miniature: an unreadable or corrupt receipt is therefore treated as **no
 prior pass** (review again) rather than as a refusal, and never as a crash.
 The receipt records completion, not intent -- see `complete_receipt`.
+
+Receipts are an honesty mechanism against mistakes, not an authentication
+boundary: same-account forgery is out of scope (operator ruling 2026-09-27,
+F774).
 """
 
 from __future__ import annotations
@@ -376,15 +380,14 @@ def _codex_verify_trace(native: object) -> bool:
 
 
 def _claude_blocks(event: dict, kind: str) -> list[dict]:
-    blocks = event.get("content")
-    if not isinstance(blocks, list):
-        message = event.get("message")
-        blocks = message.get("content") if isinstance(message, dict) else []
+    message = event.get("message")
+    blocks = message.get("content") if isinstance(message, dict) else []
     return [block for block in blocks if isinstance(block, dict) and block.get("type") == kind] if isinstance(blocks, list) else []
 
 
 def _claude_verify_trace(native: object, verify_model: object) -> bool:
-    if not isinstance(native, list) or not isinstance(verify_model, str):
+    expected_model = "claude-opus-5-5"
+    if not isinstance(native, list) or verify_model != expected_model:
         return False
     init = next((event for event in native if isinstance(event, dict)
                  and event.get("type") == "system" and event.get("subtype") == "init"), None)
@@ -397,11 +400,11 @@ def _claude_verify_trace(native: object, verify_model: object) -> bool:
     for event in native:
         if not isinstance(event, dict):
             continue
-        use_blocks = ([event] if event.get("type") == "tool_use" else []) + _claude_blocks(event, "tool_use")
+        use_blocks = _claude_blocks(event, "tool_use")
         for block in use_blocks:
-            if block.get("name") in {"Read", "Grep", "Glob"} and isinstance(block.get("id"), str):
+            if block.get("name") in {"Read", "Grep"} and isinstance(block.get("id"), str):
                 uses.add(block["id"])
-        result_blocks = ([event] if event.get("type") == "tool_result" else []) + _claude_blocks(event, "tool_result")
+        result_blocks = _claude_blocks(event, "tool_result")
         for block in result_blocks:
             ident = block.get("tool_use_id") or block.get("id")
             if isinstance(ident, str) and not block.get("is_error", False):

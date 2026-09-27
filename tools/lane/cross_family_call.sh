@@ -319,7 +319,7 @@ invoke_claude() {
     if [ "$posture" = verify ]; then
       claude -p "$(prompt_text "$posture" "$brief" claude)" \
         --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
-        --model "${CLAUDE_VERIFY_MODEL:-claude-opus-5-5}" \
+        --model "claude-opus-5-5" \
         --no-session-persistence --output-format stream-json --verbose </dev/null
     else
       claude -p "$(prompt_text "$posture" "$brief" claude)" --output-format json </dev/null
@@ -699,7 +699,7 @@ for family in "${targets[@]}"; do
   envelope_err="$(mktemp)"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
-           --arg verify_model "${CLAUDE_VERIFY_MODEL:-claude-opus-5-5}" \
+           --arg verify_model "claude-opus-5-5" \
            '. + {caller_family:$caller, target_family:$target} +
             (if $target == "claude" and .posture == "verify" then {verify_model:$verify_model} else {} end)' \
        >"$envelope_out" 2>"$envelope_err"; then
