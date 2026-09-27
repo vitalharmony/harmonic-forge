@@ -38,7 +38,7 @@ _FORGE = _FORGE_ROOT / "tools" / "gh"
 if _FORGE.is_dir():
     sys.path.insert(0, str(_FORGE))
 
-from gate_ci import check_gate_result, verdict_of
+from gate_ci import check_gate_result, gated_sha, looks_like_a_gate_report, verdict_of
 
 # harmonic-forge#791: the one definition of "this round is approved", shared
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
@@ -330,18 +330,31 @@ def require_round_approval(repo: str, issue: int, body: str) -> None:
     """A PASS may not be posted for a round nobody approved (harmonic-forge#791).
 
     `lane3-begin` is the first line; this is the second, at the point a PASS
-    becomes real. hrse#2101's round 2 posted two PASS results with no AE for
-    that round. Keyed on the verdict read from the BODY, like
-    `require_green_ci`. Only PASS is gated: FAIL and BLOCKED report a problem
-    and must always be publishable. Fails closed: a comments fetch that fails
-    refuses the PASS (`fetch_comments` raises SystemExit).
+    becomes real -- via `check_lane3_ready.resolve_gate_authority`, the SAME
+    function, not a second definition of "approved" (a preclose refuter found
+    exactly this drift when the tier-R body-sha256 check lived only in one of
+    two copies; there is now one copy).
+
+    Scoped to genuine gate reports only (preclose finding): `verdict_of`'s
+    regex reads a PASS-shaped verdict out of ANY body, including a Lane 1
+    `ready-for-l3` whose lead block happens to contain "Result: PASS" prose --
+    `looks_like_a_gate_report` is the same recognizer `check_gate_result`
+    itself gates on, so a `ready-for-l3`/`rework`/`sweep` is never blocked by
+    a check meant only for `## Lane 3 Gate Results`. FAIL and BLOCKED report a
+    problem and must always be publishable, at any kind. Fails closed: a
+    comments fetch that fails refuses the PASS (`fetch_comments` raises
+    SystemExit); a PASS with no parseable Head-SHA also refuses -- there is
+    nothing to check authorization against.
     """
-    if verdict_of(body) != "PASS":
+    if verdict_of(body) != "PASS" or not looks_like_a_gate_report(body):
         return
+    sha = gated_sha(body)
+    if sha is None:
+        fail("[GATE] REFUSED: a PASS must state the head SHA it gated -- cannot check round approval")
     comments = check_lane3_ready.fetch_comments(repo, issue)
-    approved, why_not = check_lane3_ready.round_authority(comments)
-    if approved is None:
-        fail(f"[GATE] REFUSED: a PASS cannot be posted for an unapproved round -- {why_not}")
+    authority, message = check_lane3_ready.resolve_gate_authority(comments, sha)
+    if authority is None:
+        fail(f"[GATE] REFUSED: a PASS cannot be posted for an unapproved round -- {message}")
 
 
 def main() -> None:
