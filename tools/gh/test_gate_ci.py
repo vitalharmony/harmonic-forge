@@ -22,19 +22,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_ci  # noqa: E402
 
 
-def fake_gh(checks=(), pulls=(), required=None, fail=()):
+def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
     while there was one call. Once the check consulted branch protection and
     the commit's PRs as well, every test errored — the stub was answering
     "here are some check runs" to "what are the required checks?".
+
+    `main_tip` (harmonic-forge#788): the SHA `/branches/main` reports as
+    `.commit.sha`, for `sha_is_current_main_tip`'s own call. `None` means the
+    endpoint fails, matching every other unset fixture's fail-closed default.
     """
     def run(cmd):
         url = next((a for a in cmd if a.startswith("repos/")), "")
         for marker in fail:
             if marker in url:
                 return 1, "gh: simulated failure"
+        if url.endswith("/branches/main"):
+            # Exact suffix, not a substring: `/branches/main/protection` (the
+            # required-checks lookup, checked next) contains "/branches/main"
+            # too, and a bare `in` check swallowed it -- a real regression
+            # this test class introduced and its own suite caught.
+            if main_tip is None:
+                return 1, "gh: simulated failure"
+            # `--jq ".commit.sha"` returns the bare string, not JSON-quoted.
+            return 0, main_tip
         if "/protection" in url:
             return 0, json.dumps(sorted(required)) if required else (0, "null")[1]
         if "/pulls" in url:
@@ -198,6 +211,68 @@ class PassRequiresGreenCiTests(unittest.TestCase):
             "o/r", PASS_BODY,
             run=fake_runs(check("verify", "something_new")))
         self.assertFalse(ok)
+
+
+class NoPrOverrideTests(unittest.TestCase):
+    """harmonic-forge#788: hrse#2095's live incident replayed. `verify` is
+    gated to `pull_request` events (HRSE2 `.github/workflows/ci.yml:82`), so
+    a `main`-branch data-migration action's own reference SHA never gets a
+    run at all -- reproducing exactly `test_no_checks_at_all_refuses_a_pass`
+    above, but for a shape that can never resolve by waiting."""
+
+    SHA = PASS_BODY.split("Head-SHA:** ")[1].split("\n")[0].strip()
+
+    def test_no_override_behaves_exactly_as_before(self):
+        """Passing no override at all must not change any existing
+        behaviour -- this is the same call `test_no_checks_at_all_refuses_a_pass`
+        makes, with the new keyword simply omitted."""
+        ok, msg = gate_ci.check_gate_result("o/r", PASS_BODY, run=fake_runs())
+        self.assertFalse(ok)
+        self.assertIn("not completed", msg)
+
+    def test_override_lets_a_main_tip_sha_through(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(main_tip=self.SHA),
+            ack_no_pr_required="hrse#2095 production backfill, no PR")
+        self.assertTrue(ok, msg)
+        self.assertIn("no-pr-override", msg)
+        self.assertIn("hrse#2095 production backfill, no PR", msg)
+
+    def test_override_does_not_fire_when_a_pr_exists_for_the_sha(self):
+        """AC1's absolute: the override must never bypass a SHA that belongs
+        to a real PR. `sha_is_current_main_tip` returning False (main has
+        since moved past this SHA, or a PR's own head IS this SHA) must
+        refuse exactly as if no override were passed."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(main_tip="a" * 40),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertIn("not completed", msg)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_override_does_not_fire_on_red_ci_even_with_a_pr_less_sha(self):
+        """The override is consulted ONLY at the final no-checks-at-all
+        branch -- a SHA that DOES have CI, and it's red, is refused on that
+        basis regardless of the flag."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify", "failure")],
+                                          main_tip=self.SHA),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertIn("RED", msg)
+
+    def test_override_does_not_fire_when_the_lookup_itself_fails(self):
+        """A failed lookup must not be silently treated as confirmed-no-PR."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(main_tip=None),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_sha_is_current_main_tip_directly(self):
+        self.assertTrue(gate_ci.sha_is_current_main_tip("o/r", self.SHA, run=fake_gh(main_tip=self.SHA)))
+        self.assertFalse(gate_ci.sha_is_current_main_tip("o/r", self.SHA, run=fake_gh(main_tip="a" * 40)))
+        self.assertIsNone(gate_ci.sha_is_current_main_tip("o/r", self.SHA, run=fake_gh(main_tip=None)))
 
 
 class Ac5LiveIncidentReplayTests(unittest.TestCase):

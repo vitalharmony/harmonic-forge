@@ -243,7 +243,7 @@ def validate_kind(kind: str, body: str) -> None:
     reject_plan_as_discussion(kind, body)
 
 
-def footer(kind: str, body: str, posted_by: str) -> str:
+def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None = None) -> str:
     """`kind=discussion` keeps its exact pre-harmonic-forge#473 footer.
 
     Byte-identical on that path on purpose: `lane_state.py`, a private-repo incident's
@@ -259,11 +259,21 @@ def footer(kind: str, body: str, posted_by: str) -> str:
     # lets `lane_state.py` report `validated=True` for these two artifacts
     # instead of the `False` they were pinned to by having no digest at all.
     digest = hashlib.sha256(body.rstrip("\n").encode()).hexdigest()
+    override = (f"; ack-no-pr-required={ack_no_pr_required}"
+                if ack_no_pr_required is not None else "")
     return (f"\n\n<!-- l1-post v1; kind={kind}; posted-by={posted_by}; "
-            f"body-sha256={digest} -->\n")
+            f"body-sha256={digest}{override} -->\n")
 
 
-def require_green_ci(kind: str, repo: str, body: str) -> None:
+def require_green_ci(
+    kind: str, repo: str, body: str, ack_no_pr_required: str | None = None,
+) -> bool:
+    """Returns whether the no-PR override was the reason this passed.
+
+    `gate_ci.check_gate_result`'s `(ok, message)` return keeps its existing
+    2-tuple shape (18 call sites in its own test suite unpack it that way);
+    the override marker lives in `message` instead of widening that contract.
+    """
     """A Lane 3 PASS may not outrun the PR's own CI (harmonic-forge#504).
 
     Fires for anything that IS a gate report, not only for what was stamped as
@@ -305,9 +315,10 @@ def require_green_ci(kind: str, repo: str, body: str) -> None:
     # `lane_state.py` does, and returns cleanly for anything that is not one;
     # asking it every time means the two can never disagree about what a gate
     # report IS.
-    ok, message = check_gate_result(repo, body)
+    ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
     if not ok:
         fail(message)
+    return ok and message.startswith("[GATE] no-pr-override:")
 
 
 def main() -> None:
@@ -321,7 +332,19 @@ def main() -> None:
              "`spec` and `gate-result` are Lane 3's two artifacts and are "
              "validated against their heading and digested; `discussion` is "
              "the default and unchanged.")
+    parser.add_argument(
+        "--ack-no-pr-required", default=None, metavar="REASON",
+        help="harmonic-forge#788: a `gate-result` PASS whose named SHA is "
+             "the current tip of `main` (a data-migration action with no "
+             "PR of its own, e.g. hrse#2095's live backfill) never gets a "
+             "`verify` run -- that workflow is gated to pull_request events "
+             "only. This override is consulted ONLY at that specific "
+             "no-PR-possible point; a SHA that belongs to a real PR (open, "
+             "pending, or red) is refused exactly as before, regardless of "
+             "this flag.")
     args = parser.parse_args()
+    if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
+        fail("--ack-no-pr-required requires a non-empty reason")
     args.repo = resolve_repo(args.repo)
     # harmonic-forge#266: a relative --file resolves against the CALLER's cwd,
     # which is not stable — mise resets it, and an agent's shell is reset
@@ -338,13 +361,16 @@ def main() -> None:
     # no LEAD_FIELDS entry, so this is a no-op on the pre-existing default
     # path; only `spec`/`gate-result` are newly checked.
     validate_lead(args.kind, body)
-    require_green_ci(args.kind, args.repo, body)
+    override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
     lane = os.environ.get("LANE")
     posted_by = f"LANE{lane}" if lane else "LANE-unset"
     url, _ = comment_body(
         args.repo,
         args.issue,
-        body.rstrip("\n") + footer(args.kind, body, posted_by),
+        body.rstrip("\n") + footer(
+            args.kind, body, posted_by,
+            ack_no_pr_required=args.ack_no_pr_required if override_used else None,
+        ),
     )
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
