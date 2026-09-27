@@ -168,8 +168,12 @@ GLUED_REDIRECT = re.compile(r"^(?P<pre>[^>\s]*)>{1,2}(?P<target>[^>\s]+)$")
 
 #: Interpreters whose one-liners/heredocs can write without any shell-visible
 #: write construct — the shape that produced this issue's incident.
+#: dash/ksh joined bash/sh/zsh here in harmonic-forge#787 -- NESTED_SHELLS
+#: above already named all five; this set (checked at unwrap_shells=False,
+#: so tokens[0] is still the shell's own name) had fallen behind, letting
+#: `dash -c "echo x > P"` / `ksh -c "echo x > P"` through unrecognized.
 INTERPRETERS = {"python", "python3", "node", "nodejs", "ruby", "perl",
-                "bash", "sh", "zsh"}
+                "bash", "sh", "zsh", "dash", "ksh"}
 
 #: `INTERPRETER_WRITE_VERB` and `PATH_CANDIDATE` lived here until
 #: harmonic-forge#522. They were an uncorrelated pair — "some write verb

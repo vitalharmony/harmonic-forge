@@ -293,6 +293,18 @@ class ClassifyTests(unittest.TestCase):
         tokens = "gha vitalharmony pr merge 993 --repo vitalharmony/hrse --squash".split()
         self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
 
+    def test_issue_close_via_timeout_nice_prefixes_is_classified(self):
+        """harmonic-forge#787: before strip_invocation_prefix recognized
+        timeout/nice/stdbuf, a classifier saw the prefix as tokens[0] and
+        never resolved to `gh` -- an unconditional, unprompted allow with
+        zero BATCH grant, the same incident shape #578 closed for gh-as/gha."""
+        tokens = "timeout 30 gh issue close 395 --repo vitalharmony/hrse".split()
+        self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"))
+
+    def test_pr_merge_via_nice_prefix_is_classified(self):
+        tokens = "nice gh pr merge 993 --repo vitalharmony/hrse --squash".split()
+        self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
+
 
 class DecideAllowTests(StateFixture):
     def test_pr_merge_allowed_under_live_authorization_and_link(self):

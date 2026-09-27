@@ -342,6 +342,56 @@ class TestInterpreterWriteRule(_BashWriteSurface):
         self.assertFalse(self.denied("python3 /tmp/write_it.py"))
 
 
+class TestF787PrefixAndShellGaps(_BashWriteSurface):
+    """harmonic-forge#787: two pre-existing bypasses, found by #785's own
+    silent-bypass refuter and dismissed as out of that fix's scope.
+
+    (1) dash/ksh were never in NESTED_SHELLS' effective coverage: INTERPRETERS
+    (checked at unwrap_shells=False, so tokens[0] is still the shell name) and
+    the #782 unwrap set (checked at unwrap_shells=True) both named only
+    bash/sh/zsh.
+    (2) timeout/nice/stdbuf were not in strip_invocation_prefix's strip set at
+    all, so the guard saw the prefix itself as the invoked program and no
+    verb rule ever matched.
+    """
+
+    def test_dash_ksh_c_redirect_is_denied(self):
+        for shell in ("dash", "ksh"):
+            with self.subTest(shell=shell):
+                self.assertTrue(self.denied(f'{shell} -c "echo x > {self.protected}"'))
+
+    def test_dash_ksh_c_verb_writes_are_denied(self):
+        for shell in ("dash", "ksh"):
+            with self.subTest(shell=shell):
+                self.assertTrue(self.denied(f'{shell} -c "tee {self.protected}"'))
+
+    def test_timeout_prefixed_write_is_denied(self):
+        self.assertTrue(self.denied(f"timeout 5 tee {self.protected}"))
+
+    def test_nice_prefixed_write_is_denied(self):
+        self.assertTrue(self.denied(f"nice tee {self.protected}"))
+        self.assertTrue(self.denied(f'nice bash -c "echo x > {self.protected}"'))
+
+    def test_nice_attached_flag_and_double_dash_writes_are_denied(self):
+        """Preclose finding: `nice -n5 <verb>` and `nice -- <verb>` both
+        slipped through an earlier draft's single-token option peek."""
+        self.assertTrue(self.denied(f"nice -n5 tee {self.protected}"))
+        self.assertTrue(self.denied(f"nice -- tee {self.protected}"))
+
+    def test_stdbuf_prefixed_write_is_denied(self):
+        self.assertTrue(self.denied(f"stdbuf -oL tee {self.protected}"))
+
+    def test_stacked_prefixes_write_is_denied(self):
+        self.assertTrue(self.denied(f"nice timeout 5 tee {self.protected}"))
+
+    def test_negatives_stay_allowed(self):
+        """The prefixes themselves are not the violation -- a read, or a
+        write to an unprotected path, behind the same prefixes stays allowed."""
+        self.assertFalse(self.denied(f"timeout 5 cat {self.protected}"))
+        self.assertFalse(self.denied("nice tee /tmp/scratch-f787.txt"))
+        self.assertFalse(self.denied('dash -c "echo x > /tmp/scratch-f787.txt"'))
+
+
 class TestBashReadsAndUnrelatedCommandsStillPass(_BashWriteSurface):
     """The false-positive half. The deny requires a write construct TARGETING
     a protected path, never a mention of one."""
