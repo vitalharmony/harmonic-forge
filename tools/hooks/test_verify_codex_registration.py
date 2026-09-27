@@ -90,6 +90,18 @@ class VerifyTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(missing, [])
 
+    def test_filename_in_echo_is_not_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hooks.json"
+            path.write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": "echo block_missing_preclose_inspection.py"},
+                {"type": "command", "command": "python3 batch_gate.py"},
+                {"type": "command", "command": "python3 block_closing_keywords.py"},
+            ]}]}}), encoding="utf-8")
+            ok, missing = vcr.verify(path)
+        self.assertFalse(ok)
+        self.assertEqual(missing, ["block_missing_preclose_inspection.py"])
+
 
 class MainTests(unittest.TestCase):
     """`main()`'s two real targets (`~/harmonic-forge/.codex/hooks.json` and

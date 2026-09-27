@@ -18,6 +18,7 @@ or a wiring CI check.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -34,8 +35,14 @@ REQUIRED_HOOKS = (
 def _registered_hooks(config: dict, needle: str) -> bool:
     for block in (config.get("hooks") or {}).get("PreToolUse") or []:
         for hook in block.get("hooks") or []:
-            if needle in (hook.get("command") or ""):
-                return True
+            command = hook.get("command") or ""
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                continue
+            for index, token in enumerate(tokens):
+                if Path(token).name == needle and index and Path(tokens[index - 1]).name in {"python", "python3"}:
+                    return True
     return False
 
 
@@ -53,7 +60,11 @@ def verify(hooks_json_path: Path) -> tuple[bool, list[str]]:
 
 
 def main() -> int:
-    targets = [
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", action="append", dest="paths")
+    args = parser.parse_args()
+    targets = [Path(p) for p in args.paths] if args.paths else [
         Path.home() / "harmonic-forge" / ".codex" / "hooks.json",
         Path.home() / "Harmonic_Projects" / "HRSE2" / ".codex" / "hooks.json",
     ]

@@ -117,7 +117,12 @@ class ScratchRepo(unittest.TestCase):
         if not not_triggered:
             envelope = self.findings_file([])[:-len("findings.json")] + "envelope.txt"
             status = "process-error" if envelope_label == FALLBACK else "ok"
-            Path(envelope).write_text(json.dumps({"status": status, "label": envelope_label or ""}))
+            body = {"status": status, "label": envelope_label or ""}
+            if status == "ok":
+                body["report"] = {"assumptions": [{"verdict": "confirmed"}]}
+            else:
+                body["exit_code"] = 1
+            Path(envelope).write_text(json.dumps(body))
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",

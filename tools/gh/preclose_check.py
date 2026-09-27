@@ -341,7 +341,21 @@ def require_recorded_envelope(path: str) -> None:
         if not isinstance(value, dict):
             raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
         envelopes.append(value)
-    if not envelopes or any(not isinstance(item.get("status"), str) for item in envelopes):
+    valid = True
+    for item in envelopes:
+        status = item.get("status")
+        if not isinstance(status, str):
+            valid = False
+            break
+        if status == "ok":
+            report = item.get("report")
+            if not isinstance(report, dict) or not isinstance(report.get("assumptions"), list) or not report["assumptions"]:
+                valid = False
+                break
+        elif not isinstance(item.get("exit_code"), int):
+            valid = False
+            break
+    if not envelopes or not valid:
         raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
 
 

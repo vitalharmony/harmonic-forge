@@ -107,6 +107,8 @@ lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 # a long-lived session can retain an unguarded hook set for its whole lifetime.
 if [ "$_lane_agent" = codex ]; then
   python3 "$_lane_dir/../hooks/verify_codex_registration.py" \
+    --path "$_lane_dir/../../.codex/hooks.json" \
+    --path "${HOME}/Harmonic_Projects/HRSE2/.codex/hooks.json" \
     || _lane_launch_die "Codex hook registration is incomplete -- refusing to start an unguarded session"
 fi
 

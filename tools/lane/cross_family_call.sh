@@ -728,8 +728,13 @@ done
 if [ -n "$out" ]; then
   mkdir -p "$(dirname "$out")"
   tmp_out_record="$(mktemp "${out}.tmp.XXXXXX")"
-  cp "$result_tmp" "$tmp_out_record"
-  mv -f "$tmp_out_record" "$out"
+  if cp "$result_tmp" "$tmp_out_record" && mv -f "$tmp_out_record" "$out"; then
+    :
+  else
+    rm -f "$tmp_out_record"
+    write_process_error 2 >"$out"
+    exit 2
+  fi
 fi
 rm -f "$result_tmp"
 
