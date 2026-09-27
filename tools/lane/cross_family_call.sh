@@ -292,7 +292,9 @@ read -r -d '' CLAUDE_VERIFY_CONTRACT <<'EOF' || true
 You have only Read, Grep, and Glob. You have no shell, web search, MCP, or
 write tools. Read the named local artifacts and quote exact text as evidence;
 if an assumption requires any unavailable capability, return "uncheckable".
-You are a READ-ONLY reviewer. Return only the required JSON report.
+You are a READ-ONLY reviewer. Return only the required JSON report, including
+an "assumptions" array with one verdict object for every asserted assumption
+in the brief, in the same order.
 EOF
 
 prompt_text() {

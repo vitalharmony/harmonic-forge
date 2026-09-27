@@ -49,12 +49,11 @@ def _registered_hooks(config: dict, needle: str) -> bool:
                 tokens = shlex.split(command)
             except ValueError:
                 continue
-            for index, token in enumerate(tokens):
-                script = Path(os.path.expandvars(token))
-                if (Path(token).name == needle and index
-                        and Path(tokens[index - 1]).name in {"python", "python3"}
-                        and script.is_file()):
-                    return True
+            if len(tokens) != 2 or Path(tokens[0]).name not in {"python", "python3"}:
+                continue
+            script = Path(os.path.expandvars(tokens[1]))
+            if Path(tokens[1]).name == needle and script.is_file():
+                return True
     return False
 
 

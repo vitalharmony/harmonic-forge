@@ -104,6 +104,21 @@ class VerifyTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(set(missing), set(vcr.REQUIRED_HOOKS))
 
+    def test_shell_wrapped_python_is_not_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for hook in vcr.REQUIRED_HOOKS:
+                (root / hook).write_text("# stub\n")
+            path = root / "hooks.json"
+            path.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+                {"command": f"python3 {root / 'block_missing_preclose_inspection.py'} || true"},
+                {"command": f"python3 {root / 'batch_gate.py'}"},
+                {"command": f"python3 {root / 'block_closing_keywords.py'}"},
+            ]}]}}))
+            ok, missing = vcr.verify(path)
+        self.assertFalse(ok)
+        self.assertEqual(missing, ["block_missing_preclose_inspection.py"])
+
 
 class MainTests(unittest.TestCase):
     """`main()`'s two real targets (`~/harmonic-forge/.codex/hooks.json` and
