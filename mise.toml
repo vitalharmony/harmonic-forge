@@ -371,8 +371,17 @@ python3 $PARITY --task post-comment \
 """
 
 [tasks.lane3-begin]
-description = "Lane 3: mark this worktree as actively filling Lane 3, unlocking gate-checkout for the next 12 hours (harmonic-forge#138). Run once per Lane 3 session, from the worktree you're gating in, before using it."
+description = "Lane 3: mark this worktree as actively filling Lane 3, unlocking gate-checkout for the next 12 hours (harmonic-forge#138). Refuses first, before marking anything, unless the target issue's current round is approved: an AE (or a tier-R sweep) covering the checked-out SHA, followed by a gate-readiness sweep, with no handoff or spec between that approval and the ready-for-l3 carrying it (tools/gh/check_lane3_ready.py; harmonic-forge#792 wires it here -- before that this repo's own lane3-begin checked nothing, so #791's fix protected consumer repos but not harmonic-forge itself). Pass '--issue N' when the worktree is detached or on a prior gate's branch, as HRSE2's own lane3-begin does. Run once per Lane 3 session, from the worktree you're gating in."
+usage = '''
+flag "--issue <issue>" help="Validate this issue number directly instead of deriving it from the current branch's l1-post receipt. Required when the worktree is detached or on a prior gate's branch."
+'''
 run = '''
+set -e
+if [ -n "$usage_issue" ]; then
+  python3 tools/gh/check_lane3_ready.py --issue "$usage_issue"
+else
+  python3 tools/gh/check_lane3_ready.py
+fi
 git_dir="$(git rev-parse --absolute-git-dir)"
 touch "$git_dir/LANE3_ACTIVE"
 echo "lane3-begin: $(pwd) marked Lane 3-active"

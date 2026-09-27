@@ -80,9 +80,29 @@ only a PASS. This hook adds no verdict logic of its own -- it is a second
 enforcement POINT for the same, single, existing check (AC2: reuse
 `gate_ci.looks_like_a_gate_report()`/`check_gate_result()`; do not write a
 second definition of what a gate report is or what makes CI green).
+
+## Round approval, the second check at the same point (harmonic-forge#792)
+
+harmonic-forge#791 made a PASS unpostable for a round nobody approved, but
+only inside `post_lane_discussion.py`. The two routes this hook covers
+skipped it, which left the hrse#2101 defect reachable through them. So a PASS
+gate report here also has to clear `round_approval`, which calls
+`check_lane3_ready.resolve_gate_authority`: the one function
+`post_lane_discussion.require_round_approval` and `lane3-begin` both use.
+There is no second definition of "approved".
+
+This check needs the issue number as well as the repo. Both routes require
+one (`gh issue comment <N|URL>` takes it as a positional argument,
+`post_comment.py` takes `--issue`), so an issue that can't be resolved is
+unexpected and refuses the PASS rather than allowing it. A comments fetch that
+fails, or a PASS with no head SHA it can be checked against, refuses it too.
+That matches `require_round_approval` rather than the fail-open posture above,
+because this check decides whether the gate was authorized at all, and a check
+that can't run has shown nothing.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -90,12 +110,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments  # noqa: E402  (harmonic-forge#167)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+import check_lane3_ready  # noqa: E402
 import gate_ci  # noqa: E402
 
 
 def find_repo_flag(args: list[str]) -> str | None:
     for index, token in enumerate(args):
-        if token == "--repo" and index + 1 < len(args):
+        if token in ("--repo", "-R") and index + 1 < len(args):
             return args[index + 1]
         if token.startswith("--repo="):
             return token.partition("=")[2]
@@ -132,9 +153,12 @@ def _body_from_flags(args: list[str], cwd: Path) -> str | None:
     from anywhere in `args`. Every route this hook covers accepts one of
     these spellings for the outgoing comment text."""
     for index, token in enumerate(args):
-        if token in ("--body", "--file") and index + 1 < len(args):
+        # `-b`/`-F` are `gh issue comment`'s short spellings (harmonic-forge#792).
+        if token in ("--body", "-b", "--file") and index + 1 < len(args):
             value = args[index + 1]
-            return value if token == "--body" else _read_file(value, cwd)
+            return _read_file(value, cwd) if token == "--file" else value
+        if token == "-F" and index + 1 < len(args):
+            return _read_file(args[index + 1], cwd)
         if token.startswith("--body="):
             return token.partition("=")[2]
         if token.startswith("--file="):
@@ -200,6 +224,65 @@ def find_body_and_repo(args: list[str], cwd: Path) -> tuple[str, str] | None:
     return _find_body_and_repo_inner(args, cwd)
 
 
+#: `gh issue comment` accepts the issue as a bare number or as its URL.
+_ISSUE_POSITIONAL = re.compile(r"^(?:#?|.*/issues/)(\d+)/?$")
+_GH_COMMENT_VALUE_FLAGS = {"--body", "-b", "--body-file", "-F", "--repo", "-R"}
+
+
+def _issue_flag(args: list[str]) -> int | None:
+    for index, token in enumerate(args):
+        value = None
+        if token == "--issue" and index + 1 < len(args):
+            value = args[index + 1]
+        elif token.startswith("--issue="):
+            value = token.partition("=")[2]
+        if value is not None:
+            return int(value) if value.isdigit() else None
+    return None
+
+
+def find_issue(args: list[str]) -> int | None:
+    """The issue number the segment posts to, or None. Handles the same
+    routes and wrappers as `find_body_and_repo` (harmonic-forge#792)."""
+    if args and Path(args[0]).name == "gh-as" and len(args) >= 3:
+        return find_issue(args[2:])
+    if len(args) >= 3 and args[0] == "gh" and args[1] == "issue" and args[2] == "comment":
+        rest = args[3:]
+        index = 0
+        while index < len(rest):
+            token = rest[index]
+            if token.startswith("-"):
+                # A value flag spelled with a space carries the next token
+                # with it; the rest (`--web`, `--editor`, ...) are booleans.
+                index += 2 if token in _GH_COMMENT_VALUE_FLAGS else 1
+                continue
+            match = _ISSUE_POSITIONAL.match(token)
+            return int(match.group(1)) if match else None
+        return None
+    return _issue_flag(args)
+
+
+def round_approval(repo: str, issue: int | None, body: str) -> tuple[bool, str]:
+    """`(ok, message)`: may this gate report be posted, as far as round
+    approval is concerned? Only a PASS is checked; FAIL and BLOCKED are always
+    postable. Mirrors `post_lane_discussion.require_round_approval`."""
+    if gate_ci.verdict_of(body) != "PASS":
+        return True, ""
+    if issue is None:
+        return False, "[GATE] REFUSED: cannot resolve the issue number -- cannot check round approval"
+    sha = gate_ci.gated_sha(body)
+    if sha is None:
+        return False, "[GATE] REFUSED: a PASS must state the head SHA it gated -- cannot check round approval"
+    try:
+        comments = check_lane3_ready.fetch_comments(repo, issue)
+    except SystemExit:
+        return False, f"[GATE] REFUSED: cannot fetch {repo}#{issue}'s comments -- cannot check round approval"
+    authority, message = check_lane3_ready.resolve_gate_authority(comments, sha)
+    if authority is None:
+        return False, f"[GATE] REFUSED: a PASS cannot be posted for an unapproved round -- {message}"
+    return True, message
+
+
 def denial(message: str) -> dict:
     return {
         "hookSpecificOutput": {
@@ -211,11 +294,13 @@ def denial(message: str) -> dict:
     }
 
 
-def decision(command: object, cwd: Path, check=None) -> dict:
-    """`check` is injected for tests -- avoids a live `gh api` call from
-    ever reaching a unit test, mirroring `gate_ci.py`'s own `run=` pattern.
+def decision(command: object, cwd: Path, check=None, round_check=None) -> dict:
+    """`check` and `round_check` are injected for tests -- avoids a live
+    `gh api` call from ever reaching a unit test, mirroring `gate_ci.py`'s own
+    `run=` pattern.
     """
     check = check or gate_ci.check_gate_result
+    round_check = round_check or round_approval
     if not isinstance(command, str):
         return denial(
             "Blocked: malformed Bash hook payload; refusing to bypass the "
@@ -241,6 +326,13 @@ def decision(command: object, cwd: Path, check=None) -> dict:
                 f"{message}\n\n(harmonic-forge#565: this check now applies "
                 "to every route a gate report can reach an issue by, not "
                 "only `post_lane_discussion.py`.)"
+            )
+        ok, message = round_check(repo, find_issue(segment), body)
+        if not ok:
+            return denial(
+                f"{message}\n\n(harmonic-forge#792: round approval applies to "
+                "every route a gate report can reach an issue by, not only "
+                "`post_lane_discussion.py`.)"
             )
     return {}
 

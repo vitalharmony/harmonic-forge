@@ -166,17 +166,31 @@ def current_head_sha() -> str:
 #: the two comments in THIS chain.
 ROUND_KINDS = ("handoff", "spec")
 
+#: harmonic-forge#792 AC3. A Lane 1 `rework` can amend test cases after the
+#: AE (operator-memory `feedback_rework_comments_invisible_to_lane3.md`), and
+#: an AE carried past it would cover a scope nobody approved. Most reworks
+#: don't: FAIL -> rework -> repush is the routine cycle `carry_forward`
+#: exists for. Whether a rework changed test cases can't be read from its
+#: prose, so it's declared: a rework is a round boundary UNLESS its body
+#: states `**Test cases:** unchanged`. Fails closed. A rework that forgets the
+#: line costs one extra AE; it can never carry an old AE over new cases.
+TC_UNCHANGED = re.compile(r"(?im)^[ \t]*\**[ \t]*Test cases[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*unchanged\b")
+
 
 def _is_round_artifact(comment: dict) -> bool:
     body = comment.get("body", "")
     kind_match = FOOTER_KIND.search(body)
-    if kind_match and kind_match.group(1).lower() in ROUND_KINDS:
+    kind = kind_match.group(1).lower() if kind_match else None
+    if kind in ROUND_KINDS:
         return True
+    if kind == "rework":
+        return not TC_UNCHANGED.search(body)
     return bool(ROUND_HEADING.search(body))
 
 
 def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dict | None:
-    """The oldest `handoff`/`spec` with `lo_id < id < hi_id`, or None."""
+    """The oldest round artifact (`handoff`, `spec`, or a test-case-changing
+    `rework`) with `lo_id < id < hi_id`, or None."""
     found = [c for c in comments if lo_id < c["id"] < hi_id and _is_round_artifact(c)]
     return min(found, key=lambda c: c["id"]) if found else None
 
@@ -205,23 +219,6 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
     if not candidates:
         return None
     return max(candidates, key=lambda c: c["id"])
-
-
-#: harmonic-forge#791. A Lane 1 `handoff` is new scope and a Lane 3 `spec` is
-#: an unapproved test plan; either one posted after an authorization opens a
-#: new round that the older authorization never approved. `carry_forward`
-#: exists for the fix-and-repush cycle WITHIN one approved spec, which posts
-#: neither. Without this, hrse#2101's round-1 AE carried forward through a
-#: round-2 handoff and then a round-2 spec, and Lane 3 gated round 2 twice
-#: with no AE for it.
-ROUND_KINDS = ("handoff", "spec")
-
-
-def newest_round_artifact(comments: list[dict]) -> dict | None:
-    """The newest `handoff` or `spec` on the thread, or None."""
-    found = [c for c in comments
-             if (m := FOOTER_KIND.search(c.get("body", ""))) and m.group(1).lower() in ROUND_KINDS]
-    return max(found, key=lambda c: c["id"]) if found else None
 
 
 def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | None, str]:
