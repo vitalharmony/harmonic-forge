@@ -29,7 +29,7 @@ class QueueRunTests(unittest.TestCase):
         for name in MODULE.verify_codex_registration.REQUIRED_HOOKS:
             (hooks_dir / name).write_text("# stub\n")
         (self.repo / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
-            {"command": f"python3 {hooks_dir / name}"} for name in MODULE.verify_codex_registration.REQUIRED_HOOKS
+            {"type": "command", "command": f"python3 {hooks_dir / name}"} for name in MODULE.verify_codex_registration.REQUIRED_HOOKS
         ]}]}}))
         self.home = self.root / "home"
         (self.home / ".codex").mkdir(parents=True)

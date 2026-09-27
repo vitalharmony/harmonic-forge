@@ -633,7 +633,7 @@ def bash_write_targets(segment: list[str]) -> list[str]:
             targets.append(glued.group("target"))
         index += 1
 
-    tokens = strip_invocation_prefix(segment)
+    tokens = strip_invocation_prefix(segment, unwrap_shells=False)
     if not tokens:
         return targets
     verb = Path(tokens[0]).name
@@ -689,7 +689,7 @@ def interpreter_write_targets(
     `block_irreversible_ops.py` concedes the same class for shell wrappers
     rather than pretending to close it; this follows that precedent.
     """
-    tokens = strip_invocation_prefix(segment)
+    tokens = strip_invocation_prefix(segment, unwrap_shells=False)
     if not tokens or Path(tokens[0]).name not in INTERPRETERS:
         return []
     return interpreter_write_pairs(command)
@@ -918,7 +918,7 @@ def directory_change(segment: list[str]) -> tuple[str | None, bool] | None:
 
 def nested_shell_script(segment: list[str]) -> str | None:
     """The script text of a `<shell> -c '<script>'` invocation, else None."""
-    tokens = strip_invocation_prefix(segment)
+    tokens = strip_invocation_prefix(segment, unwrap_shells=False)
     if len(tokens) < 3 or Path(tokens[0]).name not in NESTED_SHELLS:
         return None
     if "-c" not in tokens[1:]:
