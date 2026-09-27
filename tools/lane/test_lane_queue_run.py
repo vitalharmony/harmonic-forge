@@ -182,6 +182,16 @@ class QueueRunTests(unittest.TestCase):
         self.assertEqual(MODULE.session_identity("thread", self.home), "uuid")
         self.assertEqual(MODULE.session_identity("uuid", self.home), "uuid")
 
+    def test_duplicate_thread_entries_canonicalize_old_uuid_to_latest(self):
+        index = self.home / ".codex" / "session_index.jsonl"
+        index.write_text("\n".join([
+            json.dumps({"thread_name": "thread", "id": "uuid-old"}),
+            json.dumps({"thread_name": "thread", "id": "uuid-new"}),
+        ]) + "\n")
+        self.assertEqual(MODULE.session_identity("thread", self.home), "uuid-new")
+        self.assertEqual(MODULE.session_identity("uuid-old", self.home), "uuid-new")
+        self.assertEqual(MODULE.session_identity("uuid-new", self.home), "uuid-new")
+
     def test_post_resume_state_failure_blocks_and_logs(self):
         self.write_queue([self.item()])
         cwd, flags = self.good()

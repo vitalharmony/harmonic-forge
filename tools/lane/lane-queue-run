@@ -45,19 +45,23 @@ def _session_ids(session: str, home: Path) -> set[str]:
 def session_identity(session: str, home: Path) -> str:
     """One lock identity whether the operator supplied UUID or thread name."""
     index = home / ".codex" / "session_index.jsonl"
-    match: str | None = None
+    by_name: dict[str, str] = {}
+    by_id: dict[str, str] = {}
     try:
         for line in index.read_text(encoding="utf-8").splitlines():
             entry = json.loads(line)
             ident = entry.get("id")
             name = entry.get("thread_name")
-            if isinstance(ident, str) and ident == session:
-                return ident
-            if isinstance(name, str) and name == session and isinstance(ident, str):
-                match = ident
+            if isinstance(ident, str) and isinstance(name, str):
+                by_name[name] = ident
+                by_id[ident] = name
     except (OSError, ValueError):
         pass
-    return match or session
+    if session in by_name:
+        return by_name[session]
+    if session in by_id:
+        return by_name.get(by_id[session], session)
+    return session
 
 
 def session_cwd(session: str, home: Path) -> str | None:
