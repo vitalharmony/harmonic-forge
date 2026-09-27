@@ -611,6 +611,79 @@ class InterleavedWorkstreamTests(unittest.TestCase):
             c.main([])  # must not raise
 
 
+class ReworkRoundBoundaryTests(unittest.TestCase):
+    """harmonic-forge#792 AC3. A rework between the AE and the `ready-for-l3`
+    breaks the carry unless it declares `**Test cases:** unchanged`."""
+
+    T = "2026-09-27T00:00:00Z"
+    APPROVED = [
+        _comment(10, "spec", T, sha="-"),
+        _comment(11, "ae", T, sha="1111111"),
+        _comment(12, "sweep", T, sha="1111111"),
+    ]
+
+    def _rework(self, lead: str) -> dict:
+        rework = _comment(13, "rework", self.T, sha="1111111")
+        rework["body"] = f"## Rework\n\n**Finding:** TC2 fails.\n{lead}**Next:** fix.\n\n" + rework["body"]
+        return rework
+
+    def _main(self, comments):
+        with mock.patch.object(c, "current_branch", return_value="fix/1-x"), \
+             mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "issue_for_branch", return_value=1), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value="2222222"), \
+             mock.patch.object(c, "tier_w_availability", return_value=None):
+            c.main([])
+
+    def _thread(self, lead: str) -> list[dict]:
+        return self.APPROVED + [self._rework(lead), _comment(14, "ready-for-l3", self.T, sha="2222222")]
+
+    def test_a_rework_that_does_not_declare_its_test_cases_breaks_the_carry(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(self._thread(""))
+
+    def test_a_rework_that_changes_test_cases_breaks_the_carry(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(self._thread("**Test cases:** TC3 added.\n"))
+
+    def test_a_qualified_unchanged_still_breaks_the_carry(self):
+        """Preclose finding: "unchanged except TC3" changes a test case."""
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(self._thread("**Test cases:** unchanged except TC3 is new\n"))
+
+    def test_a_rework_with_test_cases_unchanged_keeps_the_carry(self):
+        self._main(self._thread("**Test cases:** unchanged\n"))
+
+    def test_the_declaration_is_read_in_its_plain_spelling_too(self):
+        self._main(self._thread("Test cases: unchanged\n"))
+
+    def _same_sha_thread(self, lead: str) -> list[dict]:
+        """Preclose finding: the rework lands after the AE with no new push."""
+        rework = self._rework(lead)
+        rework["body"] = rework["body"].replace("sha=1111111", "sha=2222222")
+        ae = _comment(11, "ae", self.T, sha="2222222")
+        return [self.APPROVED[0], ae, _comment(12, "sweep", self.T, sha="2222222"), rework]
+
+    def test_a_tc_rework_after_an_ae_at_the_same_sha_is_refused(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(self._same_sha_thread(""))
+
+    def test_a_new_spec_after_an_ae_at_the_same_sha_is_refused(self):
+        """Cross-family finding: a new spec at the AE's own SHA is a new round."""
+        thread = self._same_sha_thread("**Test cases:** unchanged\n")[:3] + [_comment(13, "spec", self.T, sha="-")]
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(thread)
+
+    def test_an_unchanged_rework_after_an_ae_at_the_same_sha_is_fine(self):
+        self._main(self._same_sha_thread("**Test cases:** unchanged\n"))
+
+    def test_a_rework_before_the_ae_is_outside_the_window(self):
+        rework = self._rework("")
+        rework["id"] = 9
+        self._main([rework] + self.APPROVED + [_comment(14, "ready-for-l3", self.T, sha="2222222")])
+
+
 if __name__ == "__main__":
     unittest.main()
 

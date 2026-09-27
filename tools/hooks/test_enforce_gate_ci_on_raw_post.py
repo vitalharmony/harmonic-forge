@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 import enforce_gate_ci_on_raw_post as m  # noqa: E402
@@ -29,6 +30,10 @@ def ok_check(repo, body):
 
 def refuse_check(repo, body):
     return False, "[GATE] REFUSED: CI is RED"
+
+
+def ok_round(repo, issue, body):
+    return True, "authorized"
 
 
 class FindBodyAndRepoTests(unittest.TestCase):
@@ -57,7 +62,7 @@ class FindBodyAndRepoTests(unittest.TestCase):
         """Never guesses a repo -- a credential-isolation-sensitive check
         must not act on an unresolved repo (mirrors batch_auth._repo_flag)."""
         args = ["gh", "issue", "comment", "9", "--body-file", str(self.file)]
-        self.assertIsNone(m.find_body_and_repo(args, self.cwd))
+        self.assertEqual(m.find_body_and_repo(args, self.cwd), (PASS_BODY, None))
 
     def test_post_comment_py_bare(self):
         args = ["post_comment.py", "--repo", "vitalharmony/harmonic-forge",
@@ -141,7 +146,9 @@ class DecisionTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def _decide(self, command: str, check=None) -> dict:
-        return m.decision(command, self.cwd, check=check)
+        # Round approval has its own test class below; stubbed here so these
+        # CI-check cases never reach `gh api`.
+        return m.decision(command, self.cwd, check=check, round_check=ok_round)
 
     def test_a_refused_pass_is_denied(self):
         cmd = f'gh issue comment 9 --repo vitalharmony/hrse --body "{PASS_BODY}"'
@@ -172,12 +179,16 @@ class DecisionTests(unittest.TestCase):
         result = self._decide(cmd, check=boom)
         self.assertFalse(_is_denied(result))
 
-    def test_no_repo_skips_the_check_rather_than_denying(self):
-        """An unresolved repo means this check cannot run -- fails toward
-        allow, matching #504's own posture for an unreadable input."""
+    def test_a_pass_with_no_repo_is_denied(self):
+        """harmonic-forge#792 preclose finding: skipping let it past both checks."""
         cmd = f'gh issue comment 9 --body "{PASS_BODY}"'
-        result = self._decide(cmd, check=refuse_check)
-        self.assertFalse(_is_denied(result))
+        result = self._decide(cmd, check=ok_check)
+        self.assertTrue(_is_denied(result))
+        self.assertIn("--repo", result["systemMessage"])
+
+    def test_a_fail_with_no_repo_still_posts(self):
+        cmd = f'gh issue comment 9 --body "{FAIL_BODY}"'
+        self.assertFalse(_is_denied(self._decide(cmd, check=refuse_check)))
 
     def test_an_unrelated_command_is_allowed(self):
         result = self._decide("git status", check=refuse_check)
@@ -223,6 +234,149 @@ class DecisionTests(unittest.TestCase):
             cmd = f'gh issue comment 9 --repo vitalharmony/hrse --body "{PASS_BODY}"'
             result = self._decide(cmd)  # no check= override
         self.assertTrue(_is_denied(result))
+
+
+SHA = "a" * 40
+NEW_SHA = "b" * 40
+ROUND_PASS = f"## Lane 3 Gate Results — H999\n\n**Verdict:** PASS\n**Head-SHA:** {SHA}\n"
+ROUND_FAIL = ROUND_PASS.replace("PASS", "FAIL")
+
+
+def _c(comment_id: int, kind: str, sha: str = SHA, extra: str = "") -> dict:
+    prefix = "Write tier W throughout.\n\n" if kind == "sweep" else ""
+    return {
+        "id": comment_id,
+        "body": f"{prefix}{extra}body\n\n<!-- l1-post v1; kind={kind}; sha={sha} -->",
+        "html_url": f"https://github.com/vitalharmony/hrse/issues/999#issuecomment-{comment_id}",
+    }
+
+
+#: A round approved at SHA: spec, then AE, then sweep.
+APPROVED = [_c(1, "handoff"), _c(2, "spec"), _c(3, "ae"), _c(4, "sweep")]
+#: hrse#2101's shape: round 1 approved at NEW_SHA's predecessor, then a round-2
+#: handoff and spec with no AE, then a ready-for-l3 naming SHA.
+UNAPPROVED = [_c(1, "spec", NEW_SHA), _c(2, "ae", NEW_SHA), _c(3, "sweep", NEW_SHA),
+              _c(4, "handoff", SHA), _c(5, "spec", SHA), _c(6, "ready-for-l3", SHA)]
+
+
+class RoundApprovalTests(unittest.TestCase):
+    """harmonic-forge#792 AC2/AC4: a raw `gh issue comment` PASS for a round
+    nobody approved is refused, through the real `resolve_gate_authority`.
+    Only the comments fetch is stubbed."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.cwd = Path(self.tmpdir.name)
+        self.body = self.cwd / "gate.md"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _decide(self, body: str, comments: list[dict], command: str | None = None) -> tuple[dict, list]:
+        self.body.write_text(body, encoding="utf-8")
+        command = command or f"gh issue comment 999 --repo vitalharmony/hrse --body-file {self.body}"
+        calls = []
+
+        def fetch(repo, issue):
+            calls.append((repo, issue))
+            return comments
+
+        with mock.patch.object(m.check_lane3_ready, "fetch_comments", side_effect=fetch):
+            return m.decision(command, self.cwd, check=ok_check), calls
+
+    def test_an_unapproved_round_pass_is_denied(self):
+        result, calls = self._decide(ROUND_PASS, UNAPPROVED)
+        self.assertTrue(_is_denied(result))
+        self.assertIn("unapproved round", result["systemMessage"])
+        self.assertEqual(calls, [("vitalharmony/hrse", 999)])
+
+    def test_an_approved_round_pass_is_allowed(self):
+        result, _ = self._decide(ROUND_PASS, APPROVED)
+        self.assertFalse(_is_denied(result))
+
+    def test_an_abbreviated_head_sha_still_matches_the_full_footer(self):
+        """Preclose finding: real reports state 8-char SHAs; the footer is full."""
+        result, _ = self._decide(ROUND_PASS.replace(SHA, SHA[:8]), APPROVED)
+        self.assertFalse(_is_denied(result))
+
+    def test_a_fail_is_never_checked(self):
+        result, calls = self._decide(ROUND_FAIL, UNAPPROVED)
+        self.assertFalse(_is_denied(result))
+        self.assertEqual(calls, [])
+
+    def test_the_same_refusal_through_post_comment_py(self):
+        command = (f"python3 tools/gh/post_comment.py --repo vitalharmony/hrse "
+                   f"--issue 999 --file {self.body}")
+        result, calls = self._decide(ROUND_PASS, UNAPPROVED, command)
+        self.assertTrue(_is_denied(result))
+        self.assertEqual(calls, [("vitalharmony/hrse", 999)])
+
+    def test_the_same_refusal_through_gh_as_with_short_flags(self):
+        command = f"gh-as vitalharmony gh issue comment 999 -R vitalharmony/hrse -F {self.body}"
+        result, _ = self._decide(ROUND_PASS, UNAPPROVED, command)
+        self.assertTrue(_is_denied(result))
+
+    def test_a_stdin_body_is_read_from_the_command_text(self):
+        """Cross-family finding: `-F -` read nothing and skipped both checks."""
+        command = (f"printf '%s' '{ROUND_PASS}' | gh issue comment 999 "
+                   "-R vitalharmony/hrse -F -")
+        result, calls = self._decide(ROUND_PASS, UNAPPROVED, command)
+        self.assertTrue(_is_denied(result))
+        self.assertEqual(calls, [("vitalharmony/hrse", 999)])
+
+    def test_a_non_gate_stdin_comment_is_untouched(self):
+        result, calls = self._decide(ROUND_PASS, UNAPPROVED,
+                                     "echo hi | gh issue comment 999 -R vitalharmony/hrse -F -")
+        self.assertFalse(_is_denied(result))
+        self.assertEqual(calls, [])
+
+    def test_a_pass_with_no_head_sha_is_denied(self):
+        body = "## Lane 3 Gate Results — H999\n\n**Verdict:** PASS\n"
+        ok, message = m.round_approval("vitalharmony/hrse", 999, body)
+        self.assertFalse(ok)
+        self.assertIn("head SHA", message)
+
+    def test_an_unresolved_issue_is_denied(self):
+        ok, message = m.round_approval("vitalharmony/hrse", None, ROUND_PASS)
+        self.assertFalse(ok)
+
+    def test_a_missing_gh_binary_is_denied(self):
+        """Preclose finding: FileNotFoundError is not SystemExit."""
+        with mock.patch.object(m.check_lane3_ready, "fetch_comments",
+                               side_effect=FileNotFoundError("gh")):
+            ok, _ = m.round_approval("vitalharmony/hrse", 999, ROUND_PASS)
+        self.assertFalse(ok)
+
+    def test_a_failed_fetch_is_denied(self):
+        with mock.patch.object(m.check_lane3_ready, "fetch_comments", side_effect=SystemExit(1)):
+            ok, message = m.round_approval("vitalharmony/hrse", 999, ROUND_PASS)
+        self.assertFalse(ok)
+        self.assertIn("cannot fetch", message)
+
+
+class FindIssueTests(unittest.TestCase):
+    def test_gh_positional_number(self):
+        self.assertEqual(m.find_issue(["gh", "issue", "comment", "42", "--repo", "o/r"]), 42)
+
+    def test_gh_positional_after_value_flags(self):
+        args = ["gh", "issue", "comment", "--repo", "o/r", "--body-file", "x.md", "42"]
+        self.assertEqual(m.find_issue(args), 42)
+
+    def test_gh_positional_url(self):
+        args = ["gh", "issue", "comment", "https://github.com/o/r/issues/42", "-F", "x.md"]
+        self.assertEqual(m.find_issue(args), 42)
+
+    def test_gh_as_wrapped(self):
+        args = ["gh-as", "acct", "gh", "issue", "comment", "42", "-F", "x.md"]
+        self.assertEqual(m.find_issue(args), 42)
+
+    def test_post_comment_issue_flag(self):
+        args = ["python3", "post_comment.py", "--repo", "o/r", "--issue", "42", "--file", "x"]
+        self.assertEqual(m.find_issue(args), 42)
+
+    def test_mise_post_comment_issue_equals(self):
+        args = ["mise", "run", "post-comment", "--", "--repo", "o/r", "--issue=42", "--file", "x"]
+        self.assertEqual(m.find_issue(args), 42)
 
 
 if __name__ == "__main__":

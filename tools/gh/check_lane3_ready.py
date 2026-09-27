@@ -166,19 +166,60 @@ def current_head_sha() -> str:
 #: the two comments in THIS chain.
 ROUND_KINDS = ("handoff", "spec")
 
+#: harmonic-forge#792 AC3. A Lane 1 `rework` can amend test cases after the
+#: AE (operator-memory `feedback_rework_comments_invisible_to_lane3.md`), and
+#: an AE carried past it would cover a scope nobody approved. Most reworks
+#: don't: FAIL -> rework -> repush is the routine cycle `carry_forward`
+#: exists for. Whether a rework changed test cases can't be read from its
+#: prose, so it's declared: a rework is a round boundary UNLESS its body
+#: states `**Test cases:** unchanged`. Fails closed. A rework that forgets the
+#: line costs one extra AE; it can never carry an old AE over new cases.
+TC_UNCHANGED = re.compile(r"(?im)^[ \t]*\**[ \t]*Test cases[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*unchanged\.?[ \t]*$")
+
+
+def same_sha(a: str | None, b: str | None) -> bool:
+    """Prefix equality, 7+ hex (harmonic-forge#792 preclose finding): a gate
+    report may state an abbreviated SHA while `l1_post`'s footer records it
+    in full, and exact equality refused an approved PASS for that alone."""
+    if not a or not b or min(len(a), len(b)) < 7:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
 
 def _is_round_artifact(comment: dict) -> bool:
     body = comment.get("body", "")
     kind_match = FOOTER_KIND.search(body)
-    if kind_match and kind_match.group(1).lower() in ROUND_KINDS:
+    kind = kind_match.group(1).lower() if kind_match else None
+    if kind in ROUND_KINDS:
         return True
+    if kind == "rework":
+        return not TC_UNCHANGED.search(body)
     return bool(ROUND_HEADING.search(body))
 
 
 def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dict | None:
-    """The oldest `handoff`/`spec` with `lo_id < id < hi_id`, or None."""
+    """The oldest round artifact (`handoff`, `spec`, or a test-case-changing
+    `rework`) with `lo_id < id < hi_id`, or None."""
     found = [c for c in comments if lo_id < c["id"] < hi_id and _is_round_artifact(c)]
     return min(found, key=lambda c: c["id"]) if found else None
+
+
+def _round_artifact_after(comments: list[dict], authority: dict) -> dict | None:
+    """The oldest test-case-changing `rework` posted after `authority`, or
+    None (harmonic-forge#792 preclose finding). The carry window only covers a
+    new SHA; a rework amending test cases with no new push reuses the
+    authority's own SHA and was never examined. Cross-family finding: a new
+    handoff or spec at the same SHA is the same hole, so any round artifact
+    counts. hrse#2095's interleaved spec is unaffected -- that gate ran on the
+    carry path, which stays window-scoped."""
+    found = [c for c in comments if c["id"] > authority["id"] and _is_round_artifact(c)]
+    return min(found, key=lambda c: c["id"]) if found else None
+
+
+def _rework_message(authority: dict, rework: dict) -> str:
+    return (f"a new round artifact ({rework['html_url']}) was posted after {authority['html_url']} "
+            "-- a fresh AE is required (a rework that changes no test cases can say "
+            "`**Test cases:** unchanged`)")
 
 
 def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict | None:
@@ -199,29 +240,12 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
         if comment["id"] > authority["id"]
         and (match := FOOTER_KIND.search(comment.get("body", "")))
         and match.group(1).lower() == "ready-for-l3"
-        and footer_sha(comment) == head_sha
+        and same_sha(footer_sha(comment), head_sha)
         and _round_artifact_between(comments, authority["id"], comment["id"]) is None
     ]
     if not candidates:
         return None
     return max(candidates, key=lambda c: c["id"])
-
-
-#: harmonic-forge#791. A Lane 1 `handoff` is new scope and a Lane 3 `spec` is
-#: an unapproved test plan; either one posted after an authorization opens a
-#: new round that the older authorization never approved. `carry_forward`
-#: exists for the fix-and-repush cycle WITHIN one approved spec, which posts
-#: neither. Without this, hrse#2101's round-1 AE carried forward through a
-#: round-2 handoff and then a round-2 spec, and Lane 3 gated round 2 twice
-#: with no AE for it.
-ROUND_KINDS = ("handoff", "spec")
-
-
-def newest_round_artifact(comments: list[dict]) -> dict | None:
-    """The newest `handoff` or `spec` on the thread, or None."""
-    found = [c for c in comments
-             if (m := FOOTER_KIND.search(c.get("body", ""))) and m.group(1).lower() in ROUND_KINDS]
-    return max(found, key=lambda c: c["id"]) if found else None
 
 
 def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | None, str]:
@@ -255,7 +279,9 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
         ae_sha = footer_sha(ae)
         if ae_sha is None:
             return None, f"AE comment ({ae['html_url']}) has no parseable sha= marker"
-        if ae_sha == head_sha:
+        if same_sha(ae_sha, head_sha):
+            if (rework := _round_artifact_after(comments, ae)) is not None:
+                return None, _rework_message(ae, rework)
             return ae, f"authorized for {head_sha} by {ae['html_url']}"
         carry = carry_forward(comments, ae, head_sha)
         if carry is None:
@@ -278,7 +304,9 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     sweep_sha = footer_sha(sweep)
     if sweep_sha is None:
         return None, f"sweep ({sweep['html_url']}) has no parseable sha= marker"
-    if sweep_sha == head_sha:
+    if same_sha(sweep_sha, head_sha):
+        if (rework := _round_artifact_after(comments, sweep)) is not None:
+            return None, _rework_message(sweep, rework)
         return sweep, f"authorized for {head_sha} by {sweep['html_url']}"
     carry = carry_forward(comments, sweep, head_sha)
     if carry is None:
