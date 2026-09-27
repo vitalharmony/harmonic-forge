@@ -102,6 +102,14 @@ fi
 export LANE_AGENT="$_lane_agent"
 lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 
+# Codex loads hook registration when the session starts. Refuse to start a
+# Codex lane while either repo lacks the merge/close/preclose gates; otherwise
+# a long-lived session can retain an unguarded hook set for its whole lifetime.
+if [ "$_lane_agent" = codex ]; then
+  python3 "$_lane_dir/../hooks/verify_codex_registration.py" \
+    || _lane_launch_die "Codex hook registration is incomplete -- refusing to start an unguarded session"
+fi
+
 ## AC9 -- minimum-version check
 #
 # Floored at the minor version deliberately; see _agent_registry.sh's header.

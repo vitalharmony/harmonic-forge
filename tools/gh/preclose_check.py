@@ -318,6 +318,33 @@ def compute_provenance(envelope: str | None, not_triggered: bool) -> str:
     return label
 
 
+def require_recorded_envelope(path: str) -> None:
+    """A required branch may use fallback only with a real failure record."""
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SystemExit(f"preclose-check: required cross-family envelope is unreadable: {exc}")
+    if not text:
+        raise SystemExit("preclose-check: required cross-family envelope is empty")
+    decoder = json.JSONDecoder()
+    envelopes = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            value, index = decoder.raw_decode(text, index)
+        except ValueError:
+            raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+        if not isinstance(value, dict):
+            raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+        envelopes.append(value)
+    if not envelopes or any(not isinstance(item.get("status"), str) for item in envelopes):
+        raise SystemExit("preclose-check: required cross-family envelope is missing or unparsable")
+
+
 def load_findings(path: str) -> list:
     try:
         data = json.loads(Path(path).read_text())
@@ -348,6 +375,7 @@ def gate(args: argparse.Namespace) -> int:
         print("Take the branch exactly as rules/cross-family-review.md states -- it is the whole")
         print("mechanism, and nothing here restates it. It is part of this ONE pass, not a second")
         print("round. Then paste the label cross_family_provenance.py prints for its envelope.")
+        print("The cross-family command MUST use --out <envelope path>; stdout alone is not a receipt.")
     else:
         print("Record the not-triggered label: cross_family_provenance.py --not-triggered")
         print("(rules/cross-family-review.md, Provenance).")
@@ -586,6 +614,8 @@ def complete(args: argparse.Namespace) -> int:
     # relabel a required two-family pass as in-family only.
     check_one_pass(repo, args.issue, head_sha, args.force)
     required, why, surviving, _ = gate_decision(args)
+    if required and args.envelope:
+        require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, args.not_triggered)
     check_provenance(required, provenance)
     prior = find_receipt(repo, args.issue)

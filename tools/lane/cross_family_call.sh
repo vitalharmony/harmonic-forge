@@ -41,7 +41,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage: cross_family_call.sh --caller claude|codex|gemini --families 2|3 \
-         --posture read-only|probe|verify --brief PATH [--cwd PATH]
+         --posture read-only|probe|verify --brief PATH [--cwd PATH] [--out PATH]
 
   --caller    which CLI is making this call (determines target order)
   --families  2 (caller's primary sibling only) or 3 (both siblings)
@@ -51,11 +51,12 @@ Usage: cross_family_call.sh --caller claude|codex|gemini --families 2|3 \
   --brief     path to a self-contained cold-brief file (no memories, no
               conversation -- see ADR-007)
   --cwd       isolated scratch directory; required for probe and verify
+  --out       atomically write the complete JSON-lines envelope to PATH
 EOF
   exit 2
 }
 
-caller="" families="" posture="" brief="" cwd=""
+caller="" families="" posture="" brief="" cwd="" out=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --caller) caller="${2:-}"; shift 2 ;;
@@ -63,31 +64,45 @@ while [ $# -gt 0 ]; do
     --posture) posture="${2:-}"; shift 2 ;;
     --brief) brief="${2:-}"; shift 2 ;;
     --cwd) cwd="${2:-}"; shift 2 ;;
+    --out) out="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "cross_family_call: unrecognized argument: $1" >&2; usage ;;
   esac
 done
 
+write_process_error() {
+  [ -n "$out" ] || return 0
+  mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
+  local tmp
+  tmp="$(mktemp "${out}.tmp.XXXXXX")" || return 0
+  printf '{"status":"process-error","exit_code":2}\n' >"$tmp"
+  mv -f "$tmp" "$out"
+}
+
+abort_preflight() {
+  echo "cross_family_call: $1" >&2
+  write_process_error
+  exit 2
+}
+
 case "$caller" in
   claude|codex|gemini) ;;
-  *) echo "cross_family_call: --caller must be claude, codex, or gemini" >&2; exit 2 ;;
+  *) abort_preflight "--caller must be claude, codex, or gemini" ;;
 esac
 case "$families" in
   2|3) ;;
-  *) echo "cross_family_call: --families must be 2 or 3" >&2; exit 2 ;;
+  *) abort_preflight "--families must be 2 or 3" ;;
 esac
 case "$posture" in
   read-only|probe|verify) ;;
-  *) echo "cross_family_call: --posture must be read-only, probe, or verify" >&2; exit 2 ;;
+  *) abort_preflight "--posture must be read-only, probe, or verify" ;;
 esac
 if [ -z "$brief" ] || [ ! -f "$brief" ]; then
-  echo "cross_family_call: --brief PATH must name an existing file" >&2
-  exit 2
+  abort_preflight "--brief PATH must name an existing file"
 fi
 if [ "$posture" = probe ] || [ "$posture" = verify ]; then
   if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
-    echo "cross_family_call: --cwd PATH is required and must be an existing directory for $posture posture" >&2
-    exit 2
+    abort_preflight "--cwd PATH is required and must be an existing directory for $posture posture"
   fi
 fi
 
@@ -116,7 +131,7 @@ if [ "$posture" = verify ]; then
   for family in "${targets[@]}"; do
     if [ "$family" != codex ]; then
       echo "cross_family_call: --posture verify is Codex-only; --caller $caller --families $families resolves to target '$family'" >&2
-      exit 2
+      abort_preflight "--posture verify is Codex-only; target '$family' is not Codex"
     fi
   done
 fi
@@ -145,7 +160,7 @@ for policy_file in "$readonly_policy" "$probe_policy"; do
     echo "  --admin-policy -- it warns on stderr and runs unprotected, so this" >&2
     echo "  check is the only thing standing between a missing file and an" >&2
     echo "  unbounded session (harmonic-forge#432)." >&2
-    exit 2
+    abort_preflight "admin policy file missing: $policy_file"
   fi
 done
 
@@ -625,6 +640,7 @@ emit_envelope() {
 overall_status=0
 preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
+result_tmp="$(mktemp)"
 for family in "${targets[@]}"; do
   tmp_out="$(mktemp)"
   # harmonic-forge#483: captured here rather than discarded inside each
@@ -657,6 +673,7 @@ for family in "${targets[@]}"; do
   envelope_err="$(mktemp)"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        >"$envelope_out" 2>"$envelope_err"; then
+    cat "$envelope_out" >>"$result_tmp"
     cat "$envelope_out"
     rm -f "$tmp_out"
   else
@@ -688,8 +705,10 @@ for family in "${targets[@]}"; do
     # needed, which is this issue's entire complaint one level down. Only two
     # values are interpolated and both are escaped; `family` and `posture` are
     # closed token sets validated long before dispatch.
-    printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s"}\n' \
-      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")"
+    failure_record="$(printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s"}\n' \
+      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")")"
+    printf '%s' "$failure_record" >>"$result_tmp"
+    printf '%s' "$failure_record"
     # `tmp_out` is deliberately NOT removed when preservation failed: the
     # message above points at it, and the incident this issue records was
     # recovered only because such a file happened to survive. Luck is now a
@@ -705,5 +724,13 @@ for family in "${targets[@]}"; do
   # reason `tmp_out` survives a failed preservation does not apply here.
   rm -f "$envelope_out" "$envelope_err" "$tmp_err"
 done
+
+if [ -n "$out" ]; then
+  mkdir -p "$(dirname "$out")"
+  tmp_out_record="$(mktemp "${out}.tmp.XXXXXX")"
+  cp "$result_tmp" "$tmp_out_record"
+  mv -f "$tmp_out_record" "$out"
+fi
+rm -f "$result_tmp"
 
 exit "$overall_status"

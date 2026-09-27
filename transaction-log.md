@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(F774): close lock and gate enforcement gaps
+- tools/lane/lane-queue-run                          | 28 ++++++++++--
+- tools/lane/test_lane_launchers.py                  | 16 +++++++
+- tools/lane/test_lane_queue_run.py                  | 17 +++++++
+- 10 files changed, 160 insertions(+), 31 deletions(-)
+
 ## fix(lane): serialize queue state and prove stop behavior (F774)
 - tools/lane/lane-queue-run         | 56 ++++++++++++++++++++++++++++++---------
 - tools/lane/queue_state.py         |  4 +++

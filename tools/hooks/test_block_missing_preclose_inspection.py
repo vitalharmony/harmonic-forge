@@ -59,6 +59,16 @@ class FindTargetsTests(unittest.TestCase):
             f"gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed",
             (REPO, "1476", "issue"))
 
+    def test_gh_as_wrapper_is_gated(self) -> None:
+        self.assert_target(
+            f"gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed",
+            (REPO, "1476", "issue"))
+
+    def test_wrapped_bash_login_shell_is_gated(self) -> None:
+        self.assert_target(
+            f"/bin/bash -lc 'gh-as vitalharmony gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed'",
+            (REPO, "1476", "issue"))
+
     def test_api_method_long_flag(self) -> None:
         self.assert_target(
             f"gh api --method PATCH repos/{REPO}/issues/1476 -f state=closed",

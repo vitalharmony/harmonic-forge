@@ -121,6 +121,14 @@ def strip_invocation_prefix(tokens: list[str]) -> list[str]:
             index += 2
         elif Path(token).name == "gha" and index + 1 < len(working):
             working = working[:index] + ["gh"] + working[index + 2:]
+        elif (Path(token).name in {"bash", "sh", "zsh"}
+              and index + 2 < len(working)
+              and working[index + 1] in {"-c", "-lc", "--command"}):
+            try:
+                nested = shlex.split(working[index + 2])
+            except ValueError:
+                return []
+            working = working[:index] + nested + working[index + 3:]
         else:
             break
     return working[index:]

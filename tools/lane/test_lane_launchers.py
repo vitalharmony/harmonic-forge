@@ -55,6 +55,15 @@ class _FixtureTree:
         self.main, self.stub_bin = bc.build_fixture_tree(
             self.root, versions=self._versions)
         self.home = self.root / "home"
+        required_hooks = {"hooks": {"PreToolUse": [{"hooks": [
+            {"command": "block_missing_preclose_inspection.py"},
+            {"command": "batch_gate.py"},
+            {"command": "block_closing_keywords.py"},
+        ]}]}}
+        for installed in (self.home / "harmonic-forge" / ".codex" / "hooks.json",
+                          self.home / "Harmonic_Projects" / "HRSE2" / ".codex" / "hooks.json"):
+            installed.parent.mkdir(parents=True, exist_ok=True)
+            installed.write_text(json.dumps(required_hooks))
         extension_record = self.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
         extension_record.parent.mkdir(parents=True)
         extension_record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
@@ -1453,6 +1462,13 @@ class PlatformRulesSync(unittest.TestCase):
             self.assertGreater(inhibit_idx, source_idx,
                                 f"lane{lane}: _cli_launch.sh must be sourced "
                                 "before the final systemd-inhibit invocation")
+
+    def test_codex_startup_refuses_stale_gate_registration(self):
+        """A Codex session must not start before the merge/close gates load."""
+        source = (LANE_DIR / "_cli_launch.sh").read_text()
+        self.assertIn('"$_lane_agent" = codex', source)
+        self.assertIn("verify_codex_registration.py", source)
+        self.assertIn("refusing to start an unguarded session", source)
 
 
 # ---------------------------------------------------------------------------

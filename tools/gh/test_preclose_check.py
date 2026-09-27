@@ -66,14 +66,15 @@ class ScratchRepo(unittest.TestCase):
         os.chdir(self.repo)
         self.addCleanup(os.chdir, self.cwd)
         # harmonic-forge#701: labels are computed by the provenance tool, never
-        # typed. A stand-in echoes the envelope's text, or the not-triggered label.
+        # typed. A stand-in reads a structurally valid envelope.
         tool = self.repo.parent / f"{self.repo.name}-provenance.py"
         tool.write_text(
             "import sys\n"
             "if '--not-triggered' in sys.argv:\n"
             f"    print({NOT_TRIGGERED!r})\n"
             "else:\n"
-            "    print(open(sys.argv[sys.argv.index('--envelope') + 1]).read().strip())\n")
+            "    import json\n"
+            "    print(json.load(open(sys.argv[sys.argv.index('--envelope') + 1]))['label'])\n")
         self.addCleanup(lambda: tool.unlink(missing_ok=True))
         patcher = patch.object(preclose, "PROVENANCE_TOOL", tool)
         patcher.start()
@@ -115,7 +116,8 @@ class ScratchRepo(unittest.TestCase):
         envelope = None
         if not not_triggered:
             envelope = self.findings_file([])[:-len("findings.json")] + "envelope.txt"
-            Path(envelope).write_text(envelope_label or "")
+            status = "process-error" if envelope_label == FALLBACK else "ok"
+            Path(envelope).write_text(json.dumps({"status": status, "label": envelope_label or ""}))
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",

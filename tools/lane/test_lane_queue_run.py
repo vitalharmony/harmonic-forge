@@ -176,6 +176,23 @@ class QueueRunTests(unittest.TestCase):
                 self.assertEqual(MODULE.run(self.args("--session", "abc"), home=self.home), 2)
         flags.assert_not_called()
 
+    def test_thread_name_and_uuid_share_canonical_lock_identity(self):
+        index = self.home / ".codex" / "session_index.jsonl"
+        index.write_text(json.dumps({"thread_name": "thread", "id": "uuid"}) + "\n")
+        self.assertEqual(MODULE.session_identity("thread", self.home), "uuid")
+        self.assertEqual(MODULE.session_identity("uuid", self.home), "uuid")
+
+    def test_post_resume_state_failure_blocks_and_logs(self):
+        self.write_queue([self.item()])
+        cwd, flags = self.good()
+        def execute(*_args, **_kwargs):
+            self.queue.write_text("not-json")
+            return SimpleNamespace(returncode=0)
+        with cwd, flags:
+            self.assertEqual(MODULE.run(self.args(), execute=execute, home=self.home), 2)
+        state = json.loads(self.queue.read_text())
+        self.assertEqual(state["items"][0]["status"], "blocked")
+
     def test_real_subprocess_uses_stub_codex_and_records_nonzero_stop(self):
         self.write_queue([self.item()])
         sessions = self.home / ".codex" / "sessions" / "2026" / "09" / "26"

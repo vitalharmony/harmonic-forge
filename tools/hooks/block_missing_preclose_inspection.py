@@ -78,7 +78,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shell_parse import command_segments  # noqa: E402
+from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 PRECLOSE_LABEL = "preclose-inspected"
 #: The opt-in signal. Only issues explicitly scoped to the Tooling Exception
@@ -284,15 +284,6 @@ def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
     return None
 
 
-def _strip_invocation_prefix(tokens: list[str]) -> list[str]:
-    index = 0
-    while index < len(tokens) and (
-        tokens[index] == "env" or ENV_ASSIGNMENT.match(tokens[index])
-    ):
-        index += 1
-    return tokens[index:]
-
-
 def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None:
     """All (repo, number, kind) this command would merge or close.
 
@@ -305,7 +296,7 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
 
     targets: list[tuple[str | None, str, str]] = []
     for raw_tokens in segments:
-        tokens = _strip_invocation_prefix(raw_tokens)
+        tokens = strip_invocation_prefix(raw_tokens)
         if not tokens:
             continue
         if os.path.basename(tokens[0]) != "gh":
