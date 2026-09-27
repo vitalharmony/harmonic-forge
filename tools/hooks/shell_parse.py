@@ -121,10 +121,57 @@ def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> li
             index += 2
         elif Path(token).name == "gha" and index + 1 < len(working):
             working = working[:index] + ["gh"] + working[index + 2:]
+        # harmonic-forge#787: timeout/nice/stdbuf are the same "invocation
+        # prefix" class as env/nohup/time above -- they wrap the real
+        # command without invoking a shell, and were simply missing here.
+        # Each strips its own flags, then its own positional argument
+        # (timeout's DURATION; nice's -n/-N adjustment, when given as a
+        # separate token), leaving the wrapped command for the next
+        # iteration of this same loop (so a stack like `nice timeout 5 tee`
+        # unwraps fully).
+        elif Path(token).name == "timeout":
+            index += 1
+            while index < len(working) and working[index].startswith("-"):
+                opt = working[index]
+                if opt in ("-k", "--kill-after", "-s", "--signal"):
+                    index += 1
+                    if index < len(working):
+                        index += 1
+                else:
+                    # bare flags (-v, --preserve-status, --foreground) and
+                    # the --kill-after=X/--signal=X joined forms both just
+                    # consume one token.
+                    index += 1
+            if index < len(working):  # the DURATION positional
+                index += 1
+        elif Path(token).name == "nice":
+            index += 1
+            if index < len(working):
+                opt = working[index]
+                if opt in ("-n", "--adjustment"):
+                    index += 1
+                    if index < len(working):
+                        index += 1
+                elif opt.startswith("--adjustment=") or re.match(r"^-\d+$", opt):
+                    index += 1
+        elif Path(token).name == "stdbuf":
+            index += 1
+            while index < len(working) and working[index].startswith("-"):
+                opt = working[index]
+                if opt in ("-i", "-o", "-e"):
+                    index += 1
+                    if index < len(working):
+                        index += 1
+                else:
+                    # combined -oL/-iL/-eL, and --input=/--output=/--error=
+                    index += 1
         # harmonic-forge#785: write guards pass unwrap_shells=False -- they must
         # still see the nested shell, or their nested-shell rules never fire.
+        # harmonic-forge#787: dash/ksh join bash/sh/zsh here -- NESTED_SHELLS
+        # in block_lane1_status_claims.py already named all five; only this
+        # unwrap set had fallen behind.
         elif (unwrap_shells
-              and Path(token).name in {"bash", "sh", "zsh"}
+              and Path(token).name in {"bash", "sh", "zsh", "dash", "ksh"}
               and index + 2 < len(working)
               and working[index + 1] in {"-c", "-lc", "--command"}):
             try:
