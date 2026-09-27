@@ -287,10 +287,22 @@ writes. If answering an assumption would require a mutation, the verdict is
 actor.
 EOF
 
+read -r -d '' CLAUDE_VERIFY_CONTRACT <<'EOF' || true
+
+You have only Read, Grep, and Glob. You have no shell, web search, MCP, or
+write tools. Read the named local artifacts and quote exact text as evidence;
+if an assumption requires any unavailable capability, return "uncheckable".
+You are a READ-ONLY reviewer. Return only the required JSON report.
+EOF
+
 prompt_text() {
-  local posture="$1" brief="$2"
+  local posture="$1" brief="$2" family="${3:-}"
   if [ "$posture" = verify ]; then
-    printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
+    if [ "$family" = claude ]; then
+      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
+    else
+      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
+    fi
   else
     printf '%s%s' "$(cat "$brief")" "$REPORT_CONTRACT"
   fi
@@ -298,22 +310,17 @@ prompt_text() {
 
 # --- per-family invocation, native stdout on fd 1, native stderr discarded ---
 
-# Takes `posture` only to thread it into `prompt_text`; it deliberately does
-# NOT branch on it. Claude has no posture-specific invocation here, and
-# `verify` can never reach this function -- the target-list guard above exits
-# non-zero first. Threading the real value (rather than hardcoding a
-# placeholder) keeps that guarantee checkable instead of assumed.
 invoke_claude() {
   local posture="$1" brief="$2" cwd="$3"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
     if [ "$posture" = verify ]; then
-      claude -p "$(prompt_text "$posture" "$brief")" \
+      claude -p "$(prompt_text "$posture" "$brief" claude)" \
         --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
         --model "${CLAUDE_VERIFY_MODEL:-claude-opus-5-5}" \
         --no-session-persistence --output-format stream-json --verbose </dev/null
     else
-      claude -p "$(prompt_text "$posture" "$brief")" --output-format json </dev/null
+      claude -p "$(prompt_text "$posture" "$brief" claude)" --output-format json </dev/null
     fi
   )
 }
@@ -400,7 +407,7 @@ invoke_codex() {
     search_args=(--search)
   fi
   "${env_args[@]}" codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
-    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief")" </dev/null
+    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief" codex)" </dev/null
 }
 
 invoke_gemini() {
@@ -476,7 +483,7 @@ SETTINGS
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
-        -p "$(prompt_text "$posture" "$brief")" -o json </dev/null
+        -p "$(prompt_text "$posture" "$brief" gemini)" -o json </dev/null
   )
 }
 
@@ -691,7 +698,8 @@ for family in "${targets[@]}"; do
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
            --arg verify_model "${CLAUDE_VERIFY_MODEL:-claude-opus-5-5}" \
-           '. + {caller_family:$caller, target_family:$target, verify_model:$verify_model}' \
+           '. + {caller_family:$caller, target_family:$target} +
+            (if $target == "claude" and .posture == "verify" then {verify_model:$verify_model} else {} end)' \
        >"$envelope_out" 2>"$envelope_err"; then
     cat "$envelope_out" >>"$result_tmp"
     cat "$envelope_out"

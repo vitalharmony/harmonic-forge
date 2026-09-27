@@ -380,7 +380,7 @@ def _claude_blocks(event: dict, kind: str) -> list[dict]:
     if not isinstance(blocks, list):
         message = event.get("message")
         blocks = message.get("content") if isinstance(message, dict) else []
-    return [block for block in blocks if isinstance(block, dict) and block.get("type") == kind]
+    return [block for block in blocks if isinstance(block, dict) and block.get("type") == kind] if isinstance(blocks, list) else []
 
 
 def _claude_verify_trace(native: object, verify_model: object) -> bool:

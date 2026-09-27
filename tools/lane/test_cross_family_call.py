@@ -922,7 +922,7 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         self.assertEqual(env["status"], "ok")
         self.assertEqual(sorted(env),
                          ["caller_family", "exit_code", "family", "native", "posture", "report",
-                          "status", "target_family", "verify_model"])
+                          "status", "target_family"])
 
     def test_one_family_failing_does_not_abort_the_others(self):
         """TC4. Before this, `set -e` killed the loop at the first failure:

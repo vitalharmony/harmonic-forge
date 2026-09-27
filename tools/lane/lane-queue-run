@@ -188,6 +188,10 @@ def run(argv: list[str], *, execute=subprocess.run, home: Path | None = None) ->
                 _log(log, "stopped: recovery blocker before step 0")
                 return 0
             for step in range(args.max_steps):
+                if not trusted(repo, home):
+                    print("lane-queue-run: hook trust is not persisted for lane repo", file=sys.stderr)
+                    _log(log, f"stopped: hook registration lost before step {step}")
+                    return 2
                 if queue_state.is_blocked(state):
                     _log(log, f"stopped: blocker after {step} steps")
                     return 0

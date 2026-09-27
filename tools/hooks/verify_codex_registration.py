@@ -18,6 +18,8 @@ or a wiring CI check.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -34,6 +36,13 @@ REQUIRED_HOOKS = (
 
 def _registered_hooks(config: dict, needle: str) -> bool:
     for block in (config.get("hooks") or {}).get("PreToolUse") or []:
+        matcher = block.get("matcher")
+        try:
+            fires_for_bash = isinstance(matcher, str) and re.search(matcher, "Bash") is not None
+        except re.error:
+            fires_for_bash = False
+        if not fires_for_bash:
+            continue
         for hook in block.get("hooks") or []:
             command = hook.get("command") or ""
             try:
@@ -41,7 +50,10 @@ def _registered_hooks(config: dict, needle: str) -> bool:
             except ValueError:
                 continue
             for index, token in enumerate(tokens):
-                if Path(token).name == needle and index and Path(tokens[index - 1]).name in {"python", "python3"}:
+                script = Path(os.path.expandvars(token))
+                if (Path(token).name == needle and index
+                        and Path(tokens[index - 1]).name in {"python", "python3"}
+                        and script.is_file()):
                     return True
     return False
 

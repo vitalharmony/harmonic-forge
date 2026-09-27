@@ -24,8 +24,12 @@ class QueueRunTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / "project"
         (self.repo / ".codex").mkdir(parents=True)
-        (self.repo / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
-            {"command": f"python3 {name}"} for name in MODULE.verify_codex_registration.REQUIRED_HOOKS
+        hooks_dir = self.root / "hooks"
+        hooks_dir.mkdir()
+        for name in MODULE.verify_codex_registration.REQUIRED_HOOKS:
+            (hooks_dir / name).write_text("# stub\n")
+        (self.repo / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+            {"command": f"python3 {hooks_dir / name}"} for name in MODULE.verify_codex_registration.REQUIRED_HOOKS
         ]}]}}))
         self.home = self.root / "home"
         (self.home / ".codex").mkdir(parents=True)
@@ -149,7 +153,7 @@ class QueueRunTests(unittest.TestCase):
         with (self.home / ".codex" / "config.toml").open("a") as config:
             config.write(f'\n[projects."{lane2.resolve()}"]\ntrust_level = "trusted"\n')
         with patch.object(MODULE, "session_cwd", return_value=str(lane2)), patch.object(MODULE, "resume_args") as flags:
-            self.assertEqual(MODULE.run(["--lane", "1", "--session", "abc", "--queue", str(self.queue), "--repo", str(lane2)], home=self.home), 2)
+            self.assertEqual(MODULE.run(["--lane", "2", "--session", "abc", "--queue", str(self.queue), "--repo", str(lane2)], home=self.home), 2)
         flags.assert_not_called()
 
     def test_rerun_skips_done_item(self):
