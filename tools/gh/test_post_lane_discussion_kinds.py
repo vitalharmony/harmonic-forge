@@ -399,6 +399,23 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     P.main()
 
+    def test_ack_no_pr_required_rejects_a_reason_that_escapes_the_footer(self):
+        """Preclose finding: `-->` in the reason ended the HTML footer early
+        and leaked the rest into the rendered comment."""
+        for reason in ("backfill --> see thread", "a <!-- b", "two\nlines"):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "body.md"
+                path.write_text(self.PASS_BODY)
+                argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path),
+                        "--kind", "gate-result", "--ack-no-pr-required", reason]
+                posted = []
+                with mock.patch.object(sys, "argv", argv), \
+                     mock.patch.object(P, "comment_body",
+                                       side_effect=lambda *a: posted.append(a) or ("u", 1)):
+                    with self.assertRaises(SystemExit):
+                        P.main()
+                self.assertEqual(posted, [])
+
     def test_require_green_ci_returns_true_when_the_override_fired(self):
         with mock.patch.object(P, "check_gate_result",
                                return_value=(True, "[GATE] no-pr-override: af35ca95 is the tip")):

@@ -51,7 +51,15 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
         if "/protection" in url:
             return 0, json.dumps(sorted(required)) if required else (0, "null")[1]
         if "/pulls" in url:
-            return 0, json.dumps(list(pulls))
+            listed = list(pulls)
+            # `stale_against_pr` asks gh to filter to open PRs with `--jq`;
+            # the real CLI drops closed ones before returning. Honour that, or
+            # a closed merge PR (harmonic-forge#788's main-tip case) reads as
+            # a live one. Entries without `state` are pre-filtered fixtures
+            # from older tests and pass through unchanged.
+            if any('select(.state == "open")' in a for a in cmd):
+                listed = [p for p in listed if p.get("state", "open") == "open"]
+            return 0, json.dumps(listed)
         if "/check-runs" in url:
             # `gh api --jq '.check_runs[]'` streams ONE OBJECT PER LINE, not an
             # array. A stub emitting an array tested a shape gh never produces.
@@ -238,17 +246,66 @@ class NoPrOverrideTests(unittest.TestCase):
         self.assertIn("no-pr-override", msg)
         self.assertIn("hrse#2095 production backfill, no PR", msg)
 
-    def test_override_does_not_fire_when_a_pr_exists_for_the_sha(self):
-        """AC1's absolute: the override must never bypass a SHA that belongs
-        to a real PR. `sha_is_current_main_tip` returning False (main has
-        since moved past this SHA, or a PR's own head IS this SHA) must
-        refuse exactly as if no override were passed."""
+    def test_override_does_not_fire_when_main_has_moved_past_the_sha(self):
         ok, msg = gate_ci.check_gate_result(
             "o/r", PASS_BODY, run=fake_gh(main_tip="a" * 40),
             ack_no_pr_required="should not matter")
         self.assertFalse(ok)
         self.assertIn("not completed", msg)
         self.assertNotIn("no-pr-override", msg)
+
+    def test_override_does_not_fire_when_an_open_pr_contains_the_sha(self):
+        """AC3, pinned for real (preclose finding: the first version of this
+        test built no PR at all and passed on the main-tip mismatch alone).
+        The SHA IS main's tip here, so only the open PR can refuse it."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        pulls=[{"number": 7, "state": "open", "head": self.SHA}]),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_a_closed_merge_pr_does_not_block_the_override(self):
+        """A main-tip commit always has its own merge PR, closed. That is the
+        hrse#2095 shape (PR #2106) and must not refuse."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        pulls=[{"number": 2106, "state": "closed", "head": "b" * 40}]),
+            ack_no_pr_required="migration on main")
+        self.assertTrue(ok, msg)
+
+    def test_override_does_not_fire_while_ci_is_pending(self):
+        """Preclose finding: a run in flight is not 'CI cannot run'."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        checks=[check("verify", None, "in_progress")]),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_override_does_not_fire_when_check_runs_are_unreadable(self):
+        """Preclose finding: a failed check-runs read is `unknown`, and an
+        unread CI must never be published as one that cannot exist."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, fail=("check-runs",)),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_override_fires_when_the_required_check_never_ran(self):
+        """The literal hrse#2095 state: other checks ran on main's tip, the
+        required `verify` never did."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("render-and-deploy")],
+                        required={"verify"}),
+            ack_no_pr_required="migration on main")
+        self.assertTrue(ok, msg)
+        self.assertIn("no-pr-override", msg)
 
     def test_override_does_not_fire_on_red_ci_even_with_a_pr_less_sha(self):
         """The override is consulted ONLY at the final no-checks-at-all

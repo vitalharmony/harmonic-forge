@@ -336,6 +336,21 @@ def sha_is_current_main_tip(repo: str, sha: str, run=None) -> bool | None:
     return bool(tip) and (tip == sha or tip.startswith(sha) or sha.startswith(tip))
 
 
+def open_prs_containing(repo: str, sha: str, run=None) -> list[dict] | None:
+    """OPEN PRs associated with `sha`; `None` if the lookup failed."""
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/pulls"])
+    if code != 0:
+        return None
+    try:
+        pulls = json.loads(out or "[]")
+    except ValueError:
+        return None
+    if not isinstance(pulls, list):
+        return None
+    return [p for p in pulls if str(p.get("state", "")).lower() == "open"]
+
+
 def check_gate_result(
     repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
 ) -> tuple[bool, str]:
@@ -412,20 +427,25 @@ def check_gate_result(
     # the second signal has not been read yet. AC3 says waiting is the correct
     # behaviour, not a judgment call -- UNLESS no PR (open or closed) exists
     # for this SHA at all, in which case there is no "yet" to wait for.
-    if ack_no_pr_required is not None:
+    # Preclose finding: only `absent` -- the required check was never asked
+    # to run -- is the "CI structurally cannot run" case. `pending` is a run
+    # in flight and `unknown` is a failed or unreadable lookup; neither is
+    # evidence CI cannot exist, and letting the override through on them
+    # published "cannot run" over a build that was running, or unread.
+    if ack_no_pr_required is not None and state == "absent":
         is_tip = sha_is_current_main_tip(repo, sha, run=run)
-        if is_tip:
+        # AC1: never when an OPEN PR contains this SHA. A main-tip commit's
+        # own merge PR is closed, so only a genuinely pending PR refuses.
+        prs = open_prs_containing(repo, sha, run=run)
+        if is_tip and prs == []:
             return True, (
                 f"[GATE] no-pr-override: {sha[:8]} is the current tip of "
                 f"main -- no PR is pending for it and `verify` is gated to "
                 f"pull_request events, so CI structurally cannot run for "
                 f"it. Acknowledged: {ack_no_pr_required}")
-        # is_tip is False (main has since moved past this SHA, or it was
-        # never main's tip -- e.g. it IS an open PR's head) or None (the
-        # lookup failed) -- either way, fall through to the normal refusal.
-        # A failed lookup must not be silently treated as "confirmed no PR",
-        # and a SHA that is an active PR's head is exactly the case AC1 says
-        # this override must never bypass.
+        # Otherwise -- main moved past this SHA, an open PR contains it, or
+        # either lookup failed (None) -- fall through to the normal refusal.
+        # A failed lookup is never read as "confirmed no PR".
     return False, (
         f"[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
         f"  {sha[:8]}: {state} — {detail}\n"

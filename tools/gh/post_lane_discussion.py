@@ -345,6 +345,15 @@ def main() -> None:
     args = parser.parse_args()
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
+    # Preclose finding: the reason is written INSIDE the HTML-comment footer,
+    # so `-->` would end the footer early, truncate its fields and leak the
+    # rest into the rendered comment. Refused rather than rewritten, the same
+    # posture `reject_quoted_markers` takes toward a lane's own text.
+    if args.ack_no_pr_required is not None and (
+            "-->" in args.ack_no_pr_required or "<!--" in args.ack_no_pr_required
+            or "\n" in args.ack_no_pr_required):
+        fail("--ack-no-pr-required reason may not contain '-->', '<!--' or a "
+             "newline: it is recorded inside the comment's HTML footer")
     args.repo = resolve_repo(args.repo)
     # harmonic-forge#266: a relative --file resolves against the CALLER's cwd,
     # which is not stable — mise resets it, and an agent's shell is reset
