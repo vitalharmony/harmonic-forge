@@ -633,7 +633,7 @@ def bash_write_targets(segment: list[str]) -> list[str]:
             targets.append(glued.group("target"))
         index += 1
 
-    tokens = strip_invocation_prefix(segment, unwrap_shells=False)
+    tokens = strip_invocation_prefix(segment)  # keeps the unwrap: verb rules must see inside `bash -c` (#785)
     if not tokens:
         return targets
     verb = Path(tokens[0]).name

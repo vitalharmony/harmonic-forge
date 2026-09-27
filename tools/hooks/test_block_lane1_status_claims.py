@@ -308,6 +308,15 @@ class TestInterpreterWriteRule(_BashWriteSurface):
         self.assertTrue(self.denied(
             f"""bash -c "echo x > {self.protected}" """))
 
+    def test_inner_shell_verb_writes_are_denied(self):
+        """harmonic-forge#785: turning the unwrap off everywhere reopened these."""
+        for script in (f"tee {self.protected}", f"cp /tmp/a {self.protected}", f"mv /tmp/a {self.protected}",
+                       f"sed -i s/a/b/ {self.protected}", f"dd if=/dev/zero of={self.protected}",
+                       f"truncate -s 0 {self.protected}"):
+            for shell in ("bash", "sh"):
+                with self.subTest(shell=shell, script=script):
+                    self.assertTrue(self.denied(f'{shell} -c "{script}"'))
+
     def test_reading_a_protected_path_is_allowed(self):
         """The required negative. A path-mention-only rule would have denied
         this issue's OWN hook survey, which was a python3 heredoc reading

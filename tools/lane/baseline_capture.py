@@ -287,6 +287,10 @@ def capture_all(lane_dir: Path) -> dict:
         # this pass locally while failing on CI (harmonic-forge#783).
         home = root / "home"
         write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
+        # Lane 3 Gemini refuses to start without this record (same as the test fixture).
+        record = home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps({"source": str(lane_dir.parent / "gemini" / "lane3-context"), "type": "link"}))
         for lane in LANES:
             for agent in AGENTS:
                 for shape, args in ARG_SHAPES.items():
