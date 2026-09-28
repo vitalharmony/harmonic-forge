@@ -14,6 +14,20 @@ matching registry entry. Pins both with a unit test.
 - tools/gh/test_l1_post_sweep_cases.py | 41 ++++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml            | 12 +++++++++--
 - 4 files changed, 91 insertions(+), 4 deletions(-)
+## docs(lane3): allow-list replaces prohibitions, trigger re-derivation, gotchas, memory write path (harmonic-forge#797)
+
+Merges the absolute-prohibitions/exception/what-you-MAY-do sections into
+one enumerated allow-list ending 'everything else is prohibited', so a
+sanctioned action (testplan writes, migration labels) can never again read
+as contradicting an absolute. Adds AE trigger re-derivation via
+lane3-begin, a no-auto-pickup-without-the-belt rule, a fresh-session
+gotchas block, and a delete-conflict flag for spec derivation. The write
+guard now also allows operator-memory/feedback_*.md (lexical+resolved,
+symlink-safe), so an in-session correction survives past the session.
+- skills/lane3-gate-platform/SKILL.md           | 190 +++++++++++++++++---------
+- tools/hooks/block_lane1_status_claims.py      |  68 +++++----
+- tools/hooks/test_block_lane1_status_claims.py |  27 ++++
+- 3 files changed, 195 insertions(+), 90 deletions(-)
 
 ## test(lane): baseline capture uses a fixture HOME, not the operator's (harmonic-forge#783)
 

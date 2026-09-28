@@ -446,6 +446,33 @@ class TestLane3ThroughTheBashSurface(_BashWriteSurface):
         self.assertFalse(self.denied("cat /etc/hostname"))
         self.assertFalse(self.denied("ls -la > /dev/null"))
 
+    def test_write_feedback_lesson_inside_memory_root_is_allowed(self):
+        """harmonic-forge#797: the one write target outside testplan/ — a
+        durable lesson that survives past this session's own context."""
+        self.assertFalse(self.denied(f"echo x > {m.MEMORY_ROOT}/feedback_l3_probe.md"))
+
+    def test_write_to_memory_index_is_denied(self):
+        """The shared MEMORY.md index is not a lesson file -- only
+        feedback_*.md is writable, never the index other lanes read."""
+        self.assertTrue(self.denied(f"echo x > {m.MEMORY_ROOT}/MEMORY.md"))
+
+    def test_write_to_a_non_feedback_memory_file_is_denied(self):
+        self.assertTrue(self.denied(f"echo x > {m.MEMORY_ROOT}/project_x.md"))
+
+    def test_symlink_escape_from_memory_root_is_denied(self):
+        """Requires BOTH the lexical and resolved form inside MEMORY_ROOT —
+        a feedback_*.md-named symlink pointing outside it must not be usable
+        to write anywhere the resolved path denies."""
+        target = Path(tempfile.mkdtemp()) / "outside.md"
+        target.write_text("pre-existing\n")
+        self.addCleanup(lambda: target.unlink(missing_ok=True))
+        link = m.MEMORY_ROOT / "feedback_escape_probe.md"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        self.addCleanup(lambda: link.unlink(missing_ok=True))
+        self.assertTrue(self.denied(f"echo x > {link}"))
+
 
 class TestPayloadSurface(unittest.TestCase):
     """End-to-end through `main()`, which is what the hook actually runs.

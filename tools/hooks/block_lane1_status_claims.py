@@ -122,6 +122,11 @@ LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 EDIT_WRITE_TOOLS = {"Edit", "Write"}
 LANE_WORKTREE_SUFFIX = re.compile(r"^(.+)-lane\d+$")
 TESTPLAN_ROOT = (Path.home() / "Harmonic_Projects" / "testplan").resolve()
+#: harmonic-forge#797: Lane 3's second legitimate write target, narrower than
+#: TESTPLAN_ROOT — a durable lesson (`feedback_*.md`) so an in-session
+#: correction survives past the session's own context, never the shared
+#: MEMORY.md index or any other file in this directory.
+MEMORY_ROOT = (Path.home() / "Harmonic_Projects" / "operator-memory").resolve()
 
 #: Shell builtins that change the working directory. `cd` was the only one
 #: recognized until harmonic-forge#529; `pushd` changes directory identically
@@ -558,30 +563,44 @@ def write_on_main_branch(file_path: str, cwd: Path) -> bool:
     return False
 
 
+def _inside(candidates: tuple, root: Path) -> bool:
+    """True if every candidate path form falls inside root — the shared
+    lexical-and-resolved check both writable targets below use, so a
+    symlink inside one pointing outside it can't be used to escape it."""
+    for candidate in candidates:
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return False
+    return True
+
+
 def lane3_write_outside_testplan(file_path: str) -> bool:
     """True if this hook invocation's own process has LANE=3 (set at
     session launch by harmonic-forge's `tools/lane/lane3` script,
-    harmonic-forge#150) and file_path resolves OUTSIDE TESTPLAN_ROOT —
-    Lane 3's only legitimate write target, for gate artifacts too large
-    for an issue comment. This is the first mechanical enforcement of the
-    "never fixes anything, ever" rule for Claude Code, closing a gap
-    Devin has had a hard profile for all along
-    (`.devin/agents/lane3-gate/AGENT.md`). Codex has no true equivalent
-    for general file-write scoping — `~/.codex/agents/lane3-gate.toml` is
-    a subagent-spawn config, never applied to a real top-level Lane 3
-    session (harmonic-forge#184); Codex's actual working mechanism
-    (harmonic-forge#152) only covers command-shaped mutations.
+    harmonic-forge#150) and file_path resolves outside BOTH of Lane 3's
+    legitimate write targets: TESTPLAN_ROOT (gate artifacts too large for
+    an issue comment) and, as of harmonic-forge#797, a `feedback_*.md`
+    lesson file inside MEMORY_ROOT (so an in-session correction survives
+    past the session's own context — no other file in that directory is
+    writable, in particular never the shared `MEMORY.md` index). This is
+    the first mechanical enforcement of the "never fixes anything, ever"
+    rule for Claude Code, closing a gap Devin has had a hard profile for
+    all along (`.devin/agents/lane3-gate/AGENT.md`). Codex has no true
+    equivalent for general file-write scoping — `~/.codex/agents/
+    lane3-gate.toml` is a subagent-spawn config, never applied to a real
+    top-level Lane 3 session (harmonic-forge#184); Codex's actual working
+    mechanism (harmonic-forge#152) only covers command-shaped mutations.
 
     Deny-by-default (inverted from `lane2_write_in_main_checkout`, which
     denies one specific place): Lane 3 has no legitimate write target
-    besides testplan artifacts, so anywhere else is denied. Requires
-    BOTH the lexically-normalized and the symlink-resolved form of the
-    path to fall inside TESTPLAN_ROOT before allowing — a symlink
-    inside testplan pointing outside it must not be usable to escape
-    the boundary. Still fails open (allows) on any path this can't
-    resolve at all, for consistency with this file's non-adversarial
-    posture elsewhere — a path-resolution edge case should not itself
-    lock out a session; it is not a hard security boundary."""
+    besides the two above, so anywhere else is denied. Requires BOTH the
+    lexically-normalized and the symlink-resolved form of the path to
+    fall inside the relevant root (and, for MEMORY_ROOT, the filename to
+    match `feedback_*.md`) before allowing. Still fails open (allows) on
+    any path this can't resolve at all, for consistency with this file's
+    non-adversarial posture elsewhere — a path-resolution edge case should
+    not itself lock out a session; it is not a hard security boundary."""
     if os.environ.get("LANE") != "3":
         return False
     if not file_path:
@@ -594,12 +613,13 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
         resolved = raw.resolve()
     except (OSError, ValueError, RuntimeError):
         return False
-    for candidate in (lexical, resolved):
-        try:
-            candidate.relative_to(TESTPLAN_ROOT)
-        except ValueError:
-            return True
-    return False
+    candidates = (lexical, resolved)
+    if _inside(candidates, TESTPLAN_ROOT):
+        return False
+    is_feedback_lesson = lexical.name.startswith("feedback_") and lexical.name.endswith(".md")
+    if is_feedback_lesson and _inside(candidates, MEMORY_ROOT):
+        return False
+    return True
 
 
 def ignorable_write_target(target: str) -> bool:
