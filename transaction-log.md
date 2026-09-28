@@ -14,6 +14,14 @@ matching registry entry. Pins both with a unit test.
 - tools/gh/test_l1_post_sweep_cases.py | 41 ++++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml            | 12 +++++++++--
 - 4 files changed, 91 insertions(+), 4 deletions(-)
+## fix(hooks): clean up tempfile.mkdtemp() dirs in the memory-write tests (harmonic-forge#797 preclose pass 2)
+
+Both used bare mkdtemp() with no cleanup, leaking a dir per test run
+(7 per suite run) unlike the tmp-checkout pattern they said they mirrored.
+TemporaryDirectory() + addCleanup matches that pattern for real.
+- tools/hooks/test_block_lane1_status_claims.py | 9 ++++++---
+- 1 file changed, 6 insertions(+), 3 deletions(-)
+
 ## fix(hooks): close two write-guard scope holes in the feedback_*.md allowance (harmonic-forge#797 preclose)
 
 preclose-inspection found: (1) a symlink named feedback_x.md resolving to

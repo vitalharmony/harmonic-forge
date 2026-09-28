@@ -460,7 +460,9 @@ class TestLane3MemoryWritePath(_BashWriteSurface):
 
     def setUp(self) -> None:
         super().setUp()
-        memory_root = Path(tempfile.mkdtemp()).resolve()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        memory_root = Path(tmp.name).resolve()
         patcher = unittest.mock.patch.object(m, "MEMORY_ROOT", memory_root)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -491,9 +493,10 @@ class TestLane3MemoryWritePath(_BashWriteSurface):
         """Requires BOTH the lexical and resolved form inside MEMORY_ROOT —
         a feedback_*.md-named symlink pointing outside it must not be usable
         to write anywhere the resolved path denies."""
-        outside = Path(tempfile.mkdtemp()) / "outside.md"
+        outside_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_dir.cleanup)
+        outside = Path(outside_dir.name) / "outside.md"
         outside.write_text("pre-existing\n")
-        self.addCleanup(lambda: outside.unlink(missing_ok=True))
         link = self.memory_root / "feedback_escape_probe.md"
         link.symlink_to(outside)
         self.assertTrue(self.denied(f"echo x > {link}"))
