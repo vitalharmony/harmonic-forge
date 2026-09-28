@@ -22,6 +22,18 @@ SWEEP_LIST = (
     "1. **A** executable as-is\n2. **B** executable\n3. **C** executable\n"
 )
 SPEC_TC = "### Test cases\n- TC1: a\n- TC2: b\n"
+# harmonic-forge#796: a partial AE (H2115-style) authorizes only the changed
+# case; the sweep still lists every spec case, with the un-authorized ones
+# marked "carried forward, not re-run" rather than omitted.
+SPEC_TC5 = "### Test cases\n- TC1: a\n- TC2: b\n- TC3: c\n- TC4: d\n- TC5: e\n"
+SWEEP_TC5_CARRY_FORWARD = (
+    "## Gate-readiness sweep — H2115\n\nWrite tier: W\n\n### Per-case readiness\n\n"
+    "1. TC1 — carried forward, not re-run: evidence in issuecomment-1; code at abc123 unchanged since.\n"
+    "2. TC2 — ready to run: accept-with-correction live.\n"
+    "3. TC3 — carried forward, not re-run: evidence in issuecomment-1; code at abc123 unchanged since.\n"
+    "4. TC4 — carried forward, not re-run: evidence in issuecomment-1; code at abc123 unchanged since.\n"
+    "5. TC5 — carried forward, not re-run: evidence in issuecomment-1; code at abc123 unchanged since.\n"
+)
 SWEEP_TC = "## Gate-readiness sweep — H874\n\nWrite tier: R\n\n### Test cases\n- TC1: ready, checked live\n- TC2: ready, checked live\n"
 # a private-repo incident: the pre-execution sweep vocabulary. `pass`/`fail` are fabrications
 # at sweep time; `ready`/`blocked` are both knowable before the gate runs.
@@ -272,6 +284,35 @@ class ValidateSweepTests(unittest.TestCase):
             "### Per-case readiness\n- TC1: ready\n- TC2: ready\n"
         )
         self.assertTrue(self._ok(sweep, SPEC_TC))
+
+    def test_partial_ae_carry_forward_sweep_is_accepted(self):
+        """harmonic-forge#796: a sweep naming all 5 spec cases, with 4 marked
+        'carried forward, not re-run' and 1 'ready to run', is a legal sweep
+        for a partial AE -- the full ID-set is present, so validate_sweep's
+        exact-match check passes, and no case states an outcome."""
+        self.assertTrue(self._ok(SWEEP_TC5_CARRY_FORWARD, SPEC_TC5, issue=2115))
+
+    def test_carry_forward_sweep_still_rejects_a_fabricated_outcome(self):
+        """A carry-forward line naming its evidence is legal; a carry-forward
+        line that instead asserts pass/fail is not -- SWEEP_FABRICATED_OUTCOME
+        applies identically to carry-forward entries."""
+        sweep = SWEEP_TC5_CARRY_FORWARD.replace(
+            "3. TC3 — carried forward, not re-run: evidence in issuecomment-1; code at abc123 unchanged since.\n",
+            "3. TC3 — pass: evidence in issuecomment-1.\n",
+        )
+        self.assertFalse(self._ok(sweep, SPEC_TC5, issue=2115))
+
+    def test_narrowing_to_one_case_is_rejected_by_the_exact_match_check(self):
+        """harmonic-forge#796 AC4/TC3: reverting the carry-forward fixture to a
+        1-case sweep must fail with the exact-match message -- proof this
+        fixture actually exercises that path, not a parser accepting anything."""
+        with self.assertRaises(SystemExit) as ctx:
+            L.validate_sweep(
+                "## Gate-readiness sweep — H2115\n\nWrite tier: W\n\n"
+                "### Per-case readiness\n\n1. TC2 — ready to run: accept-with-correction live.\n",
+                SPEC_TC5, "vitalharmony/hrse", 2115,
+            )
+        self.assertIn("sweep case IDs must exactly match spec", str(ctx.exception))
 
     def test_spec_with_no_cases_is_rejected_with_guidance(self):
         self.assertFalse(self._ok(SWEEP_LIST, "## Spec\nprose only\n"))
