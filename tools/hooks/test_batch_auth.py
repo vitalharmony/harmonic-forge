@@ -1793,3 +1793,30 @@ class TtyGateCliTests(StateFixture):
         target = ba._load(self.state_path)["F1"]["targets"][0]
         self.assertEqual(target["pr_number"], 9)
         self.assertEqual(target["repo"], "o/a")
+
+
+class MixedCaseRepoTests(unittest.TestCase):
+    """harmonic-forge#800: LeasePAL-ML is the first onboarded repo with a
+    mixed-case GitHub owner. `REPO_PREFIXES` keys are lowercased
+    (`manifest.normalize_repo`), but a repo string arriving from a CLI flag
+    or `git remote`/`gh pr` output keeps its real casing -- an exact-match
+    lookup against the lowercased table falsely denied the P prefix for the
+    real, correctly-cased slug."""
+
+    def test_issue_key_resolves_a_mixed_case_repo(self):
+        if "leasepal-ml/leasepal-app-prototype" not in ba.REPO_PREFIXES:
+            self.skipTest("leasepal not present in this manifest")
+        self.assertEqual(
+            ba.issue_key("LeasePAL-ML/LeasePAL-App-Prototype", 3), "P3")
+
+    def test_derived_merge_match_recognizes_a_mixed_case_repo(self):
+        if "leasepal-ml/leasepal-app-prototype" not in ba.REPO_PREFIXES:
+            self.skipTest("leasepal not present in this manifest")
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            ba.authorize(["P3"], state_path=state_path)
+            state = ba._load(state_path)
+            with mock.patch.object(ba, "derive_issue_key", return_value="P3"):
+                match = ba._derived_merge_match(
+                    "LeasePAL-ML/LeasePAL-App-Prototype", 3, state)
+            self.assertIsNotNone(match)

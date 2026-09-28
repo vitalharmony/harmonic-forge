@@ -986,7 +986,7 @@ class LaneTaskGeneratorTests(Base):
     """The generator writes a FLOOR, and writing it twice changes nothing."""
 
     def test_apply_adds_only_what_is_missing(self) -> None:
-        repo = self.make_repo(lane_task_names=("gate-checkout",))
+        repo = self.make_repo(lane_task_names=("gate-checkout", "check"))
         before = (repo / "mise.toml").read_text(encoding="utf-8")
         done = fo.apply_lane_tasks(self.project(repo))
         after = (repo / "mise.toml").read_text(encoding="utf-8")
@@ -999,7 +999,7 @@ class LaneTaskGeneratorTests(Base):
         self.assertNotEqual(before, after)
 
     def test_apply_is_idempotent(self) -> None:
-        repo = self.make_repo(lane_task_names=())
+        repo = self.make_repo(lane_task_names=("check",))
         fo.apply_lane_tasks(self.project(repo))
         once = (repo / "mise.toml").read_text(encoding="utf-8")
         second = fo.apply_lane_tasks(self.project(repo))
@@ -1009,7 +1009,8 @@ class LaneTaskGeneratorTests(Base):
 
     def test_the_generated_text_is_identical_across_repos(self) -> None:
         """AC1: sourced from the shared mechanism, not copy-pasted per repo."""
-        first, second = self.make_repo("one", lane_task_names=()), self.make_repo("two", lane_task_names=())
+        first, second = (self.make_repo("one", lane_task_names=("check",)),
+                        self.make_repo("two", lane_task_names=("check",)))
         for repo in (first, second):
             fo.apply_lane_tasks(self.project(repo))
         a = (first / "mise.toml").read_text(encoding="utf-8")
@@ -1018,11 +1019,37 @@ class LaneTaskGeneratorTests(Base):
 
     def test_the_generated_block_is_valid_toml(self) -> None:
         import tomllib  # noqa: PLC0415
-        repo = self.make_repo(lane_task_names=())
+        repo = self.make_repo(lane_task_names=("check",))
         fo.apply_lane_tasks(self.project(repo))
         parsed = tomllib.loads((repo / "mise.toml").read_text(encoding="utf-8"))
         self.assertEqual(sorted(parsed["tasks"]),
-                         ["gate-checkout", "l1-post", "lane-comment", "lane3-begin", "lane3-end"])
+                         ["check", "gate-checkout", "l1-post", "lane-comment",
+                          "lane3-begin", "lane3-end"])
+
+    def test_apply_surfaces_the_missing_check_task_rather_than_reporting_ok(self) -> None:
+        """harmonic-forge#800 preclose finding: `check` has no generic body
+        to render (unlike the five above, it's inherently repo-specific), so
+        `apply` used to report OK/"already present" while `check_lane_tasks`'s
+        verify pass stayed FAIL forever for a runs_lane3 repo missing it --
+        with no tool-emitted guidance that anything needed doing."""
+        repo = self.make_repo(lane_task_names=(
+            "l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end"))
+        done = fo.apply_lane_tasks(self.project(repo))
+        statuses = {c.status for c in done}
+        self.assertIn(fo.FAIL, statuses)
+        fail = next(c for c in done if c.status == fo.FAIL)
+        self.assertIn("check", fail.detail)
+
+    def test_apply_does_not_flag_missing_check_for_a_non_lane3_repo(self) -> None:
+        repo = self.make_repo(lane_task_names=(
+            "l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end"))
+        not_lane3 = self.project(repo, protocol=mf.Protocol(
+            worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+            lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+            runs_lane3=False))
+        done = fo.apply_lane_tasks(not_lane3)
+        self.assertTrue(all(c.status == fo.OK for c in done))
 
     def test_no_generated_task_carries_a_repo_relative_platform_path(self) -> None:
         """The one non-portable line this issue found: a repo-relative

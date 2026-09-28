@@ -330,8 +330,16 @@ def _command_hash(command: str) -> str:
 
 
 def issue_key(repo: str, number: str | int) -> str | None:
-    """`vitalharmony/hrse`, 395 -> `H395`. None if the repo has no prefix."""
-    prefix = REPO_PREFIXES.get(repo)
+    """`vitalharmony/hrse`, 395 -> `H395`. None if the repo has no prefix.
+
+    `REPO_PREFIXES` keys are lowercased (`manifest.normalize_repo`), but
+    `repo` here can arrive from a CLI flag or `gh pr` output in its real,
+    possibly-mixed-case slug -- every repo mapped before LeasePAL-ML
+    (harmonic-forge#800) happened to be all-lowercase, so an exact-match
+    lookup never surfaced this. Fails closed (a false deny, never a bypass),
+    but made the whole BATCH path unusable for a mixed-case repo's prefix.
+    """
+    prefix = REPO_PREFIXES.get(repo.strip().lower())
     return f"{prefix}{number}" if prefix else None
 
 
@@ -890,7 +898,7 @@ def _derived_merge_match(repo: str, number: int,
     # path already refuses an unmapped repo (`_match_issue_close` returns None
     # when `issue_key` does). Without this, a PR in an unmapped repo on another
     # account (branch `l2/h395-port`) derived H395 and merged with no prompt.
-    if repo not in REPO_PREFIXES:
+    if repo.strip().lower() not in REPO_PREFIXES:
         return None
     key = derive_issue_key(repo, number, state)
     if key is None:

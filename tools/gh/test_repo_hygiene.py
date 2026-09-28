@@ -757,6 +757,25 @@ class BoardStatusDriftTests(unittest.TestCase):
             self.assertNotIn("PATCH", args)
             self.assertNotIn("POST", args)
 
+    def test_a_mixed_case_repo_is_not_invisible_to_drift(self):
+        """harmonic-forge#800: `_board_state` keyed items by GitHub's real,
+        possibly-mixed-case `nameWithOwner` (LeasePAL-ML/LeasePAL-App-
+        Prototype), while every caller compares against the manifest's
+        lowercased repo string -- so `item_repo != repo` was true for every
+        item on a mixed-case repo's board, and this drift check silently
+        inspected zero items for it regardless of actual drift."""
+        payload = json.dumps({"data": {"user": {"projectV2": {
+            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                       "nodes": [_board_node(
+                           3, issue_state="CLOSED", status="In Progress",
+                           repo="LeasePAL-ML/LeasePAL-App-Prototype")]}}}}})
+        report = rh.Report()
+        with patch.object(rh, "_run", return_value=payload):
+            rh.audit_board_status_drift(
+                "leasepal-ml/leasepal-app-prototype", report, {})
+        self.assertEqual(len(report.board_status_drift), 1)
+        self.assertIn("#3", report.board_status_drift[0].name)
+
     def test_repo_not_on_any_board_is_silently_skipped(self):
         """`audit_unboarded` already reports the missing mapping once —
         this check must not report it a second time under a different name."""

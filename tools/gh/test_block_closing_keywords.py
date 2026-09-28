@@ -215,5 +215,18 @@ class RepoFlagSpoofingIsRejected(unittest.TestCase):
         self.assertTrue(_is_denied(result))
 
 
+class MixedCaseRepoTests(unittest.TestCase):
+    """harmonic-forge#800: mirrors batch_auth's own fix. `_repo_prefixes()`
+    keys are the manifest's lowercased `p.repo` strings, but `repo` here can
+    arrive from `git remote`/CLI in its real, possibly-mixed-case slug."""
+
+    def test_issue_key_resolves_a_mixed_case_repo(self):
+        prefixes = bck._repo_prefixes()
+        if "leasepal-ml/leasepal-app-prototype" not in prefixes:
+            self.skipTest("leasepal not present in this manifest")
+        self.assertEqual(
+            bck._issue_key("LeasePAL-ML/LeasePAL-App-Prototype", "3"), "P3")
+
+
 if __name__ == "__main__":
     unittest.main()

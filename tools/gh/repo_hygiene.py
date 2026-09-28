@@ -866,7 +866,15 @@ def _board_state(owner: str, number: str) -> dict[tuple[str, int], dict]:
             content = node.get("content") or {}
             if not content.get("number"):
                 continue
-            key = ((content.get("repository") or {}).get("nameWithOwner", ""),
+            # Lowercased to match `repo` everywhere else in this module: it
+            # comes from the manifest's `normalize_repo`-lowercased strings
+            # (`sweep_repos()`/`_REPO_BOARDS`), while `nameWithOwner` is
+            # GitHub's real, possibly-mixed-case slug. A case-sensitive key
+            # here made every LeasePAL-ML item invisible to both
+            # `audit_unboarded` (false "on no board") and
+            # `audit_board_status_drift` (silently inspects zero items,
+            # harmonic-forge#800).
+            key = ((content.get("repository") or {}).get("nameWithOwner", "").lower(),
                    content["number"])
             state[key] = {
                 "Theme": (node.get("theme") or {}).get("name"),
