@@ -372,7 +372,7 @@ Always prefix.
 | `I` | `vitalharmony/cymagraph-infra` | vitalharmony |
 | `O` | `vitalharmony/openclaw-projects` | vitalharmony |
 | `K` | ke'nekted | **`harmonicarchitect` — separate account, separate credentials** |
-| `P` | LeasePAL | own account — **projected, repo does not yet exist** |
+| `P` | `LeasePAL-ML/LeasePAL-App-Prototype` | vitalharmony — client repo, vitalharmony has push; board LeasePAL-ML #1 |
 
 ### `L` is permanently reserved and must never be assigned
 

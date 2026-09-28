@@ -121,7 +121,11 @@ def _repo_prefixes() -> dict[str, str]:
 
 
 def _issue_key(repo: str, number: str) -> str | None:
-    prefix = _repo_prefixes().get(repo)
+    """`repo` here can arrive from `git remote`/CLI in its real, possibly
+    mixed-case slug, while `_repo_prefixes()`'s keys are the manifest's
+    lowercased `p.repo` strings -- mirrors `batch_auth.issue_key`'s own fix
+    (harmonic-forge#800)."""
+    prefix = _repo_prefixes().get(repo.strip().lower())
     return f"{prefix}{number}" if prefix else None
 
 

@@ -202,9 +202,14 @@ runs_lane3 = false
 
 [[project]]
 name = "leasepal"
+repo = "LeasePAL-ML/LeasePAL-App-Prototype"
+path = "~/Harmonic_Projects/LeasePAL-App-Prototype"
 prefix = "P"
+account = "vitalharmony"
+board_owner = "LeasePAL-ML"
+board_number = "1"
 milestones = false
-onboarded = false
+onboarded = true
 
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"
@@ -213,4 +218,8 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
-runs_lane3 = false
+runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#800): a Flutter web prototype with no live
+# backend service, which Lane 3 exercises with flutter analyze / flutter test /
+# flutter build web and a Chrome run.
+needs_gate_adapter = false

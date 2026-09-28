@@ -312,6 +312,13 @@ def check_lane_tasks(project: Project) -> Check:
         "lane3_begin_task": project.protocol.lane3_begin_task,
         "lane3_end_task": project.protocol.lane3_end_task,
     }
+    if project.protocol.runs_lane3:
+        # harmonic-forge#800: `l1-post --kind ready-for-l3` runs `mise run check`
+        # unconditionally (tools/gh/l1_post.py:1549), with no fallback -- a
+        # runs_lane3 repo missing this literal task name reports "onboarded,
+        # green" while no issue in it can ever reach Lane 3 (found live on
+        # openclaw-projects#21).
+        declared["check_task"] = "check"
     present = lane_tasks.task_names(mise.read_text(encoding="utf-8"))
     missing = {field: name for field, name in declared.items() if name not in present}
     if missing:
@@ -784,15 +791,38 @@ def apply_lane_tasks(project: Project, dry_run: bool = False) -> list[Check]:
         "lane3-end": project.protocol.lane3_end_task,
     }
     missing = {canon: name for canon, name in declared.items() if name not in present}
+
+    # `check` has no generic body to render (unlike the five above, it is
+    # inherently repo-specific -- a Flutter repo's `check` is not a Python
+    # repo's), so it can never be added here. Without this, `apply` reported
+    # "ok"/"already present" while `check_lane_tasks`'s verify pass -- which
+    # now also requires `check` for a runs_lane3 project -- stayed FAIL
+    # forever, with no tool-emitted guidance on what to do about it
+    # (harmonic-forge#800 preclose finding).
+    needs_hand_written_check = (
+        project.protocol.runs_lane3 and "check" not in present)
+
+    checks: list[Check] = []
+    if needs_hand_written_check:
+        checks.append(Check(
+            "lane tasks", FAIL,
+            f"runs_lane3=true but no `check` task in {mise} -- this one has no "
+            "generic body to generate; author it by hand (see another onboarded "
+            "repo's mise.toml for the shape)"))
+
     if not missing:
-        return [Check("lane tasks", OK, "already present")]
+        if not checks:
+            checks.append(Check("lane tasks", OK, "already present"))
+        return checks
     if dry_run:
-        return [Check("lane tasks", OK,
-                      f"would add {', '.join(sorted(missing.values()))} to {mise}")]
+        checks.append(Check("lane tasks", OK,
+                      f"would add {', '.join(sorted(missing.values()))} to {mise}"))
+        return checks
 
     block = lane_tasks.render_subset(missing)
     mise.write_text(text.rstrip("\n") + "\n\n" + block, encoding="utf-8")
-    return [Check("lane tasks", OK, f"added {', '.join(sorted(missing.values()))}")]
+    checks.append(Check("lane tasks", OK, f"added {', '.join(sorted(missing.values()))}"))
+    return checks
 
 
 def apply(project: Project, dry_run: bool = False) -> list[Check]:

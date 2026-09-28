@@ -508,6 +508,17 @@ class TestRepoBoardMap(unittest.TestCase):
             gh_issue.resolve_board_for_repo("vitalharmony/harmonic-forge")[1],
         )
 
+    def test_a_mixed_case_repo_still_resolves(self):
+        """harmonic-forge#800: REPO_BOARDS keys are lowercased by
+        manifest.normalize_repo, but every repo onboarded before LeasePAL
+        happened to be all-lowercase already, so an exact-match lookup here
+        never surfaced the mismatch. `--repo` is a real GitHub owner/name,
+        and GitHub repo names are case-insensitive, so the mixed-case form a
+        human actually types must resolve too."""
+        self.assertEqual(
+            gh_issue.resolve_board_for_repo("LeasePAL-ML/LeasePAL-App-Prototype"),
+            ("LeasePAL-ML", "1"))
+
 
 class TestBoardResolutionIgnoresAmbientEnv(unittest.TestCase):
     """The bug: $GH_PROJECT_* from the invoking shell decided the board."""

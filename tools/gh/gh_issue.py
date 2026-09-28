@@ -259,9 +259,16 @@ def resolve_board_for_repo(repo: str) -> tuple[str, str]:
     Deliberately raises rather than returning None: every caller that reaches
     here has already decided a board is wanted, so a soft failure would just
     reproduce the silent no-board case this issue exists to remove.
+
+    `REPO_BOARDS` keys are lowercased (`manifest.normalize_repo`), because
+    `--repo` is a real GitHub owner/name and GitHub repo names are
+    case-insensitive. Every repo onboarded so far happened to be all-lowercase
+    already, so an exact-match lookup here never surfaced the mismatch until
+    LeasePAL-ML/LeasePAL-App-Prototype (harmonic-forge#800) -- the first
+    mixed-case one.
     """
     try:
-        return REPO_BOARDS[repo]
+        return REPO_BOARDS[repo.strip().lower()]
     except KeyError:
         raise SystemExit(
             f"[GH] No project board mapped for {repo!r}.\n"

@@ -385,6 +385,22 @@ class RepoTargetTests(unittest.TestCase):
                 123,
             )
 
+    def test_comment_target_accepts_a_mixed_case_repo(self) -> None:
+        """harmonic-forge#800: `repo` here is the manifest's lowercased form
+        (`resolve_repo`), but GitHub's own `html_url` returns the repo's real,
+        possibly-mixed-case slug (LeasePAL-ML/LeasePAL-App-Prototype). Owner/
+        repo is case-insensitive on GitHub, so a case-sensitive path compare
+        here was a false rejection waiting on the first mixed-case org."""
+        self.assertEqual(
+            post.validate_comment_target(
+                "https://github.com/LeasePAL-ML/LeasePAL-App-Prototype/issues/2"
+                "#issuecomment-789",
+                "leasepal-ml/leasepal-app-prototype",
+                2,
+            ),
+            789,
+        )
+
     def test_l1_post_uses_explicit_repo_instead_of_environment(self) -> None:
         # a private-repo incident: a handoff's lead region (before its first `###`) must
         # now carry Scope/Next — incidental to this test's subject (repo
