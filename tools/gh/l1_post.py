@@ -1173,13 +1173,20 @@ def active_worktree_branches() -> set[str]:
 
 
 def validate_comment_target(url: str, repo: str, issue: int) -> int:
+    """`repo` here is the manifest's normalized (lowercased) form
+    (`resolve_repo` returns `Project.repo`), but GitHub's own API returns
+    `html_url` in the repo's real, possibly-mixed-case slug -- confirmed
+    canonical-cased, exact-match comparison was never wrong until a
+    mixed-case org (LeasePAL-ML, harmonic-forge#800) exposed it. Owner/repo
+    is case-insensitive on GitHub, so the path comparison must be too.
+    """
     parsed = urlparse(url)
     expected_path = f"/{repo}/issues/{issue}"
     comment = re.search(r"(?:^|&)issuecomment-(\d+)(?:&|$)", parsed.fragment)
     if (
         parsed.scheme != "https"
         or parsed.netloc != "github.com"
-        or parsed.path != expected_path
+        or parsed.path.lower() != expected_path.lower()
         or not comment
     ):
         fail(f"posted comment target {url!r} does not match requested {repo}#{issue}")
