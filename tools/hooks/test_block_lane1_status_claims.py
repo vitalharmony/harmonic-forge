@@ -577,6 +577,17 @@ class TestLane3MemoryWritePath(_BashWriteSurface):
         self.assertTrue(self.denied(
             f'python3 -c "import os; os.link(\'{index}\', \'{dest}\')"'))
 
+    def test_cp_with_a_trailing_redirect_is_not_falsely_denied(self):
+        """Preclose finding: a shell redirect token (`>`, `/dev/null`)
+        following a relocate verb's own args was misread as an extra
+        relocate SOURCE, denying the ordinary, fully in-bounds pattern
+        `cp a b > /dev/null` under LANE=3 -- a real regression, not an
+        evasion, since this breaks a common redirect-output pattern."""
+        src = self.memory_root / "feedback_src.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "feedback_dest.md"
+        self.assertFalse(self.denied(f"cp {src} {dest} > /dev/null"))
+
     def test_removing_ln_from_the_verb_list_is_caught_by_a_test(self):
         """Test-honesty preclose finding: no prior test pinned `ln`'s
         presence in `bash_write_targets`'s own destination-recognition list

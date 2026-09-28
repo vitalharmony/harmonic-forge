@@ -3,6 +3,26 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): stop a trailing shell redirect from being misread as a relocate source (harmonic-forge#797 preclose pass 5, final)
+
+5-lens round 4 found: _relocate_operands didn't recognize a shell redirect
+token (>, /dev/null, 2>&1) as ending the verb's own argument list, so the
+plain, common pattern 'cp a b > /dev/null' under LANE=3 was denied,
+citing '>' itself as a bogus relocate source -- a real regression against
+ordinary usage, not an evasion. Fixed by stopping _relocate_operands's
+token scan at the first REDIRECT_TOKEN/GLUED_REDIRECT match, reusing the
+file's own existing redirect-recognition regexes.
+
+Two more narrow parsing gaps found this round (GNU long-option
+abbreviation/glued short-flag spelling for --target-directory, and a
+trailing comma defeating the interpreter relocate regex) are folded into
+harmonic-forge#801 alongside the already-filed residual, per the same
+'not a full parser' posture -- both documented in code and in #801's
+thread rather than chased further here.
+- tools/hooks/block_lane1_status_claims.py      | 19 +++++++++++++++++++
+- tools/hooks/test_block_lane1_status_claims.py | 11 +++++++++++
+- 2 files changed, 30 insertions(+)
+
 ## fix(hooks): close --target-directory=/-t and separated-option-value relocate parsing; source-check the interpreter surface too (harmonic-forge#797 preclose pass 4)
 
 5-lens panel round 3 found: --target-directory=/-t puts the destination in

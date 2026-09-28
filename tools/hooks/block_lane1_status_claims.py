@@ -673,6 +673,13 @@ def _relocate_operands(args: list[str]) -> tuple[list[str], str | None]:
     index = 0
     while index < len(args):
         token = args[index]
+        if REDIRECT_TOKEN.match(token) or GLUED_REDIRECT.match(token):
+            # harmonic-forge#797 preclose: a shell redirect (`> /dev/null`,
+            # `2>&1`) is not part of the VERB's own argument list -- treating
+            # it as a positional made `cp a b > /dev/null` deny under LANE=3,
+            # citing '>' itself as a bogus relocate source. Everything from
+            # here on belongs to the redirect, not to cp/mv/install/ln.
+            break
         if token.startswith("--target-directory="):
             target_dir = token[len("--target-directory="):]
         elif token in _TARGET_DIR_FLAGS and index + 1 < len(args):
@@ -811,6 +818,18 @@ def lane3_relocate_source_denial(sources: list[str]) -> dict | None:
 #: the whole write-guard architecture (Lane 2's main-checkout and
 #: write-on-main-branch checks share every one of these limits), not
 #: specific to the `operator-memory/` allowance this issue adds.
+#:
+#: Also folded into harmonic-forge#801 rather than chased to exhaustion here,
+#: for the same "not a full parser" reason: `_relocate_operands` matches
+#: `--target-directory=`/`-t DIR` by exact spelling, not GNU's accepted
+#: unambiguous abbreviations (`--target-dir=`) or the glued short form
+#: (`-t/DIR`); and `INTERPRETER_RELOCATE_WITH_SOURCE`/the `move` group in
+#: `INTERPRETER_WRITE_PAIR` both stop at the first `)`, so a trailing comma
+#: before it (`os.replace('a','b',)`) is valid Python that defeats both
+#: regexes identically. Each is a real, narrow parsing gap around a single
+#: known construct (not an unrecognized construct entirely), fixable in a
+#: bounded way if #801 scopes it in — unlike the fully unbounded tool list
+#: above, so it is named specifically rather than left implicit.
 
 
 def interpreter_write_targets(
