@@ -33,6 +33,13 @@ class Protocol:
     #: absent manifest with no declaration is indistinguishable from an
     #: oversight, and silence is exactly what this issue exists to outlaw.
     needs_gate_adapter: bool | None = None
+    #: harmonic-forge#802. A repo's CI standard is `verify` -> `mise run
+    #: ci-check`; a repo whose CI instead mirrors `check`'s commands against
+    #: its own parity tool (hrse's `ci-parity-check-command-sets`) declares
+    #: that task name here so `check_ci` treats it as the repo's own
+    #: equivalent of `ci-check`, rather than flagging a missing `ci-check`.
+    #: `None` means the repo follows the default `ci-check` convention.
+    ci_parity_task: str | None = None
 
     def worktree_names(self, checkout: str) -> list[str]:
         lanes = (2, 3) if self.runs_lane3 else (2,)

@@ -2408,3 +2408,11 @@ anchor = "gate-readiness-sweep"
 statement = "A partial AE carries the other cases forward: the sweep still lists every spec case, a case not being run reads 'carried forward, not re-run' with its evidence link and unchanged SHA, the AE names only the cases it authorizes, and Lane 3 executes only those cases."
 text_sha = "d0cca63bd103382e"
 hooks = []
+
+[[rule]]
+id = "R-0367"
+file = "rules/testing-gate.md"
+anchor = "the-ci-standard-every-onboarded-repo-meets-verify-runs-ci-check-harmonic-forge-802"
+statement = "Every onboarded repo declares [tasks.ci-check] (the complete, offline, credential-free, CI-runnable subset of its verification, or a declared ci_parity_task variant); [tasks.check] depends on it plus reasoned machine-local steps; CI's verify job runs only mise run ci-check, never a mirrored command list; a shared gate tool's skip is keyed on its input being absent, never on CI=true; requiring the check on main stays a per-repo operator decision."
+text_sha = "7935e513d4d86dca"
+hooks = []
