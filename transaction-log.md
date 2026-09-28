@@ -14,6 +14,22 @@ matching registry entry. Pins both with a unit test.
 - tools/gh/test_l1_post_sweep_cases.py | 41 ++++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml            | 12 +++++++++--
 - 4 files changed, 91 insertions(+), 4 deletions(-)
+## fix(hooks): close two write-guard scope holes in the feedback_*.md allowance (harmonic-forge#797 preclose)
+
+preclose-inspection found: (1) a symlink named feedback_x.md resolving to
+MEMORY.md was allowed, since the filename check keyed on the link name
+only, never the resolved target's own name; (2) feedback_*.md anywhere
+under MEMORY_ROOT, not just directly in it, was allowed, since _inside()
+is a prefix test not a direct-child test. Both closed by checking every
+path form's own parent==MEMORY_ROOT and own basename match. Also found:
+the new symlink test wrote to the real operator-memory/ directory,
+erroring on any machine without it (including CI) and risking deleting a
+real lesson file on an interrupted run -- now isolated behind a
+monkeypatched tmp MEMORY_ROOT, matching the existing tmp-checkout pattern.
+- tools/hooks/block_lane1_status_claims.py      | 18 +++++++-
+- tools/hooks/test_block_lane1_status_claims.py | 62 +++++++++++++++++++++------
+- 2 files changed, 65 insertions(+), 15 deletions(-)
+
 ## docs(lane3): allow-list replaces prohibitions, trigger re-derivation, gotchas, memory write path (harmonic-forge#797)
 
 Merges the absolute-prohibitions/exception/what-you-MAY-do sections into

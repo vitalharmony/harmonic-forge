@@ -616,9 +616,23 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
     candidates = (lexical, resolved)
     if _inside(candidates, TESTPLAN_ROOT):
         return False
-    is_feedback_lesson = lexical.name.startswith("feedback_") and lexical.name.endswith(".md")
-    if is_feedback_lesson and _inside(candidates, MEMORY_ROOT):
+    if _is_feedback_lesson_path(candidates):
         return False
+    return True
+
+
+def _is_feedback_lesson_path(candidates: tuple) -> bool:
+    """harmonic-forge#797 preclose finding: a symlink named `feedback_x.md`
+    that RESOLVES to something else (`MEMORY.md`, a file in a subdirectory)
+    must not inherit legitimacy from its own link name. Both the lexical
+    and resolved form must independently be a `feedback_*.md` file whose
+    immediate parent is exactly MEMORY_ROOT — not merely somewhere under
+    it, which would admit any subdirectory a Lane 3 session creates."""
+    for candidate in candidates:
+        if candidate.parent != MEMORY_ROOT:
+            return False
+        if not (candidate.name.startswith("feedback_") and candidate.name.endswith(".md")):
+            return False
     return True
 
 

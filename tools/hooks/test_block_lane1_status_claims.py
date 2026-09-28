@@ -446,31 +446,67 @@ class TestLane3ThroughTheBashSurface(_BashWriteSurface):
         self.assertFalse(self.denied("cat /etc/hostname"))
         self.assertFalse(self.denied("ls -la > /dev/null"))
 
+
+class TestLane3MemoryWritePath(_BashWriteSurface):
+    """harmonic-forge#797's `feedback_*.md` allowance, isolated from the
+    real `operator-memory/` directory. Preclose finding: the first version
+    of these tests pointed `m.MEMORY_ROOT` at the real directory, which (a)
+    errors on any machine without it, CI included, and (b) can delete or
+    dangle a real lesson file on an interrupted run. A monkeypatched tmp
+    root, mirroring `_BashWriteSurface`'s own tmp-checkout pattern, has
+    neither problem."""
+
+    LANE = "3"
+
+    def setUp(self) -> None:
+        super().setUp()
+        memory_root = Path(tempfile.mkdtemp()).resolve()
+        patcher = unittest.mock.patch.object(m, "MEMORY_ROOT", memory_root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.memory_root = memory_root
+
     def test_write_feedback_lesson_inside_memory_root_is_allowed(self):
-        """harmonic-forge#797: the one write target outside testplan/ — a
-        durable lesson that survives past this session's own context."""
-        self.assertFalse(self.denied(f"echo x > {m.MEMORY_ROOT}/feedback_l3_probe.md"))
+        """The one write target outside testplan/ — a durable lesson that
+        survives past this session's own context."""
+        self.assertFalse(self.denied(f"echo x > {self.memory_root}/feedback_l3_probe.md"))
 
     def test_write_to_memory_index_is_denied(self):
         """The shared MEMORY.md index is not a lesson file -- only
         feedback_*.md is writable, never the index other lanes read."""
-        self.assertTrue(self.denied(f"echo x > {m.MEMORY_ROOT}/MEMORY.md"))
+        self.assertTrue(self.denied(f"echo x > {self.memory_root}/MEMORY.md"))
 
     def test_write_to_a_non_feedback_memory_file_is_denied(self):
-        self.assertTrue(self.denied(f"echo x > {m.MEMORY_ROOT}/project_x.md"))
+        self.assertTrue(self.denied(f"echo x > {self.memory_root}/project_x.md"))
+
+    def test_write_to_a_feedback_file_in_a_subdirectory_is_denied(self):
+        """Preclose finding: `_inside()` alone is a prefix test, not a
+        direct-child test, so a `feedback_*.md`-named file anywhere under
+        MEMORY_ROOT -- not just directly in it -- would otherwise pass.
+        The allowance is for the flat lesson directory, nothing nested."""
+        (self.memory_root / "sub").mkdir()
+        self.assertTrue(self.denied(f"echo x > {self.memory_root}/sub/feedback_x.md"))
 
     def test_symlink_escape_from_memory_root_is_denied(self):
         """Requires BOTH the lexical and resolved form inside MEMORY_ROOT —
         a feedback_*.md-named symlink pointing outside it must not be usable
         to write anywhere the resolved path denies."""
-        target = Path(tempfile.mkdtemp()) / "outside.md"
-        target.write_text("pre-existing\n")
-        self.addCleanup(lambda: target.unlink(missing_ok=True))
-        link = m.MEMORY_ROOT / "feedback_escape_probe.md"
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        link.symlink_to(target)
-        self.addCleanup(lambda: link.unlink(missing_ok=True))
+        outside = Path(tempfile.mkdtemp()) / "outside.md"
+        outside.write_text("pre-existing\n")
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        link = self.memory_root / "feedback_escape_probe.md"
+        link.symlink_to(outside)
+        self.assertTrue(self.denied(f"echo x > {link}"))
+
+    def test_symlink_named_feedback_pointing_at_the_index_is_denied(self):
+        """Preclose finding: a `feedback_*.md`-NAMED symlink that resolves
+        to MEMORY.md must not inherit legitimacy from its own link name --
+        the old check tested `lexical.name` only, never the resolved
+        target's own name, so this exact retarget was allowed."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        link = self.memory_root / "feedback_retarget_probe.md"
+        link.symlink_to(index)
         self.assertTrue(self.denied(f"echo x > {link}"))
 
 
