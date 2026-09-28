@@ -186,11 +186,15 @@ gap, per this file's other BLOCKED preconditions — don't route around the
 filter to find it.
 
 **If a TC's execution deletes anything, disposable tier included**, mark it
-in the spec as `conflicts with the no-delete absolute (SKILL § What Lane 3
-may do (g))` — "a gate run never deletes anything, under any tier, ever" is
-absolute, so a spec that needs a delete (e.g. exercising an abort-on-drift
-path) surfaces that conflict for HITL to rule on at approval time, rather
-than the gate discovering and running it unflagged.
+in the spec explicitly, naming exactly what is deleted and citing that it
+is scoped to state the run's own spec created (§ Write scope's "created in
+that run" boundary) — never a broad or predicate-based delete, which item
+(g) forbids absolutely with no HITL override. A delete of something the run
+created (e.g. exercising an abort-on-drift path against disposable Tier W
+data) is permitted, but surfaces at spec approval time as a named, flagged
+operation for HITL to see — never something the gate discovers and runs
+unflagged, and never something inferred from "it's disposable, so it's
+fine."
 
 ## Gate-readiness sweep precondition
 
@@ -342,13 +346,18 @@ results, and any evidence artifact too large to paste into a comment.
 (g) **Seed throwaway test data through the repo's own fixture ledger**, as
 part of executing a pre-approved test spec — the adapter half states how,
 as a single call rather than two conventions to remember. **A gate run
-never deletes anything, under any tier, ever**: a predicate-based cleanup
-delete in a gate script once stripped every edge off a live account node
-graph-wide by matching a node it never created. Cleanup of ledger-tracked
-fixtures is a separate, later, operator-invoked sweeper, never part of a
-gate run itself, and the gate ends by running the repo's read-only residue
-check — which is what turns "the sweeper exists" into "the sweeper gets
-run."
+never runs a broad or predicate-based cleanup delete, and never deletes
+ledger-tracked fixtures itself, under any tier, ever**: a predicate-based
+cleanup delete in a gate script once stripped every edge off a live account
+node graph-wide by matching a node it never created. Cleanup of
+ledger-tracked fixtures is a separate, later, operator-invoked sweeper,
+never part of a gate run itself, and the gate ends by running the repo's
+read-only residue check — which is what turns "the sweeper exists" into
+"the sweeper gets run." This does not forbid a targeted delete that is
+itself one of the approved spec's own test cases (e.g. exercising an
+abort-on-drift path) and stays within § Write scope's "created in that
+run" boundary below — that class is real and covered by AC5's flagging
+requirement, not by this absolute.
 
 (h) **Execute a data-modifying script's write/apply path when the test spec
 submitted for Tech Lead approval explicitly named that execution as in

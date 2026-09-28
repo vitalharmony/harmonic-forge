@@ -3,6 +3,34 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): close hardlink/mv-source bypass of Lane 3 write guard (harmonic-forge#797 preclose pass 3)
+
+5-lens panel found: cp/mv/install checked only their destination, never
+source, so 'mv MEMORY.md feedback_x.md' destroyed the shared index while
+looking like a legitimate lesson write. ln was not a recognized write verb
+at all, so a hardlink named feedback_x.md pointing at MEMORY.md (or any
+file) bypassed every path check entirely -- .resolve() does not follow
+hardlinks, so the hardlink has no distinguishable path form from a real
+lesson file. Both closed the same way: ln added to the recognized verb
+list, and a new lane3_relocate_source_denial() requires cp/mv/install/ln's
+SOURCE to already be inside an allowed root too, not just the destination.
+
+Also fixed: both Lane 3 denial messages still said testplan/ was the only
+writable path, false since this issue's own earlier commits -- a denied
+session reading its own denial reason concluded no lesson write was
+possible at all. And SKILL.md's no-delete 'absolute' (item g) contradicted
+Write scope's 'may delete what it created in that run' -- narrowed (g) to
+broad/predicate-based cleanup deletes specifically, matching its own
+real incident, and updated the spec-derivation flagging instruction to
+match. Test-honesty: the symlink-escape test's fixture wasn't itself named
+feedback_*.md, so it only pinned the basename check, never the resolved-
+form containment check it claimed to -- retargeted, plus new tests for
+the hardlink and mv-source paths.
+- skills/lane3-gate-platform/SKILL.md           | 33 +++++++-----
+- tools/hooks/block_lane1_status_claims.py      | 72 +++++++++++++++++++++++----
+- tools/hooks/test_block_lane1_status_claims.py | 43 ++++++++++++++--
+- 3 files changed, 123 insertions(+), 25 deletions(-)
+
 ## docs(rules): R-0351 spot-checks Tier deep too; document the partial-AE carry-forward convention (harmonic-forge#796)
 
 Drops Tier deep from R-0351's full-re-run clause per the operator's

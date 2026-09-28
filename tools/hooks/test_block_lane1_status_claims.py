@@ -490,16 +490,51 @@ class TestLane3MemoryWritePath(_BashWriteSurface):
         self.assertTrue(self.denied(f"echo x > {self.memory_root}/sub/feedback_x.md"))
 
     def test_symlink_escape_from_memory_root_is_denied(self):
-        """Requires BOTH the lexical and resolved form inside MEMORY_ROOT —
-        a feedback_*.md-named symlink pointing outside it must not be usable
-        to write anywhere the resolved path denies."""
+        """Test-honesty preclose finding: the escape target must itself be
+        NAMED `feedback_*.md`, or this test is denied by the basename check
+        alone and never actually exercises the resolved-form CONTAINMENT
+        check (`candidate.parent != MEMORY_ROOT`) it claims to pin — a
+        mutation that dropped the containment check on the resolved form
+        left this test green with a non-`feedback_`-named target."""
         outside_dir = tempfile.TemporaryDirectory()
         self.addCleanup(outside_dir.cleanup)
-        outside = Path(outside_dir.name) / "outside.md"
+        outside = Path(outside_dir.name) / "feedback_outside.md"
         outside.write_text("pre-existing\n")
         link = self.memory_root / "feedback_escape_probe.md"
         link.symlink_to(outside)
         self.assertTrue(self.denied(f"echo x > {link}"))
+
+    def test_hardlink_to_the_memory_index_is_denied(self):
+        """Preclose finding (silent-bypass/second-run lenses): `.resolve()`
+        does not follow hardlinks, so a hardlink named `feedback_*.md`
+        pointing at MEMORY.md has no distinguishable path form from a real
+        lesson file -- the symlink-retarget defense above does not see it.
+        Closed by requiring the relocate SOURCE (here, MEMORY.md itself,
+        via `ln`) to already be inside an allowed root."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        link = self.memory_root / "feedback_hardlink_probe.md"
+        self.assertTrue(self.denied(f"ln {index} {link}"))
+
+    def test_mv_of_the_memory_index_onto_a_feedback_name_is_denied(self):
+        """Preclose finding: `bash_write_targets` checks only a `mv`/`cp`/
+        `install` command's DESTINATION -- the source (here, MEMORY.md
+        itself) was never checked, so renaming the shared index onto an
+        allowed name destroyed it while looking like a normal lesson
+        write. Closed by `lane3_relocate_source_denial`."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_mv_probe.md"
+        self.assertTrue(self.denied(f"mv {index} {dest}"))
+
+    def test_mv_between_two_feedback_names_is_allowed(self):
+        """Regression guard: the source-side check must not deny a relocate
+        whose source is ALREADY a legitimate lesson file -- only sources
+        outside Lane 3's writable roots are denied."""
+        src = self.memory_root / "feedback_old_name.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "feedback_new_name.md"
+        self.assertFalse(self.denied(f"mv {src} {dest}"))
 
     def test_symlink_named_feedback_pointing_at_the_index_is_denied(self):
         """Preclose finding: a `feedback_*.md`-NAMED symlink that resolves

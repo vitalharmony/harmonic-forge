@@ -690,7 +690,7 @@ def bash_write_targets(segment: list[str]) -> list[str]:
             for a in args
         )
         targets.extend(positional if explicit_script else positional[1:])
-    elif verb in ("cp", "mv", "install") and len(positional) >= 2:
+    elif verb in ("cp", "mv", "install", "ln") and len(positional) >= 2:
         targets.append(positional[-1])
     elif verb == "truncate":
         targets.extend(a for a in positional if not SIZE_OPERAND.match(a))
@@ -698,6 +698,54 @@ def bash_write_targets(segment: list[str]) -> list[str]:
         targets.extend(a[len("of="):] for a in args if a.startswith("of="))
 
     return [t for t in targets if not ignorable_write_target(t)]
+
+
+#: harmonic-forge#797 preclose finding: `cp`/`mv`/`install`/`ln` never author
+#: new content -- they make EXISTING content (or, for `ln`, the exact same
+#: inode) reachable under a new name. `bash_write_targets` above checks only
+#: the destination, so a Lane 3 session could `mv`/`ln` an arbitrary existing
+#: file -- including `operator-memory/MEMORY.md` itself -- onto a name the
+#: destination-only check allows. Verified live: both `mv MEMORY.md
+#: feedback_x.md` and `ln <victim> feedback_probe.md` were allowed and
+#: destroyed/clobbered their target before this fix.
+RELOCATE_VERBS = ("cp", "mv", "install", "ln")
+
+
+def bash_relocate_sources(segment: list[str]) -> list[str]:
+    """Source operand(s) of a `cp`/`mv`/`install`/`ln` invocation.
+
+    Everything but the last positional argument is a source (`cp a b c
+    dest` copies three sources). Checked only against
+    `lane3_write_outside_testplan` -- a source outside Lane 3's own
+    writable roots has no more standing to be relocated FROM than an
+    arbitrary path has to be written TO."""
+    tokens = strip_invocation_prefix(segment)
+    if not tokens or Path(tokens[0]).name not in RELOCATE_VERBS:
+        return []
+    positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+    if len(positional) < 2:
+        return []
+    return [s for s in positional[:-1] if not ignorable_write_target(s)]
+
+
+def lane3_relocate_source_denial(sources: list[str]) -> dict | None:
+    """harmonic-forge#797 preclose: deny a relocate/link whose SOURCE is
+    outside Lane 3's writable roots, independent of whether the
+    destination passes `lane3_write_outside_testplan` on its own. Reuses
+    that same predicate for the source side -- self-gates on LANE=3, same
+    as the destination check."""
+    for source in sources[:MAX_WRITE_TARGETS]:
+        if lane3_write_outside_testplan(source):
+            return denial(
+                f"Blocked: this session was launched as Lane 3 (LANE=3) and "
+                f"this command relocates or links {source!r} — "
+                "harmonic-forge#797. `cp`/`mv`/`install`/`ln` bring existing "
+                "file content (or, for `ln`, the same inode) into a new name "
+                "without authoring anything new, so the SOURCE must already "
+                "be inside an allowed location (testplan/, or an existing "
+                "feedback_*.md lesson file) too — not just the destination."
+            )
+    return None
 
 
 def interpreter_write_targets(
@@ -908,12 +956,13 @@ def protected_write_denial(
         if lane3_write_outside_testplan(target):
             return denial(
                 f"Blocked: this session was launched as Lane 3 (LANE=3) and "
-                f"this command writes outside ~/Harmonic_Projects/testplan/ "
-                f"via {construct} ({target!r}) — harmonic-forge#458. Lane 3 "
+                f"this command writes outside its two allowed roots via "
+                f"{construct} ({target!r}) — harmonic-forge#458/#797. Lane 3 "
                 "never fixes anything, ever (harmonic-forge#150); the only "
-                "writable path is the testplan root, for gate artifacts too "
-                "large for an issue comment. Redirect scratch output there "
-                "instead."
+                "writable paths are the testplan root, for gate artifacts too "
+                "large for an issue comment, and a feedback_*.md lesson file "
+                "directly inside operator-memory/. Redirect scratch output "
+                "there instead."
             )
         if write_on_main_branch(target, cwd):
             return denial(
@@ -1080,6 +1129,9 @@ def decision(command: object, cwd: Path) -> dict:
             effective_cwd)
         if write_denial is not None:
             return write_denial
+        relocate_denial = lane3_relocate_source_denial(bash_relocate_sources(segment))
+        if relocate_denial is not None:
+            return relocate_denial
         if os.environ.get("LANE") == "3":
             bulk_read_reason = bulk_comment_read_denial(segment)
             if bulk_read_reason is not None:
@@ -1174,9 +1226,11 @@ def main() -> None:
                 "Blocked: this session was launched as Lane 3 (LANE=3) "
                 "and Lane 3 never fixes anything, ever, under any "
                 "circumstance (harmonic-forge#150). The only writable "
-                "path is ~/Harmonic_Projects/testplan/, for gate "
-                "artifacts too large for an issue comment. Record the "
-                "failure and report it for Lane 2 to fix instead."
+                "paths are ~/Harmonic_Projects/testplan/ (gate artifacts "
+                "too large for an issue comment) and a "
+                "feedback_*.md lesson file directly inside "
+                "~/Harmonic_Projects/operator-memory/ (harmonic-forge#797). "
+                "Record the failure and report it for Lane 2 to fix instead."
             )))
             return
         if write_on_main_branch(file_path, cwd):
