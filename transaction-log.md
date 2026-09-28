@@ -3,6 +3,39 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): close --target-directory=/-t and separated-option-value relocate parsing; source-check the interpreter surface too (harmonic-forge#797 preclose pass 4)
+
+5-lens panel round 3 found: --target-directory=/-t puts the destination in
+a flag value, not a positional, so both the destination and new source
+checks saw zero operands for 'mv --target-directory=X victim'; install -m
+644's mode value survived the naive flag filter and was misread as a
+bogus source, false-denying legitimate in-bounds commands; and the
+interpreter surface (python3 -c) already recognizes os.replace/os.rename/
+shutil.move/shutil.copy* as writes (existing, tested) but checked only
+the destination -- the identical shell-level bug, one surface over --
+while os.link/os.symlink weren't recognized there at all, mirroring ln's
+absence from the shell verb list before this issue's earlier commit.
+
+Fixed with one shared _relocate_operands() helper (used by both
+bash_write_targets's destination extraction and bash_relocate_sources)
+that understands --target-directory=/-t and skips known separated-value
+flags (-m/-o/-g/-t/-S), plus a new interpreter_relocate_sources() mirroring
+the shell-side source check for os.replace/rename/link/symlink and
+shutil.copy*/move literal-argument calls.
+
+Documented and filed the residual as harmonic-forge#801 (deferred,
+R-0039 exception 2): the fully unbounded set of relocate/archive tools
+(rsync/tar/unzip/find -exec/xargs), MAX_WRITE_TARGETS truncation, and
+cwd-resolution are pre-existing properties of the whole write-guard
+architecture shared with Lane 2's main-checkout/write-on-main-branch
+checks, not specific to this issue's operator-memory allowance -- closing
+them exhaustively here would be the same unbounded arms race
+interpreter_write_pairs's own docstring already declines to fight for
+interpreter one-liners.
+- tools/hooks/block_lane1_status_claims.py      | 125 +++++++++++++++++++++++---
+- tools/hooks/test_block_lane1_status_claims.py |  53 +++++++++++
+- 2 files changed, 166 insertions(+), 12 deletions(-)
+
 ## fix(hooks): close hardlink/mv-source bypass of Lane 3 write guard (harmonic-forge#797 preclose pass 3)
 
 5-lens panel found: cp/mv/install checked only their destination, never

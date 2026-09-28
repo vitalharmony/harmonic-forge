@@ -536,6 +536,59 @@ class TestLane3MemoryWritePath(_BashWriteSurface):
         dest = self.memory_root / "feedback_new_name.md"
         self.assertFalse(self.denied(f"mv {src} {dest}"))
 
+    def test_mv_target_directory_flag_is_denied(self):
+        """Preclose finding: `--target-directory=`/`-t` puts the destination
+        in a FLAG value, not the last positional -- `mv --target-directory=X
+        MEMORY.md` left only one positional, so both the naive destination
+        check and the naive source check saw nothing to inspect at all."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        self.assertTrue(self.denied(f"mv --target-directory={self.memory_root} {index}"))
+        self.assertTrue(self.denied(f"mv -t {self.memory_root} {index}"))
+
+    def test_install_with_separated_mode_flag_is_not_falsely_denied(self):
+        """Preclose finding: `install -m 644 a b`'s '644' survived the naive
+        `not arg.startswith('-')` filter and was treated as a bogus extra
+        source, denying a command that never touches anything outside
+        Lane 3's own writable root."""
+        src = self.memory_root / "feedback_src.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "feedback_dest.md"
+        self.assertFalse(self.denied(f"install -m 644 {src} {dest}"))
+
+    def test_python_os_replace_of_the_memory_index_is_denied(self):
+        """Preclose finding: the interpreter surface already recognizes
+        os.replace/os.rename/shutil.move/shutil.copy* as writes (existing,
+        tested) but checked only the destination -- identical bug to the
+        shell-level mv/cp finding, one surface over."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_py_probe.md"
+        self.assertTrue(self.denied(
+            f'python3 -c "import os; os.replace(\'{index}\', \'{dest}\')"'))
+
+    def test_python_os_link_of_the_memory_index_is_denied(self):
+        """os.link/os.symlink were not recognized by the interpreter regex
+        at all before this fix -- the Python-level equivalent of `ln` not
+        being a recognized shell verb."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_py_link_probe.md"
+        self.assertTrue(self.denied(
+            f'python3 -c "import os; os.link(\'{index}\', \'{dest}\')"'))
+
+    def test_removing_ln_from_the_verb_list_is_caught_by_a_test(self):
+        """Test-honesty preclose finding: no prior test pinned `ln`'s
+        presence in `bash_write_targets`'s own destination-recognition list
+        (as opposed to the separate source-side relocate check) -- a plain
+        `ln src dst` with a fully in-bounds, allowed source must still deny
+        because `ln`'s DESTINATION is checked too, independent of the
+        source-side fix."""
+        src = self.memory_root / "feedback_src.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "MEMORY.md"
+        self.assertTrue(self.denied(f"ln {src} {dest}"))
+
     def test_symlink_named_feedback_pointing_at_the_index_is_denied(self):
         """Preclose finding: a `feedback_*.md`-NAMED symlink that resolves
         to MEMORY.md must not inherit legitimacy from its own link name --

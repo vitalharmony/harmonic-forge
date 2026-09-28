@@ -650,6 +650,46 @@ def ignorable_write_target(target: str) -> bool:
             or target.startswith("/dev/"))
 
 
+#: harmonic-forge#797 preclose: GNU coreutils flags for cp/mv/install/ln that
+#: take a SEPARATE value token (not glued with '='), so that value must not
+#: be misread as a positional source/destination path. `install -m 644 a b`
+#: was treating '644' as a source before this was recognized.
+_RELOCATE_VALUE_FLAGS = {"-m", "--mode", "-o", "--owner", "-g", "--group",
+                         "-t", "--target-directory", "-S", "--suffix"}
+_TARGET_DIR_FLAGS = ("-t", "--target-directory")
+
+
+def _relocate_operands(args: list[str]) -> tuple[list[str], str | None]:
+    """(sources, destination) for a cp/mv/install/ln invocation's own args.
+
+    Handles `--target-directory=DIR`/`-t DIR` (the destination is a FLAG
+    VALUE, not the last positional — `mv --target-directory=/tmp
+    MEMORY.md` has exactly one positional, which a naive
+    `positional[-1]` misreads as the destination and `positional[:-1]`
+    misses as a source entirely) and separated-value flags like
+    `-m`/`-o`/`-g` (the value is not a path at all)."""
+    positional: list[str] = []
+    target_dir: str | None = None
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("--target-directory="):
+            target_dir = token[len("--target-directory="):]
+        elif token in _TARGET_DIR_FLAGS and index + 1 < len(args):
+            target_dir = args[index + 1]
+            index += 1
+        elif token in _RELOCATE_VALUE_FLAGS and index + 1 < len(args):
+            index += 1
+        elif not token.startswith("-"):
+            positional.append(token)
+        index += 1
+    if target_dir is not None:
+        return positional, target_dir
+    if len(positional) >= 2:
+        return positional[:-1], positional[-1]
+    return [], None
+
+
 def bash_write_targets(segment: list[str]) -> list[str]:
     """Paths a single shell segment writes to, by static construct.
 
@@ -690,8 +730,10 @@ def bash_write_targets(segment: list[str]) -> list[str]:
             for a in args
         )
         targets.extend(positional if explicit_script else positional[1:])
-    elif verb in ("cp", "mv", "install", "ln") and len(positional) >= 2:
-        targets.append(positional[-1])
+    elif verb in RELOCATE_VERBS:
+        _sources, destination = _relocate_operands(args)
+        if destination is not None:
+            targets.append(destination)
     elif verb == "truncate":
         targets.extend(a for a in positional if not SIZE_OPERAND.match(a))
     elif verb == "dd":
@@ -714,18 +756,18 @@ RELOCATE_VERBS = ("cp", "mv", "install", "ln")
 def bash_relocate_sources(segment: list[str]) -> list[str]:
     """Source operand(s) of a `cp`/`mv`/`install`/`ln` invocation.
 
-    Everything but the last positional argument is a source (`cp a b c
-    dest` copies three sources). Checked only against
-    `lane3_write_outside_testplan` -- a source outside Lane 3's own
-    writable roots has no more standing to be relocated FROM than an
-    arbitrary path has to be written TO."""
+    Shares `_relocate_operands` with `bash_write_targets`'s destination
+    extraction, so `--target-directory=`/`-t` and separated-value flags
+    (`-m`/`-o`/`-g`) are handled identically on both sides -- a stray
+    option value must not be misread as a source any more than as a
+    destination. Checked only against `lane3_write_outside_testplan` -- a
+    source outside Lane 3's own writable roots has no more standing to be
+    relocated FROM than an arbitrary path has to be written TO."""
     tokens = strip_invocation_prefix(segment)
     if not tokens or Path(tokens[0]).name not in RELOCATE_VERBS:
         return []
-    positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
-    if len(positional) < 2:
-        return []
-    return [s for s in positional[:-1] if not ignorable_write_target(s)]
+    sources, _destination = _relocate_operands(tokens[1:])
+    return [s for s in sources if not ignorable_write_target(s)]
 
 
 def lane3_relocate_source_denial(sources: list[str]) -> dict | None:
@@ -746,6 +788,29 @@ def lane3_relocate_source_denial(sources: list[str]) -> dict | None:
                 "feedback_*.md lesson file) too — not just the destination."
             )
     return None
+
+
+#: **Residual gap, evadable, and stated as such** (same posture as
+#: `interpreter_write_pairs`'s own docstring below, harmonic-forge#446):
+#: `RELOCATE_VERBS` and `INTERPRETER_RELOCATE_WITH_SOURCE` recognize the
+#: relocate/link constructs a convenient shortcut reaches for
+#: (`mv`/`cp`/`install`/`ln`, `os.replace`/`os.rename`/`os.link`/
+#: `os.symlink`/`shutil.copy*`/`shutil.move`) — not the unbounded set of
+#: tools that can also move bytes on a filesystem (`rsync`, `tar`, `unzip`,
+#: `cpio`, `find ... -exec mv`, `xargs cp`, a Perl/awk one-liner). Chasing
+#: that set verb-by-verb is the same arms race `block_irreversible_ops.py`
+#: already declines for shell wrappers. Also residual: `sources[:
+#: MAX_WRITE_TARGETS]` silently stops checking past the 20th source in one
+#: segment (shared truncation with `protected_write_denial`'s own
+#: destination list — not a new weakening), and `lane3_write_outside_testplan`
+#: resolves a relative source against the hook process's real `Path.cwd()`,
+#: not the tracked `effective_cwd` a prior `cd` in the same script moved to
+#: (shared with the pre-existing destination check, harmonic-forge#529's
+#: `effective_cwd` tracking was never threaded into that function). Tracked
+#: as harmonic-forge#801 rather than expanded here, since it is a property of
+#: the whole write-guard architecture (Lane 2's main-checkout and
+#: write-on-main-branch checks share every one of these limits), not
+#: specific to the `operator-memory/` allowance this issue adds.
 
 
 def interpreter_write_targets(
@@ -827,6 +892,40 @@ _WRITE_OPERAND_GROUP = {
     "move": "move_op",
     "redirect": "redirect_op",
 }
+
+
+#: harmonic-forge#797 preclose: the `move` construct above already recognizes
+#: `os.replace`/`os.rename`/`shutil.copy*`/`shutil.move` as writes but reports
+#: only the destination, and `os.link`/`os.symlink` are not recognized at all
+#: — so a Lane 3 session could relocate/link an arbitrary existing file
+#: (including `operator-memory/MEMORY.md` itself) onto an allowed name via
+#: `python3 -c "..."`, identically to the shell-level bypass this diff closes
+#: for `mv`/`ln`, just one surface over. Deliberately NARROWER than the `move`
+#: group above: both operands must be string literals (no `[^,)]*` leniency),
+#: since a non-literal source can't be checked statically anyway — this is
+#: source-side detection only, feeding `lane3_relocate_source_denial`, and
+#: does not change the existing destination-only behavior or its tests.
+INTERPRETER_RELOCATE_WITH_SOURCE = re.compile(
+    r"""(?:os\.(?:replace|rename|link|symlink)|shutil\.(?:copy\w*|move))"""
+    r"""\s*\(\s*['"](?P<src>[^'"]+)['"]\s*,\s*['"][^'"]+['"]\s*\)"""
+)
+
+
+def interpreter_relocate_sources(segment: list[str], command: str) -> list[str]:
+    """Source operands of an interpreter-surface relocate/link call.
+
+    Companion to `bash_relocate_sources` for the interpreter surface — same
+    reasoning, same consumer (`lane3_relocate_source_denial`), and the same
+    interpreter-verb gate `interpreter_write_targets` uses (a non-interpreter
+    segment never reaches the raw-text scan)."""
+    tokens = strip_invocation_prefix(segment, unwrap_shells=False)
+    if not tokens or Path(tokens[0]).name not in INTERPRETERS:
+        return []
+    return [
+        match.group("src")
+        for match in INTERPRETER_RELOCATE_WITH_SOURCE.finditer(command)
+        if not ignorable_write_target(match.group("src"))
+    ]
 
 
 def interpreter_write_pairs(command: str) -> list[tuple[str, str]]:
@@ -1129,7 +1228,9 @@ def decision(command: object, cwd: Path) -> dict:
             effective_cwd)
         if write_denial is not None:
             return write_denial
-        relocate_denial = lane3_relocate_source_denial(bash_relocate_sources(segment))
+        relocate_denial = lane3_relocate_source_denial(
+            bash_relocate_sources(segment)
+            + interpreter_relocate_sources(segment, command))
         if relocate_denial is not None:
             return relocate_denial
         if os.environ.get("LANE") == "3":
