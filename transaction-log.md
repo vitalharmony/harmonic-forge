@@ -3,6 +3,23 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): strip redirects from anywhere in relocate args, not just trailing (harmonic-forge#797 cross-family finding)
+
+The required cross-family (Codex) verify pass found a redirect BEFORE the
+verb's own operands (mv > /dev/null MEMORY.md feedback_x.md) was outside
+the prior fix's coverage, which only stopped the scan at the first
+trailing redirect. Fixed by stripping every redirect token and its own
+target from anywhere in the arg list before parsing positionals, rather
+than truncating at the first occurrence.
+
+Also documented: a keyword-argument interpreter call
+(os.replace(src=..., dst=...)) defeats the same regex as the already-known
+trailing-comma case -- folded into the existing harmonic-forge#801
+residual note, not chased further here.
+- tools/hooks/block_lane1_status_claims.py      | 36 +++++++++++++++++++--------
+- tools/hooks/test_block_lane1_status_claims.py | 12 +++++++++
+- 2 files changed, 37 insertions(+), 11 deletions(-)
+
 ## fix(hooks): stop a trailing shell redirect from being misread as a relocate source (harmonic-forge#797 preclose pass 5, final)
 
 5-lens round 4 found: _relocate_operands didn't recognize a shell redirect

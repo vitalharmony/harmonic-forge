@@ -577,6 +577,18 @@ class TestLane3MemoryWritePath(_BashWriteSurface):
         self.assertTrue(self.denied(
             f'python3 -c "import os; os.link(\'{index}\', \'{dest}\')"'))
 
+    def test_mv_of_the_memory_index_with_a_leading_redirect_is_still_denied(self):
+        """Cross-family (Codex) preclose finding: a redirect BEFORE the
+        verb's own operands (`mv > /dev/null MEMORY.md feedback_x.md`) was
+        outside the scan-stops-at-first-redirect fix's coverage, since that
+        fix only handled a TRAILING redirect. Fixed by stripping every
+        redirect token+target from anywhere in the arg list, not just
+        truncating the scan at the first one found."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_leading_redirect_probe.md"
+        self.assertTrue(self.denied(f"mv > /dev/null {index} {dest}"))
+
     def test_cp_with_a_trailing_redirect_is_not_falsely_denied(self):
         """Preclose finding: a shell redirect token (`>`, `/dev/null`)
         following a relocate verb's own args was misread as an extra

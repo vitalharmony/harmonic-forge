@@ -668,18 +668,29 @@ def _relocate_operands(args: list[str]) -> tuple[list[str], str | None]:
     `positional[-1]` misreads as the destination and `positional[:-1]`
     misses as a source entirely) and separated-value flags like
     `-m`/`-o`/`-g` (the value is not a path at all)."""
+    # harmonic-forge#797 preclose (cross-family, pass 5): a shell redirect
+    # can appear BEFORE the verb's own operands too (`mv > /dev/null a b`
+    # is valid, if unusual, shell), not only after -- stopping the scan at
+    # the first redirect (as an earlier fix did) missed this direction.
+    # Drop every redirect operator token AND its own target token from the
+    # arg list entirely, wherever they fall, before parsing positionals.
+    args = list(args)
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if REDIRECT_TOKEN.match(token):
+            del args[index:index + 2]
+            continue
+        if GLUED_REDIRECT.match(token):
+            del args[index]
+            continue
+        index += 1
+
     positional: list[str] = []
     target_dir: str | None = None
     index = 0
     while index < len(args):
         token = args[index]
-        if REDIRECT_TOKEN.match(token) or GLUED_REDIRECT.match(token):
-            # harmonic-forge#797 preclose: a shell redirect (`> /dev/null`,
-            # `2>&1`) is not part of the VERB's own argument list -- treating
-            # it as a positional made `cp a b > /dev/null` deny under LANE=3,
-            # citing '>' itself as a bogus relocate source. Everything from
-            # here on belongs to the redirect, not to cp/mv/install/ln.
-            break
         if token.startswith("--target-directory="):
             target_dir = token[len("--target-directory="):]
         elif token in _TARGET_DIR_FLAGS and index + 1 < len(args):
@@ -826,10 +837,13 @@ def lane3_relocate_source_denial(sources: list[str]) -> dict | None:
 #: (`-t/DIR`); and `INTERPRETER_RELOCATE_WITH_SOURCE`/the `move` group in
 #: `INTERPRETER_WRITE_PAIR` both stop at the first `)`, so a trailing comma
 #: before it (`os.replace('a','b',)`) is valid Python that defeats both
-#: regexes identically. Each is a real, narrow parsing gap around a single
-#: known construct (not an unrecognized construct entirely), fixable in a
-#: bounded way if #801 scopes it in — unlike the fully unbounded tool list
-#: above, so it is named specifically rather than left implicit.
+#: regexes identically, and so is a keyword-argument call
+#: (`os.replace(src='a', dst='b')`, cross-family preclose finding) — neither
+#: regex requires positional syntax. Each is a real, narrow parsing gap
+#: around a single known construct (not an unrecognized construct
+#: entirely), fixable in a bounded way if #801 scopes it in — unlike the
+#: fully unbounded tool list above, so it is named specifically rather
+#: than left implicit.
 
 
 def interpreter_write_targets(
