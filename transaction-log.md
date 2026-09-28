@@ -3,6 +3,104 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): strip redirects from anywhere in relocate args, not just trailing (harmonic-forge#797 cross-family finding)
+
+The required cross-family (Codex) verify pass found a redirect BEFORE the
+verb's own operands (mv > /dev/null MEMORY.md feedback_x.md) was outside
+the prior fix's coverage, which only stopped the scan at the first
+trailing redirect. Fixed by stripping every redirect token and its own
+target from anywhere in the arg list before parsing positionals, rather
+than truncating at the first occurrence.
+
+Also documented: a keyword-argument interpreter call
+(os.replace(src=..., dst=...)) defeats the same regex as the already-known
+trailing-comma case -- folded into the existing harmonic-forge#801
+residual note, not chased further here.
+- tools/hooks/block_lane1_status_claims.py      | 36 +++++++++++++++++++--------
+- tools/hooks/test_block_lane1_status_claims.py | 12 +++++++++
+- 2 files changed, 37 insertions(+), 11 deletions(-)
+
+## fix(hooks): stop a trailing shell redirect from being misread as a relocate source (harmonic-forge#797 preclose pass 5, final)
+
+5-lens round 4 found: _relocate_operands didn't recognize a shell redirect
+token (>, /dev/null, 2>&1) as ending the verb's own argument list, so the
+plain, common pattern 'cp a b > /dev/null' under LANE=3 was denied,
+citing '>' itself as a bogus relocate source -- a real regression against
+ordinary usage, not an evasion. Fixed by stopping _relocate_operands's
+token scan at the first REDIRECT_TOKEN/GLUED_REDIRECT match, reusing the
+file's own existing redirect-recognition regexes.
+
+Two more narrow parsing gaps found this round (GNU long-option
+abbreviation/glued short-flag spelling for --target-directory, and a
+trailing comma defeating the interpreter relocate regex) are folded into
+harmonic-forge#801 alongside the already-filed residual, per the same
+'not a full parser' posture -- both documented in code and in #801's
+thread rather than chased further here.
+- tools/hooks/block_lane1_status_claims.py      | 19 +++++++++++++++++++
+- tools/hooks/test_block_lane1_status_claims.py | 11 +++++++++++
+- 2 files changed, 30 insertions(+)
+
+## fix(hooks): close --target-directory=/-t and separated-option-value relocate parsing; source-check the interpreter surface too (harmonic-forge#797 preclose pass 4)
+
+5-lens panel round 3 found: --target-directory=/-t puts the destination in
+a flag value, not a positional, so both the destination and new source
+checks saw zero operands for 'mv --target-directory=X victim'; install -m
+644's mode value survived the naive flag filter and was misread as a
+bogus source, false-denying legitimate in-bounds commands; and the
+interpreter surface (python3 -c) already recognizes os.replace/os.rename/
+shutil.move/shutil.copy* as writes (existing, tested) but checked only
+the destination -- the identical shell-level bug, one surface over --
+while os.link/os.symlink weren't recognized there at all, mirroring ln's
+absence from the shell verb list before this issue's earlier commit.
+
+Fixed with one shared _relocate_operands() helper (used by both
+bash_write_targets's destination extraction and bash_relocate_sources)
+that understands --target-directory=/-t and skips known separated-value
+flags (-m/-o/-g/-t/-S), plus a new interpreter_relocate_sources() mirroring
+the shell-side source check for os.replace/rename/link/symlink and
+shutil.copy*/move literal-argument calls.
+
+Documented and filed the residual as harmonic-forge#801 (deferred,
+R-0039 exception 2): the fully unbounded set of relocate/archive tools
+(rsync/tar/unzip/find -exec/xargs), MAX_WRITE_TARGETS truncation, and
+cwd-resolution are pre-existing properties of the whole write-guard
+architecture shared with Lane 2's main-checkout/write-on-main-branch
+checks, not specific to this issue's operator-memory allowance -- closing
+them exhaustively here would be the same unbounded arms race
+interpreter_write_pairs's own docstring already declines to fight for
+interpreter one-liners.
+- tools/hooks/block_lane1_status_claims.py      | 125 +++++++++++++++++++++++---
+- tools/hooks/test_block_lane1_status_claims.py |  53 +++++++++++
+- 2 files changed, 166 insertions(+), 12 deletions(-)
+
+## fix(hooks): close hardlink/mv-source bypass of Lane 3 write guard (harmonic-forge#797 preclose pass 3)
+
+5-lens panel found: cp/mv/install checked only their destination, never
+source, so 'mv MEMORY.md feedback_x.md' destroyed the shared index while
+looking like a legitimate lesson write. ln was not a recognized write verb
+at all, so a hardlink named feedback_x.md pointing at MEMORY.md (or any
+file) bypassed every path check entirely -- .resolve() does not follow
+hardlinks, so the hardlink has no distinguishable path form from a real
+lesson file. Both closed the same way: ln added to the recognized verb
+list, and a new lane3_relocate_source_denial() requires cp/mv/install/ln's
+SOURCE to already be inside an allowed root too, not just the destination.
+
+Also fixed: both Lane 3 denial messages still said testplan/ was the only
+writable path, false since this issue's own earlier commits -- a denied
+session reading its own denial reason concluded no lesson write was
+possible at all. And SKILL.md's no-delete 'absolute' (item g) contradicted
+Write scope's 'may delete what it created in that run' -- narrowed (g) to
+broad/predicate-based cleanup deletes specifically, matching its own
+real incident, and updated the spec-derivation flagging instruction to
+match. Test-honesty: the symlink-escape test's fixture wasn't itself named
+feedback_*.md, so it only pinned the basename check, never the resolved-
+form containment check it claimed to -- retargeted, plus new tests for
+the hardlink and mv-source paths.
+- skills/lane3-gate-platform/SKILL.md           | 33 +++++++-----
+- tools/hooks/block_lane1_status_claims.py      | 72 +++++++++++++++++++++++----
+- tools/hooks/test_block_lane1_status_claims.py | 43 ++++++++++++++--
+- 3 files changed, 123 insertions(+), 25 deletions(-)
+
 ## docs(rules): R-0351 spot-checks Tier deep too; document the partial-AE carry-forward convention (harmonic-forge#796)
 
 Drops Tier deep from R-0351's full-re-run clause per the operator's
@@ -14,6 +112,44 @@ matching registry entry. Pins both with a unit test.
 - tools/gh/test_l1_post_sweep_cases.py | 41 ++++++++++++++++++++++++++++++++++++
 - tools/rules/registry.toml            | 12 +++++++++--
 - 4 files changed, 91 insertions(+), 4 deletions(-)
+## fix(hooks): clean up tempfile.mkdtemp() dirs in the memory-write tests (harmonic-forge#797 preclose pass 2)
+
+Both used bare mkdtemp() with no cleanup, leaking a dir per test run
+(7 per suite run) unlike the tmp-checkout pattern they said they mirrored.
+TemporaryDirectory() + addCleanup matches that pattern for real.
+- tools/hooks/test_block_lane1_status_claims.py | 9 ++++++---
+- 1 file changed, 6 insertions(+), 3 deletions(-)
+
+## fix(hooks): close two write-guard scope holes in the feedback_*.md allowance (harmonic-forge#797 preclose)
+
+preclose-inspection found: (1) a symlink named feedback_x.md resolving to
+MEMORY.md was allowed, since the filename check keyed on the link name
+only, never the resolved target's own name; (2) feedback_*.md anywhere
+under MEMORY_ROOT, not just directly in it, was allowed, since _inside()
+is a prefix test not a direct-child test. Both closed by checking every
+path form's own parent==MEMORY_ROOT and own basename match. Also found:
+the new symlink test wrote to the real operator-memory/ directory,
+erroring on any machine without it (including CI) and risking deleting a
+real lesson file on an interrupted run -- now isolated behind a
+monkeypatched tmp MEMORY_ROOT, matching the existing tmp-checkout pattern.
+- tools/hooks/block_lane1_status_claims.py      | 18 +++++++-
+- tools/hooks/test_block_lane1_status_claims.py | 62 +++++++++++++++++++++------
+- 2 files changed, 65 insertions(+), 15 deletions(-)
+
+## docs(lane3): allow-list replaces prohibitions, trigger re-derivation, gotchas, memory write path (harmonic-forge#797)
+
+Merges the absolute-prohibitions/exception/what-you-MAY-do sections into
+one enumerated allow-list ending 'everything else is prohibited', so a
+sanctioned action (testplan writes, migration labels) can never again read
+as contradicting an absolute. Adds AE trigger re-derivation via
+lane3-begin, a no-auto-pickup-without-the-belt rule, a fresh-session
+gotchas block, and a delete-conflict flag for spec derivation. The write
+guard now also allows operator-memory/feedback_*.md (lexical+resolved,
+symlink-safe), so an in-session correction survives past the session.
+- skills/lane3-gate-platform/SKILL.md           | 190 +++++++++++++++++---------
+- tools/hooks/block_lane1_status_claims.py      |  68 +++++----
+- tools/hooks/test_block_lane1_status_claims.py |  27 ++++
+- 3 files changed, 195 insertions(+), 90 deletions(-)
 
 ## test(lane): baseline capture uses a fixture HOME, not the operator's (harmonic-forge#783)
 

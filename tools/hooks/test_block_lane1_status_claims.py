@@ -447,6 +447,183 @@ class TestLane3ThroughTheBashSurface(_BashWriteSurface):
         self.assertFalse(self.denied("ls -la > /dev/null"))
 
 
+class TestLane3MemoryWritePath(_BashWriteSurface):
+    """harmonic-forge#797's `feedback_*.md` allowance, isolated from the
+    real `operator-memory/` directory. Preclose finding: the first version
+    of these tests pointed `m.MEMORY_ROOT` at the real directory, which (a)
+    errors on any machine without it, CI included, and (b) can delete or
+    dangle a real lesson file on an interrupted run. A monkeypatched tmp
+    root, mirroring `_BashWriteSurface`'s own tmp-checkout pattern, has
+    neither problem."""
+
+    LANE = "3"
+
+    def setUp(self) -> None:
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        memory_root = Path(tmp.name).resolve()
+        patcher = unittest.mock.patch.object(m, "MEMORY_ROOT", memory_root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.memory_root = memory_root
+
+    def test_write_feedback_lesson_inside_memory_root_is_allowed(self):
+        """The one write target outside testplan/ — a durable lesson that
+        survives past this session's own context."""
+        self.assertFalse(self.denied(f"echo x > {self.memory_root}/feedback_l3_probe.md"))
+
+    def test_write_to_memory_index_is_denied(self):
+        """The shared MEMORY.md index is not a lesson file -- only
+        feedback_*.md is writable, never the index other lanes read."""
+        self.assertTrue(self.denied(f"echo x > {self.memory_root}/MEMORY.md"))
+
+    def test_write_to_a_non_feedback_memory_file_is_denied(self):
+        self.assertTrue(self.denied(f"echo x > {self.memory_root}/project_x.md"))
+
+    def test_write_to_a_feedback_file_in_a_subdirectory_is_denied(self):
+        """Preclose finding: `_inside()` alone is a prefix test, not a
+        direct-child test, so a `feedback_*.md`-named file anywhere under
+        MEMORY_ROOT -- not just directly in it -- would otherwise pass.
+        The allowance is for the flat lesson directory, nothing nested."""
+        (self.memory_root / "sub").mkdir()
+        self.assertTrue(self.denied(f"echo x > {self.memory_root}/sub/feedback_x.md"))
+
+    def test_symlink_escape_from_memory_root_is_denied(self):
+        """Test-honesty preclose finding: the escape target must itself be
+        NAMED `feedback_*.md`, or this test is denied by the basename check
+        alone and never actually exercises the resolved-form CONTAINMENT
+        check (`candidate.parent != MEMORY_ROOT`) it claims to pin — a
+        mutation that dropped the containment check on the resolved form
+        left this test green with a non-`feedback_`-named target."""
+        outside_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_dir.cleanup)
+        outside = Path(outside_dir.name) / "feedback_outside.md"
+        outside.write_text("pre-existing\n")
+        link = self.memory_root / "feedback_escape_probe.md"
+        link.symlink_to(outside)
+        self.assertTrue(self.denied(f"echo x > {link}"))
+
+    def test_hardlink_to_the_memory_index_is_denied(self):
+        """Preclose finding (silent-bypass/second-run lenses): `.resolve()`
+        does not follow hardlinks, so a hardlink named `feedback_*.md`
+        pointing at MEMORY.md has no distinguishable path form from a real
+        lesson file -- the symlink-retarget defense above does not see it.
+        Closed by requiring the relocate SOURCE (here, MEMORY.md itself,
+        via `ln`) to already be inside an allowed root."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        link = self.memory_root / "feedback_hardlink_probe.md"
+        self.assertTrue(self.denied(f"ln {index} {link}"))
+
+    def test_mv_of_the_memory_index_onto_a_feedback_name_is_denied(self):
+        """Preclose finding: `bash_write_targets` checks only a `mv`/`cp`/
+        `install` command's DESTINATION -- the source (here, MEMORY.md
+        itself) was never checked, so renaming the shared index onto an
+        allowed name destroyed it while looking like a normal lesson
+        write. Closed by `lane3_relocate_source_denial`."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_mv_probe.md"
+        self.assertTrue(self.denied(f"mv {index} {dest}"))
+
+    def test_mv_between_two_feedback_names_is_allowed(self):
+        """Regression guard: the source-side check must not deny a relocate
+        whose source is ALREADY a legitimate lesson file -- only sources
+        outside Lane 3's writable roots are denied."""
+        src = self.memory_root / "feedback_old_name.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "feedback_new_name.md"
+        self.assertFalse(self.denied(f"mv {src} {dest}"))
+
+    def test_mv_target_directory_flag_is_denied(self):
+        """Preclose finding: `--target-directory=`/`-t` puts the destination
+        in a FLAG value, not the last positional -- `mv --target-directory=X
+        MEMORY.md` left only one positional, so both the naive destination
+        check and the naive source check saw nothing to inspect at all."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        self.assertTrue(self.denied(f"mv --target-directory={self.memory_root} {index}"))
+        self.assertTrue(self.denied(f"mv -t {self.memory_root} {index}"))
+
+    def test_install_with_separated_mode_flag_is_not_falsely_denied(self):
+        """Preclose finding: `install -m 644 a b`'s '644' survived the naive
+        `not arg.startswith('-')` filter and was treated as a bogus extra
+        source, denying a command that never touches anything outside
+        Lane 3's own writable root."""
+        src = self.memory_root / "feedback_src.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "feedback_dest.md"
+        self.assertFalse(self.denied(f"install -m 644 {src} {dest}"))
+
+    def test_python_os_replace_of_the_memory_index_is_denied(self):
+        """Preclose finding: the interpreter surface already recognizes
+        os.replace/os.rename/shutil.move/shutil.copy* as writes (existing,
+        tested) but checked only the destination -- identical bug to the
+        shell-level mv/cp finding, one surface over."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_py_probe.md"
+        self.assertTrue(self.denied(
+            f'python3 -c "import os; os.replace(\'{index}\', \'{dest}\')"'))
+
+    def test_python_os_link_of_the_memory_index_is_denied(self):
+        """os.link/os.symlink were not recognized by the interpreter regex
+        at all before this fix -- the Python-level equivalent of `ln` not
+        being a recognized shell verb."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_py_link_probe.md"
+        self.assertTrue(self.denied(
+            f'python3 -c "import os; os.link(\'{index}\', \'{dest}\')"'))
+
+    def test_mv_of_the_memory_index_with_a_leading_redirect_is_still_denied(self):
+        """Cross-family (Codex) preclose finding: a redirect BEFORE the
+        verb's own operands (`mv > /dev/null MEMORY.md feedback_x.md`) was
+        outside the scan-stops-at-first-redirect fix's coverage, since that
+        fix only handled a TRAILING redirect. Fixed by stripping every
+        redirect token+target from anywhere in the arg list, not just
+        truncating the scan at the first one found."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        dest = self.memory_root / "feedback_leading_redirect_probe.md"
+        self.assertTrue(self.denied(f"mv > /dev/null {index} {dest}"))
+
+    def test_cp_with_a_trailing_redirect_is_not_falsely_denied(self):
+        """Preclose finding: a shell redirect token (`>`, `/dev/null`)
+        following a relocate verb's own args was misread as an extra
+        relocate SOURCE, denying the ordinary, fully in-bounds pattern
+        `cp a b > /dev/null` under LANE=3 -- a real regression, not an
+        evasion, since this breaks a common redirect-output pattern."""
+        src = self.memory_root / "feedback_src.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "feedback_dest.md"
+        self.assertFalse(self.denied(f"cp {src} {dest} > /dev/null"))
+
+    def test_removing_ln_from_the_verb_list_is_caught_by_a_test(self):
+        """Test-honesty preclose finding: no prior test pinned `ln`'s
+        presence in `bash_write_targets`'s own destination-recognition list
+        (as opposed to the separate source-side relocate check) -- a plain
+        `ln src dst` with a fully in-bounds, allowed source must still deny
+        because `ln`'s DESTINATION is checked too, independent of the
+        source-side fix."""
+        src = self.memory_root / "feedback_src.md"
+        src.write_text("lesson\n")
+        dest = self.memory_root / "MEMORY.md"
+        self.assertTrue(self.denied(f"ln {src} {dest}"))
+
+    def test_symlink_named_feedback_pointing_at_the_index_is_denied(self):
+        """Preclose finding: a `feedback_*.md`-NAMED symlink that resolves
+        to MEMORY.md must not inherit legitimacy from its own link name --
+        the old check tested `lexical.name` only, never the resolved
+        target's own name, so this exact retarget was allowed."""
+        index = self.memory_root / "MEMORY.md"
+        index.write_text("# index\n")
+        link = self.memory_root / "feedback_retarget_probe.md"
+        link.symlink_to(index)
+        self.assertTrue(self.denied(f"echo x > {link}"))
+
+
 class TestPayloadSurface(unittest.TestCase):
     """End-to-end through `main()`, which is what the hook actually runs.
 

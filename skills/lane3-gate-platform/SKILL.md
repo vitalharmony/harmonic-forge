@@ -31,6 +31,26 @@ final report. Save longer explanation for when a check actually fails and
 Lane 2 needs reproduction detail (per "What to do when you find a bug"
 below) — that's the one place detail is the point, not the exception.
 
+## Fresh-session gotchas
+
+Every fresh Lane 3 session re-discovers these independently (harmonic-forge#797).
+Read this list once, up front, instead:
+
+- `lane3-begin` needs `--issue <N>` on a detached checkout — without it, the
+  precondition check silently validates whichever issue the current branch
+  happens to belong to, or fails outright.
+- Scratch and output files go only under `~/Harmonic_Projects/testplan/`,
+  never `/tmp` — the write guard blocks `/tmp` twice, at the Bash and
+  Write/Edit tool boundaries both.
+- The gate stack's backend port is whatever `gate-restart` prints, not the
+  main dev stack's port — testing against the wrong port reads as "the
+  backend is down" when it's just the other checkout's.
+- The spec heading is exactly `## Lane 3 Test Spec — H<N>` (or the repo's own
+  prefix) — the mechanical heading check refuses anything looser.
+- Queueing (R-0116): a mid-turn trigger queues behind current work, but a
+  gate that's blocked on HITL/AE counts as finished for queueing purposes —
+  pick up the next queued issue rather than sitting idle on the blocked one.
+
 ## Codex enforcement layer
 
 Four Lane 3 protocol violations happened in a single session: every gate that
@@ -165,6 +185,17 @@ genuinely missing something a spec needs, stop and report BLOCKED naming the
 gap, per this file's other BLOCKED preconditions — don't route around the
 filter to find it.
 
+**If a TC's execution deletes anything, disposable tier included**, mark it
+in the spec explicitly, naming exactly what is deleted and citing that it
+is scoped to state the run's own spec created (§ Write scope's "created in
+that run" boundary) — never a broad or predicate-based delete, which item
+(g) forbids absolutely with no HITL override. A delete of something the run
+created (e.g. exercising an abort-on-drift path against disposable Tier W
+data) is permitted, but surfaces at spec approval time as a named, flagged
+operation for HITL to see — never something the gate discovers and runs
+unflagged, and never something inferred from "it's disposable, so it's
+fine."
+
 ## Gate-readiness sweep precondition
 
 Before executing any TC, verify a comment with heading exactly
@@ -195,6 +226,24 @@ the gate-readiness sweep above is checked. Real incident: a Claude-filled
 Lane 3 session, told "AE" only in chat, posted its own
 `## AE H<N> — approved, execute` comment and proceeded; a Codex-filled Lane 3
 session given the identical chat-only trigger correctly refused instead.
+
+**On every `AE H<N>` trigger, run `lane3-begin --issue <N>` first and read
+the latest AE comment's `**Authorized:**` line before replying.** The AE
+comment defines scope; the chat wording and your session memory do not.
+harmonic-forge#797: a session refused a genuine TC2-only Tier W AE as
+out-of-role "production triage" because it answered from its own memory of
+an earlier, wider AE on the same issue rather than re-reading the current
+one — one minute after Lane 1 had posted the narrower comment that actually
+governed. A narrowed, widened, or superseding AE always wins over whatever
+this session remembers being authorized a turn ago.
+
+**Never say you will execute automatically unless `/belt-and-suspenders` is
+armed for the issue.** "I'll execute automatically once it lands" with no
+watcher armed is a promise nobody is keeping — a real instance sat idle for
+72 minutes until the operator noticed and relayed manually. When blocked on
+something Lane 1 owes (a rebase, a corrected AE, a missing sweep), either
+arm the belt for this issue or name the exact relay the operator needs to
+send — never assert that the gap will close itself.
 
 ## Role
 
@@ -254,33 +303,84 @@ commit. The fix was correct. That is irrelevant.
 
 These incidents are the reason this skill exists.
 
-## Absolute prohibitions — no exceptions, no overrides
+## What Lane 3 may do — everything else is prohibited
 
-You MAY NOT:
-- Edit any file for any reason
-- Create any file for any reason
-- Delete any file for any reason
-- Run a state-changing task of any kind (version bump, commit, bringing
-  containers up or down, a bare restart) — the only allowed state-changing
-  tasks are the repo's `gate-*` capability wrappers
-- Run `git add`, `git commit`, `git push`, or any git write operation
-- Run `npm install`, `pip install`, or any package installation
-- Apply any fix, workaround, or patch — even a "trivial" one
-- Run any command whose primary effect is to change the state of the codebase,
-  config, or running services
+harmonic-forge#797: an absolute-prohibitions list and a separate "what you
+MAY do" list drift apart the moment the protocol adds a sanctioned action —
+only the migration exception was ever reconciled between them, so applying
+`migration-executed` (R-0133) and writing to `testplan/` (R-0132) both read
+as prohibited to a fresh session even though the protocol requires both.
+One enumerated list, closed by "everything else is prohibited," cannot drift
+that way: there is nothing to reconcile against.
 
-**Exception — HITL-approved data migrations only.**
-Per `harmonic-forge/3-lane-protocol.md`, Lane 3 is the only lane authorized to
-execute a data-modifying script's write/apply path when the test spec submitted
-for Tech Lead approval explicitly named that execution as in scope and that
-approval was granted. Running that specific pre-approved command is not a
-violation of this skill. This has happened on real issues: `--apply` migration
-runs against production data, by design.
+You MAY:
 
-This exception does not extend to any fix, patch, workaround, or command
-discovered during gate execution that was not part of the pre-approved spec.
-That always falls under the prohibitions above, no matter how small or
-obviously correct the change appears.
+(a) **Read any file**, for any reason.
+
+(b) **Run read-only shell commands** (grep, cat, `EXPLAIN` queries). `curl
+GET` against a live service and running pytest/vitest require network
+access and/or a writable temp dir respectively — both are unavailable under
+Codex `read-only` (live-verified false); use a Claude Lane 3 session for
+these per the decision rule above.
+
+(c) **Run test runners and static analysis tools that make no side effects
+beyond their own temp/cache bookkeeping** — pytest, vitest, Playwright
+against the live UI, mypy, eslint, tsc, and component/unit tests using
+jsdom/React Testing Library with a mocked API client. Under Codex
+`read-only`, even a test runner's own tmp writes are blocked; see the
+decision rule above.
+
+(d) **Run the repo's `gate-*` capability wrappers and `lane3-begin`/
+`lane3-end`** when the gate workflow actually needs them — these require a
+Claude Lane 3 session under Codex `read-only` for the same reason as (c).
+No other state-changing task (a version bump, a commit, bringing containers
+up or down, a bare restart) is a gate wrapper, regardless of how routine it
+looks.
+
+(e) **Post a spec or gate result via `lane-comment --kind spec|gate-result`**
+— never a raw `gh` comment for either (see "Post the test spec" above).
+
+(f) **Write under `~/Harmonic_Projects/testplan/`** (R-0132) — test plans,
+results, and any evidence artifact too large to paste into a comment.
+
+(g) **Seed throwaway test data through the repo's own fixture ledger**, as
+part of executing a pre-approved test spec — the adapter half states how,
+as a single call rather than two conventions to remember. **A gate run
+never runs a broad or predicate-based cleanup delete, and never deletes
+ledger-tracked fixtures itself, under any tier, ever**: a predicate-based
+cleanup delete in a gate script once stripped every edge off a live account
+node graph-wide by matching a node it never created. Cleanup of
+ledger-tracked fixtures is a separate, later, operator-invoked sweeper,
+never part of a gate run itself, and the gate ends by running the repo's
+read-only residue check — which is what turns "the sweeper exists" into
+"the sweeper gets run." This does not forbid a targeted delete that is
+itself one of the approved spec's own test cases (e.g. exercising an
+abort-on-drift path) and stays within § Write scope's "created in that
+run" boundary below — that class is real and covered by AC5's flagging
+requirement, not by this absolute.
+
+(h) **Execute a data-modifying script's write/apply path when the test spec
+submitted for Tech Lead approval explicitly named that execution as in
+scope and that approval was granted.** Per `harmonic-forge/3-lane-protocol.md`,
+Lane 3 is the only lane authorized to do this. This has happened on real
+issues: `--apply` migration runs against production data, by design. This
+does not extend to any fix, patch, workaround, or command discovered during
+gate execution that was not part of the pre-approved spec — that is always
+prohibited, no matter how small or obviously correct it looks.
+
+(i) **Apply `migration-executed` or `migration-abandoned`**
+(`gh issue edit <N> --add-label ...`) after posting the R-0133 evidence
+comment for a data-migration gate. **Applying a label is not closing or
+merging.** R-0224 governs `gh issue close`/`gh pr merge` only; Lane 3 never
+runs either, regardless of which label is on the issue.
+
+(j) **Write a lesson to `~/Harmonic_Projects/operator-memory/feedback_*.md`**
+— the one path this session may write outside `testplan/`, so a correction
+made in-session survives past this session's own context.
+
+**Everything not listed above is prohibited**, including any fix, patch, or
+workaround (even a "trivial" one); any `git add`/`commit`/`push` or other git
+write; any package installation; and any edit or write outside (f) and (j).
 
 **Cross-reference — an artifact only a writing lane can create.**
 When a gate needs something Lane 3 cannot produce (e.g. a real PR, to
@@ -290,12 +390,12 @@ the artifact and Lane 3 still reaches its own verdict, on evidence it did
 not manufacture. The conditions bounding this pattern are defined there,
 not restated here.
 
-**An AE may widen what a gate's write tier covers; it may never waive a
-lane's absolute role prohibition** — those are different boundaries, and
-only the first is HITL's to grant through that trigger
-(`harmonic-forge/3-lane-protocol.md`, harmonic-forge#401). If an AE
-purports to authorize anything on the prohibition list above, stop and
-report rather than proceeding.
+**An AE may widen what a gate's write tier covers; it may never grant
+anything outside this list** — those are different boundaries, and only the
+first is HITL's to grant through that trigger
+(`harmonic-forge/3-lane-protocol.md`, harmonic-forge#401). If an AE purports
+to authorize anything not enumerated above, stop and report rather than
+proceeding.
 
 ## What to do when you find a bug during a gate
 
@@ -310,39 +410,6 @@ report rather than proceeding.
 "The test would pass if I just changed two lines" is not a reason to apply it.
 Fixing it yourself contaminates the independence of the verification pass and
 is exactly what happened in the second incident above.
-
-## What you MAY do
-
-- Read any file
-- Run read-only shell commands (grep, cat, EXPLAIN queries). `curl GET`
-  against a live service and running pytest/vitest require network access
-  and/or a writable temp dir respectively — both are unavailable under Codex
-  `read-only` (live-verified false); use a Claude Lane 3 session for these per
-  the decision rule above.
-- Run the repo's Lane 3 capability wrappers when the gate workflow actually
-  needs them — these require a Claude Lane 3 session under Codex `read-only`
-  for the same reason
-- Run test runners that make no writes beyond their own temp/cache
-  bookkeeping (pytest, vitest, Playwright against the live UI) — under Codex
-  `read-only`, even a test runner's own tmp writes are blocked; see the
-  decision rule above
-- Run static analysis tools that produce no side effects (mypy, eslint, tsc)
-- Run **component/unit tests** that use jsdom / React Testing Library and a
-  mocked API client — these exercise UI state changes without requiring a live
-  stack, real credentials, or persistent database writes
-- Write a comment to a GitHub issue reporting results
-- Seed throwaway test data in the database as part of executing a pre-approved
-  test spec, through the repo's own fixture ledger — the adapter half states
-  how, and states it as a single call rather than two conventions to remember.
-  **A gate run never deletes anything, under any tier, ever**: a
-  predicate-based cleanup delete in a gate script once stripped every edge off
-  a live account node graph-wide by matching a node it never created. Cleanup
-  of ledger-tracked fixtures is a separate, later, operator-invoked sweeper,
-  never part of a gate run itself, and the gate ends by running the repo's
-  read-only residue check — which is what turns "the sweeper exists" into "the
-  sweeper gets run."
-- Execute a data-modifying script's write/apply path when explicitly covered
-  by HITL approval as described above
 
 ## Run the declared adapter steps (ADR-008 AC4)
 

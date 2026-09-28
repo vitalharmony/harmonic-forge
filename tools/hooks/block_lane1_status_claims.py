@@ -122,6 +122,11 @@ LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 EDIT_WRITE_TOOLS = {"Edit", "Write"}
 LANE_WORKTREE_SUFFIX = re.compile(r"^(.+)-lane\d+$")
 TESTPLAN_ROOT = (Path.home() / "Harmonic_Projects" / "testplan").resolve()
+#: harmonic-forge#797: Lane 3's second legitimate write target, narrower than
+#: TESTPLAN_ROOT — a durable lesson (`feedback_*.md`) so an in-session
+#: correction survives past the session's own context, never the shared
+#: MEMORY.md index or any other file in this directory.
+MEMORY_ROOT = (Path.home() / "Harmonic_Projects" / "operator-memory").resolve()
 
 #: Shell builtins that change the working directory. `cd` was the only one
 #: recognized until harmonic-forge#529; `pushd` changes directory identically
@@ -558,30 +563,44 @@ def write_on_main_branch(file_path: str, cwd: Path) -> bool:
     return False
 
 
+def _inside(candidates: tuple, root: Path) -> bool:
+    """True if every candidate path form falls inside root — the shared
+    lexical-and-resolved check both writable targets below use, so a
+    symlink inside one pointing outside it can't be used to escape it."""
+    for candidate in candidates:
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return False
+    return True
+
+
 def lane3_write_outside_testplan(file_path: str) -> bool:
     """True if this hook invocation's own process has LANE=3 (set at
     session launch by harmonic-forge's `tools/lane/lane3` script,
-    harmonic-forge#150) and file_path resolves OUTSIDE TESTPLAN_ROOT —
-    Lane 3's only legitimate write target, for gate artifacts too large
-    for an issue comment. This is the first mechanical enforcement of the
-    "never fixes anything, ever" rule for Claude Code, closing a gap
-    Devin has had a hard profile for all along
-    (`.devin/agents/lane3-gate/AGENT.md`). Codex has no true equivalent
-    for general file-write scoping — `~/.codex/agents/lane3-gate.toml` is
-    a subagent-spawn config, never applied to a real top-level Lane 3
-    session (harmonic-forge#184); Codex's actual working mechanism
-    (harmonic-forge#152) only covers command-shaped mutations.
+    harmonic-forge#150) and file_path resolves outside BOTH of Lane 3's
+    legitimate write targets: TESTPLAN_ROOT (gate artifacts too large for
+    an issue comment) and, as of harmonic-forge#797, a `feedback_*.md`
+    lesson file inside MEMORY_ROOT (so an in-session correction survives
+    past the session's own context — no other file in that directory is
+    writable, in particular never the shared `MEMORY.md` index). This is
+    the first mechanical enforcement of the "never fixes anything, ever"
+    rule for Claude Code, closing a gap Devin has had a hard profile for
+    all along (`.devin/agents/lane3-gate/AGENT.md`). Codex has no true
+    equivalent for general file-write scoping — `~/.codex/agents/
+    lane3-gate.toml` is a subagent-spawn config, never applied to a real
+    top-level Lane 3 session (harmonic-forge#184); Codex's actual working
+    mechanism (harmonic-forge#152) only covers command-shaped mutations.
 
     Deny-by-default (inverted from `lane2_write_in_main_checkout`, which
     denies one specific place): Lane 3 has no legitimate write target
-    besides testplan artifacts, so anywhere else is denied. Requires
-    BOTH the lexically-normalized and the symlink-resolved form of the
-    path to fall inside TESTPLAN_ROOT before allowing — a symlink
-    inside testplan pointing outside it must not be usable to escape
-    the boundary. Still fails open (allows) on any path this can't
-    resolve at all, for consistency with this file's non-adversarial
-    posture elsewhere — a path-resolution edge case should not itself
-    lock out a session; it is not a hard security boundary."""
+    besides the two above, so anywhere else is denied. Requires BOTH the
+    lexically-normalized and the symlink-resolved form of the path to
+    fall inside the relevant root (and, for MEMORY_ROOT, the filename to
+    match `feedback_*.md`) before allowing. Still fails open (allows) on
+    any path this can't resolve at all, for consistency with this file's
+    non-adversarial posture elsewhere — a path-resolution edge case should
+    not itself lock out a session; it is not a hard security boundary."""
     if os.environ.get("LANE") != "3":
         return False
     if not file_path:
@@ -594,12 +613,27 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
         resolved = raw.resolve()
     except (OSError, ValueError, RuntimeError):
         return False
-    for candidate in (lexical, resolved):
-        try:
-            candidate.relative_to(TESTPLAN_ROOT)
-        except ValueError:
-            return True
-    return False
+    candidates = (lexical, resolved)
+    if _inside(candidates, TESTPLAN_ROOT):
+        return False
+    if _is_feedback_lesson_path(candidates):
+        return False
+    return True
+
+
+def _is_feedback_lesson_path(candidates: tuple) -> bool:
+    """harmonic-forge#797 preclose finding: a symlink named `feedback_x.md`
+    that RESOLVES to something else (`MEMORY.md`, a file in a subdirectory)
+    must not inherit legitimacy from its own link name. Both the lexical
+    and resolved form must independently be a `feedback_*.md` file whose
+    immediate parent is exactly MEMORY_ROOT — not merely somewhere under
+    it, which would admit any subdirectory a Lane 3 session creates."""
+    for candidate in candidates:
+        if candidate.parent != MEMORY_ROOT:
+            return False
+        if not (candidate.name.startswith("feedback_") and candidate.name.endswith(".md")):
+            return False
+    return True
 
 
 def ignorable_write_target(target: str) -> bool:
@@ -614,6 +648,64 @@ def ignorable_write_target(target: str) -> bool:
             or target.startswith("&")
             or target == "/dev"
             or target.startswith("/dev/"))
+
+
+#: harmonic-forge#797 preclose: GNU coreutils flags for cp/mv/install/ln that
+#: take a SEPARATE value token (not glued with '='), so that value must not
+#: be misread as a positional source/destination path. `install -m 644 a b`
+#: was treating '644' as a source before this was recognized.
+_RELOCATE_VALUE_FLAGS = {"-m", "--mode", "-o", "--owner", "-g", "--group",
+                         "-t", "--target-directory", "-S", "--suffix"}
+_TARGET_DIR_FLAGS = ("-t", "--target-directory")
+
+
+def _relocate_operands(args: list[str]) -> tuple[list[str], str | None]:
+    """(sources, destination) for a cp/mv/install/ln invocation's own args.
+
+    Handles `--target-directory=DIR`/`-t DIR` (the destination is a FLAG
+    VALUE, not the last positional — `mv --target-directory=/tmp
+    MEMORY.md` has exactly one positional, which a naive
+    `positional[-1]` misreads as the destination and `positional[:-1]`
+    misses as a source entirely) and separated-value flags like
+    `-m`/`-o`/`-g` (the value is not a path at all)."""
+    # harmonic-forge#797 preclose (cross-family, pass 5): a shell redirect
+    # can appear BEFORE the verb's own operands too (`mv > /dev/null a b`
+    # is valid, if unusual, shell), not only after -- stopping the scan at
+    # the first redirect (as an earlier fix did) missed this direction.
+    # Drop every redirect operator token AND its own target token from the
+    # arg list entirely, wherever they fall, before parsing positionals.
+    args = list(args)
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if REDIRECT_TOKEN.match(token):
+            del args[index:index + 2]
+            continue
+        if GLUED_REDIRECT.match(token):
+            del args[index]
+            continue
+        index += 1
+
+    positional: list[str] = []
+    target_dir: str | None = None
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("--target-directory="):
+            target_dir = token[len("--target-directory="):]
+        elif token in _TARGET_DIR_FLAGS and index + 1 < len(args):
+            target_dir = args[index + 1]
+            index += 1
+        elif token in _RELOCATE_VALUE_FLAGS and index + 1 < len(args):
+            index += 1
+        elif not token.startswith("-"):
+            positional.append(token)
+        index += 1
+    if target_dir is not None:
+        return positional, target_dir
+    if len(positional) >= 2:
+        return positional[:-1], positional[-1]
+    return [], None
 
 
 def bash_write_targets(segment: list[str]) -> list[str]:
@@ -656,14 +748,102 @@ def bash_write_targets(segment: list[str]) -> list[str]:
             for a in args
         )
         targets.extend(positional if explicit_script else positional[1:])
-    elif verb in ("cp", "mv", "install") and len(positional) >= 2:
-        targets.append(positional[-1])
+    elif verb in RELOCATE_VERBS:
+        _sources, destination = _relocate_operands(args)
+        if destination is not None:
+            targets.append(destination)
     elif verb == "truncate":
         targets.extend(a for a in positional if not SIZE_OPERAND.match(a))
     elif verb == "dd":
         targets.extend(a[len("of="):] for a in args if a.startswith("of="))
 
     return [t for t in targets if not ignorable_write_target(t)]
+
+
+#: harmonic-forge#797 preclose finding: `cp`/`mv`/`install`/`ln` never author
+#: new content -- they make EXISTING content (or, for `ln`, the exact same
+#: inode) reachable under a new name. `bash_write_targets` above checks only
+#: the destination, so a Lane 3 session could `mv`/`ln` an arbitrary existing
+#: file -- including `operator-memory/MEMORY.md` itself -- onto a name the
+#: destination-only check allows. Verified live: both `mv MEMORY.md
+#: feedback_x.md` and `ln <victim> feedback_probe.md` were allowed and
+#: destroyed/clobbered their target before this fix.
+RELOCATE_VERBS = ("cp", "mv", "install", "ln")
+
+
+def bash_relocate_sources(segment: list[str]) -> list[str]:
+    """Source operand(s) of a `cp`/`mv`/`install`/`ln` invocation.
+
+    Shares `_relocate_operands` with `bash_write_targets`'s destination
+    extraction, so `--target-directory=`/`-t` and separated-value flags
+    (`-m`/`-o`/`-g`) are handled identically on both sides -- a stray
+    option value must not be misread as a source any more than as a
+    destination. Checked only against `lane3_write_outside_testplan` -- a
+    source outside Lane 3's own writable roots has no more standing to be
+    relocated FROM than an arbitrary path has to be written TO."""
+    tokens = strip_invocation_prefix(segment)
+    if not tokens or Path(tokens[0]).name not in RELOCATE_VERBS:
+        return []
+    sources, _destination = _relocate_operands(tokens[1:])
+    return [s for s in sources if not ignorable_write_target(s)]
+
+
+def lane3_relocate_source_denial(sources: list[str]) -> dict | None:
+    """harmonic-forge#797 preclose: deny a relocate/link whose SOURCE is
+    outside Lane 3's writable roots, independent of whether the
+    destination passes `lane3_write_outside_testplan` on its own. Reuses
+    that same predicate for the source side -- self-gates on LANE=3, same
+    as the destination check."""
+    for source in sources[:MAX_WRITE_TARGETS]:
+        if lane3_write_outside_testplan(source):
+            return denial(
+                f"Blocked: this session was launched as Lane 3 (LANE=3) and "
+                f"this command relocates or links {source!r} — "
+                "harmonic-forge#797. `cp`/`mv`/`install`/`ln` bring existing "
+                "file content (or, for `ln`, the same inode) into a new name "
+                "without authoring anything new, so the SOURCE must already "
+                "be inside an allowed location (testplan/, or an existing "
+                "feedback_*.md lesson file) too — not just the destination."
+            )
+    return None
+
+
+#: **Residual gap, evadable, and stated as such** (same posture as
+#: `interpreter_write_pairs`'s own docstring below, harmonic-forge#446):
+#: `RELOCATE_VERBS` and `INTERPRETER_RELOCATE_WITH_SOURCE` recognize the
+#: relocate/link constructs a convenient shortcut reaches for
+#: (`mv`/`cp`/`install`/`ln`, `os.replace`/`os.rename`/`os.link`/
+#: `os.symlink`/`shutil.copy*`/`shutil.move`) — not the unbounded set of
+#: tools that can also move bytes on a filesystem (`rsync`, `tar`, `unzip`,
+#: `cpio`, `find ... -exec mv`, `xargs cp`, a Perl/awk one-liner). Chasing
+#: that set verb-by-verb is the same arms race `block_irreversible_ops.py`
+#: already declines for shell wrappers. Also residual: `sources[:
+#: MAX_WRITE_TARGETS]` silently stops checking past the 20th source in one
+#: segment (shared truncation with `protected_write_denial`'s own
+#: destination list — not a new weakening), and `lane3_write_outside_testplan`
+#: resolves a relative source against the hook process's real `Path.cwd()`,
+#: not the tracked `effective_cwd` a prior `cd` in the same script moved to
+#: (shared with the pre-existing destination check, harmonic-forge#529's
+#: `effective_cwd` tracking was never threaded into that function). Tracked
+#: as harmonic-forge#801 rather than expanded here, since it is a property of
+#: the whole write-guard architecture (Lane 2's main-checkout and
+#: write-on-main-branch checks share every one of these limits), not
+#: specific to the `operator-memory/` allowance this issue adds.
+#:
+#: Also folded into harmonic-forge#801 rather than chased to exhaustion here,
+#: for the same "not a full parser" reason: `_relocate_operands` matches
+#: `--target-directory=`/`-t DIR` by exact spelling, not GNU's accepted
+#: unambiguous abbreviations (`--target-dir=`) or the glued short form
+#: (`-t/DIR`); and `INTERPRETER_RELOCATE_WITH_SOURCE`/the `move` group in
+#: `INTERPRETER_WRITE_PAIR` both stop at the first `)`, so a trailing comma
+#: before it (`os.replace('a','b',)`) is valid Python that defeats both
+#: regexes identically, and so is a keyword-argument call
+#: (`os.replace(src='a', dst='b')`, cross-family preclose finding) — neither
+#: regex requires positional syntax. Each is a real, narrow parsing gap
+#: around a single known construct (not an unrecognized construct
+#: entirely), fixable in a bounded way if #801 scopes it in — unlike the
+#: fully unbounded tool list above, so it is named specifically rather
+#: than left implicit.
 
 
 def interpreter_write_targets(
@@ -745,6 +925,40 @@ _WRITE_OPERAND_GROUP = {
     "move": "move_op",
     "redirect": "redirect_op",
 }
+
+
+#: harmonic-forge#797 preclose: the `move` construct above already recognizes
+#: `os.replace`/`os.rename`/`shutil.copy*`/`shutil.move` as writes but reports
+#: only the destination, and `os.link`/`os.symlink` are not recognized at all
+#: — so a Lane 3 session could relocate/link an arbitrary existing file
+#: (including `operator-memory/MEMORY.md` itself) onto an allowed name via
+#: `python3 -c "..."`, identically to the shell-level bypass this diff closes
+#: for `mv`/`ln`, just one surface over. Deliberately NARROWER than the `move`
+#: group above: both operands must be string literals (no `[^,)]*` leniency),
+#: since a non-literal source can't be checked statically anyway — this is
+#: source-side detection only, feeding `lane3_relocate_source_denial`, and
+#: does not change the existing destination-only behavior or its tests.
+INTERPRETER_RELOCATE_WITH_SOURCE = re.compile(
+    r"""(?:os\.(?:replace|rename|link|symlink)|shutil\.(?:copy\w*|move))"""
+    r"""\s*\(\s*['"](?P<src>[^'"]+)['"]\s*,\s*['"][^'"]+['"]\s*\)"""
+)
+
+
+def interpreter_relocate_sources(segment: list[str], command: str) -> list[str]:
+    """Source operands of an interpreter-surface relocate/link call.
+
+    Companion to `bash_relocate_sources` for the interpreter surface — same
+    reasoning, same consumer (`lane3_relocate_source_denial`), and the same
+    interpreter-verb gate `interpreter_write_targets` uses (a non-interpreter
+    segment never reaches the raw-text scan)."""
+    tokens = strip_invocation_prefix(segment, unwrap_shells=False)
+    if not tokens or Path(tokens[0]).name not in INTERPRETERS:
+        return []
+    return [
+        match.group("src")
+        for match in INTERPRETER_RELOCATE_WITH_SOURCE.finditer(command)
+        if not ignorable_write_target(match.group("src"))
+    ]
 
 
 def interpreter_write_pairs(command: str) -> list[tuple[str, str]]:
@@ -874,12 +1088,13 @@ def protected_write_denial(
         if lane3_write_outside_testplan(target):
             return denial(
                 f"Blocked: this session was launched as Lane 3 (LANE=3) and "
-                f"this command writes outside ~/Harmonic_Projects/testplan/ "
-                f"via {construct} ({target!r}) — harmonic-forge#458. Lane 3 "
+                f"this command writes outside its two allowed roots via "
+                f"{construct} ({target!r}) — harmonic-forge#458/#797. Lane 3 "
                 "never fixes anything, ever (harmonic-forge#150); the only "
-                "writable path is the testplan root, for gate artifacts too "
-                "large for an issue comment. Redirect scratch output there "
-                "instead."
+                "writable paths are the testplan root, for gate artifacts too "
+                "large for an issue comment, and a feedback_*.md lesson file "
+                "directly inside operator-memory/. Redirect scratch output "
+                "there instead."
             )
         if write_on_main_branch(target, cwd):
             return denial(
@@ -1046,6 +1261,11 @@ def decision(command: object, cwd: Path) -> dict:
             effective_cwd)
         if write_denial is not None:
             return write_denial
+        relocate_denial = lane3_relocate_source_denial(
+            bash_relocate_sources(segment)
+            + interpreter_relocate_sources(segment, command))
+        if relocate_denial is not None:
+            return relocate_denial
         if os.environ.get("LANE") == "3":
             bulk_read_reason = bulk_comment_read_denial(segment)
             if bulk_read_reason is not None:
@@ -1140,9 +1360,11 @@ def main() -> None:
                 "Blocked: this session was launched as Lane 3 (LANE=3) "
                 "and Lane 3 never fixes anything, ever, under any "
                 "circumstance (harmonic-forge#150). The only writable "
-                "path is ~/Harmonic_Projects/testplan/, for gate "
-                "artifacts too large for an issue comment. Record the "
-                "failure and report it for Lane 2 to fix instead."
+                "paths are ~/Harmonic_Projects/testplan/ (gate artifacts "
+                "too large for an issue comment) and a "
+                "feedback_*.md lesson file directly inside "
+                "~/Harmonic_Projects/operator-memory/ (harmonic-forge#797). "
+                "Record the failure and report it for Lane 2 to fix instead."
             )))
             return
         if write_on_main_branch(file_path, cwd):
