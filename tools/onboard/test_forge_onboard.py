@@ -57,7 +57,7 @@ class Base(unittest.TestCase):
         # fixtures exist to exercise the OTHER checks, and a missing task layer
         # would make every one of them report a lane-tasks failure as noise.
         # Pass `lane_task_names` to build a repo that is deliberately short.
-        names = (("l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end")
+        names = (("l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end", "check")
                  if lane_task_names is None else lane_task_names)
         (repo / "mise.toml").write_text(
             "".join(f'[tasks.{n}]\nrun = "true"\n\n' for n in names), encoding="utf-8")
@@ -885,12 +885,12 @@ class LaneTaskCheckTests(Base):
     def test_all_five_present_passes(self) -> None:
         check = fo.check_lane_tasks(self.project(self.make_repo()))
         self.assertEqual(check.status, fo.OK)
-        self.assertIn("5", check.detail)
+        self.assertIn("6", check.detail)
 
     def test_the_check_reads_the_DECLARED_name_not_a_hardcoded_one(self) -> None:
         """A repo free to rename its tasks is why this reads the manifest."""
         repo = self.make_repo(lane_task_names=("l1-post", "lane-comment", "gate-checkout",
-                                               "lane3-begin", "session-close"))
+                                               "lane3-begin", "session-close", "check"))
         renamed = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
@@ -915,6 +915,36 @@ class LaneTaskCheckTests(Base):
         repo = self.make_repo()
         (repo / "mise.toml").unlink()
         self.assertEqual(fo.check_lane_tasks(self.project(repo)).status, fo.FAIL)
+
+
+class CheckTaskRequiredForLane3Tests(Base):
+    """harmonic-forge#800 — a runs_lane3 repo missing `check` reported green
+
+    while `l1-post --kind ready-for-l3`'s unconditional `mise run check`
+    preflight (tools/gh/l1_post.py:1549) had nothing to run. Found live on
+    openclaw-projects#21.
+    """
+
+    def test_missing_check_task_fails_for_a_lane3_repo(self) -> None:
+        repo = self.make_repo(lane_task_names=(
+            "l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end"))
+        check = fo.check_lane_tasks(self.project(repo))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("check", check.detail)
+        self.assertIn("check_task", check.detail)
+
+    def test_check_task_present_passes(self) -> None:
+        self.assertEqual(fo.check_lane_tasks(self.project(self.make_repo())).status, fo.OK)
+
+    def test_a_non_lane3_repo_does_not_require_check(self) -> None:
+        repo = self.make_repo(lane_task_names=(
+            "l1-post", "lane-comment", "gate-checkout", "lane3-begin", "lane3-end"))
+        not_lane3 = self.project(repo, protocol=mf.Protocol(
+            worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+            lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+            runs_lane3=False))
+        self.assertEqual(fo.check_lane_tasks(not_lane3).status, fo.OK)
 
 
 class GateAdapterDeclarationTests(Base):

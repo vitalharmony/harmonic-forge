@@ -312,6 +312,13 @@ def check_lane_tasks(project: Project) -> Check:
         "lane3_begin_task": project.protocol.lane3_begin_task,
         "lane3_end_task": project.protocol.lane3_end_task,
     }
+    if project.protocol.runs_lane3:
+        # harmonic-forge#800: `l1-post --kind ready-for-l3` runs `mise run check`
+        # unconditionally (tools/gh/l1_post.py:1549), with no fallback -- a
+        # runs_lane3 repo missing this literal task name reports "onboarded,
+        # green" while no issue in it can ever reach Lane 3 (found live on
+        # openclaw-projects#21).
+        declared["check_task"] = "check"
     present = lane_tasks.task_names(mise.read_text(encoding="utf-8"))
     missing = {field: name for field, name in declared.items() if name not in present}
     if missing:

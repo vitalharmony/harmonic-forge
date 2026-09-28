@@ -111,15 +111,15 @@ class RealDocTests(unittest.TestCase):
         self.assertNotIn("`", expanded)
         self.assertNotIn("K42 [ke'nekted#42]", expanded, "K's repo column has no owner/repo slug form")
 
-    def test_leasepal_prefix_does_not_assert_a_nonexistent_repo_falsely(self) -> None:
-        """The P row's account column says the repo does not yet exist --
-        that caveat must survive into the gloss, not be dropped in favor
-        of a bare 'own' (preclose review, correctness + fail-direction
-        lenses)."""
+    def test_leasepal_prefix_expands_to_the_real_repo_slug(self) -> None:
+        """harmonic-forge#800: LeasePAL-App-Prototype was onboarded, so the P
+        row now names a real repo (`owner/repo` in backticks, like H/F/I/O)
+        rather than the earlier 'projected, repo does not yet exist' caveat.
+        A row shaped like the others produces the same clean `repo#N` gloss."""
         result = _run("track this under P42")
         self.assertIsNotNone(result)
         expanded = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("does not yet exist", expanded)
+        self.assertIn("LeasePAL-ML/LeasePAL-App-Prototype#42", expanded)
 
     def test_eoq_gloss_is_not_truncated_mid_sentence(self) -> None:
         """The doc's Meaning paragraph hard-wraps; a non-DOTALL capture
@@ -177,21 +177,24 @@ class RealDocTests(unittest.TestCase):
         self.assertIsNone(_run("just a normal message with no shorthand at all"))
 
     def test_malformed_row_with_empty_account_cell_does_not_crash_other_tokens(self) -> None:
-        """A doc row shaped like the P row but with a genuinely empty
-        Account cell must degrade gracefully for its own token and must
-        NOT poison expansion of unrelated, well-formed tokens in the same
-        prompt (preclose review, correctness lens, live-reproduced
-        IndexError swallowed by the outer fail-open, blanking the whole
-        prompt)."""
+        """A doc row shaped like the K row (a repo column with no `/`, so
+        `repo_issue_gloss` falls through to the account-fallback branch) but
+        with a genuinely empty Account cell must degrade gracefully for its
+        own token and must NOT poison expansion of unrelated, well-formed
+        tokens in the same prompt (preclose review, correctness lens, live-
+        reproduced IndexError swallowed by the outer fail-open, blanking the
+        whole prompt). harmonic-forge#800 onboarded LeasePAL, so P's repo
+        column now carries a real `owner/repo` slug and no longer exercises
+        this branch -- K is the row that does."""
         doc_text = Path(m.DOC_PATH).read_text()
         broken_doc = doc_text.replace(
-            "| `P` | LeasePAL | own account — **projected, repo does not yet exist** |",
-            "| `P` | LeasePAL |  |",
+            "| `K` | ke'nekted | **`harmonicarchitect` — separate account, separate credentials** |",
+            "| `K` | ke'nekted |  |",
         )
-        expanded = m.annotate("L2D H26 and P99", broken_doc)
+        expanded = m.annotate("L2D H26 and K99", broken_doc)
         self.assertIn("L2D [Lane 2 done", expanded)
         self.assertIn("H26 [vitalharmony/hrse#26]", expanded)
-        self.assertIn("P99 [LeasePAL issue #99 (account: unknown account)]", expanded)
+        self.assertIn("K99 [ke'nekted issue #99 (account: unknown account)]", expanded)
 
 
 class ParserFixtureTests(unittest.TestCase):

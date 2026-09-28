@@ -343,12 +343,20 @@ class LiveManifestTests(unittest.TestCase):
             "vitalharmony/cymagraph-infra": ("vitalharmony", "1"),
             # #4 since 2026-09-10 -- its own venture, see the manifest header.
             "vitalharmony/openclaw-projects": ("vitalharmony", "4"),
+            # harmonic-forge#800 -- LeasePAL's own board, tracked with Greg and
+            # Matt. The repo key is lowercased (normalize_repo); the board
+            # owner is not a repo slug and keeps its real casing.
+            "leasepal-ml/leasepal-app-prototype": ("LeasePAL-ML", "1"),
         })
 
     def test_the_sweep_list_matches_the_live_hygiene_task(self) -> None:
         self.assertEqual(mf.sweep_repos(LIVE), [
             "vitalharmony/hrse", "vitalharmony/harmonic-forge",
             "vitalharmony/cymagraph-infra", "vitalharmony/openclaw-projects",
+            # harmonic-forge#800 -- leasepal's account is vitalharmony, so it is
+            # swept like any other repo on that account (manifest.py's own rule:
+            # not filtered by `onboarded`, only by `account == "vitalharmony"`).
+            "leasepal-ml/leasepal-app-prototype",
         ])
 
     def test_the_manifest_agrees_with_lane_shorthand(self) -> None:
@@ -374,11 +382,14 @@ class LiveManifestTests(unittest.TestCase):
         # and therefore declares nothing here; the other three own no graph,
         # database or live service and say so explicitly. A repo that declared
         # neither would fail `check_gate_adapter`, which is the point.
-        no_adapter = {"harmonic-forge", "cymagraph-infra", "openclaw-projects"}
+        # harmonic-forge#800: leasepal is now onboarded with runs_lane3 = true
+        # and declares needs_gate_adapter = false, same as the other three
+        # graph/database/live-service-free repos.
+        no_adapter = {"harmonic-forge", "cymagraph-infra", "openclaw-projects", "leasepal"}
         self.assertEqual(
             {project.name: project.protocol for project in projects},
             {name: mf.Protocol(**common,
-                               runs_lane3=name not in {"kenekted", "leasepal"},
+                               runs_lane3=name != "kenekted",
                                needs_gate_adapter=False if name in no_adapter else None)
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
                           "openclaw-projects", "kenekted", "leasepal")})
