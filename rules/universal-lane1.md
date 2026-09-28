@@ -107,8 +107,9 @@ matters:
     decision, the same as a FAIL.
 
   **Still eligible, but re-run every test case instead of spot-checking**
-  when the issue is Tier `deep`, its Tier is unset or cannot be read, or it
-  is labeled `data-migration`.
+  when the issue's Tier is unset or cannot be read, or it is labeled
+  `data-migration`. Tier `deep` spot-checks like every other tier (operator
+  ruling 2026-09-25, H65).
 - **Every other absolute stands.** A `data-migration`-labeled issue still
   requires `migration-executed`/`migration-abandoned` (R-0169); a
   Tooling-Exception diff still requires `preclose-inspected` before close

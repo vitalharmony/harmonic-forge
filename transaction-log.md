@@ -3,6 +3,18 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## docs(rules): R-0351 spot-checks Tier deep too; document the partial-AE carry-forward convention (harmonic-forge#796)
+
+Drops Tier deep from R-0351's full-re-run clause per the operator's
+2026-09-25 ruling (H65) -- unset/unreadable Tier and data-migration still
+require a full re-run. Adds R-0366 to testing-gate.md documenting the
+partial-AE carry-forward convention (hrse H2115's worked example) and a
+matching registry entry. Pins both with a unit test.
+- rules/universal-lane1.md             |  5 +++--
+- tools/gh/test_l1_post_sweep_cases.py | 41 ++++++++++++++++++++++++++++++++++++
+- tools/rules/registry.toml            | 12 +++++++++--
+- 4 files changed, 91 insertions(+), 4 deletions(-)
+
 ## test(lane): baseline capture uses a fixture HOME, not the operator's (harmonic-forge#783)
 
 Passed locally only because the real ~/Harmonic_Projects/HRSE2/.codex/hooks.json

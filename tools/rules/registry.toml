@@ -2290,8 +2290,8 @@ hooks = [{ script = "block_lane2_status_claims.py", events = ["PreToolUse:Bash"]
 id = "R-0351"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
-statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only (a spot-check: gated SHA equals PR head and CI green, plus 1-2 test cases re-run live -- highest-risk and one random; a moved head, asserted evidence or a disagreeing spot-check leaves the carve-out; Tier deep, unset/unreadable Tier or data-migration requires every test case re-run), may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
-text_sha = "494cf7ad29567fa7"
+statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only (a spot-check: gated SHA equals PR head and CI green, plus 1-2 test cases re-run live -- highest-risk and one random; a moved head, asserted evidence or a disagreeing spot-check leaves the carve-out; unset/unreadable Tier or data-migration requires every test case re-run; Tier deep spot-checks like every other tier), may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
+text_sha = "95a8c69cd78c1bd8"
 hooks = []
 exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
 
@@ -2400,3 +2400,11 @@ anchor = "the-filing-bar-three-tests-in-order-hrse-2026-08-14"
 statement = "A retired command or flag is deleted, never kept as a refusing stub -- rules, skills, help text, refusal messages, and memory describe a retired mechanism by its function and issue number, and never spell its invocation."
 text_sha = "1398f2d878e854c2"
 hooks = ["tools/hooks/deny_retired_belt_sweep.py"]
+
+[[rule]]
+id = "R-0366"
+file = "rules/testing-gate.md"
+anchor = "gate-readiness-sweep"
+statement = "A partial AE carries the other cases forward: the sweep still lists every spec case, a case not being run reads 'carried forward, not re-run' with its evidence link and unchanged SHA, the AE names only the cases it authorizes, and Lane 3 executes only those cases."
+text_sha = "d0cca63bd103382e"
+hooks = []

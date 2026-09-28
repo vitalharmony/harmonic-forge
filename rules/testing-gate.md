@@ -126,6 +126,43 @@ for the UI-only variant.
      for one. Forcing it into a verdict/finding template produces a heading
      that lies.
 <!-- /R-0336 -->
+<!-- R-0366 -->
+   - **A partial AE carries the other cases forward.** When an AE
+     authorizes only some of a spec's cases (an amended spec, a Lane 1
+     spot-check, a TC unblocked after a PASS), the sweep still lists every
+     spec case, because `validate_sweep` requires the exact set. Each case
+     not being run reads `n. TCn — carried forward, not re-run: <evidence
+     comment link>; code at <sha> unchanged since.` Never begin with
+     pass/fail (`SWEEP_FABRICATED_OUTCOME` refuses it). The AE's
+     **Authorized:** line names only the cases to run. **Lane 3 executes
+     only the AE-authorized cases**, and reports each carried-forward case
+     as cited from its linked evidence, not as re-executed.
+
+     ```markdown
+     ## Gate-readiness sweep — H2115
+
+     **Readiness:** all 5 cases from the referenced spec accounted for —
+     1 ready to execute, 4 carried forward.
+     **Blockers:** none.
+     **Next:** Lane 3 executes TC2 only, then reports; TC1/TC3/TC4/TC5
+     are not re-run.
+
+     Write tier: W
+
+     ### Per-case readiness
+
+     1. TC1 — carried forward, not re-run: evidence already in the
+        original PASS (issuecomment-5875014148). Code at `9cb2f62f`
+        unchanged since.
+     2. TC2 — ready to run: `mise run gate-disposable-graph load`, then
+        `mise run gate-restart --tier w`. ...
+     3. TC3 — carried forward, not re-run: evidence already in the
+        original PASS (issuecomment-5875014148). Code at `9cb2f62f`
+        unchanged since.
+     4. TC4 — carried forward, not re-run: ...
+     5. TC5 — carried forward, not re-run: ...
+     ```
+<!-- /R-0366 -->
 <!-- R-0129 -->
    - **A dependency present only via an undocumented ad-hoc install (not
      declared in the project's actual manifest — `requirements.txt`,
