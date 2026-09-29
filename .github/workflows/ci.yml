@@ -5,14 +5,21 @@
 # lane3_cloud_cli_policy, deny_lane3_ae_self_post): a regression there does
 # not fail loudly, it quietly stops enforcing something.
 #
-# No dependency install step, deliberately — the suite is stdlib unittest and
-# this repo declares no dependencies. See tools/run_tests.py.
+# harmonic-forge#802: `verify` runs `mise run ci-check`, the single
+# CI-runnable definition, never a mirrored list of commands — that drift
+# is exactly what turned hrse's `main` red three times (hrse#972/#2010).
+# `ci-check` is the CI-runnable SUBSET of `mise run check`; `check` itself
+# also runs machine-local steps (platform-link drift, the cross-registry
+# sweep, the context-budget ratchet) that a fresh runner cannot pass.
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -21,16 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: jdx/mise-action@v4
 
-      - name: Syntax check
-        run: |
-          find tools -name '*.py' -print0 | xargs -0 -n1 python3 -m py_compile
-          python3 -m py_compile sync_rules.py
-
-      # Invokes the same entrypoint as `mise run test`, so CI and the local
-      # task cannot drift apart.
-      - name: Tests
-        run: python3 tools/run_tests.py
+      - run: mise run ci-check

@@ -70,7 +70,7 @@ class Base(unittest.TestCase):
 
     def make_repo(self, name: str = "thing", *, git: bool = True,
                   worktrees: bool = True, rules: bool = True,
-                  claude_md: bool = True, hooks: bool = True,
+                  claude_md: bool = True, hooks: bool = True, ci: bool = True,
                   lane_task_names: tuple[str, ...] | None = None) -> Path:
         repo = self.root / name
         repo.mkdir(parents=True, exist_ok=True)
@@ -100,6 +100,16 @@ class Base(unittest.TestCase):
         if worktrees:
             for n in (2, 3):
                 (repo.parent / f"{name}-lane{n}").mkdir(exist_ok=True)
+        if ci:
+            # harmonic-forge#802: a correctly-onboarded repo by default, same
+            # reasoning as the lane-task layer above -- these fixtures exist
+            # to exercise the OTHER checks. Pass ci=False for a repo that is
+            # deliberately missing CI.
+            workflows_dir = repo / ".github" / "workflows"
+            workflows_dir.mkdir(parents=True, exist_ok=True)
+            (workflows_dir / "ci.yml").write_text(
+                "on: [pull_request]\njobs:\n  verify:\n    steps:\n"
+                "      - run: mise run ci-check\n", encoding="utf-8")
         return repo
 
     def project(self, checkout: Path | None, **kw) -> mf.Project:
@@ -119,8 +129,21 @@ class Base(unittest.TestCase):
         return mf.Project(**fields)
 
     def statuses(self, project: mf.Project) -> dict[str, str]:
+        # harmonic-forge#802: check_branch_protection shells out to `gh api`,
+        # which is a live network call -- hermetic per this file's own
+        # docstring, so it is faked here rather than reaching the network in
+        # every test that doesn't care about it. Anything not `gh` (git,
+        # etc.) still runs for real.
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not found")
+            return real_run(cmd, *args, **kwargs)
+
         with mock.patch.object(fo, "check_prefix_agreement", return_value=[]), \
-                mock.patch.object(fo, "prefixes", return_value={"H": "thing"}):
+                mock.patch.object(fo, "prefixes", return_value={"H": "thing"}), \
+                mock.patch.object(fo.subprocess, "run", side_effect=fake_run):
             return {c.name: c.status for c in fo.verify(project)}
 
 
@@ -135,6 +158,7 @@ class VerifyTests(Base):
             "directives": {"rules": False},
             "entrypoint": {"claude_md": False},
             "hooks": {"hooks": False},
+            "ci": {"ci": False},
         }
         for name, kwargs in cases.items():
             with self.subTest(check=name):
@@ -1006,6 +1030,138 @@ class GateAdapterDeclarationTests(Base):
     def test_a_non_lane3_repo_is_skipped_not_failed(self) -> None:
         project = self.project(self.make_repo(), protocol=self._protocol(runs_lane3=False))
         self.assertEqual(fo.check_gate_adapter(project).status, fo.SKIP)
+
+
+class CiCheckTests(Base):
+    """harmonic-forge#802: `verify` runs `mise run ci-check`, or the repo
+    declares its own drift-checked parity tool."""
+
+    def _write_workflow(self, repo: Path, text: str, name: str = "ci.yml") -> None:
+        workflows = repo / ".github" / "workflows"
+        workflows.mkdir(parents=True, exist_ok=True)
+        (workflows / name).write_text(text, encoding="utf-8")
+
+    def test_verify_running_ci_check_passes(self) -> None:
+        repo = self.make_repo()  # make_repo's default fixture already does this
+        self.assertEqual(fo.check_ci(self.project(repo)).status, fo.OK)
+
+    def test_verify_running_other_commands_fails(self) -> None:
+        repo = self.make_repo(ci=False)
+        self._write_workflow(repo, "on: [pull_request]\njobs:\n  verify:\n    steps:\n"
+                                    "      - run: python3 tools/run_tests.py\n")
+        self.assertEqual(fo.check_ci(self.project(repo)).status, fo.FAIL)
+
+    def test_no_workflow_fails(self) -> None:
+        repo = self.make_repo(ci=False)
+        self.assertEqual(fo.check_ci(self.project(repo)).status, fo.FAIL)
+
+    def test_ci_parity_task_passes_without_reading_any_workflow(self) -> None:
+        import dataclasses
+        repo = self.make_repo(ci=False)
+        project = self.project(repo)
+        project = dataclasses.replace(
+            project,
+            protocol=dataclasses.replace(project.protocol, ci_parity_task="ci-parity-check-command-sets"))
+        check = fo.check_ci(project)
+        self.assertEqual(check.status, fo.OK)
+        self.assertIn("ci-parity-check-command-sets", check.detail)
+
+    def test_an_anchor_shaped_workflow_warns_not_fails(self) -> None:
+        repo = self.make_repo(ci=False)
+        self._write_workflow(
+            repo,
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  verify: &base\n"
+            "    steps: *shared_steps\n")
+        self.assertEqual(fo.check_ci(self.project(repo)).status, fo.WARN)
+
+    def test_a_split_run_block_warns_not_fails(self) -> None:
+        """A `run: |` block whose command isn't found verbatim is a shape
+        this stdlib scan cannot read confidently -- warn, not a false fail."""
+        repo = self.make_repo(ci=False)
+        self._write_workflow(
+            repo,
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  verify:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          mise run \\\n"
+            "            ci-check\n")
+        self.assertEqual(fo.check_ci(self.project(repo)).status, fo.WARN)
+
+    def test_an_old_style_run_block_with_no_mise_fails_not_warns(self) -> None:
+        """Regression: a verify job with a `run: |` block that names no
+        `mise` at all (the actual pre-#802 harmonic-forge shape) must FAIL,
+        not read as merely "unclear" the way a split `mise run ci-check`
+        does."""
+        repo = self.make_repo(ci=False)
+        self._write_workflow(
+            repo,
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  verify:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          python3 tools/run_tests.py\n")
+        self.assertEqual(fo.check_ci(self.project(repo)).status, fo.FAIL)
+
+    def test_a_non_lane3_repo_is_skipped_not_failed(self) -> None:
+        project = self.project(self.make_repo(ci=False),
+                               protocol=self._protocol_no_lane3())
+        self.assertEqual(fo.check_ci(project).status, fo.SKIP)
+
+    def _protocol_no_lane3(self):
+        return mf.Protocol(worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                           lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                           lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                           runs_lane3=False)
+
+
+class BranchProtectionCheckTests(Base):
+    """harmonic-forge#802: WARN only, never FAIL -- requiring a check on
+    `main` is an operator decision, not something onboarding enforces."""
+
+    def test_a_failed_protection_lookup_warns(self) -> None:
+        repo = self.make_repo()
+        project = self.project(repo)
+        with mock.patch.object(
+            fo.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="404"),
+        ):
+            check = fo.check_branch_protection(project)
+        self.assertEqual(check.status, fo.WARN)
+
+    def test_the_declared_check_required_passes(self) -> None:
+        repo = self.make_repo()
+        project = self.project(repo)
+        with mock.patch.object(
+            fo.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="verify", stderr=""),
+        ):
+            check = fo.check_branch_protection(project)
+        self.assertEqual(check.status, fo.OK)
+
+    def test_a_declared_ci_parity_task_still_requires_verify_on_main(self) -> None:
+        """harmonic-forge#802 gate FAIL: hrse declares
+        `ci_parity_task="ci-parity-check-command-sets"` for `check_ci`'s
+        benefit, but its real required branch-protection context is
+        "verify" regardless -- the required-context name must never
+        fall back to `ci_parity_task`."""
+        import dataclasses
+        repo = self.make_repo()
+        project = self.project(repo)
+        project = dataclasses.replace(
+            project,
+            protocol=dataclasses.replace(project.protocol, ci_parity_task="ci-parity-check-command-sets"))
+        with mock.patch.object(
+            fo.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="verify", stderr=""),
+        ):
+            check = fo.check_branch_protection(project)
+        self.assertEqual(check.status, fo.OK)
+        self.assertIn("verify", check.detail)
 
 
 class LaneTaskGeneratorTests(Base):

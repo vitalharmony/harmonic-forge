@@ -366,16 +366,19 @@ class Wiring(unittest.TestCase):
     """TC11 / TC12 / AC4 — the runners actually call it."""
 
     def test_forge_check_task_invokes_the_lint(self) -> None:
+        # harmonic-forge#802: the lint lives in ci-check, the CI-runnable
+        # subset check now depends on -- not in check's own body, which
+        # holds only the machine-local steps CI cannot run.
         body = (FORGE_ROOT / "mise.toml").read_text()
-        check = body[body.index("[tasks.check]"):body.index("[tasks.commit]")]
-        self.assertIn("tools/memory/memory_lint.py", check)
-        self.assertIn("--gate", check)
+        ci_check = body[body.index("[tasks.ci-check]"):body.index("[tasks.check]")]
+        self.assertIn("tools/memory/memory_lint.py", ci_check)
+        self.assertIn("--gate", ci_check)
 
     def test_forge_gate_runs_against_a_fixture_not_the_live_store(self) -> None:
         """The live store cannot be gated — no commit could turn it green."""
         body = (FORGE_ROOT / "mise.toml").read_text()
-        check = body[body.index("[tasks.check]"):body.index("[tasks.commit]")]
-        self.assertIn("testdata/clean", check)
+        ci_check = body[body.index("[tasks.ci-check]"):body.index("[tasks.check]")]
+        self.assertIn("testdata/clean", ci_check)
 
     def test_the_memory_suite_is_actually_discovered(self) -> None:
         """harmonic-forge#447: a suite `mise run check` never loads ships dead."""

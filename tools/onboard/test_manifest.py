@@ -386,11 +386,15 @@ class LiveManifestTests(unittest.TestCase):
         # and declares needs_gate_adapter = false, same as the other three
         # graph/database/live-service-free repos.
         no_adapter = {"harmonic-forge", "cymagraph-infra", "openclaw-projects", "leasepal"}
+        # harmonic-forge#802: hrse's CI mirrors `check`'s commands against its
+        # own parity tool rather than declaring a `ci-check` task.
+        parity_task = {"hrse": "ci-parity-check-command-sets"}
         self.assertEqual(
             {project.name: project.protocol for project in projects},
             {name: mf.Protocol(**common,
                                runs_lane3=name != "kenekted",
-                               needs_gate_adapter=False if name in no_adapter else None)
+                               needs_gate_adapter=False if name in no_adapter else None,
+                               ci_parity_task=parity_task.get(name))
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
                           "openclaw-projects", "kenekted", "leasepal")})
 

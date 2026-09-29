@@ -430,3 +430,45 @@ different mechanism (watching `main`'s own CI and reacting), and a different
 issue. Recorded here so the next reader knows the scope is a choice rather than
 an oversight: this rule removes the case that actually bit, where the PR's own
 checks were red and nothing looked.
+
+## The CI standard every onboarded repo meets — `verify` runs `ci-check` (harmonic-forge#802)
+
+The section above establishes that CI is a required signal. This section
+defines what that signal actually has to be: a repo with zero workflows, or a
+workflow whose `verify` job mirrors `check`'s commands by hand, both satisfy
+the letter of "CI exists" while leaving `gate_ci.py` unable to ever post a
+PASS (a repo with no workflow) or drifting silently from the local gate (a
+mirrored command list — the exact failure that turned hrse's `main` red three
+times, hrse#972/#2010).
+
+<!-- R-0367 -->
+**Every onboarded repo declares `[tasks.ci-check]`: the complete, CI-runnable
+subset of its verification — offline, no credentials, passing on a clean
+`ubuntu-latest`.** `[tasks.check]` is `depends = ["ci-check"]` plus whatever
+machine-local steps that runner cannot run (a live service, `$HOME`-relative
+state, a private sibling checkout), each carrying a one-line reason. The
+repo's CI runs a job named `verify`, triggered on `pull_request` (and `push`
+to `main`), whose only step of consequence is `mise run ci-check` — never a
+mirrored list of the same commands. A repo whose CI instead re-verifies
+`check`'s own command set against a parity tool (hrse's
+`ci-parity-check-command-sets`) declares that task name as `ci_parity_task`
+in its `projects.toml` protocol block instead of defining `ci-check`; that
+declared variant satisfies this rule exactly as `ci-check` does.
+
+**A skip inside a shared gate tool is keyed on its input being absent, never
+on `CI=true`.** `platform_link_report.py`'s drift check and
+`context_budget_ratchet.py`'s ratchet each protect a real invariant in every
+repo that imports them; a `CI=true` branch inside either would disarm that
+invariant in *every* onboarded repo's CI at once, not just the repo whose CI
+genuinely cannot satisfy it. The correct shape is the one `ci-check`/`check`
+already gives: the machine-local step simply is not IN `ci-check`, so CI never
+calls it at all — nothing inside the tool needs to know it is running in CI.
+
+**Requiring `verify` on `main` is a per-repo
+operator decision, not something this rule or onboarding enforces.**
+`forge-onboard`'s `check_ci` confirms the workflow exists and runs the right
+command; a separate, WARN-only `check_branch_protection` reports whether
+`main` actually requires `verify` (the job name, even for a repo that declares
+`ci_parity_task`), and a WARN never blocks onboarding or gates
+anything — see `tools/onboard/forge_onboard.py`.
+<!-- /R-0367 -->

@@ -32,8 +32,8 @@ run = "python3 tools/run_tests.py"
 description = "Verify the installed lane1/lane2/lane3 commands all resolve to this canonical tools/lane source (harmonic-forge#645). Read-only developer-machine check."
 run = "python3 tools/lane/check_installed_lane_sources.py --bin-dir \"$HOME/.local/bin\""
 
-[tasks.check]
-description = "Verification gate — syntax check over tools/ and sync_rules.py, then the full test suite"
+[tasks.ci-check]
+description = "The CI-runnable subset of verification (harmonic-forge#802): syntax check over tools/ and sync_rules.py, the full test suite, and the memory-lint fixture gates. Offline, no credentials, passes on a clean ubuntu-latest. This is what .github/workflows/ci.yml's verify job actually runs — check (below) depends on it plus the machine-local steps CI cannot run."
 run = """
 set -e
 find tools -name '*.py' -print0 | xargs -0 -n1 python3 -m py_compile
@@ -43,18 +43,6 @@ echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
 # exists yet)" while 336 passing tests sat in the repo unrun. Running them
 # here means `mise run check` means what a reader assumes it means.
 python3 tools/run_tests.py
-python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
-# harmonic-forge#543: report platform-link drift from the gate rather than
-# from a lane launcher. Fails on DRIFT (a declared link missing or pointing
-# outside the platform); reports loudly without failing when the checkout
-# simply has no manifest yet, which is usually an older branch.
-python3 tools/onboard/platform_link_report.py --project .
-# harmonic-forge#454: cross-registry ID collision sweep. Prints SKIPPED (not
-# "clean") in a single-repo checkout, so a no-op is distinguishable from a
-# pass. NOTE: forge CI does not run this — harmonic-forge is public and hrse
-# is private, so CI has no credential to check out the sibling. That is a
-# stated, accepted gap, not missing wiring.
-python3 tools/rules/check_cross_registry.py
 # harmonic-forge#494: memory-store lint. Gated against the frozen CLEAN fixture,
 # never the live store — the live store is grown by the harness, not by any
 # branch, so a live-pinned exit-1 check is one no commit could turn green.
@@ -72,12 +60,31 @@ python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate -
 # non-zero exit aborts the task before the assertion can read it.
 rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --gate --today 2026-09-06 >/dev/null || rc=$?
 test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under --gate (got $rc)"; exit 1; }
-# harmonic-forge#521: the always-loaded context surface, ratcheted. `--gate` is
-# armed HERE and deliberately not in hrse's `check` yet — hrse is 77,123 B
-# against a 48,000 B ceiling, so arming it there before hrse#1730's trim lands
-# would break every hrse commit against an issue that has not merged. Local
-# only, never CI: the runner cannot see `~/.claude/CLAUDE.md` or the shared
-# memory index, so it would measure a smaller surface and pass on a number
+"""
+
+[tasks.check]
+description = "Verification gate — depends on ci-check (the CI-runnable subset), plus the machine-local steps a CI runner cannot execute (harmonic-forge#802)."
+depends = ["ci-check"]
+run = """
+set -e
+# harmonic-forge#645: machine-local -- reads $HOME/.local/bin, which a CI
+# runner does not have.
+python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
+# harmonic-forge#543: machine-local -- fails on a checkout with no platform
+# links at all (verified live, F802 pitch-inspection), which every fresh CI
+# checkout is. Report platform-link drift from the gate rather than from a
+# lane launcher; loud, not failing, when the checkout simply has no manifest
+# yet (usually an older branch).
+python3 tools/onboard/platform_link_report.py --project .
+# harmonic-forge#454: machine-local -- needs the private hrse sibling
+# checked out beside this one, which CI has no credential for (harmonic-forge
+# is public, hrse is private). Prints SKIPPED (not "clean") in a
+# single-repo checkout, so a no-op is distinguishable from a pass. A
+# stated, accepted CI gap, not missing wiring.
+python3 tools/rules/check_cross_registry.py
+# harmonic-forge#521: machine-local -- the always-loaded context surface,
+# ratcheted. The runner cannot see ~/.claude/CLAUDE.md or the shared memory
+# index, so a CI run would measure a smaller surface and pass on a number
 # nothing pays.
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
 """

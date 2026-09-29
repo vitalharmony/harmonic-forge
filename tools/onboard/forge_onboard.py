@@ -73,8 +73,13 @@ def platform_source() -> Path:
 
 #: Status glyphs. `SKIP` exists so "not applicable to this project" never reads
 #: as either a pass or a failure -- a projected repo with no checkout has no
-#: worktrees to be missing.
-OK, FAIL, SKIP = "ok", "FAIL", "skip"
+#: worktrees to be missing. `WARN` (harmonic-forge#802) is neither: a real
+#: finding worth surfacing, but one this tool deliberately never turns into
+#: a FAIL -- either because false-positiving it would be worse than missing
+#: it (an unreadable workflow shape), or because acting on it is an explicit
+#: operator decision this tool does not make for them (requiring a check on
+#: `main`).
+OK, FAIL, SKIP, WARN = "ok", "FAIL", "skip", "WARN"
 
 
 @dataclass
@@ -84,7 +89,7 @@ class Check:
     detail: str = ""
 
     def line(self) -> str:
-        mark = {OK: "  ok  ", FAIL: " FAIL ", SKIP: " skip "}[self.status]
+        mark = {OK: "  ok  ", FAIL: " FAIL ", SKIP: " skip ", WARN: " warn "}[self.status]
         return f"[{mark}] {self.name}" + (f" — {self.detail}" if self.detail else "")
 
 
@@ -354,6 +359,138 @@ def check_gate_adapter(project: Project) -> Check:
     return Check("gate adapter", FAIL,
                  "runs_lane3 = true but no .claude/gate-adapter.json and no "
                  "needs_gate_adapter = false declaration")
+
+
+#: A YAML anchor (`&name`) or alias (`*name`) reference anywhere in the file.
+#: Its presence means a job's actual steps may not be written where they
+#: appear to be, which is exactly the shape this stdlib scan cannot read
+#: confidently (harmonic-forge#802).
+_YAML_ANCHOR_OR_ALIAS_RE = re.compile(r"(^|\s)[&*][A-Za-z_][\w-]*")
+_JOB_KEY_RE = re.compile(r"^  ([A-Za-z_][\w-]*):\s*(#.*)?$")
+_JOB_NAME_VERIFY_RE = re.compile(r"^\s*name:\s*verify\s*(#.*)?$")
+_RUN_BLOCK_RE = re.compile(r"run:\s*\|")
+
+
+def _ci_check_shape(text: str) -> str | None:
+    """`'ok'`, `'warn'`, or `None` (fail) for whether a workflow's `verify`
+    job runs `mise run ci-check` (harmonic-forge#802).
+
+    A stdlib line scan, deliberately -- PyYAML is not a forge dependency and
+    would be new surface just for this check. Reads the common shape
+    confidently: a top-level job keyed `verify:` (or carrying a `name:
+    verify` line), whose block contains the literal `mise run ci-check`. A
+    YAML anchor/alias anywhere in the file is a shape this scan cannot read
+    confidently at all -- `warn`. Within a matched job, a `run: |` block is
+    only ambiguous (`warn`, not a false `fail`) when it plausibly names
+    `mise` at all -- the split-command case this exists for. A `verify` job
+    with NO `mise` anywhere in it (an old-style inline-command workflow, the
+    exact pre-#802 shape) is confidently NOT running `ci-check` -- `fail`,
+    not a warn that would let a workflow needing the actual fix read as
+    merely "unclear."
+    """
+    if _YAML_ANCHOR_OR_ALIAS_RE.search(text):
+        return "warn"
+
+    lines = text.splitlines()
+    job_starts = [i for i, line in enumerate(lines) if _JOB_KEY_RE.match(line)]
+    if not job_starts:
+        return None
+    job_starts.append(len(lines))
+
+    for idx in range(len(job_starts) - 1):
+        start, end = job_starts[idx], job_starts[idx + 1]
+        block = lines[start:end]
+        key_match = _JOB_KEY_RE.match(lines[start])
+        job_key = key_match.group(1) if key_match else None
+        has_verify_name = any(_JOB_NAME_VERIFY_RE.match(line) for line in block)
+        if job_key != "verify" and not has_verify_name:
+            continue
+        # Comment lines are excluded from the "mise" search below -- a
+        # comment merely mentioning mise (e.g. explaining a design choice)
+        # is not evidence the job actually runs it, and reading it as such
+        # is exactly the false-WARN this scan must not produce on the real
+        # pre-#802 harmonic-forge workflow, which has exactly such a comment.
+        code_lines = [line for line in block if not line.strip().startswith("#")]
+        block_text = "\n".join(block)
+        code_text = "\n".join(code_lines)
+        if "mise run ci-check" in code_text:
+            return "ok"
+        if _RUN_BLOCK_RE.search(block_text) and "mise" in code_text:
+            return "warn"
+        return None
+    return None
+
+
+def check_ci(project: Project) -> Check:
+    """Does this repo's CI run `mise run ci-check` (harmonic-forge#802)?
+
+    Every onboarded repo's `verify` CI job runs `mise run ci-check`, the
+    single CI-runnable definition -- never a mirrored command list, which is
+    exactly the drift that turned hrse `main` red three times
+    (hrse#972/#2010). A repo may instead declare `ci_parity_task` (hrse) for
+    its own drift-checked mirror; that declaration is trusted here, not
+    re-verified -- the parity tool it names is what actually re-verifies it.
+
+    Only applies to `runs_lane3 = true` projects: CI is a Lane 3 gate
+    concern, and a repo with no Lane 3 worktree has no gate result to unblock.
+    """
+    if project.protocol is None or not project.protocol.runs_lane3:
+        return Check("ci", SKIP, "no Lane 3")
+    if project.checkout is None:
+        return Check("ci", SKIP, "no checkout")
+    if project.protocol.ci_parity_task:
+        return Check("ci", OK, f"declared ci_parity_task={project.protocol.ci_parity_task!r}")
+
+    workflows_dir = project.checkout / ".github" / "workflows"
+    if not workflows_dir.is_dir():
+        return Check("ci", FAIL, "no .github/workflows/ directory")
+    workflow_files = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
+    if not workflow_files:
+        return Check("ci", FAIL, "no .github/workflows/*.y(a)ml files")
+
+    warned: str | None = None
+    for wf in workflow_files:
+        shape = _ci_check_shape(wf.read_text(encoding="utf-8"))
+        if shape == "ok":
+            return Check("ci", OK, f"{wf.name}: verify runs mise run ci-check")
+        if shape == "warn" and warned is None:
+            warned = wf.name
+    if warned:
+        return Check("ci", WARN, f"{warned}: shape not confidently readable by the line scan")
+    return Check("ci", FAIL, "no verify job running mise run ci-check found")
+
+
+def check_branch_protection(project: Project) -> Check:
+    """Is the repo's CI check required on `main` (harmonic-forge#802)?
+
+    WARN only, never FAIL, never OK-by-default (AC3): requiring a check on
+    `main` is an explicit per-repo operator decision (Marc for vitalharmony
+    repos, Matt for LeasePAL-ML), not something onboarding enforces on its
+    own. A `gh api` lookup failure (unprotected branch, no auth, no network)
+    all collapse to the same WARN -- this check exists to surface the gap,
+    never to block on it or on its own inability to look.
+    """
+    if project.protocol is None or not project.protocol.runs_lane3:
+        return Check("branch protection", SKIP, "no Lane 3")
+    if project.repo is None:
+        return Check("branch protection", SKIP, "no repo")
+    # The required-context name is always the job name, "verify" -- unlike
+    # `check_ci`'s `ci_parity_task`, which only substitutes the mise task run
+    # *inside* that job and never the job/context name itself (harmonic-forge#802 FAIL:
+    # hrse declares `ci_parity_task="ci-parity-check-command-sets"` but its
+    # real required status check on main is "verify").
+    required_name = "verify"
+    result = subprocess.run(
+        ["gh", "api", f"repos/{project.repo}/branches/main/protection",
+         "--jq", ".required_status_checks.contexts // [] | join(\",\")"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        return Check("branch protection", WARN, "main is unprotected (or protection could not be read)")
+    contexts = result.stdout.strip()
+    if required_name in contexts.split(","):
+        return Check("branch protection", OK, f"{required_name!r} required on main")
+    return Check("branch protection", WARN, f"{required_name!r} not required on main")
 
 
 def check_directives(project: Project) -> Check:
@@ -680,8 +817,9 @@ def check_board(project: Project) -> Check:
     return Check("board", OK, f"{owner} #{number}")
 
 
-CHECKS = (check_protocol, check_lane_tasks, check_gate_adapter, check_checkout, check_worktrees,
-          check_directives, check_entrypoint, check_hooks, check_memory, check_board)
+CHECKS = (check_protocol, check_lane_tasks, check_gate_adapter, check_ci, check_branch_protection,
+          check_checkout, check_worktrees, check_directives, check_entrypoint, check_hooks,
+          check_memory, check_board)
 
 
 def verify(project: Project, manifest: Path | None = None) -> list[Check]:

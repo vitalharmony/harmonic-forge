@@ -66,6 +66,14 @@
 #                       and silence is what harmonic-forge#730 exists to
 #                       outlaw. Omit it entirely for a repo that ships a real
 #                       manifest (hrse).
+#   ci_parity_task      Optional (harmonic-forge#802). A repo's CI standard is
+#                       `verify` -> `mise run ci-check`; a repo whose CI
+#                       instead mirrors `check`'s commands against its own
+#                       parity tool (hrse's `ci-parity-check-command-sets`)
+#                       declares that task name here, and `check_ci` treats
+#                       it as this repo's own equivalent of `ci-check` rather
+#                       than flagging a missing one. Absent means the repo
+#                       follows the default `ci-check` convention.
 #
 # ## The lane task layer (harmonic-forge#730)
 #
@@ -103,6 +111,10 @@ gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
 runs_lane3 = true
+# harmonic-forge#802: hrse's CI mirrors `check`'s commands against its own
+# drift-detection tool rather than declaring a `ci-check` task; this is the
+# declared exception `check_ci` treats as equivalent, not a missing task.
+ci_parity_task = "ci-parity-check-command-sets"
 
 [[project]]
 name = "harmonic-forge"
