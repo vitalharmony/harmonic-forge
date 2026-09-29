@@ -13,6 +13,7 @@ Imports `tools/onboard/`, never the reverse (`batch_auth.py:164`'s one-way rule)
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -39,3 +40,29 @@ def repo_from_checkout(cwd: str | Path | None) -> str | None:
     except Exception:  # noqa: BLE001
         return None
     return repo_for_path_or_none(cwd or Path.cwd())
+
+
+def run_gh(args, *, repo: str | None, cwd: str | None = None,
+           timeout: int = 7) -> subprocess.CompletedProcess:
+    """Run `gh` for a hook: as the repo's slot first, and if that FAILS, once more
+    as the caller.
+
+    The close-gating hooks fail OPEN when a lookup returns nothing, so a slot that
+    exists in `projects.toml` but does not authenticate (a fresh machine, a revoked
+    or expired token) would otherwise turn "read the issue's labels" into "read
+    nothing" and silently disarm the gate, where before per-project identity the
+    global login answered (harmonic-forge#804 preclose). The retry restores exactly
+    the old behavior on that path. It is safe because hooks only READ: a wrong
+    account at worst gets a 404, never a write.
+
+    A timeout is NOT retried (two full waits would blow the hook's own budget), and
+    neither is a call that had no slot to begin with.
+    """
+    env = slot_env(repo)
+    argv = ("gh", *args)
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                            cwd=cwd, env=env)
+    if result.returncode and env is not None:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                                cwd=cwd, env=None)
+    return result

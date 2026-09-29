@@ -40,6 +40,30 @@ def _git_config(checkout: Path, *args: str) -> tuple[int, str]:
     return result.returncode, result.stdout.strip()
 
 
+def effective_helpers(checkout: Path) -> list[str]:
+    """The credential helpers git will actually consult for github.com, in order.
+
+    Reads the MERGED config (system, global, then local), not just `--local`:
+    helper lists ACCUMULATE across config files, so a local helper written after
+    the operator's global `!/usr/bin/gh auth git-credential` sits BEHIND it and is
+    never reached -- git stops at the first helper that answers (reproduced with
+    `git credential fill`, harmonic-forge#804 preclose). An empty value RESETS the
+    list, so only what follows the last empty value counts.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(checkout), "config", "--get-all", HELPER_KEY],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+    helpers: list[str] = []
+    for value in result.stdout.splitlines():
+        if value == "":
+            helpers = []
+        else:
+            helpers.append(value)
+    return helpers
+
+
 def _slot_login(slot: Path) -> str:
     """The login this slot authenticates as, or '' when it does not."""
     env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
@@ -82,13 +106,13 @@ def check_identity(project: Project, check_cls):
     if login.lower() != account.lower():
         return check_cls("identity", FAIL,
                          f"slot {slot} authenticates as {login}, but the manifest says {account}")
-    _, helper = _git_config(checkout, "--get", HELPER_KEY)
     want = expected_helper(slot)
-    if helper != want:
-        found = helper or "(none)"
+    helpers = effective_helpers(checkout)
+    if helpers != [want]:
+        found = " then ".join(helpers) or "(none)"
         return check_cls("identity", FAIL,
-                         f"{checkout}: {HELPER_KEY} is {found}, expected {want} "
-                         "(fix: forge-onboard --apply)")
+                         f"{checkout}: git will consult {found} for {HELPER_KEY}; expected only "
+                         f"{want} (fix: forge-onboard --apply)")
     _, email = _git_config(checkout, "--get", "user.email")
     return check_cls("identity", OK,
                      f"slot {account} authenticated; git helper points at it; "
@@ -96,17 +120,23 @@ def check_identity(project: Project, check_cls):
 
 
 def apply_identity(project: Project, check_cls, dry_run: bool = False) -> list:
-    """Write the per-repo credential helper wherever it is missing or points elsewhere."""
+    """Make the slot helper the ONLY effective github.com credential helper.
+
+    Writes a local RESET (an empty value) followed by the slot helper, into the repo's
+    common `.git/config` -- one write, inherited by every `git worktree`. The reset is
+    what makes it effective: without it the helper is appended behind the global one.
+    """
     target = _applicable(project)
     if target is None:
         return []
     account, checkout = target
     want = expected_helper(slot_dir(account))
-    _, have = _git_config(checkout, "--get", HELPER_KEY)
-    if have == want:
-        return [check_cls("identity helper", OK, "already points at the slot")]
+    if effective_helpers(checkout) == [want]:
+        return [check_cls("identity helper", OK, "already the only effective helper")]
     if dry_run:
         return [check_cls("identity helper", OK, f"would set {HELPER_KEY} in {checkout}")]
-    code, err = _git_config(checkout, "--replace-all", HELPER_KEY, want)
+    code, err = _git_config(checkout, "--replace-all", HELPER_KEY, "")
+    if code == 0:
+        code, err = _git_config(checkout, "--add", HELPER_KEY, want)
     return [check_cls("identity helper", OK if code == 0 else FAIL,
                       f"set {HELPER_KEY} in {checkout}" if code == 0 else err)]

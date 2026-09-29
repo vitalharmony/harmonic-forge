@@ -33,7 +33,18 @@ class IdentityBase(unittest.TestCase):
         self.repo.mkdir()
         _git(self.repo, "init", "-q", "-b", "main")
         self.slots = self.root / "slots"
-        env = mock.patch.dict(os.environ, {"GH_ACCT_HOME": str(self.slots)})
+        # The operator's real global config is `helper =` (a reset) then
+        # `!/usr/bin/gh auth git-credential`. Reproduce that shape in a temp file
+        # so the merged-config reads below never see the real machine's config.
+        self.global_config = self.root / "gitconfig-global"
+        self.global_config.write_text(
+            '[credential "https://github.com"]\n\thelper =\n'
+            '\thelper = !/usr/bin/gh auth git-credential\n')
+        env = mock.patch.dict(os.environ, {
+            "GH_ACCT_HOME": str(self.slots),
+            "GIT_CONFIG_GLOBAL": str(self.global_config),
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        })
         env.start()
         self.addCleanup(env.stop)
 
@@ -49,7 +60,13 @@ class IdentityBase(unittest.TestCase):
         return slot
 
     def set_helper(self, value: str) -> None:
-        _git(self.repo, "config", "--local", fi.HELPER_KEY, value)
+        """A correctly-written local list: a reset, then the helper."""
+        _git(self.repo, "config", "--local", "--replace-all", fi.HELPER_KEY, "")
+        _git(self.repo, "config", "--local", "--add", fi.HELPER_KEY, value)
+
+    def set_helper_without_reset(self, value: str) -> None:
+        """The naive write: appended BEHIND the global helper."""
+        _git(self.repo, "config", "--local", "--replace-all", fi.HELPER_KEY, value)
 
 
 class CheckIdentityTests(IdentityBase):
@@ -76,13 +93,25 @@ class CheckIdentityTests(IdentityBase):
         self.assertEqual(check.status, fi.FAIL)
         self.assertIn("authenticates as someoneelse", check.detail)
 
-    def test_a_missing_helper_fails_and_shows_what_is_expected(self) -> None:
+    def test_a_missing_helper_fails_and_shows_what_git_will_use(self) -> None:
+        """With nothing local, git consults the GLOBAL helper: that is what the
+        report must show, not "(none)"."""
         slot = self.make_slot()
         with mock.patch.object(fi, "_slot_login", return_value="acct"):
             check = fi.check_identity(self.project(), fo.Check)
         self.assertEqual(check.status, fi.FAIL)
-        self.assertIn("(none)", check.detail)
+        self.assertIn("!/usr/bin/gh auth git-credential", check.detail)
         self.assertIn(fi.expected_helper(slot), check.detail)
+
+    def test_a_helper_appended_behind_the_global_one_fails(self) -> None:
+        """The bug harmonic-forge#804's preclose found: the local helper is present
+        (a `--local --get` would say so) but sits BEHIND the global one, which git
+        consults first, so a push still uses the global account."""
+        slot = self.make_slot()
+        self.set_helper_without_reset(fi.expected_helper(slot))
+        with mock.patch.object(fi, "_slot_login", return_value="acct"):
+            check = fi.check_identity(self.project(), fo.Check)
+        self.assertEqual(check.status, fi.FAIL)
 
     def test_a_helper_pointing_at_the_wrong_slot_fails(self) -> None:
         """The pre-#804 kenekted state: a helper on the ad hoc config dir."""
@@ -106,7 +135,8 @@ class CheckIdentityTests(IdentityBase):
         slot = self.make_slot()
         self.set_helper(fi.expected_helper(slot))
         with mock.patch.object(fi, "_slot_login", return_value="acct"), \
-             mock.patch.object(fi, "_git_config", side_effect=[(0, fi.expected_helper(slot)), (1, "")]):
+             mock.patch.object(fi, "effective_helpers", return_value=[fi.expected_helper(slot)]), \
+             mock.patch.object(fi, "_git_config", return_value=(1, "")):
             check = fi.check_identity(self.project(), fo.Check)
         self.assertEqual(check.status, fi.OK)
         self.assertIn("(unset)", check.detail)
@@ -117,25 +147,25 @@ class ApplyIdentityTests(IdentityBase):
         slot = self.make_slot()
         done = fi.apply_identity(self.project(), fo.Check)
         self.assertEqual([c.status for c in done], [fi.OK])
-        self.assertEqual(_git(self.repo, "config", "--local", "--get", fi.HELPER_KEY),
-                         fi.expected_helper(slot))
+        self.assertEqual(fi.effective_helpers(self.repo), [fi.expected_helper(slot)])
         with mock.patch.object(fi, "_slot_login", return_value="acct"):
             self.assertEqual(fi.check_identity(self.project(), fo.Check).status, fi.OK)
 
-    def test_replaces_a_wrong_helper_rather_than_adding_a_second(self) -> None:
+    def test_a_wrong_local_helper_is_replaced_and_the_global_one_is_reset(self) -> None:
         slot = self.make_slot()
-        self.set_helper("!GH_CONFIG_DIR=/elsewhere /usr/bin/gh auth git-credential")
+        self.set_helper_without_reset("!GH_CONFIG_DIR=/elsewhere /usr/bin/gh auth git-credential")
         fi.apply_identity(self.project(), fo.Check)
-        values = subprocess.run(
+        local = subprocess.run(
             ["git", "-C", str(self.repo), "config", "--local", "--get-all", fi.HELPER_KEY],
-            capture_output=True, text=True).stdout.splitlines()
-        self.assertEqual(values, [fi.expected_helper(slot)])
+            capture_output=True, text=True).stdout.split("\n")[:-1]
+        self.assertEqual(local, ["", fi.expected_helper(slot)])
+        self.assertEqual(fi.effective_helpers(self.repo), [fi.expected_helper(slot)])
 
     def test_is_idempotent(self) -> None:
         self.make_slot()
         fi.apply_identity(self.project(), fo.Check)
         second = fi.apply_identity(self.project(), fo.Check)
-        self.assertEqual(second[0].detail, "already points at the slot")
+        self.assertEqual(second[0].detail, "already the only effective helper")
 
     def test_dry_run_writes_nothing(self) -> None:
         self.make_slot()
@@ -154,11 +184,46 @@ class ApplyIdentityTests(IdentityBase):
         worktree = self.root / "lane2"
         _git(self.repo, "worktree", "add", "-q", "--detach", str(worktree), "HEAD")
         fi.apply_identity(self.project(), fo.Check)
-        self.assertEqual(_git(worktree, "config", "--get", fi.HELPER_KEY),
-                         fi.expected_helper(slot))
+        self.assertEqual(fi.effective_helpers(worktree), [fi.expected_helper(slot)])
 
     def test_a_project_with_nothing_to_do_returns_no_checks(self) -> None:
         self.assertEqual(fi.apply_identity(self.project(path=None), fo.Check), [])
+
+
+class GitConsultsHelpersInOrderTests(IdentityBase):
+    """The mechanism the fix rests on, proven by running git rather than by reading
+    config: with fake helpers that log when they are called, `git credential fill`
+    answers from the FIRST helper, and a local reset removes the global one."""
+
+    def _helper(self, name: str, password: str) -> Path:
+        script = self.root / name
+        log = self.root / f"{name}.called"
+        script.write_text(f'#!/bin/sh\ntouch "{log}"\necho username={name}\necho password={password}\n')
+        script.chmod(0o755)
+        return script
+
+    def _fill(self) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n", capture_output=True, text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}).stdout
+
+    def test_without_a_reset_the_global_helper_answers_first(self) -> None:
+        glob, local = self._helper("globalhelper", "g"), self._helper("localhelper", "l")
+        self.global_config.write_text(
+            f'[credential "https://github.com"]\n\thelper = {glob}\n')
+        _git(self.repo, "config", "--local", "--add", fi.HELPER_KEY, str(local))
+        self.assertIn("username=globalhelper", self._fill())
+        self.assertFalse((self.root / "localhelper.called").exists())
+
+    def test_a_local_reset_makes_the_local_helper_the_only_one(self) -> None:
+        glob, local = self._helper("globalhelper", "g"), self._helper("localhelper", "l")
+        self.global_config.write_text(
+            f'[credential "https://github.com"]\n\thelper = {glob}\n')
+        _git(self.repo, "config", "--local", "--replace-all", fi.HELPER_KEY, "")
+        _git(self.repo, "config", "--local", "--add", fi.HELPER_KEY, str(local))
+        self.assertIn("username=localhelper", self._fill())
+        self.assertFalse((self.root / "globalhelper.called").exists())
 
 
 class RegisteredTests(unittest.TestCase):

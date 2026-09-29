@@ -1337,14 +1337,19 @@ def require_open_pr(
         # harmonic-forge#804: the checkout's repo comes from projects.toml, not
         # `gh repo view` -- that call ran before any identity was applied, and
         # under the wrong login it cannot see a client account's repo at all.
-        try:
-            cwd_repo = project_for_path(cwd or Path.cwd()).repo
-        except ManifestError as exc:
-            fail("cannot resolve the current repo (git remote unusable, and the "
-                 f"checkout is not registered in projects.toml): {exc}")
-        if not cwd_repo:
-            fail("cannot resolve the current repo: its projects.toml entry "
-                 "declares no `repo`")
+        # Only when git did NOT already name the repo: this branch is also reached
+        # when REST failed for a transient reason with `cwd_repo` in hand, and
+        # overwriting that with a manifest lookup would hard-fail in a per-issue
+        # `.worktrees/*-impl` worktree, which no `Project.worktrees` entry covers.
+        if cwd_repo is None:
+            try:
+                cwd_repo = project_for_path(cwd or Path.cwd()).repo
+            except ManifestError as exc:
+                fail("cannot resolve the current repo (git remote unusable, and the "
+                     f"checkout is not registered in projects.toml): {exc}")
+            if not cwd_repo:
+                fail("cannot resolve the current repo: its projects.toml entry "
+                     "declares no `repo`")
         result = run("gh", "pr", "list", "--repo", cwd_repo, "--head", branch,
                      "--base", "main", "--json", "number,state", cwd=cwd)
         if result.returncode:

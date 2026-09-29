@@ -76,7 +76,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from hook_identity import repo_from_checkout as _repo_from_checkout, slot_env as _slot_env  # noqa: E402
+from hook_identity import repo_from_checkout as _repo_from_checkout, run_gh as _run_gh  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -144,10 +144,7 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     if shutil.which("gh") is None:
         return None
     try:
-        result = subprocess.run(
-            ("gh", *args), capture_output=True, text=True, timeout=7, cwd=cwd,
-            env=_slot_env(repo),
-        )
+        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode:

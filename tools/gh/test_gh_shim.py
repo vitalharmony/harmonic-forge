@@ -116,6 +116,23 @@ class Refusal(unittest.TestCase):
         self.assertIsNone(code)
         execv.assert_called_once()
 
+    def test_the_identity_probe_does_not_spend_the_operators_override(self):
+        """harmonic-forge#804 preclose: the probe is the first gh call of every
+        entrypoint, so consuming the one-shot override here would spend it on a call
+        that needed none and leave the scan it was touched for still refused."""
+        shim = _load_shim()
+        fake_patterns = mock.Mock()
+        fake_patterns.scan_reason.return_value = None
+        fake_patterns.consume_override.return_value = True
+        with mock.patch.object(sys, "argv", ["gh", "api", "user", "--jq", ".login"]), \
+             mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
+             mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
+             mock.patch("os.execv") as fake_execv:
+            shim.main()
+        fake_patterns.consume_override.assert_not_called()
+        fake_patterns.scan_reason.assert_not_called()
+        fake_execv.assert_called_once()
+
     def test_a_lookalike_api_user_call_is_not_exempt(self):
         """Only the exact probe is exempt: other `api user` shapes still pay."""
         code, execv = self._run_main_with(["api", "user", "--jq", ".email"],

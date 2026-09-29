@@ -54,6 +54,16 @@ def main() -> None:
         import gh_scan_patterns  # noqa: PLC0415 -- imported lazily so an import
         # failure alone can never prevent falling through to the real `gh`.
 
+        # harmonic-forge#804: the per-project identity assertion (`gh api user --jq
+        # .login`) is the first `gh` call of every lane entrypoint. It is exempt from
+        # EVERYTHING below and short-circuits BEFORE the override is consumed:
+        # consuming it here would spend the operator's one-shot grant on a call that
+        # needed none, leaving the scan it was `touch`ed for still refused (preclose
+        # finding), and a low REST budget must not block every post at its first line.
+        if argv == ["api", "user", "--jq", ".login"]:
+            os.execv(real_gh, [real_gh, *argv])
+            return  # pragma: no cover -- see the execv note below
+
         # The override, when fresh, is spent here -- the single place this
         # process ever actually execs the real `gh` -- and bypasses BOTH
         # checks below (scan shape and budget floor). It is not scoped to
@@ -83,15 +93,8 @@ def main() -> None:
             and "-i" in argv
         )
         is_auth_or_version = bool(argv) and (argv[0] == "auth" or argv[0] == "--version")
-        # harmonic-forge#804: the per-project identity assertion (`gh api user --jq
-        # .login`) must not be refused by a low REST budget, or a low budget would
-        # block every lane post at its first line.
-        is_identity_probe = (
-            len(argv) == 4 and argv[0] == "api" and argv[1] == "user"
-            and argv[2] == "--jq" and argv[3] == ".login"
-        )
 
-        if not is_auth_or_version and not is_internal_budget_probe and not is_identity_probe:
+        if not is_auth_or_version and not is_internal_budget_probe:
             result = gh_scan_patterns.budget()
             if result is not None:
                 remaining, reset_epoch = result
