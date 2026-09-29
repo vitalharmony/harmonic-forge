@@ -345,7 +345,7 @@ touch, and was never meant to touch, any other permission-gated action.
 
 <!-- R-0343 -->
 The vocabulary is fixed: `Plan H<N>`, `Implement H<N>` / `Fix H<N>` (Lane 2),
-`Spec H<N>` then `AE` (Lane 3 only), `close H<N>` (Lane 1). Never invent a
+`Spec H<N>` (Lane 3), `AE H<N>` and `close H<N>` (Lane 1). Never invent a
 trigger to fill a gap — naming the wrong lane sends real work to the wrong
 session (hrse#1636 precedent: `Test #N` was the wrong name for `Spec H<N>`).
 <!-- /R-0343 -->
