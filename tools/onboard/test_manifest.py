@@ -258,11 +258,13 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(mf.repo_boards(write(self.BODY)),
                          {"o/hb": ("vitalharmony", "1")})
 
-    def test_sweep_excludes_other_accounts(self) -> None:
-        """ke'nekted is a separate account with separate credentials, and a
-        vitalharmony-authed query against it returns EMPTY rather than
-        erroring — sweeping it would report a clean repo."""
-        self.assertEqual(mf.sweep_repos(write(self.BODY)), ["o/hb", "o/nb"])
+    def test_sweep_includes_other_accounts(self) -> None:
+        """harmonic-forge#820: another account's repos are swept too, each audited as its own
+        account's slot (repo_hygiene._use_slot); they used to be excluded because a
+        vitalharmony-authed query against them returns EMPTY."""
+        swept = mf.sweep_repos(write(self.BODY))
+        self.assertEqual(swept[:2], ["o/hb", "o/nb"])
+        self.assertGreater(len(swept), 2)
 
     def test_sweep_is_not_filtered_by_onboarded(self) -> None:
         """A `onboarded = false` repo IS in the sweep. Stranded work is worth
@@ -374,9 +376,10 @@ class LiveManifestTests(unittest.TestCase):
         self.assertEqual(mf.sweep_repos(LIVE), [
             "vitalharmony/hrse", "vitalharmony/harmonic-forge",
             "vitalharmony/cymagraph-infra", "vitalharmony/openclaw-projects",
-            # harmonic-forge#800 -- leasepal's account is vitalharmony, so it is
-            # swept like any other repo on that account (manifest.py's own rule:
-            # not filtered by `onboarded`, only by `account == "vitalharmony"`).
+            # harmonic-forge#820 -- the kenekted repos (account harmonicarchitect), audited
+            # through their own slot rather than excluded.
+            "kenekted/kenekted-platform", "kenekted/kenekted-ai", "kenekted/kenekted-docs",
+            # harmonic-forge#800 -- leasepal's account is vitalharmony.
             "leasepal-ml/leasepal-app-prototype",
         ])
 

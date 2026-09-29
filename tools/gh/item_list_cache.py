@@ -470,7 +470,7 @@ TIER_DEEP = "deep"
 ESCALATING_TIERS = frozenset({TIER_DEEP})
 
 
-def fetch_issue_field(
+def _fetch_issue_field_targeted(
     repo: str,
     issue_number: int,
     project_number: str,
@@ -478,6 +478,7 @@ def fetch_issue_field(
     run=None,
     ttl: float = DEFAULT_TTL_SECONDS,
     cache_dir: Path = None,
+    _blind: dict | None = None,
 ) -> str | None:
     """**The documented answer to "what is field X on issue N"** (AC4).
 
@@ -523,7 +524,7 @@ def fetch_issue_field(
         except (OSError, json.JSONDecodeError, AttributeError):
             pass  # unreadable cache is a miss, never an error
 
-    value = _fetch_issue_field_live(repo, issue_number, project_number, field, run)
+    value = _fetch_issue_field_live(repo, issue_number, project_number, field, run, _blind)
 
     # Written only on a successful read. A GhItemListError propagates out of
     # the call above without touching the cache, so a transient failure is
@@ -540,6 +541,81 @@ def fetch_issue_field(
     return value
 
 
+def _scan_issue_field(repo: str, issue_number: int, project_number: str, owner: str,
+                      field: str, run) -> str | None:
+    """One issue's field read from the BOARD itself (`gh project item-list`), not the issue.
+
+    harmonic-forge#820: `issue.projectItems` returns nothing for a USER-owned board attached to an
+    issue in an ORGANIZATION repo (the kenekted repos), however the issue is boarded, so the cheap
+    per-issue read cannot tell "no Tier" from "cannot see the board". Reading the board can.
+    """
+    result = run(["gh", "project", "item-list", str(project_number), "--owner", owner,
+                  "--limit", "1000", "--format", "json"])
+    if result.returncode != 0:
+        stderr = getattr(result, "stderr", None)
+        raise GhItemListError(stderr.strip() if stderr else "gh project item-list failed")
+    try:
+        payload = json.loads(result.stdout)
+        items = payload["items"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GhItemListError(f"unexpected board response shape: {exc}") from exc
+    total = payload.get("totalCount")
+    if isinstance(total, int) and total > len(items):
+        # A truncated scan reading "not found" as "no Tier" is the partial-list-as-empty error.
+        raise GhItemListError(f"board scan truncated: {len(items)} of {total} items")
+    wanted = repo.lower()
+    for item in items:
+        content = item.get("content") or {}
+        if content.get("number") != int(issue_number):
+            continue
+        if content.get("repository") and str(content["repository"]).lower() != wanted:
+            continue
+        value = item.get(field.lower())
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value) if value not in (None, "") else None
+    return None
+
+
+def fetch_issue_field(
+    repo: str,
+    issue_number: int,
+    project_number: str,
+    field: str = "Tier",
+    run=None,
+    ttl: float = DEFAULT_TTL_SECONDS,
+    cache_dir: Path = None,
+    owner: str | None = None,
+) -> str | None:
+    """`_fetch_issue_field_targeted`, plus a board scan when the caller names the board `owner`.
+
+    A `None` from the cheap per-issue read is ambiguous (harmonic-forge#820): no value, not on the
+    board, or a board the per-issue query cannot see. With `owner` given, that `None` is confirmed
+    against the board itself. Without it the behavior is unchanged.
+    """
+    # The per-issue read is blind ONLY when the board's owner is not the repo's owner (a user-owned
+    # board on an organization repo). For a repo whose owner owns its board the per-issue read sees
+    # everything, so an issue with no project items is simply unboarded and never triggers a scan.
+    cross_owner = bool(owner) and owner.lower() != repo.split("/", 1)[0].lower()
+    if cross_owner:
+        ttl = 0  # a blind `None` must never be cached: the scan result is not, and would be masked
+    blind: dict = {}
+    value = _fetch_issue_field_targeted(
+        repo, issue_number, project_number, field=field, run=run, ttl=ttl, cache_dir=cache_dir,
+        _blind=blind)
+    # Scan only when the per-issue read was BLIND (no project items visible), never merely because
+    # the field is unset: an unset Tier on an ordinary board must stay one cheap query, not an
+    # uncached full-board scan on every prompt that names the issue.
+    if value is not None or not cross_owner or not blind.get("blind"):
+        return value
+    if run is None:
+        import subprocess
+
+        def run(args: list[str]):
+            return subprocess.run(args, capture_output=True, text=True)
+    return _scan_issue_field(repo, issue_number, project_number, owner, field, run)
+
+
 def fetch_issue_tier(
     repo: str,
     issue_number: int,
@@ -547,6 +623,7 @@ def fetch_issue_tier(
     run=None,
     ttl: float = 0,
     cache_dir: Path = None,
+    owner: str | None = None,
 ) -> str | None:
     """One issue's Tier (harmonic-forge#257). Thin wrapper over
     `fetch_issue_field`.
@@ -559,7 +636,7 @@ def fetch_issue_tier(
     """
     value = fetch_issue_field(
         repo, issue_number, project_number, field="Tier",
-        run=run, ttl=ttl, cache_dir=cache_dir,
+        run=run, ttl=ttl, cache_dir=cache_dir, owner=owner,
     )
     # `.strip().lower()` is TIER-specific and stays here rather than moving into
     # the general read. The tier vocabulary is lowercase and every caller
@@ -577,6 +654,7 @@ def _fetch_issue_field_live(
     project_number: str,
     field: str = "Tier",
     run=None,
+    _blind: dict | None = None,
 ) -> str | None:
     """The uncached targeted read. Split out so the caching wrapper has exactly
     one place to write the cache, rather than one per return path.
@@ -623,6 +701,10 @@ def _fetch_issue_field_live(
         return None
 
     nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
+    if not nodes and _blind is not None:
+        # The issue has NO visible project items at all: either it is on no board, or the query
+        # cannot see its board (a user-owned board on an organization repo). The caller decides.
+        _blind["blind"] = True
     for node in nodes:
         if not isinstance(node, dict):
             continue

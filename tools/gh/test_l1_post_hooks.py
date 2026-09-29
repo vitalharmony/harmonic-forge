@@ -39,6 +39,13 @@ post = load("l1_post")
 hook = load_canonical_hook()
 
 
+
+def _scan_result(items):
+    """What `gh project item-list --format json` returns to `post.run`."""
+    from types import SimpleNamespace
+    return SimpleNamespace(returncode=0, stdout=json.dumps({"items": items}), stderr="")
+
+
 class HookTests(unittest.TestCase):
     def setUp(self) -> None:
         """decision() became LANE-aware in harmonic-forge#190/#191 -- most
@@ -461,11 +468,39 @@ class EstimateGateTests(unittest.TestCase):
             targeted.return_value = "deep"
             self.assertEqual(post.resolve_board_tier("vitalharmony/hrse", "vitalharmony", "1", 627), "deep")
             targeted.return_value = None
-            self.assertIsNone(post.resolve_board_tier("vitalharmony/hrse", "vitalharmony", "1", 46))
+            with patch.object(post, "run", return_value=_scan_result([])):
+                self.assertIsNone(post.resolve_board_tier("vitalharmony/hrse", "vitalharmony", "1", 46))
         # repo and project number both reach the targeted query -- an issue on
         # two boards must be read against the right one.
         self.assertEqual(targeted.call_args[0][0], "vitalharmony/hrse")
         self.assertEqual(targeted.call_args[0][2], "1")
+
+    def test_a_blind_per_issue_read_is_confirmed_by_the_board_scan(self) -> None:
+        """harmonic-forge#820: a USER-owned board attached to an issue in an ORGANIZATION repo (the
+        kenekted repos) makes the per-issue query return no project items at all, however the issue
+        is boarded. An empty cheap read must therefore be confirmed against the board itself."""
+        boarded = _scan_result([{"content": {"number": 59}, "tier": "standard"}])
+        with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \
+             patch.object(post, "run", return_value=boarded) as run_call:
+            self.assertEqual(
+                post.resolve_board_tier("kenekted/kenekted-platform", "harmonicarchitect", "1", 59),
+                "standard")
+        argv = run_call.call_args[0]
+        self.assertIn("item-list", argv)
+        self.assertIn("harmonicarchitect", argv)
+
+    def test_a_repo_whose_owner_holds_its_board_never_falls_through_to_a_scan(self) -> None:
+        """An unset Tier on an ordinary board is one query, not a full-board scan (#820 preclose)."""
+        with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \
+             patch.object(post, "run") as run_call:
+            self.assertIsNone(post.resolve_board_tier("vitalharmony/hrse", "vitalharmony", "1", 46))
+        run_call.assert_not_called()
+
+    def test_an_issue_on_no_board_still_reads_as_no_tier_after_the_scan(self) -> None:
+        with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \
+             patch.object(post, "run", return_value=_scan_result([{"content": {"number": 1}}])):
+            self.assertIsNone(
+                post.resolve_board_tier("kenekted/kenekted-platform", "harmonicarchitect", "1", 59))
 
     def test_resolve_board_tier_does_not_fetch_the_board(self) -> None:
         """The #802 regression guard: no `project item-list` shell-out."""

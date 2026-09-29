@@ -332,7 +332,7 @@ class RealLookupPathTests(unittest.TestCase):
         with patch.object(model_tier_gate, "_CACHE_DIR", cache_dir):
             self.assertEqual(model_tier_gate.read_tier(HRSE, 1830, "1",
                                                        run=lambda cmd: payload(None)), (None, None))
-            with patch.object(model_tier_gate, "timed_run", lambda cmd, timeout=None: payload("deep")):
+            with patch.object(model_tier_gate, "timed_run", lambda cmd, timeout=None, env=None: payload("deep")):
                 self.assertEqual(t.lookup_tier(HRSE, 1830, {HRSE: "1"}), ("deep", None))
 
     def test_timed_run_passes_a_timeout_to_subprocess(self):
@@ -424,21 +424,45 @@ class MainTests(unittest.TestCase):
         self.assertIn("internal error", stderr.getvalue())
 
 
-class BoardMapIsDefaultAccountOnly(unittest.TestCase):
-    """harmonic-forge#806: the Tier read runs as the default account, so the kenekted repos
-    (account harmonicarchitect) must not appear in the board map; a `deep` issue there would
-    otherwise be read as the wrong identity and route to the wrong model, silently."""
+class KenektedTierLookupTests(unittest.TestCase):
+    """harmonic-forge#820: a `deep` kenekted issue must be gated like a `deep` hrse issue. The
+    board map includes the kenekted repos, and the read runs as THEIR slot against THEIR board
+    owner; the cheap per-issue read is blind to that board, so the board scan confirms it."""
 
-    def test_kenekted_repos_are_left_out(self) -> None:
-        boards = t._boards()
-        self.assertNotIn("kenekted/kenekted-platform", boards)
-        self.assertNotIn("kenekted/kenekted-ai", boards)
-        self.assertNotIn("kenekted/kenekted-docs", boards)
+    KEN = "kenekted/kenekted-platform"
 
-    def test_the_default_account_repos_are_still_there(self) -> None:
+    def test_the_board_map_includes_every_repo_with_a_board(self) -> None:
         boards = t._boards()
-        self.assertEqual(boards.get("vitalharmony/hrse"), "1")
-        self.assertEqual(boards.get("vitalharmony/harmonic-forge"), "3")
+        for repo in (self.KEN, "kenekted/kenekted-ai", "kenekted/kenekted-docs",
+                     "vitalharmony/hrse", "vitalharmony/harmonic-forge"):
+            self.assertIn(repo, boards)
+        self.assertEqual(boards["vitalharmony/harmonic-forge"], "3")
+
+    def test_the_board_owner_is_the_repos_own_owner(self) -> None:
+        owners = t._board_owners()
+        self.assertEqual(owners[self.KEN], "harmonicarchitect")
+        self.assertEqual(owners["vitalharmony/hrse"], "vitalharmony")
+
+    def test_a_deep_kenekted_issue_is_read_as_its_own_account_through_the_board_scan(self) -> None:
+        seen = {}
+
+        def timed(cmd, timeout=None, env=None):
+            seen.setdefault("envs", []).append((env or {}).get("GH_CONFIG_DIR"))
+            if cmd[:3] == ["gh", "api", "graphql"]:  # the per-issue read is blind to this board
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"data": {"repository": {
+                    "issue": {"projectItems": {"nodes": []}}}}}), "")
+            if cmd[:3] == ["gh", "project", "item-list"]:
+                seen["owner"] = cmd[cmd.index("--owner") + 1]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"items": [
+                    {"content": {"number": 59, "repository": self.KEN}, "tier": "deep"}]}), "")
+            raise AssertionError(cmd)
+
+        with patch.object(model_tier_gate, "timed_run", timed):
+            result = t.lookup_tier(self.KEN, 59, {self.KEN: "1"})
+        self.assertEqual(result, ("deep", None))
+        self.assertEqual(seen["owner"], "harmonicarchitect")
+        self.assertTrue(all(e and e.endswith("gh-accounts/harmonicarchitect") for e in seen["envs"]),
+                        seen["envs"])
 
 
 if __name__ == "__main__":

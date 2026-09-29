@@ -206,7 +206,7 @@ def repo_boards(path: Path | None = None) -> dict[str, tuple[str, str]]:
 
 
 def sweep_repos(path: Path | None = None) -> list[str]:
-    """Repos the hygiene sweep audits: every real repo on the vitalharmony account.
+    """Repos the hygiene sweep audits: every real repo, on whatever account.
 
     **Not filtered by `onboarded`.** That flag says whether the 3-lane
     apparatus is installed; stranded work is worth finding either way. This
@@ -216,13 +216,13 @@ def sweep_repos(path: Path | None = None) -> list[str]:
     on this flag would silently drop a repo the sweep covers, which is the exact
     class of regression this manifest exists to prevent.
 
-    ke'nekted IS excluded, because it is a **separate account with separate
-    credentials**, and a vitalharmony-authed query against it returns EMPTY
-    rather than erroring. Sweeping it under the wrong credential would report a
-    clean repo, which is worse than not sweeping it.
+    Other accounts ARE included (harmonic-forge#820). They used to be excluded because a
+    vitalharmony-authed query against a harmonicarchitect repo returns EMPTY rather than erroring,
+    so sweeping it under the wrong credential reported a clean repo. The sweep now runs each
+    repo's audits as THAT repo's own slot (`repo_hygiene._use_slot`, harmonic-forge#804), which
+    removes the hazard.
     """
-    return [p.repo for p in load(path)
-            if p.repo and p.account == "vitalharmony"]
+    return [p.repo for p in load(path) if p.repo]
 
 
 def lane_repo_checkouts(path: Path | None = None) -> list[Path]:

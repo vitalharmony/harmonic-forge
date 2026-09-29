@@ -106,6 +106,9 @@ _FALLBACK_PREFIXES = {
     "vitalharmony/harmonic-forge": "F",
     "vitalharmony/cymagraph-infra": "I",
     "vitalharmony/openclaw-projects": "O",
+    "kenekted/kenekted-platform": "K",
+    "kenekted/kenekted-ai": "Y",
+    "kenekted/kenekted-docs": "D",
 }
 
 
@@ -114,8 +117,9 @@ def _repo_prefixes() -> dict[str, str]:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
         import manifest as _manifest  # noqa: PLC0415
 
-        return {p.repo: p.prefix for p in _manifest.load()
-                if p.repo and (p.account or "vitalharmony") == "vitalharmony"}
+        # Every onboarded repo, whatever its account (harmonic-forge#820): mirrors
+        # `batch_auth._repo_prefixes()`.
+        return {p.repo: p.prefix for p in _manifest.load() if p.repo}
     except Exception:  # noqa: BLE001 -- a hook must never fail closed on import
         return dict(_FALLBACK_PREFIXES)
 

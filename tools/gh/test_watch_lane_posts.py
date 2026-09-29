@@ -225,8 +225,8 @@ class PrefixMapIsDerivedTests(unittest.TestCase):
         import manifest as onboard_manifest
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
         import batch_auth
-        expected = {p.repo: p.prefix for p in onboard_manifest.load()
-                    if p.repo and (p.account or "vitalharmony") == "vitalharmony"}
+        # harmonic-forge#820: every onboarded repo, whatever its account.
+        expected = {p.repo: p.prefix for p in onboard_manifest.load() if p.repo}
         self.assertEqual(batch_auth.REPO_PREFIXES, expected)
 
 
@@ -2011,6 +2011,18 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
                 os.environ["LANE"] = saved_lane
         return outcome, err.getvalue()
 
+    def test_a_dead_extra_account_degrades_the_belt_and_does_not_break_the_canonical_check(self):
+        """harmonic-forge#820 (preclose): dropping a dead account by REWRITING the parsed
+        --account-repos made the arguments differ from the canonical command, so the belt refused
+        to start. It must start, warn loudly, and poll only the healthy accounts."""
+        argv = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
+        dead = ([ "vitalharmony"], [("harmonicarchitect", "slot missing")])
+        with patch.object(watch_lane_posts, "_verified_accounts", return_value=dead):
+            outcome, err = self._run(list(argv), {"LANE": "1"})
+        self.assertEqual(outcome, "looped", err)
+        self.assertNotIn("canonical command", err)
+        self.assertIn("harmonicarchitect is NOT polled", err)
+
     def test_dropping_queue_for_l1_is_refused(self):
         argv = [a for a in watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
                 if a not in ("--queue-for", "l1")]
@@ -2040,7 +2052,7 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         canonical = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
         # Swap the two --watch pairs and move --interval 300 to the front.
         reordered = ["--interval", "300", "--all-worktrees", "--account-repos",
-                     "vitalharmony", "--watch", "l3", "--watch", "l2",
+                     "vitalharmony,harmonicarchitect", "--watch", "l3", "--watch", "l2",
                      "--queue-for", "l1", "--deadline-seconds",
                      str(watch_lane_posts.MONITOR_LIFETIME_S)]
         self.assertEqual(sorted(canonical), sorted(reordered),
@@ -2223,6 +2235,42 @@ class AccountFollowsTheRepo(unittest.TestCase):
             self.assertEqual(
                 watch_lane_posts._account_for_repo_arg(["harmonicarchitect/kenekted-platform"]),
                 "harmonicarchitect")
+
+
+class PerRepoAccountTests(unittest.TestCase):
+    """harmonic-forge#820: one belt polls repos on more than one account, each through ITS slot."""
+
+    def test_a_registered_repo_resolves_to_its_own_account(self) -> None:
+        self.assertEqual(watch_lane_posts._account_of("kenekted/kenekted-platform"),
+                         "harmonicarchitect")
+        self.assertEqual(watch_lane_posts._account_of("vitalharmony/hrse"), "vitalharmony")
+
+    def test_an_unregistered_repo_falls_back_to_the_process_account(self) -> None:
+        self.assertEqual(watch_lane_posts._account_of("someone/else"), watch_lane_posts._ACCOUNT)
+
+    def test_each_call_is_scoped_to_its_repos_account(self) -> None:
+        seen = []
+        with patch.object(watch_lane_posts, "gh_as",
+                          side_effect=lambda account, args, counter=None: seen.append(account) or "[]"):
+            watch_lane_posts._fetch_comments("kenekted/kenekted-platform", 59, "2026-01-01T00:00:00Z")
+            watch_lane_posts._fetch_comments("vitalharmony/hrse", 1, "2026-01-01T00:00:00Z")
+        self.assertEqual(seen, ["harmonicarchitect", "vitalharmony"])
+
+    def test_a_dead_extra_account_is_left_out_not_fatal(self) -> None:
+        def assert_identity(account):
+            if account == "harmonicarchitect":
+                raise watch_lane_posts.IdentityMismatch("slot missing")
+        with patch.object(watch_lane_posts, "assert_identity", side_effect=assert_identity):
+            verified, skipped = watch_lane_posts._verified_accounts(
+                "vitalharmony, harmonicarchitect", "vitalharmony")
+        self.assertEqual(verified, ["vitalharmony"])
+        self.assertEqual([a for a, _ in skipped], ["harmonicarchitect"])
+
+    def test_every_healthy_account_is_kept_once(self) -> None:
+        with patch.object(watch_lane_posts, "assert_identity"):
+            verified, skipped = watch_lane_posts._verified_accounts(
+                "vitalharmony,harmonicarchitect,harmonicarchitect", "vitalharmony")
+        self.assertEqual((verified, skipped), (["vitalharmony", "harmonicarchitect"], []))
 
 
 if __name__ == "__main__":

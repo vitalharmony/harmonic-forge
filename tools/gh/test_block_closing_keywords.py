@@ -228,5 +228,15 @@ class MixedCaseRepoTests(unittest.TestCase):
             bck._issue_key("LeasePAL-ML/LeasePAL-App-Prototype", "3"), "P3")
 
 
+class CrossAccountPrefixTests(unittest.TestCase):
+    """harmonic-forge#820: the kenekted repos (account harmonicarchitect) resolve to a key, so a
+    `Closes #59` in a kenekted PR is gated like any other."""
+
+    def test_a_kenekted_issue_resolves_to_its_prefix_key(self):
+        self.assertEqual(bck._issue_key("kenekted/kenekted-platform", "59"), "K59")
+        self.assertEqual(bck._issue_key("kenekted/kenekted-ai", "12"), "Y12")
+        self.assertEqual(bck._issue_key("kenekted/kenekted-docs", "7"), "D7")
+
+
 if __name__ == "__main__":
     unittest.main()

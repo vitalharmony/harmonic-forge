@@ -729,6 +729,21 @@ class LockingTests(StateFixture):
                          "the one-shot merge target is consumed exactly once")
 
 
+class CrossAccountKeysTests(unittest.TestCase):
+    """harmonic-forge#820: `BATCH K12` used to authorize nothing and say nothing, because the
+    prefix map excluded every prefix not on the default account."""
+
+    def test_the_prefix_map_includes_every_onboarded_repo(self) -> None:
+        for repo, prefix in (("kenekted/kenekted-platform", "K"), ("kenekted/kenekted-ai", "Y"),
+                             ("kenekted/kenekted-docs", "D"), ("vitalharmony/hrse", "H")):
+            with self.subTest(repo=repo):
+                self.assertEqual(ba.REPO_PREFIXES.get(repo), prefix)
+
+    def test_an_account_restricted_map_is_still_available(self) -> None:
+        self.assertNotIn("kenekted/kenekted-platform", ba._repo_prefixes("vitalharmony"))
+        self.assertIn("kenekted/kenekted-platform", ba._repo_prefixes("harmonicarchitect"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
