@@ -196,12 +196,20 @@ runs_lane3 = true
 # checks.
 needs_gate_adapter = false
 
+# ke'nekted is one venture across three repos, on one board and one account. An entry is one
+# repo (a `repo`, a checkout, worktrees) and prefixes are per repo (harmonic-forge#806).
 [[project]]
 name = "kenekted"
+repo = "kenekted/kenekted-platform"
+path = "~/Harmonic_Projects/kenekted/kenekted-platform"
 prefix = "K"
 account = "harmonicarchitect"
+board_owner = "harmonicarchitect"
+# The Kenekted Kanban (board #1) is the team's board and holds every kenekted repo. Its
+# fields Tier, Theme and Venture were ADDED (harmonic-forge#806); Status was left alone.
+board_number = "1"
 milestones = false
-onboarded = false
+onboarded = true
 
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"
@@ -210,7 +218,62 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
-runs_lane3 = false
+runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#806): DEFERRED, not declined: this Laravel app owns a database and live service, so a gate adapter
+# is owed. It has no `ci-check` yet either; both belong to the kenekted-platform CI child
+# (harmonic-forge#806 step 8), and `verify` stays red-by-design until then.
+needs_gate_adapter = false
+
+[[project]]
+name = "kenekted-ai"
+repo = "kenekted/kenekted-ai"
+path = "~/Harmonic_Projects/kenekted/kenekted-ai"
+prefix = "Y"
+account = "harmonicarchitect"
+board_owner = "harmonicarchitect"
+# The Kenekted Kanban (board #1) is the team's board and holds every kenekted repo. Its
+# fields Tier, Theme and Venture were ADDED (harmonic-forge#806); Status was left alone.
+board_number = "1"
+milestones = false
+onboarded = true
+
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
+runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#806): no graph or live service of its own is declared yet; deferred to its CI child.
+needs_gate_adapter = false
+
+[[project]]
+name = "kenekted-docs"
+repo = "kenekted/kenekted-docs"
+path = "~/Harmonic_Projects/kenekted/docs"
+prefix = "D"
+account = "harmonicarchitect"
+board_owner = "harmonicarchitect"
+# The Kenekted Kanban (board #1) is the team's board and holds every kenekted repo. Its
+# fields Tier, Theme and Venture were ADDED (harmonic-forge#806); Status was left alone.
+board_number = "1"
+milestones = false
+onboarded = true
+
+[project.protocol]
+worktree_name = "{checkout}-lane{lane}"
+l1_post_task = "l1-post"
+lane_comment_task = "lane-comment"
+gate_checkout_task = "gate-checkout"
+lane3_begin_task = "lane3-begin"
+lane3_end_task = "lane3-end"
+runs_lane3 = true
+# needs_gate_adapter = false (harmonic-forge#806): documentation repo with no service. Its checkout basename is `docs`, so its worktrees are
+# docs-lane2 and docs-lane3: the lane launchers derive the worktree from the checkout basename
+# and do not read this template, so a different name here would create worktrees they can never
+# find (harmonic-forge#806 preclose).
+needs_gate_adapter = false
 
 [[project]]
 name = "leasepal"

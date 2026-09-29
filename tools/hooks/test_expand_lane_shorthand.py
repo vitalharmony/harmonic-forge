@@ -98,18 +98,21 @@ class RealDocTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("H26 [vitalharmony/hrse#26]", result["hookSpecificOutput"]["additionalContext"])
 
-    def test_kenekted_prefix_expands_with_full_account_text_preserved(self) -> None:
-        """AC1. Asserts on the actual account CONTENT, not just that a
-        bracket exists -- the original test only checked shape and let a
-        mangled '**`harmonicarchitect' string pass (preclose review,
-        test-honesty lens, 3 independent findings)."""
-        result = _run("checking K42 status")
-        self.assertIsNotNone(result)
-        expanded = result["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("harmonicarchitect", expanded)
-        self.assertNotIn("**", expanded)
-        self.assertNotIn("`", expanded)
-        self.assertNotIn("K42 [ke'nekted#42]", expanded, "K's repo column has no owner/repo slug form")
+    def test_kenekted_prefix_expands_to_its_repo(self) -> None:
+        """harmonic-forge#806: K, Y and D each name a real kenekted repo, so each
+        expands to `owner/repo#N` like H and F do. The GitHub lookup is stubbed: the
+        expansion is what is under test, not the network."""
+        for prefix, repo in (("K", "kenekted/kenekted-platform"), ("Y", "kenekted/kenekted-ai"),
+                             ("D", "kenekted/kenekted-docs")):
+            with self.subTest(prefix=prefix), unittest.mock.patch.object(
+                    m.subprocess, "run") as run:
+                result = _run(f"checking {prefix}42 status")
+            self.assertIsNotNone(result)
+            expanded = result["hookSpecificOutput"]["additionalContext"]
+            self.assertIn(f"{prefix}42 [{repo}#42]", expanded)
+            # A repo on another account gets the gloss but never a live fetch: this hook has no
+            # per-account identity, and `Y2038` / `D30` are ordinary prose.
+            run.assert_not_called()
 
     def test_leasepal_prefix_expands_to_the_real_repo_slug(self) -> None:
         """harmonic-forge#800: LeasePAL-App-Prototype was onboarded, so the P
@@ -188,7 +191,8 @@ class RealDocTests(unittest.TestCase):
         this branch -- K is the row that does."""
         doc_text = Path(m.DOC_PATH).read_text()
         broken_doc = doc_text.replace(
-            "| `K` | ke'nekted | **`harmonicarchitect` — separate account, separate credentials** |",
+            "| `K` | `kenekted/kenekted-platform` | **`harmonicarchitect` — separate account, "
+            "separate credentials**; board harmonicarchitect #1 |",
             "| `K` | ke'nekted |  |",
         )
         expanded = m.annotate("L2D H26 and K99", broken_doc)
@@ -314,9 +318,21 @@ class LiveIssueReReadTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_account_only_prefix_is_not_live_fetched(self):
-        """K/P have no owner/repo shorthand -- nothing to `gh issue view`."""
-        with unittest.mock.patch.object(m.subprocess, "run") as run:
-            result = _run("checking K42 status")
+        """A prefix whose repo cell is not an owner/repo slug has nothing to `gh issue view`.
+        K used to be that row; harmonic-forge#806 gave it a real repo, so the property is
+        pinned against a doc row that still has the account-only shape."""
+        import tempfile
+        old_row = ("| `K` | `kenekted/kenekted-platform` | **`harmonicarchitect` — separate account, "
+                   "separate credentials**; board harmonicarchitect #1 |")
+        doc = Path(m.DOC_PATH).read_text().replace(
+            old_row, "| `K` | ke'nekted | **`harmonicarchitect` — separate account** |")
+        self.assertNotEqual(doc, Path(m.DOC_PATH).read_text(), "the K row was not found to rewrite")
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "lane-shorthand.md"
+            fixture.write_text(doc)
+            with unittest.mock.patch.object(m, "DOC_PATH", fixture), \
+                    unittest.mock.patch.object(m.subprocess, "run") as run:
+                result = _run("checking K42 status")
         self.assertIsNotNone(result)  # inline gloss still fires
         run.assert_not_called()
 

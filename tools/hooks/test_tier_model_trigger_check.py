@@ -424,5 +424,22 @@ class MainTests(unittest.TestCase):
         self.assertIn("internal error", stderr.getvalue())
 
 
+class BoardMapIsDefaultAccountOnly(unittest.TestCase):
+    """harmonic-forge#806: the Tier read runs as the default account, so the kenekted repos
+    (account harmonicarchitect) must not appear in the board map; a `deep` issue there would
+    otherwise be read as the wrong identity and route to the wrong model, silently."""
+
+    def test_kenekted_repos_are_left_out(self) -> None:
+        boards = t._boards()
+        self.assertNotIn("kenekted/kenekted-platform", boards)
+        self.assertNotIn("kenekted/kenekted-ai", boards)
+        self.assertNotIn("kenekted/kenekted-docs", boards)
+
+    def test_the_default_account_repos_are_still_there(self) -> None:
+        boards = t._boards()
+        self.assertEqual(boards.get("vitalharmony/hrse"), "1")
+        self.assertEqual(boards.get("vitalharmony/harmonic-forge"), "3")
+
+
 if __name__ == "__main__":
     unittest.main()

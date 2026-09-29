@@ -254,8 +254,9 @@ def collect_live_issue_refs(prompt: str, doc_text: str) -> list[tuple[str, str]]
     blocks -- the set this hook must live-fetch for (harmonic-forge#397).
     Reuses build_annotator()'s own pattern so the fetch set is always
     exactly the set of tokens the inline gloss already recognizes; no
-    second, divergent parse of the doc. K/P-style account-only prefixes
-    (no `/` in their repo column) are excluded -- nothing to fetch."""
+    second, divergent parse of the doc. Account-only prefixes (no `/` in their
+    repo column) are excluded -- nothing to fetch -- and so are repos on another
+    account than vitalharmony (harmonic-forge#806)."""
     built = build_annotator(doc_text)
     if built is None:
         return []
@@ -274,9 +275,15 @@ def collect_live_issue_refs(prompt: str, doc_text: str) -> list[tuple[str, str]]
                 continue
             token = match.group(0)
             prefix_char, number = token[0], token[1:]
-            repo, _account = prefixes.get(prefix_char, ("", ""))
+            repo, account = prefixes.get(prefix_char, ("", ""))
             clean_repo = STRIP_MARKDOWN.sub("", repo).strip()
             if "/" not in clean_repo:
+                continue
+            # harmonic-forge#806: K, Y and D live on another account. The inline gloss still
+            # fires, but no live fetch: this hook has no per-account identity, `Y2038` and
+            # `D30` are ordinary prose, and a false positive would cost a doomed cross-account
+            # `gh` call plus a misleading "fetch failed" block in the model's context.
+            if not STRIP_MARKDOWN.sub("", account).strip().lower().startswith("vitalharmony"):
                 continue
             pair = (clean_repo, number)
             if pair not in seen:

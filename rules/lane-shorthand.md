@@ -371,7 +371,9 @@ Always prefix.
 | `F` | `vitalharmony/harmonic-forge` | vitalharmony |
 | `I` | `vitalharmony/cymagraph-infra` | vitalharmony |
 | `O` | `vitalharmony/openclaw-projects` | vitalharmony |
-| `K` | ke'nekted | **`harmonicarchitect` — separate account, separate credentials** |
+| `K` | `kenekted/kenekted-platform` | **`harmonicarchitect` — separate account, separate credentials**; board harmonicarchitect #1 |
+| `Y` | `kenekted/kenekted-ai` | **`harmonicarchitect`**, same board (harmonic-forge#806) |
+| `D` | `kenekted/kenekted-docs` | **`harmonicarchitect`**, same board (harmonic-forge#806) |
 | `P` | `LeasePAL-ML/LeasePAL-App-Prototype` | vitalharmony — client repo, vitalharmony has push; board LeasePAL-ML #1 |
 
 ### `L` is permanently reserved and must never be assigned
@@ -397,14 +399,14 @@ archived and therefore has no prefix.
   The rule covers removal, not creation — anything consuming this should say
   so rather than silently emitting an unprefixed number.
 
-### `K` and `P` point at other accounts — never treat empty as absent
+### `K`, `Y`, `D` and `P` point at other accounts — never treat empty as absent
 
-Every `vitalharmony` prefix resolves by prepending the owner. `K` and `P` do
+Every `vitalharmony` prefix resolves by prepending the owner. `K`, `Y`, `D` and `P` do
 not: they are **different accounts with separate credentials**, and credential
 isolation across engagements is a standing rule.
 
 The failure mode is specific and quiet. A session holding vitalharmony
-credentials that queries `K123` receives an **empty result, not an error** —
+credentials that queries `K123` (or `Y123`, `D123`) receives an **empty result, not an error** —
 verified live: `gh repo list harmonicarchitect` returns nothing under
 vitalharmony auth. It will conclude "no such issue" rather than "wrong
 credentials."
