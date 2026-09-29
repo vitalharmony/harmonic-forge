@@ -351,6 +351,10 @@ class LiveManifestTests(unittest.TestCase):
             # Matt. The repo key is lowercased (normalize_repo); the board
             # owner is not a repo slug and keeps its real casing.
             "leasepal-ml/leasepal-app-prototype": ("LeasePAL-ML", "1"),
+            # harmonic-forge#806 -- one venture, one board, three repos.
+            "kenekted/kenekted-platform": ("harmonicarchitect", "1"),
+            "kenekted/kenekted-ai": ("harmonicarchitect", "1"),
+            "kenekted/kenekted-docs": ("harmonicarchitect", "1"),
         })
 
     def test_the_sweep_list_matches_the_live_hygiene_task(self) -> None:
@@ -389,18 +393,23 @@ class LiveManifestTests(unittest.TestCase):
         # harmonic-forge#800: leasepal is now onboarded with runs_lane3 = true
         # and declares needs_gate_adapter = false, same as the other three
         # graph/database/live-service-free repos.
-        no_adapter = {"harmonic-forge", "cymagraph-infra", "openclaw-projects", "leasepal"}
+        no_adapter = {"harmonic-forge", "cymagraph-infra", "openclaw-projects", "leasepal",
+                      "kenekted", "kenekted-ai", "kenekted-docs"}
         # harmonic-forge#802: hrse's CI mirrors `check`'s commands against its
         # own parity tool rather than declaring a `ci-check` task.
         parity_task = {"hrse": "ci-parity-check-command-sets"}
+        # harmonic-forge#806: kenekted-docs' checkout basename is `docs`, so its worktrees
+        # are named for the repo, not the directory.
+        worktree = {"kenekted-docs": {"worktree_name": "kenekted-{checkout}-lane{lane}"}}
         self.assertEqual(
             {project.name: project.protocol for project in projects},
-            {name: mf.Protocol(**common,
-                               runs_lane3=name != "kenekted",
+            {name: mf.Protocol(**{**common, **worktree.get(name, {})},
+                               runs_lane3=True,
                                needs_gate_adapter=False if name in no_adapter else None,
                                ci_parity_task=parity_task.get(name))
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
-                          "openclaw-projects", "kenekted", "leasepal")})
+                          "openclaw-projects", "kenekted", "kenekted-ai",
+                          "kenekted-docs", "leasepal")})
 
     def test_that_agreement_check_can_actually_fail(self) -> None:
         """Otherwise the assertion above is a check that always passes."""

@@ -371,7 +371,9 @@ Always prefix.
 | `F` | `vitalharmony/harmonic-forge` | vitalharmony |
 | `I` | `vitalharmony/cymagraph-infra` | vitalharmony |
 | `O` | `vitalharmony/openclaw-projects` | vitalharmony |
-| `K` | ke'nekted | **`harmonicarchitect` — separate account, separate credentials** |
+| `K` | `kenekted/kenekted-platform` | **`harmonicarchitect` — separate account, separate credentials**; board harmonicarchitect #1 |
+| `Y` | `kenekted/kenekted-ai` | **`harmonicarchitect`**, same board (harmonic-forge#806) |
+| `D` | `kenekted/kenekted-docs` | **`harmonicarchitect`**, same board (harmonic-forge#806) |
 | `P` | `LeasePAL-ML/LeasePAL-App-Prototype` | vitalharmony — client repo, vitalharmony has push; board LeasePAL-ML #1 |
 
 ### `L` is permanently reserved and must never be assigned
