@@ -10,6 +10,7 @@ test drives the real code path against a recorded copy of that real payload.
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 import tempfile
@@ -60,6 +61,9 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_run
             if any('select(.state == "open")' in a for a in cmd):
                 listed = [p for p in listed if p.get("state", "open") == "open"]
             return 0, json.dumps(listed)
+        if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url):
+            # Short-SHA resolution (`--jq .sha`): the fixture's SHAs are hex, padded to 40.
+            return 0, url.rsplit("/", 1)[1].ljust(40, "0")
         if "/actions/runs?" in url:
             # `--jq '.workflow_runs[] | {id, name, ...}'` streams one object per line. The
             # fixture models every check as a job of ONE workflow run (harmonic-forge#805);
@@ -577,7 +581,7 @@ class PrecloseRegressionTests(unittest.TestCase):
         def spy(cmd):
             seen.append(cmd)
             return 0, ""
-        gate_ci.ci_conclusion("o/r", "abc1234", run=spy)
+        gate_ci.ci_conclusion("o/r", "abc1234" + "0" * 33, run=spy)  # a full SHA: no resolution call first
         joined = " ".join(seen[0])
         self.assertIn("--paginate", joined)
         self.assertIn("per_page=100", joined)

@@ -360,7 +360,7 @@ class TokenStandardTests(IdentityBase):
         self.tokens["slot"] = ""
         result = self.check(token_exception="user-owned Projects v2")
         self.assertEqual(result.status, fi.FAIL)
-        self.assertIn("could not read the token", result.detail)
+        self.assertIn("unreadable", result.detail)
 
     def test_an_unrecognized_token_kind_fails_even_with_an_exception(self) -> None:
         self.tokens["slot"] = "xyz_SLOTSECRET"
