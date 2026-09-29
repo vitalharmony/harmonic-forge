@@ -26,6 +26,29 @@ import forge_onboard as fo  # noqa: E402
 import manifest as mf  # noqa: E402
 
 
+def _quiet_git_repo(git, *, cwd=None, receiver: bool = False) -> None:
+    """Keep git from spawning a detached `gc --auto` in a fixture repo.
+
+    A test that builds dozens of commits on a real temp repo and pushes them to
+    a local bare `origin.git` triggers git's auto-maintenance, which detaches and
+    keeps writing into the repo while `TemporaryDirectory.cleanup` removes it --
+    an intermittent `OSError: Directory not empty`. The receiving side is the one
+    that matters: `git push` to a local path runs `receive-pack`, which honors
+    `receive.autogc` (default on) and cannot be reached by an environment
+    setting, because git strips `GIT_CONFIG_*` when it spawns a local
+    `receive-pack` (measured: an env-based first attempt still failed 4 of 8).
+    It lost the race in every run through `l1-post`'s pre-flight (whose temp dir
+    is on btrfs under `~/.cache`) and none through plain `/tmp`, so a Lane 1
+    `ready-for-l3` on harmonic-forge could not be posted (harmonic-forge#802).
+    Configured in the repo itself so it also covers the git the code under test runs.
+    """
+    settings = [("gc.auto", "0"), ("maintenance.auto", "false")]
+    if receiver:
+        settings.append(("receive.autogc", "false"))
+    for key, value in settings:
+        git("config", key, value, cwd=cwd)
+
+
 class Base(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -527,6 +550,7 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self._git("init", "-q", "-b", "main")
+        _quiet_git_repo(self._git)
         (self.repo / "f.txt").write_text("x")
         self._git("add", "-A")
         self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one")
@@ -632,6 +656,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self._git("init", "-q", "-b", "main")
+        _quiet_git_repo(self._git)
         (self.repo / "f.txt").write_text("x")
         self._git("add", "-A")
         self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one")
@@ -640,6 +665,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
         # local `main` branch, matching how `check_worktrees` fetches it.
         self.origin = self.root / "origin.git"
         self._git("init", "-q", "--bare", str(self.origin))
+        _quiet_git_repo(self._git, cwd=self.origin, receiver=True)
         self._git("remote", "add", "origin", str(self.origin))
         self._git("push", "-q", "origin", "main")
 
