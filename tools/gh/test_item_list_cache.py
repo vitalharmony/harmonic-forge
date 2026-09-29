@@ -166,6 +166,25 @@ class OwnerScanFallbackTests(unittest.TestCase):
                                                  owner="harmonicarchitect"))
         self.assertEqual(len(calls), 1, "a visible board must cost one query, not a scan")
 
+    def test_an_owner_that_owns_its_repo_never_scans(self) -> None:
+        """The per-issue read sees every board its own owner holds, so an unboarded issue there is
+        just unboarded: no scan, however many prompts name it."""
+        run, calls = self._run([])
+        self.assertIsNone(cache.fetch_issue_tier("vitalharmony/hrse", 5, "1", run=run,
+                                                 owner="vitalharmony"))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_cross_owner_read_is_never_cached(self) -> None:
+        run, calls = self._run([], [{"content": {"number": 59, "repository": self.REPO},
+                                     "tier": "standard"}])
+        cache_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, cache_dir, ignore_errors=True)
+        for _ in range(2):
+            self.assertEqual(cache.fetch_issue_tier(
+                self.REPO, 59, "1", run=run, ttl=120, cache_dir=cache_dir,
+                owner="harmonicarchitect"), "standard")
+        self.assertEqual(len([c for c in calls if c[:3] == ["gh", "api", "graphql"]]), 2)
+
     def test_without_an_owner_a_blind_read_is_not_scanned(self) -> None:
         run, calls = self._run([])
         self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run))

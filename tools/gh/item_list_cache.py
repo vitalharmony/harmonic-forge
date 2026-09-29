@@ -593,6 +593,12 @@ def fetch_issue_field(
     board, or a board the per-issue query cannot see. With `owner` given, that `None` is confirmed
     against the board itself. Without it the behavior is unchanged.
     """
+    # The per-issue read is blind ONLY when the board's owner is not the repo's owner (a user-owned
+    # board on an organization repo). For a repo whose owner owns its board the per-issue read sees
+    # everything, so an issue with no project items is simply unboarded and never triggers a scan.
+    cross_owner = bool(owner) and owner.lower() != repo.split("/", 1)[0].lower()
+    if cross_owner:
+        ttl = 0  # a blind `None` must never be cached: the scan result is not, and would be masked
     blind: dict = {}
     value = _fetch_issue_field_targeted(
         repo, issue_number, project_number, field=field, run=run, ttl=ttl, cache_dir=cache_dir,
@@ -600,7 +606,7 @@ def fetch_issue_field(
     # Scan only when the per-issue read was BLIND (no project items visible), never merely because
     # the field is unset: an unset Tier on an ordinary board must stay one cheap query, not an
     # uncached full-board scan on every prompt that names the issue.
-    if value is not None or not owner or not blind.get("blind"):
+    if value is not None or not cross_owner or not blind.get("blind"):
         return value
     if run is None:
         import subprocess
