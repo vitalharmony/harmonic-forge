@@ -199,7 +199,7 @@ lane's own session, not just inside shared tooling scripts:
 | Create an issue | `gh api repos/OWNER/REPO/issues -f title=... -F body=@file -f "labels[]=X"` | `gh issue create` |
 | Create a PR | `gh api repos/OWNER/REPO/pulls -f title=... -f head=... -f base=... -F body=@file` | `gh pr create` |
 | Merge a PR | `gh api -X PUT repos/OWNER/REPO/pulls/N/merge -f merge_method=squash` | `gh pr merge` |
-| Check CI status | `gh api repos/OWNER/REPO/commits/SHA/check-runs` | `gh pr checks` |
+| Check CI status | `gh api repos/OWNER/REPO/actions/runs?head_sha=SHA`, then `gh api repos/OWNER/REPO/actions/runs/ID/jobs` (a fine-grained PAT cannot read `commits/SHA/check-runs`, R-0368) | `gh pr checks` |
 | Delete a branch | `gh api -X DELETE repos/OWNER/REPO/git/refs/heads/BRANCH` (URL-encode slashes) | GraphQL-based deletion |
 <!-- /R-0019 -->
 

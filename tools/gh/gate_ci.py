@@ -249,6 +249,13 @@ def ci_conclusion(repo: str, sha: str, run=None,
     # prevent. `--jq` streams one object per line (`--slurp` is rejected together with `--jq`,
     # gh 2.99.0), so the output is line-delimited and parsed per line. `filter=latest` keeps only
     # each job's latest attempt, so a re-run replaces the failure it fixed.
+    if len(sha) < 40:
+        # `actions/runs?head_sha=` matches the FULL SHA only; a gate report usually names an
+        # abbreviated one, which would read as "no runs" and wrongly refuse a valid PASS.
+        code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
+        if code != 0 or len(full.strip()) != 40:
+            return "unknown", f"could not resolve {sha[:8]} to a full SHA: {full.strip()[:120]}"
+        sha = full.strip()
     code, out = run(["gh", "api", "--paginate",
                      f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
                      "--jq", ".workflow_runs[] | {id, name, status, conclusion, "

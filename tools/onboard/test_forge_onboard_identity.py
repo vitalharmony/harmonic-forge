@@ -362,6 +362,12 @@ class TokenStandardTests(IdentityBase):
         self.assertEqual(result.status, fi.FAIL)
         self.assertIn("could not read the token", result.detail)
 
+    def test_an_unrecognized_token_kind_fails_even_with_an_exception(self) -> None:
+        self.tokens["slot"] = "xyz_SLOTSECRET"
+        result = self.check(token_exception="user-owned Projects v2")
+        self.assertEqual(result.status, fi.FAIL)
+        self.assertIn("unrecognized", result.detail)
+
     def test_a_blank_exception_counts_as_none(self) -> None:
         self.tokens["slot"] = "gho_SLOTSECRET"
         self.assertEqual(self.check(token_exception="   ").status, fi.FAIL)

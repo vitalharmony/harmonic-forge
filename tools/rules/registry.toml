@@ -203,7 +203,7 @@ id = "R-0019"
 file = "rules/universal-agent.md"
 anchor = "github-api-rest-over-graphql"
 statement = "Use the REST form of a GitHub operation whenever one exists, in any lane's own session, not just inside shared tooling."
-text_sha = "15e63ba09c7b078a"
+text_sha = "06122899c1e0352d"
 hooks = []
 
 [[rule]]

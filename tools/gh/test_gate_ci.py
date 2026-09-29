@@ -718,6 +718,26 @@ class ReadsActionsNotCheckRuns(unittest.TestCase):
             "o/r", self.SHA, run=fake_gh(checks=[check("verify")], bare_runs=[queued]))
         self.assertEqual(state, "pending")
 
+    def test_an_abbreviated_sha_is_resolved_to_the_full_sha_before_the_runs_lookup(self) -> None:
+        full = "0359854f1234567890abcdef1234567890abcdef"
+        calls = []
+        inner = fake_gh(checks=[check("verify")])
+
+        def run(cmd):
+            url = next((a for a in cmd if a.startswith("repos/")), "")
+            calls.append(url)
+            if url.endswith("/commits/0359854"):
+                return 0, full
+            return inner(cmd)
+
+        state, _ = gate_ci.ci_conclusion("o/r", "0359854", run=run)
+        self.assertEqual(state, "green")
+        self.assertTrue(any(f"head_sha={full}" in u for u in calls), calls)
+
+    def test_an_unresolvable_abbreviated_sha_is_unknown_not_absent(self) -> None:
+        state, _ = gate_ci.ci_conclusion("o/r", "0359854", run=lambda cmd: (1, "gh: not found"))
+        self.assertEqual(state, "unknown")
+
     def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
         state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))
         self.assertEqual(state, "absent")

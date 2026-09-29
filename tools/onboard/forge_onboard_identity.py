@@ -173,12 +173,12 @@ def check_identity(project: Project, check_cls):
                          f"slot {slot} authenticates as {login}, but the manifest says {account}")
     token = _token(slot)
     kind = token_kind(token)
-    if kind == "none":
+    if kind in ("none", "unknown"):
         # An unreadable credential (locked keyring, gh missing, timeout) is not "no exception
         # needed": it must never pass, exception or not.
         return check_cls("identity", FAIL,
-                         f"could not read the token for slot {slot} (gh auth token failed); "
-                         "the token type cannot be checked")
+                         f"the token for slot {slot} is {'unreadable (gh auth token failed)' if kind == 'none' else 'of an unrecognized kind'}; "
+                         "its type cannot be checked, exception or not")
     exception = (project.token_exception or "").strip()
     if kind != FINE_GRAINED and not exception:
         return check_cls(
