@@ -57,6 +57,7 @@ class Project:
     board_number: str | None = None
     milestones: bool = False
     onboarded: bool = False
+    token_exception: str | None = None  # harmonic-forge#805
     protocol: Protocol | None = None
 
     @property

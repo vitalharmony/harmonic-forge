@@ -10,6 +10,7 @@ test drives the real code path against a recorded copy of that real payload.
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 import tempfile
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_ci  # noqa: E402
 
 
-def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
+def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_runs=()):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -60,10 +61,21 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
             if any('select(.state == "open")' in a for a in cmd):
                 listed = [p for p in listed if p.get("state", "open") == "open"]
             return 0, json.dumps(listed)
-        if "/check-runs" in url:
-            # `gh api --jq '.check_runs[]'` streams ONE OBJECT PER LINE, not an
-            # array. A stub emitting an array tested a shape gh never produces.
-            return 0, "\n".join(json.dumps(c) for c in checks)
+        if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url):
+            # Short-SHA resolution (`--jq .sha`): the fixture's SHAs are hex, padded to 40.
+            return 0, url.rsplit("/", 1)[1].ljust(40, "0")
+        if "/actions/runs?" in url:
+            # `--jq '.workflow_runs[] | {id, name, ...}'` streams one object per line. The
+            # fixture models every check as a job of ONE workflow run (harmonic-forge#805);
+            # `bare_runs` are workflow runs that have no jobs at all.
+            lines = ([json.dumps({"id": 1, "name": "ci", "status": "completed",
+                                  "conclusion": "success"})] if checks else [])
+            lines += [json.dumps(dict(r, id=100 + i)) for i, r in enumerate(bare_runs)]
+            return 0, "\n".join(lines)
+        if "/actions/runs/" in url and "/jobs" in url:
+            # `--jq '.jobs[]'` streams ONE OBJECT PER LINE, not an array.
+            # Only run 1 carries the fixture's jobs; a bare run (id 100+) has none.
+            return 0, "\n".join(json.dumps(c) for c in checks) if "/runs/1/" in url else ""
         return 0, "null"
     return run
 
@@ -291,7 +303,7 @@ class NoPrOverrideTests(unittest.TestCase):
         unread CI must never be published as one that cannot exist."""
         ok, msg = gate_ci.check_gate_result(
             "o/r", PASS_BODY,
-            run=fake_gh(main_tip=self.SHA, fail=("check-runs",)),
+            run=fake_gh(main_tip=self.SHA, fail=("/actions/runs",)),
             ack_no_pr_required="should not matter")
         self.assertFalse(ok)
         self.assertNotIn("no-pr-override", msg)
@@ -569,7 +581,7 @@ class PrecloseRegressionTests(unittest.TestCase):
         def spy(cmd):
             seen.append(cmd)
             return 0, ""
-        gate_ci.ci_conclusion("o/r", "abc1234", run=spy)
+        gate_ci.ci_conclusion("o/r", "abc1234" + "0" * 33, run=spy)  # a full SHA: no resolution call first
         joined = " ".join(seen[0])
         self.assertIn("--paginate", joined)
         self.assertIn("per_page=100", joined)
@@ -663,6 +675,76 @@ class StackedProbePrTests(unittest.TestCase):
     def test_a_branch_that_matches_no_pr_falls_back_to_strict_not_to_passing(self):
         moved = dict(self.PR_A, head="99999999aaaa")
         self.assertTrue(self.stale(moved, branch="feat/renamed"))
+
+class ReadsActionsNotCheckRuns(unittest.TestCase):
+    """harmonic-forge#805: a fine-grained PAT cannot read `commits/<sha>/check-runs` (403, no
+    permission exists for it), so the gate reads Actions runs and their jobs instead."""
+
+    SHA = "0359854f1234567890abcdef1234567890abcdef"
+
+    def test_no_check_runs_endpoint_is_ever_called(self) -> None:
+        seen = []
+        inner = fake_gh(checks=[check("verify")])
+
+        def spy(cmd):
+            seen.extend(a for a in cmd if a.startswith("repos/"))
+            return inner(cmd)
+
+        state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=spy)
+        self.assertEqual(state, "green")
+        self.assertFalse([u for u in seen if "check-runs" in u], seen)
+        self.assertTrue(any("actions/runs?head_sha=" + self.SHA in u for u in seen), seen)
+        self.assertTrue(any("/jobs" in u and "filter=latest" in u for u in seen), seen)
+
+    def test_an_unreadable_jobs_list_is_unknown_not_green(self) -> None:
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify")], fail=("/jobs",)))
+        self.assertEqual(state, "unknown")
+        self.assertIn("jobs", detail)
+
+    def test_a_failed_job_is_red(self) -> None:
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify", conclusion="failure")]))
+        self.assertEqual(state, "red")
+        self.assertIn("verify", detail)
+
+    def test_a_workflow_run_with_no_jobs_is_read_as_a_check_not_ignored(self) -> None:
+        """A startup_failure run has no jobs; it must not read as green."""
+        broken = {"name": "docs", "status": "completed", "conclusion": "startup_failure"}
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify")], bare_runs=[broken]))
+        self.assertEqual(state, "red")
+        self.assertIn("docs", detail)
+
+    def test_a_queued_run_with_no_jobs_is_pending(self) -> None:
+        queued = {"name": "docs", "status": "queued", "conclusion": None}
+        state, _ = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify")], bare_runs=[queued]))
+        self.assertEqual(state, "pending")
+
+    def test_an_abbreviated_sha_is_resolved_to_the_full_sha_before_the_runs_lookup(self) -> None:
+        full = "0359854f1234567890abcdef1234567890abcdef"
+        calls = []
+        inner = fake_gh(checks=[check("verify")])
+
+        def run(cmd):
+            url = next((a for a in cmd if a.startswith("repos/")), "")
+            calls.append(url)
+            if url.endswith("/commits/0359854"):
+                return 0, full
+            return inner(cmd)
+
+        state, _ = gate_ci.ci_conclusion("o/r", "0359854", run=run)
+        self.assertEqual(state, "green")
+        self.assertTrue(any(f"head_sha={full}" in u for u in calls), calls)
+
+    def test_an_unresolvable_abbreviated_sha_is_unknown_not_absent(self) -> None:
+        state, _ = gate_ci.ci_conclusion("o/r", "0359854", run=lambda cmd: (1, "gh: not found"))
+        self.assertEqual(state, "unknown")
+
+    def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
+        state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))
+        self.assertEqual(state, "absent")
 
 
 if __name__ == "__main__":

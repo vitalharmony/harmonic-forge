@@ -92,22 +92,36 @@ def _raw_check_run(repo: str, sha: str, name: str = "verify") -> dict | None:
     `completed_at` for the actual elapsed-time math AC2 needs, which
     `ci_conclusion`'s tri-state summary alone can't provide. `gh-as
     vitalharmony`-scoped, matching `api()` below (preclose finding)."""
-    result = subprocess.run(
-        ["gh", "api", "--paginate",
-         f"repos/{repo}/commits/{sha}/check-runs?per_page=100", "--jq", ".check_runs[]"],
+    # harmonic-forge#805: Actions runs then their jobs, not `commits/<sha>/check-runs`, which a
+    # fine-grained PAT cannot read. A job carries the same name / status / started_at /
+    # completed_at this tool needs.
+    listing = subprocess.run(
+        ["gh", "api", "--paginate", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
+         "--jq", ".workflow_runs[].id"],
         text=True, capture_output=True,
     )
-    if result.returncode:
+    if listing.returncode:
         return None
     runs = []
-    for line in (result.stdout or "").splitlines():
-        line = line.strip()
-        if not line:
+    for run_id in (line.strip() for line in (listing.stdout or "").splitlines()):
+        if not run_id:
             continue
-        try:
-            runs.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+        result = subprocess.run(
+            ["gh", "api", "--paginate",
+             f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&filter=latest",
+             "--jq", ".jobs[]"],
+            text=True, capture_output=True,
+        )
+        if result.returncode:
+            return None
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                runs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     named = [r for r in runs if r.get("name") == name]
     if not named:
         return None

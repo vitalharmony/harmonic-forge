@@ -203,7 +203,7 @@ id = "R-0019"
 file = "rules/universal-agent.md"
 anchor = "github-api-rest-over-graphql"
 statement = "Use the REST form of a GitHub operation whenever one exists, in any lane's own session, not just inside shared tooling."
-text_sha = "15e63ba09c7b078a"
+text_sha = "06122899c1e0352d"
 hooks = []
 
 [[rule]]
@@ -2415,4 +2415,12 @@ file = "rules/testing-gate.md"
 anchor = "the-ci-standard-every-onboarded-repo-meets-verify-runs-ci-check-harmonic-forge-802"
 statement = "Every onboarded repo declares [tasks.ci-check] (the complete, offline, credential-free, CI-runnable subset of its verification, or a declared ci_parity_task variant); [tasks.check] depends on it plus reasoned machine-local steps; CI's verify job runs only mise run ci-check, never a mirrored command list; a shared gate tool's skip is keyed on its input being absent, never on CI=true; requiring the check on main stays a per-repo operator decision."
 text_sha = "7ab4ed88f9f72546"
+hooks = []
+
+[[rule]]
+id = "R-0368"
+file = "rules/universal-agent.md"
+anchor = "security"
+statement = "Lane credentials are fine-grained PATs, one per account, scoped to that account's repos with minimum permissions; a broader token needs a token_exception recorded in projects.toml, and tokens are loaded with --insecure-storage so a scratch slot cannot replace a live keyring credential."
+text_sha = "1dc5d8e48d1ee15a"
 hooks = []

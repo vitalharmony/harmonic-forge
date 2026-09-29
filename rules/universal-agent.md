@@ -55,6 +55,18 @@ migration scripts in a project's designated scripts directory are exempt.
 <!-- R-0007 -->
 - Secrets never appear in code, logs, prompts, or commit messages.
 <!-- /R-0007 -->
+<!-- R-0368 -->
+- **Lane credentials are fine-grained personal access tokens, one per account,
+  scoped to that account's repositories with the minimum permissions.** A
+  broader token (an OAuth `gho_` or classic `ghp_` token) is permitted for an
+  account only under a `token_exception` recorded in `projects.toml` with its
+  reason, today: fine-grained PATs cannot read or write user-owned Projects v2.
+  Load a token into a slot with `gh auth login --with-token --insecure-storage`;
+  without that flag `gh` stores it in the OS keyring keyed by host and user, so
+  a slot or scratch directory naming an existing user silently replaces that
+  user's live credential everywhere (harmonic-forge#805). `forge-onboard`
+  reports each slot's token type by prefix only and never prints a token value.
+<!-- /R-0368 -->
 <!-- R-0008 -->
 - Any query language with injection risk (SQL, Cypher, etc.) must be
   parameterized — never build queries via string interpolation/concatenation.
@@ -187,7 +199,7 @@ lane's own session, not just inside shared tooling scripts:
 | Create an issue | `gh api repos/OWNER/REPO/issues -f title=... -F body=@file -f "labels[]=X"` | `gh issue create` |
 | Create a PR | `gh api repos/OWNER/REPO/pulls -f title=... -f head=... -f base=... -F body=@file` | `gh pr create` |
 | Merge a PR | `gh api -X PUT repos/OWNER/REPO/pulls/N/merge -f merge_method=squash` | `gh pr merge` |
-| Check CI status | `gh api repos/OWNER/REPO/commits/SHA/check-runs` | `gh pr checks` |
+| Check CI status | `gh api repos/OWNER/REPO/actions/runs?head_sha=SHA`, then `gh api repos/OWNER/REPO/actions/runs/ID/jobs` (a fine-grained PAT cannot read `commits/SHA/check-runs`, R-0368) | `gh pr checks` |
 | Delete a branch | `gh api -X DELETE repos/OWNER/REPO/git/refs/heads/BRANCH` (URL-encode slashes) | GraphQL-based deletion |
 <!-- /R-0019 -->
 
