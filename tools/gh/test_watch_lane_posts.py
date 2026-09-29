@@ -2184,6 +2184,47 @@ class GitStalenessTests(unittest.TestCase):
             self.assertIn("staleness check failed", err.getvalue())
 
 
+class AccountFollowsTheRepo(unittest.TestCase):
+    """harmonic-forge#804: `--repo harmonicarchitect/...` used to poll as the process-wide
+    vitalharmony default, 404 on every call, and read as "no new work". `--repo` is
+    `action="append"`, so `main()` hands the resolver a LIST; the first cut crashed on it
+    (preclose, second pass), and its tests passed a bare string `main()` never produces."""
+
+    def _parse(self, *argv):
+        return watch_lane_posts._build_parser().parse_args(list(argv))
+
+    def test_the_shape_parse_args_produces_is_a_list(self) -> None:
+        self.assertEqual(self._parse("--repo", "vitalharmony/hrse").repo, ["vitalharmony/hrse"])
+
+    def test_a_parsed_repo_list_resolves_to_its_manifest_account(self) -> None:
+        args = self._parse("--repo", "vitalharmony/hrse")
+        self.assertEqual(watch_lane_posts._account_for_repo_arg(args.repo, args.account_repos),
+                         "vitalharmony")
+
+    def test_account_repos_names_the_account_directly(self) -> None:
+        args = self._parse("--account-repos", "harmonicarchitect", "--queue-for", "l2")
+        self.assertEqual(watch_lane_posts._account_for_repo_arg(args.repo, args.account_repos),
+                         "harmonicarchitect")
+
+    def test_an_unregistered_or_missing_repo_falls_back_to_the_default(self) -> None:
+        self.assertIsNone(watch_lane_posts._account_for_repo_arg(["someone/else"]))
+        self.assertIsNone(watch_lane_posts._account_for_repo_arg(None))
+
+    def test_a_repo_set_spanning_accounts_is_refused_not_polled_as_one(self) -> None:
+        def account(repo):
+            return {"a/x": "acct1", "b/y": "acct2"}[repo]
+        with patch("manifest_identity.account_for", side_effect=account):
+            with self.assertRaises(SystemExit) as caught:
+                watch_lane_posts._account_for_repo_arg(["a/x", "b/y"])
+        self.assertIn("spans accounts", str(caught.exception))
+
+    def test_a_non_default_account_is_returned_for_its_repo(self) -> None:
+        with patch("manifest_identity.account_for", return_value="harmonicarchitect"):
+            self.assertEqual(
+                watch_lane_posts._account_for_repo_arg(["harmonicarchitect/kenekted-platform"]),
+                "harmonicarchitect")
+
+
 if __name__ == "__main__":
     unittest.main()
 

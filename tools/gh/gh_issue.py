@@ -35,6 +35,8 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 import handoff_owed  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
 
 _BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
 
@@ -630,6 +632,9 @@ def main() -> int:
     # A repo with none (harmonic-forge, openclaw-projects) is never gated;
     # nothing invents a per-issue milestone concept for a repo that decided
     # against having one.
+    # harmonic-forge#804: act as the repo's own account. Deliberately AFTER the flag
+    # validation above: a malformed invocation must exit 2 without a network probe.
+    apply_project_identity(args.repo)
     milestones = fetch_milestones(args.repo)
     milestone_number: int | None = None
     if milestones:

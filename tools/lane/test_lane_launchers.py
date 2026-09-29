@@ -154,7 +154,7 @@ class NineCombinations(unittest.TestCase):
                         self.assertEqual(cell["env"]["LANE_AGENT"], agent)
                         self.assertEqual(
                             cell["env"]["GH_CONFIG_DIR"],
-                            str(tree.home / ".config" / "gh-vitalharmony"))
+                            str(tree.home / ".config" / "gh-accounts" / "vitalharmony"))
                         # The agent's own command is always the first token
                         # after any env(1) prefix.
                         self.assertIn(agent, _agent_args(cell))

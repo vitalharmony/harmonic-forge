@@ -144,6 +144,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from hook_identity import slot_env as _slot_env  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
@@ -831,7 +833,7 @@ def _pr_carriers(repo: str, pr_number: int,
              # it asserted only the first three argv entries and stubbed the
              # rest, so the wrong field name was invisible to 90 green tests.
              "--jq", ".head.ref, .title"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=_slot_env(repo),  # harmonic-forge#804
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1126,7 +1128,7 @@ def action_landed(kind: str, repo: str, number: str | int) -> bool | None:
     field = ".merged" if kind == "merge" else '.state == "closed"'
     result = subprocess.run(
         ["gh", "api", endpoint, "--jq", field],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, env=_slot_env(repo),  # harmonic-forge#804
     )
     if result.returncode != 0:
         return None

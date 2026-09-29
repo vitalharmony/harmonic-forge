@@ -41,6 +41,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from hook_identity import slot_env as _slot_env  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 #: The guard whose precondition is per-issue and therefore the expensive one:
@@ -63,10 +65,10 @@ class Finding:
         return f"[{mark}] {self.key:<8} {self.guard:<34} {self.detail}"
 
 
-def _gh(*args: str) -> str | None:
+def _gh(*args: str, repo: str | None = None) -> str | None:
     try:
         result = subprocess.run(["gh", *args], capture_output=True, text=True,
-                                timeout=30)
+                                timeout=30, env=_slot_env(repo))  # harmonic-forge#804
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
@@ -103,7 +105,7 @@ def check_preclose(key: str) -> Finding:
         return Finding(key, "preclose-inspection", UNKNOWN,
                        "no shorthand prefix maps this key to a repo")
     repo, number = target
-    raw = _gh("issue", "view", number, "--repo", repo, "--json", "labels,state")
+    raw = _gh("issue", "view", number, "--repo", repo, "--json", "labels,state", repo=repo)
     if raw is None:
         return Finding(key, "preclose-inspection", UNKNOWN,
                        f"could not read {repo}#{number}")
@@ -163,7 +165,7 @@ def _stale_preclose_receipt(repo: str, issue: str) -> str | None:
     in the rare duplicate-branch case, never a wrongly-authorized merge.
     """
     raw = _gh("pr", "list", "--repo", repo, "--state", "open",
-             "--json", "number,headRefName,headRefOid")
+             "--json", "number,headRefName,headRefOid", repo=repo)
     if raw is None:
         return None  # fail open: cannot resolve, don't report a false halt
     try:

@@ -401,6 +401,7 @@ class TestUnmappedRepoFailsLoudly(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), \
              patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.apply_project_identity"), \
              patch("gh_issue.create_issue", return_value="https://x/1") as created:
             try:
                 return gh_issue.main(), created
@@ -424,6 +425,46 @@ class TestUnmappedRepoFailsLoudly(unittest.TestCase):
             result, _ = self._main(["gh_issue.py", "--repo", "vitalharmony/hrse",
                                     "--title", "t"])
         self.assertEqual(result, 0)
+
+
+class TestIdentityAppliedBeforeAnyGithubCall(unittest.TestCase):
+    """harmonic-forge#804: `main` acts as the repo's registered account before the
+    first `gh` call, so the issue is filed as that account."""
+
+    def test_identity_is_applied_before_the_issue_is_created(self):
+        order = unittest.mock.Mock()
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t"]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.add_to_board", return_value=True), \
+             patch("gh_issue.apply_project_identity", order.identity), \
+             patch("gh_issue.create_issue", order.create) as _:
+            order.create.return_value = "https://x/1"
+            gh_issue.main()
+        names = [c[0] for c in order.mock_calls]
+        self.assertLess(names.index("identity"), names.index("create"))
+        order.identity.assert_called_once_with("vitalharmony/hrse")
+
+
+class TestUnregisteredRepoRefusedBeforeFiling(unittest.TestCase):
+    """harmonic-forge#804: a repo with no `projects.toml` entry has no registered
+    account, and the tool never falls back to the global login. Unlike the
+    board-mapping failure above (which happens after the issue exists), this one is
+    knowable from the manifest alone, so nothing is filed."""
+
+    def test_nothing_is_created(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GH_PROJECT_OWNER", "GH_PROJECT_NUMBER")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(sys, "argv", ["gh_issue.py", "--repo", "o/r", "--title", "t"]), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.create_issue", return_value="https://x/1") as created:
+            with self.assertRaises(Exception) as caught:
+                gh_issue.main()
+        created.assert_not_called()
+        self.assertIn("refusing to fall back", str(caught.exception))
 
 
 class TestHalfOverrideValidatedBeforeCreate(unittest.TestCase):

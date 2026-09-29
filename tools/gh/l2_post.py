@@ -26,6 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).parent))
 from receipt_runner import clear_lock, is_locked, lock_path, strip_ansi, write_receipt  # noqa: E402
 import belt_candidates  # noqa: E402
@@ -382,6 +385,7 @@ def main() -> int:
     lock_p.add_argument("--resolution-comment", type=int, required=True)
 
     args = parser.parse_args()
+    apply_project_identity(args.repo)  # harmonic-forge#804
 
     if args.action == "snapshot":
         snapshot(args.repo, args.issue)

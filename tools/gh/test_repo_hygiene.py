@@ -917,6 +917,90 @@ class MainCleanGuardTests(unittest.TestCase):
         self.assertEqual(rc, 0, "report-only category must not fail the run")
 
 
+class PerRepoIdentityTests(unittest.TestCase):
+    """harmonic-forge#804: the sweep spans accounts, so each repo's subprocesses
+    run under that repo's own slot -- never one process-wide identity."""
+
+    def tearDown(self):
+        rh._use_slot(None)
+
+    def _env_for(self, repo):
+        rh._use_slot(repo)
+        with patch("subprocess.run") as run:
+            run.return_value = unittest.mock.Mock(returncode=0, stdout="[]", stderr="")
+            rh._run(["gh", "api", "x"])
+        return run.call_args.kwargs.get("env")
+
+    def test_a_registered_repo_runs_under_its_own_slot(self):
+        env = self._env_for("vitalharmony/hrse")
+        self.assertTrue(env["GH_CONFIG_DIR"].endswith("gh-accounts/vitalharmony"))
+        self.assertNotIn("GH_TOKEN", env)
+
+    def test_an_unregistered_repo_inherits(self):
+        self.assertIsNone(self._env_for("someone/else"))
+
+    def test_switching_repos_switches_the_env(self):
+        first = self._env_for("vitalharmony/hrse")
+        second = self._env_for("someone/else")
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+    def test_the_env_is_cleared_after_use_slot_none(self):
+        rh._use_slot("vitalharmony/hrse")
+        rh._use_slot(None)
+        with patch("subprocess.run") as run:
+            run.return_value = unittest.mock.Mock(returncode=0, stdout="[]", stderr="")
+            rh._run(["git", "status"])
+        self.assertIsNone(run.call_args.kwargs.get("env"))
+
+
+class MainSwitchesSlotPerRepoTests(unittest.TestCase):
+    """The test-honesty lens's surviving mutation: deleting `_use_slot` from `main`'s
+    loops left every hygiene test green, because the tests above call `_use_slot`
+    themselves. This drives `main` and reads `_ENV` from INSIDE each repo's audit."""
+
+    def test_each_repo_and_checkout_runs_under_its_own_slot(self):
+        import io
+        from contextlib import redirect_stdout
+        forge = Path.home() / "harmonic-forge"
+        if not forge.exists():
+            self.skipTest("no ~/harmonic-forge on this machine")
+        seen = {}
+
+        def record(label):
+            def fn(target, *_a, **_k):
+                seen.setdefault(label, []).append((target, rh._ENV))
+            return fn
+
+        def noop(*_a, **_k):
+            return None
+
+        with patch.object(sys, "argv", ["repo_hygiene.py", "--repo", "vitalharmony/hrse",
+                                        "--repo", "someone/else", "--checkout", str(forge)]), \
+             patch.object(rh, "audit_repo", record("repo")), \
+             patch.object(rh, "audit_migrations", noop), \
+             patch.object(rh, "audit_unlabelled_migrations", noop), \
+             patch.object(rh, "audit_phase_closures", noop), \
+             patch.object(rh, "audit_inert_phase_dependents", noop), \
+             patch.object(rh, "audit_unboarded", noop), \
+             patch.object(rh, "audit_board_status_drift", noop), \
+             patch.object(rh, "audit_open_prs", noop), \
+             patch.object(rh, "audit_worktrees", record("checkout")), \
+             patch.object(rh, "audit_checkout_branch", noop), \
+             patch.object(rh, "audit_stashes", noop), \
+             patch.object(rh, "audit_transaction_log", noop), \
+             redirect_stdout(io.StringIO()):
+            rh.main()
+
+        (first_repo, first_env), (second_repo, second_env) = seen["repo"]
+        self.assertEqual((first_repo, second_repo), ("vitalharmony/hrse", "someone/else"))
+        self.assertTrue(first_env["GH_CONFIG_DIR"].endswith("gh-accounts/vitalharmony"))
+        self.assertIsNone(second_env, "an unregistered repo must inherit, not keep the previous repo's slot")
+        (_, checkout_env), = seen["checkout"]
+        self.assertTrue(checkout_env["GH_CONFIG_DIR"].endswith("gh-accounts/vitalharmony"))
+        self.assertIsNone(rh._ENV, "main must leave no slot applied when it returns")
+
+
 if __name__ == "__main__":
     unittest.main()
 

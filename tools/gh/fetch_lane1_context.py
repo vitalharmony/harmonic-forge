@@ -52,6 +52,10 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
 
 _MARKER_RE = re.compile(r"<!--\s*l1-post\s+v1;.*?-->", re.DOTALL)
 _KIND_RE = re.compile(r"kind=([\w-]+)")
@@ -127,6 +131,7 @@ def main() -> int:
     parser.add_argument("--repo", required=True, help="Target repo, e.g. vitalharmony/hrse")
     parser.add_argument("--issue", required=True, type=int, help="Issue number")
     args = parser.parse_args()
+    apply_project_identity(args.repo)  # harmonic-forge#804
 
     body = fetch_issue_body(args.repo, args.issue)
     all_comments = fetch_comments(args.repo, args.issue)

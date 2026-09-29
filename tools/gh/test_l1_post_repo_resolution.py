@@ -37,6 +37,7 @@ class RepoResolutionTests(unittest.TestCase):
             name = "example"
             prefix = "X"
             repo = "example/project"
+            account = "vitalharmony"
             onboarded = true
         """) + PROTOCOL, encoding="utf-8")
         subprocess.run(("git", "init", "-q", str(self.root / "checkout")), check=True)
@@ -58,6 +59,33 @@ class RepoResolutionTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             post.resolve_repo(None, self.root)
         self.assertIn("no readable origin", str(caught.exception))
+
+
+class IdentityAppliedInMainTests(unittest.TestCase):
+    """harmonic-forge#804: `l1_post.main` acts as the repo's registered account,
+    after the repo is resolved and before the first repository-sensitive call.
+    Source-level, like the sibling ordering tests: driving `main` end to end also
+    needs the whole posting chain stubbed, and a mis-stub would raise for the
+    wrong reason while still passing an assertRaises."""
+
+    def test_apply_project_identity_sits_between_resolve_repo_and_resolve_sha(self) -> None:
+        import ast
+        source = Path(post.__file__).read_text(encoding="utf-8")
+        main = next(n for n in ast.parse(source).body
+                    if isinstance(n, ast.FunctionDef) and n.name == "main")
+        body = ast.unparse(main)
+        resolve, apply_, sha = (body.index("resolve_repo(args.repo)"),
+                                body.index("apply_project_identity(repo)"),
+                                body.index("resolve_sha(args.sha)"))
+        self.assertLess(resolve, apply_)
+        self.assertLess(apply_, sha)
+
+    def test_the_gh_repo_view_fallback_is_gone(self) -> None:
+        """It ran before any identity was applied, so under the wrong login it
+        could not see a client account's repo at all."""
+        source = Path(post.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"gh", "repo", "view"', source)
+
 
 
 if __name__ == "__main__":

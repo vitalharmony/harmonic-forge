@@ -16,7 +16,13 @@ import re
 import subprocess
 from collections import defaultdict
 
+import sys
+from pathlib import Path
+
 import gate_ci
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
 
 L1 = re.compile(r"<!-- l1-post v1; kind=([^; ]+)")
 L2 = re.compile(r"(?im)^#{1,4}\s+L2D\b")
@@ -71,7 +77,7 @@ def _gh_as_run(cmd: list[str]) -> tuple[int, str]:
     happens to be active in the caller's shell rather than the account this
     report is written against)."""
     try:
-        result = subprocess.run(["gh-as", "vitalharmony", *cmd], capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)
     return result.returncode, result.stdout if result.returncode == 0 else result.stderr
@@ -87,7 +93,7 @@ def _raw_check_run(repo: str, sha: str, name: str = "verify") -> dict | None:
     `ci_conclusion`'s tri-state summary alone can't provide. `gh-as
     vitalharmony`-scoped, matching `api()` below (preclose finding)."""
     result = subprocess.run(
-        ["gh-as", "vitalharmony", "gh", "api", "--paginate",
+        ["gh", "api", "--paginate",
          f"repos/{repo}/commits/{sha}/check-runs?per_page=100", "--jq", ".check_runs[]"],
         text=True, capture_output=True,
     )
@@ -195,8 +201,7 @@ def marker_overlap(comments: list[dict]) -> list[dict]:
 
 
 def api(path: str) -> object:
-    result = subprocess.run(["gh-as", "vitalharmony", "gh", "api", path], text=True,
-                            capture_output=True)
+    result = subprocess.run(["gh", "api", path], text=True, capture_output=True)
     if result.returncode:
         raise SystemExit(result.stderr.strip() or "GitHub API failed")
     return json.loads(result.stdout)
@@ -265,6 +270,7 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--limit", type=int, default=20)
     args = parser.parse_args()
+    apply_project_identity(args.repo)  # harmonic-forge#804: gh below inherits this slot
     since = (dt.datetime.now(dt.UTC) - dt.timedelta(days=args.days)).isoformat().replace("+00:00", "Z")
     issues = api(f"repos/{args.repo}/issues?state=all&since={since}&per_page=100")
     rows = []

@@ -372,6 +372,8 @@ def check_gate_result(
     change. This is deliberately not "was --ack-no-pr-required passed", to
     match AC1's "never as a way to skip the check when a PR does exist".
     """
+    global _SLOT_ENV
+    _SLOT_ENV = _slot_env_for(repo)
     verdict = verdict_of(body)
     if verdict == "CONFLICT":
         return False, (
@@ -453,9 +455,30 @@ def check_gate_result(
         "not 'nothing failing'.")
 
 
+#: The repo's slot environment for the current `check_gate_result` call, or None.
+#: `enforce_gate_ci_on_raw_post.py` imports this module and calls
+#: `check_gate_result` in-process, so `main()`'s identity call is never reached on the
+#: hook path; without this the lookups run as the caller and 404 on a client repo.
+_SLOT_ENV: dict[str, str] | None = None
+
+
+def _slot_env_for(repo: str) -> dict[str, str] | None:
+    import sys  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+    onboard = str(Path(__file__).resolve().parents[1] / "onboard")
+    if onboard not in sys.path:
+        sys.path.insert(0, onboard)
+    try:
+        from manifest_identity import slot_env_or_none  # noqa: PLC0415
+        return slot_env_or_none(repo)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _run(cmd: list[str]) -> tuple[int, str]:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                env=_SLOT_ENV)
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)
     return result.returncode, result.stdout if result.returncode == 0 else result.stderr
@@ -470,6 +493,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file", type=Path, required=True,
                         help="gate report body to check")
     args = parser.parse_args(argv)
+    import sys  # noqa: PLC0415
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+    from manifest_identity import apply_project_identity  # noqa: PLC0415
+    apply_project_identity(args.repo)  # harmonic-forge#804
     ok, message = check_gate_result(args.repo, args.file.read_text(encoding="utf-8"))
     print(message)
     return 0 if ok else 1

@@ -372,7 +372,7 @@ class OtherPatternAuditTests(unittest.TestCase):
             manifest = Path(directory) / "projects.toml"
             manifest.write_text(
                 '[[project]]\nname="example"\nprefix="X"\n'
-                'repo="example/project"\nonboarded=true\n'
+                'repo="example/project"\naccount="vitalharmony"\nonboarded=true\n'
                 'board_owner="owner"\nboard_number="7"\n'
                 '[project.protocol]\nworktree_name="{checkout}-lane{lane}"\n'
                 'l1_post_task="l1-post"\nlane_comment_task="lane-comment"\n'

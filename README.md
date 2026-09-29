@@ -245,6 +245,25 @@ gh-as <account> gh issue list -R owner/repo
 gh-as <account> python3 some_script.py
 ```
 
+**Per-project identity (harmonic-forge#804).** You rarely need `gh-as` by hand for
+lane work: every lane entrypoint acts as its project's registered `account` in
+`projects.toml`, through that account's slot (`${GH_ACCT_HOME:-~/.config/gh-accounts}/<account>`),
+set once per process and inherited by every `gh` child. It clears an inherited
+`GH_TOKEN`/`GITHUB_TOKEN` (which `gh` ranks above the slot) and refuses if the slot
+authenticates as a different login. An unregistered repo is refused, never routed to
+the global login. `git push` uses the same slot through a per-repo credential helper
+that `forge-onboard --apply` writes and `forge-onboard` checks. The mechanism lives in
+[`tools/onboard/manifest_identity.py`](tools/onboard/manifest_identity.py).
+
+**Retired credential locations.** `~/.config/gh-harmonicarchitect` and
+`~/.config/gh-vitalharmony` (ad hoc config directories) and the keyring-backed `gha`
+shortcut are superseded by the `gh-as` slots above; `tools/gh/gha` is a thin alias to `gh-as`.
+The repo copy is not installed by itself: after merge, replace the old keyring-backed
+file with `ln -sf ~/harmonic-forge/tools/gh/gha ~/.local/bin/gha` (`gh-as` is installed
+the same way). The two directories are left in place, unused, and are removed by the
+operator after one clean week. The lane launchers export the slot directory, and nothing
+in lane tooling reads the retired ones.
+
 ---
 
 ## Documentation

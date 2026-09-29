@@ -38,6 +38,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import repo_for_path_or_none, slot_env_or_none  # noqa: E402
+
 
 class GhError(Exception):
     """A gh/git call failed. Never fail open silently — a hygiene check that
@@ -45,8 +48,19 @@ class GhError(Exception):
     that errors loudly."""
 
 
+#: The env every subprocess below runs under. None means inherit. Set per repo by
+#: `_use_slot` (harmonic-forge#804): this sweep spans accounts, and a multi-repo
+#: sweep cannot set one process-wide identity the way a single-repo entrypoint does.
+_ENV: dict[str, str] | None = None
+
+
+def _use_slot(repo: str | None) -> None:
+    global _ENV
+    _ENV = slot_env_or_none(repo)
+
+
 def _run(args: list[str], cwd: str | None = None) -> str:
-    result = subprocess.run(args, capture_output=True, text=True, cwd=cwd)
+    result = subprocess.run(args, capture_output=True, text=True, cwd=cwd, env=_ENV)
     if result.returncode != 0:
         raise GhError(f"{' '.join(args[:3])}…: {result.stderr.strip()[:200]}")
     return result.stdout
@@ -1392,6 +1406,7 @@ def main() -> int:
     # audit_board_status_drift for repos on the same board -- both fetch the
     # identical `_board_state` query now, one fetch per board, not per check.
     for repo in args.repo:
+        _use_slot(repo)
         try:
             audit_repo(repo, report)
         except GhError as exc:
@@ -1412,6 +1427,7 @@ def main() -> int:
             print(f"WARN: migration sweep skipped for {repo}: {exc}",
                   file=sys.stderr)
     for checkout in args.checkout:
+        _use_slot(repo_for_path_or_none(checkout))  # harmonic-forge#804
         audit_worktrees(checkout, report)
         audit_checkout_branch(checkout, report)
         audit_stashes(checkout, report)
@@ -1425,7 +1441,11 @@ def main() -> int:
     if args.prune_worktrees:
         print()
         for checkout in args.checkout:
+            # The prune pass calls GitHub (`gh pr list --state merged`), so it needs the
+            # checkout's slot too; resetting before it read a wrong "no merged PR".
+            _use_slot(repo_for_path_or_none(checkout))
             prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
+    _use_slot(None)
 
     if report.unlabelled_migrations:
         print(f"UNLABELLED MIGRATIONS — {len(report.unlabelled_migrations)} "

@@ -26,6 +26,8 @@ script rather than each spelling out discovery, so the two cannot drift.
 from __future__ import annotations
 
 import contextlib
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -117,6 +119,40 @@ def redirected_belt_candidates_dir(tmp_dir: Path):
         belt_candidates.DEFAULT_CANDIDATES_DIR = original
 
 
+@contextlib.contextmanager
+def hermetic_identity_probe():
+    """harmonic-forge#804: no test may reach a real GitHub for the identity probe.
+
+    Every lane entrypoint now runs `gh api user` once per process (via
+    `manifest_identity.apply_project_identity`) to confirm its slot's login. Tests that
+    drive an entrypoint's `main()` end to end therefore made a real network call, and
+    passed only on a machine that holds a real authenticated slot: on a CI runner (no
+    token, no slot) 76 of them failed with "could not verify slot". This is the same
+    single-choke-point reasoning as `redirected_belt_candidates_dir` above.
+
+    Only the exact probe argv is answered, with the slot directory's own name (a slot is
+    named for its account), so the check still sees "this slot authenticates as its
+    account". Every other `subprocess.run` passes through, and a test that mocks
+    `subprocess.run` or `_probe_login` itself replaces this stub for its own duration.
+    """
+    real = subprocess.run
+    probe = ["gh", "api", "user", "--jq", ".login"]
+
+    def run(argv, *args, **kwargs):
+        if isinstance(argv, (list, tuple)) and list(argv) == probe:
+            env = kwargs.get("env") or os.environ
+            slot = env.get("GH_CONFIG_DIR", "")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=Path(slot).name + "\n", stderr="")
+        return real(argv, *args, **kwargs)
+
+    subprocess.run = run
+    try:
+        yield
+    finally:
+        subprocess.run = real
+
+
 def build_suite() -> unittest.TestSuite:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -154,7 +190,8 @@ def main() -> int:
         return 2
 
     with tempfile.TemporaryDirectory() as tmp:
-        with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"):
+        with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"), \
+                hermetic_identity_probe():
             result = unittest.TextTestRunner(verbosity=1).run(suite)
     if not result.wasSuccessful():
         return 1

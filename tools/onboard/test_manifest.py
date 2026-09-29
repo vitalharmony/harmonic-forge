@@ -117,11 +117,13 @@ class FailLoudlyTests(unittest.TestCase):
             name = "a"
             prefix = "A"
             repo = "o/r"
+            account = "vitalharmony"
 
             [[project]]
             name = "b"
             prefix = "B"
             repo = "o/r"
+            account = "vitalharmony"
         """, "declared twice")
 
     def test_a_multi_character_prefix_is_rejected(self) -> None:
@@ -140,7 +142,7 @@ class FailLoudlyTests(unittest.TestCase):
 
     def test_onboarded_without_protocol_is_rejected(self) -> None:
         self.assertRaisesManifest(
-            '[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\nonboarded = true\n',
+            '[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\naccount = "x"\nonboarded = true\n',
             "declares no [project.protocol]")
 
     def test_unknown_protocol_key_is_rejected(self) -> None:
@@ -291,6 +293,7 @@ class ViewTests(unittest.TestCase):
             name = "known"
             prefix = "K"
             repo = "o/known"
+            account = "vitalharmony"
             onboarded = false
         """ + PROTOCOL)
         with self.assertRaises(mf.ManifestError) as unlisted:
@@ -312,6 +315,7 @@ class ViewTests(unittest.TestCase):
                 name = "known"
                 prefix = "K"
                 repo = "Owner/Known"
+                account = "vitalharmony"
                 path = "{alias}"
                 onboarded = true
             """) + PROTOCOL)
@@ -321,7 +325,7 @@ class ViewTests(unittest.TestCase):
     def test_closed_registry_rejects_suffix_aliases(self) -> None:
         path = write(MINIMAL.replace(
             'prefix = "A"',
-            'prefix = "A"\nrepo = "vitalharmony/hrse"\nonboarded = true') + PROTOCOL)
+            'prefix = "A"\nrepo = "vitalharmony/hrse"\naccount = "vitalharmony"\nonboarded = true') + PROTOCOL)
         for value in ("garbage/vitalharmony/hrse",
                       "https://evil.example/vitalharmony/hrse"):
             with self.subTest(value=value), self.assertRaises(mf.ManifestError):

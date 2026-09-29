@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# gha — the short form of `gh-as` (harmonic-forge#804).
+#
+# Before #804 this injected GH_TOKEN from the main keyring; it now delegates to
+# `gh-as`, so every account has ONE credential (its slot under
+# ${GH_ACCT_HOME:-~/.config/gh-accounts}/<account>) and the same identity check
+# and token-clearing apply. Same UX, same shortcuts.
+#
+#   gha vh   issue list --repo vitalharmony/hrse
+#   gha kn   issue list --repo harmonicarchitect/kenekted-platform
+#   gha kn   whoami
+#
+# Global gh state is never modified.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: gha <account> <gh-args...>
+
+accounts:
+  vh | vitalharmony                   hrse, harmonic-forge, cymagraph-infra
+  kn | kenekted | ka | harmonicarchitect   kenekted-platform, -ai, -docs
+
+special:
+  gha <account> whoami     print login + token scopes for that account
+
+This is `gh-as <account> gh <gh-args...>`. Set a slot up once with: gh-as --init <account>
+USAGE
+  exit 2
+}
+
+[[ $# -lt 2 ]] && usage
+
+case "${1:-}" in
+  vh|vitalharmony)                  ACCOUNT=vitalharmony ;;
+  kn|kenekted|ka|harmonicarchitect) ACCOUNT=harmonicarchitect ;;
+  -h|--help|help)                   usage ;;
+  *) echo "gha: unknown account '${1}'" >&2; usage ;;
+esac
+shift
+
+if [[ "${1:-}" == "whoami" ]]; then
+  login="$(gh-as "$ACCOUNT" gh api user -q .login)"
+  scopes="$(gh-as "$ACCOUNT" gh api -i user 2>/dev/null | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes: //p' | tr -d '\r')"
+  active="$(gh api user -q .login 2>/dev/null || echo '?')"
+  printf 'account : %s\n' "$login"
+  printf 'scopes  : %s\n' "$scopes"
+  printf 'global  : %s (unchanged)\n' "$active"
+  exit 0
+fi
+
+exec gh-as "$ACCOUNT" gh "$@"

@@ -76,6 +76,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from hook_identity import repo_from_checkout as _repo_from_checkout, run_gh as _run_gh  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
@@ -137,14 +139,12 @@ def _deny(reason: str, target_key: str | None = None) -> None:
     }))
 
 
-def _gh(*args: str, cwd: str | None = None) -> str | None:
+def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
     """Return stdout, or None on any failure. Fail-open, see module docstring."""
     if shutil.which("gh") is None:
         return None
     try:
-        result = subprocess.run(
-            ("gh", *args), capture_output=True, text=True, timeout=7, cwd=cwd,
-        )
+        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode:
@@ -321,6 +321,9 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
 def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
     if explicit:
         return explicit
+    known = _repo_from_checkout(cwd)  # harmonic-forge#804: before any gh call
+    if known:
+        return known
     out = _gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner",
               cwd=cwd)
     return out.strip() if out and out.strip() else None
@@ -333,7 +336,7 @@ def labels_for(repo: str, issue: str) -> set[str] | None:
     -- verified empirically, and the same assumption
     `block_data_migration_close.py:255-258` makes.
     """
-    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name")
+    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo)
     if out is None:
         return None
     return {line.strip() for line in out.splitlines() if line.strip()}
@@ -361,7 +364,7 @@ def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
     was well-formed.
     """
     out = _gh("pr", "view", pr, "--repo", repo, "--json", "headRefName",
-              "--jq", ".headRefName")
+              "--jq", ".headRefName", repo=repo)
     if out is None:
         return None
     match = BRANCH_ISSUE.match(out.strip())
@@ -390,7 +393,7 @@ def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
 
 def _pr_head_sha(repo: str, pr: str) -> str | None:
     out = _gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid",
-              "--jq", ".headRefOid")
+              "--jq", ".headRefOid", repo=repo)
     return out.strip() if out and out.strip() else None
 
 

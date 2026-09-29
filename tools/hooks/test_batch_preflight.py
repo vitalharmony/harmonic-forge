@@ -224,7 +224,7 @@ class ReportTests(unittest.TestCase):
         """
         calls: list[tuple] = []
 
-        def record(*args: str) -> str | None:
+        def record(*args: str, **_kw) -> str | None:
             calls.append(args)
             return issue(["tooling-exception"])
 
@@ -242,7 +242,7 @@ class ReportTests(unittest.TestCase):
         """The general form of the above: no mutating verb, ever, for any key."""
         calls: list[tuple] = []
         with mock.patch.object(bp, "_gh",
-                               side_effect=lambda *a: (calls.append(a),
+                               side_effect=lambda *a, **kw: (calls.append(a),
                                                        issue([]))[1]):
             bp.report(["F509", "H1631"])
         mutating = {"edit", "create", "close", "comment", "delete", "merge"}

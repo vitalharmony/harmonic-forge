@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - platform checkout absent
     belt_candidates = None
 
 from l1_post import (
-    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
+    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run, apply_project_identity,
     validate_lead,
 )
 
@@ -391,6 +391,7 @@ def main() -> None:
         fail("--ack-no-pr-required reason may not contain '-->', '<!--' or a "
              "newline: it is recorded inside the comment's HTML footer")
     args.repo = resolve_repo(args.repo)
+    apply_project_identity(args.repo)  # harmonic-forge#804
     # harmonic-forge#266: a relative --file resolves against the CALLER's cwd,
     # which is not stable — mise resets it, and an agent's shell is reset
     # between tool calls. That produced four "task failed" errors in one

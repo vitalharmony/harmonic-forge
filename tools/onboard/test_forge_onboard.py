@@ -63,6 +63,15 @@ class Base(unittest.TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
         self.addCleanup(self._tmp.cleanup)
+        # harmonic-forge#804: these fixtures use fake `.git` directories and no
+        # account slot, so the identity check is covered by its own hermetic file
+        # (test_forge_onboard_identity.py) and stubbed here, like the other
+        # machine-state checks the fixtures do not reproduce.
+        identity = mock.patch.object(
+            fo.forge_onboard_identity, "check_identity",
+            side_effect=lambda project, check_cls: check_cls("identity", fo.OK, "stubbed"))
+        identity.start()
+        self.addCleanup(identity.stop)
 
     def set_settings(self, data: dict) -> None:
         (self.home / ".claude" / "settings.json").write_text(
