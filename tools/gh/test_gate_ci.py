@@ -643,6 +643,23 @@ class StackedProbePrTests(unittest.TestCase):
         moved = dict(self.PR_A, head="99999999aaaa")
         self.assertTrue(self.stale(moved, self.PROBE, branch="feat/389-x"))
 
+    def test_the_gated_pr_stacked_on_another_candidate_is_not_dropped(self):
+        """It heads AT the SHA, so it is the gated PR; the probe stacked on it is what is ignored."""
+        base_pr = {"number": 41, "head": "0000000000aa", "ref": "feat/1-a", "base": "main"}
+        gated = {"number": 42, "head": self.SHA, "ref": "feat/2-b", "base": "feat/1-a"}
+        probe = {"number": 43, "head": "58047cb0de1111", "ref": "probe", "base": "feat/2-b"}
+        self.assertTrue(self.stale(base_pr, gated, probe))  # the base PR heads elsewhere: strict
+        self.assertFalse(self.stale(gated, probe))
+
+    def test_a_mutual_base_cycle_does_not_empty_the_candidates(self):
+        a = {"number": 1, "head": "aaaaaaaaaaaa", "ref": "a", "base": "b"}
+        b = {"number": 2, "head": "bbbbbbbbbbbb", "ref": "b", "base": "a"}
+        self.assertTrue(self.stale(a, b))
+
+    def test_a_pr_is_never_stacked_on_itself(self):
+        odd = {"number": 3, "head": "cccccccccccc", "ref": "x", "base": "x"}
+        self.assertTrue(self.stale(odd))
+
     def test_a_branch_that_matches_no_pr_falls_back_to_strict_not_to_passing(self):
         moved = dict(self.PR_A, head="99999999aaaa")
         self.assertTrue(self.stale(moved, branch="feat/renamed"))

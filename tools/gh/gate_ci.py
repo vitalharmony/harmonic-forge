@@ -314,8 +314,16 @@ def stale_against_pr(repo: str, sha: str, run=None,
     if branch:
         pulls = [p for p in pulls if p.get("ref") == branch] or pulls
     else:
-        heads = {p.get("ref") for p in pulls if p.get("ref")}
-        pulls = [p for p in pulls if p.get("base") not in heads]
+        # Stacked on ANOTHER candidate only: never on itself, and the exclusion can never empty the
+        # set (a mutual-base cycle would otherwise pass everything); an empty result is strict.
+        # A PR whose head IS the gated SHA is the gated PR itself and is never dropped, even when
+        # it is stacked on another open PR that also contains the SHA.
+        def at_sha(p):
+            head = p.get("head") or ""
+            return bool(head) and (head.startswith(sha) or sha.startswith(head))
+        pulls = [p for p in pulls
+                 if at_sha(p)
+                 or not any(p.get("base") == o.get("ref") and o is not p for o in pulls)] or pulls
     for pull in pulls:
         head = (pull.get("head") or "")
         if head and not head.startswith(sha) and not sha.startswith(head):
