@@ -20,7 +20,9 @@ def green_run(cmd):
         return 0, "deadbeef00000000000000000000000000000000\n"
     if "protection" in joined:
         return 0, "null"
-    if "check-runs" in joined:
+    if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
+        return 0, "1\n"
+    if "/jobs" in joined:
         return 0, json.dumps({"name": "verify", "status": "completed",
                               "conclusion": "success"}) + "\n"
     return 1, "unexpected call"
@@ -32,7 +34,9 @@ def red_run(cmd):
         return 0, "cafebabe00000000000000000000000000000000\n"
     if "protection" in joined:
         return 0, "null"
-    if "check-runs" in joined:
+    if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
+        return 0, "1\n"
+    if "/jobs" in joined:
         return 0, json.dumps({"name": "verify", "status": "completed",
                               "conclusion": "failure"}) + "\n"
     return 1, "unexpected call"
@@ -51,7 +55,9 @@ def unprotected_dependabot_noise_run(cmd):
         return 0, "b581e1f500000000000000000000000000000000\n"
     if "protection" in joined:
         return 0, "null"
-    if "check-runs" in joined:
+    if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
+        return 0, "1\n"
+    if "/jobs" in joined:
         return 0, json.dumps({"name": "Dependabot", "status": "completed",
                               "conclusion": "failure"}) + "\n"
     return 1, "unexpected call"
@@ -129,7 +135,9 @@ class CheckAllTests(unittest.TestCase):
                 return 0, "1111111100000000000000000000000000000000\n"
             if "protection" in joined:
                 return 0, "null"
-            if "check-runs" in joined:
+            if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
+                return 0, "1\n"
+            if "/jobs" in joined:
                 return 0, json.dumps({"name": "verify", "status": "completed",
                                       "conclusion": "failure"}) + "\n"
             return 1, "unexpected"
@@ -166,7 +174,9 @@ class CheckAllTests(unittest.TestCase):
                 return 0, "cafebabe00000000000000000000000000000000\n"
             if "protection" in joined:
                 return 0, "null"
-            if "check-runs" in joined:
+            if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
+                return 0, "1\n"
+            if "/jobs" in joined:
                 return 1, "rate limited"  # ci_conclusion() -> "unknown"
             return 1, "unexpected call"
 

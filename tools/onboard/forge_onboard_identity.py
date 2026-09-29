@@ -16,6 +16,7 @@ would be a check that guessed.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -92,6 +93,44 @@ def _slot_login(slot: Path) -> str:
     return _probe_login(env)
 
 
+#: Token prefixes by kind. Classification is by PREFIX ONLY: the value is never printed, logged
+#: or returned to a caller that could (harmonic-forge#805, R-0368).
+_TOKEN_KINDS = (("github_pat_", "fine-grained"), ("gho_", "oauth"), ("ghu_", "oauth"),
+                ("ghp_", "classic"))
+FINE_GRAINED = "fine-grained"
+
+
+def _token(config_dir: Path | None) -> str:
+    """The token `gh` resolves under `config_dir` (None: the default config), or ''.
+
+    Held only long enough to classify or hash it; callers must not print it.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+    env.pop("GH_CONFIG_DIR", None)
+    if config_dir is not None:
+        env["GH_CONFIG_DIR"] = str(config_dir)
+    try:
+        result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True,
+                                timeout=30, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def token_kind(token: str) -> str:
+    """`fine-grained` | `oauth` | `classic` | `unknown` | `none`, from the prefix alone."""
+    if not token:
+        return "none"
+    for prefix, kind in _TOKEN_KINDS:
+        if token.startswith(prefix):
+            return kind
+    return "unknown"
+
+
+def _digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def _applicable(project: Project):
     """(account, checkout-or-None) when this project has an account to check, else None.
 
@@ -132,9 +171,27 @@ def check_identity(project: Project, check_cls):
     if login.lower() != account.lower():
         return check_cls("identity", FAIL,
                          f"slot {slot} authenticates as {login}, but the manifest says {account}")
+    token = _token(slot)
+    kind = token_kind(token)
+    exception = (project.token_exception or "").strip()
+    if kind != FINE_GRAINED and not exception:
+        return check_cls(
+            "identity", FAIL,
+            f"slot {slot} holds a {kind} token, not a fine-grained PAT, and projects.toml records "
+            "no token_exception for it (R-0368). Create the PAT, then load it: GH_CONFIG_DIR="
+            f"{slot} gh auth login --with-token --insecure-storage; or record token_exception "
+            "with its reason")
+    if kind == FINE_GRAINED and token and _digest(token) == _digest(_token(None)):
+        return check_cls(
+            "identity", FAIL,
+            f"slot {slot} resolves to the same credential as the default gh login: the token "
+            "was stored in the shared OS keyring, so it replaced that login too. Reload it with "
+            "--insecure-storage")
+    note = f"token {kind}" + (f" (exception: {exception[:70]})" if kind != FINE_GRAINED else "")
     if checkout is None:
         return check_cls("identity", OK,
-                         f"slot {account} authenticated; no local checkout, git helper not checked")
+                         f"slot {account} authenticated, {note}; no local checkout, git helper "
+                         "not checked")
     want = expected_helper(slot)
     helpers = effective_helpers(checkout)
     if not helpers:
@@ -149,7 +206,7 @@ def check_identity(project: Project, check_cls):
                          f"{want} (fix: forge-onboard --apply)")
     _, email = _git_config(checkout, "--get", "user.email")
     return check_cls("identity", OK,
-                     f"slot {account} authenticated; git helper points at it; "
+                     f"slot {account} authenticated, {note}; git helper points at it; "
                      f"user.email {email or '(unset)'}")
 
 

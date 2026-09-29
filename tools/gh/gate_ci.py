@@ -229,7 +229,7 @@ def ci_conclusion(repo: str, sha: str, run=None,
 
     `state` is one of `green`, `red`, `pending`, `absent`, `unknown`.
 
-    **`absent` is NOT green.** A commit with no check runs has not passed CI;
+    **`absent` is NOT green.** A commit with no workflow jobs has not passed CI;
     it has not been asked. Treating an empty list as "nothing failing" is the
     same mistake in miniature that this whole module exists to prevent, and I
     made it in a wait-loop while implementing this issue: the loop tested
@@ -237,30 +237,39 @@ def ci_conclusion(repo: str, sha: str, run=None,
     reported done on a PR whose CI had not yet registered.
     """
     run = run or _run
-    # `--paginate`, because the default page is 30 and hrse's `main` tip
-    # already carries exactly thirty runs. The first draft's `--jq .check_runs`
-    # also discarded `total_count`, so a truncated list could not even be
-    # DETECTED — the same "a partial list read as nothing failing" error one
-    # level up.
+    # harmonic-forge#805: read the Actions runs for this SHA, then each run's jobs, instead of
+    # `commits/<sha>/check-runs`. A fine-grained PAT has no permission that can read check-runs
+    # (verified 403, harmonic-forge#805), while `actions/runs` and `actions/runs/<id>/jobs` are
+    # readable with the Actions permission and carry the same name / status / conclusion for every
+    # Actions-produced check, which is all any onboarded repo runs. Checks from a third-party app
+    # are no longer visible here.
     #
-    # `--jq` streams one object per line here rather than emitting an array,
-    # and `--slurp` (which would wrap the pages) is rejected outright when
-    # combined with `--jq` — confirmed against gh 2.99.0:
-    # "the `--slurp` option is not supported with `--jq` or `--template`".
-    # So: line-delimited output, parsed per line.
+    # `--paginate`, because the default page is 30 and hrse's `main` tip already carries exactly
+    # thirty runs; a truncated list read as "nothing failing" is the error this module exists to
+    # prevent. `--jq` streams one object per line (`--slurp` is rejected together with `--jq`,
+    # gh 2.99.0), so the output is line-delimited and parsed per line. `filter=latest` keeps only
+    # each job's latest attempt, so a re-run replaces the failure it fixed.
     code, out = run(["gh", "api", "--paginate",
-                     f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
-                     "--jq", ".check_runs[]"])
+                     f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
+                     "--jq", ".workflow_runs[].id"])
     if code != 0:
         return "unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}"
+    run_ids = [line.strip() for line in (out or "").splitlines() if line.strip()]
     runs = []
     try:
-        for line in (out or "").splitlines():
-            line = line.strip()
-            if line:
-                runs.append(json.loads(line))
+        for run_id in run_ids:
+            code, out = run(["gh", "api", "--paginate",
+                             f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&filter=latest",
+                             "--jq", ".jobs[]"])
+            if code != 0:
+                return "unknown", (f"could not read the jobs of run {run_id} for {sha[:8]}: "
+                                   f"{out.strip()[:200]}")
+            for line in (out or "").splitlines():
+                line = line.strip()
+                if line:
+                    runs.append(json.loads(line))
     except ValueError:
-        return "unknown", f"unparseable check-run payload for {sha[:8]}"
+        return "unknown", f"unparseable job payload for {sha[:8]}"
     if not runs:
         return "absent", f"{sha[:8]} has no check runs at all"
 

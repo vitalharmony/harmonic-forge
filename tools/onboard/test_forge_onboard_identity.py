@@ -47,6 +47,14 @@ class IdentityBase(unittest.TestCase):
         })
         env.start()
         self.addCleanup(env.stop)
+        # No test reads a real credential: the slot holds a fine-grained PAT and the default
+        # login an OAuth token, the shape the standard (R-0368) wants. Tests of the other shapes
+        # override `self.tokens`.
+        self.tokens = {"slot": "github_pat_SLOTSECRET", "default": "gho_DEFAULTSECRET"}
+        patch = mock.patch.object(
+            fi, "_token", side_effect=lambda cfg: self.tokens["default" if cfg is None else "slot"])
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def project(self, **kw) -> mf.Project:
         fields = {"name": "p", "prefix": "P", "repo": "o/p", "account": "acct",
@@ -56,7 +64,7 @@ class IdentityBase(unittest.TestCase):
 
     def make_slot(self) -> Path:
         slot = self.slots / "acct"
-        slot.mkdir(parents=True)
+        slot.mkdir(parents=True, exist_ok=True)
         return slot
 
     def set_helper(self, value: str) -> None:
@@ -306,6 +314,69 @@ class SecondPassTests(IdentityBase):
             with self.assertRaises(KeyboardInterrupt):
                 fi.apply_identity(self.project(), fo.Check)
         self.assertEqual(fi.effective_helpers(self.repo), ["!prior-helper"])
+
+
+class TokenStandardTests(IdentityBase):
+    """R-0368 / harmonic-forge#805: slots hold fine-grained PATs, or record why not."""
+
+    def check(self, **kw):
+        self.make_slot()
+        with mock.patch.object(fi, "_slot_login", return_value="acct"):
+            slot = fi.expected_helper(self.slots / "acct")
+            self.set_helper(slot)
+            return fi.check_identity(self.project(**kw), fo.Check)
+
+    def test_classification_is_by_prefix_only(self) -> None:
+        self.assertEqual(fi.token_kind("github_pat_abc"), "fine-grained")
+        self.assertEqual(fi.token_kind("gho_abc"), "oauth")
+        self.assertEqual(fi.token_kind("ghp_abc"), "classic")
+        self.assertEqual(fi.token_kind("xyz"), "unknown")
+        self.assertEqual(fi.token_kind(""), "none")
+
+    def test_a_fine_grained_slot_passes_with_no_exception(self) -> None:
+        result = self.check()
+        self.assertEqual(result.status, fi.OK)
+        self.assertIn("token fine-grained", result.detail)
+
+    def test_an_oauth_slot_without_an_exception_fails_and_names_the_load_command(self) -> None:
+        self.tokens["slot"] = "gho_SLOTSECRET"
+        result = self.check()
+        self.assertEqual(result.status, fi.FAIL)
+        self.assertIn("oauth", result.detail)
+        self.assertIn("--insecure-storage", result.detail)
+
+    def test_a_classic_slot_without_an_exception_fails(self) -> None:
+        self.tokens["slot"] = "ghp_SLOTSECRET"
+        self.assertEqual(self.check().status, fi.FAIL)
+
+    def test_a_recorded_exception_lets_an_oauth_slot_pass_and_shows_the_reason(self) -> None:
+        self.tokens["slot"] = "gho_SLOTSECRET"
+        result = self.check(token_exception="user-owned Projects v2")
+        self.assertEqual(result.status, fi.OK)
+        self.assertIn("token oauth", result.detail)
+        self.assertIn("user-owned Projects v2", result.detail)
+
+    def test_a_blank_exception_counts_as_none(self) -> None:
+        self.tokens["slot"] = "gho_SLOTSECRET"
+        self.assertEqual(self.check(token_exception="   ").status, fi.FAIL)
+
+    def test_a_slot_that_resolves_to_the_default_login_is_flagged_as_the_shared_keyring(self) -> None:
+        """The incident: `--with-token` without `--insecure-storage` wrote the PAT to the keyring,
+        replacing the live login for every config directory naming that user."""
+        self.tokens["slot"] = "github_pat_SAME"
+        self.tokens["default"] = "github_pat_SAME"
+        result = self.check()
+        self.assertEqual(result.status, fi.FAIL)
+        self.assertIn("shared OS keyring", result.detail)
+
+    def test_no_token_value_ever_appears_in_a_result(self) -> None:
+        for slot_token in ("github_pat_SLOTSECRET", "gho_SLOTSECRET", "ghp_SLOTSECRET"):
+            for exception in (None, "user-owned Projects v2"):
+                with self.subTest(token=slot_token[:6], exception=exception):
+                    self.tokens["slot"] = slot_token
+                    result = self.check(token_exception=exception)
+                    self.assertNotIn("SLOTSECRET", result.detail)
+                    self.assertNotIn("DEFAULTSECRET", result.detail)
 
 
 class RegisteredTests(unittest.TestCase):

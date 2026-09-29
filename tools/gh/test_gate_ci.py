@@ -60,9 +60,12 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
             if any('select(.state == "open")' in a for a in cmd):
                 listed = [p for p in listed if p.get("state", "open") == "open"]
             return 0, json.dumps(listed)
-        if "/check-runs" in url:
-            # `gh api --jq '.check_runs[]'` streams ONE OBJECT PER LINE, not an
-            # array. A stub emitting an array tested a shape gh never produces.
+        if "/actions/runs?" in url:
+            # `--jq '.workflow_runs[].id'` streams one bare id per line. The fixture models
+            # every check as a job of ONE workflow run (harmonic-forge#805).
+            return 0, "1" if checks else ""
+        if "/actions/runs/" in url and "/jobs" in url:
+            # `--jq '.jobs[]'` streams ONE OBJECT PER LINE, not an array.
             return 0, "\n".join(json.dumps(c) for c in checks)
         return 0, "null"
     return run
@@ -291,7 +294,7 @@ class NoPrOverrideTests(unittest.TestCase):
         unread CI must never be published as one that cannot exist."""
         ok, msg = gate_ci.check_gate_result(
             "o/r", PASS_BODY,
-            run=fake_gh(main_tip=self.SHA, fail=("check-runs",)),
+            run=fake_gh(main_tip=self.SHA, fail=("/actions/runs",)),
             ack_no_pr_required="should not matter")
         self.assertFalse(ok)
         self.assertNotIn("no-pr-override", msg)
@@ -663,6 +666,42 @@ class StackedProbePrTests(unittest.TestCase):
     def test_a_branch_that_matches_no_pr_falls_back_to_strict_not_to_passing(self):
         moved = dict(self.PR_A, head="99999999aaaa")
         self.assertTrue(self.stale(moved, branch="feat/renamed"))
+
+class ReadsActionsNotCheckRuns(unittest.TestCase):
+    """harmonic-forge#805: a fine-grained PAT cannot read `commits/<sha>/check-runs` (403, no
+    permission exists for it), so the gate reads Actions runs and their jobs instead."""
+
+    SHA = "0359854f1234567890abcdef1234567890abcdef"
+
+    def test_no_check_runs_endpoint_is_ever_called(self) -> None:
+        seen = []
+        inner = fake_gh(checks=[check("verify")])
+
+        def spy(cmd):
+            seen.extend(a for a in cmd if a.startswith("repos/"))
+            return inner(cmd)
+
+        state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=spy)
+        self.assertEqual(state, "green")
+        self.assertFalse([u for u in seen if "check-runs" in u], seen)
+        self.assertTrue(any("actions/runs?head_sha=" + self.SHA in u for u in seen), seen)
+        self.assertTrue(any("/jobs" in u and "filter=latest" in u for u in seen), seen)
+
+    def test_an_unreadable_jobs_list_is_unknown_not_green(self) -> None:
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify")], fail=("/jobs",)))
+        self.assertEqual(state, "unknown")
+        self.assertIn("jobs", detail)
+
+    def test_a_failed_job_is_red(self) -> None:
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify", conclusion="failure")]))
+        self.assertEqual(state, "red")
+        self.assertIn("verify", detail)
+
+    def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
+        state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))
+        self.assertEqual(state, "absent")
 
 
 if __name__ == "__main__":
