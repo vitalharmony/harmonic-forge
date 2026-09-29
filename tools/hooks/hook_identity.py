@@ -44,25 +44,25 @@ def repo_from_checkout(cwd: str | Path | None) -> str | None:
 
 def run_gh(args, *, repo: str | None, cwd: str | None = None,
            timeout: int = 7) -> subprocess.CompletedProcess:
-    """Run `gh` for a hook: as the repo's slot first, and if that FAILS, once more
-    as the caller.
+    """Run `gh` for a hook, as the repo's slot, retrying a transient failure once.
 
-    The close-gating hooks fail OPEN when a lookup returns nothing, so a slot that
-    exists in `projects.toml` but does not authenticate (a fresh machine, a revoked
-    or expired token) would otherwise turn "read the issue's labels" into "read
-    nothing" and silently disarm the gate, where before per-project identity the
-    global login answered (harmonic-forge#804 preclose). The retry restores exactly
-    the old behavior on that path. It is safe because hooks only READ: a wrong
-    account at worst gets a 404, never a write.
+    Never falls back to the caller's environment: that would authenticate as another
+    account whenever the slot failed, which is exactly what per-project identity
+    exists to prevent (harmonic-forge#804 cross-family finding). A slot that does not
+    authenticate therefore yields a failed lookup, and the fail-open behavior of the
+    close-gating hooks is unchanged from a lookup that returns nothing; the entrypoints
+    that write refuse loudly on the same condition.
 
-    A timeout is NOT retried (two full waits would blow the hook's own budget), and
-    neither is a call that had no slot to begin with.
+    The single retry uses the SAME environment and is skipped for a 404 or a timeout:
+    a 404 is an answer, not a transient error, and two full timeouts would blow the
+    hook's own budget. A call with no slot to begin with is not retried.
     """
     env = slot_env(repo)
     argv = ("gh", *args)
     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                             cwd=cwd, env=env)
-    if result.returncode and env is not None:
+    stderr = (result.stderr or "").lower()
+    if result.returncode and env is not None and "404" not in stderr and "not found" not in stderr:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                                cwd=cwd, env=None)
+                                cwd=cwd, env=env)
     return result

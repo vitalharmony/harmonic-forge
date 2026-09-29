@@ -126,15 +126,34 @@ def repo_for_path_or_none(path: str | Path | None) -> str | None:
         return None
 
 
+class ProbeUnavailable(RuntimeError):
+    """`gh api user` failed for a reason that says nothing about the slot's credential."""
+
+
+#: stderr fragments `gh` prints when the credential itself is missing or rejected.
+_AUTH_FAILURE_MARKERS = ("401", "not logged in", "bad credentials", "authentication",
+                         "gh auth login", "no oauth token")
+
+
 def _probe_login() -> str:
-    """The login `gh` authenticates as under the current environment, or ''."""
+    """The login `gh` authenticates as under the current environment.
+
+    Returns '' when the credential is missing or rejected. Raises `ProbeUnavailable`
+    when the probe could not decide (network, 5xx, timeout, budget refusal): that is
+    not evidence the slot is broken, and must not send the operator to re-login.
+    """
     try:
         result = subprocess.run(["gh", "api", "user", "--jq", ".login"],
                                 capture_output=True, text=True, timeout=30,
                                 env=os.environ)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProbeUnavailable(f"{type(exc).__name__}: {exc}") from exc
+    if result.returncode == 0:
+        return result.stdout.strip()
+    stderr = (result.stderr or "").strip()
+    if any(marker in stderr.lower() for marker in _AUTH_FAILURE_MARKERS):
         return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+    raise ProbeUnavailable(stderr.splitlines()[0] if stderr else f"gh exited {result.returncode}")
 
 
 def apply_project_identity(repo: str, path: Path | None = None) -> str:
@@ -152,7 +171,13 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
 
     login = _VERIFIED.get(str(slot))
     if login is None:
-        login = _probe_login()
+        try:
+            login = _probe_login()
+        except ProbeUnavailable as exc:
+            raise SystemExit(
+                f"identity: could not verify slot {slot} for account {account} "
+                f"(gh api user failed: {exc}); this is not evidence the slot is broken, "
+                "retry when GitHub is reachable") from exc
         if not login:
             raise SystemExit(
                 f"identity: slot {slot} for account {account} is not "

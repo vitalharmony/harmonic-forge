@@ -421,6 +421,32 @@ class CliTests(unittest.TestCase):
             self._run_cli(PASS_BODY, lambda r, b: (False, "[GATE] REFUSED")), 1)
 
 
+class HookPathRunsAsTheReposSlot(unittest.TestCase):
+    """harmonic-forge#804 preclose: `enforce_gate_ci_on_raw_post.py` calls
+    `check_gate_result` in-process, so `main()`'s identity call is never reached;
+    the lookups must still run under the repo's slot."""
+
+    def tearDown(self) -> None:
+        gate_ci._SLOT_ENV = None
+
+    def test_check_gate_result_sets_the_repos_slot_env_for_its_gh_calls(self) -> None:
+        slot_env = {"GH_CONFIG_DIR": "/slots/harmonicarchitect"}
+        with mock.patch.object(gate_ci, "_slot_env_for", return_value=slot_env) as resolver:
+            gate_ci.check_gate_result("harmonicarchitect/kenekted-platform", "no verdict here")
+        resolver.assert_called_once_with("harmonicarchitect/kenekted-platform")
+        self.assertEqual(gate_ci._SLOT_ENV, slot_env)
+
+    def test_run_passes_the_slot_env_to_the_subprocess(self) -> None:
+        gate_ci._SLOT_ENV = {"GH_CONFIG_DIR": "/slots/x"}
+        ok = mock.Mock(returncode=0, stdout="{}", stderr="")
+        with mock.patch("subprocess.run", return_value=ok) as run:
+            gate_ci._run(["gh", "api", "x"])
+        self.assertEqual(run.call_args.kwargs["env"], {"GH_CONFIG_DIR": "/slots/x"})
+
+    def test_an_unregistered_repo_inherits_the_callers_environment(self) -> None:
+        self.assertIsNone(gate_ci._slot_env_for("someone/else"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
@@ -575,6 +601,32 @@ class PrecloseRegressionTests(unittest.TestCase):
                         "## Lane 3 Gate Results — H1725 (tie-safety, PR #1727 @ `3b8c55ec`)"):
             with self.subTest(heading=heading):
                 self.assertIsNotNone(gate_ci.gated_sha(heading + "\n"))
+
+
+class HookPathRunsAsTheReposSlot(unittest.TestCase):
+    """harmonic-forge#804 preclose: `enforce_gate_ci_on_raw_post.py` calls
+    `check_gate_result` in-process, so `main()`'s identity call is never reached;
+    the lookups must still run under the repo's slot."""
+
+    def tearDown(self) -> None:
+        gate_ci._SLOT_ENV = None
+
+    def test_check_gate_result_sets_the_repos_slot_env_for_its_gh_calls(self) -> None:
+        slot_env = {"GH_CONFIG_DIR": "/slots/harmonicarchitect"}
+        with mock.patch.object(gate_ci, "_slot_env_for", return_value=slot_env) as resolver:
+            gate_ci.check_gate_result("harmonicarchitect/kenekted-platform", "no verdict here")
+        resolver.assert_called_once_with("harmonicarchitect/kenekted-platform")
+        self.assertEqual(gate_ci._SLOT_ENV, slot_env)
+
+    def test_run_passes_the_slot_env_to_the_subprocess(self) -> None:
+        gate_ci._SLOT_ENV = {"GH_CONFIG_DIR": "/slots/x"}
+        ok = mock.Mock(returncode=0, stdout="{}", stderr="")
+        with mock.patch("subprocess.run", return_value=ok) as run:
+            gate_ci._run(["gh", "api", "x"])
+        self.assertEqual(run.call_args.kwargs["env"], {"GH_CONFIG_DIR": "/slots/x"})
+
+    def test_an_unregistered_repo_inherits_the_callers_environment(self) -> None:
+        self.assertIsNone(gate_ci._slot_env_for("someone/else"))
 
 
 if __name__ == "__main__":

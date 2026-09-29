@@ -19,6 +19,8 @@ HERE = Path(__file__).resolve().parent
 
 #: file -> a call in `main` that reaches GitHub, which the identity call must precede.
 #: None means the entrypoint has no single such marker; the call must still be present.
+#: `preclose_check.py` is deliberately absent: it makes no GitHub call, so a live identity
+#: probe there only makes the pre-close gate network-dependent (harmonic-forge#804 preclose).
 ENTRYPOINTS = {
     "l1_post.py": "resolve_sha(args.sha)",
     "post_lane_discussion.py": None,
@@ -28,7 +30,6 @@ ENTRYPOINTS = {
     "l2_post.py": "snapshot(args.repo",
     "check_lane3_ready.py": "fetch_comments(repo",
     "fetch_lane1_context.py": "fetch_issue_body(args.repo",
-    "preclose_check.py": "gate(args)",
     "gate_ci.py": "check_gate_result(",
     "lane_transition_report.py": "api(",
     "belt_report.py": "audit(",

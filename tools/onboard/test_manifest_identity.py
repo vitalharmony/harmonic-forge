@@ -191,6 +191,24 @@ class ApplyProjectIdentityTests(unittest.TestCase):
         with mock.patch.object(mi, "_probe_login", return_value="VitalHarmony"):
             mi.apply_project_identity("vitalharmony/hrse")
 
+    def test_an_unreachable_github_is_not_reported_as_a_broken_slot(self) -> None:
+        """preclose: a network blip must not send the operator to re-login a good slot."""
+        with mock.patch.object(mi, "_probe_login", side_effect=mi.ProbeUnavailable("timed out")):
+            with self.assertRaises(SystemExit) as caught:
+                mi.apply_project_identity("vitalharmony/hrse")
+        self.assertIn("could not verify", str(caught.exception))
+        self.assertNotIn("not authenticated", str(caught.exception))
+        self.assertNotIn("gh-as --init", str(caught.exception))
+
+    def test_the_probe_separates_a_rejected_credential_from_an_outage(self) -> None:
+        rejected = mock.Mock(returncode=1, stdout="", stderr="gh: Bad credentials (HTTP 401)")
+        outage = mock.Mock(returncode=1, stdout="", stderr="dial tcp: i/o timeout")
+        with mock.patch("subprocess.run", return_value=rejected):
+            self.assertEqual(mi._probe_login(), "")
+        with mock.patch("subprocess.run", return_value=outage):
+            with self.assertRaises(mi.ProbeUnavailable):
+                mi._probe_login()
+
     def test_an_unauthenticated_slot_refuses_and_names_the_repair(self) -> None:
         with mock.patch.object(mi, "_probe_login", return_value=""):
             with self.assertRaises(SystemExit) as caught:

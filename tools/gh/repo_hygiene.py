@@ -1432,7 +1432,6 @@ def main() -> int:
         audit_checkout_branch(checkout, report)
         audit_stashes(checkout, report)
         audit_transaction_log(checkout, report)
-    _use_slot(None)
 
     # hrse#427: opt-in only, and deliberately run as a separate pass rather
     # than folded into the loop above -- AC1 requires the flag's absence to
@@ -1442,7 +1441,11 @@ def main() -> int:
     if args.prune_worktrees:
         print()
         for checkout in args.checkout:
+            # The prune pass calls GitHub (`gh pr list --state merged`), so it needs the
+            # checkout's slot too; resetting before it read a wrong "no merged PR".
+            _use_slot(repo_for_path_or_none(checkout))
             prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
+    _use_slot(None)
 
     if report.unlabelled_migrations:
         print(f"UNLABELLED MIGRATIONS — {len(report.unlabelled_migrations)} "

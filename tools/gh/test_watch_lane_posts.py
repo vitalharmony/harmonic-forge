@@ -2184,6 +2184,25 @@ class GitStalenessTests(unittest.TestCase):
             self.assertIn("staleness check failed", err.getvalue())
 
 
+class AccountFollowsTheRepo(unittest.TestCase):
+    """harmonic-forge#804 preclose: `--repo harmonicarchitect/...` used to poll as the
+    process-wide vitalharmony default, 404 on every call, and read as "no new work"."""
+
+    def test_a_registered_repo_resolves_to_its_manifest_account(self) -> None:
+        self.assertEqual(watch_lane_posts._account_for_repo_arg("vitalharmony/hrse"),
+                         "vitalharmony")
+
+    def test_an_unregistered_or_missing_repo_falls_back_to_the_default(self) -> None:
+        self.assertIsNone(watch_lane_posts._account_for_repo_arg("someone/else"))
+        self.assertIsNone(watch_lane_posts._account_for_repo_arg(None))
+
+    def test_a_non_default_account_is_returned_for_its_repo(self) -> None:
+        with patch("manifest_identity.account_for", return_value="harmonicarchitect"):
+            self.assertEqual(
+                watch_lane_posts._account_for_repo_arg("harmonicarchitect/kenekted-platform"),
+                "harmonicarchitect")
+
+
 if __name__ == "__main__":
     unittest.main()
 

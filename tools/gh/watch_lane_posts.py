@@ -1962,13 +1962,33 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Monitor's own timeout are one number, not two "
                              "that must agree. Omitted means unbounded, the "
                              "pre-#680 behaviour.")
-    parser.add_argument("--account", default=_ACCOUNT,
+    parser.add_argument("--account", default=None,
                         help="gh-as account slot every call is scoped to "
-                             f"(default: {_ACCOUNT}). Its identity is asserted "
+                             f"(default: the account registered for --repo in projects.toml, "
+                             f"else {_ACCOUNT}). Its identity is asserted "
                              "before polling: a slot authenticating as someone "
                              "else refuses loudly rather than returning empty, "
                              "because empty reads as 'no new work'.")
     return parser
+
+
+def _account_for_repo_arg(repo: str | None) -> str | None:
+    """The account registered for `--repo`, or None (harmonic-forge#804).
+
+    Without this a `--repo harmonicarchitect/...` run polled as the process-wide default
+    `vitalharmony`, every call 404ed, and the belt read that as "no new work".
+    """
+    if not repo:
+        return None
+    onboard = str(Path(__file__).resolve().parents[1] / "onboard")
+    if onboard not in sys.path:
+        sys.path.insert(0, onboard)
+    from manifest import ManifestError  # noqa: PLC0415
+    from manifest_identity import account_for  # noqa: PLC0415
+    try:
+        return account_for(repo)
+    except ManifestError:
+        return None
 
 
 def main() -> int:
@@ -1976,7 +1996,7 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    _ACCOUNT = args.account
+    _ACCOUNT = args.account or _account_for_repo_arg(args.repo) or _ACCOUNT
     try:
         assert_identity(_ACCOUNT)
     except IdentityMismatch as exc:

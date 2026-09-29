@@ -70,9 +70,19 @@ class IdentityBase(unittest.TestCase):
 
 
 class CheckIdentityTests(IdentityBase):
-    def test_a_project_with_no_registered_checkout_is_skipped(self) -> None:
-        self.assertEqual(fi.check_identity(self.project(path=None), fo.Check).status, fi.SKIP)
+    def test_a_project_with_no_account_is_skipped(self) -> None:
         self.assertEqual(fi.check_identity(self.project(account=None), fo.Check).status, fi.SKIP)
+
+    def test_a_project_with_no_checkout_still_has_its_slot_checked(self) -> None:
+        """preclose: SKIP here hid a missing slot for every project not yet cloned."""
+        missing = fi.check_identity(self.project(path=None), fo.Check)
+        self.assertEqual(missing.status, fi.FAIL)
+        self.assertIn("gh-as --init acct", missing.detail)
+        self.make_slot()
+        with mock.patch.object(fi, "_slot_login", return_value="acct"):
+            ok = fi.check_identity(self.project(path=None), fo.Check)
+        self.assertEqual(ok.status, fi.OK)
+        self.assertIn("no local checkout", ok.detail)
 
     def test_a_missing_slot_fails_and_names_the_repair(self) -> None:
         check = fi.check_identity(self.project(), fo.Check)
@@ -224,6 +234,43 @@ class GitConsultsHelpersInOrderTests(IdentityBase):
         _git(self.repo, "config", "--local", "--add", fi.HELPER_KEY, str(local))
         self.assertIn("username=localhelper", self._fill())
         self.assertFalse((self.root / "globalhelper.called").exists())
+
+
+class HelperHardeningTests(IdentityBase):
+    def test_the_helper_strips_inherited_tokens(self) -> None:
+        """preclose: `gh` ranks GH_TOKEN above GH_CONFIG_DIR, so the helper must clear both."""
+        line = fi.expected_helper(Path("/x/slot"))
+        self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN", line)
+        self.assertIn("GH_CONFIG_DIR=/x/slot", line)
+
+    def test_apply_refuses_when_the_slot_is_missing_and_writes_nothing(self) -> None:
+        results = fi.apply_identity(self.project(), fo.Check)
+        self.assertEqual(results[0].status, fi.FAIL)
+        self.assertIn("gh-as --init acct", results[0].detail)
+        self.assertEqual(fi.effective_helpers(self.repo), ["!/usr/bin/gh auth git-credential"])
+
+    def test_a_failed_second_write_restores_the_prior_local_helpers(self) -> None:
+        """preclose: the reset landing alone leaves the checkout with no helper at all."""
+        self.make_slot()
+        self.set_helper("!prior-helper")
+        real = fi._git_config
+
+        def flaky(checkout, *args):
+            if args[:1] == ("--add",) and args[-1].startswith("!env"):
+                return 255, "could not lock config file"
+            return real(checkout, *args)
+
+        with mock.patch.object(fi, "_git_config", side_effect=flaky):
+            results = fi.apply_identity(self.project(), fo.Check)
+        self.assertEqual(results[0].status, fi.FAIL)
+        self.assertIn("could not lock config file", results[0].detail)
+        self.assertIn("restored", results[0].detail)
+        self.assertEqual(fi.effective_helpers(self.repo), ["!prior-helper"])
+
+    def test_a_failed_git_call_reports_stderr_not_an_empty_reason(self) -> None:
+        code, detail = fi._git_config(self.repo / "not-a-repo", "--get", "user.email")
+        self.assertNotEqual(code, 0)
+        self.assertTrue(detail)
 
 
 class RegisteredTests(unittest.TestCase):

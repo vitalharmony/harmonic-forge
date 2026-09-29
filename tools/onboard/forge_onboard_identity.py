@@ -31,13 +31,30 @@ HELPER_KEY = "credential.https://github.com.helper"
 
 def expected_helper(slot: Path) -> str:
     """The credential helper line that authenticates a push as the slot's account."""
-    return f"!GH_CONFIG_DIR={slot} /usr/bin/gh auth git-credential"
+    # `gh` ranks GH_TOKEN/GITHUB_TOKEN above GH_CONFIG_DIR, so an exported token would
+    # silently make a push authenticate as the token's account. Strip both, exactly as
+    # `gh-as` and `manifest_identity` do (harmonic-forge#804 preclose).
+    return f"!env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR={slot} /usr/bin/gh auth git-credential"
 
 
 def _git_config(checkout: Path, *args: str) -> tuple[int, str]:
     result = subprocess.run(["git", "-C", str(checkout), "config", "--local", *args],
                             capture_output=True, text=True)
-    return result.returncode, result.stdout.strip()
+    # git writes its diagnostics to stderr; a failed call must surface them.
+    return result.returncode, (result.stdout if result.returncode == 0 else result.stderr).strip()
+
+
+def _local_helpers(checkout: Path) -> list[str]:
+    """The checkout's own `--local` helper values, in order, EMPTY entries preserved.
+
+    An empty value is the reset that makes the slot helper the only effective one, so
+    a restore that dropped it (as `.strip()` on the joined output does) would leave the
+    global helper answering first.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(checkout), "config", "--local", "--get-all", HELPER_KEY],
+        capture_output=True, text=True)
+    return result.stdout.split("\n")[:-1] if result.returncode == 0 else []
 
 
 def effective_helpers(checkout: Path) -> list[str]:
@@ -77,12 +94,17 @@ def _slot_login(slot: Path) -> str:
 
 
 def _applicable(project: Project):
-    """(account, checkout) when this project has an identity to check, else None."""
-    if not (project.repo and project.account and project.checkout):
+    """(account, checkout-or-None) when this project has an account to check, else None.
+
+    The slot is a machine-global resource, so it is checked even when the project has
+    no local clone yet; only the git-helper half needs a checkout.
+    """
+    if not project.account:
         return None
-    if not (project.checkout / ".git").exists():
-        return None
-    return project.account, project.checkout
+    checkout = project.checkout
+    if not (checkout and (checkout / ".git").exists()):
+        checkout = None
+    return project.account, checkout
 
 
 def check_identity(project: Project, check_cls):
@@ -93,7 +115,7 @@ def check_identity(project: Project, check_cls):
     """
     target = _applicable(project)
     if target is None:
-        return check_cls("identity", SKIP, "no registered checkout with an account")
+        return check_cls("identity", SKIP, "no account registered")
     account, checkout = target
     slot = slot_dir(account)
     if not slot.is_dir():
@@ -106,6 +128,9 @@ def check_identity(project: Project, check_cls):
     if login.lower() != account.lower():
         return check_cls("identity", FAIL,
                          f"slot {slot} authenticates as {login}, but the manifest says {account}")
+    if checkout is None:
+        return check_cls("identity", OK,
+                         f"slot {account} authenticated; no local checkout, git helper not checked")
     want = expected_helper(slot)
     helpers = effective_helpers(checkout)
     if helpers != [want]:
@@ -127,16 +152,32 @@ def apply_identity(project: Project, check_cls, dry_run: bool = False) -> list:
     what makes it effective: without it the helper is appended behind the global one.
     """
     target = _applicable(project)
-    if target is None:
+    if target is None or target[1] is None:
         return []
     account, checkout = target
-    want = expected_helper(slot_dir(account))
+    slot = slot_dir(account)
+    if not slot.is_dir():
+        # Writing the helper first would wipe the working global one and leave a dead
+        # slot behind; refuse until the slot exists.
+        return [check_cls("identity helper", FAIL,
+                          f"slot {slot} is missing; refusing to write a helper that points "
+                          f"at it (create it with: gh-as --init {account})")]
+    want = expected_helper(slot)
     if effective_helpers(checkout) == [want]:
         return [check_cls("identity helper", OK, "already the only effective helper")]
     if dry_run:
         return [check_cls("identity helper", OK, f"would set {HELPER_KEY} in {checkout}")]
+    prior = _local_helpers(checkout)
     code, err = _git_config(checkout, "--replace-all", HELPER_KEY, "")
     if code == 0:
         code, err = _git_config(checkout, "--add", HELPER_KEY, want)
+        if code != 0:
+            # The reset already landed: restore what was there, or the checkout is left
+            # with no github.com helper at all and every push from it (and its worktrees)
+            # fails.
+            _git_config(checkout, "--unset-all", HELPER_KEY)
+            for value in prior:
+                _git_config(checkout, "--add", HELPER_KEY, value)
+            err = f"{err} (prior local helpers restored)"
     return [check_cls("identity helper", OK if code == 0 else FAIL,
                       f"set {HELPER_KEY} in {checkout}" if code == 0 else err)]

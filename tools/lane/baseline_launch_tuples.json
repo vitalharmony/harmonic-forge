@@ -17,7 +17,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": "claude"
       },
@@ -43,7 +43,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": "claude"
       },
@@ -68,7 +68,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": "claude"
       },
@@ -95,7 +95,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": "claude"
       },
@@ -125,7 +125,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -154,7 +154,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -182,7 +182,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -212,7 +212,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -245,7 +245,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -277,7 +277,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -308,7 +308,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -341,7 +341,7 @@
       ],
       "cwd": "<ROOT>/proj",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "1",
         "LANE_AGENT": null
       },
@@ -366,7 +366,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": "claude"
       },
@@ -392,7 +392,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": "claude"
       },
@@ -417,7 +417,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": "claude"
       },
@@ -444,7 +444,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": "claude"
       },
@@ -476,7 +476,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -507,7 +507,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -537,7 +537,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -569,7 +569,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -602,7 +602,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -634,7 +634,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -665,7 +665,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -698,7 +698,7 @@
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "2",
         "LANE_AGENT": null
       },
@@ -723,7 +723,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": "claude"
       },
@@ -749,7 +749,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": "claude"
       },
@@ -774,7 +774,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": "claude"
       },
@@ -801,7 +801,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": "claude"
       },
@@ -827,7 +827,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -852,7 +852,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -876,7 +876,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -902,7 +902,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -933,7 +933,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -963,7 +963,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -992,7 +992,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },
@@ -1023,7 +1023,7 @@
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-vitalharmony",
+        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
         "LANE": "3",
         "LANE_AGENT": null
       },

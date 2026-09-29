@@ -106,20 +106,31 @@ class EachHookPassesItsReposSlot(unittest.TestCase):
         self.assertIsNone(seen[1])
 
 
-class DeadSlotFallsBackToTheCaller(unittest.TestCase):
-    """harmonic-forge#804 preclose: the close-gating hooks fail OPEN on an empty
-    lookup, so a registered slot that does not authenticate must not silently
-    disarm them. A failed slot call is retried once as the caller (the pre-#804
-    behavior); hooks only read, so a wrong account gets at worst a 404."""
+class DeadSlotNeverFallsBackToTheCaller(unittest.TestCase):
+    """harmonic-forge#804 cross-family finding: a failed slot call must never be
+    retried as the caller, because that authenticates as another account. One retry
+    is allowed, on the SAME slot environment, for a transient failure."""
 
-    def test_a_failed_slot_call_is_retried_once_without_the_slot(self) -> None:
-        fail = mock.Mock(returncode=4, stdout="", stderr="gh auth login")
+    def test_a_failed_slot_call_is_retried_once_on_the_same_slot(self) -> None:
+        fail = mock.Mock(returncode=4, stdout="", stderr="connection reset")
         with mock.patch("subprocess.run", side_effect=[fail, _ok("labels")]) as run:
             result = hi.run_gh(("api", "x"), repo=REGISTERED)
         self.assertEqual(result.stdout, "labels")
         self.assertEqual(run.call_count, 2)
-        self.assertIn("GH_CONFIG_DIR", run.call_args_list[0].kwargs["env"])
-        self.assertIsNone(run.call_args_list[1].kwargs["env"])
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["env"]["GH_CONFIG_DIR"], str(mi.slot_dir("vitalharmony")))
+
+    def test_no_call_ever_runs_with_the_callers_environment(self) -> None:
+        fail = mock.Mock(returncode=4, stdout="", stderr="gh auth login")
+        with mock.patch("subprocess.run", return_value=fail) as run:
+            hi.run_gh(("api", "x"), repo=REGISTERED)
+        self.assertTrue(all(c.kwargs["env"] is not None for c in run.call_args_list))
+
+    def test_a_404_is_an_answer_and_is_not_retried(self) -> None:
+        fail = mock.Mock(returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)")
+        with mock.patch("subprocess.run", return_value=fail) as run:
+            hi.run_gh(("api", "x"), repo=REGISTERED)
+        self.assertEqual(run.call_count, 1)
 
     def test_a_working_slot_is_called_once(self) -> None:
         with mock.patch("subprocess.run", return_value=_ok()) as run:
@@ -138,14 +149,6 @@ class DeadSlotFallsBackToTheCaller(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 hi.run_gh(("api", "x"), repo=REGISTERED)
         self.assertEqual(run.call_count, 1)
-
-    def test_a_close_hook_still_gets_labels_when_the_slot_is_dead(self) -> None:
-        """End to end through a real hook: dead slot, working global login."""
-        fail = mock.Mock(returncode=4, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=[fail, _ok("tooling-exception\n")]), \
-             mock.patch("shutil.which", return_value="/usr/bin/gh"):
-            labels = mpi.labels_for(REGISTERED, "5")
-        self.assertEqual(labels, {"tooling-exception"})
 
 
 class NoHookMutatesTheEnvironment(unittest.TestCase):
