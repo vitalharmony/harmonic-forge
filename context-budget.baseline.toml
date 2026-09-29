@@ -101,8 +101,17 @@ committed reality.
 [[increase]]
 date = "2026-09-10"
 files = [".claude/rules/lane-shorthand.md"]
-bytes = 3413
+bytes = 3460
 why = """
+Recorded as 3413 by #596 and re-measured at 3460 here: harmonic-forge#800 (#803)
+replaced the `P` row's "projected, repo does not yet exist" with the real repo
+slug and board (+47 bytes) without recording the growth, which left main
+failing its own ratchet and un-committable for every harmonic-forge
+ready-for-l3 -- the third time (see the #588 entry and this one's own history).
+Corrected to the measured net rather than adding a second entry, as the #588
+entry did. The row is required by #800's AC2, and a session needs the prefix
+table before its first prompt, so it cannot move out of the always-loaded file.
+
 harmonic-forge#569 (#592) inverted R-0116's default -- queueing is now what an
 unmarked mid-turn message means, with `NOW` registered separately as R-0355's
 interrupt marker, Esc's abandon-and-restart semantics stated alongside it so
