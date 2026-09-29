@@ -1011,7 +1011,12 @@ independently on the thread before executing any TC, exactly as it
 already verifies the gate-readiness sweep. **`AE` and its sweep are one
 atomic action, same turn, sweep strictly after** — use the repo's own
 atomic wrapper where one exists; otherwise confirm the comment order
-before telling HITL either is ready.
+before telling HITL either is ready. **The posted AE is Lane 3's trigger.**
+After posting, Lane 1 reports the two comment links and says Lane 3 executes;
+it does not list a relay to the Lane 3 session as an operator next action, and
+does not phrase one as a question (harmonic-forge#824). The next actions it does
+list are what the operator still owns: a production AE for a case this AE did
+not authorize, a `BATCH`, or a `close`.
 <!-- /R-0208 -->
 
 <!-- R-0209 -->
