@@ -591,7 +591,6 @@ def main() -> int:
              "identically to a deliberate 'in no release'.",
     )
     args = parser.parse_args()
-    apply_project_identity(args.repo)  # harmonic-forge#804: act as the repo's own account
 
     # harmonic-forge#687 AC3. A reasonless exception is refused at the parser,
     # BEFORE the issue is created -- so the run fails without having filed
@@ -633,6 +632,9 @@ def main() -> int:
     # A repo with none (harmonic-forge, openclaw-projects) is never gated;
     # nothing invents a per-issue milestone concept for a repo that decided
     # against having one.
+    # harmonic-forge#804: act as the repo's own account. Deliberately AFTER the flag
+    # validation above: a malformed invocation must exit 2 without a network probe.
+    apply_project_identity(args.repo)
     milestones = fetch_milestones(args.repo)
     milestone_number: int | None = None
     if milestones:
