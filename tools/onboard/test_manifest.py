@@ -357,6 +357,19 @@ class LiveManifestTests(unittest.TestCase):
             "kenekted/kenekted-docs": ("harmonicarchitect", "1"),
         })
 
+    #: Projects whose slot holds a fine-grained PAT and so carry no exception (R-0368). Empty today:
+    #: every board is user-owned, which a fine-grained PAT cannot access. Moving a project to a PAT
+    #: means adding its name HERE, an explicit decision, rather than inventing an exception.
+    FINE_GRAINED_PROJECTS: set = set()
+
+    def test_every_project_records_a_token_exception_or_is_declared_fine_grained(self) -> None:
+        """R-0368 / harmonic-forge#805: lane slots hold fine-grained PATs unless an exception is
+        recorded. A new entry with neither fails here on purpose, so the choice is made once."""
+        missing = [p.name for p in mf.load(LIVE)
+                   if not (p.token_exception or "").strip()
+                   and p.name not in self.FINE_GRAINED_PROJECTS]
+        self.assertEqual(missing, [], "these entries record no token_exception")
+
     def test_the_sweep_list_matches_the_live_hygiene_task(self) -> None:
         self.assertEqual(mf.sweep_repos(LIVE), [
             "vitalharmony/hrse", "vitalharmony/harmonic-forge",

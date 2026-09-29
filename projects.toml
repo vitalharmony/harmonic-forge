@@ -220,6 +220,7 @@ board_owner = "harmonicarchitect"
 board_number = "1"
 milestones = false
 onboarded = true
+token_exception = "the board (harmonicarchitect #1, the Kenekted Kanban) is a USER-owned Projects v2 board, which fine-grained PATs cannot access (GitHub-documented; verified 403, harmonic-forge#805). A fine-grained PAT for the account was issued and tested, then deleted (operator, 2026-09-29). Revisit if the board moves to the kenekted organization."
 
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"
@@ -246,6 +247,7 @@ board_owner = "harmonicarchitect"
 board_number = "1"
 milestones = false
 onboarded = true
+token_exception = "the board (harmonicarchitect #1, the Kenekted Kanban) is a USER-owned Projects v2 board, which fine-grained PATs cannot access (GitHub-documented; verified 403, harmonic-forge#805). A fine-grained PAT for the account was issued and tested, then deleted (operator, 2026-09-29). Revisit if the board moves to the kenekted organization."
 
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"
@@ -270,6 +272,7 @@ board_owner = "harmonicarchitect"
 board_number = "1"
 milestones = false
 onboarded = true
+token_exception = "the board (harmonicarchitect #1, the Kenekted Kanban) is a USER-owned Projects v2 board, which fine-grained PATs cannot access (GitHub-documented; verified 403, harmonic-forge#805). A fine-grained PAT for the account was issued and tested, then deleted (operator, 2026-09-29). Revisit if the board moves to the kenekted organization."
 
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"
