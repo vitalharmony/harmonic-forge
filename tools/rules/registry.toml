@@ -2231,8 +2231,8 @@ hooks = [{ script = "tools/hooks/batch_auth.py", events = ["PreToolUse"], wired_
 id = "R-0343"
 file = "rules/lane-shorthand.md"
 anchor = "operator-to-lane-triggers"
-statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session."
-text_sha = "61d4e1b3a7bd42e2"
+statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close; AE and close go to Lane 1, which posts the AE, and Lane 3 runs from the posted comment); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session."
+text_sha = "e59f622785468731"
 
 [[rule]]
 id = "R-0344"
