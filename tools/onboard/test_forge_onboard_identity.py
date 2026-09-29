@@ -356,6 +356,12 @@ class TokenStandardTests(IdentityBase):
         self.assertIn("token oauth", result.detail)
         self.assertIn("user-owned Projects v2", result.detail)
 
+    def test_an_unreadable_token_fails_even_with_an_exception(self) -> None:
+        self.tokens["slot"] = ""
+        result = self.check(token_exception="user-owned Projects v2")
+        self.assertEqual(result.status, fi.FAIL)
+        self.assertIn("could not read the token", result.detail)
+
     def test_a_blank_exception_counts_as_none(self) -> None:
         self.tokens["slot"] = "gho_SLOTSECRET"
         self.assertEqual(self.check(token_exception="   ").status, fi.FAIL)

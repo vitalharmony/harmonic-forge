@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_ci  # noqa: E402
 
 
-def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
+def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_runs=()):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -61,12 +61,17 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
                 listed = [p for p in listed if p.get("state", "open") == "open"]
             return 0, json.dumps(listed)
         if "/actions/runs?" in url:
-            # `--jq '.workflow_runs[].id'` streams one bare id per line. The fixture models
-            # every check as a job of ONE workflow run (harmonic-forge#805).
-            return 0, "1" if checks else ""
+            # `--jq '.workflow_runs[] | {id, name, ...}'` streams one object per line. The
+            # fixture models every check as a job of ONE workflow run (harmonic-forge#805);
+            # `bare_runs` are workflow runs that have no jobs at all.
+            lines = ([json.dumps({"id": 1, "name": "ci", "status": "completed",
+                                  "conclusion": "success"})] if checks else [])
+            lines += [json.dumps(dict(r, id=100 + i)) for i, r in enumerate(bare_runs)]
+            return 0, "\n".join(lines)
         if "/actions/runs/" in url and "/jobs" in url:
             # `--jq '.jobs[]'` streams ONE OBJECT PER LINE, not an array.
-            return 0, "\n".join(json.dumps(c) for c in checks)
+            # Only run 1 carries the fixture's jobs; a bare run (id 100+) has none.
+            return 0, "\n".join(json.dumps(c) for c in checks) if "/runs/1/" in url else ""
         return 0, "null"
     return run
 
@@ -698,6 +703,20 @@ class ReadsActionsNotCheckRuns(unittest.TestCase):
             "o/r", self.SHA, run=fake_gh(checks=[check("verify", conclusion="failure")]))
         self.assertEqual(state, "red")
         self.assertIn("verify", detail)
+
+    def test_a_workflow_run_with_no_jobs_is_read_as_a_check_not_ignored(self) -> None:
+        """A startup_failure run has no jobs; it must not read as green."""
+        broken = {"name": "docs", "status": "completed", "conclusion": "startup_failure"}
+        state, detail = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify")], bare_runs=[broken]))
+        self.assertEqual(state, "red")
+        self.assertIn("docs", detail)
+
+    def test_a_queued_run_with_no_jobs_is_pending(self) -> None:
+        queued = {"name": "docs", "status": "queued", "conclusion": None}
+        state, _ = gate_ci.ci_conclusion(
+            "o/r", self.SHA, run=fake_gh(checks=[check("verify")], bare_runs=[queued]))
+        self.assertEqual(state, "pending")
 
     def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
         state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))

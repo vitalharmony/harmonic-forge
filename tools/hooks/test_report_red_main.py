@@ -21,7 +21,7 @@ def green_run(cmd):
     if "protection" in joined:
         return 0, "null"
     if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
-        return 0, "1\n"
+        return 0, json.dumps({"id": 1, "name": "ci", "status": "completed", "conclusion": "success"}) + "\n"
     if "/jobs" in joined:
         return 0, json.dumps({"name": "verify", "status": "completed",
                               "conclusion": "success"}) + "\n"
@@ -35,7 +35,7 @@ def red_run(cmd):
     if "protection" in joined:
         return 0, "null"
     if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
-        return 0, "1\n"
+        return 0, json.dumps({"id": 1, "name": "ci", "status": "completed", "conclusion": "success"}) + "\n"
     if "/jobs" in joined:
         return 0, json.dumps({"name": "verify", "status": "completed",
                               "conclusion": "failure"}) + "\n"
@@ -56,7 +56,7 @@ def unprotected_dependabot_noise_run(cmd):
     if "protection" in joined:
         return 0, "null"
     if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
-        return 0, "1\n"
+        return 0, json.dumps({"id": 1, "name": "ci", "status": "completed", "conclusion": "success"}) + "\n"
     if "/jobs" in joined:
         return 0, json.dumps({"name": "Dependabot", "status": "completed",
                               "conclusion": "failure"}) + "\n"
@@ -136,7 +136,7 @@ class CheckAllTests(unittest.TestCase):
             if "protection" in joined:
                 return 0, "null"
             if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
-                return 0, "1\n"
+                return 0, json.dumps({"id": 1, "name": "ci", "status": "completed", "conclusion": "success"}) + "\n"
             if "/jobs" in joined:
                 return 0, json.dumps({"name": "verify", "status": "completed",
                                       "conclusion": "failure"}) + "\n"
@@ -175,7 +175,7 @@ class CheckAllTests(unittest.TestCase):
             if "protection" in joined:
                 return 0, "null"
             if "actions/runs?" in joined:  # harmonic-forge#805: Actions runs, then jobs
-                return 0, "1\n"
+                return 0, json.dumps({"id": 1, "name": "ci", "status": "completed", "conclusion": "success"}) + "\n"
             if "/jobs" in joined:
                 return 1, "rate limited"  # ci_conclusion() -> "unknown"
             return 1, "unexpected call"

@@ -251,13 +251,16 @@ def ci_conclusion(repo: str, sha: str, run=None,
     # each job's latest attempt, so a re-run replaces the failure it fixed.
     code, out = run(["gh", "api", "--paginate",
                      f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
-                     "--jq", ".workflow_runs[].id"])
+                     "--jq", ".workflow_runs[] | {id, name, status, conclusion, "
+                             "started_at: .run_started_at}"])
     if code != 0:
         return "unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}"
-    run_ids = [line.strip() for line in (out or "").splitlines() if line.strip()]
     runs = []
     try:
-        for run_id in run_ids:
+        wf_runs = [json.loads(line) for line in (out or "").splitlines() if line.strip()]
+        for wf in wf_runs:
+            run_id = wf["id"]
+            before = len(runs)
             code, out = run(["gh", "api", "--paginate",
                              f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&filter=latest",
                              "--jq", ".jobs[]"])
@@ -268,7 +271,14 @@ def ci_conclusion(repo: str, sha: str, run=None,
                 line = line.strip()
                 if line:
                     runs.append(json.loads(line))
-    except ValueError:
+            if len(runs) == before:
+                # A workflow run with NO jobs (`startup_failure`, awaiting approval, cancelled
+                # while queued) has no job to read. Read the run itself as the check, or a broken
+                # workflow is invisible and the commit reads green.
+                runs.append({"name": wf.get("name") or f"run {run_id}",
+                             "status": wf.get("status"), "conclusion": wf.get("conclusion"),
+                             "started_at": wf.get("started_at")})
+    except (ValueError, KeyError, TypeError):
         return "unknown", f"unparseable job payload for {sha[:8]}"
     if not runs:
         return "absent", f"{sha[:8]} has no check runs at all"
