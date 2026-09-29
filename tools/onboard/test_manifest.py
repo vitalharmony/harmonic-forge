@@ -398,9 +398,13 @@ class LiveManifestTests(unittest.TestCase):
         # harmonic-forge#802: hrse's CI mirrors `check`'s commands against its
         # own parity tool rather than declaring a `ci-check` task.
         parity_task = {"hrse": "ci-parity-check-command-sets"}
-        # harmonic-forge#806: kenekted-docs' checkout basename is `docs`, so its worktrees
-        # are named for the repo, not the directory.
-        worktree = {"kenekted-docs": {"worktree_name": "kenekted-{checkout}-lane{lane}"}}
+        # harmonic-forge#806: kenekted-docs' checkout basename is `docs`; the lane launchers
+        # derive worktrees from that basename, so it keeps the default template.
+        worktree: dict[str, dict[str, str]] = {}
+        # The operational switch itself, pinned: `onboarded` is what makes l1_post,
+        # preclose_check and the sweeps treat these repos as lane repos at all.
+        for name in ("kenekted", "kenekted-ai", "kenekted-docs"):
+            self.assertTrue(next(p for p in projects if p.name == name).onboarded, name)
         self.assertEqual(
             {project.name: project.protocol for project in projects},
             {name: mf.Protocol(**{**common, **worktree.get(name, {})},

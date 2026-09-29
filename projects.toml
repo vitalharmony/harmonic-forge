@@ -219,7 +219,9 @@ gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
 runs_lane3 = true
-# needs_gate_adapter = false (harmonic-forge#806): the Laravel app's gate adapter is deferred to its CI child (kenekted-platform's ci-check).
+# needs_gate_adapter = false (harmonic-forge#806): DEFERRED, not declined: this Laravel app owns a database and live service, so a gate adapter
+# is owed. It has no `ci-check` yet either; both belong to the kenekted-platform CI child
+# (harmonic-forge#806 step 8), and `verify` stays red-by-design until then.
 needs_gate_adapter = false
 
 [[project]]
@@ -260,14 +262,17 @@ milestones = false
 onboarded = true
 
 [project.protocol]
-worktree_name = "kenekted-{checkout}-lane{lane}"
+worktree_name = "{checkout}-lane{lane}"
 l1_post_task = "l1-post"
 lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
 runs_lane3 = true
-# needs_gate_adapter = false (harmonic-forge#806): documentation repo with no service; its checkout basename is `docs`, so worktrees are named kenekted-docs-lane2/-lane3, not bare docs-lane2.
+# needs_gate_adapter = false (harmonic-forge#806): documentation repo with no service. Its checkout basename is `docs`, so its worktrees are
+# docs-lane2 and docs-lane3: the lane launchers derive the worktree from the checkout basename
+# and do not read this template, so a different name here would create worktrees they can never
+# find (harmonic-forge#806 preclose).
 needs_gate_adapter = false
 
 [[project]]

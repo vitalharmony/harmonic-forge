@@ -163,9 +163,14 @@ def _boards() -> dict[str, str]:
     hinted targets (hrse and harmonic-forge) if the manifest cannot load."""
     try:
         sys.path.insert(0, str(HOOKS_DIR.parent / "onboard"))
-        from manifest import repo_boards  # noqa: PLC0415
+        from manifest import by_repo, repo_boards  # noqa: PLC0415
 
-        return {repo.lower(): board[1] for repo, board in repo_boards().items()}
+        # harmonic-forge#806: the board read runs as the default account, so a repo on another
+        # account (kenekted) is left out and takes the visible NO_BOARD path, exactly as
+        # before it was registered, rather than reading its board as the wrong identity.
+        projects = by_repo()
+        return {repo.lower(): board[1] for repo, board in repo_boards().items()
+                if projects.get(repo) is not None and projects[repo].account == "vitalharmony"}
     except Exception:  # noqa: BLE001
         return {repo.lower(): number
                 for repo, number in model_tier_gate.HINTED_TARGETS.values()}

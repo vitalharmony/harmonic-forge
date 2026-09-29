@@ -399,14 +399,14 @@ archived and therefore has no prefix.
   The rule covers removal, not creation — anything consuming this should say
   so rather than silently emitting an unprefixed number.
 
-### `K` and `P` point at other accounts — never treat empty as absent
+### `K`, `Y`, `D` and `P` point at other accounts — never treat empty as absent
 
-Every `vitalharmony` prefix resolves by prepending the owner. `K` and `P` do
+Every `vitalharmony` prefix resolves by prepending the owner. `K`, `Y`, `D` and `P` do
 not: they are **different accounts with separate credentials**, and credential
 isolation across engagements is a standing rule.
 
 The failure mode is specific and quiet. A session holding vitalharmony
-credentials that queries `K123` receives an **empty result, not an error** —
+credentials that queries `K123` (or `Y123`, `D123`) receives an **empty result, not an error** —
 verified live: `gh repo list harmonicarchitect` returns nothing under
 vitalharmony auth. It will conclude "no such issue" rather than "wrong
 credentials."

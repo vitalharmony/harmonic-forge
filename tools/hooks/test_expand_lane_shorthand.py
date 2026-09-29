@@ -105,11 +105,14 @@ class RealDocTests(unittest.TestCase):
         for prefix, repo in (("K", "kenekted/kenekted-platform"), ("Y", "kenekted/kenekted-ai"),
                              ("D", "kenekted/kenekted-docs")):
             with self.subTest(prefix=prefix), unittest.mock.patch.object(
-                    m.subprocess, "run", return_value=_fake_gh_result(returncode=1, stderr="offline")):
+                    m.subprocess, "run") as run:
                 result = _run(f"checking {prefix}42 status")
             self.assertIsNotNone(result)
             expanded = result["hookSpecificOutput"]["additionalContext"]
             self.assertIn(f"{prefix}42 [{repo}#42]", expanded)
+            # A repo on another account gets the gloss but never a live fetch: this hook has no
+            # per-account identity, and `Y2038` / `D30` are ordinary prose.
+            run.assert_not_called()
 
     def test_leasepal_prefix_expands_to_the_real_repo_slug(self) -> None:
         """harmonic-forge#800: LeasePAL-App-Prototype was onboarded, so the P
