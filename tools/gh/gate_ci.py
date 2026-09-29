@@ -287,25 +287,43 @@ def ci_conclusion(repo: str, sha: str, run=None,
     return "green", ", ".join(sorted(f"{r['name']}:{r.get('conclusion')}" for r in runs))
 
 
-def stale_against_pr(repo: str, sha: str, run=None) -> tuple[bool, str]:
+def stale_against_pr(repo: str, sha: str, run=None,
+                     branch: str | None = None) -> tuple[bool, str]:
     """Is the gated SHA behind the head of the PR it belongs to?
 
-    The SHA is self-declared, and the report is written after the gate ran. A
-    correction pushed while the report is being typed produces exactly the
-    original incident plus one push: Lane 3 truthfully gated commit A, which is
-    green; the PR now heads at B, which is red; the report names A and the
-    check reads A. `(True, ...)` means refuse.
+    harmonic-forge#816: a negative-probe PR stacked on the gated head contains the SHA and always
+    heads past it, and refusing a valid PASS for it blocked cymagraph-infra#389. A PR is ignored
+    only when it is STACKED ON another candidate: its base is the head branch of another open PR
+    that contains this SHA. That is precise where "base is not the default branch" is not: a gated
+    PR that itself targets a release or feature branch is not stacked on a candidate, so its
+    correction still refuses. With `branch` (the gated branch) the PR whose head ref equals it is
+    considered alone; a branch that matches nothing falls back to the strict, unfiltered check
+    rather than silently passing.
     """
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/pulls",
                      "--jq", "[.[] | select(.state == \"open\") "
-                             "| {number, head: .head.sha}]"])
+                             "| {number, head: .head.sha, ref: .head.ref, "
+                             "base: .base.ref}]"])
     if code != 0:
         return False, "could not resolve the SHA to a PR"
     try:
         pulls = json.loads(out or "[]") or []
     except ValueError:
         return False, "unparseable PR payload"
+    if branch:
+        pulls = [p for p in pulls if p.get("ref") == branch] or pulls
+    else:
+        # Stacked on ANOTHER candidate only: never on itself, and the exclusion can never empty the
+        # set (a mutual-base cycle would otherwise pass everything); an empty result is strict.
+        # A PR whose head IS the gated SHA is the gated PR itself and is never dropped, even when
+        # it is stacked on another open PR that also contains the SHA.
+        def at_sha(p):
+            head = p.get("head") or ""
+            return bool(head) and (head.startswith(sha) or sha.startswith(head))
+        pulls = [p for p in pulls
+                 if at_sha(p)
+                 or not any(p.get("base") == o.get("ref") and o is not p for o in pulls)] or pulls
     for pull in pulls:
         head = (pull.get("head") or "")
         if head and not head.startswith(sha) and not sha.startswith(head):
