@@ -287,8 +287,22 @@ def ci_conclusion(repo: str, sha: str, run=None,
     return "green", ", ".join(sorted(f"{r['name']}:{r.get('conclusion')}" for r in runs))
 
 
-def stale_against_pr(repo: str, sha: str, run=None) -> tuple[bool, str]:
+def _default_branch(repo: str, run) -> str | None:
+    code, out = run(["gh", "api", f"repos/{repo}", "--jq", ".default_branch"])
+    return out.strip() or None if code == 0 else None
+
+
+def stale_against_pr(repo: str, sha: str, run=None,
+                     branch: str | None = None) -> tuple[bool, str]:
     """Is the gated SHA behind the head of the PR it belongs to?
+
+    harmonic-forge#816: only the PR the gate is about counts. A negative-probe PR stacked on the
+    gated head contains the SHA and always heads past it, and refusing a valid PASS for it blocked
+    cymagraph-infra#389. With `branch` (the gated branch) only the PR whose head ref is that
+    branch is considered; without it, PRs based on a branch other than the repo's default are
+    ignored, since a stacked probe or follow-up is not the gated PR moving on. A real correction
+    pushed to the gated PR still refuses. If the default branch cannot be read, nothing is
+    filtered (the strict, pre-#816 behavior).
 
     The SHA is self-declared, and the report is written after the gate ran. A
     correction pushed while the report is being typed produces exactly the
@@ -299,13 +313,20 @@ def stale_against_pr(repo: str, sha: str, run=None) -> tuple[bool, str]:
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/pulls",
                      "--jq", "[.[] | select(.state == \"open\") "
-                             "| {number, head: .head.sha}]"])
+                             "| {number, head: .head.sha, ref: .head.ref, "
+                             "base: .base.ref}]"])
     if code != 0:
         return False, "could not resolve the SHA to a PR"
     try:
         pulls = json.loads(out or "[]") or []
     except ValueError:
         return False, "unparseable PR payload"
+    if branch:
+        pulls = [p for p in pulls if p.get("ref") == branch]
+    else:
+        default = _default_branch(repo, run)
+        if default:
+            pulls = [p for p in pulls if p.get("base") in (None, default)]
     for pull in pulls:
         head = (pull.get("head") or "")
         if head and not head.startswith(sha) and not sha.startswith(head):
