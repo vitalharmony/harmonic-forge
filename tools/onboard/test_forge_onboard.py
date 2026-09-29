@@ -1143,6 +1143,26 @@ class BranchProtectionCheckTests(Base):
             check = fo.check_branch_protection(project)
         self.assertEqual(check.status, fo.OK)
 
+    def test_a_declared_ci_parity_task_still_requires_verify_on_main(self) -> None:
+        """harmonic-forge#802 gate FAIL: hrse declares
+        `ci_parity_task="ci-parity-check-command-sets"` for `check_ci`'s
+        benefit, but its real required branch-protection context is
+        "verify" regardless -- the required-context name must never
+        fall back to `ci_parity_task`."""
+        import dataclasses
+        repo = self.make_repo()
+        project = self.project(repo)
+        project = dataclasses.replace(
+            project,
+            protocol=dataclasses.replace(project.protocol, ci_parity_task="ci-parity-check-command-sets"))
+        with mock.patch.object(
+            fo.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="verify", stderr=""),
+        ):
+            check = fo.check_branch_protection(project)
+        self.assertEqual(check.status, fo.OK)
+        self.assertIn("verify", check.detail)
+
 
 class LaneTaskGeneratorTests(Base):
     """The generator writes a FLOOR, and writing it twice changes nothing."""

@@ -464,10 +464,11 @@ genuinely cannot satisfy it. The correct shape is the one `ci-check`/`check`
 already gives: the machine-local step simply is not IN `ci-check`, so CI never
 calls it at all — nothing inside the tool needs to know it is running in CI.
 
-**Requiring `verify` (or the declared parity task) on `main` is a per-repo
+**Requiring `verify` on `main` is a per-repo
 operator decision, not something this rule or onboarding enforces.**
 `forge-onboard`'s `check_ci` confirms the workflow exists and runs the right
 command; a separate, WARN-only `check_branch_protection` reports whether
-`main` actually requires it, and a WARN never blocks onboarding or gates
+`main` actually requires `verify` (the job name, even for a repo that declares
+`ci_parity_task`), and a WARN never blocks onboarding or gates
 anything — see `tools/onboard/forge_onboard.py`.
 <!-- /R-0367 -->

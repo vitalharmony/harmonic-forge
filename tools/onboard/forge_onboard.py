@@ -474,7 +474,12 @@ def check_branch_protection(project: Project) -> Check:
         return Check("branch protection", SKIP, "no Lane 3")
     if project.repo is None:
         return Check("branch protection", SKIP, "no repo")
-    required_name = project.protocol.ci_parity_task or "verify"
+    # The required-context name is always the job name, "verify" -- unlike
+    # `check_ci`'s `ci_parity_task`, which only substitutes the mise task run
+    # *inside* that job and never the job/context name itself (harmonic-forge#802 FAIL:
+    # hrse declares `ci_parity_task="ci-parity-check-command-sets"` but its
+    # real required status check on main is "verify").
+    required_name = "verify"
     result = subprocess.run(
         ["gh", "api", f"repos/{project.repo}/branches/main/protection",
          "--jq", ".required_status_checks.contexts // [] | join(\",\")"],
