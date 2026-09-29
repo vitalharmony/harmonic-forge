@@ -874,6 +874,8 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
             fail(f"cannot read Tier for {repo}#{issue_number} on board {owner}/{number}: {exc}")
         if tier is not None:
             return tier
+        if owner.lower() == repo.split("/", 1)[0].lower():
+            return None  # the repo's own owner holds its board: the per-issue read saw everything
         # `None` is ambiguous (harmonic-forge#820): the issue has no Tier, or is not on the board,
         # OR the per-issue query is blind to it -- a USER-owned board attached to an issue in an
         # ORGANIZATION repo (the kenekted repos) returns no project items at all, however the

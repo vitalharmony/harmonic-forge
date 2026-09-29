@@ -2011,6 +2011,18 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
                 os.environ["LANE"] = saved_lane
         return outcome, err.getvalue()
 
+    def test_a_dead_extra_account_degrades_the_belt_and_does_not_break_the_canonical_check(self):
+        """harmonic-forge#820 (preclose): dropping a dead account by REWRITING the parsed
+        --account-repos made the arguments differ from the canonical command, so the belt refused
+        to start. It must start, warn loudly, and poll only the healthy accounts."""
+        argv = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
+        dead = ([ "vitalharmony"], [("harmonicarchitect", "slot missing")])
+        with patch.object(watch_lane_posts, "_verified_accounts", return_value=dead):
+            outcome, err = self._run(list(argv), {"LANE": "1"})
+        self.assertEqual(outcome, "looped", err)
+        self.assertNotIn("canonical command", err)
+        self.assertIn("harmonicarchitect is NOT polled", err)
+
     def test_dropping_queue_for_l1_is_refused(self):
         argv = [a for a in watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
                 if a not in ("--queue-for", "l1")]

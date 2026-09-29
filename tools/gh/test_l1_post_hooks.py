@@ -489,6 +489,13 @@ class EstimateGateTests(unittest.TestCase):
         self.assertIn("item-list", argv)
         self.assertIn("harmonicarchitect", argv)
 
+    def test_a_repo_whose_owner_holds_its_board_never_falls_through_to_a_scan(self) -> None:
+        """An unset Tier on an ordinary board is one query, not a full-board scan (#820 preclose)."""
+        with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \
+             patch.object(post, "run") as run_call:
+            self.assertIsNone(post.resolve_board_tier("vitalharmony/hrse", "vitalharmony", "1", 46))
+        run_call.assert_not_called()
+
     def test_an_issue_on_no_board_still_reads_as_no_tier_after_the_scan(self) -> None:
         with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \
              patch.object(post, "run", return_value=_scan_result([{"content": {"number": 1}}])):

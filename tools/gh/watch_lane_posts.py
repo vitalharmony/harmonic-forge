@@ -2066,13 +2066,17 @@ def main() -> int:
         assert_identity(_ACCOUNT)
     except IdentityMismatch as exc:
         parser.error(str(exc))
+    # The accounts this belt actually polls. `args.account_repos` itself is left EXACTLY as typed:
+    # the canonical-command check (harmonic-forge#651) compares the parsed arguments, so rewriting
+    # them to drop a dead account would make the belt refuse to start (harmonic-forge#820).
+    effective_account_repos = args.account_repos
     if args.account_repos:
         verified, skipped = _verified_accounts(args.account_repos, _ACCOUNT)
         for account, why in skipped:
             print(f"[watch_lane_posts] WARNING: account {account} is NOT polled by this belt "
                   f"({why}); its repos are left out rather than polled as the wrong login",
                   file=sys.stderr)
-        args.account_repos = ",".join(verified)
+        effective_account_repos = ",".join(verified)
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")
@@ -2095,13 +2099,13 @@ def main() -> int:
         print("[watch_lane_posts] --all-worktrees enumerating:", file=sys.stderr)
         return sorted(set(explicit_worktrees) | set(enumerate_repo_roots(repo_roots)))
 
-    if repo_roots is not None and args.account_repos:
+    if repo_roots is not None and effective_account_repos:
         # --account-repos supplies the roots so --all-worktrees needs no paths:
         # the repo set is derived once, and each repo's local checkout is found
         # by convention under --checkout-dir (harmonic-forge#596).
         try:
             repo_roots = list(repo_roots) + manifest_worktree_roots(
-                args.account_repos)
+                effective_account_repos)
         except AccountReposUnavailable as exc:
             parser.error(str(exc))
     if repo_roots is not None:
@@ -2119,12 +2123,12 @@ def main() -> int:
 
     watch = set(args.watch)
     repos: list[str] = list(args.repo or [])
-    if args.account_repos:
+    if effective_account_repos:
         try:
-            derived = manifest_repos(args.account_repos)
+            derived = manifest_repos(effective_account_repos)
         except AccountReposUnavailable as exc:
             parser.error(str(exc))
-        print(f"[watch_lane_posts] --account-repos {args.account_repos}: "
+        print(f"[watch_lane_posts] --account-repos {effective_account_repos}: "
               f"{len(derived)} non-archived repo(s)", file=sys.stderr)
         repos = sorted(set(repos) | set(derived))
     if len(repos) > 1 and args.issues:
