@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_ci  # noqa: E402
 
 
-def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, default_branch="main"):
+def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -39,9 +39,6 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, default_
         for marker in fail:
             if marker in url:
                 return 1, "gh: simulated failure"
-        if url.count("/") == 2 and url.startswith("repos/"):
-            # `repos/<owner>/<name>` with `--jq .default_branch` -> the bare string.
-            return (0, default_branch) if default_branch else (1, "gh: simulated failure")
         if url.endswith("/branches/main"):
             # Exact suffix, not a substring: `/branches/main/protection` (the
             # required-checks lookup, checked next) contains "/branches/main"
@@ -607,14 +604,15 @@ class PrecloseRegressionTests(unittest.TestCase):
 
 
 class StackedProbePrTests(unittest.TestCase):
-    """harmonic-forge#816: a probe PR stacked on the gated head must not block a valid PASS."""
+    """harmonic-forge#816: a probe PR stacked on the gated PR must not block a valid PASS, and a
+    real correction pushed to the gated PR must still refuse, whatever branch it targets."""
 
     SHA = "86c52894ea0000000000000000000000000000ff"
     PR_A = {"number": 390, "head": SHA, "ref": "feat/389-x", "base": "main"}
     PROBE = {"number": 391, "head": "58047cb0de1111", "ref": "i389-probe", "base": "feat/389-x"}
 
-    def stale(self, *pulls, branch=None, **kw):
-        return gate_ci.stale_against_pr("o/r", self.SHA, run=fake_gh(pulls=pulls, **kw),
+    def stale(self, *pulls, branch=None):
+        return gate_ci.stale_against_pr("o/r", self.SHA, run=fake_gh(pulls=pulls),
                                         branch=branch)[0]
 
     def test_a_stacked_probe_is_not_stale(self):
@@ -625,24 +623,29 @@ class StackedProbePrTests(unittest.TestCase):
         self.assertTrue(self.stale(moved))
         self.assertTrue(self.stale(moved, self.PROBE))
 
-    def test_a_pr_against_the_default_branch_that_moved_on_is_still_stale(self):
+    def test_another_pr_against_main_that_moved_on_is_still_stale(self):
         other = {"number": 7, "head": "12345678bbbb", "ref": "other", "base": "main"}
         self.assertTrue(self.stale(self.PR_A, other))
 
-    def test_a_known_gated_branch_ignores_every_other_pr(self):
+    def test_a_gated_pr_targeting_a_non_default_branch_still_refuses_its_correction(self):
+        """The fail-open the review found: a base-is-not-default filter dropped this PR."""
+        moved = {"number": 42, "head": "99999999aaaa", "ref": "feat/2-b", "base": "feat/1-a"}
+        self.assertTrue(self.stale(moved))
+
+    def test_a_probe_stacked_on_a_non_default_base_gated_pr_is_ignored(self):
+        gated = {"number": 42, "head": self.SHA, "ref": "feat/2-b", "base": "feat/1-a"}
+        probe = {"number": 43, "head": "58047cb0de1111", "ref": "probe", "base": "feat/2-b"}
+        self.assertFalse(self.stale(gated, probe))
+
+    def test_a_known_gated_branch_considers_only_that_pr(self):
         other = {"number": 7, "head": "12345678bbbb", "ref": "other", "base": "main"}
         self.assertFalse(self.stale(self.PR_A, other, self.PROBE, branch="feat/389-x"))
         moved = dict(self.PR_A, head="99999999aaaa")
         self.assertTrue(self.stale(moved, self.PROBE, branch="feat/389-x"))
 
-    def test_an_unreadable_default_branch_filters_nothing(self):
-        # Unfiltered, the probe (which heads past the SHA) counts again: the strict behavior.
-        self.assertTrue(self.stale(self.PR_A, self.PROBE, default_branch=None))
-
-    def test_the_default_branch_is_not_assumed_to_be_main(self):
-        pr = dict(self.PR_A, base="trunk")
-        probe = dict(self.PROBE, base="feat/389-x")
-        self.assertFalse(self.stale(pr, probe, default_branch="trunk"))
+    def test_a_branch_that_matches_no_pr_falls_back_to_strict_not_to_passing(self):
+        moved = dict(self.PR_A, head="99999999aaaa")
+        self.assertTrue(self.stale(moved, branch="feat/renamed"))
 
 
 if __name__ == "__main__":

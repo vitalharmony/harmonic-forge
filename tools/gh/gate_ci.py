@@ -287,28 +287,18 @@ def ci_conclusion(repo: str, sha: str, run=None,
     return "green", ", ".join(sorted(f"{r['name']}:{r.get('conclusion')}" for r in runs))
 
 
-def _default_branch(repo: str, run) -> str | None:
-    code, out = run(["gh", "api", f"repos/{repo}", "--jq", ".default_branch"])
-    return out.strip() or None if code == 0 else None
-
-
 def stale_against_pr(repo: str, sha: str, run=None,
                      branch: str | None = None) -> tuple[bool, str]:
     """Is the gated SHA behind the head of the PR it belongs to?
 
-    harmonic-forge#816: only the PR the gate is about counts. A negative-probe PR stacked on the
-    gated head contains the SHA and always heads past it, and refusing a valid PASS for it blocked
-    cymagraph-infra#389. With `branch` (the gated branch) only the PR whose head ref is that
-    branch is considered; without it, PRs based on a branch other than the repo's default are
-    ignored, since a stacked probe or follow-up is not the gated PR moving on. A real correction
-    pushed to the gated PR still refuses. If the default branch cannot be read, nothing is
-    filtered (the strict, pre-#816 behavior).
-
-    The SHA is self-declared, and the report is written after the gate ran. A
-    correction pushed while the report is being typed produces exactly the
-    original incident plus one push: Lane 3 truthfully gated commit A, which is
-    green; the PR now heads at B, which is red; the report names A and the
-    check reads A. `(True, ...)` means refuse.
+    harmonic-forge#816: a negative-probe PR stacked on the gated head contains the SHA and always
+    heads past it, and refusing a valid PASS for it blocked cymagraph-infra#389. A PR is ignored
+    only when it is STACKED ON another candidate: its base is the head branch of another open PR
+    that contains this SHA. That is precise where "base is not the default branch" is not: a gated
+    PR that itself targets a release or feature branch is not stacked on a candidate, so its
+    correction still refuses. With `branch` (the gated branch) the PR whose head ref equals it is
+    considered alone; a branch that matches nothing falls back to the strict, unfiltered check
+    rather than silently passing.
     """
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}/pulls",
@@ -322,11 +312,10 @@ def stale_against_pr(repo: str, sha: str, run=None,
     except ValueError:
         return False, "unparseable PR payload"
     if branch:
-        pulls = [p for p in pulls if p.get("ref") == branch]
+        pulls = [p for p in pulls if p.get("ref") == branch] or pulls
     else:
-        default = _default_branch(repo, run)
-        if default:
-            pulls = [p for p in pulls if p.get("base") in (None, default)]
+        heads = {p.get("ref") for p in pulls if p.get("ref")}
+        pulls = [p for p in pulls if p.get("base") not in heads]
     for pull in pulls:
         head = (pull.get("head") or "")
         if head and not head.startswith(sha) and not sha.startswith(head):
