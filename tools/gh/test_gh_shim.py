@@ -107,6 +107,22 @@ class Refusal(unittest.TestCase):
         fake_patterns.budget.assert_not_called()
         fake_execv.assert_called_once()
 
+    def test_the_identity_probe_is_exempt_from_the_budget_floor(self):
+        """harmonic-forge#804: the per-project identity assertion runs before
+        every lane post, so a low REST budget must not block it -- or a low
+        budget would block every post at its first line."""
+        code, execv = self._run_main_with(["api", "user", "--jq", ".login"],
+                                           scan_reason=None, budget_result=(500, 1.0))
+        self.assertIsNone(code)
+        execv.assert_called_once()
+
+    def test_a_lookalike_api_user_call_is_not_exempt(self):
+        """Only the exact probe is exempt: other `api user` shapes still pay."""
+        code, execv = self._run_main_with(["api", "user", "--jq", ".email"],
+                                           scan_reason=None, budget_result=(500, 1.0))
+        self.assertEqual(code, 3)
+        execv.assert_not_called()
+
     def test_internal_exception_fails_open(self):
         """A bug in the shim must never brick `gh` entirely."""
         shim = _load_shim()

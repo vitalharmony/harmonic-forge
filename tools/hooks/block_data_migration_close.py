@@ -69,6 +69,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hook_identity import repo_from_checkout as _repo_from_checkout, slot_env as _slot_env  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shell_parse import command_segments  # noqa: E402
@@ -105,7 +107,7 @@ def _deny(reason: str) -> None:
     }))
 
 
-def _gh(*args: str, cwd: str | None = None) -> str | None:
+def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
     """Return stdout, or None on any failure.
 
     Fail-open by design: a hook that blocks work whenever the network is
@@ -117,6 +119,7 @@ def _gh(*args: str, cwd: str | None = None) -> str | None:
     try:
         result = subprocess.run(
             ("gh", *args), capture_output=True, text=True, timeout=7, cwd=cwd,
+            env=_slot_env(repo),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -245,6 +248,9 @@ def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
     """
     if explicit:
         return explicit
+    known = _repo_from_checkout(cwd)  # harmonic-forge#804: before any gh call
+    if known:
+        return known
     out = _gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner",
               cwd=cwd)
     return out.strip() if out and out.strip() else None
@@ -252,7 +258,7 @@ def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
 
 def labels_for(repo: str, issue: str) -> set[str] | None:
     """Label names on the issue, or None when they cannot be read."""
-    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name")
+    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo)
     if out is None:
         return None
     return {line.strip() for line in out.splitlines() if line.strip()}

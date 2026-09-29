@@ -35,7 +35,7 @@ import re
 from pathlib import Path
 
 from l1_post import (
-    fail, is_substantive, regular_body, reject_reserved_marker, resolve_repo, run,
+    fail, is_substantive, regular_body, reject_reserved_marker, resolve_repo, run, apply_project_identity,
 )
 
 ALLOWED_LABELS = {"bug", "feature", "tech-debt", "ui", "infrastructure"}
@@ -185,6 +185,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.repo = resolve_repo(args.repo)
+    apply_project_identity(args.repo)  # harmonic-forge#804
     body = regular_body(args.body_file)
     reject_reserved_marker(body)
     current = issue_body(args.repo, args.issue)

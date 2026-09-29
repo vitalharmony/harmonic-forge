@@ -39,6 +39,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
+
 #: `<repo>#<number>` — the documented element format (`REF_FORMAT` in
 #: `belt_mechanics.py`). Validated rather than assumed: an entry that does not
 #: match is reported as its own finding, never counted as zero.
@@ -388,6 +391,7 @@ def main() -> int:
     if args.audit:
         if not args.repo:
             parser.error("--audit requires --repo OWNER/REPO")
+        apply_project_identity(args.repo)  # harmonic-forge#804: only --audit calls GitHub
         return audit(records, args.repo, args.window if args.window > 10 else 100)
     return report(records, malformed, args.last, args.window, args.log)
 

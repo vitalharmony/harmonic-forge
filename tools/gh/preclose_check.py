@@ -58,6 +58,7 @@ from manifest import (  # noqa: E402
     ManifestError, normalize_repo as normalize_manifest_repo,
     require_onboarded_repo,
 )
+from manifest_identity import apply_project_identity  # noqa: E402
 
 # A change under any of these runs on every session, every commit, or every
 # gate -- so its failure mode is silent and total rather than local.
@@ -757,6 +758,7 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    apply_project_identity(registered_repo(args.repo))  # harmonic-forge#804
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")

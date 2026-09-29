@@ -470,6 +470,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file", type=Path, required=True,
                         help="gate report body to check")
     args = parser.parse_args(argv)
+    import sys  # noqa: PLC0415
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+    from manifest_identity import apply_project_identity  # noqa: PLC0415
+    apply_project_identity(args.repo)  # harmonic-forge#804
     ok, message = check_gate_result(args.repo, args.file.read_text(encoding="utf-8"))
     print(message)
     return 0 if ok else 1

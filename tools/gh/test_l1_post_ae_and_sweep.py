@@ -12,6 +12,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 import unittest
 
@@ -130,6 +131,17 @@ class MainIntegrationTests(unittest.TestCase):
         self.ae_file = self.tmp / "ae.md"
         self.sweep_file = self.tmp / "sweep.md"
         self.posted_kinds: list[str] = []
+        # harmonic-forge#804: `main` acts as the repo's registered account, which
+        # these fake repos have none of; that step has its own tests.
+        identity = mock.patch.object(post, "apply_project_identity")
+        identity.start()
+        self.addCleanup(identity.stop)
+        # ...and the cwd here is an unregistered worktree, so the manifest fallback
+        # that replaced `gh repo view` in require_open_pr is stubbed the same way.
+        cwd_repo = mock.patch.object(
+            post, "project_for_path", return_value=mock.Mock(repo="vitalharmony/harmonic-forge"))
+        cwd_repo.start()
+        self.addCleanup(cwd_repo.stop)
 
     def tearDown(self) -> None:
         for f in (self.ae_file, self.sweep_file):

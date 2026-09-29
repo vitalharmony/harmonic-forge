@@ -24,6 +24,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
+
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
@@ -354,6 +357,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     repo = current_repo()
+    apply_project_identity(repo)  # harmonic-forge#804
     if args.issue is not None:
         issue = args.issue
     else:

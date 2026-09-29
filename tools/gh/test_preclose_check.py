@@ -308,6 +308,7 @@ class RepoMismatchTests(ScratchRepo):
 name = "future"
 prefix = "X"
 repo = "example/future"
+account = "vitalharmony"
 onboarded = false
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"
@@ -331,6 +332,7 @@ runs_lane3 = true
 name = "future"
 prefix = "X"
 repo = "example/future"
+account = "vitalharmony"
 onboarded = false
 [project.protocol]
 worktree_name = "{checkout}-lane{lane}"

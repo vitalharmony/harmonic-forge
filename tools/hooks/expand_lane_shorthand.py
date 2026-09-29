@@ -62,6 +62,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hook_identity import slot_env as _slot_env  # noqa: E402
+
 DOC_PATH = Path(__file__).resolve().parent.parent.parent / "rules" / "lane-shorthand.md"
 
 TABLE_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*(.+?)\s*\|")
@@ -375,6 +377,7 @@ def fetch_issue_context(repo: str, number: str, timeout: int = _FETCH_TIMEOUT_SE
                 "--json", "title,state,updatedAt,body,comments,url",
             ],
             capture_output=True, text=True, timeout=timeout, check=False,
+            env=_slot_env(repo),  # harmonic-forge#804
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

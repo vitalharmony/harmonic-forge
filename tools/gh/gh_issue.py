@@ -35,6 +35,8 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 import handoff_owed  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
 
 _BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
 
@@ -589,6 +591,7 @@ def main() -> int:
              "identically to a deliberate 'in no release'.",
     )
     args = parser.parse_args()
+    apply_project_identity(args.repo)  # harmonic-forge#804: act as the repo's own account
 
     # harmonic-forge#687 AC3. A reasonless exception is refused at the parser,
     # BEFORE the issue is created -- so the run fails without having filed

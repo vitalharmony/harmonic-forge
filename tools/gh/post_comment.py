@@ -29,6 +29,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest_identity import apply_project_identity  # noqa: E402
+
 
 def post_comment(repo: str, issue: int, body_file: Path, source_content: str) -> int:
     print(f"[POST-COMMENT] Posting to {repo}#{issue}")
@@ -90,6 +93,7 @@ def main() -> int:
     group.add_argument("--file", type=Path, help="Path to a file containing the comment body")
     group.add_argument("--body", type=str, help="Comment body as a literal string (written to a tempfile internally)")
     args = parser.parse_args()
+    apply_project_identity(args.repo)  # harmonic-forge#804
 
     tmp_path: Path | None = None
     if args.file:

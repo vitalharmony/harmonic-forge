@@ -147,6 +147,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hook_identity import slot_env as _slot_env  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from batch_auth import REPO_PREFIXES  # noqa: E402
 
@@ -161,16 +163,22 @@ STATE_PATH = Path.home() / ".claude" / "state" / "main-ci-status.json"
 DEFAULT_REQUIRED_CHECKS = {"verify"}
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
+def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)
     return result.returncode, result.stdout if result.returncode == 0 else result.stderr
 
 
+def _run_for(repo: str):
+    """harmonic-forge#804: this sweep spans accounts, so each repo gets its own slot."""
+    env = _slot_env(repo)
+    return lambda cmd: _run(cmd, env=env)
+
+
 def _main_sha(repo: str, run=None) -> str | None:
-    run = run or _run
+    run = run or _run_for(repo)
     code, out = run(["gh", "api", f"repos/{repo}/commits/main", "--jq", ".sha"])
     if code != 0:
         return None
@@ -203,7 +211,7 @@ def check_repo(repo: str, run=None, sha=None) -> tuple[str, str] | None:
 
     `sha`/`run` injected for tests -- no test may reach `gh api`.
     """
-    run = run or _run
+    run = run or _run_for(repo)
     head = sha if sha is not None else _main_sha(repo, run=run)
     if head is None:
         return None

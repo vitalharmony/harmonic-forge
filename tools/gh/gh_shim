@@ -83,8 +83,15 @@ def main() -> None:
             and "-i" in argv
         )
         is_auth_or_version = bool(argv) and (argv[0] == "auth" or argv[0] == "--version")
+        # harmonic-forge#804: the per-project identity assertion (`gh api user --jq
+        # .login`) must not be refused by a low REST budget, or a low budget would
+        # block every lane post at its first line.
+        is_identity_probe = (
+            len(argv) == 4 and argv[0] == "api" and argv[1] == "user"
+            and argv[2] == "--jq" and argv[3] == ".login"
+        )
 
-        if not is_auth_or_version and not is_internal_budget_probe:
+        if not is_auth_or_version and not is_internal_budget_probe and not is_identity_probe:
             result = gh_scan_patterns.budget()
             if result is not None:
                 remaining, reset_epoch = result

@@ -21,6 +21,12 @@ set -euo pipefail
 
 ACCT_HOME="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
 
+# harmonic-forge#804: `gh` gives GH_TOKEN precedence over GH_CONFIG_DIR (tested
+# 2026-09-28: GH_TOKEN=vitalharmony + the harmonicarchitect slot resolves to
+# vitalharmony), so an inherited token would silently defeat the slot -- both the
+# identity probe below and the exec. Cleared once, before either.
+unset GH_TOKEN GITHUB_TOKEN
+
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-1}"

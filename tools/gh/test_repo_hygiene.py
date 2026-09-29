@@ -921,6 +921,43 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class PerRepoIdentityTests(unittest.TestCase):
+    """harmonic-forge#804: the sweep spans accounts, so each repo's subprocesses
+    run under that repo's own slot -- never one process-wide identity."""
+
+    def tearDown(self):
+        rh._use_slot(None)
+
+    def _env_for(self, repo):
+        rh._use_slot(repo)
+        with patch("subprocess.run") as run:
+            run.return_value = unittest.mock.Mock(returncode=0, stdout="[]", stderr="")
+            rh._run(["gh", "api", "x"])
+        return run.call_args.kwargs.get("env")
+
+    def test_a_registered_repo_runs_under_its_own_slot(self):
+        env = self._env_for("vitalharmony/hrse")
+        self.assertTrue(env["GH_CONFIG_DIR"].endswith("gh-accounts/vitalharmony"))
+        self.assertNotIn("GH_TOKEN", env)
+
+    def test_an_unregistered_repo_inherits(self):
+        self.assertIsNone(self._env_for("someone/else"))
+
+    def test_switching_repos_switches_the_env(self):
+        first = self._env_for("vitalharmony/hrse")
+        second = self._env_for("someone/else")
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+    def test_the_env_is_cleared_after_use_slot_none(self):
+        rh._use_slot("vitalharmony/hrse")
+        rh._use_slot(None)
+        with patch("subprocess.run") as run:
+            run.return_value = unittest.mock.Mock(returncode=0, stdout="[]", stderr="")
+            rh._run(["git", "status"])
+        self.assertIsNone(run.call_args.kwargs.get("env"))
+
+
 class AuditUnboardedTests(unittest.TestCase):
     """hrse#979 — open issues invisible to board-driven reporting."""
 

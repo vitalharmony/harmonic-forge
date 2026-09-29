@@ -20,6 +20,7 @@ from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
 from manifest import ManifestError, require_onboarded_repo  # noqa: E402
+from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
 
 # harmonic-forge#219: shared item-list cache, consolidating 4 previously
 # independent duplicate `gh project item-list` fetches. Falls back to a
@@ -1308,10 +1309,11 @@ def require_open_pr(
     a private-repo incident: `gh pr list --head <branch> --base main` with NO `--repo`
     silently returned `[]` for a real, open, matching PR when run from a git
     *worktree* (confirmed live) -- `gh`'s own implicit repo detection for
-    `pr list` is not as reliable as `gh repo view`'s, which correctly resolves
-    the same worktree. So the repo is resolved explicitly via `gh repo view`
-    (cwd-based, same source of truth as intended, just a reliable path to it)
-    and passed to `pr list` as `--repo`, rather than leaving `gh` to infer it.
+    `pr list` is not reliable from a worktree. So the repo is resolved
+    explicitly (from the git remote, else from projects.toml by checkout path;
+    harmonic-forge#804 replaced the `gh repo view` fallback, which ran before
+    any per-project identity was applied) and passed to `pr list` as `--repo`,
+    rather than leaving `gh` to infer it.
 
     Returns (checks, warnings), matching `world_checks`' shape: warnings is
     durable text the caller appends into the posted comment body itself
@@ -1332,13 +1334,17 @@ def require_open_pr(
         # Fallback: the original GraphQL path, unchanged. Reached when the
         # remote is not a recognised github.com URL, or REST itself failed --
         # never silently, so a genuinely broken check still fails loudly below.
-        repo_view = run("gh", "repo", "view", "--json", "nameWithOwner",
-                         "-q", ".nameWithOwner", cwd=cwd)
-        if repo_view.returncode or not repo_view.stdout.strip():
-            fail("cannot resolve the current repo (git remote unusable, and "
-                 "'gh repo view' failed): "
-                 + (repo_view.stderr.strip() or "empty output"))
-        cwd_repo = repo_view.stdout.strip()
+        # harmonic-forge#804: the checkout's repo comes from projects.toml, not
+        # `gh repo view` -- that call ran before any identity was applied, and
+        # under the wrong login it cannot see a client account's repo at all.
+        try:
+            cwd_repo = project_for_path(cwd or Path.cwd()).repo
+        except ManifestError as exc:
+            fail("cannot resolve the current repo (git remote unusable, and the "
+                 f"checkout is not registered in projects.toml): {exc}")
+        if not cwd_repo:
+            fail("cannot resolve the current repo: its projects.toml entry "
+                 "declares no `repo`")
         result = run("gh", "pr", "list", "--repo", cwd_repo, "--head", branch,
                      "--base", "main", "--json", "number,state", cwd=cwd)
         if result.returncode:
@@ -1781,6 +1787,10 @@ def main() -> None:
     # repository-sensitive work.
     args.repo = resolve_repo(args.repo)
     repo = args.repo
+    # harmonic-forge#804: act as the repo's own registered account, before the
+    # first `gh` call, so a client account's repo is reachable and a wrong
+    # login refuses before anything is written.
+    apply_project_identity(repo)
     sha = resolve_sha(args.sha)
 
     if args.kind == "ae-and-sweep":

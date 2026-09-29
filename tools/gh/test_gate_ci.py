@@ -404,7 +404,10 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "report.md"
             path.write_text(body, encoding="utf-8")
-            with mock.patch.object(gate_ci, "check_gate_result", checker):
+            # harmonic-forge#804: `main` applies the repo's registered identity; the
+            # fake repo has none, and that step has its own tests.
+            with mock.patch.object(gate_ci, "check_gate_result", checker), \
+                 mock.patch.dict(sys.modules, {"manifest_identity": mock.Mock()}):
                 return gate_ci.main(["--repo", "o/r", "--file", str(path)])
 
     def test_an_accepted_report_exits_zero(self):

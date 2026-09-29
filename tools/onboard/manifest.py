@@ -161,6 +161,8 @@ def _validate(projects: list[Project], target: Path) -> None:
                 raise ManifestError(
                     f"{target}: {project.repo} declared twice ({dupe}, {project.name})")
             seen_repo[project.repo] = project.name
+            if not project.account:  # harmonic-forge#804: no repo without an identity
+                raise ManifestError(f"{target}: {project.name} declares a repo but no `account`")
         if project.onboarded and not project.repo:
             raise ManifestError(
                 f"{target}: {project.name} is onboarded but declares no repo")

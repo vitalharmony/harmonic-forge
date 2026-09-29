@@ -165,9 +165,12 @@ class RequireOpenPr(unittest.TestCase):
         self.assertFalse(any("pr" in c and "list" in c for c in captured),
                          "gh pr list (GraphQL) was called")
 
-    def test_it_falls_back_to_graphql_when_git_cannot_resolve_the_repo(self) -> None:
+    def test_it_falls_back_to_the_manifest_when_git_cannot_resolve_the_repo(self) -> None:
         """The fallback is not dead code: a non-github.com remote, or no git
-        remote at all, still has to reach a verdict rather than fail open."""
+        remote at all, still has to reach a verdict rather than fail open.
+        harmonic-forge#804: it resolves the checkout's repo from projects.toml,
+        no longer via `gh repo view`, which ran before any identity was applied
+        and cannot see a client account's repo under the wrong login."""
         captured: list[tuple] = []
 
         def _run(*args, **kwargs):
@@ -176,12 +179,15 @@ class RequireOpenPr(unittest.TestCase):
                 _pr_list_result([{"number": 1, "state": "OPEN"}]),
                 git_remote_fails=True)(*args, **kwargs)
 
-        with mock.patch.object(L, "run", side_effect=_run):
+        project = mock.Mock(repo="vitalharmony/hrse")
+        with mock.patch.object(L, "run", side_effect=_run), \
+             mock.patch.object(L, "project_for_path", return_value=project):
             checks, _ = L.require_open_pr("vitalharmony/hrse", "feat/x")
 
         self.assertEqual(checks, ["pr-open"])
-        self.assertTrue(any("view" in c for c in captured),
-                        "fallback did not reach gh repo view")
+        self.assertFalse(any("view" in c for c in captured), "gh repo view was called")
+        pr_list = next(c for c in captured if "pr" in c and "list" in c)
+        self.assertIn("vitalharmony/hrse", pr_list)
 
     def test_the_remediation_message_does_not_hardcode_the_issue_repo(self) -> None:
         """The printed `gh pr create` command must be runnable as-is from the
@@ -193,11 +199,20 @@ class RequireOpenPr(unittest.TestCase):
         message = str(caught.exception) + getattr(caught.exception, "args", ("",))[0]
         self.assertNotIn("--repo vitalharmony/harmonic-forge", message)
 
-    def test_repo_view_failure_aborts_rather_than_silently_passing(self) -> None:
-        """a private-repo incident: the new `gh repo view` resolution step must fail
-        closed too, same posture as the `gh pr list` call it feeds."""
+    def test_an_unresolvable_checkout_aborts_rather_than_silently_passing(self) -> None:
+        """a private-repo incident: the resolution step must fail closed too,
+        same posture as the `gh pr list` call it feeds. harmonic-forge#804: the
+        step is now a manifest lookup, so an unregistered checkout is the case."""
         failed = subprocess.CompletedProcess(("gh",), 1, "", "not a git repo")
-        with mock.patch.object(L, "run", return_value=failed):
+        with mock.patch.object(L, "run", return_value=failed), \
+             mock.patch.object(L, "project_for_path", side_effect=L.ManifestError("unregistered")):
+            with self.assertRaises(SystemExit):
+                L.require_open_pr("vitalharmony/hrse", "feat/1234-thing")
+
+    def test_a_registered_entry_with_no_repo_aborts(self) -> None:
+        failed = subprocess.CompletedProcess(("gh",), 1, "", "not a git repo")
+        with mock.patch.object(L, "run", return_value=failed), \
+             mock.patch.object(L, "project_for_path", return_value=mock.Mock(repo=None)):
             with self.assertRaises(SystemExit):
                 L.require_open_pr("vitalharmony/hrse", "feat/1234-thing")
 
