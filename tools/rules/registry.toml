@@ -2341,7 +2341,7 @@ id = "R-0357"
 file = "rules/universal-agent.md"
 anchor = "report-discipline"
 statement = "Evidence a protocol rule requires is MANDATORY and unaffected by R-0356: R-0131/R-0176 (a gate report carries the pasted artifact, R-0132's size escape being a link not a summary), R-0240 (handoff precondition evidence inline), and every template heading l1_post.py validates. Where a rule names an artifact, that naming is the answer -- do not re-derive it from the input/artifact test. Otherwise a generated ARTIFACT the operator asked for is pasted verbatim, commentary after and never instead; this is NARROWER than the operator's standing instruction, which triggers on any tool-generated report regardless of who asked, and where they differ the broader governs and you paste. The test is authorship and purpose, not size. Two cases resolved explicitly: the operator asking to SEE something that already exists (a diff, a log line, an error) is pasted, because they asked for the text and not your reading of it; genuinely unsure with nobody asking, relay the verdict and say the raw output is available."
-text_sha = "a5174b34f289388f"
+text_sha = "ff32a0ed76daf91e"
 hooks = []
 exception_to = ["R-0356"]
 
