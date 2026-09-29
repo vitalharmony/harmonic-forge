@@ -357,6 +357,14 @@ class LiveManifestTests(unittest.TestCase):
             "kenekted/kenekted-docs": ("harmonicarchitect", "1"),
         })
 
+    def test_every_project_records_a_token_exception_with_a_reason(self) -> None:
+        """R-0368 / harmonic-forge#805: lane slots hold fine-grained PATs unless an exception is
+        recorded. Every board today is user-owned (which a fine-grained PAT cannot access), so
+        every entry carries one. A NEW entry without a reason fails here on purpose: it must
+        either record its exception or move to a fine-grained PAT, and say which."""
+        missing = [p.name for p in mf.load(LIVE) if not (p.token_exception or "").strip()]
+        self.assertEqual(missing, [], "these entries record no token_exception")
+
     def test_the_sweep_list_matches_the_live_hygiene_task(self) -> None:
         self.assertEqual(mf.sweep_repos(LIVE), [
             "vitalharmony/hrse", "vitalharmony/harmonic-forge",
