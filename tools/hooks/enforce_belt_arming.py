@@ -517,10 +517,11 @@ def decide(payload: dict[str, Any], lane: str | None,
                         remaining = max(1, ID_LESS_STALE_SECONDS - age)
                         return _reason(lane, calls,
                                        f"Denied: an earlier CronCreate attempt in this session "
-                                       f"never completed (job id unknown, recorded {age}s ago; "
-                                       f"it was probably denied or failed). Retry in "
-                                       f"{remaining}s, when that record expires. If CronList "
-                                       f"shows a job, the suspenders are already armed.")
+                                       f"left a record with no job id (job id unknown, recorded "
+                                       f"{age}s ago). Run CronList first: if it shows the "
+                                       f"suspenders job, they are already armed, so do NOT retry. "
+                                       f"If it shows nothing, the attempt was denied or failed: "
+                                       f"Retry in {remaining}s, when that record expires.")
                     job = f"as cron `{record['id']}`"
                     return _reason(lane, calls,
                                    f"Denied: the suspenders are already armed in this "

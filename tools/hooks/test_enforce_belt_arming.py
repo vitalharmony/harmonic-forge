@@ -315,6 +315,9 @@ class DeletedCronClearsTheArmingRecord(unittest.TestCase):
             # (naming the seconds), never to delete a file.
             self.assertIn("Retry in", reason)
             self.assertRegex(reason, r"Retry in \d+s")
+            # ...but only AFTER CronList: an id-less record can also mean the job exists and its
+            # id could not be parsed, and a blind retry would stack a duplicate.
+            self.assertLess(reason.index("CronList"), reason.index("Retry in"))
             self.assertNotIn(str(Path(arming) / "sess-a"), reason)
             self.assertNotIn("removes", reason)
             self.assertNotIn("remove ", reason)
@@ -332,6 +335,15 @@ class DeletedCronClearsTheArmingRecord(unittest.TestCase):
         found = int(re.search(r"Retry in (\d+)s", reason).group(1))
         self.assertLessEqual(found, guard.ID_LESS_STALE_SECONDS)
         self.assertGreater(found, guard.ID_LESS_STALE_SECONDS - 30)
+
+    def test_the_settings_allow_rule_for_the_canonical_cron_is_present(self):
+        """harmonic-forge#814: CronCreate is allowed by rule, not by the nondeterministic
+        auto-mode classifier. RESIDUAL, stated here so removing this test is a decision: a static
+        allow cannot be scoped to lane sessions, and this hook does not restrict a session with no
+        LANE set, so such a session's CronCreate is now allowed without the classifier."""
+        settings = json.loads((Path(guard.__file__).resolve().parents[2] / ".claude"
+                               / "settings.json").read_text(encoding="utf-8"))
+        self.assertIn("CronCreate", settings["permissions"]["allow"])
 
     def test_ac7_posttooluse_never_decides(self):
         with tempfile.TemporaryDirectory() as arming:
