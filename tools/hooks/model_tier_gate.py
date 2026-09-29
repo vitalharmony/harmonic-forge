@@ -167,11 +167,15 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
 _READ_TIMEOUT_SECONDS = 4
 
 
-def timed_run(cmd: list[str], timeout: float = _READ_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+def timed_run(cmd: list[str], timeout: float = _READ_TIMEOUT_SECONDS,
+              env: dict | None = None) -> subprocess.CompletedProcess:
     """`_run` with a timeout -- the one timed board-read runner every Tier
-    reader in this directory uses (edit gate, trigger check, Stop backstop)."""
+    reader in this directory uses (edit gate, trigger check, Stop backstop).
+
+    `env` (harmonic-forge#820) runs the read as another account's slot, for a repo on an account
+    other than the caller's; None inherits the caller's environment."""
     return subprocess.run(cmd, capture_output=True, text=True, check=False,
-                          timeout=timeout)
+                          timeout=timeout, env=env)
 
 
 def _allow() -> None:
@@ -406,7 +410,7 @@ def is_not_an_issue_error(message: str) -> bool:
 
 
 def read_tier(repo: str, issue_number: int, project_number: str, run=None,
-              ttl: float = _CACHE_TTL):
+              ttl: float = _CACHE_TTL, owner: str | None = None):
     """`(tier, error)` for one issue on one board.
 
     `tier` is a Tier string, None (no Tier set, or the shared module is not
@@ -423,7 +427,7 @@ def read_tier(repo: str, issue_number: int, project_number: str, run=None,
     try:
         return _item_list_cache.fetch_issue_tier(
             repo, issue_number, project_number,
-            run=run or _run, ttl=ttl, cache_dir=_CACHE_DIR,
+            run=run or _run, ttl=ttl, cache_dir=_CACHE_DIR, owner=owner,
         ), None
     except _item_list_cache.GhItemListError as exc:
         message = str(exc).strip() or exc.__class__.__name__

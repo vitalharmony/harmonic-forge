@@ -248,16 +248,18 @@ def _locked_state(state_path: Path):
 # manifest is checked against it (see manifest.check_prefix_agreement), and this
 # reads the manifest so all three agree by construction rather than by review.
 #
-# Cross-account prefixes stay excluded: K/P point at other accounts entirely,
-# and BATCH authorization never crosses an account boundary (credential
-# isolation across engagements is a standing rule). That filter is applied here
-# rather than in the manifest, which legitimately describes every project.
-def _repo_prefixes(account: str = "vitalharmony") -> dict[str, str]:
+# Every onboarded repo is included, whatever its account (harmonic-forge#820). This used to
+# exclude the other account's prefixes so BATCH authorization could never cross an account
+# boundary, which made `BATCH K12` authorize nothing and say nothing. The boundary is now
+# enforced where it belongs: every `gh` call for a repo runs as THAT repo's own slot
+# (harmonic-forge#804), so a key for a kenekted repo can only ever act as harmonicarchitect.
+# Pass `account` to restrict the map to one account.
+def _repo_prefixes(account: str | None = None) -> dict[str, str]:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
         import manifest as _manifest  # noqa: PLC0415 — optional, see below
         return {p.repo: p.prefix for p in _manifest.load()
-                if p.repo and (p.account or account) == account}
+                if p.repo and (account is None or (p.account or account) == account)}
     except Exception:  # noqa: BLE001 — a hook must never fail closed on import
         # This runs as a PreToolUse hook on every matching command. If the
         # manifest cannot be read, denying every BATCH would be worse than
@@ -268,6 +270,9 @@ def _repo_prefixes(account: str = "vitalharmony") -> dict[str, str]:
             "vitalharmony/harmonic-forge": "F",
             "vitalharmony/cymagraph-infra": "I",
             "vitalharmony/openclaw-projects": "O",
+            "kenekted/kenekted-platform": "K",
+            "kenekted/kenekted-ai": "Y",
+            "kenekted/kenekted-docs": "D",
         }
 
 

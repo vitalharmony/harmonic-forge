@@ -158,19 +158,29 @@ def collect_refs(prompt: str, cwd: str) -> list[tuple[str, int]]:
     return refs
 
 
-def _boards() -> dict[str, str]:
-    """`{owner/name: board_number}` from `projects.toml`, else the gate's
-    hinted targets (hrse and harmonic-forge) if the manifest cannot load."""
+def _board_owners() -> dict[str, str]:
+    """`{owner/name: board_owner}` from `projects.toml`; empty if the manifest cannot load."""
     try:
         sys.path.insert(0, str(HOOKS_DIR.parent / "onboard"))
-        from manifest import by_repo, repo_boards  # noqa: PLC0415
+        from manifest import repo_boards  # noqa: PLC0415
 
-        # harmonic-forge#806: the board read runs as the default account, so a repo on another
-        # account (kenekted) is left out and takes the visible NO_BOARD path, exactly as
-        # before it was registered, rather than reading its board as the wrong identity.
-        projects = by_repo()
-        return {repo.lower(): board[1] for repo, board in repo_boards().items()
-                if projects.get(repo) is not None and projects[repo].account == "vitalharmony"}
+        return {repo.lower(): board[0] for repo, board in repo_boards().items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _boards() -> dict[str, str]:
+    """`{owner/name: board_number}` from `projects.toml`, else the gate's
+    hinted targets (hrse and harmonic-forge) if the manifest cannot load.
+
+    Every repo with a board is included, whatever its account (harmonic-forge#820): the read for
+    a repo runs as THAT repo's own slot (`lookup_tier`), so a kenekted issue's Tier is read as
+    harmonicarchitect against harmonicarchitect's board rather than skipped."""
+    try:
+        sys.path.insert(0, str(HOOKS_DIR.parent / "onboard"))
+        from manifest import repo_boards  # noqa: PLC0415
+
+        return {repo.lower(): board[1] for repo, board in repo_boards().items()}
     except Exception:  # noqa: BLE001
         return {repo.lower(): number
                 for repo, number in model_tier_gate.HINTED_TARGETS.values()}
@@ -200,7 +210,21 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str]):
     board = boards.get(repo.lower())
     if board is None:
         return NO_BOARD, None
-    return model_tier_gate.read_tier(repo.lower(), number, board, run=_timed_run, ttl=0)
+    owner = _board_owners().get(repo.lower())
+    env = None
+    try:
+        sys.path.insert(0, str(HOOKS_DIR))
+        import hook_identity  # noqa: PLC0415
+
+        env = hook_identity.slot_env(repo)  # the repo's own slot, or None to inherit
+    except Exception:  # noqa: BLE001 -- a hook must never fail on identity resolution
+        env = None
+    if env is None:
+        run = _timed_run
+    else:
+        def run(cmd):
+            return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
+    return model_tier_gate.read_tier(repo.lower(), number, board, run=run, ttl=0, owner=owner)
 
 
 def decide(refs: list[tuple[str, int]], model: str | None, lookup,

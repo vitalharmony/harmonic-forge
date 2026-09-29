@@ -115,7 +115,7 @@ Usage
     # The Lane 1 case: every live worktree, repo-wide, plus --queue-for l1
     # re-checking any issue a worktree, --issues, or a recent l2_post.py
     # `plan` posting already names:
-    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
         --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
 
     # The Lane 2 case: both halves, same candidate-supplied contract.
@@ -123,7 +123,7 @@ Usage
     # ~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl checkout; --queue-for l2 re-checks whichever
     # of those (plus any --issues, plus a recent l1_post.py `handoff`/
     # `rework` posting) carry an eligible marker:
-    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony \\
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
         --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
 
     # The Lane 3 case: Lane 3 has no worktree of its own, so its candidate
@@ -131,7 +131,7 @@ Usage
     # AC7') any recent l1_post.py ready-for-l3/ae/sweep/ae-and-sweep posting --
     # an empty set yields an empty queue, not a scan. The repo set for
     # --all-worktrees/--account-repos is still DERIVED, not listed (R-0122):
-    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony \\
+    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect \\
         --watch l1 --interval 300 --deadline-seconds 1800
 
     # No lane arms the retired account-wide belt sweep
@@ -213,6 +213,26 @@ from belt_mechanics import (  # noqa: E402
 #: paths; threading it through every signature would be a larger diff than the
 #: change warrants and would not make it more explicit.
 _ACCOUNT = "vitalharmony"
+
+_REPO_ACCOUNTS: dict[str, str] | None = None
+
+
+def _account_of(repo: str) -> str:
+    """The account whose slot reaches `repo`, from `projects.toml`; the process default otherwise.
+
+    harmonic-forge#820: one belt now covers repos on more than one account (vitalharmony AND
+    harmonicarchitect), so each call is scoped to ITS repo's account, not to one process-wide
+    value. A vitalharmony query against a harmonicarchitect repo reads EMPTY, and an empty poll
+    reads as "no new work".
+    """
+    global _REPO_ACCOUNTS
+    if _REPO_ACCOUNTS is None:
+        try:
+            _REPO_ACCOUNTS = {p.repo.lower(): p.account for p in onboard_manifest.load()
+                              if p.repo and p.account}
+        except Exception:  # noqa: BLE001 -- unreadable manifest: fall back to the default
+            _REPO_ACCOUNTS = {}
+    return _REPO_ACCOUNTS.get((repo or "").lower()) or _ACCOUNT
 _COUNTER = CallCounter()
 
 #: The full marker text, not just its `kind=` field (harmonic-forge#583) --
@@ -475,7 +495,7 @@ def _report_resolutions(
 def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
     try:
         raw = gh_as(
-            _ACCOUNT,
+            _account_of(repo),
             ["api", f"repos/{repo}/issues/{issue}/comments?since={since}"],
             counter=_COUNTER,
         )
@@ -709,7 +729,7 @@ def _issue_labels(repo: str, issue: int) -> set[str] | None:
     moment its worktree exists."""
     try:
         raw = gh_as(
-            _ACCOUNT,
+            _account_of(repo),
             ["api", "-X", "GET", f"repos/{repo}/issues/{issue}",
              "--jq", ".labels[].name"],
             counter=_COUNTER,
@@ -743,7 +763,7 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     the issue actually having been resolved."""
     try:
         raw = gh_as(
-            _ACCOUNT,
+            _account_of(repo),
             ["api", "-X", "GET", f"repos/{repo}/issues/{issue}/comments",
              "--paginate", "-f", "per_page=100"],
             counter=_COUNTER,
@@ -772,7 +792,7 @@ def _issue_is_open(repo: str, issue: int) -> bool:
     silently dropping it -- the same fail-safe direction as the rest of
     this module's error handling)."""
     try:
-        raw = gh_as(_ACCOUNT,
+        raw = gh_as(_account_of(repo),
                     ["api", "-X", "GET", f"repos/{repo}/issues/{issue}", "--jq", ".state"],
                     counter=_COUNTER)
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
@@ -1012,8 +1032,12 @@ def _manifest_projects(account: str) -> list:
         raise AccountReposUnavailable(
             f"could not read projects.toml: {exc}. Refusing to arm a belt on an "
             "unknown repo set -- an empty one reads as 'no work anywhere'.") from exc
+    # harmonic-forge#820: `account` may name several, comma-separated ("vitalharmony,
+    # harmonicarchitect"); one belt then covers every named account's repos, each polled through
+    # its own slot (`_account_of`).
+    accounts = {a.strip() for a in account.split(",") if a.strip()}
     selected = [p for p in projects
-                if p.onboarded and p.repo and (p.account or "vitalharmony") == account]
+                if p.onboarded and p.repo and (p.account or "vitalharmony") in accounts]
     if not selected:
         raise AccountReposUnavailable(
             f"projects.toml declares no onboarded repos for account {account!r} -- "
@@ -1278,8 +1302,8 @@ def comment_watch_cycle(
     """
     lines: list[str] = []
     fetch_failed = False
-    account = _ACCOUNT or "vitalharmony"
     for repo, issue in targets:
+        account = _account_of(repo)
         target = f"{repo}#{issue}"
         mark = watermarks.get(account, _wm_key(repo, issue))
         comments = _fetch_comments(
@@ -1644,7 +1668,7 @@ def queue_cycle(
 CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
     "1": [
         {
-            "argv": ["--all-worktrees", "--account-repos", "vitalharmony",
+            "argv": ["--all-worktrees", "--account-repos", "vitalharmony,harmonicarchitect",
                       "--queue-for", "l1", "--watch", "l2", "--watch", "l3",
                       "--interval", "300",
                       "--deadline-seconds", str(MONITOR_LIFETIME_S)],
@@ -1653,7 +1677,7 @@ CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
     ],
     "2": [
         {
-            "argv": ["--all-worktrees", "--account-repos", "vitalharmony",
+            "argv": ["--all-worktrees", "--account-repos", "vitalharmony,harmonicarchitect",
                       "--queue-for", "l2", "--watch", "l1", "--interval", "300",
                       "--deadline-seconds", str(MONITOR_LIFETIME_S)],
             "lock": "belt-lane2.lock",
@@ -1661,7 +1685,7 @@ CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
     ],
     "3": [
         {
-            "argv": ["--queue-for", "l3", "--account-repos", "vitalharmony",
+            "argv": ["--queue-for", "l3", "--account-repos", "vitalharmony,harmonicarchitect",
                       "--watch", "l1", "--interval", "300",
                       "--deadline-seconds", str(MONITOR_LIFETIME_S)],
             "lock": "belt-lane3.lock",
@@ -1984,7 +2008,7 @@ def _account_for_repo_arg(repos, account_repos: str | None = None) -> str | None
     refused rather than silently polled as one of them. None means "fall back".
     """
     if account_repos:
-        return account_repos
+        return account_repos.split(",")[0].strip()  # the default; each repo resolves its own
     if not repos:
         return None
     if isinstance(repos, str):
@@ -2016,6 +2040,11 @@ def main() -> int:
                 or _ACCOUNT)
     try:
         assert_identity(_ACCOUNT)
+        # Every other account this belt polls must authenticate as itself too: an empty poll
+        # from a wrong login reads as "no new work" (harmonic-forge#820).
+        for extra in (args.account_repos or "").split(","):
+            if extra.strip() and extra.strip() != _ACCOUNT:
+                assert_identity(extra.strip())
     except IdentityMismatch as exc:
         parser.error(str(exc))
 
@@ -2338,7 +2367,7 @@ def main() -> int:
                 #: so passing the owner-qualified form yields
                 #: `vitalharmony/vitalharmony/hrse` and matches no ref's
                 #: repo half.
-                tick.repo_result(_ACCOUNT, _r.rsplit("/", 1)[-1], _r in ok_repos)
+                tick.repo_result(_account_of(_r), _r.rsplit("/", 1)[-1], _r in ok_repos)
         tick.counter = CallCounter(
             calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
             calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],

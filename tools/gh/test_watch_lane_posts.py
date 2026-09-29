@@ -225,8 +225,8 @@ class PrefixMapIsDerivedTests(unittest.TestCase):
         import manifest as onboard_manifest
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
         import batch_auth
-        expected = {p.repo: p.prefix for p in onboard_manifest.load()
-                    if p.repo and (p.account or "vitalharmony") == "vitalharmony"}
+        # harmonic-forge#820: every onboarded repo, whatever its account.
+        expected = {p.repo: p.prefix for p in onboard_manifest.load() if p.repo}
         self.assertEqual(batch_auth.REPO_PREFIXES, expected)
 
 
@@ -2040,7 +2040,7 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         canonical = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
         # Swap the two --watch pairs and move --interval 300 to the front.
         reordered = ["--interval", "300", "--all-worktrees", "--account-repos",
-                     "vitalharmony", "--watch", "l3", "--watch", "l2",
+                     "vitalharmony,harmonicarchitect", "--watch", "l3", "--watch", "l2",
                      "--queue-for", "l1", "--deadline-seconds",
                      str(watch_lane_posts.MONITOR_LIFETIME_S)]
         self.assertEqual(sorted(canonical), sorted(reordered),

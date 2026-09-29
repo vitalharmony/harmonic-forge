@@ -470,7 +470,7 @@ TIER_DEEP = "deep"
 ESCALATING_TIERS = frozenset({TIER_DEEP})
 
 
-def fetch_issue_field(
+def _fetch_issue_field_targeted(
     repo: str,
     issue_number: int,
     project_number: str,
@@ -540,6 +540,65 @@ def fetch_issue_field(
     return value
 
 
+def _scan_issue_field(repo: str, issue_number: int, project_number: str, owner: str,
+                      field: str, run) -> str | None:
+    """One issue's field read from the BOARD itself (`gh project item-list`), not the issue.
+
+    harmonic-forge#820: `issue.projectItems` returns nothing for a USER-owned board attached to an
+    issue in an ORGANIZATION repo (the kenekted repos), however the issue is boarded, so the cheap
+    per-issue read cannot tell "no Tier" from "cannot see the board". Reading the board can.
+    """
+    result = run(["gh", "project", "item-list", str(project_number), "--owner", owner,
+                  "--limit", "1000", "--format", "json"])
+    if result.returncode != 0:
+        stderr = getattr(result, "stderr", None)
+        raise GhItemListError(stderr.strip() if stderr else "gh project item-list failed")
+    try:
+        items = json.loads(result.stdout)["items"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GhItemListError(f"unexpected board response shape: {exc}") from exc
+    wanted = repo.lower()
+    for item in items:
+        content = item.get("content") or {}
+        if content.get("number") != int(issue_number):
+            continue
+        if content.get("repository") and str(content["repository"]).lower() != wanted:
+            continue
+        value = item.get(field.lower())
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value) if value not in (None, "") else None
+    return None
+
+
+def fetch_issue_field(
+    repo: str,
+    issue_number: int,
+    project_number: str,
+    field: str = "Tier",
+    run=None,
+    ttl: float = DEFAULT_TTL_SECONDS,
+    cache_dir: Path = None,
+    owner: str | None = None,
+) -> str | None:
+    """`_fetch_issue_field_targeted`, plus a board scan when the caller names the board `owner`.
+
+    A `None` from the cheap per-issue read is ambiguous (harmonic-forge#820): no value, not on the
+    board, or a board the per-issue query cannot see. With `owner` given, that `None` is confirmed
+    against the board itself. Without it the behavior is unchanged.
+    """
+    value = _fetch_issue_field_targeted(
+        repo, issue_number, project_number, field=field, run=run, ttl=ttl, cache_dir=cache_dir)
+    if value is not None or not owner:
+        return value
+    if run is None:
+        import subprocess
+
+        def run(args: list[str]):
+            return subprocess.run(args, capture_output=True, text=True)
+    return _scan_issue_field(repo, issue_number, project_number, owner, field, run)
+
+
 def fetch_issue_tier(
     repo: str,
     issue_number: int,
@@ -547,6 +606,7 @@ def fetch_issue_tier(
     run=None,
     ttl: float = 0,
     cache_dir: Path = None,
+    owner: str | None = None,
 ) -> str | None:
     """One issue's Tier (harmonic-forge#257). Thin wrapper over
     `fetch_issue_field`.
@@ -559,7 +619,7 @@ def fetch_issue_tier(
     """
     value = fetch_issue_field(
         repo, issue_number, project_number, field="Tier",
-        run=run, ttl=ttl, cache_dir=cache_dir,
+        run=run, ttl=ttl, cache_dir=cache_dir, owner=owner,
     )
     # `.strip().lower()` is TIER-specific and stays here rather than moving into
     # the general read. The tier vocabulary is lowercase and every caller

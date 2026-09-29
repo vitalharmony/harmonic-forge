@@ -85,7 +85,7 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
   ```
 
   **`--queue-for l1` catches a Lane 2 plan with no worktree yet through a
@@ -163,7 +163,7 @@ mid-issue is not the command to arm:
   load-bearing and does not transfer.
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
   **`--queue-for l2` catches that inbound handoff through the same
@@ -180,7 +180,7 @@ mid-issue is not the command to arm:
 - **Lane 3** — no worktree of its own; watches what is handed to it:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony --watch l1 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800
   ```
 
   Lane 3 no longer arms a repo-wide sweep. It is the retired account-wide
@@ -233,7 +233,7 @@ own bounded `--queue-for l1` — it reports the queued count once at the first
 poll, even when that count is zero, and names how many repos it scanned. A
 genuinely quiet repo and a dead process must never look the same on the log.
 
-**The repo set is derived, never listed** — `--account-repos vitalharmony`
+**The repo set is derived, never listed** — `--account-repos vitalharmony,harmonicarchitect`
 resolves through `projects.toml`, the onboarded-repo manifest, per **R-0122**
 and this protocol's own design note: *"so a new repo is picked up automatically
 and an archived one drops out."* Onboarding a repo (R-0340) is what brings it

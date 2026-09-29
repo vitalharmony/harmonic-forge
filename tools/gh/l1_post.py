@@ -867,11 +867,17 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
     # board, in either order.
     if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_issue_tier"):
         try:
-            return _item_list_cache.fetch_issue_tier(
+            tier = _item_list_cache.fetch_issue_tier(
                 repo, issue_number, number, run=lambda cmd: run(*cmd),
             )
         except _item_list_cache.GhItemListError as exc:
             fail(f"cannot read Tier for {repo}#{issue_number} on board {owner}/{number}: {exc}")
+        if tier is not None:
+            return tier
+        # `None` is ambiguous (harmonic-forge#820): the issue has no Tier, or is not on the board,
+        # OR the per-issue query is blind to it -- a USER-owned board attached to an issue in an
+        # ORGANIZATION repo (the kenekted repos) returns no project items at all, however the
+        # issue is boarded. Fall through to the full-board scan, which reads the board itself.
     # Fallback for a checkout whose harmonic-forge sibling predates #802 (or is
     # absent entirely). Deliberately the old full-board scan: correctness first,
     # cost second -- a stale sibling must still gate correctly, just expensively.
