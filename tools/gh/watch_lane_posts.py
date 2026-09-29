@@ -2031,6 +2031,30 @@ def _account_for_repo_arg(repos, account_repos: str | None = None) -> str | None
     return next(iter(accounts), None)
 
 
+def _verified_accounts(account_repos: str, primary: str) -> tuple[list[str], list[tuple[str, str]]]:
+    """`(verified accounts, [(skipped account, reason)])` for a comma-separated `--account-repos`.
+
+    The primary account was already asserted, so a failure there refuses to start. Every OTHER
+    account is asserted here and, if its slot is missing or authenticates as someone else, is
+    left out with a loud warning: one dead slot must not take the whole belt down, and an empty
+    poll from a wrong login must not read as "no new work" (harmonic-forge#820).
+    """
+    verified: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for account in (a.strip() for a in account_repos.split(",")):
+        if not account or account in verified:
+            continue
+        if account == primary:
+            verified.append(account)
+            continue
+        try:
+            assert_identity(account)
+            verified.append(account)
+        except IdentityMismatch as exc:
+            skipped.append((account, str(exc)))
+    return verified, skipped
+
+
 def main() -> int:
     global _ACCOUNT
     parser = _build_parser()
@@ -2040,13 +2064,15 @@ def main() -> int:
                 or _ACCOUNT)
     try:
         assert_identity(_ACCOUNT)
-        # Every other account this belt polls must authenticate as itself too: an empty poll
-        # from a wrong login reads as "no new work" (harmonic-forge#820).
-        for extra in (args.account_repos or "").split(","):
-            if extra.strip() and extra.strip() != _ACCOUNT:
-                assert_identity(extra.strip())
     except IdentityMismatch as exc:
         parser.error(str(exc))
+    if args.account_repos:
+        verified, skipped = _verified_accounts(args.account_repos, _ACCOUNT)
+        for account, why in skipped:
+            print(f"[watch_lane_posts] WARNING: account {account} is NOT polled by this belt "
+                  f"({why}); its repos are left out rather than polled as the wrong login",
+                  file=sys.stderr)
+        args.account_repos = ",".join(verified)
 
     if args.issues and not args.repo:
         parser.error("--issues requires --repo")

@@ -233,17 +233,16 @@ def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None
         return _report(messages)
 
     if lookup is None:
-        from tier_model_trigger_check import _boards  # noqa: PLC0415
+        from tier_model_trigger_check import NO_BOARD, _boards, lookup_tier  # noqa: PLC0415
 
         boards = _boards()
 
         def lookup(repo, number):
-            board = boards.get(repo)
-            if board is None:
-                return None, None
-            # ttl=0 (preclose fix 7): a report on a Tier raised mid-turn must
-            # not be hidden by the edit gate's 120 s cache.
-            return model_tier_gate.read_tier(repo, number, board, run=_timed_run, ttl=0)
+            # harmonic-forge#820: `lookup_tier` reads each repo's board as that repo's own slot
+            # and board owner (ttl=0, preclose fix 7: a Tier raised mid-turn must not be hidden by
+            # the edit gate's cache), so a kenekted issue is not read as vitalharmony.
+            tier, error = lookup_tier(repo, number, boards)
+            return (None, None) if tier is NO_BOARD else (tier, error)
 
     for repo, issue, call_model in posted[:_MAX_TIER_READS]:
         model = call_model or fallback_model or session_model.current_model(

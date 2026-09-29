@@ -126,6 +126,63 @@ class FetchIssueTierTests(unittest.TestCase):
 
 
 
+class OwnerScanFallbackTests(unittest.TestCase):
+    """harmonic-forge#820: a USER-owned board on an ORGANIZATION repo is invisible to the per-issue
+    query (no project items at all). With the board `owner` known, that blind read is confirmed
+    against the board itself, and ONLY that: an unset Tier on a visible board stays one query."""
+
+    REPO = "kenekted/kenekted-platform"
+
+    @staticmethod
+    def _result(stdout, code=0):
+        r = MagicMock()
+        r.returncode, r.stdout, r.stderr = code, stdout, ""
+        return r
+
+    def _run(self, nodes, board_items=None, total=None):
+        calls = []
+
+        def run(cmd):
+            calls.append(cmd)
+            if cmd[:3] == ["gh", "api", "graphql"]:
+                return self._result(json.dumps({"data": {"repository": {
+                    "issue": {"projectItems": {"nodes": nodes}}}}}))
+            payload = {"items": board_items or [], "totalCount": total or len(board_items or [])}
+            return self._result(json.dumps(payload))
+        return run, calls
+
+    def test_a_blind_read_is_confirmed_against_the_board(self) -> None:
+        run, calls = self._run([], [{"content": {"number": 59, "repository": self.REPO},
+                                     "tier": "standard"}])
+        self.assertEqual(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
+                                                owner="harmonicarchitect"), "standard")
+        self.assertEqual(calls[-1][:3], ["gh", "project", "item-list"])
+        self.assertIn("harmonicarchitect", calls[-1])
+
+    def test_an_unset_tier_on_a_visible_board_is_not_scanned(self) -> None:
+        node = {"project": {"number": 1}, "value": None}
+        run, calls = self._run([node])
+        self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
+                                                 owner="harmonicarchitect"))
+        self.assertEqual(len(calls), 1, "a visible board must cost one query, not a scan")
+
+    def test_without_an_owner_a_blind_read_is_not_scanned(self) -> None:
+        run, calls = self._run([])
+        self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_same_numbered_issue_from_another_repo_is_not_matched(self) -> None:
+        run, _ = self._run([], [{"content": {"number": 59, "repository": "kenekted/kenekted-ai"},
+                                 "tier": "deep"}])
+        self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
+                                                 owner="harmonicarchitect"))
+
+    def test_a_truncated_scan_is_an_error_not_no_tier(self) -> None:
+        run, _ = self._run([], [{"content": {"number": 1, "repository": self.REPO}}], total=2000)
+        with self.assertRaises(cache.GhItemListError):
+            cache.fetch_issue_tier(self.REPO, 59, "1", run=run, owner="harmonicarchitect")
+
+
 class MandatedPathDefaults(unittest.TestCase):
     """harmonic-forge#468 AC1 — the defaults are the cheap path now.
 

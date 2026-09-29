@@ -891,6 +891,9 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
         fail(f"unexpected response shape from project board {owner}/{number}")
     for item in items:
         content = item.get("content") or {}
+        # A board can carry issues from several repos; match the repo too when it is reported.
+        if content.get("repository") and str(content["repository"]).lower() != repo.lower():
+            continue
         if content.get("number") == issue_number:
             tier = item.get("tier")
             if isinstance(tier, str) and tier.strip():

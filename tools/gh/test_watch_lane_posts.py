@@ -2225,6 +2225,42 @@ class AccountFollowsTheRepo(unittest.TestCase):
                 "harmonicarchitect")
 
 
+class PerRepoAccountTests(unittest.TestCase):
+    """harmonic-forge#820: one belt polls repos on more than one account, each through ITS slot."""
+
+    def test_a_registered_repo_resolves_to_its_own_account(self) -> None:
+        self.assertEqual(watch_lane_posts._account_of("kenekted/kenekted-platform"),
+                         "harmonicarchitect")
+        self.assertEqual(watch_lane_posts._account_of("vitalharmony/hrse"), "vitalharmony")
+
+    def test_an_unregistered_repo_falls_back_to_the_process_account(self) -> None:
+        self.assertEqual(watch_lane_posts._account_of("someone/else"), watch_lane_posts._ACCOUNT)
+
+    def test_each_call_is_scoped_to_its_repos_account(self) -> None:
+        seen = []
+        with patch.object(watch_lane_posts, "gh_as",
+                          side_effect=lambda account, args, counter=None: seen.append(account) or "[]"):
+            watch_lane_posts._fetch_comments("kenekted/kenekted-platform", 59, "2026-01-01T00:00:00Z")
+            watch_lane_posts._fetch_comments("vitalharmony/hrse", 1, "2026-01-01T00:00:00Z")
+        self.assertEqual(seen, ["harmonicarchitect", "vitalharmony"])
+
+    def test_a_dead_extra_account_is_left_out_not_fatal(self) -> None:
+        def assert_identity(account):
+            if account == "harmonicarchitect":
+                raise watch_lane_posts.IdentityMismatch("slot missing")
+        with patch.object(watch_lane_posts, "assert_identity", side_effect=assert_identity):
+            verified, skipped = watch_lane_posts._verified_accounts(
+                "vitalharmony, harmonicarchitect", "vitalharmony")
+        self.assertEqual(verified, ["vitalharmony"])
+        self.assertEqual([a for a, _ in skipped], ["harmonicarchitect"])
+
+    def test_every_healthy_account_is_kept_once(self) -> None:
+        with patch.object(watch_lane_posts, "assert_identity"):
+            verified, skipped = watch_lane_posts._verified_accounts(
+                "vitalharmony,harmonicarchitect,harmonicarchitect", "vitalharmony")
+        self.assertEqual((verified, skipped), (["vitalharmony", "harmonicarchitect"], []))
+
+
 if __name__ == "__main__":
     unittest.main()
 

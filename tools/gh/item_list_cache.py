@@ -478,6 +478,7 @@ def _fetch_issue_field_targeted(
     run=None,
     ttl: float = DEFAULT_TTL_SECONDS,
     cache_dir: Path = None,
+    _blind: dict | None = None,
 ) -> str | None:
     """**The documented answer to "what is field X on issue N"** (AC4).
 
@@ -523,7 +524,7 @@ def _fetch_issue_field_targeted(
         except (OSError, json.JSONDecodeError, AttributeError):
             pass  # unreadable cache is a miss, never an error
 
-    value = _fetch_issue_field_live(repo, issue_number, project_number, field, run)
+    value = _fetch_issue_field_live(repo, issue_number, project_number, field, run, _blind)
 
     # Written only on a successful read. A GhItemListError propagates out of
     # the call above without touching the cache, so a transient failure is
@@ -554,9 +555,14 @@ def _scan_issue_field(repo: str, issue_number: int, project_number: str, owner: 
         stderr = getattr(result, "stderr", None)
         raise GhItemListError(stderr.strip() if stderr else "gh project item-list failed")
     try:
-        items = json.loads(result.stdout)["items"]
+        payload = json.loads(result.stdout)
+        items = payload["items"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise GhItemListError(f"unexpected board response shape: {exc}") from exc
+    total = payload.get("totalCount")
+    if isinstance(total, int) and total > len(items):
+        # A truncated scan reading "not found" as "no Tier" is the partial-list-as-empty error.
+        raise GhItemListError(f"board scan truncated: {len(items)} of {total} items")
     wanted = repo.lower()
     for item in items:
         content = item.get("content") or {}
@@ -587,9 +593,14 @@ def fetch_issue_field(
     board, or a board the per-issue query cannot see. With `owner` given, that `None` is confirmed
     against the board itself. Without it the behavior is unchanged.
     """
+    blind: dict = {}
     value = _fetch_issue_field_targeted(
-        repo, issue_number, project_number, field=field, run=run, ttl=ttl, cache_dir=cache_dir)
-    if value is not None or not owner:
+        repo, issue_number, project_number, field=field, run=run, ttl=ttl, cache_dir=cache_dir,
+        _blind=blind)
+    # Scan only when the per-issue read was BLIND (no project items visible), never merely because
+    # the field is unset: an unset Tier on an ordinary board must stay one cheap query, not an
+    # uncached full-board scan on every prompt that names the issue.
+    if value is not None or not owner or not blind.get("blind"):
         return value
     if run is None:
         import subprocess
@@ -637,6 +648,7 @@ def _fetch_issue_field_live(
     project_number: str,
     field: str = "Tier",
     run=None,
+    _blind: dict | None = None,
 ) -> str | None:
     """The uncached targeted read. Split out so the caching wrapper has exactly
     one place to write the cache, rather than one per return path.
@@ -683,6 +695,10 @@ def _fetch_issue_field_live(
         return None
 
     nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
+    if not nodes and _blind is not None:
+        # The issue has NO visible project items at all: either it is on no board, or the query
+        # cannot see its board (a user-owned board on an organization repo). The caller decides.
+        _blind["blind"] = True
     for node in nodes:
         if not isinstance(node, dict):
             continue
