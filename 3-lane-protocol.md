@@ -1016,7 +1016,10 @@ After posting, Lane 1 reports the two comment links and says Lane 3 executes;
 it does not list a relay to the Lane 3 session as an operator next action, and
 does not phrase one as a question (harmonic-forge#824). The next actions it does
 list are what the operator still owns: a production AE for a case this AE did
-not authorize, a `BATCH`, or a `close`.
+not authorize, a `BATCH`, or a `close`. A Lane 3 session that is not watching
+the issue is Lane 3's gap to report, by arming its belt or naming the relay it
+needs (`skills/lane3-gate-platform/SKILL.md`), not a step Lane 1 assigns to the
+operator.
 <!-- /R-0208 -->
 
 <!-- R-0209 -->
