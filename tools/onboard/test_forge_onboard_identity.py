@@ -273,6 +273,41 @@ class HelperHardeningTests(IdentityBase):
         self.assertTrue(detail)
 
 
+class SecondPassTests(IdentityBase):
+    def test_a_github_outage_is_not_reported_as_a_dead_credential(self) -> None:
+        self.make_slot()
+        import manifest_identity as mi
+        with mock.patch.object(fi, "_slot_login", side_effect=mi.ProbeUnavailable("timed out")):
+            check = fi.check_identity(self.project(), fo.Check)
+        self.assertEqual(check.status, fi.FAIL)
+        self.assertIn("could not verify", check.detail)
+        self.assertNotIn("gh-as --init", check.detail)
+
+    def test_no_helper_at_all_is_named_as_such(self) -> None:
+        self.make_slot()
+        _git(self.repo, "config", "--local", "--replace-all", fi.HELPER_KEY, "")
+        with mock.patch.object(fi, "_slot_login", return_value="acct"):
+            check = fi.check_identity(self.project(), fo.Check)
+        self.assertEqual(check.status, fi.FAIL)
+        self.assertIn("NO", check.detail)
+        self.assertIn("interrupted", check.detail)
+
+    def test_an_interrupt_between_the_reset_and_the_add_restores_the_prior_helpers(self) -> None:
+        self.make_slot()
+        self.set_helper("!prior-helper")
+        real = fi._git_config
+
+        def interrupted(checkout, *args):
+            if args[:1] == ("--add",) and args[-1].startswith("!env"):
+                raise KeyboardInterrupt
+            return real(checkout, *args)
+
+        with mock.patch.object(fi, "_git_config", side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                fi.apply_identity(self.project(), fo.Check)
+        self.assertEqual(fi.effective_helpers(self.repo), ["!prior-helper"])
+
+
 class RegisteredTests(unittest.TestCase):
     def test_check_identity_is_in_the_registry(self) -> None:
         self.assertIn(fo.check_identity, fo.CHECKS)

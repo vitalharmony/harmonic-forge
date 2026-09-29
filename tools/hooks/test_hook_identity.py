@@ -27,6 +27,26 @@ import report_red_main as rrm  # noqa: E402
 
 REGISTERED = "vitalharmony/hrse"
 
+_slots_tmp = None
+_slots_patch = None
+
+
+def setUpModule() -> None:
+    """Slots exist for the module's tests, wherever they run: without this the outcome depends
+    on whether the machine happens to hold a real `~/.config/gh-accounts/vitalharmony`."""
+    import tempfile
+    global _slots_tmp, _slots_patch
+    _slots_tmp = tempfile.TemporaryDirectory()
+    for account in ("vitalharmony", "harmonicarchitect"):
+        (Path(_slots_tmp.name) / account).mkdir()
+    _slots_patch = mock.patch.dict(os.environ, {"GH_ACCT_HOME": _slots_tmp.name})
+    _slots_patch.start()
+
+
+def tearDownModule() -> None:
+    _slots_patch.stop()
+    _slots_tmp.cleanup()
+
 
 def _ok(stdout: str = "x") -> mock.Mock:
     return mock.Mock(returncode=0, stdout=stdout, stderr="")
@@ -148,6 +168,31 @@ class DeadSlotNeverFallsBackToTheCaller(unittest.TestCase):
         with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 7)) as run:
             with self.assertRaises(subprocess.TimeoutExpired):
                 hi.run_gh(("api", "x"), repo=REGISTERED)
+        self.assertEqual(run.call_count, 1)
+
+
+class DeadSlotIsSignalledNotSilent(unittest.TestCase):
+    """harmonic-forge#804 second preclose: a registered repo whose slot directory does not
+    exist used to run `gh` unauthenticated twice and let every close-gating hook fail open
+    without a word. It now skips the doomed call and says so on stderr."""
+
+    def test_a_missing_slot_runs_no_gh_and_warns_on_stderr(self) -> None:
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as empty, \
+                mock.patch.dict(os.environ, {"GH_ACCT_HOME": empty}), \
+                mock.patch("subprocess.run") as run, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            result = hi.run_gh(("api", "x"), repo=REGISTERED)
+        run.assert_not_called()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NOT enforcing", err.getvalue())
+        self.assertIn("gh-as --init", err.getvalue())
+
+    def test_an_auth_failure_is_not_retried_on_the_same_dead_environment(self) -> None:
+        fail = mock.Mock(returncode=1, stdout="", stderr="To get started with GitHub CLI, please run: gh auth login")
+        with mock.patch("subprocess.run", return_value=fail) as run:
+            hi.run_gh(("api", "x"), repo=REGISTERED)
         self.assertEqual(run.call_count, 1)
 
 

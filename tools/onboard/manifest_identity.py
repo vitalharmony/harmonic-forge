@@ -131,12 +131,12 @@ class ProbeUnavailable(RuntimeError):
 
 
 #: stderr fragments `gh` prints when the credential itself is missing or rejected.
-_AUTH_FAILURE_MARKERS = ("401", "not logged in", "bad credentials", "authentication",
+AUTH_FAILURE_MARKERS = ("401", "not logged in", "bad credentials", "authentication",
                          "gh auth login", "no oauth token")
 
 
-def _probe_login() -> str:
-    """The login `gh` authenticates as under the current environment.
+def _probe_login(env: dict[str, str] | None = None) -> str:
+    """The login `gh` authenticates as under `env` (default: the current environment).
 
     Returns '' when the credential is missing or rejected. Raises `ProbeUnavailable`
     when the probe could not decide (network, 5xx, timeout, budget refusal): that is
@@ -145,13 +145,13 @@ def _probe_login() -> str:
     try:
         result = subprocess.run(["gh", "api", "user", "--jq", ".login"],
                                 capture_output=True, text=True, timeout=30,
-                                env=os.environ)
+                                env=os.environ if env is None else env)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProbeUnavailable(f"{type(exc).__name__}: {exc}") from exc
     if result.returncode == 0:
         return result.stdout.strip()
     stderr = (result.stderr or "").strip()
-    if any(marker in stderr.lower() for marker in _AUTH_FAILURE_MARKERS):
+    if any(marker in stderr.lower() for marker in AUTH_FAILURE_MARKERS):
         return ""
     raise ProbeUnavailable(stderr.splitlines()[0] if stderr else f"gh exited {result.returncode}")
 

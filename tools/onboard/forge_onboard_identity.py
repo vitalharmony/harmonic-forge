@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 
 from manifest import Project
-from manifest_identity import slot_dir
+from manifest_identity import ProbeUnavailable, _probe_login, slot_dir
 
 OK, FAIL, SKIP = "ok", "FAIL", "skip"
 
@@ -82,15 +82,14 @@ def effective_helpers(checkout: Path) -> list[str]:
 
 
 def _slot_login(slot: Path) -> str:
-    """The login this slot authenticates as, or '' when it does not."""
+    """The login this slot authenticates as, or '' when its credential is missing or rejected.
+
+    Raises `ProbeUnavailable` when the probe could not decide (outage, 5xx, budget refusal):
+    that says nothing about the slot and must not read as "re-run gh-as --init".
+    """
     env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
     env["GH_CONFIG_DIR"] = str(slot)
-    try:
-        result = subprocess.run(["gh", "api", "user", "--jq", ".login"],
-                                capture_output=True, text=True, timeout=30, env=env)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+    return _probe_login(env)
 
 
 def _applicable(project: Project):
@@ -121,7 +120,12 @@ def check_identity(project: Project, check_cls):
     if not slot.is_dir():
         return check_cls("identity", FAIL,
                          f"slot {slot} is missing (create it with: gh-as --init {account})")
-    login = _slot_login(slot)
+    try:
+        login = _slot_login(slot)
+    except ProbeUnavailable as exc:
+        return check_cls("identity", FAIL,
+                         f"could not verify slot {slot} (gh api user failed: {exc}); this is not "
+                         "evidence the slot is broken, re-run when GitHub is reachable")
     if not login:
         return check_cls("identity", FAIL,
                          f"slot {slot} is not authenticated (repair: gh-as --init {account})")
@@ -133,8 +137,13 @@ def check_identity(project: Project, check_cls):
                          f"slot {account} authenticated; no local checkout, git helper not checked")
     want = expected_helper(slot)
     helpers = effective_helpers(checkout)
+    if not helpers:
+        return check_cls("identity", FAIL,
+                         f"{checkout}: NO {HELPER_KEY} at all, so git push cannot authenticate "
+                         "(an interrupted forge-onboard --apply leaves this); expected "
+                         f"{want} (fix: forge-onboard --apply)")
     if helpers != [want]:
-        found = " then ".join(helpers) or "(none)"
+        found = " then ".join(helpers)
         return check_cls("identity", FAIL,
                          f"{checkout}: git will consult {found} for {HELPER_KEY}; expected only "
                          f"{want} (fix: forge-onboard --apply)")
@@ -142,6 +151,12 @@ def check_identity(project: Project, check_cls):
     return check_cls("identity", OK,
                      f"slot {account} authenticated; git helper points at it; "
                      f"user.email {email or '(unset)'}")
+
+
+def _restore_helpers(checkout: Path, prior: list[str]) -> None:
+    _git_config(checkout, "--unset-all", HELPER_KEY)
+    for value in prior:
+        _git_config(checkout, "--add", HELPER_KEY, value)
 
 
 def apply_identity(project: Project, check_cls, dry_run: bool = False) -> list:
@@ -170,14 +185,18 @@ def apply_identity(project: Project, check_cls, dry_run: bool = False) -> list:
     prior = _local_helpers(checkout)
     code, err = _git_config(checkout, "--replace-all", HELPER_KEY, "")
     if code == 0:
-        code, err = _git_config(checkout, "--add", HELPER_KEY, want)
+        try:
+            code, err = _git_config(checkout, "--add", HELPER_KEY, want)
+        except BaseException:
+            # Ctrl-C / SIGTERM between the reset and the add: put the prior values back
+            # before propagating, or the checkout is left with no github.com helper.
+            _restore_helpers(checkout, prior)
+            raise
         if code != 0:
             # The reset already landed: restore what was there, or the checkout is left
             # with no github.com helper at all and every push from it (and its worktrees)
             # fails.
-            _git_config(checkout, "--unset-all", HELPER_KEY)
-            for value in prior:
-                _git_config(checkout, "--add", HELPER_KEY, value)
+            _restore_helpers(checkout, prior)
             err = f"{err} (prior local helpers restored)"
     return [check_cls("identity helper", OK if code == 0 else FAIL,
                       f"set {HELPER_KEY} in {checkout}" if code == 0 else err)]

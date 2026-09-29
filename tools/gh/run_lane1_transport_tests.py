@@ -12,7 +12,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 GH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
-from run_tests import redirected_belt_candidates_dir  # noqa: E402
+from run_tests import hermetic_identity_probe, redirected_belt_candidates_dir  # noqa: E402
 
 
 def main() -> int:
@@ -21,7 +21,8 @@ def main() -> int:
     for pattern in ("test_l1_post*.py", "test_post_lane_discussion*.py"):
         suite.addTests(loader.discover(str(GH_DIR), pattern=pattern))
     with tempfile.TemporaryDirectory(prefix="lane1-transport-tests-") as tmp:
-        with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"):
+        with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"), \
+                hermetic_identity_probe():
             result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
 

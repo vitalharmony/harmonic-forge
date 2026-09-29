@@ -19,6 +19,11 @@ from pathlib import Path
 
 _ONBOARD = str(Path(__file__).resolve().parents[1] / "onboard")
 
+#: `gh` stderr that says the credential itself is missing or rejected; a retry on the same
+#: environment cannot change it (mirrors `manifest_identity.AUTH_FAILURE_MARKERS`).
+_AUTH_MARKERS = ("401", "not logged in", "bad credentials", "authentication",
+                 "gh auth login", "no oauth token")
+
 
 def slot_env(repo: str | None) -> dict[str, str] | None:
     """The env to run `gh` for `repo` under, or None to inherit."""
@@ -59,10 +64,21 @@ def run_gh(args, *, repo: str | None, cwd: str | None = None,
     """
     env = slot_env(repo)
     argv = ("gh", *args)
+    if env is not None and not Path(env["GH_CONFIG_DIR"]).is_dir():
+        # No credential exists for this account on this machine. Running `gh` here can only
+        # fail unauthenticated, and falling back to the caller would act as another account.
+        # The close-gating hooks read "no answer" as "nothing to enforce" and fail open, so
+        # say so on stderr rather than let the gate go inert without a word.
+        print(f"[identity] slot {env['GH_CONFIG_DIR']} is missing: this hook's lookup for "
+              f"{repo} was skipped, so its gate is NOT enforcing "
+              f"(create the slot with: gh-as --init <account>)", file=sys.stderr)
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="identity slot missing")
     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                             cwd=cwd, env=env)
     stderr = (result.stderr or "").lower()
-    if result.returncode and env is not None and "404" not in stderr and "not found" not in stderr:
+    answered_or_dead = ("404" in stderr or "not found" in stderr
+                        or any(m in stderr for m in _AUTH_MARKERS))
+    if result.returncode and env is not None and not answered_or_dead:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                                 cwd=cwd, env=env)
     return result

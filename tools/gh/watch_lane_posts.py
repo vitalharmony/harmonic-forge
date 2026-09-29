@@ -1972,23 +1972,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _account_for_repo_arg(repo: str | None) -> str | None:
-    """The account registered for `--repo`, or None (harmonic-forge#804).
+def _account_for_repo_arg(repos, account_repos: str | None = None) -> str | None:
+    """The account this belt polls as, from `--account-repos` or `--repo` (harmonic-forge#804).
 
     Without this a `--repo harmonicarchitect/...` run polled as the process-wide default
     `vitalharmony`, every call 404ed, and the belt read that as "no new work".
+
+    `--account-repos` IS an account name. `--repo` is repeatable (`action="append"`), so
+    `repos` is a list, or None; a bare string is accepted too. `_ACCOUNT` is one process-wide
+    value, so a `--repo` set that spans accounts cannot be polled by one belt and is
+    refused rather than silently polled as one of them. None means "fall back".
     """
-    if not repo:
+    if account_repos:
+        return account_repos
+    if not repos:
         return None
+    if isinstance(repos, str):
+        repos = [repos]
     onboard = str(Path(__file__).resolve().parents[1] / "onboard")
     if onboard not in sys.path:
         sys.path.insert(0, onboard)
     from manifest import ManifestError  # noqa: PLC0415
     from manifest_identity import account_for  # noqa: PLC0415
-    try:
-        return account_for(repo)
-    except ManifestError:
-        return None
+    accounts = set()
+    for repo in repos:
+        try:
+            accounts.add(account_for(repo))
+        except ManifestError:
+            continue
+    if len(accounts) > 1:
+        raise SystemExit(
+            f"--repo spans accounts {sorted(accounts)}: one belt polls as one account. "
+            "Run one belt per account, or name one with --account.")
+    return next(iter(accounts), None)
 
 
 def main() -> int:
@@ -1996,7 +2012,8 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    _ACCOUNT = args.account or _account_for_repo_arg(args.repo) or _ACCOUNT
+    _ACCOUNT = (args.account or _account_for_repo_arg(args.repo, args.account_repos)
+                or _ACCOUNT)
     try:
         assert_identity(_ACCOUNT)
     except IdentityMismatch as exc:
