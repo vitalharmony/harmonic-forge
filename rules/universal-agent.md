@@ -712,10 +712,15 @@ naming is the answer; do not re-derive it from the input/artifact test below.
 
 **Otherwise: a generated ARTIFACT the operator asked for is pasted verbatim.**
 Its raw output appears as literal text — commentary may follow, never replace,
-and pointing at a tool-output pane does not satisfy it. **This is narrower than
-the operator's own standing instruction**, which triggers on any tool-, script-
-or skill-generated report or summary regardless of who asked; where the two
-differ, the broader one governs and you paste.
+and pointing at a tool-output pane does not satisfy it.
+
+**Lane, issue and subagent output is never pasted into chat** (harmonic-forge#810).
+Issue comments posted or read, `l1-post`/`l2-post`/`lane-comment` output, gate
+reports, AE/sweep results, subagent and pitch/preclose-inspection reports, and CI
+logs each get one line in chat: the verdict plus the issue or comment link. The
+operator reads the issue when they need the detail; pasted output only buries the
+ask. The evidence the rules above require belongs **in the issue comment**, never
+in chat.
 
 **The test is authorship and purpose, not size.** An input is material you
 consumed to reach a conclusion; an artifact is the thing asked to exist. Two
