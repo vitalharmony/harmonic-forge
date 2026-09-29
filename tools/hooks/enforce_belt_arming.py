@@ -507,9 +507,22 @@ def decide(payload: dict[str, Any], lane: str | None,
             if marker.exists():
                 record = _read_record(marker)
                 if not _record_is_stale(marker, record, now, proc_root):
-                    job = (f"as cron `{record['id']}`" if record.get("id") else
-                           f"(job id unknown, recorded "
-                           f"{int(now - _record_created(marker, record))}s ago)")
+                    if not record.get("id"):
+                        # harmonic-forge#814: a record with no job id is the PreToolUse write
+                        # of a CronCreate that never completed (the classifier denied it, or it
+                        # failed) -- PostToolUse never ran to record an id. It expires on its own
+                        # after ID_LESS_STALE_SECONDS, so the right instruction is to wait, not
+                        # to delete a file.
+                        age = int(now - _record_created(marker, record))
+                        remaining = max(1, ID_LESS_STALE_SECONDS - age)
+                        return _reason(lane, calls,
+                                       f"Denied: an earlier CronCreate attempt in this session "
+                                       f"left a record with no job id (job id unknown, recorded "
+                                       f"{age}s ago). Run CronList first: if it shows the "
+                                       f"suspenders job, they are already armed, so do NOT retry. "
+                                       f"If it shows nothing, the attempt was denied or failed: "
+                                       f"Retry in {remaining}s, when that record expires.")
+                    job = f"as cron `{record['id']}`"
                     return _reason(lane, calls,
                                    f"Denied: the suspenders are already armed in this "
                                    f"session {job}; a second job would stack duplicate "
