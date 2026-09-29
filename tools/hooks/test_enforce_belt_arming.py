@@ -5,6 +5,7 @@ transcripts; each allow case is the canonical call, or something unrelated the
 guard must not touch.
 """
 import json
+import re
 import os
 import subprocess
 import sys
@@ -310,9 +311,27 @@ class DeletedCronClearsTheArmingRecord(unittest.TestCase):
             second = _run("CronCreate", CANONICAL_CRON, session_id="sess-a", arming_dir=arming)
             reason = json.loads(second.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
             self.assertIn("job id unknown", reason)
-            self.assertIn(str(Path(arming) / "sess-a"), reason)
+            # harmonic-forge#814: the record expires on its own, so the instruction is to WAIT
+            # (naming the seconds), never to delete a file.
+            self.assertIn("Retry in", reason)
+            self.assertRegex(reason, r"Retry in \d+s")
+            self.assertNotIn(str(Path(arming) / "sess-a"), reason)
+            self.assertNotIn("removes", reason)
+            self.assertNotIn("remove ", reason)
             self.assertNotIn("the existing job keeps running",
                              guard.__file__ and Path(guard.__file__).read_text(encoding="utf-8"))
+
+    def test_the_retry_wait_is_within_the_stale_window(self):
+        """harmonic-forge#814: an id-less record younger than ID_LESS_STALE_SECONDS names the
+        seconds LEFT, so waiting that long clears it."""
+        with tempfile.TemporaryDirectory() as arming:
+            _run("CronCreate", CANONICAL_CRON, session_id="sess-b", arming_dir=arming)
+            reason = json.loads(_run("CronCreate", CANONICAL_CRON, session_id="sess-b",
+                                     arming_dir=arming).stdout)["hookSpecificOutput"][
+                "permissionDecisionReason"]
+        found = int(re.search(r"Retry in (\d+)s", reason).group(1))
+        self.assertLessEqual(found, guard.ID_LESS_STALE_SECONDS)
+        self.assertGreater(found, guard.ID_LESS_STALE_SECONDS - 30)
 
     def test_ac7_posttooluse_never_decides(self):
         with tempfile.TemporaryDirectory() as arming:
