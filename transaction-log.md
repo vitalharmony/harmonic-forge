@@ -3,6 +3,18 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(telemetry): archive aged belt candidates and superseded preclose receipts (harmonic-forge#826)
+
+Two AC5-sweep finds: belt_candidates' 14-day prune was the only on-disk record
+of a lane post's kind/poster/time; preclose_check overwrote each issue's
+receipt per pass. Both now archive first.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/gh/belt_candidates.py | 19 ++++++++++++++++++-
+- tools/gh/preclose_check.py  | 19 +++++++++++++++++++
+- 2 files changed, 37 insertions(+), 1 deletion(-)
+
 ## feat(telemetry): encrypted off-machine transcript backup + timers (harmonic-forge#826)
 
 restic repo in the Insync-synced Drive tree (config and password stay local,

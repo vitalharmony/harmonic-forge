@@ -559,6 +559,10 @@ def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str,
     directory = receipt_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = receipt_path(repo, issue)
+    # harmonic-forge#826: one receipt per issue is overwritten by each pass,
+    # so the previous pass is archived first -- best-effort, because the new
+    # receipt is what the merge guard reads and must always be written.
+    _archive_previous_receipt(path, repo)
     payload = {"repo": repo, "issue": issue, "reviewed_sha": head_sha,
                "refuters": size, "status": status, **(extra or {})}
     handle = tempfile.NamedTemporaryFile("w", dir=directory, delete=False, suffix=".tmp")
@@ -570,6 +574,21 @@ def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str,
         handle.close()
     os.replace(handle.name, path)
     return path
+
+
+def _archive_previous_receipt(path: Path, repo: str) -> None:
+    if not path.exists():
+        return
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        archive.archive("preclose-receipts",
+                        [json.loads(path.read_text(encoding="utf-8"))],
+                        origin=archive.origin_for_repo(repo))
+    except Exception:
+        return
 
 
 def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
