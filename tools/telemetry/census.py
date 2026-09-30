@@ -76,6 +76,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     rows, failed = [], False
     for project in manifest.load(args.manifest):
         if not project.repo:
+            # Reported, never skipped: a silent `continue` made 7 rows read as all 8.
+            rows.append({"account": project.account or "unresolved", "org": "unresolved",
+                         "repo": f"unresolved ({project.name})", "note": "",
+                         "error": "registry entry has no repo"})
+            failed = True
             continue
         row: dict[str, Any] = {"account": project.account, "org": project.repo.split("/", 1)[0],
                                "repo": project.repo, "note": ""}
@@ -84,8 +89,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             apply_project_identity(project.repo)
             row.update(census_repo(project.repo, gh_pages))
-        except (RuntimeError, SystemExit) as exc:
-            row["error"] = str(exc)[:200]
+        except (Exception, SystemExit) as exc:  # one repo's failure never loses the others' rows
+            row["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
             failed = True
         rows.append(row)
     with args.out.open("w", newline="", encoding="utf-8") as handle:
