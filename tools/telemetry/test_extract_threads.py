@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -149,23 +150,60 @@ class GateVerdictTests(unittest.TestCase):
         body = "## Lane 3 Gate Results — H1 — PASS\n\n**Verdict:** FAIL"
         self.assertEqual(self._types(body), ["unknown"])
 
-    def test_non_h2_gate_heading_is_scored_not_dropped(self):
-        self.assertEqual(self._types("### Lane 3 Gate Results — H1\n**Verdict:** FAIL"), ["gate.fail"])
-
-    def test_quoted_posted_by_does_not_reassign_the_actor(self):
+    def _events(self, body, **extra):
         import eras
+        return eras.comment_events(_gate(body, **extra), account="a", org="o", repo="o/r", issue=1)
+
+    def test_non_h2_gate_heading_with_its_own_footer_is_scored(self):
+        body = "### Lane 3 Gate Results — H1\n**Verdict:** FAIL\n" + _FOOT.format(kind="gate-result", by="LANE3")
+        self.assertEqual(self._types(body), ["gate.fail"])
+
+    def test_gate_recap_heading_in_a_discussion_is_not_a_gate(self):
+        body = ("## Lane 1 — closing\n### Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n"
+                + _FOOT.format(kind="discussion", by="LANE1"))
+        self.assertEqual(self._types(body), ["l1.discussion"])
+
+    def test_blockquoted_footer_never_reassigns_or_invents(self):
         body = ("## Handoff: x\n> evidence: <!-- l1-post v1; kind=spec; posted-by=LANE3 -->\n"
                 "<!-- l1-post v1; kind=handoff; body-sha256=" + "a" * 64 + " -->")
-        body = body.replace("> evidence: <!-- l1-post v1; kind=spec; posted-by=LANE3 -->", "> quoted posted-by=LANE3")
-        events = eras.comment_events(_gate(body), account="a", org="o", repo="o/r", issue=1)
-        self.assertEqual({e["actor"] for e in events}, {"lane1"})
+        events = self._events(body)
+        self.assertEqual([(e["event_type"], e["actor"]) for e in events], [("handoff.posted", "lane1")])
 
-    def test_edited_comment_carries_updated_at_for_ordering(self):
+    def test_rework_quoting_a_gate_footer_is_still_a_rework(self):
+        body = ("## Rework — H1\n> <!-- l1-post v1; kind=gate-result; posted-by=LANE3 -->\n\n"
+                + _FOOT.format(kind="rework", by="LANE1"))
+        self.assertEqual(self._types(body), ["l1.rework"])
+
+    def test_gate_quoting_a_handoff_footer_is_attested_and_lane3(self):
+        body = ("## Lane 3 Gate Results — H1\n**Verdict:** PASS\n> <!-- l1-post v1; kind=handoff; posted-by=LANE1 -->\n"
+                + _FOOT.format(kind="gate-result", by="LANE3"))
+        [event] = self._events(body)
+        self.assertEqual((event["event_type"], event["actor"], event["provenance"], event["validated"]),
+                         ("gate.pass", "lane3", "footer", True))
+
+    def test_lane_unset_footer_is_unset_not_lane1(self):
+        [event] = self._events("## Note\n" + _FOOT.format(kind="discussion", by="LANE-unset"))
+        self.assertEqual(event["actor"], "unset")
+
+    def test_token_era_gate_emits_one_event(self):
+        body = "## L3P H1\n## Lane 3 Gate Results\n" + _FOOT.format(kind="gate-result", by="LANE3")
+        self.assertEqual(self._types(body), ["gate.pass"])
+
+    def test_each_edit_and_version_is_its_own_row(self):
         import eras
         body = "## Lane 3 Gate Results — H1\n**Verdict:** PASS"
-        event = eras.comment_events(_gate(body, updated_at="2026-10-01T00:00:00Z"),
-                                    account="a", org="o", repo="o/r", issue=1)[0]
-        self.assertEqual(event["attrs"]["edited_at"], "2026-10-01T00:00:00Z")
+        first = self._events(body)[0]
+        edited = self._events(body, updated_at="2026-10-01T00:00:00Z")[0]
+        self.assertEqual(edited["attrs"]["edited_at"], "2026-10-01T00:00:00Z")
+        self.assertEqual(first["attrs"]["comment_id"], edited["attrs"]["comment_id"])
+        with tempfile.TemporaryDirectory() as store, mock.patch.dict(os.environ, {emit.STORE_ENV: store}):
+            self.assertEqual(emit.emit([first])["written"], 1)
+            self.assertEqual(emit.emit([edited])["written"], 1)
+            with mock.patch.object(eras, "EXTRACTOR_VERSION", "threads-next"):
+                self.assertEqual(emit.emit(self._events(body))["written"], 1)
+
+
+_FOOT = "<!-- l1-post v1; kind={kind}; posted-by={by}; body-sha256=" + "b" * 64 + " -->"
 
 
 class RestGetTests(unittest.TestCase):
@@ -201,10 +239,47 @@ class RestGetTests(unittest.TestCase):
             self.assertEqual(xt.rest_get("r"), [[7]])
         self.assertNotIn("If-None-Match", " ".join(run.call_args.args[0]))
 
+    def test_full_cached_last_page_is_followed_after_a_304(self):
+        full = json.dumps(list(range(xt.PER_PAGE)))
+        ok = 'HTTP/2.0 200 OK\r\nEtag: "a"\r\n\r\n' + full
+        empty = 'HTTP/2.0 200 OK\r\nEtag: "z"\r\n\r\n[]'
+        new = 'HTTP/2.0 200 OK\r\nEtag: "n"\r\n\r\n[101]'
+        not_mod = "HTTP/2.0 304 Not Modified\r\n\r\n"
+        outs = [ok, empty, not_mod, new]
+        run = mock.Mock(side_effect=[SimpleNamespace(returncode=0, stdout=o, stderr="") for o in outs])
+        with mock.patch.object(xt.subprocess, "run", run):
+            self.assertEqual(len(xt.rest_get("r?per_page=100")), 2)
+            pages = xt.rest_get("r?per_page=100")
+        self.assertEqual(pages[-1], [101])
+        self.assertIn("r?per_page=100&page=2", run.call_args_list[3].args[0])
+
+    def test_prune_drops_stale_entries_and_orphan_temps(self):
+        cache = xt._cache_dir()
+        stale, orphan, live = cache / "old.json", cache / "x.tmp", cache / "new.json"
+        for f in (stale, orphan, live):
+            f.write_text("{}")
+        past = time.time() - 40 * 86400
+        os.utime(stale, (past, past))
+        os.utime(orphan, (time.time() - 7200,) * 2)
+        xt._prune(cache)
+        self.assertEqual(sorted(f.name for f in cache.iterdir() if f.name in {"old.json", "x.tmp", "new.json"}),
+                         ["new.json"])
+        self.assertEqual(oct(cache.stat().st_mode & 0o777), "0o700")
+
     def test_http_error_raises(self):
         run = mock.Mock(return_value=SimpleNamespace(returncode=1, stdout="HTTP/2.0 404 Not Found\r\n\r\n{}", stderr="nf"))
         with mock.patch.object(xt.subprocess, "run", run), self.assertRaises(RuntimeError):
             xt.rest_get("r")
+
+
+class QuotaTests(unittest.TestCase):
+    def test_window_reset_mid_run_is_unmeasurable_not_negative(self):
+        projects = [SimpleNamespace(name="h", repo="o/h", account="acct")]
+        with mock.patch.object(xt, "extract_repo", return_value={"repo": "o/h", "issues": 2}):
+            [out] = xt.run(projects, None, mock.Mock(), mock.Mock(side_effect=[120, 4940]))
+        self.assertIsNone(out["quota_cost"])
+        self.assertIsNone(out["quota_per_100_issues"])
+        self.assertIn("reset", out["quota_note"])
 
 
 if __name__ == "__main__":

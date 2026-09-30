@@ -12,10 +12,19 @@ writes nothing and leaves every file byte-identical (AC1).
 - **REST only** (AC4): every call goes through `rest_get`, which refuses a
   GraphQL path. No board scans.
 - **ETag-cached**: each page's ETag and body live under
-  `$XDG_CACHE_HOME/harmonic-forge/telemetry-etag/` (mode 700), so an
-  unchanged page is a 304, which GitHub does not count against the quota.
+  `$XDG_CACHE_HOME/harmonic-forge/telemetry-etag/` (mode 700, files 600), so
+  an unchanged page is a 304, which GitHub does not count against the quota.
+  **The cache holds raw REST pages, comment bodies included** -- the
+  "never bodies" rule binds the event store, not this local cache. Entries
+  unused for 30 days and orphaned `.tmp` files are pruned on each run.
+- **A full last page is always followed.** GitHub sends no `rel="next"` on a
+  page that is the last one *when fetched*; once cached, a 304 would stop
+  there forever after comment 101 lands. So a page of `per_page` items with
+  no next link is followed by an explicit `page=N+1` probe.
 - **Quota recorded** (AC4): core `remaining` is read per account before and
-  after, and the cost per 100 issues is printed in the run summary.
+  after, and the cost per 100 issues is printed in the run summary. A
+  negative difference means the rate-limit window reset mid-run: the cost is
+  then recorded as unmeasurable (`null` plus `quota_note`), never negative.
 
 Usage:
     python3 tools/telemetry/extract_threads.py [--repo owner/name] [--issue N]
@@ -31,6 +40,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -45,6 +55,11 @@ import eras  # noqa: E402
 #: path -> list of decoded JSON pages. Injected in tests.
 RestGet = Callable[[str], list[Any]]
 _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
+_PAGE = re.compile(r"[?&]page=(\d+)")
+PER_PAGE = 100
+_CACHE_MAX_AGE_S = 30 * 86400
+_TMP_MAX_AGE_S = 3600
+_pruned: set[str] = set()
 
 
 class GraphQLRefused(RuntimeError):
@@ -55,7 +70,29 @@ def _cache_dir() -> Path:
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     path = base / "harmonic-forge" / "telemetry-etag"
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)  # mkdir's mode is ignored when the directory exists
+    if str(path) not in _pruned:
+        _pruned.add(str(path))
+        _prune(path)
     return path
+
+
+def _prune(path: Path) -> None:
+    """Drop entries unused for 30 days and orphaned temp files."""
+    now = time.time()
+    for entry in path.iterdir():
+        try:
+            age = now - entry.stat().st_mtime
+            if age > (_TMP_MAX_AGE_S if entry.suffix == ".tmp" else _CACHE_MAX_AGE_S):
+                entry.unlink()
+        except OSError:
+            continue
+
+
+def _with_page(url: str, number: int) -> str:
+    base, _, query = url.partition("?")
+    params = [p for p in query.split("&") if p and not p.startswith("page=")]
+    return f"{base}?{'&'.join(params + [f'page={number}'])}"
 
 
 def _split_response(text: str) -> tuple[int, dict[str, str], str]:
@@ -92,7 +129,8 @@ def rest_get(path: str) -> list[Any]:
         result = subprocess.run(cmd, capture_output=True, text=True)
         status, headers, body = _split_response(result.stdout)
         if status == 304 and entry:
-            page, link = entry["page"], entry.get("link", "")
+            page, link = entry["page"], headers.get("link") or entry.get("link", "")
+            os.utime(cached)  # still in use: keep it out of the 30-day prune
         elif result.returncode == 0 and status == 200:
             page, link = json.loads(body), headers.get("link", "")
             fd, tmp = tempfile.mkstemp(dir=cached.parent, prefix=cached.stem, suffix=".tmp")
@@ -103,7 +141,13 @@ def rest_get(path: str) -> list[Any]:
             raise RuntimeError(f"gh api {url}: HTTP {status} {result.stderr.strip()[:200]}")
         pages.append(page)
         nxt = _NEXT.search(link or "")
-        url = nxt.group(1).split("api.github.com/", 1)[-1] if nxt else ""
+        number = int(m.group(1)) if (m := _PAGE.search(url)) else 1
+        if nxt:
+            url = nxt.group(1).split("api.github.com/", 1)[-1]
+        elif isinstance(page, list) and len(page) >= PER_PAGE:
+            url = _with_page(url, number + 1)  # full last page: probe for more
+        else:
+            url = ""
     return pages
 
 
@@ -173,6 +217,9 @@ def run(projects: Iterable[Any], get: RestGet, identity: Callable[[str], Any],
             summary = extract_repo(project.repo, project.account, get, **opts)
             after = quota()
             cost = before - after if before is not None and after is not None else None
+            if cost is not None and cost < 0:
+                summary["quota_note"] = "rate-limit window reset during the run; cost not measurable"
+                cost = None
             summary["quota_cost"] = cost
             summary["quota_per_100_issues"] = (round(cost * 100 / summary["issues"], 1)
                                                if cost is not None and summary["issues"] else None)
