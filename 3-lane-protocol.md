@@ -1453,15 +1453,21 @@ before posting the handoff, whenever any of:
 2. Load-Bearing Assumptions contains any entry marked "asserted" rather
    than "verified-live."
 3. The implementation's own operation mutates git state or live data
-   (beyond the deliverable's normal function) **and** the issue is not
-   already routed through the Tooling Exception (which has its own
-   human-reviewed pass covering this).
+   (beyond the deliverable's normal function).
+4. The issue carries the `tooling-exception` label, whatever the other
+   three fields say (harmonic-forge#838). A Tooling Exception issue has no
+   Lane 3, and its preclose pass runs after the defects are built in: 9 of
+   the 12 distinct defects in #834's and #836's preclose passes traced to
+   the handoff. `l1_post.py --kind handoff` refuses such a handoff until
+   `tools/gh/pitch_receipt.py record` has stored the verdict for that
+   issue.
 <!-- /R-0238 -->
 
 Most handoffs — a single obvious design, no unverified assumptions, no
 self-mutating automation — post with zero additional review. The two
-template fields cost nothing to fill in as "none"; the second read only
-fires when Lane 1 itself has flagged something contestable.
+template fields cost nothing to fill in as "none"; the second read fires
+when Lane 1 itself has flagged something contestable, and on every Tooling
+Exception handoff (trigger 4).
 
 <!-- R-0239 -->
 **One pass, no loop.** `pitch-inspection` returns PROCEED / PROCEED WITH

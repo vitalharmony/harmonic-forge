@@ -169,7 +169,7 @@ class WiredIntoMain(unittest.TestCase):
 
     # a private-repo incident: the lead region needs Scope/Next now too.
     HANDOFF = "**Scope:** plan-first wiring test.\n**Next:** n/a.\n\n" + "\n".join(
-        f"### {heading}\nreal content for {heading}\n" for heading in L.HANDOFF_HEADINGS
+        f"### {heading}\nreal content for {heading}, per `git grep -n x`\n" for heading in L.HANDOFF_HEADINGS
         if heading != "Implementation Spec"
     ) + "\n### Implementation Spec\n1. Do the thing.\n2. Then the other.\n"
 
@@ -187,6 +187,7 @@ class WiredIntoMain(unittest.TestCase):
                  mock.patch.object(L, "resolve_sha", return_value="a" * 40), \
                  mock.patch.object(L, "validate_tier_set"), \
                  mock.patch.object(L, "validate_milestone_set"), \
+                 mock.patch.object(L, "issue_labels", return_value=set()), \
                  mock.patch.object(L, "post_kind",
                                    side_effect=lambda *a, **k: posted.append(a[2]) or ("u", 1)):
                 L.main()

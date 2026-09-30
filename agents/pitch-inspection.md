@@ -1,6 +1,6 @@
 ---
 name: pitch-inspection
-description: Use BEFORE posting a Lane 1 handoff to GitHub, when any of these three checkable conditions holds — (1) the handoff's Design-alternatives field is anything other than "none" (Lane 1 chose between plausible designs); (2) the handoff's Load-bearing-assumptions field contains any assumption marked "asserted" rather than "verified-live"; (3) the implementation's own operation mutates git state or live data (not merely the deliverable's normal function) AND the issue is NOT already routed to the Tooling Exception. Also usable on explicit operator request. Reviews the DRAFT handoff plus the live codebase with fresh context and answers one question: will this design survive contact with Lane 2, or does it contain a structural flaw that will generate a #233-style thrashing class? Do NOT use on routine handoffs (single obvious design, no unverified assumptions, no self-mutating automation) — that is Lane 1's existing job, and a second read there is pure overhead. ONE pass only: if Lane 1 disagrees with the verdict after one revision, escalate to the human operator — never re-invoke for a second round on the same handoff.
+description: Use BEFORE posting a Lane 1 handoff to GitHub, when any of these four checkable conditions holds — (1) the handoff's Design-alternatives field is anything other than "none" (Lane 1 chose between plausible designs); (2) the handoff's Load-bearing-assumptions field contains any assumption marked "asserted" rather than "verified-live"; (3) the implementation's own operation mutates git state or live data (not merely the deliverable's normal function); (4) the issue carries the `tooling-exception` label, whatever the other fields say (harmonic-forge#838; `l1_post.py` refuses the handoff until `tools/gh/pitch_receipt.py record` stores your verdict). Also usable on explicit operator request. Reviews the DRAFT handoff plus the live codebase with fresh context and answers one question: will this design survive contact with Lane 2, or does it contain a structural flaw that will generate a #233-style thrashing class? Do NOT use on routine handoffs (single obvious design, no unverified assumptions, no self-mutating automation) — that is Lane 1's existing job, and a second read there is pure overhead. ONE pass only: if Lane 1 disagrees with the verdict after one revision, escalate to the human operator — never re-invoke for a second round on the same handoff.
 model: claude-opus-5
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 hooks:
@@ -132,6 +132,31 @@ the call gets no retry budget of its own and does not extend it.
    provision. This is a distinct dimension from check 1 (verifying
    behavioral assertions about *existing* code) — don't fold it in
    silently, it's checkable and skippable independently.
+6. **Hunt the assumptions the handoff never states** (harmonic-forge#838).
+   Checks 1 and 5 verify what the handoff says. Every handoff-origin defect
+   in #834's and #836's preclose passes was something it did not say.
+   Answer each item below with the command that found the answer (a
+   `git grep`, a file read). "None found" is an answer only with its
+   command.
+   - **Changed contracts and all their readers.** For every function,
+     file format, heading list, receipt field or CLI flag the design
+     changes, list every existing reader. #834's handoff named two receipt
+     readers when there were three.
+   - **The handoff's own Consumers and Equivalents section.** Every reader
+     and equivalent it names comes with the command that found it, "none"
+     included; re-run one of them. `l1_post.py` checks only that the section
+     is filled in, because whether a search ran is not in the text
+     (harmonic-forge#838 sticky-wicket PATCH).
+   - **Existing equivalents.** Does the repo already implement this
+     behavior, or a guard for it? #836 specified a HEAD-is-main
+     precondition that `tools/lane/_lane_refresh.sh` already implemented.
+   - **Escape hatches and reset paths, and who authorizes each.** Every
+     override, `--force`, reset or restart the design adds or leans on,
+     and the named authorizer. #834's "reforge" exit had neither a
+     mechanism nor an authorizer.
+   - **The hard case in each test case.** Does each TC name the input most
+     likely to break it (whitespace, a rebase, a multi-repo run, a label
+     added late)? A TC that only exercises the happy path proves nothing.
 
 ## Verdict — exactly one, no hedging
 

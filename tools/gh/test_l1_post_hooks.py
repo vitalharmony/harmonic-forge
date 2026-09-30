@@ -413,12 +413,13 @@ class RepoTargetTests(unittest.TestCase):
         # now carry Scope/Next — incidental to this test's subject (repo
         # targeting), same footnote as the --plan-first flag below.
         body = "**Scope:** repo targeting test.\n**Next:** n/a.\n\n" + "\n".join(
-            f"### {heading}\nA documented value." for heading in post.HANDOFF_HEADINGS
+            f"### {heading}\nA documented value, per `git grep -n value`." for heading in post.HANDOFF_HEADINGS
         )
         with patch.object(post, "regular_body", return_value=body), \
              patch.object(post, "resolve_sha", return_value="a" * 40), \
              patch.object(post, "validate_tier_set"), \
              patch.object(post, "validate_milestone_set"), \
+             patch.object(post, "issue_labels", return_value=set()), \
              patch.object(post, "world_checks", return_value=(["world"], [])), \
              patch.object(post, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.object(post, "write_receipt"), \

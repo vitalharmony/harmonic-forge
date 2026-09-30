@@ -943,8 +943,8 @@ hooks = []
 id = "R-0109"
 file = "rules/universal-lane1.md"
 anchor = "advisory-triggers"
-statement = "Use pitch-inspection before a Lane 1 handoff when alternatives were considered, a load-bearing assumption remains asserted, or the implementation mutates Git or live data."
-text_sha = "5ca0309093081da8"
+statement = "Use pitch-inspection before a Lane 1 handoff when alternatives were considered, a load-bearing assumption remains asserted, the implementation mutates Git or live data, or the issue is labeled tooling-exception."
+text_sha = "9236297e9b75684a"
 hooks = []
 
 [[rule]]
@@ -2012,8 +2012,8 @@ hooks = []
 id = "R-0238"
 file = "3-lane-protocol.md"
 anchor = "Pre-Flight Second Read"
-statement = "Lane 1 invokes pitch-inspection before posting a handoff whenever design alternatives are not \"none\", a load-bearing assumption is \"asserted\", or the implementation mutates git state or live data outside the Tooling Exception."
-text_sha = "bb9075cff8ff173c"
+statement = "Lane 1 invokes pitch-inspection before posting a handoff whenever design alternatives are not \"none\", a load-bearing assumption is \"asserted\", the implementation mutates git state or live data, or the issue is labeled tooling-exception; l1_post refuses a Tooling Exception handoff with no recorded verdict."
+text_sha = "d84e179d13ac7019"
 hooks = []
 
 [[rule]]

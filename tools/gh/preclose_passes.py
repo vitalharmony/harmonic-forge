@@ -31,8 +31,10 @@ MAX_PASSES = 2
 
 STICKY_WICKET = (
     "Two preclose passes are complete, and both left surviving findings. Do not run a "
-    "third. Invoke the sticky-wicket agent on this issue: 'patch' means the operator "
-    "--forces the final head; 'reforge' means a new branch, and the pass count restarts."
+    "third. Invoke the sticky-wicket agent on this issue: 'patch' means one cross-family "
+    "post-verdict check reads just the patch (preclose_check.py --post-verdict), then the "
+    "operator --forces the final head; 'reforge' means a new branch, and the pass count "
+    "restarts."
 )
 OPERATOR = (
     "Two preclose passes are complete. Do not run a third. Escalate to the operator; "
@@ -141,10 +143,65 @@ def record(receipt: dict | None, sha: str, current_patch_id: str | None, survivi
                                 "branch": branch, "epoch": epoch}]
     return {"pass_history": everything, "pass_count": len(current(everything)),
             "surviving_findings": int(surviving), "prior_surviving_findings": prior_surviving,
-            "reviewed_patch_id": current_patch_id}
+            "reviewed_patch_id": current_patch_id, **_post_verdict(receipt)}
 
 
 def carried(receipt: dict | None) -> dict:
     """The fields a non-completing write (``plan``) must preserve."""
     passes = history(receipt)
-    return {"pass_history": passes, "pass_count": len(current(passes))} if passes else {}
+    fields = {"pass_history": passes, "pass_count": len(current(passes))} if passes else {}
+    return {**fields, **_post_verdict(receipt)}
+
+
+# harmonic-forge#838 AC5: after a sticky-wicket PATCH verdict, one cross-family
+# refuter reads just the patch (pass-2 head...final head) before the operator's
+# --force. It is recorded beside the passes, never in ``pass_history``, so it
+# never counts toward the cap. Both receipt writers rebuild the payload from
+# ``record``/``carried``, so a field neither carries would vanish on the next
+# write -- which is why both carry it.
+POST_VERDICT_REQUIRED = (
+    "Two passes both left surviving findings (the sticky-wicket case). Before the "
+    "operator's --force covers this head, one cross-family refuter must read the patch "
+    "since pass 2: preclose_check.py --post-verdict --base <pass-2 head> --envelope <path> "
+    "--findings <file>. It never counts as a pass (harmonic-forge#838)."
+)
+
+
+def _post_verdict(receipt: dict | None) -> dict:
+    check = (receipt or {}).get("post_verdict_check")
+    return {"post_verdict_check": check} if isinstance(check, dict) else {}
+
+
+def post_verdict_refusal(receipt: dict | None, sha: str) -> str | None:
+    """Why a forced receipt at ``sha`` must not be written yet, or None.
+    Only the sticky-wicket case needs the check; the operator case (not both
+    passes with survivors) is unchanged."""
+    passes = current(history(receipt))
+    if len(passes) < MAX_PASSES or cap_message(passes) != STICKY_WICKET:
+        return None
+    check = _post_verdict(receipt).get("post_verdict_check") or {}
+    if check.get("head_sha") == sha:
+        return None
+    return POST_VERDICT_REQUIRED
+
+
+def reviewed_head(receipt: dict | None) -> str | None:
+    """The head the receipt currently vouches for. The post-verdict write keeps
+    it unchanged, so recording the check never lets the merge hook accept the
+    final head on its own: the operator's --force still has to."""
+    return (receipt or {}).get("reviewed_sha")
+
+
+def reviewed_patch_id(receipt: dict | None) -> str | None:
+    """The patch id of the diff the receipt vouches for: rebase-stable, unlike
+    the commit id (#838 sticky-wicket PATCH)."""
+    return (receipt or {}).get("reviewed_patch_id")
+
+
+def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
+                        current_patch_id: str | None, provenance: str, surviving: int) -> dict:
+    """The receipt with the check added and every pass left exactly as it was."""
+    return {**carried(receipt),
+            "post_verdict_check": {"base_sha": base_sha, "head_sha": head_sha,
+                                   "patch_id": current_patch_id, "provenance": provenance,
+                                   "surviving": int(surviving)}}

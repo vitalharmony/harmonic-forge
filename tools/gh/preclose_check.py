@@ -528,15 +528,16 @@ def find_receipt(repo: str, issue: int) -> dict | None:
     return read_receipt(legacy_path)
 
 
-def local_patch_id(base: str, head: str) -> str | None:
-    """`git patch-id --verbatim` of `base...head` (harmonic-forge#834 AC1).
+def local_patch_id(base: str, head: str, dots: str = "...") -> str | None:
+    """`git patch-id --verbatim` of `base...head` (harmonic-forge#834 AC1), or
+    of `base..head` when the caller needs exactly base's descendants (#838).
 
     The rendering is pinned (context, prefixes, external diff and textconv
     off, renames on) so a local `diff.*` setting cannot make it differ from
     the `gh pr diff` rendering the merge hook hashes."""
     diff = run("git", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "diff",
                "--no-ext-diff", "--no-textconv", "--no-color", "-U3", "-M",
-               "--src-prefix=a/", "--dst-prefix=b/", f"{base}...{head}").stdout
+               "--src-prefix=a/", "--dst-prefix=b/", f"{base}{dots}{head}").stdout
     return preclose_passes.patch_id(diff)
 
 
@@ -551,6 +552,11 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
     head (a rebase) is not a new pass. Replaces the old per-SHA check, which
     re-armed on every head change and so allowed unbounded passes."""
     if force and not reforge:
+        # harmonic-forge#838 AC5: the operator's --force still needs the
+        # post-verdict check in the sticky-wicket case.
+        reason = preclose_passes.post_verdict_refusal(find_receipt(repo, issue), head_sha)
+        if reason:
+            raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
     reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force)
     if reason:
@@ -792,6 +798,11 @@ def main() -> None:
     parser.add_argument("--reforge", action="store_true",
                         help="Operator instruction only, and only with --force: after sticky-wicket "
                              "ruled 'reforge', start a new pass epoch for a changed diff (harmonic-forge#834).")
+    parser.add_argument("--main", default="origin/main",
+                        help="With --post-verdict: the ref pass 2's patch id was taken against.")
+    parser.add_argument("--post-verdict", action="store_true",
+                        help="After sticky-wicket's PATCH verdict: record one cross-family refuter's "
+                             "read of --base (the pass-2 head)...--head. Not a pass (harmonic-forge#838).")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",
@@ -801,7 +812,68 @@ def main() -> None:
         if not args.findings:
             parser.error("--gate needs --findings")
         sys.exit(gate(args))
+    if args.post_verdict:
+        if not (args.findings and args.envelope):
+            parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
+        sys.exit(post_verdict(args))
     sys.exit(complete(args) if args.complete else plan(args))
+
+
+def post_verdict(args: argparse.Namespace) -> int:
+    """harmonic-forge#838 AC5: record the one cross-family refuter's read of
+    the patch applied after a sticky-wicket PATCH verdict. ``--base`` is the
+    pass-2 head, so the diff is just the patch. Never appended to the pass
+    history, so it never counts toward the cap."""
+    require_writable(receipt_dir())
+    repo = registered_repo(args.repo)
+    head_sha = _require_repo_and_head(repo, args)
+    base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()
+    if not base_sha:
+        raise SystemExit(f"preclose-check: --base {args.base!r} does not resolve to a commit")
+    prior = find_receipt(repo, args.issue) or {}
+    passes = preclose_passes.current(preclose_passes.history(prior))
+    if (len(passes) < preclose_passes.MAX_PASSES
+            or preclose_passes.cap_message(passes) != preclose_passes.STICKY_WICKET):
+        raise SystemExit("preclose-check: --post-verdict applies only after two passes that both "
+                         "left surviving findings (the sticky-wicket case).")
+    # F838 sticky-wicket PATCH: bind --base by PATCH ID, not by commit id.
+    # Lane 1 rebases finished branches, after which the pass-2 commit is
+    # unreachable (and absent from a fresh clone), so a commit-id binding made
+    # --force permanently unreachable. Pass 2's patch id is already the
+    # rebase-stable identity (#834: "a patch-identical rebase is not a pass").
+    pass_two_head = preclose_passes.reviewed_head(prior)
+    pass_two_patch = preclose_passes.reviewed_patch_id(prior)
+    if base_sha != pass_two_head and not (
+            pass_two_patch and local_patch_id(args.main, base_sha) == pass_two_patch):
+        raise SystemExit(f"preclose-check: --base {base_sha[:12]} is neither the pass-2 head "
+                         f"{str(pass_two_head)[:12]} nor patch-identical to it against "
+                         f"{args.main}. The post-verdict check reads only the patch since pass 2.")
+    # Two-dot: exactly base's descendants. Three-dot would widen to the whole
+    # branch whenever a rebase moved the merge base.
+    patch = local_patch_id(base_sha, head_sha, dots="..")
+    if patch is None:
+        raise SystemExit("preclose-check: there is no patch between --base and --head to check.")
+    require_recorded_envelope(args.envelope)
+    provenance = compute_provenance(args.envelope, False)
+    check_provenance(True, provenance)
+    # This check IS the one refuter, so it has no in-family fallback: a
+    # cross-family call that did not run means nobody read the patch.
+    if not provenance.startswith(PROVENANCE_TRIGGERED[0]):
+        raise SystemExit("preclose-check: the post-verdict check needs a cross-family call that ran; "
+                         f"got {provenance!r}. Retry the call; a fallback is not a check.")
+    surviving = len(surviving_findings(load_findings(args.findings)))
+    # The vouched-for head and status stay exactly as pass 2 left them: this
+    # check is not a pass, and the operator's --force is what covers the final
+    # head (harmonic-forge#838 plan review).
+    path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
+                         prior.get("refuters", 0), status=prior.get("status", "complete"),
+                         extra=preclose_passes.post_verdict_fields(
+                             prior, base_sha, head_sha, patch, provenance, surviving))
+    print(f"preclose-check: post-verdict check recorded for {repo}#{args.issue}, "
+          f"{base_sha[:12]}..{head_sha[:12]} ({surviving} surviving finding(s)); not a pass.")
+    print(f"  receipt: {path}")
+    print(f"  {provenance}")
+    return 0
 
 
 if __name__ == "__main__":

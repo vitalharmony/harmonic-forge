@@ -378,7 +378,8 @@ The advisory roles are read-only advice, never implementation authority.
 <!-- R-0109 -->
 - `pitch-inspection` — before a Lane 1 handoff when alternatives were
   considered, a load-bearing assumption remains, the implementation
-  mutates Git/live data, or the operator explicitly requests it.
+  mutates Git/live data, the issue is labeled `tooling-exception`
+  (harmonic-forge#838), or the operator explicitly requests it.
 <!-- /R-0109 -->
 
 <!-- R-0110 -->

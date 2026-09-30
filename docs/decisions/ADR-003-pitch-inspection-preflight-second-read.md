@@ -84,6 +84,36 @@ one-pass pre-flight second read, not a standing risk gate.
   assurance about how faithfully later completion claims will match
   reality.
 
+## Amendment (harmonic-forge#838, 2026-09-30): every Tooling Exception handoff
+
+The third trigger's exclusion is removed, and a fourth trigger is added:
+every handoff on an issue labeled `tooling-exception` is reviewed before
+posting. `l1_post.py` enforces it through a per-issue receipt. The operator
+adopted this on 2026-09-30: "the goal is to get these autonomous passes to
+go through as few iterations as possible."
+
+**The evidence.** harmonic-forge#834 (standard, 5-refuter panels) found 5
+distinct defects in preclose pass 1 and 3 more in pass 2, 2 of them created
+by pass 1's fixes, and ended at a sticky-wicket PATCH. harmonic-forge#836
+(fast, one refuter) found 2 and then 2 more and ended at sticky-wicket. **9
+of those 12 defects came from the Lane 1 handoff**, and none of them was an
+assumption the handoff stated. They were unstated: a reader it did not
+list, a guard the repo already had, a reset path with no authorizer.
+
+**The three reasons this ADR rejected a broader trigger, answered:**
+1. *"High-risk" is not checkable.* The new trigger is a label, which is
+   mechanical.
+2. *It taxes issues that would have gone fine.* That is real. 156 Tooling
+   Exception issues closed in 2026-09 (harmonic-forge 122, hrse 34), and
+   each now pays one review. `tools/gh/preclose_pass_report.py` measures
+   passes per issue before and after, rather than asserting a saving.
+3. *The Tooling Exception is already covered by its own reviewed pass and
+   by `sticky-wicket`.* Both run after implementation. The #834 and #836
+   data is those two mechanisms looping on defects a pre-implementation
+   read would have caught.
+
+R-0239's one pass, no loop, is unchanged.
+
 ## Why this is the right scope, not just a smaller version of the same idea
 
 The two new handoff fields have value independent of the agent ever

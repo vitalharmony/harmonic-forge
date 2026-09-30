@@ -83,10 +83,15 @@ try:
 except ImportError:
     _handoff_owed = None
 
+# harmonic-forge#838: a sibling module, imported by path so the check works
+# however this file is loaded (tests load it by file location).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pitch_receipt  # noqa: E402
+
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
     "Design Alternatives Considered", "Load-Bearing Assumptions",
-    "Delegated Judgment Calls", "Pre-Flight Preconditions", "Implementation Spec",
+    "Consumers and Equivalents", "Delegated Judgment Calls", "Pre-Flight Preconditions", "Implementation Spec",
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
@@ -513,6 +518,12 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
             fail(f"handoff heading is still a template placeholder: {heading}")
     if requires_preflight and heading_content(body, "Pre-Flight Preconditions").lower() == "none":
         fail("live-mutating/cross-repo handoff requires explicit pre-flight preconditions")
+    # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by
+    # STRUCTURE only -- present and not a placeholder, like every heading
+    # above. Whether each reader came with the search that found it is a
+    # question about what was run, which is not in the text; two preclose
+    # passes showed a regex fails both ways (sticky-wicket PATCH), so that
+    # check is pitch-inspection's (agents/pitch-inspection.md, check 6).
 
 
 #: harmonic-forge#472. Per-artifact lead blocks, NOT one universal
@@ -1048,11 +1059,7 @@ def validate_tooling_exception_labelled(body: str, repo: str, issue: int) -> Non
     next_field = match.group("text") if match else ""
     if not _TOOLING_EXCEPTION_MENTION.search(next_field):
         return
-    result = run("gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name")
-    if result.returncode:
-        fail(f"cannot read labels on {repo}#{issue} to verify the Tooling Exception arming label")
-    labels = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    if "tooling-exception" not in labels:
+    if "tooling-exception" not in issue_labels(repo, issue):
         fail(
             f"this handoff's Next line declares Tooling Exception but "
             f"{repo}#{issue} does not carry the tooling-exception label "
@@ -1060,6 +1067,25 @@ def validate_tooling_exception_labelled(body: str, repo: str, issue: int) -> Non
             f"pre-close merge gate. Add it first:\n"
             f"  gh issue edit {issue} --repo {repo} --add-label tooling-exception"
         )
+
+
+def issue_labels(repo: str, issue: int) -> set[str]:
+    """The issue's labels, read live. Shared by both label checks
+    (harmonic-forge#838)."""
+    result = run("gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name")
+    if result.returncode:
+        fail(f"cannot read labels on {repo}#{issue}")
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def validate_pitch_inspected(repo: str, issue: int) -> None:
+    """harmonic-forge#838 AC3: R-0238 trigger 4. Unconditional, unlike the
+    Next-field check above: the labels are read live at post time, so a label
+    added after the draft was written still triggers it, whatever the draft
+    says."""
+    reason = pitch_receipt.refusal(repo, issue, issue_labels(repo, issue))
+    if reason:
+        fail(reason)
 
 
 # a private-repo incident: files whose presence in two branches carries no information about
@@ -1687,6 +1713,11 @@ def post_kind(
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
+        # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one
+        # handoff it reviewed. R-0239's single revision happens before posting,
+        # so consuming it here keeps that, and a later redesigned handoff on
+        # the same issue needs a fresh review.
+        pitch_receipt.consume(repo, issue, url)
     return url, comment_id
 
 
@@ -1893,6 +1924,7 @@ def main() -> None:
         validate_tier_set(repo, args.issue)
         validate_milestone_set(repo, args.issue)
         validate_tooling_exception_labelled(body, repo, args.issue)
+        validate_pitch_inspected(repo, args.issue)
     validate_lead(args.kind, body)
     if args.kind == "sweep":
         spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")
