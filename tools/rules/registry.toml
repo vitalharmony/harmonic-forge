@@ -818,6 +818,14 @@ hooks = []
 restates = "R-0080"
 
 [[rule]]
+id = "R-0369"
+file = "rules/universal-lane1.md"
+anchor = "post-merge-deploy"
+statement = "After the last merge of a batch, Lane 1 fast-forwards the clean main checkout to origin/main (never a merge commit or reset), restarts through the project's lifecycle path, and spot-checks one new route or behavior; it never lists these as operator actions."
+text_sha = "c7b1c283c9f3bd5e"
+hooks = []
+
+[[rule]]
 id = "R-0095"
 file = "rules/universal-lane1.md"
 anchor = "doc-only-merges-wait"

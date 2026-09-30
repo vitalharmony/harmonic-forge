@@ -170,6 +170,26 @@ actually merged. See `universal-claude.md`'s Tool-use safeguards for the
 concrete commands and the specific `l1_post.py` friction this prevents.
 <!-- /R-0094 -->
 
+## Post-merge deploy (harmonic-forge#836)
+
+<!-- R-0369 -->
+After the **last** merge of a batch (not after each PR), Lane 1 deploys what
+merged, itself, and never lists any of these steps as an operator action:
+
+1. Confirm the project's main checkout has no tracked changes.
+2. Fast-forward it to `origin/main` (`git fetch origin`, then
+   `git merge --ff-only origin/main`). Never a merge commit and never a
+   reset. If the fast-forward is refused, stop and report. This is the one
+   direct `git` step sanctioned alongside R-0001's prohibition on manual
+   `add`/`commit`/`push`.
+3. Restart through the project's designated lifecycle path (R-0001). HRSE2's
+   is `mise run restart --no-bump --no-git` (R-0297/R-0298).
+4. Spot-check one route or behavior the merge added.
+
+Merged code does not run until this is done, and a merged hook is inert until
+the main checkout carries it.
+<!-- /R-0369 -->
+
 Lane 1 never opens a worktree by hand to post from: HRSE2's posting tasks
 (`l1-post`, `lane-comment`, `l1-issue`) run from two fixed `origin/main`
 worktrees that `tools/gh/l1_tools_env.sh` creates and refreshes on every

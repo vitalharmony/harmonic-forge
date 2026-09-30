@@ -3,6 +3,14 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## docs(rules): R-0369 post-merge deploy is an explicit Lane 1 step -- fast-forward the main checkout, restart through the lifecycle path, spot-check (harmonic-forge#836)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- rules/universal-lane1.md  | 20 ++++++++++++++++++++
+- tools/rules/registry.toml |  8 ++++++++
+- 2 files changed, 28 insertions(+)
+
 ## fix(preclose): sticky-wicket PATCH -- --reforge is operator-only (requires --force, refuses a reviewed diff), batch_preflight reads through the merge hook, current-epoch count message, one-reader invariant test (harmonic-forge#834)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
