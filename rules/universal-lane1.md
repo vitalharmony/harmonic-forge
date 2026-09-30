@@ -210,7 +210,6 @@ in `.claude/settings.json` stays inert in every already-running session, Lane
 new hook (as opposed to editing one already registered), say so in the close
 comment and restart the affected sessions; do not report the hook as deployed.
 <!-- /R-0369 -->
-<!-- /R-0369 -->
 
 Lane 1 never opens a worktree by hand to post from: HRSE2's posting tasks
 (`l1-post`, `lane-comment`, `l1-issue`) run from two fixed `origin/main`
