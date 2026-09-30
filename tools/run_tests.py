@@ -172,7 +172,11 @@ def main() -> int:
     # run must never write into the operator's real telemetry archive, so the
     # whole run gets a throwaway root unless a test sets its own.
     archive_tmp = tempfile.TemporaryDirectory(prefix="hf-telemetry-test-")
+    (Path(archive_tmp.name) / ".hf-telemetry-test-root").write_text("test archive root\n", encoding="utf-8")
     os.environ.setdefault("HARMONIC_FORGE_TELEMETRY_ARCHIVE", archive_tmp.name)
+    # ... and failures go to a throwaway state dir, never the real failure log.
+    # Forced, not setdefault: XDG_STATE_HOME is commonly already exported.
+    os.environ["XDG_STATE_HOME"] = str(Path(archive_tmp.name) / "state")
     files = _test_files()
     if not files:
         print("[test] no test files found — refusing to report success", file=sys.stderr)

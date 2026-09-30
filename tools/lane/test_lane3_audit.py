@@ -34,6 +34,8 @@ class AuditRecordTests(unittest.TestCase):
         # harmonic-forge#826: the trim now archives its overflow; never let a
         # test write into the real archive under ~/.local/share.
         self.archive_root = Path(self._tmp.name) / "archive"
+        self.archive_root.mkdir()
+        (self.archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
         env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(self.archive_root)})
         env.start()
         self.addCleanup(env.stop)

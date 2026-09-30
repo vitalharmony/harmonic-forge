@@ -3,6 +3,21 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): act on preclose panel findings (harmonic-forge#826)
+
+Override guarded by a test-root sentinel; archive failures logged outside the
+root; 10x hard ceiling on bounded writers; corrupt handoff_owed files archived
+raw; CI export incremental, oldest-first, run+jobs atomic, skip keyed on days
+set; actions_retention.py added; tests for every archive site; run_tests
+forces a temp XDG_STATE_HOME.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/telemetry/ci_history_export.py |  80 ++++++----
+- tools/telemetry/test_archive.py      |   9 +-
+- tools/telemetry/test_prune_sites.py  | 292 +++++++++++++++++++++++++++++++++++
+- 12 files changed, 564 insertions(+), 35 deletions(-)
+
 ## feat(telemetry): archive aged belt candidates and superseded preclose receipts (harmonic-forge#826)
 
 Two AC5-sweep finds: belt_candidates' 14-day prune was the only on-disk record

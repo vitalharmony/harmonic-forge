@@ -35,8 +35,9 @@ class ArchiveTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self.root = self.tmp / "archive"
-        self._env = mock.patch.dict(os.environ, {archive.ROOT_ENV: str(self.root)})
+        self.root = archive.make_test_root(self.tmp / "archive")
+        self._env = mock.patch.dict(os.environ, {archive.ROOT_ENV: str(self.root),
+                                                 "XDG_STATE_HOME": str(self.tmp / "state")})
         self._env.start()
         archive.reset_registry_cache()
         self.checkout_a = self.tmp / "work" / "Alpha_Repo"
@@ -118,7 +119,7 @@ class ArchiveTests(unittest.TestCase):
 class CiHistoryExportTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name) / "archive"
+        self.root = archive.make_test_root(Path(self._tmp.name) / "archive")
         self._env = mock.patch.dict(os.environ, {archive.ROOT_ENV: str(self.root)})
         self._env.start()
         self.origin = archive.Origin("acct-one", "orgone", "orgone/alpha")
@@ -160,7 +161,7 @@ class CiHistoryExportTests(unittest.TestCase):
     def test_dry_run_writes_nothing(self) -> None:
         counts = cix.export_repo("orgone/alpha", self.origin, self._gh, dry_run=True)
         self.assertGreater(counts["runs"], 0)
-        self.assertFalse(self.root.exists())
+        self.assertEqual(list(self.root.rglob("*.jsonl.gz")), [])
 
     def test_unreadable_retention_is_treated_as_at_risk(self) -> None:
         def denied(path: str):

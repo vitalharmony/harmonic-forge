@@ -165,7 +165,8 @@ def record_fire(payload: dict, lane: str | None, injected: bool,
                 lines = target.read_text(encoding="utf-8").splitlines(True)
                 if len(lines) > FIRE_LOG_MAX:
                     dropped = lines[:-FIRE_LOG_MAX]
-                    if _archive_fires(dropped) == len(dropped):
+                    if _archive_fires(dropped) == len(dropped) or \
+                            _force_trim(len(lines), FIRE_LOG_MAX, "belt-wakeup-fires", len(dropped)):
                         target.write_text("".join(lines[-FIRE_LOG_MAX:]), encoding="utf-8")
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -220,3 +221,20 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _force_trim(total: int, bound: int, source: str, dropped: int) -> bool:
+    """Past the archive's hard ceiling, trim without an archive and record the
+    forced loss (harmonic-forge#826); below it, keep everything."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+    except Exception:
+        return total > bound * 10
+    if not archive.over_hard_ceiling(total, bound):
+        return False
+    archive.record_failure(source, "hard ceiling reached; trimmed without archive",
+                           forced_loss=dropped)
+    return True

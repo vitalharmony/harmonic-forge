@@ -63,11 +63,56 @@ class Origin:
 UNRESOLVED = Origin("unresolved", "unresolved", None)
 
 
+#: A test root must carry this file, or the override is refused. An env var is
+#: inherited by every child process, so an unguarded override would let any
+#: process that happened to inherit it archive into a throwaway directory while
+#: every prune site, seeing a full count, deleted the only live copy. Refusing
+#: fails toward retention: `archive()` returns 0 and nothing is deleted.
+TEST_ROOT_SENTINEL = ".hf-telemetry-test-root"
+
+
+class ArchiveRootRefused(RuntimeError):
+    pass
+
+
 def archive_root() -> Path:
     override = os.environ.get(ROOT_ENV)
     if override:
-        return Path(override).expanduser()
+        root = Path(override).expanduser()
+        if not (root / TEST_ROOT_SENTINEL).exists():
+            raise ArchiveRootRefused(
+                f"{ROOT_ENV}={override} has no {TEST_ROOT_SENTINEL}; refusing to archive there")
+        return root
     return Path.home() / ".local/share/harmonic-forge/telemetry/archive"
+
+
+def make_test_root(path: Path) -> Path:
+    """Mark a directory as a legitimate test archive root (tests only)."""
+    path.mkdir(parents=True, exist_ok=True)
+    (path / TEST_ROOT_SENTINEL).write_text("test archive root\n", encoding="utf-8")
+    return path
+
+
+def failure_log() -> Path:
+    """Where archive failures are recorded -- outside the archive root, so a
+    broken root cannot also swallow the evidence that it is broken."""
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") \
+        / "harmonic-forge" / "telemetry-archive-failures.jsonl"
+
+
+def record_failure(source: str, reason: str, *, forced_loss: int = 0) -> None:
+    """One line per failure. `forced_loss` > 0 means a caller hit its hard
+    ceiling and trimmed without an archive -- the one case data is lost."""
+    try:
+        path = failure_log()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "at": datetime.now(timezone.utc).isoformat(), "source": source,
+                "reason": reason[:300], "forced_loss": forced_loss,
+            }) + "\n")
+    except Exception:
+        pass
 
 
 def encode_cwd(path: Path) -> str:
@@ -225,7 +270,8 @@ def archive(
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         return len(batch)
-    except Exception:
+    except Exception as exc:
+        record_failure(source, f"{type(exc).__name__}: {exc}")
         return 0
 
 
@@ -277,6 +323,17 @@ def archive_file(source: str, path: Path, *, reason: str) -> int:
     repo = content.get("repo") if isinstance(content, dict) else None
     origin = origin_for_repo(repo) if repo else resolve(where)
     return archive(source, [record], origin=origin)
+
+
+#: A bounded writer whose archive keeps failing holds its overflow rather than
+#: drop it -- but only up to this many times its bound. Past that it trims
+#: anyway and records the forced loss, so a broken archive can never turn a
+#: hook that fires on every tool call into an unbounded, ever-slower read.
+HARD_CEILING_FACTOR = 10
+
+
+def over_hard_ceiling(total: int, bound: int) -> bool:
+    return total > bound * HARD_CEILING_FACTOR
 
 
 def read(path: Path) -> list[dict[str, Any]]:

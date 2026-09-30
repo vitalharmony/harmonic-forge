@@ -1510,6 +1510,7 @@ class PruneTests(StateFixture):
         # the real archive under ~/.local/share.
         self._archive_tmp = tempfile.TemporaryDirectory()
         self.archive_root = Path(self._archive_tmp.name)
+        (self.archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
         env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(self.archive_root)})
         env.start()
         self.addCleanup(env.stop)

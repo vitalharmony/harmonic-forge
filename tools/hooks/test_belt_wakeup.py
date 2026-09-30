@@ -181,6 +181,8 @@ class TestFireLog(unittest.TestCase):
         # harmonic-forge#826: the trim archives its overflow; keep tests out of
         # the real archive under ~/.local/share.
         self.archive_root = Path(self.tmpdir.name) / "archive"
+        self.archive_root.mkdir()
+        (self.archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
         self._env = mock.patch.dict(
             os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(self.archive_root)})
         self._env.start()

@@ -101,41 +101,67 @@ def retention(repo: str, gh: GhJson) -> Optional[dict]:
 
 
 def export_repo(repo: str, origin: archive.Origin, gh: GhJson, *, dry_run: bool) -> dict[str, int]:
+    """Archive what is new since the last run.
+
+    **Incremental, oldest first.** Each run is archived with its jobs and
+    recorded in the dedupe state before the next run's jobs are fetched, and
+    runs go oldest-first -- the soonest to fall out of GitHub's retention
+    window. A transient `gh` failure mid-pass therefore keeps everything
+    already done, and the next pass resumes where it stopped. Statuses follow
+    the same rule per commit, oldest commit first.
+
+    **At-least-once.** A run is marked done only together with its jobs, so a
+    failure can never strand a run's jobs. A crash between an append and the
+    state save re-archives that one batch; every record carries `kind` + `id`,
+    the key F637's store dedupes on (design.md: a deterministic `event_id`
+    makes re-extraction idempotent)."""
     state = _load_state(repo)
     runs: list[dict] = []
     for page in gh(f"repos/{repo}/actions/runs?per_page=100"):
         runs.extend(r for r in page.get("workflow_runs", []) if r.get("status") == "completed")
+    runs.sort(key=lambda r: (r.get("created_at") or "", r["id"]))
     new_runs = [r for r in runs if r["id"] not in state["run"]]
 
-    job_records: list[dict] = []
-    for run in new_runs:
-        for page in gh(f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100&filter=all"):
-            for job in page.get("jobs", []):
-                if job.get("id") not in state["job"] and job.get("status") == "completed":
-                    job_records.append({"kind": "job", **_pick(job, JOB_FIELDS)})
-
-    shas: set[str] = {r["head_sha"] for r in runs if r.get("head_sha")}
+    commits: list[tuple[str, str]] = []
     for page in gh(f"repos/{repo}/commits?per_page=100"):
-        shas.update(c["sha"] for c in page if isinstance(c, dict) and c.get("sha"))
-    status_records: list[dict] = []
-    for sha in sorted(shas):
-        for page in gh(f"repos/{repo}/commits/{sha}/statuses?per_page=100"):
-            for status in page:
-                if status.get("id") not in state["status"]:
-                    status_records.append({"kind": "status", "sha": sha, **_pick(status, STATUS_FIELDS)})
+        for c in page:
+            if isinstance(c, dict) and c.get("sha"):
+                when = ((c.get("commit") or {}).get("committer") or {}).get("date") or ""
+                commits.append((when, c["sha"]))
+    seen = {sha for _, sha in commits}
+    commits.extend(("", r["head_sha"]) for r in runs if r.get("head_sha") and r["head_sha"] not in seen)
+    commits.sort()
 
-    run_records = [{"kind": "workflow_run", **_pick(r, RUN_FIELDS)} for r in new_runs]
-    counts = {"runs": len(run_records), "jobs": len(job_records), "statuses": len(status_records)}
-    if dry_run:
-        return counts
-
-    for kind, records in (("run", run_records), ("job", job_records), ("status", status_records)):
-        if not records:
+    counts = {"runs": 0, "jobs": 0, "statuses": 0}
+    for run in new_runs:
+        jobs: list[dict] = []
+        for page in gh(f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100&filter=all"):
+            jobs.extend({"kind": "job", **_pick(job, JOB_FIELDS)} for job in page.get("jobs", [])
+                        if job.get("status") == "completed")
+        batch = [{"kind": "workflow_run", **_pick(run, RUN_FIELDS)}, *jobs]
+        counts["runs"] += 1
+        counts["jobs"] += len(jobs)
+        if dry_run:
             continue
-        written = archive.archive(SOURCE, records, origin=origin)
-        if written != len(records):
-            raise RuntimeError(f"{repo}: archived {written} of {len(records)} {kind} records")
-        state[kind].update(r["id"] for r in records)
+        written = archive.archive(SOURCE, batch, origin=origin)
+        if written != len(batch):
+            raise RuntimeError(f"{repo}: archived {written} of {len(batch)} records for run {run['id']}")
+        state["run"].add(run["id"])
+        state["job"].update(j["id"] for j in jobs)
+        _save_state(repo, state)
+
+    for _when, sha in commits:
+        batch = []
+        for page in gh(f"repos/{repo}/commits/{sha}/statuses?per_page=100"):
+            batch.extend({"kind": "status", "sha": sha, **_pick(st, STATUS_FIELDS)}
+                         for st in page if st.get("id") not in state["status"])
+        counts["statuses"] += len(batch)
+        if dry_run or not batch:
+            continue
+        written = archive.archive(SOURCE, batch, origin=origin)
+        if written != len(batch):
+            raise RuntimeError(f"{repo}: archived {written} of {len(batch)} status records for {sha}")
+        state["status"].update(r["id"] for r in batch)
         _save_state(repo, state)
     return counts
 
@@ -165,8 +191,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             apply_project_identity(project.repo)
             ret = retention(project.repo, gh_json_lines)
             row["retention"] = ret
-            if ret and ret.get("maximum_allowed_days", 0) >= FULL_RETENTION_DAYS:
-                row["action"] = "skip: repo allows full retention"
+            if ret and ret.get("days", 0) >= FULL_RETENTION_DAYS:
+                # Keyed on the retention actually SET, not the plan maximum: a
+                # repo that allows 400 but is set to 90 still loses history.
+                row["action"] = "skip: retention already set to 400 days"
             else:
                 origin = archive.Origin(project.account or "unresolved",
                                         project.repo.split("/", 1)[0], project.repo)

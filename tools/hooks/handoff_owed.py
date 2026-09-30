@@ -130,11 +130,28 @@ def prune(now: float | None = None) -> None:
                 # harmonic-forge#826: the owed records are archived first, and
                 # the file goes only when every one of them was written.
                 owed = _read(entry)
-                if owed and _archive_owed(owed, entry.stem) != len(owed):
+                if owed:
+                    if _archive_owed(owed, entry.stem) != len(owed):
+                        continue
+                elif _archive_raw(entry) != 1:
+                    # Unparseable or non-list: the raw text is the only copy,
+                    # so it is archived as-is, and kept when that fails.
                     continue
                 entry.unlink()
         except OSError:
             continue
+
+
+def _archive_raw(entry: Path) -> int:
+    """Archive an owed file that does not parse as a list of records; 0 = keep."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        return archive.archive_file("handoff-owed", entry, reason="unparseable-prune")
+    except Exception:
+        return 0
 
 
 def _archive_owed(owed: list[dict], session: str) -> int:
