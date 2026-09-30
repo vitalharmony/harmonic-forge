@@ -292,10 +292,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def _force_trim(total: int, bound: int, source: str, dropped: int) -> bool:
     """Past the archive's hard ceiling, trim without an archive and record the
     forced loss (harmonic-forge#826); below it, keep everything."""
@@ -311,3 +307,7 @@ def _force_trim(total: int, bound: int, source: str, dropped: int) -> bool:
     archive.record_failure(source, "hard ceiling reached; trimmed without archive",
                            forced_loss=dropped)
     return True
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

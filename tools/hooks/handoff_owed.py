@@ -130,7 +130,7 @@ def prune(now: float | None = None) -> None:
                 # harmonic-forge#826: the owed records are archived first, and
                 # the file goes only when every one of them was written.
                 owed = _read(entry)
-                if owed:
+                if owed and _is_clean_list(entry, len(owed)):
                     if _archive_owed(owed, entry.stem) != len(owed):
                         continue
                 elif _archive_raw(entry) != 1:
@@ -140,6 +140,16 @@ def prune(now: float | None = None) -> None:
                 entry.unlink()
         except OSError:
             continue
+
+
+def _is_clean_list(entry: Path, kept: int) -> bool:
+    """True only when `_read` dropped nothing, so archiving the parsed records
+    archives the whole file. Anything else goes through the raw archive."""
+    try:
+        data = json.loads(entry.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, list) and len(data) == kept
 
 
 def _archive_raw(entry: Path) -> int:

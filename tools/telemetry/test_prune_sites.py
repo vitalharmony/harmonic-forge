@@ -280,6 +280,68 @@ class ExportIncrementalTests(_Root):
         self.assertEqual(archived, [1, 2])
 
 
+class ScriptModeCeilingTests(_Root):
+    """Pass-2 finding: `_force_trim` was defined after `__main__`, so the hook
+    (run as a script) hit NameError. Exercise the SCRIPT, not an import."""
+
+    def test_belt_wakeup_run_as_a_script_can_reach_force_trim(self):
+        import runpy
+        ns = runpy.run_path(str(TOOLS / "hooks" / "belt_wakeup.py"), run_name="not_main")
+        self.assertIn("_force_trim", ns)
+        source = (TOOLS / "hooks" / "belt_wakeup.py").read_text(encoding="utf-8")
+        self.assertLess(source.index("def _force_trim("), source.index('if __name__ == "__main__":'))
+        source = (TOOLS / "lane" / "lane3_audit.py").read_text(encoding="utf-8")
+        self.assertLess(source.index("def _force_trim("), source.index('if __name__ == "__main__":'))
+
+    def test_belt_wakeup_trims_past_the_ceiling_when_archiving_fails(self):
+        import belt_wakeup
+        log = self.tmp / "fires.jsonl"
+        with mock.patch.object(belt_wakeup, "FIRE_LOG_MAX", 2), \
+                mock.patch.object(belt_wakeup, "_archive_fires", return_value=0):
+            for i in range(25):
+                belt_wakeup.record_fire({"session_id": str(i)}, "1", True, path=log)
+        self.assertLessEqual(len(log.read_text().splitlines()), 2 * archive.HARD_CEILING_FACTOR)
+        self.assertTrue(any(f["source"] == "belt-wakeup-fires" and f["forced_loss"] > 0
+                            for f in self.failures()))
+
+
+class HandoffOwedMixedTests(HandoffOwedTests):
+    def test_a_file_with_a_non_dict_entry_is_archived_raw_whole(self):
+        f = self.owed / "sess.json"
+        f.write_text(json.dumps([{"repo": "vitalharmony/hrse", "issue": 3}, "legacy-string"]),
+                     encoding="utf-8")
+        self._age(f)
+        handoff_owed.prune()
+        self.assertFalse(f.exists())
+        self.assertIn("legacy-string", json.dumps(self.archived("handoff-owed")[0]["record"]))
+
+
+class RetentionRoutingTests(_Root):
+    def test_a_repo_already_at_400_days_is_skipped(self):
+        manifest = self.tmp / "projects.toml"
+        manifest.write_text('[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\naccount = "acct"\n',
+                            encoding="utf-8")
+        with mock.patch.object(cix, "retention", return_value={"days": 400, "maximum_allowed_days": 400}), \
+                mock.patch.object(cix, "export_repo") as export, \
+                mock.patch("manifest_identity.apply_project_identity"):
+            cix.main(["--manifest", str(manifest)])
+        export.assert_not_called()
+
+    def test_apply_puts_the_maximum_for_a_raise(self):
+        calls = []
+
+        def gh(*args):
+            calls.append(args)
+            out = json.dumps({"days": 400 if any("PUT" == a for a in args) or len(calls) > 2 else 90,
+                              "maximum_allowed_days": 400})
+            return mock.Mock(returncode=0, stdout=out, stderr="")
+        row = actions_retention.apply("o/a", gh, dry_run=False)
+        put = [c for c in calls if "PUT" in c]
+        self.assertEqual(len(put), 1)
+        self.assertIn("days=400", put[0])
+        self.assertEqual(row["action"], "raise")
+
+
 class RetentionPlanTests(unittest.TestCase):
     def test_plan(self):
         self.assertEqual(actions_retention.plan({"days": 90, "maximum_allowed_days": 400}), "raise")

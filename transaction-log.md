@@ -3,6 +3,19 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): preclose pass-2 findings (harmonic-forge#826)
+
+_force_trim moved above __main__ in belt_wakeup and lane3_audit (script-mode
+NameError); handoff_owed archives any file _read would drop entries from as raw;
+tests for script mode, the belt_wakeup ceiling, skip-at-400 and the retention PUT.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/hooks/handoff_owed.py         | 12 ++++++-
+- tools/lane/lane3_audit.py           |  8 ++---
+- tools/telemetry/test_prune_sites.py | 62 +++++++++++++++++++++++++++++++++++++
+- 4 files changed, 81 insertions(+), 9 deletions(-)
+
 ## fix(telemetry): act on preclose panel findings (harmonic-forge#826)
 
 Override guarded by a test-root sentinel; archive failures logged outside the
