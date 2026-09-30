@@ -1,0 +1,8 @@
+[Unit]
+Description=Harmonic Forge: encrypted off-machine backup of Claude Code transcripts (harmonic-forge#826)
+
+[Service]
+Type=oneshot
+ExecStart=%h/harmonic-forge/tools/telemetry/transcript_backup.sh
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-transcript-backup.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-transcript-backup.log
