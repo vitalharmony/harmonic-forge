@@ -37,6 +37,7 @@ and 0 on any failure -- which the caller reads as "do not delete".
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import gzip
 import json
 import os
@@ -254,6 +255,10 @@ def archive(
                 "account": who.account,
                 "org": who.org,
                 "repo": who.repo,
+                # Dedupe key for at-least-once delivery: a partial multi-origin
+                # failure re-archives the groups that already succeeded.
+                "record_hash": hashlib.sha256(
+                    json.dumps(record, sort_keys=True, default=str).encode("utf-8")).hexdigest(),
                 "record": record,
             }, sort_keys=True, default=str) + "\n"
             for record in batch
@@ -262,11 +267,19 @@ def archive(
         with lock.open("a") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
-                with target.open("ab") as raw:
-                    with gzip.GzipFile(fileobj=raw, mode="ab") as gz:
-                        gz.write(lines)
-                    raw.flush()
-                    os.fsync(raw.fileno())
+                size = target.stat().st_size if target.exists() else 0
+                try:
+                    with target.open("ab") as raw:
+                        with gzip.GzipFile(fileobj=raw, mode="ab") as gz:
+                            gz.write(lines)
+                        raw.flush()
+                        os.fsync(raw.fileno())
+                except BaseException:
+                    # A torn gzip member would make the whole partition
+                    # unreadable after the next good append: roll it back.
+                    with target.open("r+b") as raw:
+                        raw.truncate(size)
+                    raise
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         return len(batch)

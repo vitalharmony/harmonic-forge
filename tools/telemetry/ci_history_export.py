@@ -69,7 +69,9 @@ def gh_json_lines(path: str) -> list[Any]:
 
 
 def _state_path(repo: str) -> Path:
-    return archive.archive_root() / "_state" / "ci-history" / (repo.replace("/", "__") + ".json")
+    # Outside the archive root (preclose pass 3): deleting an account's partition
+    # must not leave dedupe state that hides its history from the next export.
+    return archive.failure_log().parent / "ci-history-state" / (repo.replace("/", "__") + ".json")
 
 
 def _load_state(repo: str) -> dict[str, set]:

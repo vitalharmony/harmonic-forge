@@ -301,7 +301,18 @@ def _force_trim(total: int, bound: int, source: str, dropped: int) -> bool:
             sys.path.insert(0, telemetry)
         import archive  # noqa: PLC0415
     except Exception:
-        return total > bound * 10
+        if total <= bound * 10:
+            return False
+        try:  # the archive module is unavailable, so record the loss here
+            state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+            log = state / "harmonic-forge" / "telemetry-archive-failures.jsonl"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"source": source, "forced_loss": dropped,
+                                         "reason": "archive module unavailable; hard ceiling"}) + "\n")
+        except Exception:
+            pass
+        return True
     if not archive.over_hard_ceiling(total, bound):
         return False
     archive.record_failure(source, "hard ceiling reached; trimmed without archive",

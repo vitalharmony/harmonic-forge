@@ -342,6 +342,44 @@ class RetentionRoutingTests(_Root):
         self.assertEqual(row["action"], "raise")
 
 
+class Pass3Tests(_Root):
+    def test_a_missing_registry_path_is_reported(self):
+        """AC7: a registry entry whose path is not on disk is reported, never skipped."""
+        import io
+        from contextlib import redirect_stdout
+        manifest = self.tmp / "projects.toml"
+        manifest.write_text('[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\naccount = "acct"\n'
+                            f'path = "{self.tmp / "gone"}"\n', encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out), \
+                mock.patch.object(cix, "retention", return_value={"days": 400, "maximum_allowed_days": 400}), \
+                mock.patch("manifest_identity.apply_project_identity"):
+            cix.main(["--manifest", str(manifest)])
+        self.assertIn("path not on disk", out.getvalue())
+
+    def test_a_failed_append_is_rolled_back_so_the_partition_stays_readable(self):
+        archive.archive("belt", [{"n": 1}], origin=archive.UNRESOLVED)
+        real_open = gzip.GzipFile
+
+        class Torn(real_open):
+            def write(self, data):
+                super().write(data[: len(data) // 2])
+                raise OSError("ENOSPC")
+        with mock.patch.object(gzip, "GzipFile", Torn):
+            self.assertEqual(archive.archive("belt", [{"n": 2}], origin=archive.UNRESOLVED), 0)
+        archive.archive("belt", [{"n": 3}], origin=archive.UNRESOLVED)
+        self.assertEqual([r["record"]["n"] for r in self.archived("belt")], [1, 3])
+
+    def test_every_envelope_carries_a_content_hash_for_dedupe(self):
+        archive.archive("belt", [{"n": 1}, {"n": 1}], origin=archive.UNRESOLVED)
+        rows = self.archived("belt")
+        self.assertEqual(rows[0]["record_hash"], rows[1]["record_hash"])
+        self.assertEqual(len(rows[0]["record_hash"]), 64)
+
+    def test_export_state_lives_outside_the_archive_root(self):
+        self.assertFalse(str(cix._state_path("o/a")).startswith(str(self.root)))
+
+
 class RetentionPlanTests(unittest.TestCase):
     def test_plan(self):
         self.assertEqual(actions_retention.plan({"days": 90, "maximum_allowed_days": 400}), "raise")

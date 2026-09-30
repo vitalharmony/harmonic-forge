@@ -3,6 +3,20 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): pass-3 findings (harmonic-forge#826)
+
+Torn gzip append rolled back; record_hash dedupe key in every envelope; export
+state moved out of the archive root; transcript backup refuses to re-init a
+lost repo; forced-loss recorded when the archive module is unavailable; AC7
+missing-path test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/telemetry/ci_history_export.py |  4 +++-
+- tools/telemetry/test_prune_sites.py  | 38 ++++++++++++++++++++++++++++++++++++
+- tools/telemetry/transcript_backup.sh | 11 +++++++++++
+- 6 files changed, 94 insertions(+), 8 deletions(-)
+
 ## fix(telemetry): preclose pass-2 findings (harmonic-forge#826)
 
 _force_trim moved above __main__ in belt_wakeup and lane3_audit (script-mode

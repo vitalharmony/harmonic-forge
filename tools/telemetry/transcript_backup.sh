@@ -39,10 +39,21 @@ if [[ "$perm" != "600" && "$perm" != "400" ]]; then
   exit 2
 fi
 
+# Once a repository exists, its id is remembered locally. A missing or
+# unreadable repository after that is an error, never a fresh `init`: a new
+# empty repo would pass every later check while every earlier snapshot --
+# the only copy of transcripts Claude Code has since deleted -- is gone.
+ID_FILE="${REPO_ID_FILE:-$HOME/.config/harmonic-forge/transcript-backup.repo-id}"
 if ! restic cat config >/dev/null 2>&1; then
+  if [[ -s "$ID_FILE" ]]; then
+    echo "transcript-backup: repository $(cat "$ID_FILE") is missing or unreadable at $RESTIC_REPOSITORY; refusing to init a new one" >&2
+    exit 4
+  fi
   mkdir -p "$RESTIC_REPOSITORY"
   restic init
 fi
+restic cat config 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' > "$ID_FILE.tmp" \
+  && mv "$ID_FILE.tmp" "$ID_FILE"
 
 restic backup --tag claude-transcripts --one-file-system --no-scan "$SOURCE_DIR"
 
