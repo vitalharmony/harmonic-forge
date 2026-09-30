@@ -3,6 +3,18 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): apply F828 preclose panel — repo/issue in event_id, UTC ts, record_hash archive key, never-drop per-event rejects, attrs body guard, census reports every entry (harmonic-forge#828)
+- tools/telemetry/emit.py        | 188 ++++++++++++++++++++++++++++++-----------
+- tools/telemetry/schema_v1.json |  55 ++++++++++--
+- tools/telemetry/test_store.py  | 110 +++++++++++++++++++-----
+- 4 files changed, 280 insertions(+), 82 deletions(-)
+
+## feat(telemetry): event store T0 — ADR-009, schema v1, emit(), archive ingest, registry census (harmonic-forge#828)
+- tools/telemetry/emit.py                         | 123 ++++++++++++++++++++++++
+- tools/telemetry/schema_v1.json                  |  27 ++++++
+- tools/telemetry/test_store.py                   | 113 ++++++++++++++++++++++
+- 5 files changed, 432 insertions(+)
+
 ## fix(telemetry): pass-3 findings (harmonic-forge#826)
 
 Torn gzip append rolled back; record_hash dedupe key in every envelope; export
