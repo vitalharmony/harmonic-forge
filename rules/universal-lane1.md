@@ -176,9 +176,10 @@ concrete commands and the specific `l1_post.py` friction this prevents.
 After the **last** merge of a batch (not after each PR), Lane 1 deploys what
 merged, itself, and never lists any of these steps as an operator action. It
 does so for **every repository the batch merged into**: a mixed batch such as
-`H2141,F834` deploys both checkouts, because project hooks resolve by absolute
-path into the platform checkout (`~/harmonic-forge`), and a merged hook is
-inert until the checkout carrying it is updated.
+`H2141,F834` deploys both checkouts, because rules, skills, hooks and `tools/`
+scripts resolve by absolute path into the platform checkout
+(`~/harmonic-forge`), and a stale checkout serves the pre-merge copy of all of
+them.
 
 1. Confirm the repo's main checkout is on a clean `refs/heads/main`: HEAD is
    that branch (not detached, not another branch), no merge or rebase is in
@@ -187,16 +188,28 @@ inert until the checkout carrying it is updated.
    (`tools/lane/_lane_refresh.sh`).
 2. Fast-forward it to `origin/main` (`git fetch origin`, then
    `git merge --ff-only origin/main`). Never a merge commit and never a
-   reset. If the fast-forward is refused, stop and report. This is the one
-   direct `git` step sanctioned alongside R-0001's prohibition on manual
-   `add`/`commit`/`push`.
+   reset. If the fast-forward is refused, stop and report. These are the
+   direct `git` commands this rule sanctions; R-0001's prohibition on manual
+   `add`/`commit`/`push` is unaffected.
 3. Where the repo has a running stack, restart it through its designated
    lifecycle path (R-0001). HRSE2's is `mise run restart --no-bump --no-git`
    (R-0297/R-0298). Deploy uses `--no-bump --no-git` because the merged
    commits already carry their version and their commit; a bump or a git step
    here would create a local commit on `main`. A repo with no stack is
    deployed by step 2 alone.
-4. Spot-check one route or behavior the merge added.
+4. Where the merge changed a running stack's behavior, spot-check one route
+   or behavior it added. A rules-, docs- or registry-only merge has nothing to
+   spot-check: step 2 plus `mise run rules-check` (or the repo's equivalent) is
+   its whole deploy. The close comment says which of the two applied.
+
+Steps 1–4 make merged *content* live: application code, routes, `tools/`
+scripts, and rule or skill text read on next load. They do **not** make live
+anything a session snapshots at start. In particular a newly registered hook
+in `.claude/settings.json` stays inert in every already-running session, Lane
+1's own included, until that session is restarted. When the batch registered a
+new hook (as opposed to editing one already registered), say so in the close
+comment and restart the affected sessions; do not report the hook as deployed.
+<!-- /R-0369 -->
 <!-- /R-0369 -->
 
 Lane 1 never opens a worktree by hand to post from: HRSE2's posting tasks
