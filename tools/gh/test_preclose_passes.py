@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
 import preclose_passes  # noqa: E402
-from test_preclose_check import ANCHORED, ScratchRepo, _Args, git, preclose  # noqa: E402
+from test_preclose_check import ANCHORED, CROSS, ScratchRepo, _Args, git, preclose  # noqa: E402
 
 import block_missing_preclose_inspection as hook  # noqa: E402
 
@@ -130,6 +130,58 @@ class PassCapTests(ScratchRepo):
         self.assertEqual(preclose_passes.reviewed_head(after), preclose_passes.reviewed_head(before))
         self.plan(tier="fast", force=True)
         self.assertIn("post_verdict_check", self.receipt())
+
+    def post_verdict(self, base: str) -> None:
+        """The real `--post-verdict` entry point, with a structurally valid
+        cross-family envelope (the same stand-in `complete()` uses)."""
+        import json as _json
+        envelope = Path(self.findings_file([])).with_name("pv-envelope.txt")
+        envelope.write_text(_json.dumps({
+            "status": "ok", "label": CROSS, "report": {"assumptions": [{"verdict": "confirmed"}]},
+            "family": "codex", "posture": "verify", "exit_code": 0, "caller_family": "claude",
+            "target_family": "codex",
+            "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
+        preclose.post_verdict(_Args(repo=REPO, issue=ISSUE, base=base, head="HEAD",
+                                    findings=self.findings_file([]), envelope=str(envelope)))
+
+    def head(self) -> str:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+
+    def test_post_verdict_entry_point_unlocks_force_for_the_patch_only(self) -> None:
+        """F838 preclose pass 1: the real entry point, bound to the pass-2 head."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        pass_two = self.head()
+        self.commit("scripts/c.py")
+        self.post_verdict(pass_two)
+        receipt = self.receipt()
+        self.assertEqual(receipt["post_verdict_check"]["base_sha"], pass_two)
+        self.assertEqual(receipt["post_verdict_check"]["head_sha"], self.head())
+        self.assertEqual(receipt["pass_count"], 2)
+        self.plan(tier="fast", force=True)
+
+    def test_post_verdict_refuses_a_base_other_than_the_pass_two_head(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.commit("scripts/c.py")
+        with self.assertRaises(SystemExit) as refused:
+            self.post_verdict("base")  # the whole branch, not the patch
+        self.assertIn("pass-2 head", str(refused.exception))
+        self.assertNotIn("post_verdict_check", self.receipt())
+
+    def test_post_verdict_refuses_an_empty_patch(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        with self.assertRaises(SystemExit) as refused:
+            self.post_verdict(self.head())
+        self.assertIn("no patch", str(refused.exception))
+
+    def test_post_verdict_outside_the_sticky_wicket_case_is_refused(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        pass_one = self.head()
+        self.commit("scripts/b.py")
+        with self.assertRaises(SystemExit):
+            self.post_verdict(pass_one)
 
     def test_force_after_a_clean_pass_needs_no_post_verdict_check(self) -> None:
         """The operator case is unchanged: AC5 is the sticky-wicket case only."""

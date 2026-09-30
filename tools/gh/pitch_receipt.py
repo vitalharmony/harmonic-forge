@@ -8,7 +8,9 @@ receipt for the issue.
 
 The receipt is bound to the ISSUE, never to the handoff body: R-0239 allows one
 revision after the verdict, and a body-bound receipt would demand a second
-review of that revision, which is the loop R-0239 forbids. A ``REFORGE``
+review of that revision, which is the loop R-0239 forbids. It covers ONE
+posted handoff: ``l1_post`` consumes it on a successful post, so a later,
+redesigned handoff on the same issue needs a fresh review. A ``REFORGE``
 verdict refuses posting until a new verdict is recorded, which is how the
 operator's ruling on it lands.
 
@@ -78,11 +80,38 @@ def record(repo: str, issue: int, verdict: str, model: str | None = None,
     return path
 
 
+def consume(repo: str, issue: int, posted_url: str | None = None) -> None:
+    """Mark the verdict used by the handoff it reviewed. Best-effort: the post
+    already happened, so a failure here must not fail it, and an unconsumed
+    receipt fails toward a stale-but-real review, not toward none at all."""
+    receipt = read(repo, issue)
+    if not receipt or receipt.get("consumed_by"):
+        return
+    receipt["consumed_by"] = posted_url or "posted"
+    try:
+        handle = tempfile.NamedTemporaryFile("w", dir=receipt_dir(), delete=False, suffix=".tmp")
+        with handle:
+            json.dump(receipt, handle, indent=2)
+        os.replace(handle.name, receipt_path(repo, issue))
+    except OSError:
+        return
+
+
+def _usable(receipt: dict | None, repo: str, issue: int) -> dict | None:
+    """A receipt that names another issue, or was already used by a posted
+    handoff, is no receipt (F838 preclose pass 1)."""
+    if not receipt or receipt.get("consumed_by"):
+        return None
+    if receipt.get("repo") != repo or receipt.get("issue") != issue:
+        return None
+    return receipt
+
+
 def refusal(repo: str, issue: int, labels: set[str]) -> str | None:
     """Why a handoff on this issue must not post yet, or None."""
     if LABEL not in labels:
         return None
-    receipt = read(repo, issue)
+    receipt = _usable(read(repo, issue), repo, issue)
     command = (f"python3 ~/harmonic-forge/tools/gh/pitch_receipt.py record --repo {repo} "
                f"--issue {issue} --verdict <VERDICT>")
     if receipt is None or receipt.get("verdict") not in VERDICTS:

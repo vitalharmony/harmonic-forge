@@ -833,6 +833,17 @@ def post_verdict(args: argparse.Namespace) -> int:
             or preclose_passes.cap_message(passes) != preclose_passes.STICKY_WICKET):
         raise SystemExit("preclose-check: --post-verdict applies only after two passes that both "
                          "left surviving findings (the sticky-wicket case).")
+    # F838 preclose pass 1: the check is "just the patch", so --base must be
+    # exactly the head pass 2 reviewed, and the patch must not be empty.
+    # Otherwise an omitted --base (origin/main) reviews the whole branch, and
+    # --base HEAD records a check over nothing -- either would unlock --force.
+    pass_two_head = preclose_passes.reviewed_head(prior)
+    if base_sha != pass_two_head:
+        raise SystemExit(f"preclose-check: --base must be the pass-2 head {str(pass_two_head)[:12]}, "
+                         f"got {base_sha[:12]}. The post-verdict check reads only the patch since pass 2.")
+    if base_sha == head_sha:
+        raise SystemExit("preclose-check: --base and --head are the same commit: there is no patch "
+                         "since pass 2 to check.")
     require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, False)
     check_provenance(True, provenance)

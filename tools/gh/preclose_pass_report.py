@@ -99,6 +99,11 @@ def main() -> None:
     parser.add_argument("--since", help="Only receipts written on or after this date (YYYY-MM-DD).")
     args = parser.parse_args()
     since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None
+    if not any(args.archive.glob("**/preclose-receipts/*.jsonl.gz")):
+        # F838 preclose pass 1: without the archive, every pre-#834 issue reads
+        # as one pass, which flatters the baseline -- say so, never silently.
+        print(f"WARNING: no receipt archive under {args.archive}; issues closed before "
+              "harmonic-forge#834 are counted as one pass each (an undercount).", file=sys.stderr)
     print(render(rows(args.dir, since, args.archive)))
 
 

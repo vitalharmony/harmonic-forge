@@ -57,6 +57,19 @@ class ReceiptTests(unittest.TestCase):
         pitch_receipt.receipt_path(REPO, ISSUE).write_text("{not json", encoding="utf-8")
         self.assertIsNotNone(pitch_receipt.refusal(REPO, ISSUE, TE))
 
+    def test_a_posted_handoff_consumes_the_verdict(self) -> None:
+        """F838 preclose pass 1: a redesigned second handoff needs a fresh review."""
+        pitch_receipt.record(REPO, ISSUE, "PROCEED")
+        pitch_receipt.consume(REPO, ISSUE, "https://example.test/c/1")
+        self.assertIn("no verdict is recorded", pitch_receipt.refusal(REPO, ISSUE, TE))
+        pitch_receipt.record(REPO, ISSUE, "PROCEED")
+        self.assertIsNone(pitch_receipt.refusal(REPO, ISSUE, TE))
+
+    def test_a_receipt_naming_another_issue_is_refused(self) -> None:
+        pitch_receipt.record("other/repo", 999, "WAIVED", reason="operator: x")
+        pitch_receipt.receipt_path("other/repo", 999).replace(pitch_receipt.receipt_path(REPO, ISSUE))
+        self.assertIsNotNone(pitch_receipt.refusal(REPO, ISSUE, TE))
+
     def test_receipt_is_bound_to_the_issue_not_another(self) -> None:
         pitch_receipt.record(REPO, ISSUE + 1, "PROCEED")
         self.assertIsNotNone(pitch_receipt.refusal(REPO, ISSUE, TE))
@@ -82,6 +95,15 @@ class L1PostTests(unittest.TestCase):
         pitch_receipt.record(REPO, ISSUE, "PROCEED")
         with patch.object(post, "issue_labels", return_value=TE):
             post.validate_pitch_inspected(REPO, ISSUE)
+
+    def test_posting_a_handoff_consumes_the_verdict(self) -> None:
+        pitch_receipt.record(REPO, ISSUE, "PROCEED")
+        with patch.object(post, "world_checks", return_value=([], [])), \
+                patch.object(post, "comment_body", return_value=("https://example.test/c/2", 2)), \
+                patch.object(post, "write_receipt"), \
+                patch.object(post, "_discharge_handoff_owed"):
+            post.post_kind(REPO, ISSUE, "handoff", "body", "a" * 40, "b", plan_first=False)
+        self.assertEqual(pitch_receipt.read(REPO, ISSUE)["consumed_by"], "https://example.test/c/2")
 
     def test_unlabeled_issue_posts_without_a_receipt(self) -> None:
         with patch.object(post, "issue_labels", return_value={"feature"}):

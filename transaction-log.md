@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(tooling): preclose pass 1 findings -- post-verdict bound to the pass-2 head, Consumers needs a quoted search, pitch verdict consumed on post and identity-checked (harmonic-forge#838)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/gh/test_l1_post_plan_first_spec.py |  2 +-
+- tools/gh/test_pitch_receipt.py           | 22 +++++++++++++
+- tools/gh/test_preclose_passes.py         | 54 +++++++++++++++++++++++++++++++-
+- 9 files changed, 156 insertions(+), 20 deletions(-)
+
 ## feat(tooling): pitch-inspection on every Tooling Exception handoff, Consumers-and-Equivalents field, post-verdict check (harmonic-forge#838)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
