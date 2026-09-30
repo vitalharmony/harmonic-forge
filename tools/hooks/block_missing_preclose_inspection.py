@@ -397,9 +397,34 @@ def _pr_head_sha(repo: str, pr: str) -> str | None:
     return out.strip() if out and out.strip() else None
 
 
-def _preclose_receipt_ok(repo: str, issue: str, head_sha: str) -> bool:
+def _receipt(repo: str, issue: str) -> dict | None:
+    """The issue's preclose receipt, or None on any failure (fail closed)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        from preclose_check import find_receipt  # noqa: PLC0415
+        return find_receipt(repo, int(issue))
+    except Exception:
+        return None
+
+
+def _pr_patch_id(repo: str, pr: str | None) -> str | None:
+    """harmonic-forge#834 AC3: `git patch-id --stable` of the PR's diff, from
+    `gh pr diff`, so no local checkout of the PR is needed. None on failure."""
+    if not pr:
+        return None
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+    except Exception:
+        return None
+    return preclose_passes.patch_id(_gh("pr", "diff", pr, "--repo", repo, repo=repo))
+
+
+def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | None = None) -> bool:
     """harmonic-forge#778 AC3. `True` only when a `status: complete`
-    receipt for `repo`#`issue` names `head_sha` as its `reviewed_sha`.
+    receipt for `repo`#`issue` names `head_sha` as its `reviewed_sha`, or
+    (harmonic-forge#834 AC3) its `reviewed_patch_id` equals the PR's current
+    patch-id: a rebase that leaves the diff unchanged is not a new pass.
 
     Fails CLOSED (returns `False`, which denies) on any resolution failure
     -- unlike the rest of this hook's fail-open style. Everywhere else, a
@@ -410,21 +435,28 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str) -> bool:
     here would let the label alone (already known stale-able, per the
     issue's Cause 3) stand in for a receipt that binds to nothing.
     """
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-        from preclose_check import find_receipt  # noqa: PLC0415
-    except Exception:
+    receipt = _receipt(repo, issue)
+    if not receipt or receipt.get("status") != "complete":
         return False
-    try:
-        receipt = find_receipt(repo, int(issue))
-    except Exception:
-        return False
-    if not receipt:
-        return False
-    return receipt.get("status") == "complete" and receipt.get("reviewed_sha") == head_sha
+    if receipt.get("reviewed_sha") == head_sha:
+        return True
+    reviewed = receipt.get("reviewed_patch_id")
+    return bool(reviewed) and reviewed == _pr_patch_id(repo, via_pr)
 
 
 def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    # harmonic-forge#834 AC4: at the cap, never tell the session to run
+    # another pass -- that instruction is what produced #829's third pass.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+        passes = preclose_passes.history(_receipt(repo, issue))
+        if len(passes) >= preclose_passes.MAX_PASSES:
+            return (f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, has no completed "
+                    f"pre-close receipt covering its current head {head_sha[:12]} "
+                    f"(harmonic-forge#778 AC3).\n\n{preclose_passes.cap_message(passes)}")
+    except Exception:
+        pass
     return (
         f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, carries "
         f"{PRECLOSE_LABEL!r} but no completed pre-close receipt names its "
@@ -523,7 +555,7 @@ def main() -> None:
                         f"reachable.",
                         target_key=_acting)
                     return
-                if not _preclose_receipt_ok(repo, issue, head_sha):
+                if not _preclose_receipt_ok(repo, issue, head_sha, via_pr):
                     _deny(_stale_receipt_message(repo, issue, via_pr, head_sha),
                           target_key=_acting)
                     return

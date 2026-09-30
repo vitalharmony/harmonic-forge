@@ -41,7 +41,8 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    error, not a silent fallback to any one consuming repo (ADR-008 decision 2).
 
    It computes the panel from blast radius (primary) and `Tier` (secondary),
-   prints one lens per refuter, and writes a receipt enforcing one pass.
+   prints one lens per refuter, and writes a receipt that counts passes per issue
+   (at most two; see "Two passes, then sticky-wicket or the operator" below).
    Blast radius leads because every incident in this class so far was a small
    diff — a hook that locked out Bash, `l1_post.py`'s worktree-overlap check,
    a stale `harmonic-forge` checkout. Sizing by diff size would have
@@ -79,8 +80,8 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    the branch; findings do not.** That is not a bug to correct: a unanimous
    no-defect verdict from one model family cannot be told apart from a blind
    spot that family shares with the implementer, while a panel that found real
-   defects has already given you work, and the clean re-run after the fix is
-   where the gate fires. A high-blast diff (the same patterns as step 2), or
+   defects has already given you work, and the clean re-run after the fix —
+   **pass 2 of at most 2** — is where the gate fires. A high-blast diff (the same patterns as step 2), or
    the operator asking (`--cross-family`), also triggers it. Tier never does.
 
    When it triggers, take the branch exactly as
@@ -114,12 +115,26 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
 7. **Act on the survivors**, then hand back to the operator. State plainly
    that the check ran, what it found, and that closure is theirs to call.
 
-## One pass, then escalate
+## Two passes, then sticky-wicket or the operator
 
-If you disagree with a finding after one revision, **escalate to the
-operator** rather than re-running. The script refuses a second pass on the
-same issue for this reason: a second panel on the same diff is Lane 1
-arguing with itself at the operator's cost. `--force` exists for an operator
+**At most two passes per issue** (operator ruling 2026-09-30,
+harmonic-forge#834). Pass 1 reviews; pass 2 verifies the fixes on the new
+head. **A rebase, or any head change whose diff is patch-identical to a
+reviewed one, is not a pass**: the receipt records `reviewed_patch_id`, and the
+merge hook accepts a head whose patch-id matches it.
+
+A third pass never runs:
+
+- **Both passes left surviving findings** → invoke the **sticky-wicket**
+  agent. "Patch" means the operator's `--force` covers the final head, with no
+  third panel. "Reforge" means a new branch, and the pass count restarts.
+- **Anything else** (pass 2 was clean but the diff changed again, or you
+  dispute a finding) → **escalate to the operator**.
+
+The script enforces this: `--plan`/`--complete` refuse a third pass and name
+which of the two cases applies, and the merge hook stops offering "run the
+pass" once two are recorded. A thread comment saying "pass N of M" is not
+authority; the receipt's `pass_count` is. `--force` exists for an operator
 instruction, not for your own judgment.
 
 ## When it fires

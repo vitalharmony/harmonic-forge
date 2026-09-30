@@ -59,6 +59,9 @@ from manifest import (  # noqa: E402
     require_onboarded_repo,
 )
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import preclose_passes  # noqa: E402  (harmonic-forge#834)
+
 # A change under any of these runs on every session, every commit, or every
 # gate -- so its failure mode is silent and total rather than local.
 HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -525,27 +528,20 @@ def find_receipt(repo: str, issue: int) -> dict | None:
     return read_receipt(legacy_path)
 
 
-def check_one_pass(repo: str, issue: int, head_sha: str, force: bool) -> None:
-    """One pass per diff, then escalate -- the rule pitch-inspection carries.
+def local_patch_id(base: str, head: str) -> str | None:
+    """`git patch-id --stable` of `base...head` (harmonic-forge#834 AC1)."""
+    return preclose_passes.patch_id(run("git", "diff", f"{base}...{head}").stdout)
 
-    Keyed on the reviewed SHA, not merely on the issue: a revised diff is new
-    work and must be reviewable, or the correct response to a finding (fix it)
-    would be gated behind a flag the tool tells the caller not to use.
-    """
+
+def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, force: bool) -> None:
+    """harmonic-forge#834: at most two passes per issue, and a patch-identical
+    head (a rebase) is not a new pass. Replaces the old per-SHA check, which
+    re-armed on every head change and so allowed unbounded passes."""
     if force:
         return
-    prior = find_receipt(repo, issue)
-    if not prior or prior.get("status") != "complete":
-        return
-    if prior.get("reviewed_sha") != head_sha:
-        return
-    raise SystemExit(
-        f"preclose-check: a completed pass already covers {repo}#{issue} at {head_sha[:12]}.\n"
-        "One pass per diff. If the findings are disputed after one revision, escalate to the "
-        "operator rather than re-running -- a second panel on the same diff is Lane 1 arguing "
-        "with itself at the operator's cost.\n"
-        "Revising the diff re-arms this automatically; --force is for an operator instruction."
-    )
+    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch)
+    if reason:
+        raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 
 
 def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str,
@@ -651,7 +647,7 @@ def plan(args: argparse.Namespace) -> int:
     require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
-    check_one_pass(repo, args.issue, head_sha, args.force)
+    check_pass_cap(repo, args.issue, head_sha, local_patch_id(args.base, args.head), args.force)
 
     files = changed_files(args.base, args.head)
     dirty = uncommitted_files()
@@ -699,7 +695,10 @@ def plan(args: argparse.Namespace) -> int:
           f"--repo {repo} --issue {args.issue} --gate --findings <file>")
     print()
     print(NOT_A_GATE)
-    write_receipt(repo, args.issue, head_sha, size, status="planned")
+    # harmonic-forge#834: a planned receipt overwrites the complete one, so
+    # it must carry the pass history forward or the count would reset.
+    write_receipt(repo, args.issue, head_sha, size, status="planned",
+                  extra=preclose_passes.carried(find_receipt(repo, args.issue)))
     return 0
 
 
@@ -721,7 +720,8 @@ def complete(args: argparse.Namespace) -> int:
     # harmonic-forge#701 preclose finding (two refuters): without this, a
     # second --complete on the same SHA overwrote the receipt and could
     # relabel a required two-family pass as in-family only.
-    check_one_pass(repo, args.issue, head_sha, args.force)
+    patch = local_patch_id(args.base, args.head)
+    check_pass_cap(repo, args.issue, head_sha, patch, args.force)
     required, why, surviving, _ = gate_decision(args)
     if required and args.envelope:
         require_recorded_envelope(args.envelope)
@@ -730,12 +730,13 @@ def complete(args: argparse.Namespace) -> int:
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-        "surviving_findings": surviving,
+        **preclose_passes.record(prior, head_sha, patch, surviving),
         "cross_family_required": required,
         "cross_family_reason": why,
         "provenance": provenance,
     })
-    print(f"preclose-check: recorded a completed pass for {repo}#{args.issue} at {head_sha[:12]}")
+    print(f"preclose-check: recorded pass {len(preclose_passes.history(read_receipt(path)))} of at most "
+          f"{preclose_passes.MAX_PASSES} for {repo}#{args.issue} at {head_sha[:12]}")
     print(f"  receipt: {path}")
     print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
     print(f"  {provenance}")
@@ -770,7 +771,8 @@ def main() -> None:
     parser.add_argument("--cross-family", action="store_true",
                         help="Operator asked for the cross-family branch (gate criterion 3).")
     parser.add_argument("--force", action="store_true",
-                        help="Re-run despite a completed receipt for this same diff. Operator instruction only.")
+                        help="Run despite the per-issue cap (two passes; a patch-identical rebase is not "
+                             "a pass) or a pass already covering this diff. Operator instruction only.")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",

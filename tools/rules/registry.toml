@@ -927,8 +927,8 @@ hooks = []
 id = "R-0108"
 file = "rules/universal-lane1.md"
 anchor = "advisory-triggers"
-statement = "Use sticky-wicket after two consecutive same-class Lane 2 completion to Lane 3 FAIL cycles on one issue."
-text_sha = "73fc95d3cbf22a93"
+statement = "Use sticky-wicket after two consecutive same-class Lane 2 completion to Lane 3 FAIL cycles on one issue, or after two preclose passes on one Tooling Exception issue that both left surviving findings."
+text_sha = "cb7b1cb8adf93ebd"
 hooks = []
 
 [[rule]]
