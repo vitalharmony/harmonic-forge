@@ -529,17 +529,31 @@ def find_receipt(repo: str, issue: int) -> dict | None:
 
 
 def local_patch_id(base: str, head: str) -> str | None:
-    """`git patch-id --stable` of `base...head` (harmonic-forge#834 AC1)."""
-    return preclose_passes.patch_id(run("git", "diff", f"{base}...{head}").stdout)
+    """`git patch-id --verbatim` of `base...head` (harmonic-forge#834 AC1).
+
+    The rendering is pinned (context, prefixes, external diff and textconv
+    off, renames on) so a local `diff.*` setting cannot make it differ from
+    the `gh pr diff` rendering the merge hook hashes."""
+    diff = run("git", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "diff",
+               "--no-ext-diff", "--no-textconv", "--no-color", "-U3", "-M",
+               "--src-prefix=a/", "--dst-prefix=b/", f"{base}...{head}").stdout
+    return preclose_passes.patch_id(diff)
 
 
-def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, force: bool) -> None:
+def current_branch() -> str | None:
+    name = run("git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    return name if name and name != "HEAD" else None
+
+
+def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, force: bool,
+                   reforge: bool = False) -> None:
     """harmonic-forge#834: at most two passes per issue, and a patch-identical
     head (a rebase) is not a new pass. Replaces the old per-SHA check, which
     re-armed on every head change and so allowed unbounded passes."""
     if force:
         return
-    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch)
+    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch,
+                                     current_branch(), reforge)
     if reason:
         raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 
@@ -647,7 +661,8 @@ def plan(args: argparse.Namespace) -> int:
     require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
-    check_pass_cap(repo, args.issue, head_sha, local_patch_id(args.base, args.head), args.force)
+    check_pass_cap(repo, args.issue, head_sha, local_patch_id(args.base, args.head), args.force,
+                   getattr(args, "reforge", False))
 
     files = changed_files(args.base, args.head)
     dirty = uncommitted_files()
@@ -721,7 +736,8 @@ def complete(args: argparse.Namespace) -> int:
     # second --complete on the same SHA overwrote the receipt and could
     # relabel a required two-family pass as in-family only.
     patch = local_patch_id(args.base, args.head)
-    check_pass_cap(repo, args.issue, head_sha, patch, args.force)
+    reforge = getattr(args, "reforge", False)
+    check_pass_cap(repo, args.issue, head_sha, patch, args.force, reforge)
     required, why, surviving, _ = gate_decision(args)
     if required and args.envelope:
         require_recorded_envelope(args.envelope)
@@ -730,7 +746,7 @@ def complete(args: argparse.Namespace) -> int:
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-        **preclose_passes.record(prior, head_sha, patch, surviving),
+        **preclose_passes.record(prior, head_sha, patch, surviving, current_branch(), reforge),
         "cross_family_required": required,
         "cross_family_reason": why,
         "provenance": provenance,
@@ -773,6 +789,9 @@ def main() -> None:
     parser.add_argument("--force", action="store_true",
                         help="Run despite the per-issue cap (two passes; a patch-identical rebase is not "
                              "a pass) or a pass already covering this diff. Operator instruction only.")
+    parser.add_argument("--reforge", action="store_true",
+                        help="After sticky-wicket ruled 'reforge' on two passes that both left "
+                             "survivors: start a new pass epoch from a NEW branch (harmonic-forge#834).")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",

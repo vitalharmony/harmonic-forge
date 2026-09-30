@@ -435,13 +435,22 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | Non
     here would let the label alone (already known stale-able, per the
     issue's Cause 3) stand in for a receipt that binds to nothing.
     """
-    receipt = _receipt(repo, issue)
-    if not receipt or receipt.get("status") != "complete":
+    # harmonic-forge#834 preclose: read the last COMPLETED pass from the
+    # receipt's history, not the receipt's own status -- an abandoned `--plan`
+    # for the next pass rewrites the status to "planned" and must not
+    # un-review the diff the last pass covered.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+        last = preclose_passes.reviewed(_receipt(repo, issue))
+    except Exception:
         return False
-    if receipt.get("reviewed_sha") == head_sha:
+    if not last:
+        return False
+    if last.get("sha") == head_sha:
         return True
-    reviewed = receipt.get("reviewed_patch_id")
-    return bool(reviewed) and reviewed == _pr_patch_id(repo, via_pr)
+    reviewed_patch = last.get("patch_id")
+    return bool(reviewed_patch) and reviewed_patch == _pr_patch_id(repo, via_pr)
 
 
 def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
@@ -450,7 +459,7 @@ def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) ->
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
-        passes = preclose_passes.history(_receipt(repo, issue))
+        passes = preclose_passes.current(preclose_passes.history(_receipt(repo, issue)))
         if len(passes) >= preclose_passes.MAX_PASSES:
             return (f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, has no completed "
                     f"pre-close receipt covering its current head {head_sha[:12]} "

@@ -18,7 +18,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
 import preclose_passes  # noqa: E402
-from test_preclose_check import ANCHORED, ScratchRepo, git, preclose  # noqa: E402
+from test_preclose_check import ANCHORED, ScratchRepo, _Args, git, preclose  # noqa: E402
 
 import block_missing_preclose_inspection as hook  # noqa: E402
 
@@ -111,6 +111,89 @@ class PassCapTests(ScratchRepo):
                   "refuters": 3, "surviving_findings": 2}
         self.assertEqual(len(preclose_passes.history(legacy)), 1)
         self.assertEqual(preclose_passes.record(legacy, "new", "pid", 1)["pass_count"], 2)
+
+
+class PreclosePassOneFixTests(ScratchRepo):
+    """The five defects harmonic-forge#834's own preclose pass 1 found."""
+
+    def run_pass(self, relpath: str, findings: list | None = None) -> None:
+        PassCapTests.run_pass(self, relpath, findings)
+
+    def complete_reforge(self) -> None:
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
+                                    findings=self.findings_file(SURVIVOR), envelope=None,
+                                    not_triggered=True, cross_family=False, force=False,
+                                    reforge=True))
+
+    def test_a_reindent_is_a_different_diff(self) -> None:
+        """A: `--stable` hashed a behavior-changing dedent as the same diff."""
+        self.commit("scripts/g.py", "def g(x):\n    if x:\n        a()\n        b()\n")
+        self.plan(tier="fast")
+        self.complete()
+        self.commit("scripts/g.py", "def g(x):\n    if x:\n        a()\n    b()\n")
+        diff = preclose.run("git", "diff", "base...HEAD").stdout
+        with patch.object(hook, "_gh", return_value=diff):
+            self.assertFalse(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head", "7"))
+        self.assertIn("refuters:", self.plan(tier="fast"))
+
+    def test_reforge_on_a_new_branch_restarts_the_count(self) -> None:
+        """B: the documented reforge exit exists in code."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.commit("scripts/new.py")
+        self.assertIn("refuters:", self.plan(tier="fast", reforge=True))
+        self.complete_reforge()
+        stored = preclose.find_receipt(REPO, ISSUE)
+        self.assertEqual(stored["pass_count"], 1)
+        self.assertEqual(len(stored["pass_history"]), 3)
+
+    def test_reforge_on_the_same_branch_is_refused(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.commit("scripts/c.py")
+        with self.assertRaises(SystemExit) as caught:
+            self.plan(tier="fast", reforge=True)
+        self.assertIn("this is the branch the two reviewed passes were on", str(caught.exception))
+
+    def test_reforge_without_two_survivor_passes_is_refused(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py")
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.commit("scripts/new.py")
+        with self.assertRaises(SystemExit) as caught:
+            self.plan(tier="fast", reforge=True)
+        self.assertIn("--reforge applies only", str(caught.exception))
+
+    def test_abandoned_plan_does_not_unreview_the_last_pass(self) -> None:
+        """C: pass 1 at A, pass 2 planned at B, B withdrawn: A still merges."""
+        self.run_pass("scripts/a.py")
+        reviewed_sha = preclose.find_receipt(REPO, ISSUE)["reviewed_sha"]
+        self.commit("scripts/b.py")
+        self.plan(tier="fast")
+        git("reset", "-q", "--hard", reviewed_sha, cwd=self.repo)
+        self.assertEqual(preclose.find_receipt(REPO, ISSUE)["status"], "planned")
+        self.assertTrue(hook._preclose_receipt_ok(REPO, str(ISSUE), reviewed_sha, "7"))
+
+    def test_local_diff_config_does_not_change_the_patch_id(self) -> None:
+        """D: the script's rendering must match `gh pr diff`'s, whatever diff.* says."""
+        self.commit("scripts/a.py", "".join(f"line {n}\n" for n in range(40)))
+        before = preclose.local_patch_id("base", "HEAD")
+        for key, value in (("diff.context", "10"), ("diff.noprefix", "true"),
+                           ("diff.mnemonicPrefix", "true")):
+            git("config", key, value, cwd=self.repo)
+        self.assertEqual(preclose.local_patch_id("base", "HEAD"), before)
+
+    def test_hook_at_the_cap_with_survivors_names_sticky_wicket(self) -> None:
+        """E: the hook's sticky-wicket half of AC4 had no test."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        message = hook._stale_receipt_message(REPO, str(ISSUE), "7", "abc")
+        self.assertIn("sticky-wicket", message)
+        self.assertNotIn("Run the pre-close pass", message)
 
 
 class HookPatchIdTests(ScratchRepo):

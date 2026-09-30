@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(preclose): apply F834 preclose pass 1 -- verbatim patch-id, explicit --reforge epoch, last completed pass survives an abandoned plan, pinned diff rendering, sticky-wicket hook test (harmonic-forge#834)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/gh/preclose_passes.py                      | 64 ++++++++++++++----
+- tools/gh/test_preclose_passes.py                 | 85 +++++++++++++++++++++++-
+- tools/hooks/block_missing_preclose_inspection.py | 21 ++++--
+- 5 files changed, 181 insertions(+), 27 deletions(-)
+
 ## fix(preclose): cap of two passes per issue, a patch-identical rebase is not a pass, third routes to sticky-wicket or the operator (harmonic-forge#834)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

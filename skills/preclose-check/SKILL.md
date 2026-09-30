@@ -127,7 +127,10 @@ A third pass never runs:
 
 - **Both passes left surviving findings** → invoke the **sticky-wicket**
   agent. "Patch" means the operator's `--force` covers the final head, with no
-  third panel. "Reforge" means a new branch, and the pass count restarts.
+  third panel. "Reforge" means a new branch, and the pass count restarts: run
+  `--plan`/`--complete` with `--reforge` from that new branch. It is refused
+  from the old branch, and refused unless both passes left survivors, so a
+  branch rename can never reset the cap on its own.
 - **Anything else** (pass 2 was clean but the diff changed again, or you
   dispute a finding) → **escalate to the operator**.
 
