@@ -192,6 +192,12 @@ _lane_arg_denied() {
       ;;
   esac
   [ "$arg" = "$token" ] || [ "${arg%%=*}" = "$token" ] && return 0
+  # harmonic-forge#840: clap accepts a short option's value glued on
+  # (`-sread-only`), so `-s` is also refused in that form. Only for exactly
+  # `-s`, so no other short flag is affected.
+  if [ "$token" = "-s" ]; then
+    case "$arg" in -s?*) return 0 ;; esac
+  fi
   # The glued config forms, so `sandbox_workspace_write` (a whole-table
   # override) is refused however the `-c` is spelled.
   case "$arg" in

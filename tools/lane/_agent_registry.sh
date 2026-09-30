@@ -254,7 +254,7 @@ declare -A AGENT_SESSION_FLAGS=(
 )
 declare -A AGENT_SESSION_DENIED=(
   [claude]=""
-  [codex]="--no-daemon --remote sandbox_workspace_write*"
+  [codex]="--no-daemon --remote sandbox_workspace_write* sandbox_mode* --full-auto -s"
   [gemini]=""
 )
 
@@ -286,11 +286,20 @@ declare -A AGENT_LANE_POLICY=(
   [gemini:3]="gemini-lane3.toml"
 )
 
-# AGENT_LANE_ADD_DIR / AGENT_LANE_SANDBOX -- harmonic-forge#644.
+# AGENT_LANE_ADD_DIR / AGENT_LANE_SANDBOX -- harmonic-forge#644, #840.
+#
+# harmonic-forge#840 (operator ruling 2026-09-30, "codex launches with no
+# sandbox, ever"): every Codex lane slot is `danger-full-access`, so the
+# launcher injects it at Lanes 1, 2 and 3 whatever ~/.codex/config.toml says,
+# and a caller cannot put a sandbox back (`--sandbox`, `-s`, `--full-auto` and
+# any `sandbox_mode` override are denied). Approvals are unchanged. The
+# cross-family reviewer (cross_family_call.sh) keeps its own explicit
+# `--sandbox`. The `/tmp` exclusion flags and `--add-dir` roots below are
+# no-ops without a sandbox and are left in place (#840 AC7).
 #
 # Same NC7 pattern as AGENT_LANE_POLICY above: every agent:lane slot is
-# declared; the sandbox is populated only at [codex:3] (the add-dir list at
-# every Codex lane since harmonic-forge#756). Two tables, not one, because their
+# declared; the add-dir list is populated at every Codex lane since
+# harmonic-forge#756. Two tables, not one, because their
 # live-verified Codex flag semantics differ (harmonic-forge#644 Plan,
 # Delegated Judgment 1): `--add-dir` is repeatable, so it is injected
 # unconditionally below and never denied -- a caller's own `--add-dir` still
@@ -320,7 +329,7 @@ declare -A AGENT_LANE_ADD_DIR=(
 )
 declare -A AGENT_LANE_SANDBOX=(
   [claude:1]="" [claude:2]="" [claude:3]=""
-  [codex:1]=""  [codex:2]=""  [codex:3]="workspace-write"
+  [codex:1]="danger-full-access"  [codex:2]="danger-full-access"  [codex:3]="danger-full-access"
   [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
 )
 

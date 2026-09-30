@@ -155,3 +155,20 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # `$HOME/.cache/cymagraph/` (hrse PR-A of #756); Lane 3's `gate-restart`
 # takes that lock, so the directory must be a writable root.
 <HOME>/.cache/cymagraph
+
+# AMENDMENT 7 -- harmonic-forge#840, 2026-09-30.  Operator ruling: "codex
+# launches with no sandbox, ever."  Every Codex lane session (Lanes 1, 2 and 3,
+# and queued resumes) now gets `--sandbox danger-full-access` from
+# AGENT_LANE_SANDBOX, independent of ~/.codex/config.toml, and no passthrough
+# can put a sandbox back: `--sandbox`/`-s` (spaced, `=` and glued), `--full-auto`
+# and any `sandbox_mode` config override are denied at every Codex lane.  This
+# SUPERSEDES AMENDMENT 4's `--sandbox workspace-write` at Lane 3; `--sandbox`
+# stays on the list above, now carrying `danger-full-access`, and the baseline's
+# Codex cells record that value (sandbox tokens only).  Approvals are unchanged,
+# and the cross-family reviewer (cross_family_call.sh) keeps its own explicit
+# `--sandbox`.  The #756 `sandbox_workspace_write.exclude_*` keys and the
+# `--add-dir` roots stay injected: they are no-ops without a sandbox, and
+# removing them is not this issue.  The trade-off, recorded: #644's sandbox
+# limited what Lane 3 could write; Lane 3's LANE-keyed hook guards are
+# unaffected, and the launcher flag was never a boundary the agent could not
+# talk past (see AGENT_LANE_SANDBOX's comment in _agent_registry.sh).

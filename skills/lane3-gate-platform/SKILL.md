@@ -97,6 +97,13 @@ fixes this without also making the target worktree writable —
 `writable_roots` is additive to `cwd`, not exclusive of it, so a "writable
 scratch dir but read-only worktree" profile is not constructible.
 
+> **harmonic-forge#840 (2026-09-30):** Codex lane sessions, Lane 3 included,
+> now launch with `--sandbox danger-full-access` and cannot be re-sandboxed
+> from the command line. The `read-only`/`workspace-write` trade-off above
+> describes the old launch and no longer applies to a lane session; Lane 3's
+> write limits are its LANE-keyed hook guards. The cross-family reviewer keeps
+> its own sandbox.
+
 **Decision rule:** if the approved test spec is entirely static/mocked (no
 live network calls, no test-runner temp writes, no browser), use Codex
 `read-only` Lane 3 — its extra OS-level restriction is a genuine feature

@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(lane): Codex lane sessions launch with no sandbox, ever; the reviewer keeps its own (harmonic-forge#840)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/lane/lane3_safety_additions.txt  | 17 ++++++++
+- tools/lane/test_lane_launchers.py      | 80 +++++++++++++++++++++++++++++++---
+- tools/lane/test_lane_queue_run.py      | 11 ++++-
+- 7 files changed, 149 insertions(+), 15 deletions(-)
+
 ## fix(tooling): pass report warns on an undecodable archive line (harmonic-forge#838 post-verdict check)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

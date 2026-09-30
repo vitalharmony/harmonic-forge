@@ -187,7 +187,7 @@ class NineCombinations(unittest.TestCase):
             self.assertTrue(cell["launched"], cell.get("stderr"))
             # harmonic-forge#756: lane 1's private TMPDIR grant + sandbox keys.
             self.assertEqual(_agent_args(cell),
-                             ["codex", "--add-dir",
+                             ["codex", "--sandbox", "danger-full-access", "--add-dir",
                               f"{tree.home}/.cache/codex-lane-tmp/lane1",
                               "--add-dir", f"{tree.home}/.claude/state/preclose",
                               "--no-daemon", *CodexLaneTmp.KEYS, "-p", "hello"])
@@ -199,7 +199,7 @@ class NineCombinations(unittest.TestCase):
             self.assertTrue(cell["launched"], cell.get("stderr"))
             # harmonic-forge#756: lane 1's private TMPDIR grant + sandbox keys.
             self.assertEqual(_agent_args(cell),
-                             ["codex", "--add-dir",
+                             ["codex", "--sandbox", "danger-full-access", "--add-dir",
                               f"{tree.home}/.cache/codex-lane-tmp/lane1",
                               "--add-dir", f"{tree.home}/.claude/state/preclose",
                               "--no-daemon", *CodexLaneTmp.KEYS, "--agent", "x"])
@@ -582,7 +582,8 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         with _FixtureTree() as tree:
             args = _agent_args(tree.run("3", [], LANE_CLI="codex"))
             self.assertIn("--sandbox", args)
-            self.assertEqual(args[args.index("--sandbox") + 1], "workspace-write")
+            # harmonic-forge#840: no sandbox, ever, at any Codex lane.
+            self.assertEqual(args[args.index("--sandbox") + 1], "danger-full-access")
             self.assertIn("--add-dir", args)
             self.assertTrue(
                 args[args.index("--add-dir") + 1].endswith("Harmonic_Projects/testplan"))
@@ -592,7 +593,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         before the subcommand, so it reaches a `resume --last` launch too --
         not only the bare form above. `resume`/`--last` are passthrough
         (step 5), injected after the launcher's own flags (step 4b), so the
-        result is `codex --sandbox workspace-write --add-dir <testplan>
+        result is `codex --sandbox danger-full-access --add-dir <testplan>
         --no-daemon resume --last` (harmonic-forge#754 added the step-4c
         `--no-daemon`), never the injection moved after the subcommand.
         harmonic-forge#756 added two more `--add-dir`s and the two `-c`
@@ -603,7 +604,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             args = _agent_args(cell)
             home = str(tree.home)
             self.assertEqual(args, [
-                "codex", "--sandbox", "workspace-write",
+                "codex", "--sandbox", "danger-full-access",
                 "--add-dir", f"{home}/Harmonic_Projects/testplan",
                 "--add-dir", f"{home}/.cache/codex-lane-tmp/lane3",
                 "--add-dir", f"{home}/.cache/cymagraph",
@@ -621,6 +622,75 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             denied = tree.run("3", ["--sandbox", "danger-full-access"], LANE_CLI="codex")
             self.assertFalse(denied["launched"])
             self.assertIn("cannot be set, removed, or contradicted", denied["stderr"])
+
+    def test_every_codex_lane_launches_with_no_sandbox_exactly_once(self):
+        """harmonic-forge#840 AC1: the launcher injects `--sandbox
+        danger-full-access` at Lanes 1, 2 and 3, independent of
+        ~/.codex/config.toml, and exactly once (codex hard-errors on two)."""
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    cell = tree.run(lane, [], LANE_CLI="codex")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    args = _agent_args(cell)
+                    self.assertEqual(args.count("--sandbox"), 1)
+                    self.assertEqual(args[args.index("--sandbox") + 1], "danger-full-access")
+                    self.assertNotIn("workspace-write", args)
+
+    SANDBOX_RESTORING = (
+        ["--sandbox", "read-only"],
+        ["--sandbox=workspace-write"],
+        ["-s", "workspace-write"],
+        ["-sread-only"],          # clap accepts a short option's value glued on
+        ["--full-auto"],          # implies workspace-write
+        ["-c", "sandbox_mode=workspace-write"],
+        ["--config=sandbox_mode=read-only"],
+        ["-csandbox_mode=read-only"],
+        ["-c=sandbox_mode=read-only"],
+        ["exec", "-s", "read-only", "true"],
+    )
+
+    def test_no_passthrough_can_restore_a_sandbox_at_any_codex_lane(self):
+        """harmonic-forge#840 AC2: each of these is refused at every Codex
+        lane and never execs."""
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for args in self.SANDBOX_RESTORING:
+                    with self.subTest(lane=lane, args=args):
+                        cell = tree.run(lane, ["--agent", "codex", "--", *args])
+                        self.assertFalse(cell["launched"])
+                        self.assertIn("cannot be set, removed, or contradicted", cell["stderr"])
+
+    def test_a_prompt_word_mentioning_sandbox_mode_is_not_refused(self):
+        """AC2's scope: only a real key=value override or the flag itself."""
+        allowed = (["-p", "sandbox_mode is mentioned in prose"],
+                   ["a prompt about sandbox_mode=x and -s flags"],
+                   ["-c", "model_reasoning_effort=high"],
+                   ["--add-dir", "/tmp/elsewhere"])
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for args in allowed:
+                    with self.subTest(lane=lane, args=args):
+                        cell = tree.run(lane, ["--agent", "codex", "--", *args])
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_claude_and_gemini_are_not_affected_by_the_codex_sandbox_denials(self):
+        """The new deny tokens belong to the codex row only."""
+        with _FixtureTree() as tree:
+            for agent in ("claude", "gemini"):
+                for lane in ("1", "2", "3"):
+                    with self.subTest(agent=agent, lane=lane):
+                        cell = tree.run(lane, ["--agent", agent])
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        self.assertNotIn("--sandbox", _agent_args(cell))
+
+    def test_cross_family_reviewer_keeps_its_own_explicit_sandbox(self):
+        """harmonic-forge#840 AC5: the reviewer is out of scope. Its command
+        still passes its own `--sandbox`, which overrides the new config
+        default, so a reviewer inside the diff it reviews cannot write to it."""
+        source = (Path(__file__).resolve().parent / "cross_family_call.sh").read_text()
+        self.assertIn('--sandbox "$sandbox"', source)
+        self.assertNotIn("danger-full-access", source.replace("`danger-full-access`", ""))
 
     def test_codex_lane3_caller_add_dir_coexists(self):
         """A caller-supplied `--add-dir` at codex:3 still launches, with BOTH
