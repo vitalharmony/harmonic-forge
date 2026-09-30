@@ -180,21 +180,18 @@ def _stale_preclose_receipt(repo: str, issue: str) -> str | None:
             break
     if not pr_number or not head_sha:
         return None
+    # harmonic-forge#834: ask the merge hook itself, so the preflight's answer
+    # is the merge's answer (patch-id acceptance, last completed pass, and the
+    # at-the-cap message that never says "run another pass").
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-        from preclose_check import find_receipt  # noqa: PLC0415
+        import block_missing_preclose_inspection as merge_hook  # noqa: PLC0415
 
-        receipt = find_receipt(repo, int(issue))
+        if merge_hook._preclose_receipt_ok(repo, str(issue), head_sha, str(pr_number)):
+            return None
+        message = merge_hook._stale_receipt_message(repo, str(issue), str(pr_number), head_sha)
     except Exception:
         return None  # fail open, consistent with every other lookup here
-    if receipt and receipt.get("status") == "complete" \
-            and receipt.get("reviewed_sha") == head_sha:
-        return None
-    return (
-        f"{PRECLOSE_SATISFIED_LABEL} present, but PR #{pr_number}'s current "
-        f"head {head_sha[:12]} has no completed preclose receipt (harmonic-"
-        f"forge#778 AC3) — the merge WILL halt. Re-run preclose_check.py "
-        f"against this head before batching.")
+    return f"{PRECLOSE_SATISFIED_LABEL} present, but the merge WILL halt. {message}"
 
 
 def check_authorization(key: str) -> Finding:

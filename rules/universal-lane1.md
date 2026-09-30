@@ -327,7 +327,12 @@ The advisory roles are read-only advice, never implementation authority.
 <!-- /R-0107 -->
 <!-- R-0108 -->
 - `sticky-wicket` — after two consecutive same-class Lane 2 completion →
-  Lane 3 FAIL (or Lane 1 declined-completion) cycles on one issue.
+  Lane 3 FAIL (or Lane 1 declined-completion) cycles on one issue; or, on
+  Tooling Exception work, after two preclose passes on one issue that both
+  left surviving findings (harmonic-forge#834). The preclose verdict is patch
+  (the operator `--force`s the final head) or reforge (a new approach whose
+  count restarts, started only by the operator's `--force --reforge`); any
+  other wish for a third pass goes to the operator.
 <!-- /R-0108 -->
 <!-- R-0109 -->
 - `pitch-inspection` — before a Lane 1 handoff when alternatives were
