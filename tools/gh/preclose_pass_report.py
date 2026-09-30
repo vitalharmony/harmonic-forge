@@ -42,6 +42,10 @@ def archived_heads(root: Path, skipped: list[str] | None = None) -> dict[str, se
             try:
                 record = json.loads(line).get("record") or {}
             except (ValueError, AttributeError):
+                # A line that will not decode is a record this count misses:
+                # say so, never skip silently (F838 post-verdict check).
+                if skipped is not None:
+                    skipped.append(f"{path}: undecodable line")
                 continue
             head = preclose_passes.reviewed_head(record)
             if record.get("status") == "complete" and head:
@@ -115,8 +119,8 @@ def report(directory: Path, since: datetime | None, archive: Path) -> str:
         warnings.append(f"WARNING: no receipt archive under {archive}; issues closed before "
                         "harmonic-forge#834 are counted as one pass each (an undercount).")
     if skipped:
-        warnings.append(f"WARNING: {len(skipped)} archive file(s) could not be read; pass counts "
-                        "for issues they held may be undercounted.")
+        warnings.append(f"WARNING: {len(skipped)} archive file(s) or line(s) could not be read; "
+                        "pass counts for issues they held may be undercounted.")
     return "\n".join(warnings + ([""] if warnings else []) + [table])
 
 

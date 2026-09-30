@@ -57,7 +57,14 @@ class PassReportTests(unittest.TestCase):
         undecodable = self.archive / "o" / "preclose-receipts" / "2026-07.jsonl.gz"
         undecodable.write_bytes(gzip.compress(b"\xff\xfe not utf-8"))
         text = report.report(self.receipts, None, self.archive)
-        self.assertIn("2 archive file(s) could not be read", text)
+        self.assertIn("2 archive file(s) or line(s) could not be read", text)
+
+    def test_malformed_archive_line_warns(self) -> None:
+        path = self.archive_file([{"repo": "o/r", "issue": 1, "status": "complete", "reviewed_sha": "c1"}])
+        with gzip.open(path, "at", encoding="utf-8") as handle:
+            handle.write("{not json\n")
+        text = report.report(self.receipts, None, self.archive)
+        self.assertIn("1 archive file(s) or line(s) could not be read", text)
         self.assertNotIn("no receipt archive", text)
 
 

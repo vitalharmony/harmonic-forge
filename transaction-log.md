@@ -3,6 +3,14 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(tooling): pass report warns on an undecodable archive line (harmonic-forge#838 post-verdict check)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/gh/preclose_pass_report.py      | 8 ++++++--
+- tools/gh/test_preclose_pass_report.py | 9 ++++++++-
+- 2 files changed, 14 insertions(+), 3 deletions(-)
+
 ## fix(tooling): pass report warns on an archive that is not valid UTF-8 (harmonic-forge#838 post-verdict check)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
