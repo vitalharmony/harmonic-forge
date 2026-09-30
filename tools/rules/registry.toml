@@ -818,6 +818,14 @@ hooks = []
 restates = "R-0080"
 
 [[rule]]
+id = "R-0369"
+file = "rules/universal-lane1.md"
+anchor = "post-merge-deploy"
+statement = "After the last merge of a batch, Lane 1 deploys every repository the batch merged into: confirm a clean refs/heads/main, fast-forward to origin/main (never a merge commit or reset), restart through the lifecycle path where a stack exists, spot-check a changed behavior where there is one, and never report a newly registered hook as deployed until the affected sessions restart; it never lists these as operator actions."
+text_sha = "45531e1365d817d0"
+hooks = []
+
+[[rule]]
 id = "R-0095"
 file = "rules/universal-lane1.md"
 anchor = "doc-only-merges-wait"
