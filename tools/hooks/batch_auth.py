@@ -382,7 +382,30 @@ def _prune(state: dict, now: datetime) -> dict:
             continue
         if not stale:
             kept[key] = entry
+    dropped = [{"key": k, **v} for k, v in state.items() if k not in kept and isinstance(v, dict)]
+    if dropped and _archive_pruned(dropped) != len(dropped):
+        # harmonic-forge#826: an entry is removed only once the archive holds
+        # it. A telemetry failure keeps everything -- the same fail-toward-
+        # retention posture as the unparseable-expiry branch above.
+        return dict(state)
     return kept
+
+
+def _archive_pruned(entries: list[dict]) -> int:
+    """Archive pruned BATCH entries by their key's repo; 0 means keep them.
+
+    Called inside `_locked_state`, so it stays one memoized registry lookup
+    and one gzip append per origin -- no network, no subprocess."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+    except Exception:
+        return 0
+    return archive.archive_by_origin(
+        "batch-authorized", entries, None,
+        origin_of=lambda e: archive.origin_for_key(e.get("key")))
 
 
 def top_up(

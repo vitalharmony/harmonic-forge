@@ -3,6 +3,90 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): pass-3 findings (harmonic-forge#826)
+
+Torn gzip append rolled back; record_hash dedupe key in every envelope; export
+state moved out of the archive root; transcript backup refuses to re-init a
+lost repo; forced-loss recorded when the archive module is unavailable; AC7
+missing-path test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/telemetry/ci_history_export.py |  4 +++-
+- tools/telemetry/test_prune_sites.py  | 38 ++++++++++++++++++++++++++++++++++++
+- tools/telemetry/transcript_backup.sh | 11 +++++++++++
+- 6 files changed, 94 insertions(+), 8 deletions(-)
+
+## fix(telemetry): preclose pass-2 findings (harmonic-forge#826)
+
+_force_trim moved above __main__ in belt_wakeup and lane3_audit (script-mode
+NameError); handoff_owed archives any file _read would drop entries from as raw;
+tests for script mode, the belt_wakeup ceiling, skip-at-400 and the retention PUT.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/hooks/handoff_owed.py         | 12 ++++++-
+- tools/lane/lane3_audit.py           |  8 ++---
+- tools/telemetry/test_prune_sites.py | 62 +++++++++++++++++++++++++++++++++++++
+- 4 files changed, 81 insertions(+), 9 deletions(-)
+
+## fix(telemetry): act on preclose panel findings (harmonic-forge#826)
+
+Override guarded by a test-root sentinel; archive failures logged outside the
+root; 10x hard ceiling on bounded writers; corrupt handoff_owed files archived
+raw; CI export incremental, oldest-first, run+jobs atomic, skip keyed on days
+set; actions_retention.py added; tests for every archive site; run_tests
+forces a temp XDG_STATE_HOME.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/telemetry/ci_history_export.py |  80 ++++++----
+- tools/telemetry/test_archive.py      |   9 +-
+- tools/telemetry/test_prune_sites.py  | 292 +++++++++++++++++++++++++++++++++++
+- 12 files changed, 564 insertions(+), 35 deletions(-)
+
+## feat(telemetry): archive aged belt candidates and superseded preclose receipts (harmonic-forge#826)
+
+Two AC5-sweep finds: belt_candidates' 14-day prune was the only on-disk record
+of a lane post's kind/poster/time; preclose_check overwrote each issue's
+receipt per pass. Both now archive first.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/gh/belt_candidates.py | 19 ++++++++++++++++++-
+- tools/gh/preclose_check.py  | 19 +++++++++++++++++++
+- 2 files changed, 37 insertions(+), 1 deletion(-)
+
+## feat(telemetry): encrypted off-machine transcript backup + timers (harmonic-forge#826)
+
+restic repo in the Insync-synced Drive tree (config and password stay local,
+never committed); waits for the upload to report SYNCED, then restic check.
+Units for the transcript backup (daily) and the CI-history export (weekly),
+with an idempotent installer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- .../systemd/forge-transcript-backup.service        |  8 +++
+- .../systemd/forge-transcript-backup.timer          |  9 +++
+- tools/telemetry/transcript_backup.sh               | 67 ++++++++++++++++++++++
+- 6 files changed, 114 insertions(+)
+
+## feat(telemetry): archive instead of prune; CI-history export (harmonic-forge#826)
+
+One shared registry-driven archive (v1 envelope, account/org partitions,
+unresolved kept) wired into lane3_audit, belt_wakeup (now flock'd),
+handoff_owed, batch_auth (memoized, <50ms lock budget), compaction_marker
+and enforce_belt_arming (best-effort; its unlinks are state transitions).
+ci_history_export archives workflow-run/job/status metadata for repos whose
+Actions retention max is under 400 days. run_tests isolates the archive root.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/telemetry/archive.py           | 285 +++++++++++++++++++++++++++++++++++
+- tools/telemetry/ci_history_export.py | 185 +++++++++++++++++++++++
+- tools/telemetry/test_archive.py      | 172 +++++++++++++++++++++
+- 13 files changed, 928 insertions(+), 8 deletions(-)
+
 ## fix(hooks): strip redirects from anywhere in relocate args, not just trailing (harmonic-forge#797 cross-family finding)
 
 The required cross-family (Codex) verify pass found a redirect BEFORE the

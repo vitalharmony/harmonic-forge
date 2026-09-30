@@ -1,0 +1,8 @@
+[Unit]
+Description=Harmonic Forge: archive CI pass/fail metadata before GitHub retention deletes it (harmonic-forge#826)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/telemetry/ci_history_export.py
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-ci-history.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-ci-history.log

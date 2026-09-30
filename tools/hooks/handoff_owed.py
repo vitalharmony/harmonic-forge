@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -126,9 +127,56 @@ def prune(now: float | None = None) -> None:
     for entry in entries:
         try:
             if entry.is_file() and entry.stat().st_mtime < cutoff:
+                # harmonic-forge#826: the owed records are archived first, and
+                # the file goes only when every one of them was written.
+                owed = _read(entry)
+                if owed and _is_clean_list(entry, len(owed)):
+                    if _archive_owed(owed, entry.stem) != len(owed):
+                        continue
+                elif _archive_raw(entry) != 1:
+                    # Unparseable or non-list: the raw text is the only copy,
+                    # so it is archived as-is, and kept when that fails.
+                    continue
                 entry.unlink()
         except OSError:
             continue
+
+
+def _is_clean_list(entry: Path, kept: int) -> bool:
+    """True only when `_read` dropped nothing, so archiving the parsed records
+    archives the whole file. Anything else goes through the raw archive."""
+    try:
+        data = json.loads(entry.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, list) and len(data) == kept
+
+
+def _archive_raw(entry: Path) -> int:
+    """Archive an owed file that does not parse as a list of records; 0 = keep."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        return archive.archive_file("handoff-owed", entry, reason="unparseable-prune")
+    except Exception:
+        return 0
+
+
+def _archive_owed(owed: list[dict], session: str) -> int:
+    """Archive one session's owed-handoff records by their repo; 0 = keep."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+    except Exception:
+        return 0
+    records = [{"session": session, **e} for e in owed]
+    return archive.archive_by_origin(
+        "handoff-owed", records, None,
+        origin_of=lambda e: archive.origin_for_repo(e.get("repo")))
 
 
 def record(repo: str, issue: int, url: str = "", key: str | None = None,

@@ -7,6 +7,7 @@ consuming repo until harmonic-forge#721 moves its protocol half here.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,22 @@ class AuditRecordTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.log = Path(self._tmp.name) / "lane3-audit.jsonl"
+        # harmonic-forge#826: the trim now archives its overflow; never let a
+        # test write into the real archive under ~/.local/share.
+        self.archive_root = Path(self._tmp.name) / "archive"
+        self.archive_root.mkdir()
+        (self.archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
+        env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(self.archive_root)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _archived(self) -> list[dict]:
+        import gzip
+        rows: list[dict] = []
+        for part in sorted(self.archive_root.rglob("lane3-audit/*.jsonl.gz")):
+            with gzip.open(part, "rt", encoding="utf-8") as handle:
+                rows.extend(json.loads(line)["record"] for line in handle if line.strip())
+        return rows
 
     def _entries(self) -> list[dict]:
         return audit.read(path=self.log)
@@ -81,6 +98,24 @@ class AuditRecordTests(unittest.TestCase):
             for i in range(25):
                 audit.record("post-checkout", "moved", target=str(i), path=self.log)
         self.assertLessEqual(len(self._entries()), 10)
+
+    def test_trim_archives_every_dropped_record(self) -> None:
+        """harmonic-forge#826 AC1: live plus archive hold every record."""
+        with mock.patch.object(audit, "MAX_RECORDS", 10):
+            for i in range(25):
+                audit.record("post-checkout", "moved", target=str(i), path=self.log)
+        live = [e["target"] for e in self._entries()]
+        archived = [e["target"] for e in self._archived()]
+        self.assertLessEqual(len(live), 10)
+        self.assertEqual(sorted(live + archived, key=int), [str(i) for i in range(25)])
+
+    def test_trim_keeps_the_overflow_when_the_archive_fails(self) -> None:
+        """AC6: the bound stays, but a failed archive never costs history."""
+        with mock.patch.object(audit, "MAX_RECORDS", 5), \
+                mock.patch.object(audit, "_archive", return_value=0):
+            for i in range(8):
+                audit.record("post-checkout", "moved", target=str(i), path=self.log)
+        self.assertEqual(len(self._entries()), 8)
 
 
 class AuditSurvivesLaneEndTests(unittest.TestCase):

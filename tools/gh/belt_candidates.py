@@ -199,8 +199,12 @@ def read_candidates(
             continue
         if posted_at < cutoff:
             if prune:
+                # harmonic-forge#826: this file is the only on-disk record of
+                # the post's kind/poster/time, so it is archived first and
+                # unlinked only when the archive holds it.
                 try:
-                    path.unlink()
+                    if _archive_candidate(path, entry) == 1:
+                        path.unlink()
                 except OSError:
                     pass
             continue
@@ -210,3 +214,16 @@ def read_candidates(
             continue
         candidates.add((repo, issue))
     return candidates
+
+
+def _archive_candidate(path: Path, entry: dict) -> int:
+    """Archive one aged-out candidate file by its repo; 0 means keep it."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        return archive.archive("belt-candidates", [{"path": path.name, **entry}],
+                               origin=archive.origin_for_repo(entry.get("repo")))
+    except Exception:
+        return 0

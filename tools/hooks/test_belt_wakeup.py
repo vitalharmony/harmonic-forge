@@ -159,6 +159,13 @@ class TestSessionStartSourceCoverage(unittest.TestCase):
         self.assertEqual(self._matcher_for("compaction_marker.py"), "compact")
 
 
+def _fire_many(path: Path, proc: int, count: int) -> None:
+    """One simulated session process writing `count` fires (harmonic-forge#826)."""
+    for i in range(count):
+        belt_wakeup.record_fire({"source": "startup", "session_id": f"{proc}-{i}"}, "1", True,
+                                path=path)
+
+
 class TestFireLog(unittest.TestCase):
     """The fire log is #560's acceptance test, made mechanical.
 
@@ -171,9 +178,53 @@ class TestFireLog(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tmpdir.name) / "fires.jsonl"
+        # harmonic-forge#826: the trim archives its overflow; keep tests out of
+        # the real archive under ~/.local/share.
+        self.archive_root = Path(self.tmpdir.name) / "archive"
+        self.archive_root.mkdir()
+        (self.archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
+        self._env = mock.patch.dict(
+            os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(self.archive_root)})
+        self._env.start()
 
     def tearDown(self):
+        self._env.stop()
         self.tmpdir.cleanup()
+
+    def _archived(self):
+        import gzip
+        rows = []
+        for part in sorted(self.archive_root.rglob("belt-wakeup-fires/*.jsonl.gz")):
+            with gzip.open(part, "rt", encoding="utf-8") as handle:
+                rows.extend(json.loads(line)["record"] for line in handle if line.strip())
+        return rows
+
+    def test_trim_archives_every_dropped_fire(self):
+        """harmonic-forge#826: live plus archive hold every fire record."""
+        total = belt_wakeup.FIRE_LOG_MAX + 20
+        for i in range(total):
+            belt_wakeup.record_fire({"source": "startup", "session_id": str(i)}, "1", True,
+                                    path=self.path)
+        live = [json.loads(l)["session_id"] for l in self.path.read_text().splitlines()]
+        archived = [r["session_id"] for r in self._archived()]
+        self.assertEqual(sorted(live + archived, key=int), [str(i) for i in range(total)])
+
+    def test_concurrent_writers_lose_and_duplicate_nothing(self):
+        """The new flock: parallel sessions never lose or double-archive a fire."""
+        import multiprocessing
+        per, procs = 150, 4
+        ctx = multiprocessing.get_context("fork")
+        workers = [ctx.Process(target=_fire_many, args=(self.path, p, per)) for p in range(procs)]
+        with mock.patch.object(belt_wakeup, "FIRE_LOG_MAX", 50):
+            for w in workers:
+                w.start()
+            for w in workers:
+                w.join()
+        live = [json.loads(l)["session_id"] for l in self.path.read_text().splitlines()]
+        archived = [r["session_id"] for r in self._archived()]
+        everything = live + archived
+        self.assertEqual(len(everything), per * procs)
+        self.assertEqual(len(set(everything)), per * procs)
 
     def test_it_records_the_sessionstart_source_not_the_lane_source(self):
         """Two different things, and conflating them would make the log answer

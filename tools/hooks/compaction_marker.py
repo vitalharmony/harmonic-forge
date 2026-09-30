@@ -605,10 +605,25 @@ def prune_markers(now: float) -> None:
             data = json.loads(entry.read_text(encoding="utf-8"))
             stamp = datetime.fromisoformat(data["compacted_at"]).timestamp()
             if now - stamp > TTL_SECONDS:
+                # harmonic-forge#826: housekeeping, so archive-then-delete.
+                if _archive_marker(entry) != 1:
+                    continue
                 entry.unlink()
         except (FileNotFoundError, PermissionError, OSError,
                 ValueError, KeyError, TypeError):
             continue
+
+
+def _archive_marker(entry: Path) -> int:
+    """Archive a TTL-expired compaction marker; 0 means keep it (#826)."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        return archive.archive_file("compaction-marker", entry, reason="ttl-prune")
+    except Exception:
+        return 0
 
 
 def read_marker(session_id: str) -> dict | None:

@@ -211,13 +211,44 @@ def record(event: str, outcome: str, *, worktree: Path | None = None,
 
 
 def _trim(path: Path) -> None:
-    """Bound the log. Caller MUST hold the exclusive lock — see `record()`."""
+    """Bound the log. Caller MUST hold the exclusive lock — see `record()`.
+
+    The overflow is archived before it is cut (harmonic-forge#826), and the
+    cut happens only when the archive reports every dropped record written:
+    a telemetry failure leaves the file briefly over its bound rather than
+    losing history. The next record retries.
+    """
     try:
         lines = path.read_text(encoding="utf-8").splitlines(True)
-        if len(lines) > MAX_RECORDS:
-            path.write_text("".join(lines[-MAX_RECORDS:]), encoding="utf-8")
+        if len(lines) <= MAX_RECORDS:
+            return
+        dropped = lines[:-MAX_RECORDS]
+        if _archive(dropped, path) != len(dropped) and \
+                not _force_trim(len(lines), MAX_RECORDS, "lane3-audit", len(dropped)):
+            return
+        path.write_text("".join(lines[-MAX_RECORDS:]), encoding="utf-8")
     except Exception:
         return
+
+
+def _archive(lines: list[str], path: Path) -> int:
+    """Hand the overflow to the shared telemetry archive; 0 means "keep it"."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+    except Exception:
+        return 0
+    records = []
+    for line in lines:
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            records.append({"unparsed": line.rstrip("\n")})
+    # The log sits in the checkout's git-common-dir, so its parent resolves
+    # against the registry's `path` for this repo.
+    return archive.archive("lane3-audit", records, where=path.parent)
 
 
 def read(path: Path | None = None, cwd: Path | None = None) -> list[dict]:
@@ -259,6 +290,34 @@ def main(argv: list[str] | None = None) -> int:
     for entry in read()[-args.n:]:
         print(json.dumps(entry))
     return 0
+
+
+def _force_trim(total: int, bound: int, source: str, dropped: int) -> bool:
+    """Past the archive's hard ceiling, trim without an archive and record the
+    forced loss (harmonic-forge#826); below it, keep everything."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+    except Exception:
+        if total <= bound * 10:
+            return False
+        try:  # the archive module is unavailable, so record the loss here
+            state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+            log = state / "harmonic-forge" / "telemetry-archive-failures.jsonl"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"source": source, "forced_loss": dropped,
+                                         "reason": "archive module unavailable; hard ceiling"}) + "\n")
+        except Exception:
+            pass
+        return True
+    if not archive.over_hard_ceiling(total, bound):
+        return False
+    archive.record_failure(source, "hard ceiling reached; trimmed without archive",
+                           forced_loss=dropped)
+    return True
 
 
 if __name__ == "__main__":

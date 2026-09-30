@@ -1,0 +1,9 @@
+[Unit]
+Description=Archive CI history weekly, well inside the 90-day retention window (harmonic-forge#826)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
