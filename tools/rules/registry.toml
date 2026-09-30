@@ -821,8 +821,8 @@ restates = "R-0080"
 id = "R-0369"
 file = "rules/universal-lane1.md"
 anchor = "post-merge-deploy"
-statement = "After the last merge of a batch, Lane 1 fast-forwards the clean main checkout to origin/main (never a merge commit or reset), restarts through the project's lifecycle path, and spot-checks one new route or behavior; it never lists these as operator actions."
-text_sha = "c7b1c283c9f3bd5e"
+statement = "After the last merge of a batch, Lane 1 deploys every repository the batch merged into: confirm a clean refs/heads/main, fast-forward to origin/main (never a merge commit or reset), restart through the lifecycle path where a stack exists, and spot-check one new route or behavior; it never lists these as operator actions."
+text_sha = "1d4f701733f67c8c"
 hooks = []
 
 [[rule]]

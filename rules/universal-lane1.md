@@ -174,20 +174,29 @@ concrete commands and the specific `l1_post.py` friction this prevents.
 
 <!-- R-0369 -->
 After the **last** merge of a batch (not after each PR), Lane 1 deploys what
-merged, itself, and never lists any of these steps as an operator action:
+merged, itself, and never lists any of these steps as an operator action. It
+does so for **every repository the batch merged into**: a mixed batch such as
+`H2141,F834` deploys both checkouts, because project hooks resolve by absolute
+path into the platform checkout (`~/harmonic-forge`), and a merged hook is
+inert until the checkout carrying it is updated.
 
-1. Confirm the project's main checkout has no tracked changes.
+1. Confirm the repo's main checkout is on a clean `refs/heads/main`: HEAD is
+   that branch (not detached, not another branch), no merge or rebase is in
+   progress, and there are no tracked changes. Otherwise stop and report. The
+   `lane1` launcher applies the same guard at session start
+   (`tools/lane/_lane_refresh.sh`).
 2. Fast-forward it to `origin/main` (`git fetch origin`, then
    `git merge --ff-only origin/main`). Never a merge commit and never a
    reset. If the fast-forward is refused, stop and report. This is the one
    direct `git` step sanctioned alongside R-0001's prohibition on manual
    `add`/`commit`/`push`.
-3. Restart through the project's designated lifecycle path (R-0001). HRSE2's
-   is `mise run restart --no-bump --no-git` (R-0297/R-0298).
+3. Where the repo has a running stack, restart it through its designated
+   lifecycle path (R-0001). HRSE2's is `mise run restart --no-bump --no-git`
+   (R-0297/R-0298). Deploy uses `--no-bump --no-git` because the merged
+   commits already carry their version and their commit; a bump or a git step
+   here would create a local commit on `main`. A repo with no stack is
+   deployed by step 2 alone.
 4. Spot-check one route or behavior the merge added.
-
-Merged code does not run until this is done, and a merged hook is inert until
-the main checkout carries it.
 <!-- /R-0369 -->
 
 Lane 1 never opens a worktree by hand to post from: HRSE2's posting tasks
