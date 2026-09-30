@@ -1,0 +1,515 @@
+{
+ "1733": {
+  "comments": [
+   {
+    "body": "## Handoff: H1733 \u2014 admit WORKED_WITH to the bridge query, after triaging 98 edges\n### Issue\n### Read this first: the ordering is the safety property\n### Lane 3 Gate Variant\n### Affected Files\n### Root Cause / Entry Point\n### Design Alternatives Considered\n### Load-Bearing Assumptions\n### Delegated Judgment Calls\n### Pre-Flight Preconditions\n### Implementation Spec\n### Test Cases (for Lane 3)\n### Read-Before-Edit Instruction\n### Ambiguity Gate\n<!-- l1-post v1; kind=handoff; plan-first=true; sha=0055d33b97bdaa1cdeeadfe6ef47097c326c4a12; body-sha256=a90618baee262d7b610919892590a34b6ec3491699e025881fb8295360116cba; checks=body-validation,tier-set,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-09T03:39:08Z",
+    "id": 5595416036
+   },
+   {
+    "body": "## L2P \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n## Read-Before-Edit \u2014 the comment that makes this change unsafe by default\n```python\n```\n## The 98, read in full rather than from the summary\n```\n```\n```\n```\n```\n```\n## JDC 2 \u2014 the 98: don't touch the graph, filter at the assertion\n## JDC 1 \u2014 the weight, argued against the scale\n## Method\n## Questions\n```json\n```",
+    "created_at": "2026-09-09T03:42:39Z",
+    "id": 5595441903
+   },
+   {
+    "body": "## Plan ratified \u2014 both questions answered, filter-not-triage\n### Question 1 \u2014 AC1's \"recorded disposition\" is satisfied by the argued rule plus enumeration\n### Question 2 \u2014 filter at the bridge query, ratified\n### On the weight (JDC1) and the P2P table gap it exposes\n### Proceed\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-09T03:45:43Z",
+    "id": 5595464593
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n## Both halves, and why either alone was the bug\n```\n```\n## AC4 \u2014 live, on real data\n```\n```\n## The gate actually excludes \u2014 checked, not assumed\n```\n```\n## AC6 \u2014 the date bug was worse than 12 rows\n```\n```\n```\n```\n## Two pre-existing tests broke, and both were right to\n```python\n```\n## One thing I got wrong and replaced\n## Verification\n```json\n```",
+    "created_at": "2026-09-09T04:02:36Z",
+    "id": 5595592175
+   },
+   {
+    "body": "## Ready for Lane 3\n### What Lane 2 implemented\n### Independent re-verification performed by Lane 1 this session\n### Test cases for Lane 3\n<!-- l1-post v1; kind=ready-for-l3; sha=22754b8c95a859415e42e91f855fcfc59692085f; body-sha256=43f3b7fec0e2b847835f669c5371b4720299fc1515ef9fd0165914d10fd83f2b; checks=mise-check,origin-main-ancestor,branch-sha-match,clean-worktree,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-09T04:29:45Z",
+    "id": 5595802923
+   },
+   {
+    "body": "## Lane 3 Test Spec \u2014 H1733 (WORKED_WITH bridge admission, PR #1737 @ `22754b8c`)\n## Independent pre-spec verification (live, already run)\n```\n```\n## DISCLOSED NOW, BEFORE HITL APPROVAL \u2014 a live-breaking regression, found during pre-spec verification\n```python\n# EXCEPTION: ClientError {neo4j_code: Neo.ClientError.Statement.ParameterMissing}\n# {message: Expected parameter(s): today_ym}\n```\n## Test cases\n## What this spec does not attempt\n<!-- l1-post v1; kind=spec; posted-by=LANE3; body-sha256=13926e532a7b026f4af722e2558734e8182353bd54df9e1540d78460fea70632 -->",
+    "created_at": "2026-09-09T04:35:17Z",
+    "id": 5595848336
+   },
+   {
+    "body": "## Rework\n<!-- l1-post v1; kind=rework; sha=22754b8c95a859415e42e91f855fcfc59692085f; body-sha256=2d1260d6644fd0127213292dc0dd029b914c47663500a4649dfd0197042be12a; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-09T04:41:46Z",
+    "id": 5595911994
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n## The defect, and why every test I wrote was blind to it\n```python\n```\n```\n```\n```\n```\n## AC4, demonstrated live \u2014 the criterion the prior SHA could not reach\n```\n```\n```\n```\n## Gate\n```\n```\n## Write tier\n```json\n```",
+    "created_at": "2026-09-09T04:51:09Z",
+    "id": 5595997363
+   },
+   {
+    "body": "## Correction to the spec above \u2014 the disclosed defect is fixed, TC4 now PASS\n### Independent re-verification (live, already run)\n```\n```\n```python\n# Leonel DeLeon -> 3 bridge(s)\n# Saman Pourkermani -> 1 bridge(s)\n# Matt Long -> 0 bridge(s)\n# Keith Hatchett -> 0 bridge(s)\n# Celestine Vettical -> 0 bridge(s)\n```\n### Why the new test closes the actual gap, not just the symptom\n### Diff scope, updated\n```\n```\n<!-- l1-post v1; kind=discussion; posted-by=LANE3 -->",
+    "created_at": "2026-09-09T05:23:40Z",
+    "id": 5596263664
+   },
+   {
+    "body": "## Acknowledged \u2014 TC4 now PASS, nothing owed from Lane 1\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-09T05:40:13Z",
+    "id": 5596407976
+   },
+   {
+    "body": "## Lane 3 Gate Results \u2014 H1733 (WORKED_WITH bridge admission, PR #1737 @ `b19c3c4c`)\n**Verdict: PASS**\n### Evidence\n```\n```\n```\n```\n### Process note\n### Summary\n<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=25ae84df58ce9fc016606dabaa74cf1e867b7ece1fb2994f6f440764f97e10a4 -->",
+    "created_at": "2026-09-09T05:48:02Z",
+    "id": 5596473432
+   },
+   {
+    "body": "## Closed \u2014 Lane 3 PASS (8/8 TCs), independently re-verified live\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-09T05:50:20Z",
+    "id": 5596492619
+   }
+  ],
+  "timeline": [
+   {
+    "created_at": "2026-09-09T03:36:42Z",
+    "event": "milestoned",
+    "id": 30800239488,
+    "milestone": {
+     "title": "2.9"
+    }
+   },
+   {
+    "created_at": "2026-09-09T03:36:43Z",
+    "event": "labeled",
+    "id": 30800240148,
+    "label": {
+     "name": "bug"
+    }
+   },
+   {
+    "created_at": "2026-09-09T03:36:43Z",
+    "event": "labeled",
+    "id": 30800240259,
+    "label": {
+     "name": "career-vertical"
+    }
+   },
+   {
+    "created_at": "2026-09-09T03:36:43Z",
+    "event": "project_v2_item_status_changed",
+    "id": 30800241492
+   },
+   {
+    "created_at": "2026-09-09T03:36:43Z",
+    "event": "added_to_project_v2",
+    "id": 30800241564
+   },
+   {
+    "created_at": "2026-09-09T03:39:08Z",
+    "event": "commented",
+    "id": 5595416036
+   },
+   {
+    "created_at": "2026-09-09T03:42:39Z",
+    "event": "commented",
+    "id": 5595441903
+   },
+   {
+    "created_at": "2026-09-09T03:45:43Z",
+    "event": "commented",
+    "id": 5595464593
+   },
+   {
+    "created_at": "2026-09-09T04:02:36Z",
+    "event": "commented",
+    "id": 5595592175
+   },
+   {
+    "created_at": "2026-09-09T04:29:45Z",
+    "event": "commented",
+    "id": 5595802923
+   },
+   {
+    "created_at": "2026-09-09T04:35:17Z",
+    "event": "commented",
+    "id": 5595848336
+   },
+   {
+    "created_at": "2026-09-09T04:41:46Z",
+    "event": "commented",
+    "id": 5595911994
+   },
+   {
+    "created_at": "2026-09-09T04:51:09Z",
+    "event": "commented",
+    "id": 5595997363
+   },
+   {
+    "created_at": "2026-09-09T05:23:40Z",
+    "event": "commented",
+    "id": 5596263664
+   },
+   {
+    "created_at": "2026-09-09T05:40:13Z",
+    "event": "commented",
+    "id": 5596407976
+   },
+   {
+    "created_at": "2026-09-09T05:48:02Z",
+    "event": "commented",
+    "id": 5596473432
+   },
+   {
+    "created_at": "2026-09-09T05:50:20Z",
+    "event": "commented",
+    "id": 5596492619
+   },
+   {
+    "created_at": "2026-09-09T05:50:22Z",
+    "event": "closed",
+    "id": 30805212237
+   },
+   {
+    "created_at": "2026-09-09T05:50:23Z",
+    "event": "project_v2_item_status_changed",
+    "id": 30805215232
+   }
+  ]
+ },
+ "1866": {
+  "comments": [
+   {
+    "body": "## Handoff: [Issue #1866 \u2014 Classify all 59 live-marked integration files into live_graph, live, and delete]\n### Issue\n### Lane 3 Gate Variant\n### Affected Files\n### Root Cause / Entry Point\n### Design Alternatives Considered\n### Load-Bearing Assumptions\n### Delegated Judgment Calls\n### Pre-Flight Preconditions\n### Implementation Spec\n### Test Cases (for Lane 3)\n### Read-Before-Edit Instruction\n### Ambiguity Gate\n### Classification table (58 real files; `conftest.py` excluded as a false-positive grep match)\n<!-- l1-post v1; kind=handoff; plan-first=false; sha=9170bc5113a3c7c19b8a9bebeeea0d8b09ee2d53; body-sha256=bee6d7f4105cf92a12b36b848dd23bca385a9be016d32e444672eb94f6bb8d50; checks=body-validation,tier-set,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-23T01:53:57Z",
+    "id": 5787614180
+   },
+   {
+    "body": "## Lane 2 \u2014 AC4/AC5/AC6 evidence (hrse#1866)\n### AC1 \u2014 one classification flagged for escalation, not applied\n### AC2 \u2014 wiring verified live\n### AC3 \u2014 verified unaffected\n### AC4 \u2014 pre-existing failures, `mise run check-full` against Tier W (765 passed, 6 failed, 6 skipped, 51 deselected)\n### AC5 \u2014 deletions\n### AC6 \u2014 final \"runs nowhere\" count\n### Branch / commit\n<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->",
+    "created_at": "2026-09-23T02:20:40Z",
+    "id": 5787831025
+   },
+   {
+    "body": "## Lane 2 \u2014 implementation complete (hrse#1866)\n<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->",
+    "created_at": "2026-09-23T02:21:46Z",
+    "id": 5787840277
+   },
+   {
+    "body": "## Lane 1 \u2014 AC1 resolution: `test_h231_backfill_collapse.py` is a second false positive, not a misclassification\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-23T02:22:50Z",
+    "id": 5787849839
+   },
+   {
+    "body": "## ready-for-l3: hrse#1866\n### Target\n### Verified\n### Next\n<!-- l1-post v1; kind=ready-for-l3; sha=2d3ca74b28d5ce337ff8231ef5beb0f4cf00dd42; body-sha256=be4b6524a66cbd1d03339ab707d125501e2fc72110a9795efe9e6d01d07fced5; checks=mise-check,origin-main-ancestor,branch-sha-match,clean-worktree,issue-open,origin-branch-sha-match,active-worktree-overlap,pr-open -->",
+    "created_at": "2026-09-23T02:38:00Z",
+    "id": 5787997542
+   },
+   {
+    "body": "## Lane 3 Test Spec \u2014 H1866\n### Target\n### Write-scope tier\n### Test cases\n### Preconditions checked before execution\n### Out of scope\n<!-- l1-post v1; kind=spec; posted-by=LANE3; body-sha256=70af17fddf5c84ae63e45e36ffae66da268c4fc1f98b05dfa8d7f35a3c3cca43 -->",
+    "created_at": "2026-09-23T02:41:21Z",
+    "id": 5788031738
+   },
+   {
+    "body": "## AE \u2014 H1866\n<!-- l1-post v1; kind=ae; sha=2d3ca74b28d5ce337ff8231ef5beb0f4cf00dd42; body-sha256=eb3539a4060b2c85b223968ccd2a9a8c6a8bceeb795fd817fdf6a7e06e4e5e6a; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap,pr-open -->",
+    "created_at": "2026-09-23T03:48:21Z",
+    "id": 5788634750
+   },
+   {
+    "body": "## Gate-readiness sweep \u2014 H1866\n### Per-case readiness\n<!-- l1-post v1; kind=sweep; sha=2d3ca74b28d5ce337ff8231ef5beb0f4cf00dd42; body-sha256=1d82c18cfb6d4e427a44471cec872484ac421d0462bc8271ba76daa7a308f503; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-23T03:53:16Z",
+    "id": 5788672038
+   },
+   {
+    "body": "## Lane 3 Gate Results \u2014 H1866\n**Verdict:** FAIL\n### Target\n### TC3 \u2014 PASS\n### TC4 \u2014 PASS\n### TC5 \u2014 PASS (mechanism), evidence feeds the TC7 finding\n### TC6 \u2014 PASS\n### TC7 \u2014 FAIL\n### TC8 \u2014 PASS\n### ADR-008 adapter calls\n### Write-scope tier\n<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=1071d1471ba1b81ac6287cb78c405cd6a5edd0b473d4bf0f614e9083d59e66cb -->",
+    "created_at": "2026-09-23T04:08:00Z",
+    "id": 5788855597
+   },
+   {
+    "body": "## Rework \u2014 H1866\n<!-- l1-post v1; kind=rework; sha=2d3ca74b28d5ce337ff8231ef5beb0f4cf00dd42; body-sha256=f5cb006d1af66e8fd8e19d5fdc954f7622f7c694bcc86faae89c11d54ccb67d0; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-23T04:09:14Z",
+    "id": 5788869652
+   },
+   {
+    "body": "## Lane 2 \u2014 corrected AC4 evidence (hrse#1866 rework)\n### Gap 1 \u2014 added the missing Tier W row\n### Gap 2 \u2014 CI-empty-container run, categorized (17 failures)\n### Filing-bar note\n### AC5/AC6 \u2014 unchanged\n<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->",
+    "created_at": "2026-09-23T04:18:08Z",
+    "id": 5788962611
+   },
+   {
+    "body": "## ready-for-l3: hrse#1866\n### Target\n### Verified\n### Next\n<!-- l1-post v1; kind=ready-for-l3; sha=2d3ca74b28d5ce337ff8231ef5beb0f4cf00dd42; body-sha256=e12e8e74f0a0f502c1cff741cf22069414016bdcfe81f6caf3633fe6f528fa45; checks=mise-check,origin-main-ancestor,branch-sha-match,clean-worktree,issue-open,origin-branch-sha-match,active-worktree-overlap,pr-open -->",
+    "created_at": "2026-09-23T04:24:06Z",
+    "id": 5789019325
+   },
+   {
+    "body": "## Lane 3 Gate Results \u2014 H1866\n**Verdict:** PASS\n### Target\n### TC7 \u2014 PASS (re-verified)\n### Residue check (ADR-008 adapter, report-only)\n### Write-scope tier\n<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=485de880ef134d8b0a67560a0b9e541f9bab82aec706c0d1373b6866930b1efc -->",
+    "created_at": "2026-09-23T04:28:17Z",
+    "id": 5789055190
+   },
+   {
+    "body": "<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-23T04:29:52Z",
+    "id": 5789067562
+   }
+  ],
+  "timeline": [
+   {
+    "created_at": "2026-09-16T18:07:48Z",
+    "event": "milestoned",
+    "id": 31266143670,
+    "milestone": {
+     "title": "2.9"
+    }
+   },
+   {
+    "created_at": "2026-09-16T18:07:49Z",
+    "event": "labeled",
+    "id": 31266144446,
+    "label": {
+     "name": "bug"
+    }
+   },
+   {
+    "created_at": "2026-09-16T18:07:49Z",
+    "event": "labeled",
+    "id": 31266144595,
+    "label": {
+     "name": "tech-debt"
+    }
+   },
+   {
+    "created_at": "2026-09-16T18:07:49Z",
+    "event": "labeled",
+    "id": 31266144760,
+    "label": {
+     "name": "infrastructure"
+    }
+   },
+   {
+    "created_at": "2026-09-16T18:07:51Z",
+    "event": "added_to_project_v2",
+    "id": 31266289496
+   },
+   {
+    "created_at": "2026-09-16T18:07:52Z",
+    "event": "project_v2_item_status_changed",
+    "id": 31266169650
+   },
+   {
+    "created_at": "2026-09-16T18:08:10Z",
+    "event": "labeled",
+    "id": 31266166845,
+    "label": {
+     "name": "resonance-chain"
+    }
+   },
+   {
+    "created_at": "2026-09-16T18:15:19Z",
+    "event": "cross-referenced",
+    "source": {
+     "issue": {
+      "number": 1867,
+      "repository": {
+       "full_name": "vitalharmony/hrse"
+      }
+     }
+    }
+   },
+   {
+    "created_at": "2026-09-22T15:24:35Z",
+    "event": "cross-referenced",
+    "source": {
+     "issue": {
+      "number": 1993,
+      "repository": {
+       "full_name": "vitalharmony/hrse"
+      }
+     }
+    }
+   },
+   {
+    "created_at": "2026-09-22T15:52:10Z",
+    "event": "renamed",
+    "id": 31612820057
+   },
+   {
+    "created_at": "2026-09-23T01:53:57Z",
+    "event": "commented",
+    "id": 5787614180
+   },
+   {
+    "created_at": "2026-09-23T02:20:40Z",
+    "event": "commented",
+    "id": 5787831025
+   },
+   {
+    "created_at": "2026-09-23T02:21:46Z",
+    "event": "commented",
+    "id": 5787840277
+   },
+   {
+    "created_at": "2026-09-23T02:22:50Z",
+    "event": "commented",
+    "id": 5787849839
+   },
+   {
+    "created_at": "2026-09-23T02:33:44Z",
+    "event": "cross-referenced",
+    "source": {
+     "issue": {
+      "number": 2005,
+      "pull_request": {},
+      "repository": {
+       "full_name": "vitalharmony/hrse"
+      }
+     }
+    }
+   },
+   {
+    "created_at": "2026-09-23T02:38:00Z",
+    "event": "commented",
+    "id": 5787997542
+   },
+   {
+    "created_at": "2026-09-23T02:41:21Z",
+    "event": "commented",
+    "id": 5788031738
+   },
+   {
+    "created_at": "2026-09-23T03:48:21Z",
+    "event": "commented",
+    "id": 5788634750
+   },
+   {
+    "created_at": "2026-09-23T03:53:16Z",
+    "event": "commented",
+    "id": 5788672038
+   },
+   {
+    "created_at": "2026-09-23T04:08:00Z",
+    "event": "commented",
+    "id": 5788855597
+   },
+   {
+    "created_at": "2026-09-23T04:09:14Z",
+    "event": "commented",
+    "id": 5788869652
+   },
+   {
+    "created_at": "2026-09-23T04:18:08Z",
+    "event": "commented",
+    "id": 5788962611
+   },
+   {
+    "created_at": "2026-09-23T04:24:06Z",
+    "event": "commented",
+    "id": 5789019325
+   },
+   {
+    "created_at": "2026-09-23T04:28:17Z",
+    "event": "commented",
+    "id": 5789055190
+   },
+   {
+    "created_at": "2026-09-23T04:29:52Z",
+    "event": "commented",
+    "id": 5789067562
+   },
+   {
+    "created_at": "2026-09-23T04:30:02Z",
+    "event": "closed",
+    "id": 31650267745
+   },
+   {
+    "created_at": "2026-09-23T04:30:03Z",
+    "event": "project_v2_item_status_changed",
+    "id": 31652353232
+   }
+  ]
+ },
+ "745": {
+  "comments": [
+   {
+    "body": "## Amendment \u2014 add a context-degradation measurement axis\n<!-- l1-post v1; kind=discussion; posted-by=LANE-unset -->",
+    "created_at": "2026-08-21T19:12:50Z",
+    "id": 5374176406,
+    "updated_at": "2026-08-21T19:12:50Z"
+   },
+   {
+    "body": "## Handoff: H745 \u2014 measure every `complete()` call site against the caching preconditions\n### Issue\n### Lane 3 Gate Variant\n### Currency correction \u2014 both cited line numbers have moved\n```python\n```\n### Affected Files\n### Root Cause / Entry Point\n### Design Alternatives Considered\n### Load-Bearing Assumptions\n### Delegated Judgment Calls\n### Pre-Flight Preconditions\n### Implementation Spec\n### Test Cases (for Lane 3)\n### Read-Before-Edit Instruction\n### Ambiguity Gate\n<!-- l1-post v1; kind=handoff; plan-first=false; sha=044003aa830d22d4fbb20f45c1f36fffae4b2563; body-sha256=c6776ec7f2a6f555a60ed76e306677dfe68a9a9ed70657ed39624470ba7a77e2; checks=body-validation,tier-set,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T01:27:24Z",
+    "id": 5556069074,
+    "updated_at": "2026-09-06T01:27:24Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n## Read-before-edit \u2014 the rubric and the precedent, quoted\n```python\n```\n## Result \u2014 no additional call site qualifies\n```\n```\n## Coverage \u2014 asserted live, not counted by hand\n```\n```\n## The amendment the handoff omitted\n## Two findings reported rather than acted on\n## TC5 \u2014 `_system_param()` unchanged\n```\n```\n## Verification gate\n```\n```\n## Branch\n```json\n```",
+    "created_at": "2026-09-06T06:11:55Z",
+    "id": 5557380623,
+    "updated_at": "2026-09-06T06:11:55Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```\n```\n```json\n```",
+    "created_at": "2026-09-06T07:00:34Z",
+    "id": 5557607356,
+    "updated_at": "2026-09-06T07:00:34Z"
+   },
+   {
+    "body": "<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-06T17:40:01Z",
+    "id": 5560980812,
+    "updated_at": "2026-09-06T17:40:01Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```json\n```",
+    "created_at": "2026-09-06T17:42:34Z",
+    "id": 5560994856,
+    "updated_at": "2026-09-06T17:42:34Z"
+   },
+   {
+    "body": "## L1 \u2014 rebase request, hrse#745\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-06T18:11:28Z",
+    "id": 5561158357,
+    "updated_at": "2026-09-06T18:11:28Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```\n```\n## Gate re-run on the rebased SHA\n```\n```\n## One check worth doing that the gate alone would not have made obvious\n```\n```\n```json\n```",
+    "created_at": "2026-09-06T20:40:08Z",
+    "id": 5562028475,
+    "updated_at": "2026-09-06T20:40:08Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```\n```\n## Worth naming rather than repeating a fourth time\n```json\n```",
+    "created_at": "2026-09-06T20:45:46Z",
+    "id": 5562059893,
+    "updated_at": "2026-09-06T20:45:46Z"
+   },
+   {
+    "body": "## L1 \u2014 ready-for-l3, hrse#745\n<!-- l1-post v1; kind=ready-for-l3; sha=a3b1b293e3d4f3ced5e42a1356f517501b1f933a; body-sha256=65c207b813894d4a523f71a315d631306b3e1e78439122221e4725cbf54ca4bd; checks=mise-check,origin-main-ancestor,branch-sha-match,clean-worktree,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T20:48:18Z",
+    "id": 5562073650,
+    "updated_at": "2026-09-06T20:48:18Z"
+   },
+   {
+    "body": "## Lane 3 Test Spec \u2014 hrse#745 \u2014 measure every `complete()` call site against the caching preconditions\n### TC1 \u2014 every `complete()` call site outside the two gateway modules is either flagged or annotated\n### TC2 \u2014 every reason comment names a measured number, not just a claim\n### TC3 \u2014 every newly-flagged (`cache_system=True`) site's system text is genuinely static\n### TC4 \u2014 every newly-flagged site's system text genuinely clears the resolved model's floor\n### TC5 \u2014 `_system_param()` is unchanged\n### TC6 \u2014 the measurement doc records negatives as well as positives\n### TC7 \u2014 a zero-qualifying-site outcome (if that's what resulted) is treated as a pass\n### TC8 \u2014 the amendment's context-degradation measurement (50k-token threshold) was performed\n### TC9 \u2014 no scope breach: `_system_param()` semantics, message-history caching, model routing all untouched\n### TC10 \u2014 the `match_service.py:237` precedent comment's three-fact shape is the template actually followed\n### TC11 \u2014 standard verification gate\n### TC12 \u2014 diff scoped as claimed",
+    "created_at": "2026-09-06T20:49:39Z",
+    "id": 5562081245,
+    "updated_at": "2026-09-06T20:49:39Z"
+   },
+   {
+    "body": "## AE \u2014 hrse#745\n<!-- l1-post v1; kind=ae; sha=a3b1b293e3d4f3ced5e42a1356f517501b1f933a; body-sha256=a1613541feedcb168cc53444241adc28ab228413d5fdd398dd9886e6d2d7e1b1; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T20:50:27Z",
+    "id": 5562085872,
+    "updated_at": "2026-09-06T20:50:27Z"
+   },
+   {
+    "body": "## Gate-readiness sweep \u2014 hrse#745\n<!-- l1-post v1; kind=sweep; sha=a3b1b293e3d4f3ced5e42a1356f517501b1f933a; body-sha256=6aafd167f75cc97b5cb9f808987b386705521936726e5d206824f19b257241a1; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T20:50:30Z",
+    "id": 5562086101,
+    "updated_at": "2026-09-06T20:50:30Z"
+   },
+   {
+    "body": "## Lane 3 Gate Results \u2014 hrse#745 \u2014 PASS\n### TC1 \u2014 every `complete()` call site is flagged or annotated\n### TC2 \u2014 every reason comment names a measured number\n### TC3 \u2014 every newly-flagged site's system text is genuinely static\n### TC4 \u2014 every newly-flagged site's system text clears the resolved model's floor (checked against the actual tier)\n```\n```\n### TC5 \u2014 `_system_param()` is unchanged\n### TC6 \u2014 the measurement doc records negatives as well as positives\n### TC7 \u2014 a zero-qualifying-site outcome is a valid pass\n### TC8 \u2014 the 50,000-token context-degradation amendment was performed\n### TC9 \u2014 no scope breach\n### TC10 \u2014 the precedent's three-fact shape followed\n### TC11 \u2014 standard verification gate\n### TC12 \u2014 diff scoped as claimed",
+    "created_at": "2026-09-06T21:00:02Z",
+    "id": 5562137133,
+    "updated_at": "2026-09-06T21:00:02Z"
+   },
+   {
+    "body": "",
+    "created_at": "2026-09-06T21:12:06Z",
+    "id": 5562205704,
+    "updated_at": "2026-09-06T21:12:06Z"
+   }
+  ],
+  "timeline": []
+ }
+}

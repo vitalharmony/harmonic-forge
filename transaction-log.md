@@ -3,6 +3,27 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): apply F829 preclose pass 2 — own-footer-only markers, blockquotes stripped, one gate event per comment, per-reading subject ids, full-page probe, cache prune, quota reset (harmonic-forge#829)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/telemetry/eras.py                 | 93 +++++++++++++++++++++----------
+- tools/telemetry/extract_threads.py      | 57 +++++++++++++++++--
+- tools/telemetry/test_extract_threads.py | 97 +++++++++++++++++++++++++++++----
+- 3 files changed, 203 insertions(+), 44 deletions(-)
+
+## fix(telemetry): apply F829 preclose pass 1 — gate_ci verdicts, footer-only posted-by, pre-0909 fixture, cache race, repo filter (harmonic-forge#829)
+- tools/telemetry/extract_threads.py      | 21 +++++--
+- tools/telemetry/fixtures/threads.json   | 97 ++++++++++++++++++++++++++++++++-
+- tools/telemetry/test_extract_threads.py | 82 +++++++++++++++++++++++-----
+- 4 files changed, 223 insertions(+), 36 deletions(-)
+
+## feat(telemetry): Tranche 1 thread-event extractor — era parser over lane_state, REST+ETag, gh-thread/gh-timeline partitions (harmonic-forge#829)
+- tools/telemetry/extract_threads.py      | 195 +++++++++++++++
+- tools/telemetry/fixtures/threads.json   | 420 ++++++++++++++++++++++++++++++++
+- tools/telemetry/test_extract_threads.py | 155 ++++++++++++
+- 4 files changed, 894 insertions(+)
+
 ## fix(telemetry): apply F828 preclose panel — repo/issue in event_id, UTC ts, record_hash archive key, never-drop per-event rejects, attrs body guard, census reports every entry (harmonic-forge#828)
 - tools/telemetry/emit.py        | 188 ++++++++++++++++++++++++++++++-----------
 - tools/telemetry/schema_v1.json |  55 ++++++++++--
