@@ -55,6 +55,16 @@ trigger. An assumption that turns out wrong invalidates everything built
 on it; naming it here is what makes it checkable instead of silently
 inherited.
 
+### Consumers and Equivalents
+{none | for each contract this handoff changes (a function, query, file
+format, heading list, receipt field, CLI flag): every existing reader, and
+any existing implementation of the same behavior, each with the search that
+found it, e.g. `git grep -n HANDOFF_HEADINGS`} — "none" is valid only with
+the search that returned nothing; `l1_post.py` refuses a bare "none"
+(harmonic-forge#838). Load-Bearing Assumptions verifies what this handoff
+states; this field finds what it forgot to state, which is where most
+handoff-origin defects came from.
+
 ### Delegated Judgment Calls
 {none | list each design decision this spec deliberately leaves to Lane 2
 rather than resolving here} — "none" is the common, zero-cost answer. A

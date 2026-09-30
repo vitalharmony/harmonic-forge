@@ -8,6 +8,7 @@ receipt shape rather than each against its own mock.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -92,11 +93,50 @@ class PassCapTests(ScratchRepo):
         with self.assertRaises(SystemExit):
             self.complete(findings=SURVIVOR, not_triggered=True)
 
+    def record_post_verdict(self) -> None:
+        """What `--post-verdict` writes, minus the cross-family call itself."""
+        prior = self.receipt()
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+        preclose.write_receipt(REPO, ISSUE, preclose_passes.reviewed_head(prior), 1, "complete",
+                               extra=preclose_passes.post_verdict_fields(
+                                   prior, "base", head, None, "Red-team provenance: cross-family (x)", 0))
+
     def test_force_bypasses_and_records_pass_three(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
         self.run_pass("scripts/b.py", SURVIVOR)
-        self.run_pass("scripts/c.py", SURVIVOR, force=True)
+        self.commit("scripts/c.py")
+        self.record_post_verdict()
+        self.plan(tier="fast", force=True)
+        self.complete(findings=SURVIVOR, not_triggered=True, force=True)
         self.assertEqual(self.receipt()["pass_count"], 3)
+
+    def test_force_in_the_sticky_wicket_case_needs_the_post_verdict_check(self) -> None:
+        """harmonic-forge#838 AC5."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.commit("scripts/c.py")
+        with self.assertRaises(SystemExit) as refused:
+            self.plan(tier="fast", force=True)
+        self.assertIn("--post-verdict", str(refused.exception))
+
+    def test_post_verdict_check_is_not_a_pass_and_survives_later_writes(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        before = self.receipt()
+        self.commit("scripts/c.py")
+        self.record_post_verdict()
+        after = self.receipt()
+        self.assertEqual(after["pass_count"], 2)
+        self.assertEqual(preclose_passes.reviewed_head(after), preclose_passes.reviewed_head(before))
+        self.plan(tier="fast", force=True)
+        self.assertIn("post_verdict_check", self.receipt())
+
+    def test_force_after_a_clean_pass_needs_no_post_verdict_check(self) -> None:
+        """The operator case is unchanged: AC5 is the sticky-wicket case only."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", [])
+        self.commit("scripts/c.py")
+        self.plan(tier="fast", force=True)
 
     def test_count_survives_an_archive_failure(self) -> None:
         """The archive swallows its own errors (harmonic-forge#826); break its

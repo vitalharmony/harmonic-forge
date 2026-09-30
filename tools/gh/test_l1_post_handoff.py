@@ -20,6 +20,36 @@ post = load("l1_post")
 
 
 class HandoffTests(unittest.TestCase):
+
+    def _body(self, consumers: str) -> str:
+        return "\n".join(
+            f"### {heading}\n{consumers if heading == 'Consumers and Equivalents' else 'A documented value.'}"
+            for heading in post.HANDOFF_HEADINGS
+        )
+
+    def test_consumers_heading_is_required(self) -> None:
+        """harmonic-forge#838 AC4."""
+        self.assertIn("Consumers and Equivalents", post.HANDOFF_HEADINGS)
+        body = "\n".join(f"### {h}\nA documented value." for h in post.HANDOFF_HEADINGS
+                         if h != "Consumers and Equivalents")
+        with self.assertRaises(SystemExit):
+            post.validate_handoff(body, requires_preflight=False)
+
+    def test_bare_none_in_consumers_is_refused(self) -> None:
+        for bare in ("none", "None.", "none -- nothing reads it"):
+            with self.subTest(bare=bare), self.assertRaises(SystemExit):
+                post.validate_handoff(self._body(bare), requires_preflight=False)
+
+    def test_none_with_its_search_is_accepted(self) -> None:
+        post.validate_handoff(self._body("none: `git grep -n HANDOFF_HEADINGS` finds only l1_post.py"),
+                              requires_preflight=False)
+
+    def test_none_elsewhere_still_needs_no_search(self) -> None:
+        """The rule is scoped to this one heading (plan review change 4)."""
+        body = self._body("`HANDOFF_HEADINGS`: l1_post.py (`git grep -n HANDOFF_HEADINGS`)").replace(
+            "### Design Alternatives Considered\nA documented value.",
+            "### Design Alternatives Considered\nnone")
+        post.validate_handoff(body, requires_preflight=False)
     def test_template_with_real_content_is_accepted(self) -> None:
         body = "\n".join(
             f"### {heading}\nA documented value." for heading in post.HANDOFF_HEADINGS

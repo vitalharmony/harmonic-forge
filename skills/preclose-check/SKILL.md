@@ -127,7 +127,14 @@ A third pass never runs:
 
 - **Both passes left surviving findings** → invoke the **sticky-wicket**
   agent. "Patch" means the operator's `--force` covers the final head, with no
-  third panel. "Reforge" means a new approach, and the pass count restarts —
+  third panel, **after one post-verdict check** (harmonic-forge#838): a
+  single cross-family refuter, run per `rules/cross-family-review.md`, reads
+  only the patch (`<pass-2 head>...<final head>`), and
+  `preclose_check.py --post-verdict --base <pass-2 head> --envelope <path>
+  --findings <file>` records it. It is not a pass and never counts toward the
+  cap. Until it is recorded for the final head, `--force` refuses and names
+  it. A surviving finding from it goes to the operator with the `--force`
+  request. "Reforge" means a new approach, and the pass count restarts —
   but **only the operator starts it**: `--reforge` runs only together with
   `--force` (an operator instruction), and even then refuses a diff a
   completed pass already reviewed. No branch name, rename or detached HEAD

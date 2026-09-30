@@ -419,6 +419,7 @@ class RepoTargetTests(unittest.TestCase):
              patch.object(post, "resolve_sha", return_value="a" * 40), \
              patch.object(post, "validate_tier_set"), \
              patch.object(post, "validate_milestone_set"), \
+             patch.object(post, "issue_labels", return_value=set()), \
              patch.object(post, "world_checks", return_value=(["world"], [])), \
              patch.object(post, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.object(post, "write_receipt"), \

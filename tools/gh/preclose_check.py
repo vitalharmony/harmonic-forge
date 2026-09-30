@@ -551,6 +551,11 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
     head (a rebase) is not a new pass. Replaces the old per-SHA check, which
     re-armed on every head change and so allowed unbounded passes."""
     if force and not reforge:
+        # harmonic-forge#838 AC5: the operator's --force still needs the
+        # post-verdict check in the sticky-wicket case.
+        reason = preclose_passes.post_verdict_refusal(find_receipt(repo, issue), head_sha)
+        if reason:
+            raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
     reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force)
     if reason:
@@ -792,6 +797,9 @@ def main() -> None:
     parser.add_argument("--reforge", action="store_true",
                         help="Operator instruction only, and only with --force: after sticky-wicket "
                              "ruled 'reforge', start a new pass epoch for a changed diff (harmonic-forge#834).")
+    parser.add_argument("--post-verdict", action="store_true",
+                        help="After sticky-wicket's PATCH verdict: record one cross-family refuter's "
+                             "read of --base (the pass-2 head)...--head. Not a pass (harmonic-forge#838).")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",
@@ -801,7 +809,47 @@ def main() -> None:
         if not args.findings:
             parser.error("--gate needs --findings")
         sys.exit(gate(args))
+    if args.post_verdict:
+        if not (args.findings and args.envelope):
+            parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
+        sys.exit(post_verdict(args))
     sys.exit(complete(args) if args.complete else plan(args))
+
+
+def post_verdict(args: argparse.Namespace) -> int:
+    """harmonic-forge#838 AC5: record the one cross-family refuter's read of
+    the patch applied after a sticky-wicket PATCH verdict. ``--base`` is the
+    pass-2 head, so the diff is just the patch. Never appended to the pass
+    history, so it never counts toward the cap."""
+    require_writable(receipt_dir())
+    repo = registered_repo(args.repo)
+    head_sha = _require_repo_and_head(repo, args)
+    base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()
+    if not base_sha:
+        raise SystemExit(f"preclose-check: --base {args.base!r} does not resolve to a commit")
+    prior = find_receipt(repo, args.issue) or {}
+    passes = preclose_passes.current(preclose_passes.history(prior))
+    if (len(passes) < preclose_passes.MAX_PASSES
+            or preclose_passes.cap_message(passes) != preclose_passes.STICKY_WICKET):
+        raise SystemExit("preclose-check: --post-verdict applies only after two passes that both "
+                         "left surviving findings (the sticky-wicket case).")
+    require_recorded_envelope(args.envelope)
+    provenance = compute_provenance(args.envelope, False)
+    check_provenance(True, provenance)
+    surviving = len(surviving_findings(load_findings(args.findings)))
+    # The vouched-for head and status stay exactly as pass 2 left them: this
+    # check is not a pass, and the operator's --force is what covers the final
+    # head (harmonic-forge#838 plan review).
+    path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
+                         prior.get("refuters", 0), status=prior.get("status", "complete"),
+                         extra=preclose_passes.post_verdict_fields(
+                             prior, base_sha, head_sha, local_patch_id(args.base, args.head),
+                             provenance, surviving))
+    print(f"preclose-check: post-verdict check recorded for {repo}#{args.issue}, "
+          f"{base_sha[:12]}...{head_sha[:12]} ({surviving} surviving finding(s)); not a pass.")
+    print(f"  receipt: {path}")
+    print(f"  {provenance}")
+    return 0
 
 
 if __name__ == "__main__":
