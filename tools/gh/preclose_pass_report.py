@@ -34,7 +34,7 @@ def archived_heads(root: Path, skipped: list[str] | None = None) -> dict[str, se
     for path in root.glob("**/preclose-receipts/*.jsonl.gz"):
         try:
             lines = gzip.open(path, "rt", encoding="utf-8").read().splitlines()
-        except (OSError, EOFError):
+        except (OSError, EOFError, UnicodeDecodeError):
             if skipped is not None:
                 skipped.append(str(path))
             continue

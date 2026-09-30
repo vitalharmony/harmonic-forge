@@ -54,8 +54,10 @@ class PassReportTests(unittest.TestCase):
         self.archive_file([{"repo": "o/r", "issue": 1, "status": "complete", "reviewed_sha": "c1"}])
         bad = self.archive / "o" / "preclose-receipts" / "2026-08.jsonl.gz"
         bad.write_bytes(b"not gzip")
+        undecodable = self.archive / "o" / "preclose-receipts" / "2026-07.jsonl.gz"
+        undecodable.write_bytes(gzip.compress(b"\xff\xfe not utf-8"))
         text = report.report(self.receipts, None, self.archive)
-        self.assertIn("1 archive file(s) could not be read", text)
+        self.assertIn("2 archive file(s) could not be read", text)
         self.assertNotIn("no receipt archive", text)
 
 
