@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parent
 # it -- which is the condition under which a vacuous assertion in the sibling
 # `tools/gh` suite survived review. A doc guard nobody runs is the same
 # failure class this comment already describes one level up.
-TEST_DIRS = ["gate", "gh", "hooks", "lane", "memory", "onboard", "rules",
+TEST_DIRS = ["gate", "gh", "hooks", "lane", "memory", "onboard", "rules", "telemetry",
              "../scripts", "../skills/belt-and-suspenders", "../skills/verification-gate"]
 PATTERN = "test_*.py"
 
@@ -168,6 +168,11 @@ def build_suite() -> unittest.TestSuite:
 
 
 def main() -> int:
+    # harmonic-forge#826: hooks under test now archive what they prune. A test
+    # run must never write into the operator's real telemetry archive, so the
+    # whole run gets a throwaway root unless a test sets its own.
+    archive_tmp = tempfile.TemporaryDirectory(prefix="hf-telemetry-test-")
+    os.environ.setdefault("HARMONIC_FORGE_TELEMETRY_ARCHIVE", archive_tmp.name)
     files = _test_files()
     if not files:
         print("[test] no test files found — refusing to report success", file=sys.stderr)

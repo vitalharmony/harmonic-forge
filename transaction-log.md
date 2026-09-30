@@ -3,6 +3,22 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## feat(telemetry): archive instead of prune; CI-history export (harmonic-forge#826)
+
+One shared registry-driven archive (v1 envelope, account/org partitions,
+unresolved kept) wired into lane3_audit, belt_wakeup (now flock'd),
+handoff_owed, batch_auth (memoized, <50ms lock budget), compaction_marker
+and enforce_belt_arming (best-effort; its unlinks are state transitions).
+ci_history_export archives workflow-run/job/status metadata for repos whose
+Actions retention max is under 400 days. run_tests isolates the archive root.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XncsrarwQoGWzUdoKfGmfH
+- tools/telemetry/archive.py           | 285 +++++++++++++++++++++++++++++++++++
+- tools/telemetry/ci_history_export.py | 185 +++++++++++++++++++++++
+- tools/telemetry/test_archive.py      | 172 +++++++++++++++++++++
+- 13 files changed, 928 insertions(+), 8 deletions(-)
+
 ## fix(hooks): strip redirects from anywhere in relocate args, not just trailing (harmonic-forge#797 cross-family finding)
 
 The required cross-family (Codex) verify pass found a redirect BEFORE the

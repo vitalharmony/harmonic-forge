@@ -161,6 +161,24 @@ def write_grant(session_id: str, reason: str, now: float | None = None) -> Path 
     return path
 
 
+def _archive_state_file(path: Path, reason: str) -> None:
+    """Best-effort archive before a *semantic* unlink (harmonic-forge#826).
+
+    Unlike a housekeeping prune, these deletes are the state transition
+    itself: removing a grant is how it is consumed or expired, and removing
+    the cron marker is how CronDelete retires it. Gating them on the archive
+    would leave a consumed grant reusable, so the unlink always happens and
+    this only records what it removed."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        archive.archive_file("belt-arming-state", path, reason=reason)
+    except Exception:
+        pass
+
+
 def read_grant(session_id: object, now: float | None = None) -> dict[str, Any] | None:
     """The live grant for this session, or None. An expired or unreadable
     grant is deleted: it must not linger to be revived."""
@@ -172,9 +190,11 @@ def read_grant(session_id: object, now: float | None = None) -> dict[str, Any] |
         grant = json.loads(path.read_text(encoding="utf-8"))
         created = float(grant["created"])
     except (OSError, ValueError, KeyError, TypeError):
+        _archive_state_file(path, "grant-unreadable")
         path.unlink(missing_ok=True)
         return None
     if not (created <= now + 60 and now - created <= GRANT_TTL_SECONDS):
+        _archive_state_file(path, "grant-expired")
         path.unlink(missing_ok=True)
         return None
     return grant
@@ -402,6 +422,7 @@ def record_post_tool_use(payload: dict[str, Any], lane: str | None) -> None:
             record["id"] = job_id
             marker.write_text(json.dumps(record) + "\n", encoding="utf-8")
     elif tool == "CronDelete" and record.get("id") and tool_input.get("id") == record["id"]:
+        _archive_state_file(marker, "cron-deleted")
         marker.unlink(missing_ok=True)
 
 
@@ -493,6 +514,7 @@ def decide(payload: dict[str, Any], lane: str | None,
                                           and prompt.strip() in skill_args):
                     path = grant_path(session_id)
                     assert path is not None
+                    _archive_state_file(path, "grant-consumed")
                     path.unlink(missing_ok=True)
                     notes.append("enforce_belt_arming: non-canonical CronCreate allowed; "
                                  "the operator's ALLOW LOOP grant is now consumed.")

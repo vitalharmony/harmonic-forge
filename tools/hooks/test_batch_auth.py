@@ -1504,6 +1504,56 @@ class PruneTests(StateFixture):
     """harmonic-forge#567 AC1/AC2/AC3: `_prune` runs only from `authorize()`/
     `top_up()`, inside their existing lock, and never removes a live entry."""
 
+    def setUp(self):
+        super().setUp()
+        # harmonic-forge#826: pruned entries are archived; keep tests out of
+        # the real archive under ~/.local/share.
+        self._archive_tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._archive_tmp.name)
+        env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(self.archive_root)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(self._archive_tmp.cleanup)
+
+    def _archived_keys(self) -> list[str]:
+        import gzip
+        keys = []
+        for part in self.archive_root.rglob("batch-authorized/*.jsonl.gz"):
+            with gzip.open(part, "rt", encoding="utf-8") as handle:
+                keys.extend(json.loads(line)["record"]["key"] for line in handle if line.strip())
+        return keys
+
+    def test_a_pruned_entry_is_archived_before_removal(self):
+        """harmonic-forge#826 AC2: the pruned entry exists in the archive."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._expire("F1", hours_ago=ba.PRUNE_GRACE_HOURS + 1)
+        ba.authorize(["F2"], state_path=self.state_path)
+        self.assertNotIn("F1", ba._load(self.state_path))
+        self.assertEqual(self._archived_keys(), ["F1"])
+
+    def test_a_failed_archive_keeps_the_entry(self):
+        """AC6: never lose an entry to a telemetry failure."""
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._expire("F1", hours_ago=ba.PRUNE_GRACE_HOURS + 1)
+        with mock.patch.object(ba, "_archive_pruned", return_value=0):
+            ba.authorize(["F2"], state_path=self.state_path)
+        self.assertIn("F1", ba._load(self.state_path))
+
+    def test_archiving_keeps_the_lock_hold_under_budget(self):
+        """harmonic-forge#826 R5: `_prune` runs inside `_locked_state` on every
+        merge path. Archiving 60 stale entries adds under 50 ms to it."""
+        import time
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(hours=ba.PRUNE_GRACE_HOURS + 1)).isoformat()
+        state = {f"F{i}": {"expires_at": stale, "targets": []} for i in range(60)}
+        ba._archive_pruned([{"key": "F0", "expires_at": stale}])  # warm the memo
+        with mock.patch.object(ba, "_entry_live", return_value=False):
+            started = time.perf_counter()
+            kept = ba._prune(state, now)
+            elapsed = time.perf_counter() - started
+        self.assertEqual(kept, {})
+        self.assertLess(elapsed, 0.05)
+
     def _expire(self, key: str, hours_ago: float) -> None:
         state = ba._load(self.state_path)
         state[key]["expires_at"] = (

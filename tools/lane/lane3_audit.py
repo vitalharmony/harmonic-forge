@@ -211,13 +211,43 @@ def record(event: str, outcome: str, *, worktree: Path | None = None,
 
 
 def _trim(path: Path) -> None:
-    """Bound the log. Caller MUST hold the exclusive lock — see `record()`."""
+    """Bound the log. Caller MUST hold the exclusive lock — see `record()`.
+
+    The overflow is archived before it is cut (harmonic-forge#826), and the
+    cut happens only when the archive reports every dropped record written:
+    a telemetry failure leaves the file briefly over its bound rather than
+    losing history. The next record retries.
+    """
     try:
         lines = path.read_text(encoding="utf-8").splitlines(True)
-        if len(lines) > MAX_RECORDS:
-            path.write_text("".join(lines[-MAX_RECORDS:]), encoding="utf-8")
+        if len(lines) <= MAX_RECORDS:
+            return
+        dropped = lines[:-MAX_RECORDS]
+        if _archive(dropped, path) != len(dropped):
+            return
+        path.write_text("".join(lines[-MAX_RECORDS:]), encoding="utf-8")
     except Exception:
         return
+
+
+def _archive(lines: list[str], path: Path) -> int:
+    """Hand the overflow to the shared telemetry archive; 0 means "keep it"."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+    except Exception:
+        return 0
+    records = []
+    for line in lines:
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            records.append({"unparsed": line.rstrip("\n")})
+    # The log sits in the checkout's git-common-dir, so its parent resolves
+    # against the registry's `path` for this repo.
+    return archive.archive("lane3-audit", records, where=path.parent)
 
 
 def read(path: Path | None = None, cwd: Path | None = None) -> list[dict]:
