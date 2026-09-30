@@ -31,17 +31,27 @@ if str(_SCRIPTS) not in sys.path:
 
 import lane_state  # noqa: E402
 
+_GH = Path(__file__).resolve().parents[1] / "gh"
+if str(_GH) not in sys.path:
+    sys.path.insert(0, str(_GH))
+
+import gate_ci  # noqa: E402
+
 EXTRACTOR_VERSION = "threads-1"
-#: Both live shapes: `**Verdict:** PASS` and `**Verdict: PASS**`.
-_VERDICT = re.compile(r"(?im)^\s*\**\s*Verdict\s*:?\s*\**\s*:?\s*\**\s*(PASS|FAIL|BLOCKED)\b")
 _POSTED_BY = re.compile(r"posted-by=LANE(\d)", re.I)
+#: `posted-by` is read only from inside an l1-post footer, never from prose or
+#: a blockquote that quotes another comment's footer as evidence.
+_FOOTER = re.compile(r"<!--\s*l1-post\b[^>]*-->", re.I)
+_GATE_KEYS = {lane_state.KEY_GATE_PASS, lane_state.KEY_GATE_FAIL, lane_state.KEY_UNKNOWN}
+_VERDICT_KEY = {"PASS": lane_state.KEY_GATE_PASS, "FAIL": lane_state.KEY_GATE_FAIL,
+                "BLOCKED": lane_state.KEY_BLOCKED_LANE}
 _TOKEN_LANE = re.compile(r"^token:L(\d)")
 #: Footers `l1_post.py` stamps without `posted-by` are Lane 1's by construction.
 _L1_KINDS = {"handoff", "ae", "sweep", "rework", "ready-for-l3", "discussion"}
 
 
 def _actor(provenance: str, body: str) -> str:
-    posted = _POSTED_BY.search(body)
+    posted = next((m for f in _FOOTER.findall(body) for m in [_POSTED_BY.search(f)] if m), None)
     if posted:
         return f"lane{posted.group(1)}"
     token = _TOKEN_LANE.match(provenance)
@@ -61,27 +71,42 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
     raw = comment.get("body") or ""
     body = lane_state._FENCE.sub("", raw)
     events = []
-    for t in lane_state.parse_timeline([comment]):
-        key, validated = t.key, t.validated
-        if key == lane_state.KEY_UNKNOWN and t.provenance.endswith("gate-result"):
-            verdict = _VERDICT.search(body)
-            if verdict and verdict.group(1) != "BLOCKED":
-                key = lane_state.KEY_GATE_PASS if verdict.group(1) == "PASS" else lane_state.KEY_GATE_FAIL
-            elif verdict:
-                key = lane_state.KEY_BLOCKED_LANE
-        era, _, detail = t.provenance.partition(":")
+    updated = str(comment.get("updated_at") or comment.get("created_at") or "")
+
+    def add(key: str, provenance: str, validated: bool, at: str, cid: str, extra: dict) -> None:
+        era, _, detail = provenance.partition(":")
         # `lane_state`'s token regex is anchored to a `## L<N><C>` heading, so
         # a token transition IS heading-era evidence (the pre-2026-09-09 L2
         # shape AC3 names); `marker` keeps the token spelling.
         if era == "token":
             era = "heading"
         events.append({
-            "ts": t.at, "source": "gh-thread", "account": account, "org": org, "repo": repo,
-            "issue": issue, "actor": _actor(t.provenance, body), "event_type": key,
-            "subject_kind": "comment", "subject_id": f"comment:{t.comment_id}",
-            "attrs": {"marker": detail}, "provenance": era, "validated": validated,
-            "extractor_version": EXTRACTOR_VERSION,
+            "ts": at, "source": "gh-thread", "account": account, "org": org, "repo": repo,
+            "issue": issue, "actor": _actor(provenance, body), "event_type": key,
+            "subject_kind": "comment", "subject_id": f"comment:{cid}",
+            # updated_at orders two readings of one edited comment: the
+            # latest per subject_id is the current one (the store is append-only).
+            "attrs": {"marker": detail, "edited_at": updated, **extra},
+            "provenance": era, "validated": validated, "extractor_version": EXTRACTOR_VERSION,
         })
+
+    is_gate = gate_ci.looks_like_a_gate_report(body)
+    for t in lane_state.parse_timeline([comment]):
+        if t.key in _GATE_KEYS and t.provenance.endswith("gate-result") and is_gate:
+            continue  # scored below, by gate_ci's anchored reader
+        add(t.key, t.provenance, t.validated, t.at, t.comment_id, {})
+    # Gate verdicts come from gate_ci.verdict_of(): heading or lead block only
+    # (never a per-TC line), any heading level, and CONFLICT when the two
+    # disagree -- recorded as unknown, never resolved to either side.
+    if is_gate:
+        verdict = gate_ci.verdict_of(body)
+        attested = bool(lane_state._FOOTER_KIND.search(body)) and \
+            lane_state._FOOTER_KIND.search(body).group("kind").lower() == "gate-result"
+        provenance = "footer:gate-result" if attested else "heading:gate-result"
+        validated = attested and bool(lane_state._FOOTER_BODY_SHA.search(body))
+        add(_VERDICT_KEY.get(verdict or "", lane_state.KEY_UNKNOWN), provenance, validated,
+            str(comment.get("created_at") or comment.get("createdAt") or ""),
+            str(comment.get("id") or ""), {"verdict": verdict or "none"})
     return events
 
 

@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(telemetry): apply F829 preclose pass 1 — gate_ci verdicts, footer-only posted-by, pre-0909 fixture, cache race, repo filter (harmonic-forge#829)
+- tools/telemetry/extract_threads.py      | 21 +++++--
+- tools/telemetry/fixtures/threads.json   | 97 ++++++++++++++++++++++++++++++++-
+- tools/telemetry/test_extract_threads.py | 82 +++++++++++++++++++++++-----
+- 4 files changed, 223 insertions(+), 36 deletions(-)
+
 ## feat(telemetry): Tranche 1 thread-event extractor — era parser over lane_state, REST+ETag, gh-thread/gh-timeline partitions (harmonic-forge#829)
 - tools/telemetry/extract_threads.py      | 195 +++++++++++++++
 - tools/telemetry/fixtures/threads.json   | 420 ++++++++++++++++++++++++++++++++

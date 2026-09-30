@@ -416,5 +416,100 @@
     "id": 31652353232
    }
   ]
+ },
+ "745": {
+  "comments": [
+   {
+    "body": "## Amendment \u2014 add a context-degradation measurement axis\n<!-- l1-post v1; kind=discussion; posted-by=LANE-unset -->",
+    "created_at": "2026-08-21T19:12:50Z",
+    "id": 5374176406,
+    "updated_at": "2026-08-21T19:12:50Z"
+   },
+   {
+    "body": "## Handoff: H745 \u2014 measure every `complete()` call site against the caching preconditions\n### Issue\n### Lane 3 Gate Variant\n### Currency correction \u2014 both cited line numbers have moved\n```python\n```\n### Affected Files\n### Root Cause / Entry Point\n### Design Alternatives Considered\n### Load-Bearing Assumptions\n### Delegated Judgment Calls\n### Pre-Flight Preconditions\n### Implementation Spec\n### Test Cases (for Lane 3)\n### Read-Before-Edit Instruction\n### Ambiguity Gate\n<!-- l1-post v1; kind=handoff; plan-first=false; sha=044003aa830d22d4fbb20f45c1f36fffae4b2563; body-sha256=c6776ec7f2a6f555a60ed76e306677dfe68a9a9ed70657ed39624470ba7a77e2; checks=body-validation,tier-set,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T01:27:24Z",
+    "id": 5556069074,
+    "updated_at": "2026-09-06T01:27:24Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n## Read-before-edit \u2014 the rubric and the precedent, quoted\n```python\n```\n## Result \u2014 no additional call site qualifies\n```\n```\n## Coverage \u2014 asserted live, not counted by hand\n```\n```\n## The amendment the handoff omitted\n## Two findings reported rather than acted on\n## TC5 \u2014 `_system_param()` unchanged\n```\n```\n## Verification gate\n```\n```\n## Branch\n```json\n```",
+    "created_at": "2026-09-06T06:11:55Z",
+    "id": 5557380623,
+    "updated_at": "2026-09-06T06:11:55Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```\n```\n```json\n```",
+    "created_at": "2026-09-06T07:00:34Z",
+    "id": 5557607356,
+    "updated_at": "2026-09-06T07:00:34Z"
+   },
+   {
+    "body": "<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-06T17:40:01Z",
+    "id": 5560980812,
+    "updated_at": "2026-09-06T17:40:01Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```json\n```",
+    "created_at": "2026-09-06T17:42:34Z",
+    "id": 5560994856,
+    "updated_at": "2026-09-06T17:42:34Z"
+   },
+   {
+    "body": "## L1 \u2014 rebase request, hrse#745\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    "created_at": "2026-09-06T18:11:28Z",
+    "id": 5561158357,
+    "updated_at": "2026-09-06T18:11:28Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```\n```\n## Gate re-run on the rebased SHA\n```\n```\n## One check worth doing that the gate alone would not have made obvious\n```\n```\n```json\n```",
+    "created_at": "2026-09-06T20:40:08Z",
+    "id": 5562028475,
+    "updated_at": "2026-09-06T20:40:08Z"
+   },
+   {
+    "body": "## L2D \u2014 receipt-backed status (harmonic-forge#371)\n### Narrative\n```\n```\n```\n```\n## Worth naming rather than repeating a fourth time\n```json\n```",
+    "created_at": "2026-09-06T20:45:46Z",
+    "id": 5562059893,
+    "updated_at": "2026-09-06T20:45:46Z"
+   },
+   {
+    "body": "## L1 \u2014 ready-for-l3, hrse#745\n<!-- l1-post v1; kind=ready-for-l3; sha=a3b1b293e3d4f3ced5e42a1356f517501b1f933a; body-sha256=65c207b813894d4a523f71a315d631306b3e1e78439122221e4725cbf54ca4bd; checks=mise-check,origin-main-ancestor,branch-sha-match,clean-worktree,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T20:48:18Z",
+    "id": 5562073650,
+    "updated_at": "2026-09-06T20:48:18Z"
+   },
+   {
+    "body": "## Lane 3 Test Spec \u2014 hrse#745 \u2014 measure every `complete()` call site against the caching preconditions\n### TC1 \u2014 every `complete()` call site outside the two gateway modules is either flagged or annotated\n### TC2 \u2014 every reason comment names a measured number, not just a claim\n### TC3 \u2014 every newly-flagged (`cache_system=True`) site's system text is genuinely static\n### TC4 \u2014 every newly-flagged site's system text genuinely clears the resolved model's floor\n### TC5 \u2014 `_system_param()` is unchanged\n### TC6 \u2014 the measurement doc records negatives as well as positives\n### TC7 \u2014 a zero-qualifying-site outcome (if that's what resulted) is treated as a pass\n### TC8 \u2014 the amendment's context-degradation measurement (50k-token threshold) was performed\n### TC9 \u2014 no scope breach: `_system_param()` semantics, message-history caching, model routing all untouched\n### TC10 \u2014 the `match_service.py:237` precedent comment's three-fact shape is the template actually followed\n### TC11 \u2014 standard verification gate\n### TC12 \u2014 diff scoped as claimed",
+    "created_at": "2026-09-06T20:49:39Z",
+    "id": 5562081245,
+    "updated_at": "2026-09-06T20:49:39Z"
+   },
+   {
+    "body": "## AE \u2014 hrse#745\n<!-- l1-post v1; kind=ae; sha=a3b1b293e3d4f3ced5e42a1356f517501b1f933a; body-sha256=a1613541feedcb168cc53444241adc28ab228413d5fdd398dd9886e6d2d7e1b1; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T20:50:27Z",
+    "id": 5562085872,
+    "updated_at": "2026-09-06T20:50:27Z"
+   },
+   {
+    "body": "## Gate-readiness sweep \u2014 hrse#745\n<!-- l1-post v1; kind=sweep; sha=a3b1b293e3d4f3ced5e42a1356f517501b1f933a; body-sha256=6aafd167f75cc97b5cb9f808987b386705521936726e5d206824f19b257241a1; checks=body-validation,issue-open,origin-branch-sha-match,active-worktree-overlap -->",
+    "created_at": "2026-09-06T20:50:30Z",
+    "id": 5562086101,
+    "updated_at": "2026-09-06T20:50:30Z"
+   },
+   {
+    "body": "## Lane 3 Gate Results \u2014 hrse#745 \u2014 PASS\n### TC1 \u2014 every `complete()` call site is flagged or annotated\n### TC2 \u2014 every reason comment names a measured number\n### TC3 \u2014 every newly-flagged site's system text is genuinely static\n### TC4 \u2014 every newly-flagged site's system text clears the resolved model's floor (checked against the actual tier)\n```\n```\n### TC5 \u2014 `_system_param()` is unchanged\n### TC6 \u2014 the measurement doc records negatives as well as positives\n### TC7 \u2014 a zero-qualifying-site outcome is a valid pass\n### TC8 \u2014 the 50,000-token context-degradation amendment was performed\n### TC9 \u2014 no scope breach\n### TC10 \u2014 the precedent's three-fact shape followed\n### TC11 \u2014 standard verification gate\n### TC12 \u2014 diff scoped as claimed",
+    "created_at": "2026-09-06T21:00:02Z",
+    "id": 5562137133,
+    "updated_at": "2026-09-06T21:00:02Z"
+   },
+   {
+    "body": "",
+    "created_at": "2026-09-06T21:12:06Z",
+    "id": 5562205704,
+    "updated_at": "2026-09-06T21:12:06Z"
+   }
+  ],
+  "timeline": []
  }
 }

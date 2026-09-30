@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -78,7 +79,13 @@ def rest_get(path: str) -> list[Any]:
     while url:
         key = hashlib.sha256(f"{scope}\x1f{url}".encode()).hexdigest()
         cached = _cache_dir() / f"{key}.json"
-        entry = json.loads(cached.read_text()) if cached.exists() else None
+        try:
+            entry = json.loads(cached.read_text()) if cached.exists() else None
+        except (ValueError, OSError):
+            # A torn or corrupt entry is a cache miss, never a permanent failure.
+            print(f"[extract] discarding corrupt cache entry {cached}", file=sys.stderr)
+            cached.unlink(missing_ok=True)
+            entry = None
         cmd = ["gh", "api", "-i", url]
         if entry and entry.get("etag"):
             cmd[3:3] = ["-H", f"If-None-Match: {entry['etag']}"]
@@ -88,10 +95,10 @@ def rest_get(path: str) -> list[Any]:
             page, link = entry["page"], entry.get("link", "")
         elif result.returncode == 0 and status == 200:
             page, link = json.loads(body), headers.get("link", "")
-            tmp = cached.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"etag": headers.get("etag"), "page": page, "link": link}))
-            os.chmod(tmp, 0o600)
-            tmp.replace(cached)
+            fd, tmp = tempfile.mkstemp(dir=cached.parent, prefix=cached.stem, suffix=".tmp")
+            with os.fdopen(fd, "w") as handle:  # mkstemp: per-process, mode 600
+                handle.write(json.dumps({"etag": headers.get("etag"), "page": page, "link": link}))
+            os.replace(tmp, cached)
         else:
             raise RuntimeError(f"gh api {url}: HTTP {status} {result.stderr.strip()[:200]}")
         pages.append(page)
@@ -151,6 +158,10 @@ def run(projects: Iterable[Any], get: RestGet, identity: Callable[[str], Any],
         quota: Callable[[], Optional[int]], **opts: Any) -> list[dict[str, Any]]:
     summaries = []
     only_repo = opts.pop("repo", None)
+    projects = list(projects)
+    if only_repo and not any(p.repo == only_repo for p in projects):
+        # An unmatched filter must not look like an idempotent no-op re-run.
+        return [{"repo": only_repo, "error": "not in the registry (projects.toml)"}]
     for project in projects:
         if not project.repo or (only_repo and project.repo != only_repo):
             if not project.repo:
