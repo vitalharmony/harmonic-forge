@@ -192,6 +192,12 @@ def reviewed_head(receipt: dict | None) -> str | None:
     return (receipt or {}).get("reviewed_sha")
 
 
+def reviewed_patch_id(receipt: dict | None) -> str | None:
+    """The patch id of the diff the receipt vouches for: rebase-stable, unlike
+    the commit id (#838 sticky-wicket PATCH)."""
+    return (receipt or {}).get("reviewed_patch_id")
+
+
 def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
                         current_patch_id: str | None, provenance: str, surviving: int) -> dict:
     """The receipt with the check added and every pass left exactly as it was."""

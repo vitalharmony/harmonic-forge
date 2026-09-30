@@ -142,6 +142,11 @@ the call gets no retry budget of its own and does not extend it.
      file format, heading list, receipt field or CLI flag the design
      changes, list every existing reader. #834's handoff named two receipt
      readers when there were three.
+   - **The handoff's own Consumers and Equivalents section.** Every reader
+     and equivalent it names comes with the command that found it, "none"
+     included; re-run one of them. `l1_post.py` checks only that the section
+     is filled in, because whether a search ran is not in the text
+     (harmonic-forge#838 sticky-wicket PATCH).
    - **Existing equivalents.** Does the repo already implement this
      behavior, or a guard for it? #836 specified a HEAD-is-main
      precondition that `tools/lane/_lane_refresh.sh` already implemented.

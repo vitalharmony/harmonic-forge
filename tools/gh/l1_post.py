@@ -95,9 +95,6 @@ HANDOFF_HEADINGS = [
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
-# harmonic-forge#838 AC4: evidence is a search COMMAND, quoted as code -- not
-# the word "grep" in prose ("none -- no grep was needed" is not evidence).
-SEARCH_EVIDENCE = re.compile(r"`[^`\n]*\b(?:git grep|grep|rg)\b[^`\n]*`")
 
 # a private-repo incident (pre-close panel): a sweep entry must be a LINE, must name its own
 # case, and must carry text. The deleted TC_STATUS pattern enforced all three
@@ -521,15 +518,12 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
             fail(f"handoff heading is still a template placeholder: {heading}")
     if requires_preflight and heading_content(body, "Pre-Flight Preconditions").lower() == "none":
         fail("live-mutating/cross-repo handoff requires explicit pre-flight preconditions")
-    # harmonic-forge#838 AC4: every reader and equivalent comes "with the
-    # grep that found them", and "none" carries the grep that found nothing.
-    # So the section must quote at least one search command, however its
-    # prose is worded -- keying on the word "none" let "N/A" and "Nothing
-    # reads it" through (F838 preclose pass 1).
-    if not SEARCH_EVIDENCE.search(heading_content(body, "Consumers and Equivalents")):
-        fail("Consumers and Equivalents quotes no search command -- list each reader or say "
-             "\"none\" together with the search that found it, as code, e.g. "
-             "`git grep -n <contract>` (harmonic-forge#838)")
+    # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by
+    # STRUCTURE only -- present and not a placeholder, like every heading
+    # above. Whether each reader came with the search that found it is a
+    # question about what was run, which is not in the text; two preclose
+    # passes showed a regex fails both ways (sticky-wicket PATCH), so that
+    # check is pitch-inspection's (agents/pitch-inspection.md, check 6).
 
 
 #: harmonic-forge#472. Per-artifact lead blocks, NOT one universal

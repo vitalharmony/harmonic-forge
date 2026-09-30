@@ -60,8 +60,8 @@ inherited.
 format, heading list, receipt field, CLI flag): every existing reader, and
 any existing implementation of the same behavior, each with the search that
 found it, e.g. `git grep -n HANDOFF_HEADINGS`} — "none" is valid only with
-the search that returned nothing; `l1_post.py` refuses a bare "none"
-(harmonic-forge#838). Load-Bearing Assumptions verifies what this handoff
+the search that returned nothing (harmonic-forge#838). `l1_post.py` checks
+only that the section is filled in; pitch-inspection checks the searches. Load-Bearing Assumptions verifies what this handoff
 states; this field finds what it forgot to state, which is where most
 handoff-origin defects came from.
 

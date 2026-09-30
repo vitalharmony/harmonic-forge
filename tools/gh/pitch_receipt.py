@@ -81,9 +81,10 @@ def record(repo: str, issue: int, verdict: str, model: str | None = None,
 
 
 def consume(repo: str, issue: int, posted_url: str | None = None) -> None:
-    """Mark the verdict used by the handoff it reviewed. Best-effort: the post
-    already happened, so a failure here must not fail it, and an unconsumed
-    receipt fails toward a stale-but-real review, not toward none at all."""
+    """Mark the verdict used by the handoff it reviewed. The post has already
+    happened, so a failure here cannot un-post it -- but it must not be silent:
+    an unconsumed receipt would let the NEXT handoff on this issue post on this
+    review (F838 sticky-wicket PATCH). Raise, naming the post and the fix."""
     receipt = read(repo, issue)
     if not receipt or receipt.get("consumed_by"):
         return
@@ -93,8 +94,11 @@ def consume(repo: str, issue: int, posted_url: str | None = None) -> None:
         with handle:
             json.dump(receipt, handle, indent=2)
         os.replace(handle.name, receipt_path(repo, issue))
-    except OSError:
-        return
+    except OSError as exc:
+        raise SystemExit(
+            f"pitch-receipt: the handoff posted ({posted_url or 'posted'}), but its verdict could "
+            f"not be marked used: {exc}. Delete {receipt_path(repo, issue)} by hand so the next "
+            "handoff on this issue needs a fresh review.") from exc
 
 
 def _usable(receipt: dict | None, repo: str, issue: int) -> dict | None:

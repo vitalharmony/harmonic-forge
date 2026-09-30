@@ -26,7 +26,7 @@ import preclose_passes  # noqa: E402
 ARCHIVE = Path.home() / ".local/share/harmonic-forge/telemetry/archive"
 
 
-def archived_heads(root: Path) -> dict[str, set[str]]:
+def archived_heads(root: Path, skipped: list[str] | None = None) -> dict[str, set[str]]:
     """Completed heads per issue from the #826 archive of overwritten receipts.
     Receipts written before #834 carry no pass history, so without this every
     such issue reads as one pass. Best-effort: an unreadable file is skipped."""
@@ -35,6 +35,8 @@ def archived_heads(root: Path) -> dict[str, set[str]]:
         try:
             lines = gzip.open(path, "rt", encoding="utf-8").read().splitlines()
         except (OSError, EOFError):
+            if skipped is not None:
+                skipped.append(str(path))
             continue
         for line in lines:
             try:
@@ -48,8 +50,9 @@ def archived_heads(root: Path) -> dict[str, set[str]]:
     return heads
 
 
-def rows(directory: Path, since: datetime | None = None, archive: Path | None = None) -> list[dict]:
-    history_heads = archived_heads(archive) if archive else {}
+def rows(directory: Path, since: datetime | None = None, archive: Path | None = None,
+         skipped: list[str] | None = None) -> list[dict]:
+    history_heads = archived_heads(archive, skipped) if archive else {}
     out = []
     for path in sorted(directory.glob("*.json")):
         try:
@@ -99,12 +102,22 @@ def main() -> None:
     parser.add_argument("--since", help="Only receipts written on or after this date (YYYY-MM-DD).")
     args = parser.parse_args()
     since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None
-    if not any(args.archive.glob("**/preclose-receipts/*.jsonl.gz")):
-        # F838 preclose pass 1: without the archive, every pre-#834 issue reads
-        # as one pass, which flatters the baseline -- say so, never silently.
-        print(f"WARNING: no receipt archive under {args.archive}; issues closed before "
-              "harmonic-forge#834 are counted as one pass each (an undercount).", file=sys.stderr)
-    print(render(rows(args.dir, since, args.archive)))
+    print(report(args.dir, since, args.archive))
+
+
+def report(directory: Path, since: datetime | None, archive: Path) -> str:
+    """The table plus any undercount warning, all on stdout, so a report
+    redirected to a file carries its own caveat (F838 sticky-wicket PATCH)."""
+    skipped: list[str] = []
+    table = render(rows(directory, since, archive, skipped))
+    warnings = []
+    if not any(archive.glob("**/preclose-receipts/*.jsonl.gz")):
+        warnings.append(f"WARNING: no receipt archive under {archive}; issues closed before "
+                        "harmonic-forge#834 are counted as one pass each (an undercount).")
+    if skipped:
+        warnings.append(f"WARNING: {len(skipped)} archive file(s) could not be read; pass counts "
+                        "for issues they held may be undercounted.")
+    return "\n".join(warnings + ([""] if warnings else []) + [table])
 
 
 if __name__ == "__main__":

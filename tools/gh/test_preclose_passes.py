@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
 import preclose_passes  # noqa: E402
-from test_preclose_check import ANCHORED, CROSS, ScratchRepo, _Args, git, preclose  # noqa: E402
+from test_preclose_check import ANCHORED, CROSS, FALLBACK, ScratchRepo, _Args, git, preclose  # noqa: E402
 
 import block_missing_preclose_inspection as hook  # noqa: E402
 
@@ -141,7 +141,7 @@ class PassCapTests(ScratchRepo):
             "family": "codex", "posture": "verify", "exit_code": 0, "caller_family": "claude",
             "target_family": "codex",
             "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
-        preclose.post_verdict(_Args(repo=REPO, issue=ISSUE, base=base, head="HEAD",
+        preclose.post_verdict(_Args(repo=REPO, issue=ISSUE, base=base, head="HEAD", main="base",
                                     findings=self.findings_file([]), envelope=str(envelope)))
 
     def head(self) -> str:
@@ -182,6 +182,65 @@ class PassCapTests(ScratchRepo):
         self.commit("scripts/b.py")
         with self.assertRaises(SystemExit):
             self.post_verdict(pass_one)
+
+    def envelope(self, label: str = CROSS) -> str:
+        import json as _json
+        path = Path(self.findings_file([])).with_name("cli-envelope.txt")
+        ok = label == CROSS
+        body = {"status": "ok" if ok else "process-error", "label": label,
+                "exit_code": 0 if ok else 1}
+        if ok:
+            body.update({"report": {"assumptions": [{"verdict": "confirmed"}]}, "family": "codex",
+                         "posture": "verify", "caller_family": "claude", "target_family": "codex",
+                         "native": [{"type": "thread.started"},
+                                    {"type": "item.completed", "item": {"type": "agent_message"}}]})
+        path.write_text(_json.dumps(body))
+        return str(path)
+
+    def cli_post_verdict(self, base: str, label: str = CROSS) -> None:
+        """Through `main()`'s --post-verdict dispatch, not the function."""
+        argv = ["preclose_check.py", "--repo", REPO, "--issue", str(ISSUE), "--post-verdict",
+                "--base", base, "--main", "base", "--findings", self.findings_file([]),
+                "--envelope", self.envelope(label)]
+        with patch.object(sys, "argv", argv), self.assertRaises(SystemExit) as done:
+            preclose.main()
+        if done.exception.code not in (0, None):
+            raise SystemExit(done.exception.code)
+
+    def test_cli_accepts_a_patch_identical_base_after_a_rebase(self) -> None:
+        """F838 sticky-wicket PATCH: Lane 1 rebases; the pass-2 commit is gone
+        from the branch, and the rebased twin must still be accepted."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        pass_two = self.head()
+        self.rebase_onto_moved_base()
+        rebased_twin = self.head()
+        self.assertNotEqual(rebased_twin, pass_two)
+        self.commit("scripts/c.py")
+        self.cli_post_verdict(rebased_twin)
+        check = self.receipt()["post_verdict_check"]
+        self.assertEqual((check["base_sha"], check["head_sha"]), (rebased_twin, self.head()))
+        self.plan(tier="fast", force=True)
+
+    def test_cli_refuses_a_fallback_envelope(self) -> None:
+        """This check is the one refuter: a call that did not run is not a check."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        pass_two = self.head()
+        self.commit("scripts/c.py")
+        with self.assertRaises(SystemExit) as refused:
+            self.cli_post_verdict(pass_two, label=FALLBACK)
+        self.assertIn("cross-family call that ran", str(refused.exception))
+        self.assertNotIn("post_verdict_check", self.receipt())
+
+    def test_cli_refuses_an_empty_patch_between_distinct_commits(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        pass_two = self.head()
+        git("commit", "-q", "--allow-empty", "-m", "empty", cwd=self.repo)
+        with self.assertRaises(SystemExit) as refused:
+            self.cli_post_verdict(pass_two)
+        self.assertIn("no patch", str(refused.exception))
 
     def test_force_after_a_clean_pass_needs_no_post_verdict_check(self) -> None:
         """The operator case is unchanged: AC5 is the sticky-wicket case only."""

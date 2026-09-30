@@ -528,15 +528,16 @@ def find_receipt(repo: str, issue: int) -> dict | None:
     return read_receipt(legacy_path)
 
 
-def local_patch_id(base: str, head: str) -> str | None:
-    """`git patch-id --verbatim` of `base...head` (harmonic-forge#834 AC1).
+def local_patch_id(base: str, head: str, dots: str = "...") -> str | None:
+    """`git patch-id --verbatim` of `base...head` (harmonic-forge#834 AC1), or
+    of `base..head` when the caller needs exactly base's descendants (#838).
 
     The rendering is pinned (context, prefixes, external diff and textconv
     off, renames on) so a local `diff.*` setting cannot make it differ from
     the `gh pr diff` rendering the merge hook hashes."""
     diff = run("git", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "diff",
                "--no-ext-diff", "--no-textconv", "--no-color", "-U3", "-M",
-               "--src-prefix=a/", "--dst-prefix=b/", f"{base}...{head}").stdout
+               "--src-prefix=a/", "--dst-prefix=b/", f"{base}{dots}{head}").stdout
     return preclose_passes.patch_id(diff)
 
 
@@ -797,6 +798,8 @@ def main() -> None:
     parser.add_argument("--reforge", action="store_true",
                         help="Operator instruction only, and only with --force: after sticky-wicket "
                              "ruled 'reforge', start a new pass epoch for a changed diff (harmonic-forge#834).")
+    parser.add_argument("--main", default="origin/main",
+                        help="With --post-verdict: the ref pass 2's patch id was taken against.")
     parser.add_argument("--post-verdict", action="store_true",
                         help="After sticky-wicket's PATCH verdict: record one cross-family refuter's "
                              "read of --base (the pass-2 head)...--head. Not a pass (harmonic-forge#838).")
@@ -833,20 +836,31 @@ def post_verdict(args: argparse.Namespace) -> int:
             or preclose_passes.cap_message(passes) != preclose_passes.STICKY_WICKET):
         raise SystemExit("preclose-check: --post-verdict applies only after two passes that both "
                          "left surviving findings (the sticky-wicket case).")
-    # F838 preclose pass 1: the check is "just the patch", so --base must be
-    # exactly the head pass 2 reviewed, and the patch must not be empty.
-    # Otherwise an omitted --base (origin/main) reviews the whole branch, and
-    # --base HEAD records a check over nothing -- either would unlock --force.
+    # F838 sticky-wicket PATCH: bind --base by PATCH ID, not by commit id.
+    # Lane 1 rebases finished branches, after which the pass-2 commit is
+    # unreachable (and absent from a fresh clone), so a commit-id binding made
+    # --force permanently unreachable. Pass 2's patch id is already the
+    # rebase-stable identity (#834: "a patch-identical rebase is not a pass").
     pass_two_head = preclose_passes.reviewed_head(prior)
-    if base_sha != pass_two_head:
-        raise SystemExit(f"preclose-check: --base must be the pass-2 head {str(pass_two_head)[:12]}, "
-                         f"got {base_sha[:12]}. The post-verdict check reads only the patch since pass 2.")
-    if base_sha == head_sha:
-        raise SystemExit("preclose-check: --base and --head are the same commit: there is no patch "
-                         "since pass 2 to check.")
+    pass_two_patch = preclose_passes.reviewed_patch_id(prior)
+    if base_sha != pass_two_head and not (
+            pass_two_patch and local_patch_id(args.main, base_sha) == pass_two_patch):
+        raise SystemExit(f"preclose-check: --base {base_sha[:12]} is neither the pass-2 head "
+                         f"{str(pass_two_head)[:12]} nor patch-identical to it against "
+                         f"{args.main}. The post-verdict check reads only the patch since pass 2.")
+    # Two-dot: exactly base's descendants. Three-dot would widen to the whole
+    # branch whenever a rebase moved the merge base.
+    patch = local_patch_id(base_sha, head_sha, dots="..")
+    if patch is None:
+        raise SystemExit("preclose-check: there is no patch between --base and --head to check.")
     require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, False)
     check_provenance(True, provenance)
+    # This check IS the one refuter, so it has no in-family fallback: a
+    # cross-family call that did not run means nobody read the patch.
+    if not provenance.startswith(PROVENANCE_TRIGGERED[0]):
+        raise SystemExit("preclose-check: the post-verdict check needs a cross-family call that ran; "
+                         f"got {provenance!r}. Retry the call; a fallback is not a check.")
     surviving = len(surviving_findings(load_findings(args.findings)))
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
@@ -854,10 +868,9 @@ def post_verdict(args: argparse.Namespace) -> int:
     path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
                          prior.get("refuters", 0), status=prior.get("status", "complete"),
                          extra=preclose_passes.post_verdict_fields(
-                             prior, base_sha, head_sha, local_patch_id(args.base, args.head),
-                             provenance, surviving))
+                             prior, base_sha, head_sha, patch, provenance, surviving))
     print(f"preclose-check: post-verdict check recorded for {repo}#{args.issue}, "
-          f"{base_sha[:12]}...{head_sha[:12]} ({surviving} surviving finding(s)); not a pass.")
+          f"{base_sha[:12]}..{head_sha[:12]} ({surviving} surviving finding(s)); not a pass.")
     print(f"  receipt: {path}")
     print(f"  {provenance}")
     return 0

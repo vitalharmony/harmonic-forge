@@ -35,18 +35,17 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             post.validate_handoff(body, requires_preflight=False)
 
-    def test_bare_none_in_consumers_is_refused(self) -> None:
-        for bare in ("none", "None.", "none -- nothing reads it", "N/A", "No existing readers.",
-                     "Nothing else reads this format.", "none -- no grep was needed",
-                     "none (git grep found nothing)"):
-            with self.subTest(bare=bare), self.assertRaises(SystemExit):
-                post.validate_handoff(self._body(bare), requires_preflight=False)
-
-    def test_readers_listed_without_their_search_are_refused(self) -> None:
-        """AC4: every reader comes with the grep that found it."""
+    def test_consumers_placeholder_is_refused(self) -> None:
+        """AC4 is structural: the template's own placeholder never posts."""
         with self.assertRaises(SystemExit):
-            post.validate_handoff(self._body("`HANDOFF_HEADINGS` is read by l1_post.py"),
+            post.validate_handoff(self._body("{none | for each contract this handoff changes}"),
                                   requires_preflight=False)
+
+    def test_consumers_prose_is_not_pattern_matched(self) -> None:
+        """Sticky-wicket PATCH (F838): whether a search ran is not in the text,
+        so l1_post checks only structure and pitch-inspection checks the rest."""
+        post.validate_handoff(self._body("none, per the search recorded in the review"),
+                              requires_preflight=False)
 
     def test_none_with_its_search_is_accepted(self) -> None:
         post.validate_handoff(self._body("none: `git grep -n HANDOFF_HEADINGS` finds only l1_post.py"),
