@@ -550,10 +550,9 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
     """harmonic-forge#834: at most two passes per issue, and a patch-identical
     head (a rebase) is not a new pass. Replaces the old per-SHA check, which
     re-armed on every head change and so allowed unbounded passes."""
-    if force:
+    if force and not reforge:
         return
-    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch,
-                                     current_branch(), reforge)
+    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force)
     if reason:
         raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 
@@ -751,7 +750,8 @@ def complete(args: argparse.Namespace) -> int:
         "cross_family_reason": why,
         "provenance": provenance,
     })
-    print(f"preclose-check: recorded pass {len(preclose_passes.history(read_receipt(path)))} of at most "
+    print(f"preclose-check: recorded pass "
+          f"{len(preclose_passes.current(preclose_passes.history(read_receipt(path))))} of at most "
           f"{preclose_passes.MAX_PASSES} for {repo}#{args.issue} at {head_sha[:12]}")
     print(f"  receipt: {path}")
     print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
@@ -790,8 +790,8 @@ def main() -> None:
                         help="Run despite the per-issue cap (two passes; a patch-identical rebase is not "
                              "a pass) or a pass already covering this diff. Operator instruction only.")
     parser.add_argument("--reforge", action="store_true",
-                        help="After sticky-wicket ruled 'reforge' on two passes that both left "
-                             "survivors: start a new pass epoch from a NEW branch (harmonic-forge#834).")
+                        help="Operator instruction only, and only with --force: after sticky-wicket "
+                             "ruled 'reforge', start a new pass epoch for a changed diff (harmonic-forge#834).")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",

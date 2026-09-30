@@ -9,11 +9,13 @@ is not a new pass. A third pass is never run:
   and the count restarts);
 - anything else goes to the operator.
 
-**Reforge** is explicit, never inferred from a branch name (a rename would
-otherwise reset the cap): ``--reforge`` is accepted only when the current
-epoch holds two passes that both left survivors, and only from a branch other
-than the one those passes reviewed. It starts a new epoch; the old passes stay
-in ``pass_history`` as the record.
+**Reforge is the operator's instruction, never Lane 1's own** (F834 pass 2,
+sticky-wicket PATCH verdict): "sticky-wicket ruled reforge" is an off-machine
+authorization no local check can establish, and branch names are renameable
+and absent under a detached HEAD, so a branch-name fence was self-service.
+``--reforge`` therefore requires ``--force``, and even then refuses a diff a
+completed pass already covers. It starts a new epoch; the old passes stay in
+``pass_history`` as the record.
 
 The count rides in the receipt itself (``pass_history``), carried forward by
 every receipt write, planned or complete. It never depends on the telemetry
@@ -109,21 +111,20 @@ def covered(passes: list[dict], sha: str, current_patch_id: str | None) -> bool:
 
 
 def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
-            branch: str | None = None, reforge: bool = False) -> str | None:
+            reforge: bool = False, force: bool = False) -> str | None:
     """Why a new pass must not run, or None when it may."""
     passes = current(history(receipt))
-    if reforge:
-        if len(passes) < MAX_PASSES or cap_message(passes) != STICKY_WICKET:
-            return ("--reforge applies only after two passes that both left surviving findings "
-                    "and sticky-wicket's reforge verdict.")
-        if branch and passes[-1].get("branch") == branch:
-            return ("--reforge needs a new branch; this is the branch the two reviewed passes "
-                    "were on.")
-        return None
+    if reforge and not force:
+        return ("--reforge is the operator's instruction, never Lane 1's own: it runs only "
+                "with --force, after sticky-wicket's reforge verdict.")
     if covered(passes, sha, current_patch_id):
+        if reforge:
+            return "--reforge needs a changed diff; a completed pass already reviewed this one."
         return ("A completed pass already covers this diff (same head, or patch-identical: "
                 "a rebase is not a pass). Nothing new to review. If a finding is disputed, "
                 "escalate to the operator rather than re-running.")
+    if force:
+        return None
     if len(passes) >= MAX_PASSES:
         return cap_message(passes)
     return None

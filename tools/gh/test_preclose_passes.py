@@ -119,14 +119,16 @@ class PreclosePassOneFixTests(ScratchRepo):
     def run_pass(self, relpath: str, findings: list | None = None) -> None:
         PassCapTests.run_pass(self, relpath, findings)
 
-    def complete_reforge(self) -> None:
+    def complete_reforge(self, force: bool = True) -> str:
         import contextlib
         import io
-        with contextlib.redirect_stdout(io.StringIO()):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
             preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
                                     findings=self.findings_file(SURVIVOR), envelope=None,
-                                    not_triggered=True, cross_family=False, force=False,
+                                    not_triggered=True, cross_family=False, force=force,
                                     reforge=True))
+        return out.getvalue()
 
     def test_a_reindent_is_a_different_diff(self) -> None:
         """A: `--stable` hashed a behavior-changing dedent as the same diff."""
@@ -139,34 +141,38 @@ class PreclosePassOneFixTests(ScratchRepo):
             self.assertFalse(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head", "7"))
         self.assertIn("refuters:", self.plan(tier="fast"))
 
-    def test_reforge_on_a_new_branch_restarts_the_count(self) -> None:
-        """B: the documented reforge exit exists in code."""
+    def test_operator_reforge_on_a_changed_diff_restarts_the_count(self) -> None:
+        """B: the reforge exit exists, as the operator's instruction (--force)."""
         self.run_pass("scripts/a.py", SURVIVOR)
         self.run_pass("scripts/b.py", SURVIVOR)
         git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
         self.commit("scripts/new.py")
-        self.assertIn("refuters:", self.plan(tier="fast", reforge=True))
-        self.complete_reforge()
+        self.assertIn("refuters:", self.plan(tier="fast", reforge=True, force=True))
+        out = self.complete_reforge()
+        self.assertIn("recorded pass 1 of at most 2", out)
         stored = preclose.find_receipt(REPO, ISSUE)
         self.assertEqual(stored["pass_count"], 1)
         self.assertEqual(len(stored["pass_history"]), 3)
 
-    def test_reforge_on_the_same_branch_is_refused(self) -> None:
+    def test_reforge_without_force_is_refused(self) -> None:
+        """F834 pass 2 / sticky-wicket: no branch-name fence; reforge is operator-only."""
         self.run_pass("scripts/a.py", SURVIVOR)
         self.run_pass("scripts/b.py", SURVIVOR)
-        self.commit("scripts/c.py")
-        with self.assertRaises(SystemExit) as caught:
-            self.plan(tier="fast", reforge=True)
-        self.assertIn("this is the branch the two reviewed passes were on", str(caught.exception))
+        for move in (("checkout", "-q", "-b", "v2"), ("checkout", "-q", "--detach"),
+                     ("branch", "-m", "main", "renamed")):
+            with self.subTest(move=move):
+                git(*move, cwd=self.repo)
+                with self.assertRaises(SystemExit) as caught:
+                    self.plan(tier="fast", reforge=True)
+                self.assertIn("operator's instruction", str(caught.exception))
 
-    def test_reforge_without_two_survivor_passes_is_refused(self) -> None:
+    def test_operator_reforge_on_an_already_reviewed_diff_is_refused(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
-        self.run_pass("scripts/b.py")
-        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
-        self.commit("scripts/new.py")
+        self.run_pass("scripts/b.py", SURVIVOR)
+        git("checkout", "-q", "-b", "v2", cwd=self.repo)
         with self.assertRaises(SystemExit) as caught:
-            self.plan(tier="fast", reforge=True)
-        self.assertIn("--reforge applies only", str(caught.exception))
+            self.plan(tier="fast", reforge=True, force=True)
+        self.assertIn("needs a changed diff", str(caught.exception))
 
     def test_abandoned_plan_does_not_unreview_the_last_pass(self) -> None:
         """C: pass 1 at A, pass 2 planned at B, B withdrawn: A still merges."""
@@ -196,6 +202,24 @@ class PreclosePassOneFixTests(ScratchRepo):
         self.assertNotIn("Run the pre-close pass", message)
 
 
+class OneReaderInvariantTests(unittest.TestCase):
+    """F834 sticky-wicket change 5: a receipt field read outside
+    preclose_passes.py is how batch_preflight.py drifted. Enforced, not remembered."""
+
+    def test_no_receipt_field_is_read_outside_the_shared_module(self) -> None:
+        import re
+        tools = HERE.parent
+        reads = re.compile(r"""(?:\.get\(|\[)["'](?:reviewed_sha|reviewed_patch_id|pass_history|pass_count)["']""")
+        offenders = []
+        for path in tools.rglob("*.py"):
+            if path.name.startswith("test_") or path.name == "preclose_passes.py":
+                continue
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if reads.search(line):
+                    offenders.append(f"{path.relative_to(tools)}:{number}")
+        self.assertEqual(offenders, [])
+
+
 class HookPatchIdTests(ScratchRepo):
     """AC3/AC4 through the real hook and the real receipt."""
 
@@ -218,6 +242,28 @@ class HookPatchIdTests(ScratchRepo):
         self.commit("scripts/extra.py")
         with patch.object(hook, "_gh", return_value=self.pr_diff()):
             self.assertFalse(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head-sha", "7"))
+
+    def test_batch_preflight_agrees_with_the_merge_hook_after_a_rebase(self) -> None:
+        import batch_preflight
+        PassCapTests.rebase_onto_moved_base(self)
+        prs = '[{"number": 7, "headRefName": "fix/1208-x", "headRefOid": "new-head-sha"}]'
+        with patch.object(hook, "_gh", return_value=self.pr_diff()), \
+                patch.object(batch_preflight, "_gh", return_value=prs):
+            self.assertIsNone(batch_preflight._stale_preclose_receipt(REPO, str(ISSUE)))
+
+    def test_batch_preflight_at_the_cap_never_offers_a_third_pass(self) -> None:
+        import batch_preflight
+        self.commit("scripts/b.py")
+        self.plan(tier="fast")
+        self.complete()
+        self.commit("scripts/c.py")
+        prs = '[{"number": 7, "headRefName": "fix/1208-x", "headRefOid": "unreviewed-sha"}]'
+        with patch.object(hook, "_gh", return_value=self.pr_diff()), \
+                patch.object(batch_preflight, "_gh", return_value=prs):
+            message = batch_preflight._stale_preclose_receipt(REPO, str(ISSUE))
+        self.assertIn("WILL halt", message)
+        self.assertIn("Escalate to the operator", message)
+        self.assertNotIn("Re-run", message)
 
     def test_unreadable_pr_diff_fails_closed(self) -> None:
         with patch.object(hook, "_gh", return_value=None):
