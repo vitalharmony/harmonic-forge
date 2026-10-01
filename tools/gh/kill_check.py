@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -149,10 +150,30 @@ def materialize(directory: Path, sha: str, origin: str) -> None:
                                f"{result.stderr.decode(errors='replace')}")
 
 
+def remove_tree(directory: Path) -> str | None:
+    """Remove scratch, repairing test-created permissions, or report failure."""
+    if not directory.exists():
+        return None
+
+    def repair(function, name, _error):
+        if os.path.islink(name):
+            raise OSError(f"cannot safely repair symlink {name}")
+        os.chmod(name, stat.S_IRWXU)
+        function(name)
+
+    try:
+        shutil.rmtree(directory, onerror=repair)
+    except OSError as exc:
+        return str(exc)
+    return None if not directory.exists() else f"{directory} still exists"
+
+
 def one_check(check: dict, *, sha: str, origin: str, repo: str,
               parent: Path, timeout: int) -> dict:
-    result = {**check, "baseline_rcs": [], "mutated_rc": None, "verdict": "error"}
+    result = {**check, "baseline_rcs": [], "control_rc": None,
+              "mutated_rc": None, "verdict": "error"}
     directory = Path(tempfile.mkdtemp(prefix="kill-check-", dir=parent))
+    snapshot: Path | None = None
     try:
         materialize(directory, sha, origin)
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -164,10 +185,24 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
             if baseline.returncode:
                 result["verdict"] = "broken-test" if len(result["baseline_rcs"]) == 1 else "flaky"
                 return result
-        patch_path = check["patch_path"]
-        for argv in (["git", "apply", "--check", patch_path],
-                     ["git", "apply", patch_path]):
-            applied = run_command(argv, cwd=directory)
+        # Match the control and mutant from the *same* post-baseline state at
+        # the same path. A test that merely fails on its third invocation is
+        # flaky, not evidence of a kill.
+        snapshot = Path(tempfile.mkdtemp(prefix="kill-check-snapshot-", dir=parent))
+        shutil.copytree(directory, snapshot, dirs_exist_ok=True, symlinks=True)
+        control = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
+        result["control_rc"] = control.returncode
+        if control.returncode:
+            result["verdict"] = "flaky"
+            return result
+        removal_error = remove_tree(directory)
+        if removal_error:
+            raise RuntimeError(f"cannot restore control state: {removal_error}")
+        shutil.copytree(snapshot, directory, symlinks=True)
+        patch_bytes = check["patch_text"].encode()
+        for argv in (["git", "apply", "--check", "-"],
+                     ["git", "apply", "-"]):
+            applied = run_command(argv, cwd=directory, input_bytes=patch_bytes)
             if applied.returncode:
                 result["verdict"] = "patch-failed"
                 result["detail"] = applied.stderr.decode(errors="replace").strip()
@@ -180,7 +215,11 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
     except (OSError, RuntimeError) as exc:
         result["detail"] = str(exc)
     finally:
-        shutil.rmtree(directory, ignore_errors=True)
+        errors = [error for error in
+                  (remove_tree(directory), remove_tree(snapshot) if snapshot else None) if error]
+        if errors:
+            result["verdict"] = "cleanup-failed"
+            result["detail"] = "; ".join(errors)
     return result
 
 

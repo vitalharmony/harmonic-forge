@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -82,7 +83,8 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(self.receipt()["status"], "pass")
         self.assertEqual(self.receipt()["head_sha"], git(self.repo, "rev-parse", "HEAD"))
         self.assertEqual(item["patch_text"], self.patch_file.read_text())
-        self.assertEqual(len(item["patch_sha256"]), 64)
+        self.assertEqual(item["patch_sha256"],
+                         hashlib.sha256(item["patch_text"].encode()).hexdigest())
         self.assertEqual(list(kill.scratch_parent().glob("kill-check-*")), [])
 
     def test_vacuous_test_is_not_a_kill(self) -> None:
@@ -117,6 +119,19 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(self.execute(), 1)
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "flaky")
 
+    def test_third_run_state_failure_is_not_a_kill(self) -> None:
+        (self.repo / "third.py").write_text(
+            "from pathlib import Path\n"
+            "p = Path('count')\n"
+            "n = int(p.read_text()) + 1 if p.exists() else 1\n"
+            "p.write_text(str(n))\n"
+            "assert n < 3\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "third")
+        self.write_checks(test=["python3", "third.py"])
+        self.assertEqual(self.execute(), 1)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "flaky")
+
     def test_origin_main_available_and_timeout(self) -> None:
         self.write_checks(test=["python3", "-c", "import subprocess; "
                                 "assert subprocess.check_output(['git','remote','get-url','origin']); "
@@ -125,6 +140,16 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(self.receipt()["checks"][0]["baseline_rcs"], [0, 0])
         self.write_checks(test=["python3", "-c", "import time; time.sleep(2)"])
         self.assertEqual(self.execute(timeout=1), 1)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "timeout")
+        (self.repo / "sleep_on_stub.py").write_text(
+            "from f import f\nimport time\n"
+            "if f() != 1:\n    time.sleep(2)\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "mutated timeout")
+        self.write_checks(test=["python3", "sleep_on_stub.py"])
+        self.assertEqual(self.execute(timeout=1), 1)
+        self.assertEqual(self.receipt()["checks"][0]["baseline_rcs"], [0, 0])
+        self.assertEqual(self.receipt()["checks"][0]["control_rc"], 0)
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "timeout")
 
     def test_repo_state_unchanged_and_tmpdir_ignored(self) -> None:
@@ -156,6 +181,34 @@ class KillCheckTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 kill.write_receipt(REPO, ISSUE, {"status": "fail"})
         self.assertEqual(kill.receipt_path(REPO, ISSUE).read_bytes(), before)
+
+    def test_materialize_exception_and_cleanup_failure(self) -> None:
+        with patch.object(kill, "materialize", side_effect=RuntimeError("unpack failed")):
+            self.assertEqual(self.execute(), 1)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "error")
+        self.assertEqual(list(kill.scratch_parent().glob("kill-check-*")), [])
+        with patch.object(kill, "remove_tree", return_value="permission denied"):
+            self.assertEqual(self.execute(), 1)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "cleanup-failed")
+
+    def test_patch_file_change_does_not_change_applied_bytes(self) -> None:
+        original = self.patch_file.read_text()
+        real_command = kill.run_command
+        calls = 0
+
+        def change_after_baselines(argv, **kwargs):
+            nonlocal calls
+            result = real_command(argv, **kwargs)
+            if argv == ["python3", "check.py"]:
+                calls += 1
+                if calls == 2:
+                    self.patch_file.write_text("not a diff\n")
+            return result
+
+        with patch.object(kill, "run_command", side_effect=change_after_baselines):
+            self.assertEqual(self.execute(), 0)
+        self.assertEqual(self.receipt()["checks"][0]["patch_text"], original)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "killed")
 
     def test_plan_receipt_waiver_and_force(self) -> None:
         args = argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main", head="HEAD",
@@ -198,6 +251,11 @@ class KillCheckTests(unittest.TestCase):
         self.assertNotEqual(first["head_sha"], git(self.repo, "rev-parse", "HEAD"))
         self.assertTrue(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD"),
                                               preclose.local_patch_id("origin/main", "HEAD")))
+        args = argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main", head="HEAD",
+                                  tier="fast", force=False, reforge=False,
+                                  allow_dirty=False, allow_repo_mismatch=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(preclose.plan(args), 0)
 
 
 if __name__ == "__main__":
