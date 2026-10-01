@@ -10,12 +10,23 @@ done, so it cannot prevent anything; it guarantees the operator sees it.
 
 Reads the current turn from `transcript_path` (back to the last real prompt,
 bounded like every other transcript read in this directory) and collects the
-Bash tool calls that post to an issue thread and did not error:
-`l1_post.py`, `l2_post.py post`, `post_comment.py`, `mise run lane-comment`,
-`gh issue comment`, and `gh api .../issues/N/comments` with a POST. For each
-posted `(repo, issue)` it reads the board Tier fresh (`ttl=0`) and,
+turn's post **receipts** (harmonic-forge#843 reforge): the comment URL a
+sanctioned poster prints, read from the Bash `tool_result` it landed in. The
+URL names the repo and issue exactly, so no command-text parser decides where a
+post went. A receipt counts only when all three hold (NC1): the result belongs
+to a Bash call; that call's command names a poster; and the URL is on that
+poster's own receipt line (or is the whole stdout of a bare `gh` post). Reads
+that merely quote a comment URL -- a `Read`, `fetch_lane1_context.py`, `gh api
+.../comments`, `l1_post.py`'s own `[check-lane3-ready]` lines -- never count.
+For each posted `(repo, issue)` it reads the board Tier fresh (`ttl=0`) and,
 for `deep`, compares the model that made the call (that assistant entry's
 `message.model`, else `session_model.current_model`).
+
+Residual, recorded by the operator's ruling: a post whose output never lands in
+this turn's `tool_result` (a backgrounded call) yields no receipt.
+
+`posted_targets` (command text) survives only as the downshift reminder's
+suppression hint, where a wrong guess costs silence.
 
 The transcript read is bounded (`_SCAN_MAX_BYTES`). When the bound is hit
 before the start of the turn, the report says so ("backstop scan truncated"),
@@ -48,9 +59,21 @@ from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 _MAX_TIER_READS = 6
 _READ_TIMEOUT_SECONDS = 3
 _POSTER_SCRIPTS = frozenset({"l1_post.py", "l2_post.py", "post_comment.py"})
-# Scripts whose --repo defaults to hrse when omitted (HRSE2's l1_post.py and
-# its `lane-comment` mise task); everything else falls back to the cwd repo.
-_HRSE_DEFAULT = "vitalharmony/hrse"
+# harmonic-forge#843 AC1: no poster defaults to hrse. `l1_post.resolve_repo()`
+# resolves the INVOKING checkout, so a harmonic-forge post was being scored
+# against an hrse issue of the same number.
+_MISE_POSTERS = frozenset({"l1-post", "l2-post", "lane-comment", "post-comment"})
+
+# harmonic-forge#843 reforge, NC1: a receipt is the URL on a poster's OWN line.
+_RECEIPT_URL_RE = re.compile(
+    r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)#issuecomment-\d+")
+_POSTER_IN_COMMAND_RE = re.compile(
+    r"l1-post|l1_post|l2-post|l2_post|post-comment|post_comment|lane-comment"
+    r"|post_lane_discussion|gh\s+issue\s+comment|--method\s+POST|-X\s+POST")
+_RECEIPT_LINE_RE = re.compile(
+    r"^\s*(?:\[l1-post\] (?:posted and refetched|AE posted|sweep posted) "
+    r"|\[POST-COMMENT\] Posted: |\[post-comment\] posted and refetched )")
+_BARE_GH_POST_RE = re.compile(r"(?:^|\s|/)gh\s+(?:issue\s+comment|api\b)")
 _API_COMMENTS_RE = re.compile(r"(?:^|/)repos/([^/\s]+/[^/\s]+)/issues/(\d+)/comments/?$")
 _ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
 _GH_FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field", "--input"})
@@ -103,12 +126,12 @@ def posted_targets(command: str, cwd_repo) -> list[tuple[str, int]]:
             if names[script] == "l2_post.py" and "post" not in rest:
                 continue  # snapshot / resolve-lock post nothing
             issue = _as_int(_flag(rest, "--issue"))
-            repo = _flag(rest, "--repo") or (
-                _HRSE_DEFAULT if names[script] == "l1_post.py" else None)
-        elif "lane-comment" in tokens and names[0] == "mise":
-            rest = tokens[tokens.index("lane-comment") + 1:]
+            repo = _flag(rest, "--repo")
+        elif names[0] == "mise" and any(t in _MISE_POSTERS for t in tokens):
+            task = next(t for t in tokens if t in _MISE_POSTERS)
+            rest = tokens[tokens.index(task) + 1:]
             issue = _as_int(_flag(rest, "--issue"))
-            repo = _flag(rest, "--repo") or _HRSE_DEFAULT
+            repo = _flag(rest, "--repo")
         elif names[0] == "gh" and tokens[1:3] == ["issue", "comment"] and len(tokens) > 3:
             issue = _as_int(tokens[3])
             url = _ISSUE_URL_RE.search(tokens[3])
@@ -161,12 +184,54 @@ def _bytes_scanned(size: int) -> int:
     return min(size, chunks * _SCAN_CHUNK_BYTES)
 
 
-def scan_turn(transcript_path: str) -> tuple[list[tuple[str, str | None, str]], bool]:
+def _result_text(block: dict) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(part.get("text", "") for part in content
+                         if isinstance(part, dict) and isinstance(part.get("text"), str))
+    return ""
+
+
+def _receipt_urls(command: str, text: str) -> list[tuple[str, int]]:
+    """`(repo, issue)` this one Bash result proves it posted to (NC1)."""
+    if not _POSTER_IN_COMMAND_RE.search(command):
+        return []
+    found: list[tuple[str, int]] = []
+    whole = bool(_BARE_GH_POST_RE.search(command)) and not any(
+        name in command for name in ("l1_post", "l1-post", "l2_post", "l2-post",
+                                     "post_comment", "post-comment", "lane-comment",
+                                     "post_lane_discussion"))
+    for line in text.splitlines():
+        anchored = whole or bool(_RECEIPT_LINE_RE.match(line))
+        if not anchored and line.lstrip().startswith("{"):
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                data = None
+            anchored = isinstance(data, dict) and any(
+                isinstance(data.get(k), str) and "#issuecomment-" in data[k]
+                for k in ("url", "html_url"))
+        if anchored:
+            for repo, number in _RECEIPT_URL_RE.findall(line):
+                pair = (repo.lower(), int(number))
+                if pair not in found:
+                    found.append(pair)
+    return found
+
+
+def scan_turn(transcript_path: str, with_receipts: bool = False):
     """`(turn_posts, truncated)`. `truncated` is True when the bounded tail
     read ran out before reaching the turn's first entry (harmonic-forge#656
-    preclose fix 6), so earlier calls in this turn were never seen."""
+    preclose fix 6), so earlier calls in this turn were never seen.
+
+    `with_receipts=True` (harmonic-forge#843 reforge) also returns this turn's
+    post receipts, `(repo, issue, model)`, from the SAME bounded pass:
+    `(turn_posts, truncated, receipts)`. The default shape is unchanged."""
     errored: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
+    results: dict[str, str] = {}
     reached_turn_start = False
     try:
         size = os.path.getsize(transcript_path)
@@ -186,9 +251,11 @@ def scan_turn(transcript_path: str) -> tuple[list[tuple[str, str | None, str]], 
                 continue
             if entry.get("type") == "user":
                 for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_result" \
-                            and block.get("is_error"):
-                        errored.add(block.get("tool_use_id"))
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        if block.get("is_error"):
+                            errored.add(block.get("tool_use_id"))
+                        elif with_receipts:
+                            results[block.get("tool_use_id") or ""] = _result_text(block)
             elif entry.get("type") == "assistant":
                 model = (entry.get("message") or {}).get("model")
                 for block in content:
@@ -198,10 +265,18 @@ def scan_turn(transcript_path: str) -> tuple[list[tuple[str, str | None, str]], 
                         if isinstance(command, str):
                             calls.append((command, model, block.get("id") or ""))
     except OSError:
-        return [], False
+        return ([], False, []) if with_receipts else ([], False)
     truncated = not reached_turn_start and size > _bytes_scanned(size)
     calls.reverse()
-    return [call for call in calls if call[2] not in errored], truncated
+    kept = [call for call in calls if call[2] not in errored]
+    if not with_receipts:
+        return kept, truncated
+    receipts: list[tuple[str, int, str | None]] = []
+    for command, model, tool_id in kept:
+        for repo, issue in _receipt_urls(command, results.get(tool_id, "")):
+            if not any(r[:2] == (repo, issue) for r in receipts):
+                receipts.append((repo, issue, model))
+    return kept, truncated, receipts
 
 
 def _timed_run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -214,20 +289,9 @@ def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None
         return None
     transcript_path = payload.get("transcript_path") or ""
     cwd = payload.get("cwd") or os.getcwd()
-    cache: dict[str, str | None] = {}
 
-    def cwd_repo():
-        if "repo" not in cache:
-            cache["repo"] = model_tier_gate.resolve_repo(cwd)
-        return cache["repo"]
-
-    posted: list[tuple[str, int, str | None]] = []
-    calls, truncated = scan_turn(transcript_path)
-    for command, model, _tool_id in calls:
-        for repo, issue in posted_targets(command, cwd_repo):
-            repo = repo.lower()
-            if not any(p[:2] == (repo, issue) for p in posted):
-                posted.append((repo, issue, model))
+    # harmonic-forge#843 reforge: receipts only (operator ruling 4).
+    _calls, truncated, posted = scan_turn(transcript_path, with_receipts=True)
     messages: list[str] = [_TRUNCATED_NOTE + "."] if truncated else []
     if not posted:
         return _report(messages)
