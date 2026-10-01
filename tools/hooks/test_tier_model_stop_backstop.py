@@ -118,7 +118,25 @@ class MisePosterTests(unittest.TestCase):
                                 cwd=str(self.root)), [(FORGE, 843)])
 
     def test_other_mise_tasks_are_not_posts(self):
+        """Fixtures carry `--issue`, so this fails if the poster allowlist is removed
+        (#843 preclose: the old fixture passed with it deleted)."""
         self.assertEqual(self.t("mise run check && mise run restart --no-bump --no-git"), [])
+        self.assertEqual(self.t("mise run l2-snapshot --issue 843"), [])
+        self.assertEqual(self.t("mise run l2-resolve-lock --issue 843"), [])
+
+    def test_bare_mise_task_form_is_a_post(self):
+        """#843 preclose: mise also dispatches `mise <task>` without `run`."""
+        self.assertEqual(self.t("mise lane-comment --issue 5 --file f.md", cwd_repo=FORGE),
+                         [(FORGE, 5)])
+        self.assertEqual(self.t(f"mise -C {self.forge} l2-post --kind plan --issue 843"),
+                         [(FORGE, 843)])
+
+    def test_a_cd_that_may_not_persist_is_not_trusted(self):
+        """#843 preclose: a subshell or short-circuited `cd` keeps the cwd repo."""
+        self.assertEqual(self.t(f"(cd {self.forge} && git log -1) ; mise run l2-post --kind plan "
+                                "--issue 1908"), [(HRSE, 1908)])
+        self.assertEqual(self.t(f"cd {self.forge} && git log -1 || mise run l2-post --kind plan "
+                                "--issue 1908"), [(HRSE, 1908)])
 
 
 def tool_use(uid, command, model="claude-sonnet-5"):

@@ -121,6 +121,7 @@ class InHandProbeTests(unittest.TestCase):
         self.tiers: dict = {}
         self.states: dict = {}
         self.reads: list = []
+        self.fail_git = None
 
     def make_repo(self, name, origin):
         repo = self.root / name
@@ -156,7 +157,8 @@ class InHandProbeTests(unittest.TestCase):
 
         def lookup(repo, number, boards, ttl=0):
             self.reads.append(("tier", repo, number, ttl))
-            return self.tiers.get((repo, number)), None
+            tier = self.tiers.get((repo, number))
+            return (tier, "HTTP 403") if tier is model_tier_gate.LOOKUP_FAILED else (tier, None)
 
         def timed_run(cmd, timeout=3, env=None):
             if cmd[0] == "gh":
@@ -164,7 +166,11 @@ class InHandProbeTests(unittest.TestCase):
                 repo, number = repo_issue.rsplit("/issues/", 1)
                 self.reads.append(("state", repo, int(number)))
                 state = self.states.get((repo, int(number)), "open")
+                if state is None:
+                    return subprocess.CompletedProcess(cmd, 1, "", "HTTP 502")
                 return subprocess.CompletedProcess(cmd, 0, state + "\n", "")
+            if self.fail_git and tuple(cmd[3:5]) == self.fail_git:
+                return subprocess.CompletedProcess(cmd, 128, "", "fatal: dubious ownership")
             return real_timed_run(cmd, timeout=timeout, env=env)
 
         env = {"LANE": lane, "HARMONIC_FORGE_ROOT": str(self.forge)}
@@ -197,9 +203,45 @@ class InHandProbeTests(unittest.TestCase):
         self.assertNotIn("state", [r[0] for r in self.reads])
 
     def test_branch_naming_another_repos_issue_wins(self):
-        path = self.worktree(self.lane2, "hrse2-843-impl", "l2/f843-downshift")
+        """Repo AND number come from the branch: the path says hrse2-999."""
+        path = self.worktree(self.lane2, "hrse2-999-impl", "l2/f843-downshift")
         self.assertEqual(worktree_issue.issue_for_worktree(str(path)),
                          ("vitalharmony/harmonic-forge", 843))
+
+    def test_impl_worktree_filter(self):
+        root = str(self.wt_root)
+        self.assertTrue(worktree_issue.is_impl_worktree(f"{root}/hrse2-1908-impl"))
+        self.assertFalse(worktree_issue.is_impl_worktree(f"{root}/hrse2-1908-review"))
+        self.assertFalse(worktree_issue.is_impl_worktree(f"{root}/nested/hrse2-1908-impl"))
+        self.assertFalse(worktree_issue.is_impl_worktree(str(self.lane2)))
+
+    def test_tier_lookup_failure_is_silent(self):
+        """AC4: a failed board read must suppress, never remind."""
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.tiers[("vitalharmony/hrse", 1908)] = model_tier_gate.LOOKUP_FAILED
+        self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_issue_state_read_failure_is_silent(self):
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.tiers[("vitalharmony/hrse", 1908)] = "deep"
+        self.states[("vitalharmony/hrse", 1908)] = None  # gh read fails
+        self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_git_failure_inside_a_repo_is_silent(self):
+        """#843 preclose: a nonzero `git worktree list` in a real repo is
+        undecidable, not "no worktrees"."""
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.tiers[("vitalharmony/hrse", 1908)] = "deep"
+        self.fail_git = ("worktree", "list")
+        self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_chained_relative_cd_into_a_worktree_counts(self):
+        """#843 preclose: `cd .worktrees && cd hrse2-1908-impl` resolves the
+        second hop against the first."""
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.tiers[("vitalharmony/hrse", 1908)] = "deep"
+        self.assertIsNone(self.run_hook(
+            self.transcript("cd ../.worktrees && cd hrse2-1908-impl && git status"), lane="1"))
 
     def test_detached_head_falls_back_to_path_and_origin(self):
         path = self.worktree(self.forge, "forge-843-impl")
@@ -220,6 +262,21 @@ class InHandProbeTests(unittest.TestCase):
         self.reads.clear()
         self.assertIsNone(self.run_hook(self.transcript(f"cd {path} && git status"), lane="1"))
         self.assertIsNone(self.run_hook(self.transcript(f"git -C {path} log -1"), lane="1"))
+
+    def test_live_worktree_is_checked_before_stale_closed_ones(self):
+        """#843 preclose: three leftover closed-deep worktrees would use the
+        whole budget; the most recently used worktree is checked first."""
+        for n in (826, 828, 2115):
+            self.worktree(self.lane2, f"hrse2-{n}-impl", f"feat/{n}-x")
+            self.tiers[("vitalharmony/hrse", n)] = "deep"
+            self.states[("vitalharmony/hrse", n)] = "closed"
+        time.sleep(1.1)
+        live = self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        (live / "touched").write_text("x")
+        git("add", "touched", cwd=live)
+        self.tiers[("vitalharmony/hrse", 1908)] = "deep"
+        self.assertIsNone(self.run_hook(self.transcript()))
+        self.assertEqual(self.reads[0][1:3], ("vitalharmony/hrse", 1908))
 
     def test_read_budget_truncates_and_never_raises(self):
         for n in range(101, 108):

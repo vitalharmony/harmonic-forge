@@ -64,11 +64,30 @@ class _Budget:
         return True
 
 
+def _in_git_tree(directory: str) -> bool:
+    """A `.git` entry at or above `directory`: the cheap, git-free test that
+    tells "not a repository" (a true negative) from a git failure."""
+    path = Path(directory).resolve()
+    return any((candidate / ".git").exists() for candidate in (path, *path.parents))
+
+
+def _git_lines(directory: str, *args: str) -> list[str] | None:
+    """stdout lines of a timed git call. None when `directory` is not in a git
+    tree at all (a true negative). A nonzero exit INSIDE a tree raises: an
+    undecidable answer must suppress the reminder, never read as "nothing in
+    hand" (AC4; harmonic-forge#843 preclose)."""
+    if not _in_git_tree(directory):
+        return None
+    result = model_tier_gate.timed_run(["git", "-C", directory, *args],
+                                       timeout=_GIT_TIMEOUT_SECONDS)
+    if result.returncode != 0:
+        raise RuntimeError(f"git {args[0]} failed in a git tree")
+    return result.stdout.splitlines()
+
+
 def _toplevel(directory: str) -> str | None:
-    result = model_tier_gate.timed_run(
-        ["git", "-C", directory, "rev-parse", "--show-toplevel"], timeout=_GIT_TIMEOUT_SECONDS)
-    top = result.stdout.strip() if result.returncode == 0 else ""
-    return top or None
+    lines = _git_lines(directory, "rev-parse", "--show-toplevel")
+    return lines[0].strip() if lines else None
 
 
 def _deep_and_open(repo: str, number: int, boards: dict, budget: _Budget) -> bool:
@@ -97,6 +116,7 @@ def _changed_dirs(command: str, cwd: str) -> list[str]:
     except ValueError:
         return []
     dirs: list[str] = []
+    base = cwd  # a chained relative `cd a && cd b` resolves `b` against `a`
     for raw in segments:
         tokens = backstop.strip_invocation_prefix(raw)
         if not tokens:
@@ -109,7 +129,9 @@ def _changed_dirs(command: str, cwd: str) -> list[str]:
                 found.append(value)
         for target in found:
             path = os.path.expanduser(target)
-            dirs.append(path if os.path.isabs(path) else os.path.join(cwd, path))
+            dirs.append(path if os.path.isabs(path) else os.path.join(base, path))
+        if change and change[1] and change[0]:
+            base = dirs[len(dirs) - len(found)]
     return dirs
 
 
@@ -134,12 +156,21 @@ def _turn_dirs_deep(transcript_path: str, cwd: str, boards: dict, budget: _Budge
 
 
 def _worktree_paths(directory: str) -> list[str]:
-    result = model_tier_gate.timed_run(
-        ["git", "-C", directory, "worktree", "list", "--porcelain"], timeout=_GIT_TIMEOUT_SECONDS)
-    if result.returncode != 0:
-        return []
-    return [line[len("worktree "):] for line in result.stdout.splitlines()
-            if line.startswith("worktree ")]
+    lines = _git_lines(directory, "worktree", "list", "--porcelain") or []
+    return [line[len("worktree "):] for line in lines if line.startswith("worktree ")]
+
+
+def _last_active(path: str) -> float:
+    """When a worktree was last used: its own git index or HEAD mtime, read
+    through the `.git` file's `gitdir:` pointer (no git call). 0 when unknown."""
+    try:
+        pointer = (Path(path) / ".git").read_text().strip()
+        gitdir = Path(pointer.split("gitdir:", 1)[1].strip()) if pointer.startswith("gitdir:") \
+            else Path(path) / ".git"
+        return max((gitdir / name).stat().st_mtime for name in ("index", "HEAD")
+                   if (gitdir / name).exists())
+    except (OSError, ValueError, IndexError):
+        return 0.0
 
 
 def _impl_worktrees_deep(cwd: str, env, boards: dict, budget: _Budget) -> bool:
@@ -153,6 +184,10 @@ def _impl_worktrees_deep(cwd: str, env, boards: dict, budget: _Budget) -> bool:
             if path not in paths and worktree_issue.is_impl_worktree(path):
                 paths.append(path)
     seen: set[tuple[str, int]] = set()
+    # harmonic-forge#843 preclose: leftover worktrees for closed deep issues
+    # cost two reads each, so with the cap the live one must come first. The
+    # worktree a lane is working in has the freshest git index.
+    paths.sort(key=_last_active, reverse=True)
     for path in paths:
         pair = worktree_issue.issue_for_worktree(path)
         if pair is None or pair in seen:

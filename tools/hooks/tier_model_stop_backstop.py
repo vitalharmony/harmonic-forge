@@ -96,12 +96,34 @@ def _dir_repo(directory: str | None, cwd: str | None) -> str | None:
     return model_tier_gate.resolve_repo(path) if os.path.isdir(path) else None
 
 
+# mise's own global options that take a value, so the task name after them is
+# found in both `mise [opts] run <task>` and the bare `mise [opts] <task>` form.
+_MISE_VALUE_OPTS = frozenset({"-C", "--cd", "-E", "--env", "-j", "--jobs", "--shell"})
+
+
 def _mise_task(tokens: list[str]) -> tuple[str | None, str | None, list[str]]:
-    """`(task, -C dir, args after the task)` for `mise [-C <dir>] run <task> ...`."""
-    directory = _flag(tokens[:tokens.index("run")] if "run" in tokens else tokens, "-C", "--cd")
-    if "run" not in tokens:
-        return None, directory, []
-    at = tokens.index("run") + 1
+    """`(task, -C dir, args after the task)` for `mise [opts] [run] <task> ...`.
+
+    harmonic-forge#843 preclose: mise also dispatches a bare `mise <task>`,
+    which origin/main's `lane-comment` detection matched and a `run`-only
+    parser would silently drop."""
+    directory: str | None = None
+    at = 1
+    while at < len(tokens):
+        token = tokens[at]
+        if token in _MISE_VALUE_OPTS and at + 1 < len(tokens):
+            if token in ("-C", "--cd"):
+                directory = tokens[at + 1]
+            at += 2
+            continue
+        if token.startswith("--cd="):
+            directory = token.split("=", 1)[1]
+        if token.startswith("-"):
+            at += 1
+            continue
+        break
+    if at < len(tokens) and tokens[at] == "run":
+        at += 1
     task = tokens[at] if at < len(tokens) else None
     return task, directory, tokens[at + 1:]
 
@@ -123,12 +145,19 @@ def posted_targets(command: str, cwd_repo, cwd: str | None = None) -> list[tuple
         return []
     targets: list[tuple[str, int]] = []
     effective_dir: str | None = None
+    # harmonic-forge#843 preclose: `command_segments` flattens `( … )` and
+    # `||`, so a `cd` inside a subshell or on a branch that may not run cannot
+    # be told apart from one that persists. With either present, no `cd` is
+    # trusted and the poster keeps the cwd repo (origin/main's behavior).
+    trust_cd = "(" not in command and "||" not in command
     for raw in segments:
         tokens = strip_invocation_prefix(raw)
         if not tokens:
             continue
         change = directory_change(tokens)
         if change is not None:
+            if not trust_cd:
+                continue
             target, resolvable = change
             if resolvable and target:
                 base = effective_dir or cwd
