@@ -464,7 +464,7 @@ usage = '''
 arg "args" var=#true help="tools/gh/kill_check.py run|waive plus its flags"
 '''
 run = '''
-eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/kill_check.py" $usage_args
+eval python3 tools/gh/kill_check.py $usage_args
 '''
 
 [tasks.preclose-check]
