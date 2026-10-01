@@ -66,9 +66,12 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    same finding.
 
 5. **Evaluate the cross-family gate** (harmonic-forge#701). Write every
-   finding the panel returned to a JSON list of `{anchor, scenario}` objects,
+   finding the panel returned to a JSON list of `{anchor, scenario, mechanism}` objects,
    survivors and dismissed alike. Give each one you dismissed a
    `"dismissed": "<reason>"` field, so it does not count as a survivor.
+   `mechanism` names the approach that failed, not the symptom, and is
+   required for every survivor when `--complete` records the pass; `--gate`,
+   `--post-verdict`, and dismissed findings do not require it.
    Then run:
 
    ```
@@ -107,6 +110,12 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    - every surviving finding, in the refuter's own words,
    - **every dismissed finding, with your reason for dismissing it.**
 
+   Define the survivor table as `| # | Anchor | Scenario | Mechanism |`, and
+   follow it with the pass's full distinct normalized mechanism list. When
+   pass 1 reports a cluster, invoke sticky-wicket before fixing anything and
+   record its posted verdict with `--cluster-verdict PATCH|REFORGE
+   --comment-url <url>`.
+
    The dismissals are not optional. Without them the check is invisible and
    unfalsifiable — the operator sees another Lane 1 self-report rather than
    an auditable record. Publishing what you overruled is the whole
@@ -116,6 +125,14 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    that the check ran, what it found, and that closure is theirs to call.
 
 ## Two passes, then sticky-wicket or the operator
+
+Before pass 2, two or more pass-1 survivors sharing the same mechanism route
+to sticky-wicket. `--plan` and `--complete` refuse until `--cluster-verdict`
+records PATCH; REFORGE refuses an ordinary pass and proceeds only under the
+operator's `--force --reforge`, which starts a new epoch. An unresolved
+cluster may be bypassed by the operator's `--force` (with or without
+`--reforge`). The cluster and verdict survive planned and completed receipt
+writes and do not count as a pass.
 
 **At most two passes per issue** (operator ruling 2026-09-30,
 harmonic-forge#834). Pass 1 reviews; pass 2 verifies the fixes on the new

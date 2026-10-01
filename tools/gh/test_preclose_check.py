@@ -38,7 +38,8 @@ def git(*args: str, cwd: Path) -> None:
     subprocess.run(("git", *args), cwd=cwd, check=True, capture_output=True)
 
 
-ANCHORED = {"anchor": "scripts/x.py:12", "scenario": "input Y crashes at line 12"}
+ANCHORED = {"anchor": "scripts/x.py:12", "scenario": "input Y crashes at line 12",
+            "mechanism": "re-parsing shell text"}
 CROSS = "Red-team provenance: cross-family (codex / gpt-x) — 2 of 2 assumption(s) checked"
 NOT_TRIGGERED = "Red-team provenance: in-family only (claude-opus-5) — cross-family branch not triggered"
 FALLBACK = "Red-team provenance: in-family fallback (claude-opus-5) — status process-error"
@@ -148,6 +149,37 @@ class _Args:
     def __init__(self, **kwargs):
         self.allow_repo_mismatch = False  # harmonic-forge#704: complete() now shares plan()'s guard
         self.__dict__.update(kwargs)
+
+
+class MechanismContractTests(ScratchRepo):
+    def test_complete_names_every_survivor_missing_a_mechanism(self) -> None:
+        self.commit("scripts/a.py")
+        self.plan(tier="fast")
+        missing = [{"anchor": "a.py:1", "scenario": "a"},
+                   {"anchor": "b.py:2", "scenario": "b", "mechanism": "   "},
+                   {"anchor": "c.py:3", "scenario": "c", "mechanism": []},
+                   {"anchor": "d.py:4", "scenario": "d", "mechanism": 0},
+                   {"anchor": "e.py:5", "scenario": "e", "mechanism": ["x"]},
+                   {"anchor": "f.py:6", "scenario": "f", "mechanism": 1}]
+        with self.assertRaises(SystemExit) as refused:
+            self.complete(missing, not_triggered=True)
+        self.assertIn("a.py:1", str(refused.exception))
+        self.assertIn("b.py:2", str(refused.exception))
+        self.assertIn("c.py:3", str(refused.exception))
+        self.assertIn("d.py:4", str(refused.exception))
+        self.assertIn("e.py:5", str(refused.exception))
+        self.assertIn("f.py:6", str(refused.exception))
+
+    def test_dismissed_finding_without_a_mechanism_is_accepted(self) -> None:
+        self.commit("scripts/a.py")
+        self.plan(tier="fast")
+        dismissed = {"anchor": "a.py:1", "scenario": "a", "dismissed": "not in diff"}
+        self.complete([dismissed])
+
+    def test_gate_does_not_require_a_mechanism(self) -> None:
+        path = self.findings_file([{"anchor": "a.py:1", "scenario": "a"}])
+        preclose.gate(_Args(repo="vitalharmony/hrse", issue=1208, findings=path,
+                            cross_family=False, base="base", head="HEAD"))
 
 
 class PanelSizingTests(unittest.TestCase):

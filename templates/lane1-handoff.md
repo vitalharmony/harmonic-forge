@@ -42,7 +42,10 @@ have to infer which gate applies.
 in favor of the chosen one} — "none" means there was one obvious design; a
 non-"none" answer is a `pitch-inspection` trigger (see
 `3-lane-protocol.md` § Pre-Flight Second Read), not a formality to fill in
-after the fact.
+after the fact. If the design recognizes inputs in a grammar this repo does
+not own (shell text, third-party CLI/config syntax, natural-language prose),
+"none" is invalid: list the authoritative-signal alternative and why it was
+rejected or unavailable.
 
 ### Load-Bearing Assumptions
 {none | list each assumption about existing behavior this spec depends on,

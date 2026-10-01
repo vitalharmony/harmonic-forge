@@ -157,6 +157,17 @@ the call gets no retry budget of its own and does not extend it.
    - **The hard case in each test case.** Does each TC name the input most
      likely to break it (whitespace, a rebase, a multi-repo run, a label
      added late)? A TC that only exercises the happy path proves nothing.
+7. **Reject open-grammar recognizers unless the authoritative signal is
+   unavailable** (harmonic-forge#845). If correctness requires recognizing
+   every spelling of input in a grammar this repo does not own—shell command
+   text, a third-party CLI's flags/config syntax, or natural-language prose—
+   require the handoff to name the authoritative signal it considered and
+   why it cannot use it. Receipts or structured output, exit status, and
+   refusing the whole input class are examples. Test cases enumerating
+   spellings (spaced, glued, `=` forms) are the tell. F840 and F843 both
+   converged only after they stopped parsing the foreign grammar. Without a
+   named unavailable authoritative signal, the verdict is **REFORGE BEFORE
+   HANDOFF**.
 
 ## Verdict — exactly one, no hedging
 
@@ -167,6 +178,9 @@ the call gets no retry budget of its own and does not extend it.
   name the wrong assumption in one sentence and sketch the concretely
   different approach, including any prior art (live-verified, dated —
   never asserted from training memory).
+
+An open-grammar recognizer that does not satisfy check 7 is always the
+REFORGE case, not a list of additional spellings to patch.
 
 ## Operating rules
 

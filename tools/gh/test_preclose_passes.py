@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -131,7 +133,7 @@ class PassCapTests(ScratchRepo):
         self.plan(tier="fast", force=True)
         self.assertIn("post_verdict_check", self.receipt())
 
-    def post_verdict(self, base: str) -> None:
+    def post_verdict(self, base: str, findings: list | None = None) -> None:
         """The real `--post-verdict` entry point, with a structurally valid
         cross-family envelope (the same stand-in `complete()` uses)."""
         import json as _json
@@ -142,7 +144,7 @@ class PassCapTests(ScratchRepo):
             "target_family": "codex",
             "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
         preclose.post_verdict(_Args(repo=REPO, issue=ISSUE, base=base, head="HEAD", main="base",
-                                    findings=self.findings_file([]), envelope=str(envelope)))
+                                    findings=self.findings_file(findings or []), envelope=str(envelope)))
 
     def head(self) -> str:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
@@ -182,6 +184,14 @@ class PassCapTests(ScratchRepo):
         self.commit("scripts/b.py")
         with self.assertRaises(SystemExit):
             self.post_verdict(pass_one)
+
+    def test_post_verdict_accepts_a_survivor_without_mechanism(self) -> None:
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        pass_two = self.head()
+        self.commit("scripts/c.py")
+        self.post_verdict(pass_two, [{"anchor": "x.py:1", "scenario": "breaks"}])
+        self.assertEqual(self.receipt()["post_verdict_check"]["surviving"], 1)
 
     def envelope(self, label: str = CROSS) -> str:
         import json as _json
@@ -262,6 +272,225 @@ class PassCapTests(ScratchRepo):
                   "refuters": 3, "surviving_findings": 2}
         self.assertEqual(len(preclose_passes.history(legacy)), 1)
         self.assertEqual(preclose_passes.record(legacy, "new", "pid", 1)["pass_count"], 2)
+
+
+class MechanismClusterTests(ScratchRepo):
+    def receipt(self) -> dict:
+        return preclose.find_receipt(REPO, ISSUE)
+
+    def findings(self, *mechanisms: str) -> list[dict]:
+        return [{"anchor": f"scripts/{number}.py:1", "scenario": "breaks",
+                 "mechanism": mechanism}
+                for number, mechanism in enumerate(mechanisms)]
+
+    def run_pass(self, relpath: str, findings: list[dict]) -> str:
+        self.commit(relpath)
+        self.plan(tier="fast")
+        return self.complete(findings=findings, not_triggered=True)
+
+    def test_pass_one_cluster_normalizes_case_and_whitespace_and_routes(self) -> None:
+        output = self.run_pass("scripts/a.py", self.findings(
+            "Re-parsing shell text", "re-parsing  shell text", "RE-PARSING shell text"))
+        cluster = self.receipt()["mechanism_cluster"]
+        self.assertEqual(cluster["mechanisms"], ["re-parsing shell text"])
+        self.assertEqual(self.receipt()["pass_history"][0]["mechanisms"],
+                         ["re-parsing shell text"])
+        self.assertIn("sticky-wicket", output)
+
+    def test_different_and_near_synonym_mechanisms_do_not_cluster(self) -> None:
+        output = self.run_pass("scripts/a.py", self.findings(
+            "re-parse shell text", "re-parsing shell text"))
+        self.assertNotIn("mechanism_cluster", self.receipt())
+        self.assertIn("re-parse shell text, re-parsing shell text", output)
+        self.commit("scripts/b.py")
+        self.plan(tier="fast")
+
+    def test_dismissed_finding_does_not_create_a_cluster(self) -> None:
+        findings = self.findings("same", "same")
+        findings[1]["dismissed"] = "not in diff"
+        self.run_pass("scripts/a.py", findings)
+        self.assertNotIn("mechanism_cluster", self.receipt())
+
+    def test_unresolved_cluster_refuses_plan_and_complete_but_force_bypasses(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        self.commit("scripts/b.py")
+        with self.assertRaises(SystemExit) as plan_refused:
+            self.plan(tier="fast")
+        self.assertIn("cluster-verdict", str(plan_refused.exception))
+        with self.assertRaises(SystemExit) as complete_refused:
+            self.complete(findings=self.findings("other"), not_triggered=True)
+        self.assertIn("cluster-verdict", str(complete_refused.exception))
+        self.plan(tier="fast", force=True)
+
+    def test_patch_allows_pass_two_and_cluster_survives_plan_and_complete(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        receipt = self.receipt()
+        receipt["mechanism_cluster"].update(verdict="PATCH", comment_url="https://example.test")
+        preclose.write_receipt(REPO, ISSUE, receipt["reviewed_sha"], receipt["refuters"],
+                               receipt["status"], extra=receipt)
+        self.commit("scripts/b.py")
+        self.plan(tier="fast")
+        self.assertEqual(self.receipt()["mechanism_cluster"]["verdict"], "PATCH")
+        self.complete(findings=self.findings("same", "same"), not_triggered=True)
+        self.assertEqual(self.receipt()["pass_count"], 2)
+        self.assertEqual(self.receipt()["mechanism_cluster"]["verdict"], "PATCH")
+
+    def test_reforge_verdict_requires_force_reforge_and_new_epoch_drops_cluster(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        receipt = self.receipt()
+        receipt["mechanism_cluster"].update(verdict="REFORGE", comment_url="https://example.test")
+        preclose.write_receipt(REPO, ISSUE, receipt["reviewed_sha"], receipt["refuters"],
+                               receipt["status"], extra=receipt)
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.commit("scripts/new.py")
+        with self.assertRaises(SystemExit):
+            self.plan(tier="fast")
+        with self.assertRaises(SystemExit) as forced_plan:
+            self.plan(tier="fast", force=True)
+        self.assertIn("--force --reforge", str(forced_plan.exception))
+        with self.assertRaises(SystemExit) as forced_complete:
+            self.complete(findings=self.findings("new"), not_triggered=True, force=True)
+        self.assertIn("--force --reforge", str(forced_complete.exception))
+        receipt = self.receipt()
+        self.assertIn("--force --reforge", preclose_passes.refusal(
+            receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
+            preclose.local_patch_id("base", "HEAD"), force=True))
+        self.plan(tier="fast", force=True, reforge=True)
+        preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
+                                findings=self.findings_file(self.findings("new")), envelope=None,
+                                not_triggered=True, cross_family=False, force=True, reforge=True))
+        self.assertNotIn("mechanism_cluster", self.receipt())
+
+    def test_pass_two_cluster_does_not_create_the_early_route(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("one", "two"))
+        self.run_pass("scripts/b.py", self.findings("same", "same"))
+        self.assertNotIn("mechanism_cluster", self.receipt())
+        self.commit("scripts/c.py")
+        with self.assertRaises(SystemExit) as refused:
+            self.plan(tier="fast")
+        self.assertEqual(str(refused.exception).count("Two preclose passes"), 1)
+
+    def test_cluster_verdict_validates_comment_and_preserves_receipt(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        before = self.receipt()
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'),
+            stderr="")
+        args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                     comment_url="https://www.github.com/vitalharmony/hrse/pull/9#issuecomment-99?x=1",
+                     force=False)
+        with patch.object(preclose, "run", return_value=api):
+            preclose.cluster_verdict(args)
+        after = self.receipt()
+        self.assertEqual(after["mechanism_cluster"]["verdict"], "PATCH")
+        self.assertEqual(after["reviewed_sha"], before["reviewed_sha"])
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["refuters"], before["refuters"])
+
+    def test_cluster_verdict_refuses_foreign_comment_api_failure_and_overwrite(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                     comment_url="https://github.com/x/y/issues/1#issuecomment-99", force=False)
+        foreign = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/x/y/issues/1",'
+            '"html_url":"https://github.com/x/y/issues/1#issuecomment-99"}'), stderr="")
+        with patch.object(preclose, "run", return_value=foreign), self.assertRaises(SystemExit):
+            preclose.cluster_verdict(args)
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="404")
+        with patch.object(preclose, "run", return_value=failed), self.assertRaises(SystemExit):
+            preclose.cluster_verdict(args)
+
+    def test_cluster_verdict_refuses_no_receipt_no_cluster_and_already_set(self) -> None:
+        args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                     comment_url="https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99",
+                     force=False)
+        with self.assertRaises(SystemExit) as absent:
+            preclose.cluster_verdict(args)
+        self.assertIn("prior receipt", str(absent.exception))
+        self.run_pass("scripts/a.py", self.findings("one", "two"))
+        with self.assertRaises(SystemExit) as no_cluster:
+            preclose.cluster_verdict(args)
+        self.assertIn("no mechanism cluster", str(no_cluster.exception))
+
+        self.commit("scripts/b.py")
+        self.complete(findings=self.findings("same", "same"), not_triggered=True)
+        # A pass-2 cluster deliberately does not count. Seed a current-epoch
+        # cluster to isolate the verdict-overwrite contract.
+        receipt = self.receipt()
+        receipt["mechanism_cluster"] = {"pass_sha": receipt["reviewed_sha"], "epoch": 0,
+                                        "mechanisms": ["same"], "verdict": "PATCH",
+                                        "comment_url": "https://old.invalid"}
+        preclose.write_receipt(REPO, ISSUE, receipt["reviewed_sha"], receipt["refuters"],
+                               receipt["status"], extra=receipt)
+        with self.assertRaises(SystemExit) as set_already:
+            preclose.cluster_verdict(args)
+        self.assertIn("already has a verdict", str(set_already.exception))
+
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'),
+            stderr="")
+        args.force = True
+        args.cluster_verdict = "REFORGE"
+        with patch.object(preclose, "run", return_value=api):
+            preclose.cluster_verdict(args)
+        self.assertEqual(self.receipt()["mechanism_cluster"]["verdict"], "REFORGE")
+
+    def test_cluster_verdict_cli_requires_comment_url_and_never_reaches_plan(self) -> None:
+        argv = ["preclose_check.py", "--repo", REPO, "--issue", str(ISSUE),
+                "--cluster-verdict", "PATCH"]
+        with patch.object(sys, "argv", argv), patch.object(preclose, "plan") as planned, \
+                self.assertRaises(SystemExit) as refused:
+            preclose.main()
+        self.assertEqual(refused.exception.code, 2)
+        planned.assert_not_called()
+
+    def test_concurrent_verdict_correction_cannot_be_overwritten_by_delayed_patch(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        patch_args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                           comment_url="https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99",
+                           force=False)
+        reforge_args = _Args(repo=f"https://github.com/{REPO}.git", issue=ISSUE,
+                             cluster_verdict="REFORGE",
+                             comment_url=patch_args.comment_url, force=True)
+        entered_api = threading.Event()
+        release_patch = threading.Event()
+        original_run = preclose.run
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'),
+            stderr="")
+
+        def interleaved_run(*args, **kwargs):
+            if args[:2] == ("gh", "api"):
+                if threading.current_thread().name == "delayed-patch":
+                    entered_api.set()
+                    self.assertTrue(release_patch.wait(5))
+                return api
+            return original_run(*args, **kwargs)
+
+        errors: list[BaseException] = []
+
+        def invoke(args):
+            try:
+                preclose.cluster_verdict(args)
+            except BaseException as exc:  # surfaced in the test thread below
+                errors.append(exc)
+
+        with patch.object(preclose, "run", side_effect=interleaved_run):
+            delayed = threading.Thread(target=invoke, args=(patch_args,), name="delayed-patch")
+            correction = threading.Thread(target=invoke, args=(reforge_args,), name="newer-reforge")
+            delayed.start()
+            self.assertTrue(entered_api.wait(5))
+            correction.start()
+            time.sleep(0.05)
+            release_patch.set()
+            delayed.join(5)
+            correction.join(5)
+        self.assertFalse(delayed.is_alive() or correction.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(self.receipt()["mechanism_cluster"]["verdict"], "REFORGE")
 
 
 class PreclosePassOneFixTests(ScratchRepo):
