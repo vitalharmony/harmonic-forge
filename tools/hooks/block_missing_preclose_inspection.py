@@ -459,7 +459,11 @@ def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) ->
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
-        passes = preclose_passes.current(preclose_passes.history(_receipt(repo, issue)))
+        receipt = _receipt(repo, issue)
+        cluster = preclose_passes.cluster_message(receipt)
+        if cluster:
+            return cluster
+        passes = preclose_passes.current(preclose_passes.history(receipt))
         if len(passes) >= preclose_passes.MAX_PASSES:
             return (f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, has no completed "
                     f"pre-close receipt covering its current head {head_sha[:12]} "

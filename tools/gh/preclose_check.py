@@ -438,8 +438,18 @@ def load_findings(path: str) -> list:
     except (OSError, ValueError) as exc:
         raise SystemExit(f"preclose-check: cannot read --findings {path}: {exc}")
     if not isinstance(data, list):
-        raise SystemExit("preclose-check: --findings must be a JSON list of {anchor, scenario} objects")
+        raise SystemExit("preclose-check: --findings must be a JSON list of {anchor, scenario, mechanism} objects")
     return data
+
+
+def require_mechanisms(findings: list) -> None:
+    """At completion only, every survivor names the approach that failed."""
+    missing = [str(finding.get("anchor") or "<missing anchor>")
+               for finding in surviving_findings(findings)
+               if not str(finding.get("mechanism") or "").strip()]
+    if missing:
+        raise SystemExit("preclose-check: surviving findings need a non-empty mechanism: "
+                         + ", ".join(missing))
 
 
 def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
@@ -710,7 +720,8 @@ def plan(args: argparse.Namespace) -> int:
     print("auditable by the operator instead of another Lane 1 self-report.")
     print()
     print("When the panel has actually run, write its findings to a JSON list of")
-    print("{anchor, scenario} objects and evaluate the cross-family gate:")
+    print("{anchor, scenario, mechanism} objects and evaluate the cross-family gate")
+    print("(mechanism is required on survivors at --complete only):")
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
           f"--repo {repo} --issue {args.issue} --gate --findings <file>")
     print()
@@ -743,6 +754,10 @@ def complete(args: argparse.Namespace) -> int:
     patch = local_patch_id(args.base, args.head)
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, patch, args.force, reforge)
+    findings = load_findings(args.findings)
+    require_mechanisms(findings)
+    mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
+                  for finding in surviving_findings(findings)]
     required, why, surviving, _ = gate_decision(args)
     if required and args.envelope:
         require_recorded_envelope(args.envelope)
@@ -751,7 +766,8 @@ def complete(args: argparse.Namespace) -> int:
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-        **preclose_passes.record(prior, head_sha, patch, surviving, current_branch(), reforge),
+        **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
+                                 current_branch(), reforge),
         "cross_family_required": required,
         "cross_family_reason": why,
         "provenance": provenance,
@@ -762,6 +778,10 @@ def complete(args: argparse.Namespace) -> int:
     print(f"  receipt: {path}")
     print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
     print(f"  {provenance}")
+    print(f"  mechanisms: {', '.join(sorted(set(mechanisms))) or '(none)'}")
+    route = preclose_passes.cluster_message(read_receipt(path))
+    if route:
+        print(f"  {route}")
     print()
     print(NOT_A_GATE)
     return 0
@@ -785,7 +805,8 @@ def main() -> None:
     parser.add_argument("--gate", action="store_true",
                         help="After the panel: evaluate the cross-family gate (harmonic-forge#701).")
     parser.add_argument("--findings",
-                        help="JSON list of the panel's findings, each {anchor: 'path:line', scenario}.")
+                        help="JSON list of findings {anchor, scenario, mechanism}; mechanism is required "
+                             "on survivors at --complete only.")
     parser.add_argument("--envelope",
                         help="With --complete: the cross-family call's envelope; its label is computed.")
     parser.add_argument("--not-triggered", action="store_true",
@@ -803,6 +824,10 @@ def main() -> None:
     parser.add_argument("--post-verdict", action="store_true",
                         help="After sticky-wicket's PATCH verdict: record one cross-family refuter's "
                              "read of --base (the pass-2 head)...--head. Not a pass (harmonic-forge#838).")
+    parser.add_argument("--cluster-verdict", choices=("PATCH", "REFORGE"),
+                        help="Record sticky-wicket's verdict for a pass 1 mechanism cluster; not a pass.")
+    parser.add_argument("--comment-url",
+                        help="With --cluster-verdict: the sticky-wicket comment URL. --force corrects it.")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",
@@ -816,7 +841,51 @@ def main() -> None:
         if not (args.findings and args.envelope):
             parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
         sys.exit(post_verdict(args))
+    if args.cluster_verdict:
+        if not args.comment_url:
+            parser.error("--cluster-verdict needs --comment-url")
+        sys.exit(cluster_verdict(args))
     sys.exit(complete(args) if args.complete else plan(args))
+
+
+def cluster_verdict(args: argparse.Namespace) -> int:
+    """Record sticky-wicket's ruling without changing the vouched-for head."""
+    require_writable(receipt_dir())
+    repo = registered_repo(args.repo)
+    prior = find_receipt(repo, args.issue)
+    if not prior:
+        raise SystemExit("preclose-check: --cluster-verdict needs a prior receipt")
+    passes = preclose_passes.current(preclose_passes.history(prior))
+    epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)
+    cluster = prior.get("mechanism_cluster")
+    if not isinstance(cluster, dict) or int(cluster.get("epoch") or 0) != epoch:
+        raise SystemExit("preclose-check: no mechanism cluster exists in the current epoch")
+    if cluster.get("verdict") and not args.force:
+        raise SystemExit("preclose-check: the mechanism cluster already has a verdict; "
+                         "the operator may correct it with --force")
+    match = re.search(r"(?:issuecomment-|/issues/comments/)(\d+)", args.comment_url)
+    if not match:
+        raise SystemExit("preclose-check: --comment-url must identify a GitHub issue comment")
+    result = run("gh", "api", f"repos/{repo}/issues/comments/{match.group(1)}")
+    if result.returncode:
+        raise SystemExit("preclose-check: cannot verify --comment-url through the GitHub API")
+    try:
+        comment = json.loads(result.stdout)
+    except ValueError as exc:
+        raise SystemExit(f"preclose-check: invalid GitHub comment response: {exc}") from exc
+    expected = f"https://api.github.com/repos/{repo}/issues/{args.issue}"
+    if comment.get("issue_url") != expected:
+        raise SystemExit("preclose-check: --comment-url resolves to a different issue")
+    canonical = comment.get("html_url")
+    if not isinstance(canonical, str) or not canonical:
+        raise SystemExit("preclose-check: verified comment has no html_url")
+    updated = {**cluster, "verdict": args.cluster_verdict, "comment_url": canonical}
+    path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
+                         prior.get("refuters", 0), status=prior.get("status", "complete"),
+                         extra={**preclose_passes.carried(prior), "mechanism_cluster": updated})
+    print(f"preclose-check: mechanism-cluster verdict {args.cluster_verdict} recorded; not a pass.")
+    print(f"  receipt: {path}")
+    return 0
 
 
 def post_verdict(args: argparse.Namespace) -> int:

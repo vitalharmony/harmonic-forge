@@ -126,6 +126,7 @@ For each surviving finding:
 FINDING — <one-line claim>
 file:line
 Failure scenario: <inputs/state → wrong behavior>
+Mechanism: <the approach that fails, not the symptom>
 Why it survives the diff: <what in the change permits it>
 ```
 

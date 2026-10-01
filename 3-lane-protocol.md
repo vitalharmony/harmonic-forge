@@ -1463,6 +1463,10 @@ before posting the handoff, whenever any of:
    issue.
 <!-- /R-0238 -->
 
+Pitch-inspection check 7 is the open-grammar recognizer check: a design that
+parses foreign shell/CLI/config/prose syntax must name the authoritative
+signal considered and why it is unavailable (harmonic-forge#845).
+
 Most handoffs — a single obvious design, no unverified assumptions, no
 self-mutating automation — post with zero additional review. The two
 template fields cost nothing to fill in as "none"; the second read fires

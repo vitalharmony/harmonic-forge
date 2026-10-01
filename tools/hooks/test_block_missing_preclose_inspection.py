@@ -557,6 +557,23 @@ class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
         self._write_receipt(REPO, 1476, "deadbeef", status="planned")
         self.assertFalse(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
 
+    def test_stale_head_with_unresolved_cluster_routes_before_offering_a_pass(self):
+        directory = self.preclose_check.receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        self.preclose_check.receipt_path(REPO, 1476).write_text(json.dumps({
+            "repo": REPO, "issue": 1476, "reviewed_sha": "old", "refuters": 5,
+            "status": "complete", "pass_history": [{
+                "sha": "old", "patch_id": "p", "surviving": 2,
+                "mechanisms": ["re-parsing shell text"], "epoch": 0,
+            }],
+            "mechanism_cluster": {"pass_sha": "old", "epoch": 0,
+                                  "mechanisms": ["re-parsing shell text"],
+                                  "verdict": None, "comment_url": None},
+        }))
+        message = hook._stale_receipt_message(REPO, "1476", "9", "new-head")
+        self.assertIn("sticky-wicket", message)
+        self.assertNotIn("Run the pre-close pass", message)
+
 
 if __name__ == "__main__":
     unittest.main()

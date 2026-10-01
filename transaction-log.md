@@ -29,6 +29,11 @@ Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
 - tools/hooks/tier_model_trigger_check.py      |   9 +-
 - tools/hooks/worktree_issue.py                | 115 +++++++++++++++
 - 6 files changed, 673 insertions(+), 62 deletions(-)
+## feat(preclose): route pass-one mechanism clusters (harmonic-forge#845)
+- tools/gh/test_preclose_passes.py                   | 175 ++++++++++++++++++++-
+- tools/hooks/block_missing_preclose_inspection.py   |   6 +-
+- .../test_block_missing_preclose_inspection.py      |  17 ++
+- 12 files changed, 402 insertions(+), 15 deletions(-)
 
 ## fix(lane): preclose sticky-wicket patch — refuse all Codex -c/-p passthrough, sandbox exec/review launches, Codex Lane 2 guard delegates to the shared parser and covers other projects' main checkouts (harmonic-forge#840)
 

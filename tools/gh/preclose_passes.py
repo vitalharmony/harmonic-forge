@@ -22,6 +22,10 @@ every receipt write, planned or complete. It never depends on the telemetry
 archive (harmonic-forge#826), which is best-effort and swallows every error.
 Shared by ``preclose_check.py`` and ``block_missing_preclose_inspection.py``
 so both enforcement points say exactly the same thing (AC4).
+
+Issue #845 adds an earlier circuit breaker: when pass 1 has two surviving
+findings with the same author-declared mechanism, sticky-wicket rules on the
+approach before Lane 1 fixes either symptom.
 """
 from __future__ import annotations
 
@@ -40,6 +44,22 @@ OPERATOR = (
     "Two preclose passes are complete. Do not run a third. Escalate to the operator; "
     "--force is their instruction, not yours."
 )
+CLUSTER_ROUTE = (
+    "Pass 1 has multiple surviving findings from the same mechanism: {mechanisms}. "
+    "Invoke the sticky-wicket agent now, before fixing anything, then record its "
+    "verdict with preclose_check.py --cluster-verdict PATCH|REFORGE --comment-url "
+    "<url>. The operator may bypass an unresolved cluster with --force; a REFORGE "
+    "verdict proceeds only with the operator's --force --reforge."
+)
+
+
+def normalize_mechanism(mechanism: object) -> str:
+    """The deliberately narrow comparison promised by F845.
+
+    This is not inference over prose: it only casefolds and collapses
+    whitespace in the author-declared key. Near-synonyms remain distinct.
+    """
+    return " ".join(str(mechanism).casefold().split())
 
 
 def patch_id(diff_text: str | None) -> str | None:
@@ -127,30 +147,73 @@ def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
                 "escalate to the operator rather than re-running.")
     if force:
         return None
+    cluster = cluster_message(receipt)
+    if cluster:
+        return cluster
     if len(passes) >= MAX_PASSES:
         return cap_message(passes)
     return None
 
 
 def record(receipt: dict | None, sha: str, current_patch_id: str | None, surviving: int,
-           branch: str | None = None, reforge: bool = False) -> dict:
+           mechanisms: list[str] | None = None, branch: str | None = None,
+           reforge: bool = False) -> dict:
     """The receipt fields for a newly completed pass (AC1)."""
     everything = history(receipt)
     passes = current(everything)
     epoch = max((int(p.get("epoch") or 0) for p in everything), default=0) + (1 if reforge else 0)
     prior_surviving = int(passes[-1].get("surviving") or 0) if passes and not reforge else None
+    distinct = sorted(set(mechanisms or []))
     everything = everything + [{"sha": sha, "patch_id": current_patch_id, "surviving": int(surviving),
-                                "branch": branch, "epoch": epoch}]
+                                "mechanisms": distinct, "branch": branch, "epoch": epoch}]
+    extra = _post_verdict(receipt)
+    existing = _mechanism_cluster(receipt, epoch)
+    if existing:
+        extra["mechanism_cluster"] = existing
+    elif len(current(everything)) == 1:
+        clustered = sorted({mechanism for mechanism in distinct
+                            if (mechanisms or []).count(mechanism) >= 2})
+        if clustered:
+            extra["mechanism_cluster"] = {"pass_sha": sha, "mechanisms": clustered,
+                                          "verdict": None, "comment_url": None,
+                                          "epoch": epoch}
     return {"pass_history": everything, "pass_count": len(current(everything)),
             "surviving_findings": int(surviving), "prior_surviving_findings": prior_surviving,
-            "reviewed_patch_id": current_patch_id, **_post_verdict(receipt)}
+            "reviewed_patch_id": current_patch_id, **extra}
 
 
 def carried(receipt: dict | None) -> dict:
     """The fields a non-completing write (``plan``) must preserve."""
     passes = history(receipt)
     fields = {"pass_history": passes, "pass_count": len(current(passes))} if passes else {}
-    return {**fields, **_post_verdict(receipt)}
+    epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)
+    cluster = _mechanism_cluster(receipt, epoch)
+    return {**fields, **_post_verdict(receipt),
+            **({"mechanism_cluster": cluster} if cluster else {})}
+
+
+def _mechanism_cluster(receipt: dict | None, epoch: int) -> dict | None:
+    cluster = (receipt or {}).get("mechanism_cluster")
+    if isinstance(cluster, dict) and int(cluster.get("epoch") or 0) == epoch:
+        return cluster
+    return None
+
+
+def cluster_message(receipt: dict | None) -> str | None:
+    """Route an unresolved/current-epoch cluster, or enforce its REFORGE verdict."""
+    passes = history(receipt)
+    epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)
+    cluster = _mechanism_cluster(receipt, epoch)
+    if not cluster:
+        return None
+    mechanisms = ", ".join(cluster.get("mechanisms") or [])
+    verdict = cluster.get("verdict")
+    if verdict == "PATCH":
+        return None
+    if verdict == "REFORGE":
+        return (f"Sticky-wicket ruled REFORGE for the pass 1 mechanism cluster ({mechanisms}). "
+                "Only the operator's --force --reforge starts the new epoch.")
+    return CLUSTER_ROUTE.format(mechanisms=mechanisms)
 
 
 # harmonic-forge#838 AC5: after a sticky-wicket PATCH verdict, one cross-family
