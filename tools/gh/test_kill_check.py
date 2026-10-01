@@ -174,6 +174,30 @@ class KillCheckTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(fresh.exists())
 
+    def test_reaper_repairs_protected_old_scratch_and_skips_active_lease(self) -> None:
+        parent = kill.scratch_parent()
+        old, active = parent / "kill-check-old", parent / "kill-check-active"
+        (old / "locked").mkdir(parents=True)
+        (old / "locked" / "file").write_text("x")
+        (old / "locked").chmod(0)
+        active.mkdir()
+        ancient = time.time() - kill.SCRATCH_AGE_SECONDS - 10
+        os.utime(old, (ancient, ancient))
+        os.utime(active, (ancient, ancient))
+        with kill.scratch_lease(active), patch.object(kill, "remove_tree", wraps=kill.remove_tree) as removed:
+            kill.reap_old(parent)
+            self.assertTrue(active.exists())
+            self.assertFalse(old.exists())
+            self.assertTrue(any(call.args[0] == old for call in removed.call_args_list))
+
+    def test_timeout_kills_descendants_holding_capture_pipes(self) -> None:
+        script = ("import subprocess,time; "
+                  "subprocess.Popen(['sleep','30']); time.sleep(30)")
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            kill.run_command(["python3", "-c", script], timeout=1)
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_atomic_replace_preserves_prior_receipt_on_error(self) -> None:
         self.assertEqual(self.execute(), 0)
         before = kill.receipt_path(REPO, ISSUE).read_bytes()
@@ -209,6 +233,52 @@ class KillCheckTests(unittest.TestCase):
             self.assertEqual(self.execute(), 0)
         self.assertEqual(self.receipt()["checks"][0]["patch_text"], original)
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "killed")
+
+    def test_interrupted_recheck_invalidates_prior_pass(self) -> None:
+        self.assertEqual(self.execute(), 0)
+        self.assertEqual(self.receipt()["status"], "pass")
+        with patch.object(kill, "one_check", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.execute()
+        self.assertEqual(self.receipt()["status"], "running")
+        self.assertFalse(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD"),
+                                               preclose.local_patch_id("origin/main", "HEAD")))
+
+    def test_every_check_must_be_killed(self) -> None:
+        checks = json.loads(self.checks_file.read_text())
+        checks.append({**checks[0], "ac": "AC2", "test": ["python3", "-c", "assert True"]})
+        self.checks_file.write_text(json.dumps(checks))
+        self.assertEqual(self.execute(), 1)
+        self.assertEqual([item["verdict"] for item in self.receipt()["checks"]],
+                         ["killed", "vacuous"])
+
+    def test_forge_import_root_points_to_mutated_scratch(self) -> None:
+        git(self.repo, "remote", "set-url", "origin",
+            "https://github.com/vitalharmony/harmonic-forge.git")
+        (self.repo / "forge_check.py").write_text(
+            "import os\nfrom f import f\n"
+            "assert os.environ['HARMONIC_FORGE_ROOT'] == os.getcwd()\n"
+            "assert f() == 1\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "forge check")
+        self.write_checks(test=["python3", "forge_check.py"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(kill.run(argparse.Namespace(
+                repo="vitalharmony/harmonic-forge", issue=846, base="origin/main",
+                head="HEAD", checks=str(self.checks_file), timeout=300)), 0)
+        self.assertEqual(kill.read_receipt("vitalharmony/harmonic-forge", 846)["status"], "pass")
+
+    def test_unrelated_head_does_not_inherit_passing_receipt(self) -> None:
+        self.assertEqual(self.execute(), 0)
+        (self.repo / "other.txt").write_text("unrelated\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "unrelated")
+        args = argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main", head="HEAD",
+                                  tier="fast", force=False, reforge=False,
+                                  allow_dirty=False, allow_repo_mismatch=False)
+        with self.assertRaises(SystemExit) as refused:
+            preclose.plan(args)
+        self.assertIn("kill-check", str(refused.exception))
 
     def test_plan_receipt_waiver_and_force(self) -> None:
         args = argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main", head="HEAD",

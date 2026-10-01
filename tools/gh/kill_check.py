@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -24,8 +27,27 @@ SCRATCH_AGE_SECONDS = 24 * 60 * 60
 def run_command(argv: list[str], *, cwd: Path | None = None,
                 env: dict[str, str] | None = None, timeout: int | None = None,
                 input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, cwd=cwd, env=env, timeout=timeout, input=input_bytes,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    process = subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True,
+                               stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout, stderr = process.communicate(input=input_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            # A descendant that escaped the process group must not hold this
+            # runner hostage through inherited capture pipes.
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+        raise
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
 def git_value(*args: str) -> str:
@@ -123,12 +145,41 @@ def scratch_parent() -> Path:
     return parent.resolve()
 
 
+def lease_path(directory: Path) -> Path:
+    return directory.with_name(directory.name + ".lease")
+
+
+@contextlib.contextmanager
+def scratch_lease(directory: Path):
+    path = lease_path(directory)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    if not directory.exists():
+        path.unlink(missing_ok=True)
+
+
 def reap_old(parent: Path) -> None:
     cutoff = time.time() - SCRATCH_AGE_SECONDS
     for path in parent.iterdir():
         if (path.name.startswith("kill-check-") and path.is_dir()
                 and not path.is_symlink() and path.stat().st_mtime < cutoff):
-            shutil.rmtree(path)
+            lease = lease_path(path)
+            fd = os.open(lease, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "a+") as handle:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue  # An active run owns this scratch, regardless of age.
+                error = remove_tree(path)
+                if error:
+                    raise RuntimeError(f"cannot reap {path}: {error}")
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            lease.unlink(missing_ok=True)
 
 
 def materialize(directory: Path, sha: str, origin: str) -> None:
@@ -154,15 +205,16 @@ def remove_tree(directory: Path) -> str | None:
     """Remove scratch, repairing test-created permissions, or report failure."""
     if not directory.exists():
         return None
-
-    def repair(function, name, _error):
-        if os.path.islink(name):
-            raise OSError(f"cannot safely repair symlink {name}")
-        os.chmod(name, stat.S_IRWXU)
-        function(name)
-
     try:
-        shutil.rmtree(directory, onerror=repair)
+        # Walk top-down so restoring each directory's search bit permits the
+        # next level. Never follow or chmod symlinks out of scratch.
+        directory.chmod(stat.S_IRWXU)
+        for root, dirs, _files in os.walk(directory, topdown=True, followlinks=False):
+            for name in dirs:
+                child = Path(root) / name
+                if not child.is_symlink():
+                    child.chmod(stat.S_IRWXU)
+        shutil.rmtree(directory)
     except OSError as exc:
         return str(exc)
     return None if not directory.exists() else f"{directory} still exists"
@@ -174,71 +226,78 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
               "mutated_rc": None, "verdict": "error"}
     directory = Path(tempfile.mkdtemp(prefix="kill-check-", dir=parent))
     snapshot: Path | None = None
-    try:
-        materialize(directory, sha, origin)
-        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-        if repo == "vitalharmony/harmonic-forge":
-            env["HARMONIC_FORGE_ROOT"] = str(directory)
-        for _ in range(2):
-            baseline = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
-            result["baseline_rcs"].append(baseline.returncode)
-            if baseline.returncode:
-                result["verdict"] = "broken-test" if len(result["baseline_rcs"]) == 1 else "flaky"
+    with contextlib.ExitStack() as leases:
+        leases.enter_context(scratch_lease(directory))
+        try:
+            materialize(directory, sha, origin)
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            if repo == "vitalharmony/harmonic-forge":
+                env["HARMONIC_FORGE_ROOT"] = str(directory)
+            for _ in range(2):
+                baseline = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
+                result["baseline_rcs"].append(baseline.returncode)
+                if baseline.returncode:
+                    result["verdict"] = "broken-test" if len(result["baseline_rcs"]) == 1 else "flaky"
+                    return result
+            # Match control and mutant from one post-baseline state and path.
+            snapshot = Path(tempfile.mkdtemp(prefix="kill-check-snapshot-", dir=parent))
+            leases.enter_context(scratch_lease(snapshot))
+            shutil.copytree(directory, snapshot, dirs_exist_ok=True, symlinks=True)
+            control = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
+            result["control_rc"] = control.returncode
+            if control.returncode:
+                result["verdict"] = "flaky"
                 return result
-        # Match the control and mutant from the *same* post-baseline state at
-        # the same path. A test that merely fails on its third invocation is
-        # flaky, not evidence of a kill.
-        snapshot = Path(tempfile.mkdtemp(prefix="kill-check-snapshot-", dir=parent))
-        shutil.copytree(directory, snapshot, dirs_exist_ok=True, symlinks=True)
-        control = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
-        result["control_rc"] = control.returncode
-        if control.returncode:
-            result["verdict"] = "flaky"
-            return result
-        removal_error = remove_tree(directory)
-        if removal_error:
-            raise RuntimeError(f"cannot restore control state: {removal_error}")
-        shutil.copytree(snapshot, directory, symlinks=True)
-        patch_bytes = check["patch_text"].encode()
-        for argv in (["git", "apply", "--check", "-"],
-                     ["git", "apply", "-"]):
-            applied = run_command(argv, cwd=directory, input_bytes=patch_bytes)
-            if applied.returncode:
-                result["verdict"] = "patch-failed"
-                result["detail"] = applied.stderr.decode(errors="replace").strip()
-                return result
-        mutated = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
-        result["mutated_rc"] = mutated.returncode
-        result["verdict"] = "vacuous" if mutated.returncode == 0 else "killed"
-    except subprocess.TimeoutExpired:
-        result["verdict"] = "timeout"
-    except (OSError, RuntimeError) as exc:
-        result["detail"] = str(exc)
-    finally:
-        errors = [error for error in
-                  (remove_tree(directory), remove_tree(snapshot) if snapshot else None) if error]
-        if errors:
-            result["verdict"] = "cleanup-failed"
-            result["detail"] = "; ".join(errors)
+            removal_error = remove_tree(directory)
+            if removal_error:
+                raise RuntimeError(f"cannot restore control state: {removal_error}")
+            shutil.copytree(snapshot, directory, symlinks=True)
+            patch_bytes = check["patch_text"].encode()
+            for argv in (["git", "apply", "--check", "-"], ["git", "apply", "-"]):
+                applied = run_command(argv, cwd=directory, input_bytes=patch_bytes)
+                if applied.returncode:
+                    result["verdict"] = "patch-failed"
+                    result["detail"] = applied.stderr.decode(errors="replace").strip()
+                    return result
+            mutated = run_command(check["test"], cwd=directory, env=env, timeout=timeout)
+            result["mutated_rc"] = mutated.returncode
+            result["verdict"] = "vacuous" if mutated.returncode == 0 else "killed"
+        except subprocess.TimeoutExpired:
+            result["verdict"] = "timeout"
+        except (OSError, RuntimeError) as exc:
+            result["detail"] = str(exc)
+        finally:
+            errors = [error for error in
+                      (remove_tree(directory), remove_tree(snapshot) if snapshot else None) if error]
+            if errors:
+                result["verdict"] = "cleanup-failed"
+                result["detail"] = "; ".join(errors)
     return result
 
 
 def run(args: argparse.Namespace) -> int:
-    checks = checked_inputs(args.checks)  # Resolve all paths before scratch commands.
-    if args.timeout <= 0:
-        raise SystemExit("kill-check: --timeout must be positive")
     repo, sha, patch_id = identity(args.repo, args.issue, args.base, args.head)
-    origin = git_value("remote", "get-url", "origin")
-    parent = scratch_parent()
-    reap_old(parent)
-    results = [one_check(check, sha=sha, origin=origin, repo=repo,
-                         parent=parent, timeout=args.timeout) for check in checks]
-    status = "pass" if all(item["verdict"] == "killed" for item in results) else "fail"
-    path = write_receipt(repo, args.issue,
-                         {"repo": repo, "issue": args.issue, "head_sha": sha,
-                          "scratch_parent": str(parent), "patch_id": patch_id,
-                          "checks": results, "status": status,
-                          "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+    payload = {"repo": repo, "issue": args.issue, "head_sha": sha,
+               "patch_id": patch_id, "checks": [],
+               "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    with preclose.receipt_lock(repo, args.issue):
+        write_receipt(repo, args.issue, {**payload, "status": "running"})
+        try:
+            checks = checked_inputs(args.checks)  # Resolve before scratch commands.
+            if args.timeout <= 0:
+                raise ValueError("--timeout must be positive")
+            origin = git_value("remote", "get-url", "origin")
+            parent = scratch_parent()
+            reap_old(parent)
+            results = [one_check(check, sha=sha, origin=origin, repo=repo,
+                                 parent=parent, timeout=args.timeout) for check in checks]
+        except Exception as exc:
+            write_receipt(repo, args.issue, {**payload, "status": "fail", "error": str(exc)})
+            raise
+        status = "pass" if all(item["verdict"] == "killed" for item in results) else "fail"
+        path = write_receipt(repo, args.issue,
+                             {**payload, "scratch_parent": str(parent),
+                              "checks": results, "status": status})
     print("AC | Mechanism | Verdict")
     for item in results:
         print(f"{item['ac']} | {item['mechanism']} | {item['verdict']}")
@@ -250,10 +309,11 @@ def waive(args: argparse.Namespace) -> int:
     if not args.reason or not args.reason.strip():
         raise SystemExit("kill-check: waive needs --reason quoting the operator's instruction")
     repo, sha, patch_id = identity(args.repo, args.issue, args.base, args.head)
-    path = write_receipt(repo, args.issue,
-                         {"repo": repo, "issue": args.issue, "head_sha": sha,
-                          "patch_id": patch_id, "status": "waived", "reason": args.reason,
-                          "checks": [], "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+    with preclose.receipt_lock(repo, args.issue):
+        path = write_receipt(repo, args.issue,
+                             {"repo": repo, "issue": args.issue, "head_sha": sha,
+                              "patch_id": patch_id, "status": "waived", "reason": args.reason,
+                              "checks": [], "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()})
     print(f"kill-check: waiver recorded; receipt: {path}")
     return 0
 
