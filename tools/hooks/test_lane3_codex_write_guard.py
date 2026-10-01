@@ -256,7 +256,9 @@ class LaneGateTests(unittest.TestCase):
                 env = {}
                 import os
                 env.update(os.environ)
-                env["LANE"] = "2"
+                # LANE=1, not 2: since harmonic-forge#840, Lane 2 takes its own
+                # main-checkout branch before this early return is reached.
+                env["LANE"] = "1"
                 result = subprocess.run(
                     [sys.executable, str(mutated_path)],
                     input=json.dumps(bash_payload("echo 'unterminated", worktree)),
@@ -266,7 +268,7 @@ class LaneGateTests(unittest.TestCase):
             self.assertEqual(
                 decision(mutated_decision), "deny",
                 "mutating the early return away should restore the bug "
-                "(LANE=2 denied) -- if this still allows, the test above "
+                "(LANE=1 denied) -- if this still allows, the test above "
                 "is not exercising the fix",
             )
         finally:

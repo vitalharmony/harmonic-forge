@@ -254,7 +254,7 @@ declare -A AGENT_SESSION_FLAGS=(
 )
 declare -A AGENT_SESSION_DENIED=(
   [claude]=""
-  [codex]="--no-daemon --remote sandbox_workspace_write* sandbox_mode* --full-auto -s"
+  [codex]="--no-daemon --remote sandbox_workspace_write* sandbox_mode* sandbox_permissions* --full-auto --approve-for-me -s"
   [gemini]=""
 )
 
@@ -331,6 +331,16 @@ declare -A AGENT_LANE_SANDBOX=(
   [claude:1]="" [claude:2]="" [claude:3]=""
   [codex:1]="danger-full-access"  [codex:2]="danger-full-access"  [codex:3]="danger-full-access"
   [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
+)
+
+# AGENT_QUEUE_SANDBOX -- harmonic-forge#840, operator ruling on its preclose
+# (2026-09-30). A QUEUED `codex exec ... resume` (lane-queue-run) stays
+# sandboxed, deliberately unlike the interactive lane sessions above: exec mode
+# has no interactive approval prompt, so `danger-full-access` there would be the
+# approvals-and-sandbox bypass the ruling excluded. queue_resume_args.sh reads
+# this, not AGENT_LANE_SANDBOX.
+declare -A AGENT_QUEUE_SANDBOX=(
+  [claude]="" [codex]="workspace-write" [gemini]=""
 )
 
 # The agents this registry knows. `--agent` is CLOSED against this list: an

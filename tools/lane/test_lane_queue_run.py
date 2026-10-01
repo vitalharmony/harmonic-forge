@@ -70,20 +70,22 @@ class QueueRunTests(unittest.TestCase):
 
     def test_registry_helper_replays_sandbox_add_dirs_and_config_tokens(self):
         flags = MODULE.resume_args("3")
-        self.assertEqual(flags[:2], ["--sandbox", "danger-full-access"])
+        self.assertEqual(flags[:2], ["--sandbox", "workspace-write"])
         self.assertIn("--add-dir", flags)
         self.assertIn("-c", flags)
         self.assertIn("sandbox_workspace_write.exclude_slash_tmp=true", flags)
         self.assertNotIn("--dangerously-bypass-hook-trust", flags)
 
-    def test_queued_resume_is_unsandboxed_at_every_lane(self):
-        """harmonic-forge#840 AC3: a queued `codex exec ... resume` runs with no
-        sandbox at Lanes 1, 2 and 3, from the same registry table."""
+    def test_queued_resume_stays_sandboxed_at_every_lane(self):
+        """harmonic-forge#840, operator ruling on its preclose: a queued
+        `codex exec ... resume` keeps workspace-write at every lane, because
+        exec mode has no approval prompt (AGENT_QUEUE_SANDBOX), unlike the
+        interactive lane sessions."""
         for lane in ("1", "2", "3"):
             with self.subTest(lane=lane):
                 flags = MODULE.resume_args(lane)
                 self.assertEqual(flags.count("--sandbox"), 1)
-                self.assertEqual(flags[flags.index("--sandbox") + 1], "danger-full-access")
+                self.assertEqual(flags[flags.index("--sandbox") + 1], "workspace-write")
 
     def test_empty_and_existing_blocker_do_not_resume(self):
         for item in ([], [self.item(status="blocked", note="human needed")]):

@@ -642,11 +642,14 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         ["--sandbox=workspace-write"],
         ["-s", "workspace-write"],
         ["-sread-only"],          # clap accepts a short option's value glued on
-        ["--full-auto"],          # implies workspace-write
+        ["--full-auto"],          # implies workspace-write (older CLIs)
+        ["--approve-for-me"],     # codex-cli 0.159.2: "using the workspace-write sandbox"
+        ["-c", 'sandbox_permissions=["disk-full-read-access"]'],
         ["-c", "sandbox_mode=workspace-write"],
         ["--config=sandbox_mode=read-only"],
         ["-csandbox_mode=read-only"],
         ["-c=sandbox_mode=read-only"],
+        ["-c", '"sandbox_mode"="read-only"'],   # quoted TOML key (F840 preclose)
         ["exec", "-s", "read-only", "true"],
     )
 
@@ -675,7 +678,9 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                         self.assertTrue(cell["launched"], cell.get("stderr"))
 
     def test_claude_and_gemini_are_not_affected_by_the_codex_sandbox_denials(self):
-        """The new deny tokens belong to the codex row only."""
+        """The new deny tokens belong to the codex row only: each Codex-refused
+        form still launches for Claude and Gemini (F840 preclose: an empty
+        passthrough never exercised the deny loop)."""
         with _FixtureTree() as tree:
             for agent in ("claude", "gemini"):
                 for lane in ("1", "2", "3"):
@@ -683,6 +688,13 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                         cell = tree.run(lane, ["--agent", agent])
                         self.assertTrue(cell["launched"], cell.get("stderr"))
                         self.assertNotIn("--sandbox", _agent_args(cell))
+                    for args in self.SANDBOX_RESTORING:
+                        if args[:1] == ["exec"] or args[0].startswith("--sandbox"):
+                            continue  # agent-native meaning differs; not a deny-row check
+                        with self.subTest(agent=agent, lane=lane, args=args):
+                            cell = tree.run(lane, ["--agent", agent, "--", *args])
+                            self.assertNotIn("cannot be set, removed, or contradicted",
+                                             cell.get("stderr") or "")
 
     def test_cross_family_reviewer_keeps_its_own_explicit_sandbox(self):
         """harmonic-forge#840 AC5: the reviewer is out of scope. Its command
@@ -690,7 +702,12 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         default, so a reviewer inside the diff it reviews cannot write to it."""
         source = (Path(__file__).resolve().parent / "cross_family_call.sh").read_text()
         self.assertIn('--sandbox "$sandbox"', source)
-        self.assertNotIn("danger-full-access", source.replace("`danger-full-access`", ""))
+        # The reviewer's own values, pinned (F840 preclose: the old check
+        # passed with the value flipped): read-only by default, workspace-write
+        # for the probe posture, and never danger-full-access.
+        self.assertIn('local sandbox="read-only"', source)
+        self.assertIn('    sandbox="workspace-write"', source)
+        self.assertNotIn('sandbox="danger-full-access"', source)
 
     def test_codex_lane3_caller_add_dir_coexists(self):
         """A caller-supplied `--add-dir` at codex:3 still launches, with BOTH

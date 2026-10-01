@@ -185,6 +185,10 @@ _lane_arg_denied() {
       # mentions the name (a `-p` value, a prompt) is never refused.
       case "$key" in *=*) ;; *) return 1 ;; esac
       key="${key%%=*}"
+      # harmonic-forge#840 preclose: codex accepts a quoted TOML key
+      # (`-c '"sandbox_mode"=...'`), so quotes are stripped before matching.
+      key="${key//\"/}"
+      key="${key//\'/}"
       case "$key" in
         "${token%\*}"|"${token%\*}".*) return 0 ;;
       esac

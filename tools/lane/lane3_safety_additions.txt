@@ -157,10 +157,12 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 <HOME>/.cache/cymagraph
 
 # AMENDMENT 7 -- harmonic-forge#840, 2026-09-30.  Operator ruling: "codex
-# launches with no sandbox, ever."  Every Codex lane session (Lanes 1, 2 and 3,
-# and queued resumes) now gets `--sandbox danger-full-access` from
+# launches with no sandbox, ever."  Every interactive Codex lane session (Lanes
+# 1, 2 and 3) now gets `--sandbox danger-full-access` from
 # AGENT_LANE_SANDBOX, independent of ~/.codex/config.toml, and no passthrough
-# can put a sandbox back: `--sandbox`/`-s` (spaced, `=` and glued), `--full-auto`
+# can put a sandbox back: `--sandbox`/`-s` (spaced, `=` and glued), `--full-auto`,
+# `--approve-for-me` ("using the workspace-write sandbox", codex-cli 0.159.2),
+# any `sandbox_permissions` override,
 # and any `sandbox_mode` config override are denied at every Codex lane.  This
 # SUPERSEDES AMENDMENT 4's `--sandbox workspace-write` at Lane 3; `--sandbox`
 # stays on the list above, now carrying `danger-full-access`, and the baseline's
@@ -172,3 +174,8 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # limited what Lane 3 could write; Lane 3's LANE-keyed hook guards are
 # unaffected, and the launcher flag was never a boundary the agent could not
 # talk past (see AGENT_LANE_SANDBOX's comment in _agent_registry.sh).
+# Two operator rulings on #840's preclose: a QUEUED `codex exec` resume keeps
+# `workspace-write` (AGENT_QUEUE_SANDBOX), because exec mode has no approval
+# prompt; and a Codex Lane 2 write into the main checkout is denied by
+# lane3_codex_write_guard.py (via codex_lane2_main_checkout.py), as Claude
+# Lane 2's already is, because the sandbox was its only confinement.
