@@ -3,6 +3,33 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): F843 sticky-wicket PATCH -- unknown open state suppresses, suffixed impl worktrees, test-runner output is never a receipt, flag-first gh api POST, bare-gh receipts kept beside named posters; all 26 AC mechanisms kill-checked (harmonic-forge#843)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/hooks/tier_downshift_reminder.py       | 10 ++--
+- tools/hooks/tier_model_stop_backstop.py      | 15 +++---
+- tools/hooks/worktree_issue.py                |  4 +-
+- 5 files changed, 143 insertions(+), 16 deletions(-)
+
+## fix(hooks): F843 reforge pass-1 fixes -- receipts bound to the posting segment's issue, l2_post-only JSON anchor, implicit-POST gh api form, unavailable Tier module is undecidable; tests pin each (harmonic-forge#843)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/hooks/test_tier_model_stop_backstop.py | 52 +++++++++++++++++++++
+- tools/hooks/tier_downshift_reminder.py       |  4 ++
+- tools/hooks/tier_model_stop_backstop.py      | 68 +++++++++++++++++++++-------
+- 4 files changed, 134 insertions(+), 18 deletions(-)
+
+## fix(hooks): REFORGE -- downshift reminder and Tier backstop read post receipts, own their git resolver, and settle open state in one batched read per account (harmonic-forge#843)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/hooks/tier_model_stop_backstop.py      | 130 ++++++++++++-----
+- tools/hooks/tier_model_trigger_check.py      |   9 +-
+- tools/hooks/worktree_issue.py                | 115 +++++++++++++++
+- 6 files changed, 673 insertions(+), 62 deletions(-)
+
 ## fix(lane): preclose sticky-wicket patch — refuse all Codex -c/-p passthrough, sandbox exec/review launches, Codex Lane 2 guard delegates to the shared parser and covers other projects' main checkouts (harmonic-forge#840)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
