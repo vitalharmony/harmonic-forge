@@ -294,9 +294,11 @@ def run(args: argparse.Namespace) -> int:
             reap_old(parent)
             results = [one_check(check, sha=sha, origin=origin, repo=repo,
                                  parent=parent, timeout=args.timeout) for check in checks]
-        except BaseException as exc:
+        except (Exception, SystemExit) as exc:
             # checked_inputs/git_value use SystemExit for invalid input;
             # record failure rather than leaving an ambiguous running receipt.
+            # Deliberately leave KeyboardInterrupt uncaught: an interrupted
+            # recheck must retain its nonpassing running receipt.
             write_receipt(repo, args.issue, {**payload, "status": "fail", "error": str(exc)})
             raise
         status = "pass" if all(item["verdict"] == "killed" for item in results) else "fail"
