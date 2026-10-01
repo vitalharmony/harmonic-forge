@@ -32,7 +32,10 @@ def run_command(argv: list[str], *, cwd: Path | None = None,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         stdout, stderr = process.communicate(input=input_bytes, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except BaseException:
+        # The test runs in its own session: terminal Ctrl-C reaches this
+        # process, not its children. Kill the group on every interruption,
+        # not only on timeout, before scratch cleanup can begin.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -291,7 +294,9 @@ def run(args: argparse.Namespace) -> int:
             reap_old(parent)
             results = [one_check(check, sha=sha, origin=origin, repo=repo,
                                  parent=parent, timeout=args.timeout) for check in checks]
-        except Exception as exc:
+        except BaseException as exc:
+            # checked_inputs/git_value use SystemExit for invalid input;
+            # record failure rather than leaving an ambiguous running receipt.
             write_receipt(repo, args.issue, {**payload, "status": "fail", "error": str(exc)})
             raise
         status = "pass" if all(item["verdict"] == "killed" for item in results) else "fail"

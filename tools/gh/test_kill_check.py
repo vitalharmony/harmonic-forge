@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kill_check as kill  # noqa: E402
@@ -198,6 +198,15 @@ class KillCheckTests(unittest.TestCase):
             kill.run_command(["python3", "-c", script], timeout=1)
         self.assertLess(time.monotonic() - started, 5)
 
+    def test_interrupt_kills_test_process_group(self) -> None:
+        process = Mock(pid=4242, returncode=-9)
+        process.communicate.side_effect = [KeyboardInterrupt(), (b"", b"")]
+        with patch.object(kill.subprocess, "Popen", return_value=process), \
+                patch.object(kill.os, "killpg") as killed:
+            with self.assertRaises(KeyboardInterrupt):
+                kill.run_command(["python3", "check.py"])
+        killed.assert_called_once_with(4242, kill.signal.SIGKILL)
+
     def test_atomic_replace_preserves_prior_receipt_on_error(self) -> None:
         self.assertEqual(self.execute(), 0)
         before = kill.receipt_path(REPO, ISSUE).read_bytes()
@@ -243,6 +252,14 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(self.receipt()["status"], "running")
         self.assertFalse(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD"),
                                                preclose.local_patch_id("origin/main", "HEAD")))
+
+    def test_invalid_recheck_records_fail_not_running(self) -> None:
+        self.assertEqual(self.execute(), 0)
+        self.checks_file.write_text("{invalid json")
+        with self.assertRaises(SystemExit):
+            self.execute()
+        self.assertEqual(self.receipt()["status"], "fail")
+        self.assertIn("cannot read checks", self.receipt()["error"])
 
     def test_every_check_must_be_killed(self) -> None:
         checks = json.loads(self.checks_file.read_text())
