@@ -130,6 +130,9 @@ sensitive real-world data between lanes" for the gitignored-local-file +
 path-only-comment pattern.
 
 ### Test Cases (for Lane 3)
+For a Tooling Exception, list one kill check per AC-bearing mechanism:
+AC → the stub patch that removes the mechanism → the test that must fail.
+Keep the checks file and patches outside the tracked worktree.
 1. After fixing, [action] must produce [Y] and must NOT produce [Z].
 2. ...
 

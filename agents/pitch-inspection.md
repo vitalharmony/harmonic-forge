@@ -157,6 +157,8 @@ the call gets no retry budget of its own and does not extend it.
    - **The hard case in each test case.** Does each TC name the input most
      likely to break it (whitespace, a rebase, a multi-repo run, a label
      added late)? A TC that only exercises the happy path proves nothing.
+     For Tooling Exception work, every AC-bearing mechanism also needs a
+     listed kill check: the stub that removes it and the test that must fail.
 7. **Reject open-grammar recognizers unless the authoritative signal is
    unavailable** (harmonic-forge#845). If correctness requires recognizing
    every spelling of input in a grammar this repo does not own—shell command
