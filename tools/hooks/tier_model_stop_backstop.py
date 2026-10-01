@@ -69,11 +69,12 @@ _RECEIPT_URL_RE = re.compile(
     r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)#issuecomment-\d+")
 _POSTER_IN_COMMAND_RE = re.compile(
     r"l1-post|l1_post|l2-post|l2_post|post-comment|post_comment|lane-comment"
-    r"|post_lane_discussion|gh\s+issue\s+comment|--method\s+POST|-X\s+POST")
+    r"|post_lane_discussion|gh\s+issue\s+comment|--method\s+POST|-X\s+POST"
+    # `gh api …/comments -f body=…` is an implicit POST (preclose).
+    r"|gh\s+api\s+\S*issues/\d+/comments\b.*(?:\s-[fF]\s|--(?:raw-)?field[\s=]|--input\b)")
 _RECEIPT_LINE_RE = re.compile(
     r"^\s*(?:\[l1-post\] (?:posted and refetched|AE posted|sweep posted) "
     r"|\[POST-COMMENT\] Posted: |\[post-comment\] posted and refetched )")
-_BARE_GH_POST_RE = re.compile(r"(?:^|\s|/)gh\s+(?:issue\s+comment|api\b)")
 _API_COMMENTS_RE = re.compile(r"(?:^|/)repos/([^/\s]+/[^/\s]+)/issues/(\d+)/comments/?$")
 _ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
 _GH_FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field", "--input"})
@@ -194,30 +195,63 @@ def _result_text(block: dict) -> str:
     return ""
 
 
+_GH_COMMENT_SEGMENT_RE = re.compile(
+    r"gh\s+issue\s+comment\s+(?:\S*/issues/)?(\d+)\b")
+_GH_API_POST_SEGMENT_RE = re.compile(
+    r"gh\s+api\s+\S*issues/(\d+)/comments\b[^&;|\n]*?"
+    r"(?:--method\s+POST|-X\s*POST|\s-[fF]\s|--(?:raw-)?field[\s=]|--input\b)")
+_NAMED_POSTERS = ("l1_post", "l1-post", "l2_post", "l2-post", "post_comment",
+                  "post-comment", "lane-comment", "post_lane_discussion")
+
+
+def _bare_gh_post_numbers(command: str) -> set[int]:
+    """Issue numbers a bare `gh` POST in this command targets. A bare `gh` post
+    prints only the URL (or JSON with it), so its receipt is bound to the
+    issue the posting SEGMENT names: a chained read of another issue never
+    counts, and a chained post still does (harmonic-forge#843 preclose)."""
+    if any(name in command for name in _NAMED_POSTERS):
+        return set()
+    numbers = {int(n) for n in _GH_COMMENT_SEGMENT_RE.findall(command)}
+    numbers |= {int(n) for n in _GH_API_POST_SEGMENT_RE.findall(command)}
+    return numbers
+
+
 def _receipt_urls(command: str, text: str) -> list[tuple[str, int]]:
-    """`(repo, issue)` this one Bash result proves it posted to (NC1)."""
+    """`(repo, issue)` this one Bash result proves it posted to (NC1).
+
+    A named poster's receipt is the URL on its own receipt line (or, for
+    `l2_post`, the `url` of its one JSON result). A bare `gh` post's receipt is
+    a printed comment URL whose issue number the posting segment names."""
     if not _POSTER_IN_COMMAND_RE.search(command):
         return []
     found: list[tuple[str, int]] = []
-    whole = bool(_BARE_GH_POST_RE.search(command)) and not any(
-        name in command for name in ("l1_post", "l1-post", "l2_post", "l2-post",
-                                     "post_comment", "post-comment", "lane-comment",
-                                     "post_lane_discussion"))
+    bare_numbers = _bare_gh_post_numbers(command)
+    l2_post = "l2_post" in command or "l2-post" in command
+
+    def add(repo: str, number: str) -> None:
+        pair = (repo.lower(), int(number))
+        if pair not in found:
+            found.append(pair)
+
     for line in text.splitlines():
-        anchored = whole or bool(_RECEIPT_LINE_RE.match(line))
-        if not anchored and line.lstrip().startswith("{"):
+        if _RECEIPT_LINE_RE.match(line):
+            for repo, number in _RECEIPT_URL_RE.findall(line):
+                add(repo, number)
+            continue
+        if l2_post and line.lstrip().startswith("{"):
+            # `l2_post.py` prints ONE JSON result whose `url` is the created
+            # comment; a chained `gh api .../comments` read prints `html_url`.
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
                 data = None
-            anchored = isinstance(data, dict) and any(
-                isinstance(data.get(k), str) and "#issuecomment-" in data[k]
-                for k in ("url", "html_url"))
-        if anchored:
-            for repo, number in _RECEIPT_URL_RE.findall(line):
-                pair = (repo.lower(), int(number))
-                if pair not in found:
-                    found.append(pair)
+            if isinstance(data, dict) and isinstance(data.get("url"), str):
+                for repo, number in _RECEIPT_URL_RE.findall(data["url"]):
+                    add(repo, number)
+            continue
+        for repo, number in _RECEIPT_URL_RE.findall(line):
+            if int(number) in bare_numbers:
+                add(repo, number)
     return found
 
 

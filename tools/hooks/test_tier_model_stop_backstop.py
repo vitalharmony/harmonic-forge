@@ -159,6 +159,58 @@ class TurnTests(unittest.TestCase):
         out, calls = self.run_hook(path, {(FORGE, 843): "deep"})
         self.assertEqual(calls, [(FORGE, 843)])
 
+    def test_a_chained_read_before_a_post_is_not_a_receipt(self):
+        """Preclose: `gh api …/comments` JSON (html_url) chained before a post."""
+        read_url = receipt("vitalharmony/hrse", 1908)
+        post_url = receipt("vitalharmony/hrse", 7)
+        path = self.transcript(prompt("x"),
+            tool_use("a", "gh api repos/vitalharmony/hrse/issues/1908/comments --jq '.[]' "
+                          "&& mise run lane-comment --issue 7 --file f"),
+            tool_result("a", content=json.dumps({"html_url": read_url, "body": "x"})
+                        + f"\n[post-comment] posted and refetched {post_url}"))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep", (HRSE, 7): "fast"})
+        self.assertEqual(calls, [(HRSE, 7)])
+
+    def test_implicit_post_gh_api_field_form_is_a_receipt(self):
+        url = receipt("vitalharmony/hrse", 1908)
+        path = self.transcript(prompt("x"),
+            tool_use("a", "gh api repos/vitalharmony/hrse/issues/1908/comments -f body=@n.md --jq .html_url"),
+            tool_result("a", content=url))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [(HRSE, 1908)])
+
+    def test_a_bare_gh_post_chained_with_a_read_counts_nothing_from_the_read(self):
+        path = self.transcript(prompt("x"),
+            tool_use("a", "gh issue comment 7 --body x && gh api repos/vitalharmony/hrse/issues/1908/comments "
+                          "--jq '.[].html_url'"),
+            tool_result("a", content=receipt("vitalharmony/hrse", 7) + "\n"
+                        + receipt("vitalharmony/hrse", 1908)))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep", (HRSE, 7): "fast"})
+        self.assertNotIn((HRSE, 1908), calls)
+
+    def test_chained_bare_gh_posts_still_count(self):
+        """Preclose: 151 real chained posts. Bound to the posting segment's issue."""
+        path = self.transcript(prompt("x"),
+            tool_use("a", "cd /tmp && gh issue comment 1908 --body-file n.md && echo done"),
+            tool_result("a", content=receipt("vitalharmony/hrse", 1908) + "\ndone"))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [(HRSE, 1908)])
+        path = self.transcript(prompt("x"),
+            tool_use("b", "gh api repos/vitalharmony/hrse/issues/1908/comments -F body=@n.md "
+                          "--jq .html_url && rm n.md"),
+            tool_result("b", content=receipt("vitalharmony/hrse", 1908)))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [(HRSE, 1908)])
+
+    def test_list_shaped_tool_result_carries_a_receipt(self):
+        url = receipt("vitalharmony/hrse", 1908)
+        path = self.transcript(prompt("x"),
+            tool_use("a", "mise run lane-comment --issue 1908 --file f"),
+            tool_result("a", content=[{"type": "text",
+                                       "text": f"[post-comment] posted and refetched {url}"}]))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [(HRSE, 1908)])
+
     def test_forge_receipt_from_an_hrse_session_is_forge(self):
         url = receipt("vitalharmony/harmonic-forge", 843)
         path = self.transcript(prompt("x"),

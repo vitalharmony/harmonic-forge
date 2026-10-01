@@ -220,6 +220,10 @@ def _open_states(pairs: list[tuple[str, int]]) -> dict[tuple[str, int], str | No
 
 
 def _deep_open_in_hand(pairs: list[tuple[str, int]], boards: dict) -> bool:
+    if pairs and model_tier_gate._item_list_cache is None:
+        # `read_tier` answers (None, None), "no Tier", when its shared module
+        # is unavailable. Here that is undecidable, not "not deep" (AC4).
+        raise RuntimeError("tier module unavailable")
     deep = []
     for repo, number in pairs:
         tier, _error = tier_model_trigger_check.lookup_tier(

@@ -188,12 +188,38 @@ class InHandProbeTests(unittest.TestCase):
         self.deep("vitalharmony/hrse", 1908)
         self.assertIsNone(self.run_hook(self.transcript()))
 
-    def test_closed_or_standard_reminds(self):
+    def test_closed_deep_reminds(self):
         self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
         self.deep("vitalharmony/hrse", 1908, state="CLOSED")
         self.assertIn("Switch down", self.run_hook(self.transcript())["systemMessage"])
+
+    def test_open_standard_reminds_and_reads_no_state(self):
+        """The Tier filter on its own: an OPEN issue that is not deep."""
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
         self.tiers[("vitalharmony/hrse", 1908)] = "standard"
+        self.states[("vitalharmony/hrse", 1908)] = "OPEN"
         self.assertIn("Switch down", self.run_hook(self.transcript())["systemMessage"])
+        self.assertEqual(self.graphql, [])
+
+    def test_unavailable_tier_module_is_silent(self):
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.deep("vitalharmony/hrse", 1908)
+        with patch.object(model_tier_gate, "_item_list_cache", None):
+            self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_every_state_unreadable_is_silent(self):
+        """AC4: the only deep candidate's state is unreadable -> undecidable."""
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.deep("vitalharmony/hrse", 1908, state=None)
+        self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_probe_deadline_is_silent(self):
+        import time
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.tiers[("vitalharmony/hrse", 1908)] = "standard"
+        with patch.object(reminder, "_PROBE_DEADLINE_SECONDS", 0.2), \
+             patch.object(worktree_issue, "issue_for_worktree", side_effect=lambda p: time.sleep(1)):
+            self.assertIsNone(self.run_hook(self.transcript()))
 
     def test_branch_wins_over_the_path_for_repo_and_number(self):
         path = self.worktree(self.lane2, "hrse2-999-impl", "l2/f843-downshift")
