@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -343,6 +345,16 @@ class MechanismClusterTests(ScratchRepo):
         self.commit("scripts/new.py")
         with self.assertRaises(SystemExit):
             self.plan(tier="fast")
+        with self.assertRaises(SystemExit) as forced_plan:
+            self.plan(tier="fast", force=True)
+        self.assertIn("--force --reforge", str(forced_plan.exception))
+        with self.assertRaises(SystemExit) as forced_complete:
+            self.complete(findings=self.findings("new"), not_triggered=True, force=True)
+        self.assertIn("--force --reforge", str(forced_complete.exception))
+        receipt = self.receipt()
+        self.assertIn("--force --reforge", preclose_passes.refusal(
+            receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
+            preclose.local_patch_id("base", "HEAD"), force=True))
         self.plan(tier="fast", force=True, reforge=True)
         preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
                                 findings=self.findings_file(self.findings("new")), envelope=None,
@@ -433,6 +445,51 @@ class MechanismClusterTests(ScratchRepo):
             preclose.main()
         self.assertEqual(refused.exception.code, 2)
         planned.assert_not_called()
+
+    def test_concurrent_verdict_correction_cannot_be_overwritten_by_delayed_patch(self) -> None:
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        patch_args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                           comment_url="https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99",
+                           force=False)
+        reforge_args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="REFORGE",
+                             comment_url=patch_args.comment_url, force=True)
+        entered_api = threading.Event()
+        release_patch = threading.Event()
+        original_run = preclose.run
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'),
+            stderr="")
+
+        def interleaved_run(*args, **kwargs):
+            if args[:2] == ("gh", "api"):
+                if threading.current_thread().name == "delayed-patch":
+                    entered_api.set()
+                    self.assertTrue(release_patch.wait(5))
+                return api
+            return original_run(*args, **kwargs)
+
+        errors: list[BaseException] = []
+
+        def invoke(args):
+            try:
+                preclose.cluster_verdict(args)
+            except BaseException as exc:  # surfaced in the test thread below
+                errors.append(exc)
+
+        with patch.object(preclose, "run", side_effect=interleaved_run):
+            delayed = threading.Thread(target=invoke, args=(patch_args,), name="delayed-patch")
+            correction = threading.Thread(target=invoke, args=(reforge_args,), name="newer-reforge")
+            delayed.start()
+            self.assertTrue(entered_api.wait(5))
+            correction.start()
+            time.sleep(0.05)
+            release_patch.set()
+            delayed.join(5)
+            correction.join(5)
+        self.assertFalse(delayed.is_alive() or correction.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(self.receipt()["mechanism_cluster"]["verdict"], "REFORGE")
 
 
 class PreclosePassOneFixTests(ScratchRepo):

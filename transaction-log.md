@@ -29,6 +29,12 @@ Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
 - tools/hooks/tier_model_trigger_check.py      |   9 +-
 - tools/hooks/worktree_issue.py                | 115 +++++++++++++++
 - 6 files changed, 673 insertions(+), 62 deletions(-)
+## fix(preclose): serialize receipt decisions (harmonic-forge#845)
+- tools/gh/preclose_passes.py      | 11 +++++---
+- tools/gh/test_preclose_check.py  | 10 ++++++-
+- tools/gh/test_preclose_passes.py | 57 ++++++++++++++++++++++++++++++++++++++++
+- 4 files changed, 111 insertions(+), 6 deletions(-)
+
 ## feat(preclose): route pass-one mechanism clusters (harmonic-forge#845)
 - tools/gh/test_preclose_passes.py                   | 175 ++++++++++++++++++++-
 - tools/hooks/block_missing_preclose_inspection.py   |   6 +-

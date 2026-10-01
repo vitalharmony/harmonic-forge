@@ -53,13 +53,13 @@ CLUSTER_ROUTE = (
 )
 
 
-def normalize_mechanism(mechanism: object) -> str:
+def normalize_mechanism(mechanism: str) -> str:
     """The deliberately narrow comparison promised by F845.
 
     This is not inference over prose: it only casefolds and collapses
     whitespace in the author-declared key. Near-synonyms remain distinct.
     """
-    return " ".join(str(mechanism).casefold().split())
+    return " ".join(mechanism.casefold().split())
 
 
 def patch_id(diff_text: str | None) -> str | None:
@@ -139,6 +139,12 @@ def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
     if reforge and not force:
         return ("--reforge is the operator's instruction, never Lane 1's own: it runs only "
                 "with --force, after sticky-wicket's reforge verdict.")
+    cluster = cluster_message(receipt)
+    if force and not reforge:
+        if (cluster
+                and (receipt or {}).get("mechanism_cluster", {}).get("verdict") == "REFORGE"):
+            return cluster
+        return None
     if covered(passes, sha, current_patch_id):
         if reforge:
             return "--reforge needs a changed diff; a completed pass already reviewed this one."
@@ -147,7 +153,6 @@ def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
                 "escalate to the operator rather than re-running.")
     if force:
         return None
-    cluster = cluster_message(receipt)
     if cluster:
         return cluster
     if len(passes) >= MAX_PASSES:

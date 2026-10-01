@@ -156,11 +156,19 @@ class MechanismContractTests(ScratchRepo):
         self.commit("scripts/a.py")
         self.plan(tier="fast")
         missing = [{"anchor": "a.py:1", "scenario": "a"},
-                   {"anchor": "b.py:2", "scenario": "b", "mechanism": "   "}]
+                   {"anchor": "b.py:2", "scenario": "b", "mechanism": "   "},
+                   {"anchor": "c.py:3", "scenario": "c", "mechanism": []},
+                   {"anchor": "d.py:4", "scenario": "d", "mechanism": 0},
+                   {"anchor": "e.py:5", "scenario": "e", "mechanism": ["x"]},
+                   {"anchor": "f.py:6", "scenario": "f", "mechanism": 1}]
         with self.assertRaises(SystemExit) as refused:
             self.complete(missing, not_triggered=True)
         self.assertIn("a.py:1", str(refused.exception))
         self.assertIn("b.py:2", str(refused.exception))
+        self.assertIn("c.py:3", str(refused.exception))
+        self.assertIn("d.py:4", str(refused.exception))
+        self.assertIn("e.py:5", str(refused.exception))
+        self.assertIn("f.py:6", str(refused.exception))
 
     def test_dismissed_finding_without_a_mechanism_is_accepted(self) -> None:
         self.commit("scripts/a.py")

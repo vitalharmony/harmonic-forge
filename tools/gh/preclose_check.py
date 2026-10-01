@@ -44,12 +44,15 @@ F774).
 from __future__ import annotations
 
 import argparse
+import fcntl
+import functools
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
@@ -446,7 +449,8 @@ def require_mechanisms(findings: list) -> None:
     """At completion only, every survivor names the approach that failed."""
     missing = [str(finding.get("anchor") or "<missing anchor>")
                for finding in surviving_findings(findings)
-               if not str(finding.get("mechanism") or "").strip()]
+               if not isinstance(finding.get("mechanism"), str)
+               or not finding["mechanism"].strip()]
     if missing:
         raise SystemExit("preclose-check: surviving findings need a non-empty mechanism: "
                          + ", ".join(missing))
@@ -508,6 +512,29 @@ def receipt_path(repo: str, issue: int) -> Path:
     return receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
 
 
+@contextmanager
+def receipt_lock(repo: str, issue: int):
+    """Serialize an issue's full receipt read-check-write transaction."""
+    directory = receipt_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{_repo_key(repo)}_{issue}.lock"
+    with path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def serialized_receipt(function):
+    @functools.wraps(function)
+    def locked(args: argparse.Namespace):
+        require_writable(receipt_dir())
+        with receipt_lock(args.repo, args.issue):
+            return function(args)
+    return locked
+
+
 def read_receipt(path: Path) -> dict | None:
     """A receipt that cannot be read is no receipt.
 
@@ -562,9 +589,13 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
     head (a rebase) is not a new pass. Replaces the old per-SHA check, which
     re-armed on every head change and so allowed unbounded passes."""
     if force and not reforge:
+        receipt = find_receipt(repo, issue)
+        reason = preclose_passes.refusal(receipt, head_sha, patch, reforge, force)
+        if reason:
+            raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         # harmonic-forge#838 AC5: the operator's --force still needs the
         # post-verdict check in the sticky-wicket case.
-        reason = preclose_passes.post_verdict_refusal(find_receipt(repo, issue), head_sha)
+        reason = preclose_passes.post_verdict_refusal(receipt, head_sha)
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
@@ -670,6 +701,7 @@ def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
     return head_sha
 
 
+@serialized_receipt
 def plan(args: argparse.Namespace) -> int:
     # F783 preclose finding: plan is the first step and its output is the
     # instruction to spend a panel, so it must refuse before printing any.
@@ -733,6 +765,7 @@ def plan(args: argparse.Namespace) -> int:
     return 0
 
 
+@serialized_receipt
 def complete(args: argparse.Namespace) -> int:
     """Mark the pass done -- separate from planning, on purpose.
 
@@ -848,6 +881,7 @@ def main() -> None:
     sys.exit(complete(args) if args.complete else plan(args))
 
 
+@serialized_receipt
 def cluster_verdict(args: argparse.Namespace) -> int:
     """Record sticky-wicket's ruling without changing the vouched-for head."""
     require_writable(receipt_dir())
@@ -888,6 +922,7 @@ def cluster_verdict(args: argparse.Namespace) -> int:
     return 0
 
 
+@serialized_receipt
 def post_verdict(args: argparse.Namespace) -> int:
     """harmonic-forge#838 AC5: record the one cross-family refuter's read of
     the patch applied after a sticky-wicket PATCH verdict. ``--base`` is the
