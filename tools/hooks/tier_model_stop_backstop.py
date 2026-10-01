@@ -199,9 +199,11 @@ _GH_COMMENT_SEGMENT_RE = re.compile(
     r"gh\s+issue\s+comment\s+(?:\S*/issues/)?(\d+)\b")
 _GH_API_POST_SEGMENT_RE = re.compile(
     r"gh\s+api\s+\S*issues/(\d+)/comments\b[^&;|\n]*?"
-    r"(?:--method\s+POST|-X\s*POST|\s-[fF]\s|--(?:raw-)?field[\s=]|--input\b)")
-_NAMED_POSTERS = ("l1_post", "l1-post", "l2_post", "l2-post", "post_comment",
-                  "post-comment", "lane-comment", "post_lane_discussion")
+    r"(?:--method\s+POST|-X\s*POST|\s-[fF]\s|--(?:raw-)?field[\s=]|--input\b)"
+    # the POST flag may also come before the path (reforge pass-2 #4)
+    r"|gh\s+api\s+(?:--method\s+POST|-X\s*POST)\s+\S*issues/(\d+)/comments\b")
+# A command that RUNS TESTS prints fixture receipts, never real ones (pass-2 #3).
+_TEST_RUN_RE = re.compile(r"\b(?:unittest|pytest|run_tests\.py|vitest)\b|mise\s+run\s+(?:test|check)\b")
 
 
 def _bare_gh_post_numbers(command: str) -> set[int]:
@@ -209,10 +211,9 @@ def _bare_gh_post_numbers(command: str) -> set[int]:
     prints only the URL (or JSON with it), so its receipt is bound to the
     issue the posting SEGMENT names: a chained read of another issue never
     counts, and a chained post still does (harmonic-forge#843 preclose)."""
-    if any(name in command for name in _NAMED_POSTERS):
-        return set()
     numbers = {int(n) for n in _GH_COMMENT_SEGMENT_RE.findall(command)}
-    numbers |= {int(n) for n in _GH_API_POST_SEGMENT_RE.findall(command)}
+    for groups in _GH_API_POST_SEGMENT_RE.findall(command):
+        numbers |= {int(n) for n in groups if n}
     return numbers
 
 
@@ -222,7 +223,7 @@ def _receipt_urls(command: str, text: str) -> list[tuple[str, int]]:
     A named poster's receipt is the URL on its own receipt line (or, for
     `l2_post`, the `url` of its one JSON result). A bare `gh` post's receipt is
     a printed comment URL whose issue number the posting segment names."""
-    if not _POSTER_IN_COMMAND_RE.search(command):
+    if not _POSTER_IN_COMMAND_RE.search(command) or _TEST_RUN_RE.search(command):
         return []
     found: list[tuple[str, int]] = []
     bare_numbers = _bare_gh_post_numbers(command)

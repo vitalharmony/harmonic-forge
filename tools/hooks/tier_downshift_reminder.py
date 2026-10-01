@@ -235,9 +235,13 @@ def _deep_open_in_hand(pairs: list[tuple[str, int]], boards: dict) -> bool:
     if not deep:
         return False
     states = _open_states(deep)
-    if all(state is None for state in states.values()):
-        raise RuntimeError("no open-state could be read")  # undecidable: suppress
-    return any(state == "OPEN" for state in states.values())
+    if any(state == "OPEN" for state in states.values()):
+        return True
+    if any(state is None for state in states.values()):
+        # An unknown deep candidate may be the live one: undecidable, so
+        # suppress (AC4; reforge sticky-wicket #2, pass-2 #1).
+        raise RuntimeError("an open-state could not be read")
+    return False
 
 
 def _probe_in_hand(transcript_path: str, cwd: str, env) -> bool:

@@ -28,7 +28,9 @@ sys.path.insert(0, str(HOOKS_DIR))
 import model_tier_gate  # noqa: E402
 
 GIT_TIMEOUT_SECONDS = 1.5
-_IMPL_DIR_RE = re.compile(r"-(?P<number>\d+)-impl$")
+# `<stem>-<N>-impl`, or `<stem>-<N><letter>-impl` for a second worktree on the
+# same issue (e.g. a reforge); the branch still decides repo and issue.
+_IMPL_DIR_RE = re.compile(r"-(?P<number>\d+)[a-z]?-impl$")
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
 _IMPL_ROOTS = (
     str(Path.home() / "Harmonic_Projects" / ".worktrees"),

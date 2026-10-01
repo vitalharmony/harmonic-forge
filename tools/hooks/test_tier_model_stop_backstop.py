@@ -202,6 +202,68 @@ class TurnTests(unittest.TestCase):
         _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
         self.assertEqual(calls, [(HRSE, 1908)])
 
+    def test_l2_post_json_anchor_is_l2_post_only_and_url_only(self):
+        """Pass-2 #7/#8: a chained read's JSON html_url never counts; l2_post's
+        own `url` does; an l2_post JSON line with only html_url does not."""
+        read_url, post_url = receipt("vitalharmony/hrse", 1908), receipt("vitalharmony/hrse", 7)
+        path = self.transcript(prompt("x"),
+            tool_use("a", "gh api repos/vitalharmony/hrse/issues/1908/comments --jq '.[]' "
+                          "&& mise run l2-post --kind plan --issue 7 --narrative-file n.md"),
+            tool_result("a", content=json.dumps({"html_url": read_url}) + "\n"
+                        + json.dumps({"url": post_url, "posted": True})))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep", (HRSE, 7): "fast"})
+        self.assertEqual(calls, [(HRSE, 7)])
+        path = self.transcript(prompt("x"),
+            tool_use("b", "python3 tools/gh/l2_post.py post --kind plan --issue 1908"),
+            tool_result("b", content=json.dumps({"html_url": read_url})))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [])
+
+    def test_a_url_keyed_json_line_from_a_non_l2_post_command_is_not_a_receipt(self):
+        """The l2_post-only gate on its own: a `url` key, not from l2_post."""
+        url = receipt("vitalharmony/hrse", 1908)
+        path = self.transcript(prompt("x"),
+            tool_use("a", "mise run lane-comment --issue 7 --file f && cat result.json"),
+            tool_result("a", content=json.dumps({"url": url})))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [])
+
+    def test_a_named_poster_chained_with_a_bare_gh_post_keeps_both(self):
+        """Pass-2 #9: no short-circuit; the bare post's URL still counts."""
+        path = self.transcript(prompt("x"),
+            tool_use("a", "mise run lane-comment --issue 7 --file f && gh issue comment 1908 --body x"),
+            tool_result("a", content=f"[post-comment] posted and refetched {receipt('vitalharmony/hrse', 7)}\n"
+                        + receipt("vitalharmony/hrse", 1908)))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep", (HRSE, 7): "fast"})
+        self.assertEqual(sorted(calls), [(HRSE, 7), (HRSE, 1908)])
+
+    def test_receipt_shaped_output_without_a_poster_in_the_command_is_silent(self):
+        """Pass-2 #10, NC1 condition 2 on its own."""
+        url = receipt("vitalharmony/hrse", 1908)
+        path = self.transcript(prompt("x"), tool_use("a", "cat /tmp/session.log"),
+                               tool_result("a", content=f"[l1-post] posted and refetched {url}"))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [])
+
+    def test_running_a_posters_tests_mints_no_receipt(self):
+        """Pass-2 #3: test output carries fixture receipts."""
+        url = receipt("vitalharmony/hrse", 1908)
+        path = self.transcript(prompt("x"),
+            tool_use("a", "python3 -m unittest tools/gh/test_l1_post.py"),
+            tool_result("a", content=f"[l1-post] posted and refetched {url}\nOK"))
+        _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [])
+
+    def test_post_flag_before_the_path_is_a_receipt(self):
+        """Pass-2 #4."""
+        url = receipt("vitalharmony/hrse", 1908)
+        for cmd in ("gh api -X POST repos/vitalharmony/hrse/issues/1908/comments -f body=x",
+                    "gh api --method POST repos/vitalharmony/hrse/issues/1908/comments -f body=x"):
+            with self.subTest(cmd=cmd):
+                path = self.transcript(prompt("x"), tool_use("a", cmd), tool_result("a", content=url))
+                _out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+                self.assertEqual(calls, [(HRSE, 1908)])
+
     def test_list_shaped_tool_result_carries_a_receipt(self):
         url = receipt("vitalharmony/hrse", 1908)
         path = self.transcript(prompt("x"),

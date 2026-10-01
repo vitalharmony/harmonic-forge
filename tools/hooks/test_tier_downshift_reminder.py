@@ -202,10 +202,64 @@ class InHandProbeTests(unittest.TestCase):
         self.assertEqual(self.graphql, [])
 
     def test_unavailable_tier_module_is_silent(self):
+        """Pass-2 #5: the real read_tier answers (None, None) here, so the stub
+        must too, or the guard is never what decides."""
         self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
-        self.deep("vitalharmony/hrse", 1908)
+        self.tiers[("vitalharmony/hrse", 1908)] = None
         with patch.object(model_tier_gate, "_item_list_cache", None):
             self.assertIsNone(self.run_hook(self.transcript()))
+        reminder._TURN_SCANS.clear()
+        self.assertIn("Switch down", self.run_hook(self.transcript("true"))["systemMessage"])
+
+    def test_probe_tier_lookup_failure_is_silent(self):
+        self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
+        self.tiers[("vitalharmony/hrse", 1908)] = model_tier_gate.LOOKUP_FAILED
+        self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_suffixed_reforge_worktree_is_an_impl_worktree(self):
+        """Pass-2 #2: `<stem>-<N><letter>-impl` passes the filter; the branch decides."""
+        path = self.worktree(self.forge, "forge-843r-impl", "fix/843-reforge")
+        self.assertTrue(worktree_issue.is_impl_worktree(str(path)))
+        self.deep("vitalharmony/harmonic-forge", 843)
+        self.assertIsNone(self.run_hook(self.transcript()))
+
+    def test_manifest_prefix_beyond_h_and_f_resolves(self):
+        """Pass-2 #12: the prefix class comes from the manifest (F605), so an
+        onboarded prefix like `o` resolves; a literal [hHfF] class would not."""
+        repo = worktree_issue.prefix_repos().get("o")
+        self.assertTrue(repo)
+        path = self.worktree(self.lane2, "hrse2-12-impl", "l2/o12-thing")
+        self.assertEqual(worktree_issue.issue_for_worktree(str(path)), (repo.lower(), 12))
+
+    def test_open_states_reads_partial_data_on_a_nonzero_exit(self):
+        """Pass-2 #13: one inaccessible repo makes gh exit 1 with partial data."""
+        payload = json.dumps({"data": {"c0": {"issue": {"state": "OPEN"}}, "c1": None}})
+        with patch.object(model_tier_gate, "timed_run",
+                          return_value=subprocess.CompletedProcess([], 1, payload, "NOT_FOUND")):
+            states = reminder._open_states([("vitalharmony/hrse", 1908), ("vitalharmony/hrse", 9)])
+        self.assertEqual(states[("vitalharmony/hrse", 1908)], "OPEN")
+        self.assertIsNone(states[("vitalharmony/hrse", 9)])
+
+    def test_a_receipt_for_a_deep_issue_silences_the_reminder(self):
+        """Pass-2 #6: the receipt half of _posted_deep."""
+        url = "https://github.com/vitalharmony/hrse/issues/1908#issuecomment-1"
+        path = self.root / "r.jsonl"
+        path.write_text("".join(json.dumps(e) + "\n" for e in [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-5", "content": [
+                {"type": "tool_use", "id": "a", "name": "Bash",
+                 # post_lane_discussion.py is not a command-text poster, so
+                 # only the RECEIPT can find this post (kill check).
+                 "input": {"command": "python3 tools/gh/post_lane_discussion.py --issue 1908 --file f"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "a",
+                 "content": f"[post-comment] posted and refetched {url}"}]}}]))
+        self.tiers[("vitalharmony/hrse", 1908)] = "deep"
+        with patch.object(tier_model_trigger_check, "lookup_tier",
+                          side_effect=lambda r, n, b, ttl=0: (self.tiers.get((r, n)), None)), \
+             patch.object(tier_model_trigger_check, "_boards", return_value={}), \
+             patch.object(reminder.backstop.model_tier_gate, "resolve_repo", return_value="vitalharmony/hrse"):
+            self.assertTrue(reminder._posted_deep(str(path), str(self.lane2)))
 
     def test_every_state_unreadable_is_silent(self):
         """AC4: the only deep candidate's state is unreadable -> undecidable."""
@@ -267,12 +321,16 @@ class InHandProbeTests(unittest.TestCase):
         self.deep("vitalharmony/hrse", 1908)
         self.deep("vitalharmony/harmonic-forge", 777, state=None)  # alias returns null
         self.assertIsNone(self.run_hook(self.transcript()))
-        # The distinguishing case: the readable issue is CLOSED and the other
-        # alias is unreadable. A null is "unknown, not in hand" (NC3b), so the
-        # reminder fires; failing the whole probe on one null would be silence.
+        # Reforge sticky-wicket #2 (pass-2 #1): the readable issue is CLOSED and
+        # the other is unknown. The unknown one may be the live deep issue, so
+        # this is undecidable and SUPPRESSES (AC4), never a false "switch down".
         self.states[("vitalharmony/hrse", 1908)] = "CLOSED"
         reminder._TURN_SCANS.clear()
-        self.assertIn("Switch down", self.run_hook(self.transcript("true"))["systemMessage"])
+        self.assertIsNone(self.run_hook(self.transcript("true")))
+        # And with nothing unknown, a CLOSED-only set reminds.
+        self.states[("vitalharmony/harmonic-forge", 777)] = "CLOSED"
+        reminder._TURN_SCANS.clear()
+        self.assertIn("Switch down", self.run_hook(self.transcript("true", "true"))["systemMessage"])
 
     def test_lane1_ignores_worktrees_but_counts_entering_one(self):
         path = self.worktree(self.lane2, "hrse2-1908-impl", "feat/1908-rule-editor")
