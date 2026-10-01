@@ -93,6 +93,11 @@ class ScratchRepo(unittest.TestCase):
         home_patcher = patch.dict(os.environ, {"HOME": self.home_tmp.name})
         home_patcher.start()
         self.addCleanup(home_patcher.stop)
+        # Existing planner tests exercise their own concerns; F846's receipt
+        # behavior is tested separately with the real checker.
+        kill_patcher = patch.object(preclose, "kill_receipt_ok", return_value=True)
+        kill_patcher.start()
+        self.addCleanup(kill_patcher.stop)
 
     def commit(self, relpath: str, body: str = "x\n") -> None:
         target = self.repo / relpath

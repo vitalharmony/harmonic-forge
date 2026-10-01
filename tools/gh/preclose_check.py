@@ -604,6 +604,12 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
         raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 
 
+def kill_receipt_ok(repo: str, issue: int, head_sha: str, patch_id: str | None) -> bool:
+    """The independent kill-check receipt must cover this exact review diff."""
+    import kill_check  # Lazy: kill_check reuses this module's receipt helpers.
+    return kill_check.covering_receipt(repo, issue, head_sha, patch_id)
+
+
 def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str,
                   extra: dict | None = None) -> Path:
     """Atomic, so an interrupted write cannot leave a half-file behind.
@@ -710,6 +716,12 @@ def plan(args: argparse.Namespace) -> int:
     head_sha = _require_repo_and_head(repo, args)
     check_pass_cap(repo, args.issue, head_sha, local_patch_id(args.base, args.head), args.force,
                    getattr(args, "reforge", False))
+    if not args.force and not kill_receipt_ok(
+            repo, args.issue, head_sha, local_patch_id(args.base, args.head)):
+        raise SystemExit(
+            f"preclose-check: no passing kill-check receipt covers {repo}#{args.issue} "
+            f"at {head_sha[:12]}. Run: mise run kill-check -- run --repo {repo} "
+            f"--issue {args.issue} --checks <file>")
 
     files = changed_files(args.base, args.head)
     dirty = uncommitted_files()

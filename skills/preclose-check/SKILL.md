@@ -20,7 +20,11 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
 ## Procedure
 
 1. **Commit the work first.** The refuters review a finished diff, not a
-   working tree.
+   working tree. Run the handoff's kill checks with `mise run kill-check --
+   run --repo <owner/repo> --issue <N> --checks <file>` before `--plan`.
+   Keep the checks file and patches outside the tracked tree; `--plan`
+   refuses without a covering passing receipt unless the operator uses
+   `--force`.
 
 2. **Plan the panel**, run from the repo under review (the receipt is written
    to a user-level store, `~/.claude/state/preclose/`, shared across
@@ -109,6 +113,7 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    your repo's own Lane-1-posting rule for why. Include:
    - every surviving finding, in the refuter's own words,
    - **every dismissed finding, with your reason for dismissing it.**
+   - the kill-check results table (AC, mechanism, verdict) from the receipt.
 
    Define the survivor table as `| # | Anchor | Scenario | Mechanism |`, and
    follow it with the pass's full distinct normalized mechanism list. When
