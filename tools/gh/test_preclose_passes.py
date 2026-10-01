@@ -451,7 +451,8 @@ class MechanismClusterTests(ScratchRepo):
         patch_args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
                            comment_url="https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99",
                            force=False)
-        reforge_args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="REFORGE",
+        reforge_args = _Args(repo=f"https://github.com/{REPO}.git", issue=ISSUE,
+                             cluster_verdict="REFORGE",
                              comment_url=patch_args.comment_url, force=True)
         entered_api = threading.Event()
         release_patch = threading.Event()

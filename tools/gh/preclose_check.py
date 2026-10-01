@@ -530,7 +530,7 @@ def serialized_receipt(function):
     @functools.wraps(function)
     def locked(args: argparse.Namespace):
         require_writable(receipt_dir())
-        with receipt_lock(args.repo, args.issue):
+        with receipt_lock(registered_repo(args.repo), args.issue):
             return function(args)
     return locked
 
