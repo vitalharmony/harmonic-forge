@@ -234,19 +234,15 @@ declare -A AGENT_SYSTEM_PROMPT_FLAG=(
 #
 # `-c` is last-wins and these are injected before passthrough, so a caller's
 # `-c sandbox_workspace_write.exclude_slash_tmp=false` would silently undo
-# them (pitch-inspection NC4). The deny entries below refuse that: a token
-# ending in `*` is a PREFIX match on the config key, applied to the `-c
-# key=value` / `--config key=value` value word and to the glued
-# `-ckey=value` / `--config=key=value` forms (`_lane_arg_denied` in
-# `_cli_launch.sh`). The one prefix `sandbox_workspace_write*` covers the
-# whole table: both exclude keys, `writable_roots` (which could re-add `/tmp`,
-# preclose finding) and a whole-table `-c sandbox_workspace_write={...}`.
-# Not covered, recorded rather
-# than claimed: a quoted TOML key (`-c 'sandbox_workspace_write."exclude_slash_tmp"=false'`)
-# a `-p/--profile` pointing at an on-disk profile, and a caller's own
-# `--add-dir /tmp` (`--add-dir` is repeatable and never denied, see
-# AGENT_LANE_ADD_DIR below) -- the same launcher-
-# denylist ceiling lane3_safety_additions.txt records for `--sandbox read-only`.
+# them (pitch-inspection NC4). harmonic-forge#840 (sticky-wicket verdict and
+# operator ruling Q3): a Codex lane refuses EVERY caller `-c`/`--config` and
+# `-p`/`--profile`, in spaced, `=`-glued and glued forms, rather than deciding
+# which config keys are dangerous. The key-prefix matcher this replaced kept
+# losing to Codex's own TOML parsing (a quoted key, then whitespace around the
+# key), and the recorded `-p/--profile` ceiling closes with it. A setting a
+# lane needs belongs in AGENT_SESSION_FLAGS, not on the command line. Still
+# not covered, recorded rather than claimed: a caller's own `--add-dir /tmp`
+# (`--add-dir` is repeatable and never denied, see AGENT_LANE_ADD_DIR below).
 declare -A AGENT_SESSION_FLAGS=(
   [claude]=""
   [codex]="--no-daemon -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true"
@@ -254,7 +250,7 @@ declare -A AGENT_SESSION_FLAGS=(
 )
 declare -A AGENT_SESSION_DENIED=(
   [claude]=""
-  [codex]="--no-daemon --remote sandbox_workspace_write* sandbox_mode* sandbox_permissions* --full-auto --approve-for-me -s"
+  [codex]="--no-daemon --remote -c --config -p --profile --full-auto --approve-for-me -s"
   [gemini]=""
 )
 
@@ -291,8 +287,8 @@ declare -A AGENT_LANE_POLICY=(
 # harmonic-forge#840 (operator ruling 2026-09-30, "codex launches with no
 # sandbox, ever"): every Codex lane slot is `danger-full-access`, so the
 # launcher injects it at Lanes 1, 2 and 3 whatever ~/.codex/config.toml says,
-# and a caller cannot put a sandbox back (`--sandbox`, `-s`, `--full-auto` and
-# any `sandbox_mode` override are denied). Approvals are unchanged. The
+# and a caller cannot put a sandbox back (`--sandbox`, `-s`, `--full-auto`,
+# `--approve-for-me`, and every `-c`/`-p` override are denied). Approvals are unchanged. The
 # cross-family reviewer (cross_family_call.sh) keeps its own explicit
 # `--sandbox`. The `/tmp` exclusion flags and `--add-dir` roots below are
 # no-ops without a sandbox and are left in place (#840 AC7).
@@ -333,14 +329,21 @@ declare -A AGENT_LANE_SANDBOX=(
   [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
 )
 
-# AGENT_QUEUE_SANDBOX -- harmonic-forge#840, operator ruling on its preclose
-# (2026-09-30). A QUEUED `codex exec ... resume` (lane-queue-run) stays
-# sandboxed, deliberately unlike the interactive lane sessions above: exec mode
-# has no interactive approval prompt, so `danger-full-access` there would be the
-# approvals-and-sandbox bypass the ruling excluded. queue_resume_args.sh reads
-# this, not AGENT_LANE_SANDBOX.
+# AGENT_QUEUE_SANDBOX -- harmonic-forge#840, operator rulings on its preclose
+# (2026-09-30) and sticky-wicket (Q2). NON-INTERACTIVE Codex stays sandboxed,
+# deliberately unlike the interactive lane sessions above: exec mode has no
+# interactive approval prompt, so `danger-full-access` there would be the
+# approvals-and-sandbox bypass the ruling excluded. It applies to a queued
+# `codex exec ... resume` (queue_resume_args.sh) AND to a lane launch whose
+# passthrough carries a word in AGENT_NONINTERACTIVE_WORDS (`_cli_launch.sh`
+# step 4b), which then gets this sandbox instead of AGENT_LANE_SANDBOX. Any
+# such word counts, not only the first: top-level flags may precede the
+# subcommand, and a false positive only adds a sandbox.
 declare -A AGENT_QUEUE_SANDBOX=(
   [claude]="" [codex]="workspace-write" [gemini]=""
+)
+declare -A AGENT_NONINTERACTIVE_WORDS=(
+  [claude]="" [codex]="exec e review" [gemini]=""
 )
 
 # The agents this registry knows. `--agent` is CLOSED against this list: an
@@ -357,7 +360,7 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_MODEL_FLAG AGENT_MODEL_FLAG_ENV AGENT_MODEL_FLAG_VALUE
   AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
   AGENT_EFFORT_LEVELS AGENT_LAUNCH_REFUSED_ENV
-  AGENT_SESSION_FLAGS AGENT_SESSION_DENIED
+  AGENT_SESSION_FLAGS AGENT_SESSION_DENIED AGENT_QUEUE_SANDBOX AGENT_NONINTERACTIVE_WORDS
 )
 
 _registry_die() {

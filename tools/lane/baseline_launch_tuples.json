@@ -197,36 +197,8 @@
       "stderr": ""
     },
     "lane1/codex/quoted-with-spaces": {
-      "argv": [
-        "systemd-inhibit",
-        "--what=sleep:idle",
-        "--who=lane1",
-        "--why=Lane 1 Claude Code session",
-        "--mode=block",
-        "codex",
-        "--sandbox",
-        "danger-full-access",
-        "--add-dir",
-        "<HOME>/.cache/codex-lane-tmp/lane1",
-        "--add-dir",
-        "<HOME>/.claude/state/preclose",
-        "--no-daemon",
-        "-c",
-        "sandbox_workspace_write.exclude_slash_tmp=true",
-        "-c",
-        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-        "-p",
-        "two words here"
-      ],
-      "cwd": "<ROOT>/proj",
-      "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
-        "LANE": "1",
-        "LANE_AGENT": null
-      },
-      "launched": true,
-      "returncode": 0,
-      "stderr": ""
+      "launched": false,
+      "returncode": 1
     },
     "lane1/gemini/explicit-permission-mode": {
       "argv": [
@@ -560,38 +532,8 @@
       "stderr": ""
     },
     "lane2/codex/quoted-with-spaces": {
-      "argv": [
-        "systemd-inhibit",
-        "--what=sleep:idle",
-        "--who=lane2",
-        "--why=Lane 2 (implementer) Claude Code session",
-        "--mode=block",
-        "codex",
-        "--sandbox",
-        "danger-full-access",
-        "--add-dir",
-        "<HOME>/Harmonic_Projects/.worktrees",
-        "--add-dir",
-        "<HOME>/.cache/codex-lane-tmp/lane2",
-        "--add-dir",
-        "<HOME>/.cache/cymagraph",
-        "--no-daemon",
-        "-c",
-        "sandbox_workspace_write.exclude_slash_tmp=true",
-        "-c",
-        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-        "-p",
-        "two words here"
-      ],
-      "cwd": "<ROOT>/proj-lane2",
-      "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
-        "LANE": "2",
-        "LANE_AGENT": null
-      },
-      "launched": true,
-      "returncode": 0,
-      "stderr": ""
+      "launched": false,
+      "returncode": 1
     },
     "lane2/gemini/explicit-permission-mode": {
       "argv": [
@@ -901,30 +843,8 @@
       "stderr": ""
     },
     "lane3/codex/quoted-with-spaces": {
-      "argv": [
-        "systemd-inhibit",
-        "--what=sleep:idle",
-        "--who=lane3",
-        "--why=Lane 3 (gate) Claude Code session",
-        "--mode=block",
-        "codex",
-        "--sandbox",
-        "danger-full-access",
-        "--add-dir",
-        "<HOME>/Harmonic_Projects/testplan",
-        "--no-daemon",
-        "-p",
-        "two words here"
-      ],
-      "cwd": "<ROOT>/proj-lane3",
-      "env": {
-        "GH_CONFIG_DIR": "<HOME>/.config/gh-accounts/vitalharmony",
-        "LANE": "3",
-        "LANE_AGENT": null
-      },
-      "launched": true,
-      "returncode": 0,
-      "stderr": ""
+      "launched": false,
+      "returncode": 1
     },
     "lane3/gemini/explicit-permission-mode": {
       "argv": [

@@ -162,8 +162,10 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # AGENT_LANE_SANDBOX, independent of ~/.codex/config.toml, and no passthrough
 # can put a sandbox back: `--sandbox`/`-s` (spaced, `=` and glued), `--full-auto`,
 # `--approve-for-me` ("using the workspace-write sandbox", codex-cli 0.159.2),
-# any `sandbox_permissions` override,
-# and any `sandbox_mode` config override are denied at every Codex lane.  This
+# and, after #840's sticky-wicket (operator ruling Q3), EVERY caller
+# `-c`/`--config` and `-p`/`--profile` are denied at every Codex lane: the
+# config-key matcher they replace lost twice to Codex's own TOML parsing, and
+# the old `-p/--profile` ceiling is closed with it.  This
 # SUPERSEDES AMENDMENT 4's `--sandbox workspace-write` at Lane 3; `--sandbox`
 # stays on the list above, now carrying `danger-full-access`, and the baseline's
 # Codex cells record that value (sandbox tokens only).  Approvals are unchanged,
@@ -174,8 +176,12 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # limited what Lane 3 could write; Lane 3's LANE-keyed hook guards are
 # unaffected, and the launcher flag was never a boundary the agent could not
 # talk past (see AGENT_LANE_SANDBOX's comment in _agent_registry.sh).
-# Two operator rulings on #840's preclose: a QUEUED `codex exec` resume keeps
-# `workspace-write` (AGENT_QUEUE_SANDBOX), because exec mode has no approval
-# prompt; and a Codex Lane 2 write into the main checkout is denied by
-# lane3_codex_write_guard.py (via codex_lane2_main_checkout.py), as Claude
-# Lane 2's already is, because the sandbox was its only confinement.
+# Operator rulings on #840's preclose and sticky-wicket: NON-INTERACTIVE Codex
+# keeps `workspace-write` (AGENT_QUEUE_SANDBOX), because exec mode has no
+# approval prompt -- a queued `codex exec` resume, and a lane launch whose
+# passthrough carries `exec`/`e`/`review` (AGENT_NONINTERACTIVE_WORDS).  A
+# Codex Lane 2 write into the main checkout -- its own project's, or another
+# project's, as the Claude side refuses (#458) -- is denied by
+# lane3_codex_write_guard.py (via codex_lane2_main_checkout.py), because the
+# sandbox was its only confinement.  The baseline's three Codex
+# `quoted-with-spaces` cells (`-p "two words here"`) now record a refusal.

@@ -68,6 +68,44 @@ class CodexLane2MainCheckout(unittest.TestCase):
                                             str(self.main)), lane="1")
         self.assertIsNone(decision(out))
 
+    def test_directory_changes_the_shared_parser_knows_are_followed(self) -> None:
+        """#840 sticky-wicket: `pushd` and a `cd` inside a compound command
+        move the write the same as a plain `cd` (shared `directory_change`)."""
+        for command in (f"pushd {self.main} && echo BAD > tracked.md",
+                        f"if true; then cd {self.main}; echo BAD > tracked.md; fi"):
+            with self.subTest(command=command):
+                self.assertEqual(self.lane2(bash_payload(command, str(self.impl))), "deny")
+
+    def test_an_interpreter_write_into_the_main_checkout_is_denied(self) -> None:
+        """#840 pass 2 finding 5: the interpreter branch has a test that fails
+        if it is removed."""
+        command = f"python3 -c \"open('{self.main}/tracked.md','w').write('z')\""
+        self.assertEqual(self.lane2(bash_payload(command, str(self.impl))), "deny")
+
+    def test_a_write_into_another_projects_main_checkout_is_denied(self) -> None:
+        """#840 operator ruling Q1: as the Claude side (harmonic-forge#458)."""
+        other = self.main.parent / "otherproj"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(other)], check=True)
+        (other / "t.md").write_text("x\n")
+        subprocess.run(["git", "-C", str(other), "add", "t.md"], check=True)
+        subprocess.run(["git", "-C", str(other), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "seed"], check=True)
+        self.assertEqual(self.lane2(bash_payload(f"echo x > {other}/t.md", str(self.impl))), "deny")
+        self.assertEqual(self.lane2(apply_patch_payload(patch("Update", other / "t.md"),
+                                                        str(self.impl))), "deny")
+
+    def test_an_unresolvable_home_fails_open_without_a_traceback(self) -> None:
+        """#840 pass 2 finding 2: `~<unknown-user>` makes expanduser raise;
+        the guard still answers (silence), it does not crash. `run_guard`
+        fails the test on any stderr or non-zero exit."""
+        for payload in (bash_payload("echo x > ~nosuchuser840/f.txt", str(self.impl)),
+                        bash_payload("cd ~nosuchuser840 && echo x > a", str(self.impl)),
+                        apply_patch_payload("*** Begin Patch\n*** Add File: ~nosuchuser840/x\n+x\n"
+                                            "*** End Patch", str(self.impl))):
+            with self.subTest(payload=payload):
+                self.assertIsNone(self.lane2(payload))
+
     def test_lane2_fails_open_on_an_unparseable_payload(self) -> None:
         """An accidental-mix-up guard: a parse gap never blocks Lane 2's own work."""
         for payload in ({"tool_name": "Bash"}, [],

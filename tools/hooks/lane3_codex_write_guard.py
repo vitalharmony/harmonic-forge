@@ -202,7 +202,12 @@ def _lane2_decision(host: str) -> dict | None:
         return _allow(host)
     if not isinstance(command, str) or not isinstance(cwd, str) or not cwd:
         return _allow(host)
-    reason = lane2_denial(payload.get("tool_name"), command, Path(cwd), apply_patch_targets)
+    try:
+        reason = lane2_denial(payload.get("tool_name"), command, Path(cwd),
+                              apply_patch_targets, _resolve)
+    except (OSError, ValueError, RuntimeError, AttributeError, TypeError):
+        # Lane 2 fails OPEN on anything it cannot resolve (#840 preclose).
+        return _allow(host)
     return _deny(reason) if reason else _allow(host)
 
 

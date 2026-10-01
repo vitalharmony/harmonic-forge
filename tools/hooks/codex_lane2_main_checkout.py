@@ -6,7 +6,15 @@ session out of the project's shared main checkout. Claude Lane 2 has always
 been kept out by `block_lane1_status_claims.lane2_write_in_main_checkout`;
 this applies that same predicate to Codex's `apply_patch` and `Bash` writes,
 so the no-sandbox ruling holds without letting Lane 2 write where Lane 1 and
-the operator work (operator ruling on #840's preclose, 2026-09-30).
+the operator work (operator ruling on #840's preclose, 2026-09-30). It also
+applies `write_on_main_branch`, so a Lane 2 write into ANOTHER project's main
+checkout (an HRSE2 session writing into ~/harmonic-forge) is refused as the
+Claude side refuses it (harmonic-forge#458; operator ruling on the #840
+sticky-wicket, Q1).
+
+It parses nothing itself (#840 sticky-wicket): directory changes come from
+the shared `directory_change()` (compound keywords, `pushd`), and paths are
+resolved by the caller's `_resolve`, which returns None rather than raising.
 
 Same posture as the Claude check: an accidental-mix-up guard, not a security
 boundary. It fails OPEN on anything it cannot parse or resolve, because a
@@ -25,8 +33,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from block_lane1_status_claims import (  # noqa: E402
     bash_write_targets,
     command_segments,
+    directory_change,
     interpreter_write_pairs,
     lane2_write_in_main_checkout,
+    write_on_main_branch,
 )
 
 LANE2_DENIAL = (
@@ -36,51 +46,50 @@ LANE2_DENIAL = (
 )
 
 
-def _resolve(target: str, cwd: Path) -> str:
-    raw = Path(target).expanduser()
-    return str(raw if raw.is_absolute() else cwd / raw)
-
-
-def bash_targets(command: str, cwd: Path) -> list[str]:
-    """Absolute write targets of a shell command, following a static `cd`.
-    A dynamic or bare `cd` makes later relative targets unresolvable, and
-    they are skipped (fail open), never guessed at."""
+def bash_targets(command: str, cwd: Path, resolve) -> list[str]:
+    """Absolute write targets of a shell command, following a static
+    directory change. A dynamic or bare one makes later relative targets
+    unresolvable, and they are skipped (fail open), never guessed at; so is
+    any target `resolve` cannot resolve."""
     try:
         segments = command_segments(command)
     except (AttributeError, TypeError, ValueError):
         return []
-    effective, resolvable = cwd, True
+    effective: Path | None = cwd
     targets: list[str] = []
     for segment in segments:
-        if segment and segment[0] == "cd":
-            operands = [t for t in segment[1:] if not t.startswith("-")]
-            if not operands or any(c in operands[0] for c in "$`"):
-                resolvable = False
-                continue
-            moved = Path(operands[0]).expanduser()
-            effective = moved if moved.is_absolute() else effective / moved
-            resolvable = True
+        change = directory_change(segment)
+        if change is not None:
+            target, resolvable = change
+            moved = resolve(target, effective) if resolvable and effective else None
+            effective = Path(moved) if moved else None
             continue
         joined = " ".join(segment)
         raw = list(bash_write_targets(segment))
         raw += [operand for _construct, operand in interpreter_write_pairs(joined)]
         for target in raw:
-            if not resolvable and not Path(target).expanduser().is_absolute():
+            # After an unresolvable directory change only an absolute (or
+            # `~`) target is known; a relative one would be a guess.
+            if effective is None and not target.startswith(("/", "~")):
                 continue
-            targets.append(_resolve(target, effective))
+            resolved = resolve(target, effective or cwd)
+            if resolved is not None:
+                targets.append(resolved)
     return targets
 
 
-def lane2_denial(tool_name: str, command: str, cwd: Path, patch_targets) -> str | None:
-    """The denial reason when a Codex Lane 2 write lands in the main checkout,
-    else None. `patch_targets` is the guard's own `apply_patch_targets`."""
+def lane2_denial(tool_name: str, command: str, cwd: Path, patch_targets, resolve) -> str | None:
+    """The denial reason when a Codex Lane 2 write lands in a main checkout,
+    this project's or another's, else None. `patch_targets` and `resolve` are
+    the guard's own `apply_patch_targets` and `_resolve`."""
     if tool_name == "apply_patch":
-        targets = [_resolve(t, cwd) for t in (patch_targets(command) or [])]
+        targets = [resolve(t, cwd) for t in (patch_targets(command) or [])]
     elif tool_name == "Bash":
-        targets = bash_targets(command, cwd)
+        targets = bash_targets(command, cwd, resolve)
     else:
         return None
     for target in targets:
-        if lane2_write_in_main_checkout(target, cwd):
+        if target and (lane2_write_in_main_checkout(target, cwd)
+                       or write_on_main_branch(target, cwd)):
             return LANE2_DENIAL
     return None

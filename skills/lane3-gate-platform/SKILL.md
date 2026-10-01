@@ -105,8 +105,9 @@ scratch dir but read-only worktree" profile is not constructible.
 > its own sandbox.
 
 **Decision rule (since harmonic-forge#840):** a Codex Lane 3 session runs
-with no sandbox, and `--sandbox`/`-s`/`--full-auto`/`sandbox_mode` are
-refused at launch, so there is no `read-only` Codex Lane 3 to choose; its
+with no sandbox, and `--sandbox`/`-s`/`--full-auto`/`--approve-for-me`/`-c`/`-p`
+are refused at launch, so there is no `read-only` Codex Lane 3 to choose (a
+non-interactive `exec`/`review` launch gets `workspace-write`); its
 write limit is the LANE-keyed hook guard. Choose Codex or Claude by the
 spec's needs, not by sandbox. If the spec requires any live network call, a test runner needing its
 own writable temp (pytest, vitest), or real browser E2E, launch that Lane 3

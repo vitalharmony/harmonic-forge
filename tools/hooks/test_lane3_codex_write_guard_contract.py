@@ -40,7 +40,7 @@ class SharedAllowDecisionTests(unittest.TestCase):
             and isinstance(node.func, ast.Name)
             and node.func.id == "_allow"
         ]
-        self.assertEqual(len(calls), 7)  # +3 in _lane2_decision (harmonic-forge#840)
+        self.assertEqual(len(calls), 8)  # +4 in _lane2_decision (harmonic-forge#840)
         for call in calls:
             self.assertEqual(len(call.args), 1)
             self.assertIsInstance(call.args[0], ast.Name)
