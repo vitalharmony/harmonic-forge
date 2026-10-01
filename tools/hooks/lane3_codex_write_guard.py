@@ -192,8 +192,33 @@ def bash_decision(command: str, cwd: Path, host: str) -> dict | None:
     return _allow(host)
 
 
+def _lane2_decision(host: str) -> dict | None:
+    from codex_lane2_main_checkout import lane2_denial  # noqa: PLC0415
+    try:
+        payload = json.load(sys.stdin)
+        tool_input = payload.get("tool_input") or {}
+        command, cwd = tool_input.get("command"), payload.get("cwd")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        return _allow(host)
+    if not isinstance(command, str) or not isinstance(cwd, str) or not cwd:
+        return _allow(host)
+    try:
+        reason = lane2_denial(payload.get("tool_name"), command, Path(cwd),
+                              apply_patch_targets, _resolve)
+    except (OSError, ValueError, RuntimeError, AttributeError, TypeError):
+        # Lane 2 fails OPEN on anything it cannot resolve (#840 preclose).
+        return _allow(host)
+    return _deny(reason) if reason else _allow(host)
+
+
 def main() -> int:
     host = _host(sys.argv[1:])
+
+    if os.environ.get("LANE") == "2":
+        # harmonic-forge#840: with no sandbox, keep Codex Lane 2 out of the
+        # main checkout, as Claude Lane 2 already is. Fails open.
+        _emit(_lane2_decision(host))
+        return 0
 
     if os.environ.get("LANE") != "3":
         # harmonic-forge#644 rework: this file's own fail-closed branches

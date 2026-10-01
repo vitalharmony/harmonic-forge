@@ -97,10 +97,19 @@ fixes this without also making the target worktree writable —
 `writable_roots` is additive to `cwd`, not exclusive of it, so a "writable
 scratch dir but read-only worktree" profile is not constructible.
 
-**Decision rule:** if the approved test spec is entirely static/mocked (no
-live network calls, no test-runner temp writes, no browser), use Codex
-`read-only` Lane 3 — its extra OS-level restriction is a genuine feature
-there. If the spec requires any live network call, a test runner needing its
+> **harmonic-forge#840 (2026-09-30):** Codex lane sessions, Lane 3 included,
+> now launch with `--sandbox danger-full-access` and cannot be re-sandboxed
+> from the command line. The `read-only`/`workspace-write` trade-off above
+> describes the old launch and no longer applies to a lane session; Lane 3's
+> write limits are its LANE-keyed hook guards. The cross-family reviewer keeps
+> its own sandbox.
+
+**Decision rule (since harmonic-forge#840):** a Codex Lane 3 session runs
+with no sandbox, and `--sandbox`/`-s`/`--full-auto`/`--approve-for-me`/`-c`/`-p`
+are refused at launch, so there is no `read-only` Codex Lane 3 to choose (a
+non-interactive `exec`/`review` launch gets `workspace-write`); its
+write limit is the LANE-keyed hook guard. Choose Codex or Claude by the
+spec's needs, not by sandbox. If the spec requires any live network call, a test runner needing its
 own writable temp (pytest, vitest), or real browser E2E, launch that Lane 3
 session as Claude instead (`lane3` launcher, default `LANE_CLI=claude`) —
 Claude's Lane 3 enforcement is the hook+prose model described above (`LANE`-

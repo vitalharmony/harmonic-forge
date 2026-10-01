@@ -164,43 +164,21 @@ done < <(registry_lane_denied_tokens "$_lane_agent" "$LANE")
 
 # _lane_arg_denied <arg> <token> -- does one passthrough word hit one token?
 #
-# A plain token matches the word exactly or as `<token>=value`. A token that
-# ends in `*` (harmonic-forge#756 NC4) is a PREFIX match on a Codex `-c` config
-# KEY: it is tested against the word itself (the value word of `-c key=v` or
-# `--config key=v`) and against the key inside the glued `-ckey=v`, `-c=key=v` and
-# `--config=key=v` forms. The comparison is a quoted-prefix `case`, so the
-# `*` is never a glob and a token never matches a path on disk.
+# A token matches the word exactly or as `<token>=value`. A SHORT token (`-s`,
+# `-c`, `-p`) also matches its glued form (`-sread-only`, `-ckey=v`, `-pname`),
+# because clap accepts a short option's value glued on. harmonic-forge#840
+# (sticky-wicket verdict): config keys are no longer parsed here at all -- a
+# Codex lane refuses the whole `-c`/`-p` flag class (see AGENT_SESSION_DENIED),
+# so there is no key syntax left for a caller to spell around.
 _lane_arg_denied() {
-  local arg="$1" token="$2" key
+  local arg="$1" token="$2"
+  [ "$arg" = "$token" ] || [ "${arg%%=*}" = "$token" ] && return 0
   case "$token" in
-    *\*)
-      key="$arg"
-      case "$key" in
-        --config=*) key="${key#--config=}" ;;
-        -c=*) key="${key#-c=}" ;;
-        -c?*) key="${key#-c}" ;;
-      esac
-      # Only a real `key=value` override counts, and the key must be the
-      # table itself or one of its dotted keys -- so prose that merely
-      # mentions the name (a `-p` value, a prompt) is never refused.
-      case "$key" in *=*) ;; *) return 1 ;; esac
-      key="${key%%=*}"
-      case "$key" in
-        "${token%\*}"|"${token%\*}".*) return 0 ;;
-      esac
-      return 1
+    -[a-zA-Z])
+      case "$arg" in "$token"?*) return 0 ;; esac
       ;;
   esac
-  [ "$arg" = "$token" ] || [ "${arg%%=*}" = "$token" ] && return 0
-  # The glued config forms, so `sandbox_workspace_write` (a whole-table
-  # override) is refused however the `-c` is spelled.
-  case "$arg" in
-    --config=*) key="${arg#--config=}" ;;
-    -c=*) key="${arg#-c=}" ;;
-    -c?*) key="${arg#-c}" ;;
-    *) return 1 ;;
-  esac
-  [ "${key%%=*}" = "$token" ]
+  return 1
 }
 
 if [ "${#_lane_denied[@]}" -gt 0 ]; then
@@ -415,6 +393,17 @@ fi
 #     conditionally injected here at all -- a caller-supplied one is refused
 #     outright by the AC4 deny check above, so this always fires.
 _lane_sandbox="$(registry_lookup AGENT_LANE_SANDBOX "$_lane_agent:$LANE")"
+# harmonic-forge#840 (operator ruling Q2): non-interactive Codex has no
+# approval prompt, so a passthrough carrying `exec`/`review` gets the
+# non-interactive sandbox instead of the lane's own.
+for _word in $(registry_lookup AGENT_NONINTERACTIVE_WORDS "$_lane_agent"); do
+  for _arg in "${lane_passthrough[@]}"; do
+    if [ "$_arg" = "$_word" ]; then
+      _lane_sandbox="$(registry_lookup AGENT_QUEUE_SANDBOX "$_lane_agent")"
+      break 2
+    fi
+  done
+done
 if [ -n "$_lane_sandbox" ]; then
   cli_args+=("--sandbox" "$_lane_sandbox")
 fi

@@ -3,6 +3,33 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane): preclose sticky-wicket patch — refuse all Codex -c/-p passthrough, sandbox exec/review launches, Codex Lane 2 guard delegates to the shared parser and covers other projects' main checkouts (harmonic-forge#840)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/lane/baseline_launch_tuples.json             | 92 ++--------------------
+- tools/lane/lane3_safety_additions.txt              | 20 +++--
+- tools/lane/test_lane_launchers.py                  | 83 ++++++++++++++-----
+- 10 files changed, 215 insertions(+), 209 deletions(-)
+
+## fix(lane): preclose pass-1 fixes — quoted sandbox keys, glued -s, --approve-for-me and sandbox_permissions denied; Codex Lane 2 main-checkout guard; queued resumes stay workspace-write (harmonic-forge#840)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/lane/queue_resume_args.sh                    |  3 +-
+- tools/lane/test_lane_launchers.py                  | 23 +++++-
+- tools/lane/test_lane_queue_run.py                  | 12 +--
+- 12 files changed, 250 insertions(+), 20 deletions(-)
+
+## feat(lane): Codex lane sessions launch with no sandbox, ever; the reviewer keeps its own (harmonic-forge#840)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/lane/lane3_safety_additions.txt  | 17 ++++++++
+- tools/lane/test_lane_launchers.py      | 80 +++++++++++++++++++++++++++++++---
+- tools/lane/test_lane_queue_run.py      | 11 ++++-
+- 7 files changed, 149 insertions(+), 15 deletions(-)
+
 ## fix(tooling): pass report warns on an undecodable archive line (harmonic-forge#838 post-verdict check)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
