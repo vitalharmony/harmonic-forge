@@ -24,10 +24,14 @@ def targets(command, cwd_repo=HRSE):
 
 
 class PosterDetectionTests(unittest.TestCase):
-    def test_l1_post_defaults_to_hrse(self):
+    def test_l1_post_resolves_the_invoking_checkout_not_hrse(self):
+        """harmonic-forge#843 AC1: was `test_l1_post_defaults_to_hrse`. `l1_post.py`
+        resolves the INVOKING checkout, so no poster gets an hrse default."""
         self.assertEqual(targets("python3 scripts/l1_post.py --issue 1830 --kind handoff "
                                  "--sha abc --branch main --file /tmp/h.md", cwd_repo=FORGE),
-                         [(HRSE, 1830)])
+                         [(FORGE, 1830)])
+        self.assertEqual(targets("mise run lane-comment --issue 1999 --file /tmp/c.md",
+                                 cwd_repo=FORGE), [(FORGE, 1999)])
 
     def test_l2_post_post_only(self):
         cmd = ("python3 ~/harmonic-forge/tools/gh/l2_post.py post --kind plan "
@@ -67,8 +71,54 @@ class PosterDetectionTests(unittest.TestCase):
         self.assertEqual(targets(cmd), [])
 
     def test_chained_commands(self):
+        # /tmp is not a repository, so both fall back to the cwd repo (#843 AC1).
         cmd = "cd /tmp && gh issue comment 3 --body x && l1_post.py --issue 4 --kind ae --sha s --branch b"
-        self.assertEqual(targets(cmd, cwd_repo=FORGE), [(FORGE, 3), (HRSE, 4)])
+        self.assertEqual(targets(cmd, cwd_repo=FORGE), [(FORGE, 3), (FORGE, 4)])
+
+
+class MisePosterTests(unittest.TestCase):
+    """harmonic-forge#843 AC1/AC5: the lanes' own mise posting wrappers, through
+    the real `posted_targets` (never patched)."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.forge = self.root / "harmonic-forge"
+        self.forge.mkdir()
+
+    def repo_of(self, path):
+        return FORGE if Path(path).resolve() == self.forge.resolve() else None
+
+    def t(self, command, cwd_repo=HRSE, cwd=None):
+        with patch.object(model_tier_gate, "resolve_repo", side_effect=self.repo_of):
+            return b.posted_targets(command, lambda: cwd_repo, cwd)
+
+    def test_cd_then_mise_l2_post(self):
+        self.assertEqual(self.t(f"cd {self.forge} && mise run l2-post --kind plan --issue 843 "
+                                "--narrative-file n.md"), [(FORGE, 843)])
+
+    def test_mise_dash_c_l2_post(self):
+        self.assertEqual(self.t(f"mise -C {self.forge} run l2-post --kind plan --issue 843 "
+                                "--narrative-file n.md"), [(FORGE, 843)])
+
+    def test_issue_equals_form(self):
+        self.assertEqual(self.t("mise run l2-post --kind plan --issue=843 --narrative-file n.md",
+                                cwd_repo=FORGE), [(FORGE, 843)])
+
+    def test_l1_post_from_forge_is_forge(self):
+        self.assertEqual(self.t("mise run l1-post --issue 843 --kind handoff --sha s --branch main "
+                                "--file h.md", cwd_repo=FORGE), [(FORGE, 843)])
+
+    def test_explicit_repo_wins(self):
+        self.assertEqual(self.t(f"mise -C {self.forge} run l1-post --repo vitalharmony/hrse "
+                                "--issue 7 --kind ae --sha s --branch b"), [(HRSE, 7)])
+
+    def test_relative_cd_resolves_against_the_payload_cwd(self):
+        self.assertEqual(self.t("cd harmonic-forge && mise run l2-post --kind plan --issue 843",
+                                cwd=str(self.root)), [(FORGE, 843)])
+
+    def test_other_mise_tasks_are_not_posts(self):
+        self.assertEqual(self.t("mise run check && mise run restart --no-bump --no-git"), [])
 
 
 def tool_use(uid, command, model="claude-sonnet-5"):
@@ -126,6 +176,17 @@ class TurnTests(unittest.TestCase):
             "redoing on a high-tier model. (harmonic-forge#656)")
         self.assertNotIn("decision", out, "the backstop never blocks")
         self.assertNotIn("LANE_MODEL", out["systemMessage"])
+
+    def test_sonnet_mise_l2_post_on_deep_is_reported(self):
+        """harmonic-forge#843 AC5: the upward backstop sees `mise run l2-post`."""
+        path = self.transcript(
+            prompt("Implement H1908"),
+            tool_use("a", "mise run l2-post --kind completion --issue 1908 --narrative-file n.md"),
+            tool_result("a"),
+        )
+        out, calls = self.run_hook(path, {(HRSE, 1908): "deep"})
+        self.assertEqual(calls, [(HRSE, 1908)])
+        self.assertIn("vitalharmony/hrse#1908 (Tier deep) from claude-sonnet-5", out["systemMessage"])
 
     def test_only_the_current_turn_counts(self):
         path = self.transcript(

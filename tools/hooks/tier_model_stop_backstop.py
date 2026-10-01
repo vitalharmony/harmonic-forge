@@ -12,7 +12,8 @@ Reads the current turn from `transcript_path` (back to the last real prompt,
 bounded like every other transcript read in this directory) and collects the
 Bash tool calls that post to an issue thread and did not error:
 `l1_post.py`, `l2_post.py post`, `post_comment.py`, `mise run lane-comment`,
-`gh issue comment`, and `gh api .../issues/N/comments` with a POST. For each
+`mise [-C <dir>] run l1-post`/`l2-post` (harmonic-forge#843), `gh issue comment`,
+and `gh api .../issues/N/comments` with a POST. For each
 posted `(repo, issue)` it reads the board Tier fresh (`ttl=0`) and,
 for `deep`, compares the model that made the call (that assistant entry's
 `message.model`, else `session_model.current_model`).
@@ -44,13 +45,16 @@ sys.path.insert(0, str(HOOKS_DIR))
 import model_tier_gate  # noqa: E402
 import session_model  # noqa: E402
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+from block_lane1_status_claims import directory_change  # noqa: E402
 
 _MAX_TIER_READS = 6
 _READ_TIMEOUT_SECONDS = 3
 _POSTER_SCRIPTS = frozenset({"l1_post.py", "l2_post.py", "post_comment.py"})
-# Scripts whose --repo defaults to hrse when omitted (HRSE2's l1_post.py and
-# its `lane-comment` mise task); everything else falls back to the cwd repo.
-_HRSE_DEFAULT = "vitalharmony/hrse"
+# harmonic-forge#843 AC1: no poster defaults to hrse. `l1_post.resolve_repo()`
+# resolves the INVOKING checkout, so a harmonic-forge post was being scored
+# against an hrse issue of the same number. The repo is `--repo`, else a
+# `mise -C <dir>` or an earlier `cd <dir>` in the same command, else the cwd.
+_MISE_POSTERS = frozenset({"l1-post", "l2-post"})
 _API_COMMENTS_RE = re.compile(r"(?:^|/)repos/([^/\s]+/[^/\s]+)/issues/(\d+)/comments/?$")
 _ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
 _GH_FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field", "--input"})
@@ -79,36 +83,79 @@ def _as_int(value: str | None) -> int | None:
     return int(value) if value.isdigit() else None
 
 
-def posted_targets(command: str, cwd_repo) -> list[tuple[str, int]]:
+def _dir_repo(directory: str | None, cwd: str | None) -> str | None:
+    """The repository a directory belongs to, or None. A relative path
+    resolves against the payload cwd (never this process's own)."""
+    if not directory:
+        return None
+    path = os.path.expanduser(directory)
+    if not os.path.isabs(path):
+        if not cwd:
+            return None
+        path = os.path.join(cwd, path)
+    return model_tier_gate.resolve_repo(path) if os.path.isdir(path) else None
+
+
+def _mise_task(tokens: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """`(task, -C dir, args after the task)` for `mise [-C <dir>] run <task> ...`."""
+    directory = _flag(tokens[:tokens.index("run")] if "run" in tokens else tokens, "-C", "--cd")
+    if "run" not in tokens:
+        return None, directory, []
+    at = tokens.index("run") + 1
+    task = tokens[at] if at < len(tokens) else None
+    return task, directory, tokens[at + 1:]
+
+
+def posted_targets(command: str, cwd_repo, cwd: str | None = None) -> list[tuple[str, int]]:
     """`(repo, issue)` pairs a Bash command posts a comment to.
 
     `cwd_repo` is a zero-argument callable, so the cwd's `git`/`mise.toml`
-    read happens only for a post that actually needs it.
+    read happens only for a post that actually needs it. `cwd` is the Stop
+    payload's cwd, against which a relative `cd`/`-C` resolves.
+
+    harmonic-forge#843 AC1: a `cd`/`pushd` in an earlier segment of the SAME
+    command sets the directory a later poster runs in (it never carries
+    across separate tool calls).
     """
     try:
         segments = command_segments(command)
     except ValueError:
         return []
     targets: list[tuple[str, int]] = []
+    effective_dir: str | None = None
     for raw in segments:
         tokens = strip_invocation_prefix(raw)
         if not tokens:
             continue
+        change = directory_change(tokens)
+        if change is not None:
+            target, resolvable = change
+            if resolvable and target:
+                base = effective_dir or cwd
+                expanded = os.path.expanduser(target)
+                effective_dir = expanded if os.path.isabs(expanded) or not base \
+                    else os.path.join(base, expanded)
+            else:
+                effective_dir = None
+            continue
         names = [os.path.basename(t) for t in tokens]
         repo: str | None = None
         issue: int | None = None
+        run_dir: str | None = effective_dir
         script = next((i for i, n in enumerate(names) if n in _POSTER_SCRIPTS), None)
         if script is not None:
             rest = tokens[script + 1:]
             if names[script] == "l2_post.py" and "post" not in rest:
                 continue  # snapshot / resolve-lock post nothing
             issue = _as_int(_flag(rest, "--issue"))
-            repo = _flag(rest, "--repo") or (
-                _HRSE_DEFAULT if names[script] == "l1_post.py" else None)
-        elif "lane-comment" in tokens and names[0] == "mise":
-            rest = tokens[tokens.index("lane-comment") + 1:]
+            repo = _flag(rest, "--repo")
+        elif names[0] == "mise":
+            task, mise_dir, rest = _mise_task(tokens)
+            if task not in _MISE_POSTERS | {"lane-comment"}:
+                continue
             issue = _as_int(_flag(rest, "--issue"))
-            repo = _flag(rest, "--repo") or _HRSE_DEFAULT
+            repo = _flag(rest, "--repo")
+            run_dir = mise_dir if mise_dir else run_dir
         elif names[0] == "gh" and tokens[1:3] == ["issue", "comment"] and len(tokens) > 3:
             issue = _as_int(tokens[3])
             url = _ISSUE_URL_RE.search(tokens[3])
@@ -131,7 +178,7 @@ def posted_targets(command: str, cwd_repo) -> list[tuple[str, int]]:
             continue
         if issue is None:
             continue
-        repo = repo or cwd_repo()
+        repo = repo or _dir_repo(run_dir, cwd) or cwd_repo()
         if repo and (repo, issue) not in targets:
             targets.append((repo, issue))
     return targets
@@ -224,7 +271,7 @@ def run(payload: dict, env: dict | None = None, lookup=None, fallback_model=None
     posted: list[tuple[str, int, str | None]] = []
     calls, truncated = scan_turn(transcript_path)
     for command, model, _tool_id in calls:
-        for repo, issue in posted_targets(command, cwd_repo):
+        for repo, issue in posted_targets(command, cwd_repo, cwd):
             repo = repo.lower()
             if not any(p[:2] == (repo, issue) for p in posted):
                 posted.append((repo, issue, model))

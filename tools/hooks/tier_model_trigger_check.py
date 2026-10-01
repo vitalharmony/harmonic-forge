@@ -201,11 +201,12 @@ class _NoBoard:
 NO_BOARD = _NoBoard()
 
 
-def lookup_tier(repo: str, number: int, boards: dict[str, str]):
+def lookup_tier(repo: str, number: int, boards: dict[str, str], ttl: float = 0):
     """`(tier, error)`; `(NO_BOARD, None)` for a repo with no board.
 
-    `ttl=0` (preclose fix 7): a trigger is the moment a raised Tier must be
-    seen, so it never reads the edit gate's 120 s cache.
+    `ttl=0` by default (preclose fix 7): a trigger is the moment a raised Tier
+    must be seen, so it never reads the edit gate's 120 s cache. The advisory
+    downshift reminder passes the cache TTL instead (harmonic-forge#843 AC2).
     """
     board = boards.get(repo.lower())
     if board is None:
@@ -224,7 +225,7 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str]):
     else:
         def run(cmd):
             return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
-    return model_tier_gate.read_tier(repo.lower(), number, board, run=run, ttl=0, owner=owner)
+    return model_tier_gate.read_tier(repo.lower(), number, board, run=run, ttl=ttl, owner=owner)
 
 
 def decide(refs: list[tuple[str, int]], model: str | None, lookup,

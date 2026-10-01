@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(hooks): downshift reminder counts deep work in hand -- mise l1-post/l2-post posts, an open deep issue's impl worktree (LANE=2), a cd/git -C/mise -C into one; no hrse default for any poster (harmonic-forge#843)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018t3rBVC79Nv9D5TgP9XD8D
+- tools/hooks/tier_model_stop_backstop.py      |  73 ++++++++++--
+- tools/hooks/tier_model_trigger_check.py      |   9 +-
+- tools/hooks/worktree_issue.py                |  61 ++++++++++
+- 6 files changed, 510 insertions(+), 26 deletions(-)
+
 ## fix(lane): preclose sticky-wicket patch — refuse all Codex -c/-p passthrough, sandbox exec/review launches, Codex Lane 2 guard delegates to the shared parser and covers other projects' main checkouts (harmonic-forge#840)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
