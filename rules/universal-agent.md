@@ -519,6 +519,13 @@ self-declared Tooling-Exception eligibility does not reach this exception** —
 an agent cannot scope its own filing out of the artifact requirement.
 <!-- /R-0039 -->
 
+<!-- R-0372 -->
+**A Tooling Exception issue is also split by mechanism when it is filed**:
+one issue per mechanism at Tier `deep` or with two high-blast mechanisms, and an
+authorization mechanism always alone at Tier `deep` (`3-lane-protocol.md`
+R-0370 and R-0371).
+<!-- /R-0372 -->
+
 <!-- R-0352 -->
 **A deferral is declared on the issue at filing time**, in one comment, naming
 three things: **the trigger** (the observable event that ends the deferral),

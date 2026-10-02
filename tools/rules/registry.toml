@@ -1930,8 +1930,8 @@ hooks = []
 id = "R-0228"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
-statement = "Under the exception a single implementer designs and writes the tooling in one pass, with no Lane 1 handoff, Lane 2 relay, or per-round Lane 3 gates. A batch may be delegated to a subagent, which implements/gates/commits/pushes/opens PRs; merge and close stay with the operator's own session regardless."
-text_sha = "d83bf50e29b1f9c8"
+statement = "Under the exception a single implementer designs and writes the tooling in one pass, with no Lane 1 handoff relayed to another lane, no Lane 2 relay, and no per-round Lane 3 gates; the filing artifact R-0039 requires is still posted. A batch may be delegated to a subagent, which implements/gates/commits/pushes/opens PRs; merge and close stay with the operator's own session regardless."
+text_sha = "00a6dcc742cc8888"
 hooks = []
 
 [[rule]]
@@ -2431,4 +2431,36 @@ file = "rules/universal-agent.md"
 anchor = "security"
 statement = "Lane credentials are fine-grained PATs, one per account, scoped to that account's repos with minimum permissions; a broader token needs a token_exception recorded in projects.toml, and tokens are loaded with --insecure-storage so a scratch slot cannot replace a live keyring credential."
 text_sha = "1dc5d8e48d1ee15a"
+hooks = []
+
+[[rule]]
+id = "R-0370"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "A Tooling Exception issue is filed as one issue per mechanism when it is Tier deep (8+ points) or when two or more of its mechanisms each touch a HIGH_BLAST_PATTERNS surface or tools/gh/; one mechanism is one independently removable design, which may carry several ACs and kill checks; dependent children are linked blocked-by and each carries its own handoff in the same filing (or R-0352's deferral shape); a single deep mechanism stays one issue; it applies at filing, and an already-filed issue is re-split only on the operator's word; planning.md's exceptions do not carry over, only the operator's override (harmonic-forge#856, from harmonic-forge#851)."
+text_sha = "267932b98b825cce"
+hooks = []
+
+[[rule]]
+id = "R-0371"
+file = "3-lane-protocol.md"
+anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
+statement = "Any mechanism that mints, relaxes or bypasses an authorization (an AE or ready-for-l3, a batch_auth merge grant, the preclose-inspected label gate, the model-tier gate, auto-AE, a review waiver, any PreToolUse deny-hook relaxation) is its own issue at any Tier, carries board Tier deep (overriding HRSE2 planning.md's point-to-Tier table for it), and runs preclose-check with --tier deep; when in doubt it is its own issue (harmonic-forge#856)."
+text_sha = "2bb076ba3b1a9b6e"
+hooks = []
+
+[[rule]]
+id = "R-0372"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "Pointer at the filing bar: a Tooling Exception issue is also split by mechanism when filed, and an authorization mechanism is always filed alone at Tier deep (3-lane-protocol.md R-0370, R-0371)."
+text_sha = "2ee9e2b435c93b5e"
+hooks = []
+
+[[rule]]
+id = "R-0373"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "Before filing a Tooling Exception issue with its handoff, Lane 1 splits it by mechanism where R-0370 requires and files any authorization mechanism alone at Tier deep (R-0371)."
+text_sha = "4b693652133572b1"
 hooks = []

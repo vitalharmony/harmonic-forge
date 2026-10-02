@@ -1247,12 +1247,78 @@ tooling/documentation work directly to Claude Code."), and carries the
 same posture: explicit, per-issue, never assumed.
 <!-- /R-0227 -->
 
+<!-- R-0370 -->
+**A Tooling Exception issue is split by mechanism at filing** (harmonic-forge#856,
+from harmonic-forge#851). File one issue per mechanism when either holds: (i) the
+issue is estimated at Tier `deep` (8 points or more), or (ii) at any Tier, two or
+more of its mechanisms each touch a high-blast surface as
+`tools/gh/preclose_check.py`'s `HIGH_BLAST_PATTERNS` defines it, or `tools/gh/`
+(which those patterns do not cover, and where harmonic-forge#851's defect lived).
+
+- **One mechanism** is one design that a single change could remove whole, such
+  as one hook, one filter or one rule. It may carry several ACs and several kill
+  checks (`tools/gh/kill_check.py` takes one per AC); two kill checks on the same
+  design are still one mechanism. Two designs that can be removed independently
+  are two mechanisms.
+- Dependent children are linked with blocked-by.
+- Each child carries its own handoff in the same filing action (R-0039). A child
+  whose handoff's file and line citations would be written against code a
+  prerequisite that has not landed (a sibling or any other issue) is about to
+  change is R-0039's third exception,
+  declared with R-0352's deferral shape (trigger, owner, record); that is the
+  only reason a child's handoff defers. Any other child whose handoff cannot be
+  written is handled exactly as R-0039 handles any issue in that state,
+  pipeline-blocking case included; R-0370 adds no case of its own.
+- R-0228 removes the relay of that handoff to another lane, not the filing
+  artifact itself (R-0228 now says so).
+- A single mechanism that is itself deep stays one issue: the rule splits
+  bundles, not single mechanisms.
+- It applies at filing. An issue already filed is re-split only on the operator's
+  word.
+- HRSE2's `.claude/rules/planning.md` 13-point decomposition threshold still
+  applies to all issues; this rule is narrower and earlier (Tooling Exception
+  only, from 8 points). planning.md's three exceptions (research spike,
+  production fire, single-line fix) do not carry over here; only the operator's
+  override does.
+
+harmonic-forge#851 bundled lane-owned event filtering, Lane 3 auto-pickup and a
+per-repo auto-AE toggle in one deep issue. It ran two preclose passes, two
+sticky-wicket rulings and a reforge, and the filtering and pickup mechanisms were
+re-reviewed at full-panel size every round although the defects sat in the one
+authorization path.
+<!-- /R-0370 -->
+
+<!-- R-0371 -->
+**An authorization mechanism is its own issue and is reviewed at full depth**
+(harmonic-forge#856). Any mechanism that mints, relaxes or bypasses an
+authorization is filed as its own issue at any Tier, carries board Tier `deep`
+whatever its point estimate, and runs `preclose-check` with `--tier deep`.
+This Tier overrides HRSE2 `.claude/rules/planning.md`'s point-to-Tier table for
+such an issue. That table is a default mapping from points, and planning.md
+itself calls Tier "a model-routing signal, not a forecast" whose one live
+consumer is the model-tier gate, so routing an authorization mechanism to `deep`
+at a low point count uses the field as designed. The free-text estimate still
+records the actual points, and a lane session on the issue needs the high-tier
+model `deep` routes to. Isolating it
+must not shrink its review: the panel is 1, 3 or 5 refuters by Tier
+(`tools/gh/preclose_check.py`), and `HIGH_BLAST_PATTERNS` does not cover
+`tools/gh/`, where harmonic-forge#851's auto-AE defect lived.
+
+Authorizations, enumerated: an AE or `ready-for-l3`; a `tools/hooks/batch_auth.py`
+merge grant; the `preclose-inspected` label gate (R-0233/R-0234); the model-tier
+gate (`tools/hooks/model_tier_gate.py`); auto-AE; a waiver of a review
+requirement; any relaxation of a `PreToolUse` deny hook. When in doubt, it is its
+own issue.
+<!-- /R-0371 -->
+
 <!-- R-0228 -->
 **Process under the exception:**
 - **Single implementer.** One agent (whichever lane the operator assigns,
   including Lane 1/Claude Code as an explicit exception to "Lane 1 never
   implements") designs and writes the tooling in one pass. No Lane 1
-  handoff document, no Lane 2 relay, no per-round Lane 3 gates.
+  handoff relayed to another lane, no Lane 2 relay, no per-round Lane 3 gates.
+  The filing artifact R-0039 requires is still posted with the issue
+  (Tooling-Exception eligibility "does not reach this exception").
 - **A batch may be delegated to a subagent — its merge and close may
   not.** Running a Tooling Exception batch inside a subagent so the parent
   session stays interruptible is endorsed, not merely tolerated: the

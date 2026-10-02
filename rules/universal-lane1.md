@@ -307,6 +307,12 @@ handoff; do not reconstruct its section list from memory or this
 summary.
 <!-- /R-0099 -->
 
+<!-- R-0373 -->
+Before filing a Tooling Exception issue with its handoff, split it by mechanism
+where `3-lane-protocol.md` R-0370 requires, and file any authorization mechanism
+alone at Tier `deep` (R-0371).
+<!-- /R-0373 -->
+
 <!-- R-0100 -->
 For a Plan-First issue, withhold implementation steps from the first
 handoff; post them only after Lane 2's plan clears review, as defined by
