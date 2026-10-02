@@ -50,7 +50,9 @@ rule above forbids two of the three steps that branch requires, and the
 contradiction resolves silently inside your own reasoning): you may create a
 scratch directory outside the repository, run
 `tools/lane/build_cross_family_brief.py --out <path in that scratch dir>`,
-make the one permitted `cross_family_call.sh` invocation, and run
+make one of the two permitted `cross_family_call.sh` invocations (`--caller` is
+the family of the session that **wrote the handoff**, so the reviewer is the
+other family — R-0358, harmonic-forge#848), and run
 `tools/lane/cross_family_provenance.py` on the envelope it returns. Those
 four, in that shape, are the only non-read commands you run. Nothing in the
 repository under review is written, and no GitHub state is touched.

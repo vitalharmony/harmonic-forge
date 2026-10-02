@@ -8,6 +8,7 @@ one-pass suite that patched away the very cwd-dependence that made the guard
 evadable. Both now run the real entry point and assert on real output.
 """
 
+import argparse
 import contextlib
 import importlib.util
 import io
@@ -18,7 +19,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).parent
 
@@ -780,6 +781,153 @@ class CrossFamilyReceiptTests(ScratchRepo):
         with self.assertRaises(SystemExit):              # required, so not-triggered is refused
             self.complete([dismissed], not_triggered=True)
 
+
+class OwnModelCallSiteTests(unittest.TestCase):
+    """harmonic-forge#848 preclose finding 5: `--own-model` reaches
+    `compute_provenance` from both entry points, not just from the helper."""
+
+    class _Stop(Exception):
+        pass
+
+    def _capture(self) -> MagicMock:
+        return MagicMock(side_effect=self._Stop)
+
+    def test_complete_forwards_own_model(self) -> None:
+        fake = self._capture()
+        args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, findings="f.json",
+                                  base="origin/main", head="HEAD", force=False, envelope=None,
+                                  not_triggered=True, own_model="gpt-6-sol")
+        # receipt_lock is stubbed: the real one flocks the shared per-issue
+        # lock, which a concurrent kill-check run on this issue holds.
+        with patch.object(preclose, "require_writable"), \
+             patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
+             patch.object(preclose, "registered_repo", return_value=args.repo), \
+             patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+             patch.object(preclose, "local_patch_id", return_value="p"), \
+             patch.object(preclose, "check_pass_cap"), \
+             patch.object(preclose, "load_findings", return_value=[]), \
+             patch.object(preclose, "require_mechanisms"), \
+             patch.object(preclose, "gate_decision", return_value=(False, "", 0, None)), \
+             patch.object(preclose, "compute_provenance", fake), \
+             self.assertRaises(self._Stop):
+            preclose.complete(args)
+        self.assertEqual(fake.call_args.args[2], "gpt-6-sol")
+
+    def test_post_verdict_forwards_own_model(self) -> None:
+        fake = self._capture()
+        args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, base="b",
+                                  head="HEAD", main="origin/main", envelope="e.jsonl",
+                                  own_model="claude-opus-5-5")
+        passes = preclose.preclose_passes
+        with patch.object(preclose, "require_writable"), \
+             patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
+             patch.object(preclose, "registered_repo", return_value=args.repo), \
+             patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+             patch.object(preclose, "run", return_value=MagicMock(stdout="b" * 40)), \
+             patch.object(preclose, "find_receipt", return_value={}), \
+             patch.object(passes, "current", return_value=[{}] * passes.MAX_PASSES), \
+             patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
+             patch.object(passes, "reviewed_head", return_value="b" * 40), \
+             patch.object(passes, "reviewed_patch_id", return_value="p"), \
+             patch.object(preclose, "local_patch_id", return_value="p"), \
+             patch.object(preclose, "require_recorded_envelope"), \
+             patch.object(preclose, "compute_provenance", fake), \
+             self.assertRaises(self._Stop):
+            preclose.post_verdict(args)
+        self.assertEqual(fake.call_args.args[2], "claude-opus-5-5")
+
+
+
+class OwnModelTests(unittest.TestCase):
+    """harmonic-forge#848 AC8: the calling session's model reaches the label."""
+
+    def test_compute_provenance_forwards_own_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "prov.py"
+            tool.write_text("import sys\nprint(' '.join(sys.argv[1:]))\n")
+            with patch.object(preclose, "PROVENANCE_TOOL", tool):
+                label = preclose.compute_provenance(None, True, "gpt-6-sol")
+        self.assertIn("--own-model gpt-6-sol", label)
+
+    def test_compute_provenance_omits_own_model_when_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "prov.py"
+            tool.write_text("import sys\nprint(' '.join(sys.argv[1:]) or 'x')\n")
+            with patch.object(preclose, "PROVENANCE_TOOL", tool):
+                label = preclose.compute_provenance(None, True)
+        self.assertNotIn("--own-model", label)
+
+    def test_not_triggered_without_own_model_is_a_parser_error(self) -> None:
+        """Preclose finding 2: the label names the session's family on the
+        not-triggered branch too, so --own-model is required there as well."""
+        argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
+                "--complete", "--findings", "/dev/null", "--not-triggered"]
+        # complete() is stubbed so a parser that wrongly lets this through
+        # fails fast here instead of running a real pass.
+        with patch.object(sys, "argv", argv), \
+             patch.object(preclose, "complete", return_value=0), \
+             patch("sys.stderr", new_callable=io.StringIO) as err, \
+             self.assertRaises(SystemExit) as done:
+            preclose.main()
+        self.assertEqual(done.exception.code, 2)
+        self.assertIn("--own-model", err.getvalue())
+
+    @staticmethod
+    def _parses(command: str) -> int:
+        """Feed a printed preclose_check.py command through main()'s own parser
+        with every `<placeholder>` filled in; complete/post_verdict are stubbed,
+        so the exit code is the parser's verdict alone."""
+        import re as _re
+        import shlex
+        filled = _re.sub(r"<[^>]*>", "X", command)
+        tokens = shlex.split(filled)
+        argv = ["preclose_check.py"] + tokens[tokens.index(next(t for t in tokens
+                                                                if t.endswith("preclose_check.py"))) + 1:]
+        with patch.object(sys, "argv", argv), \
+             patch.object(preclose, "complete", return_value=0), \
+             patch.object(preclose, "post_verdict", return_value=0), \
+             patch("sys.stderr", new_callable=io.StringIO), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            try:
+                preclose.main()
+            except SystemExit as done:
+                return done.code or 0
+        return 0
+
+    def test_gate_hint_carries_own_model(self) -> None:
+        """Pass-2 survivor 5: the command --gate actually PRINTS must parse --
+        captured from stdout, never read from the source text."""
+        for required in (True, False):
+            with self.subTest(required=required):
+                out = io.StringIO()
+                with patch.object(preclose, "require_writable"), \
+                     patch.object(preclose, "registered_repo", return_value="vitalharmony/harmonic-forge"), \
+                     patch.object(preclose, "gate_decision", return_value=(required, "why", 1, [])), \
+                     patch("sys.stdout", out):
+                    preclose.gate(_Args(repo="vitalharmony/harmonic-forge", issue=848,
+                                        findings="f.json", cross_family=False))
+                line = next(l for l in out.getvalue().splitlines() if "--complete" in l)
+                self.assertIn("--own-model", line)
+                self.assertEqual(self._parses(line), 0, line)
+
+    def test_post_verdict_hint_parses(self) -> None:
+        """Pass-2 survivor 4: the sticky-wicket remediation command must run."""
+        import preclose_passes
+        text = preclose_passes.POST_VERDICT_REQUIRED
+        command = text[text.index("preclose_check.py --post-verdict"):text.index(". It never")]
+        command = "--repo vitalharmony/harmonic-forge --issue 848 " + command.split("preclose_check.py", 1)[1]
+        self.assertEqual(self._parses("python3 preclose_check.py " + command), 0, command)
+
+    def test_envelope_without_own_model_is_a_parser_error(self) -> None:
+        argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
+                "--complete", "--findings", "/dev/null", "--envelope", "/dev/null"]
+        with patch.object(sys, "argv", argv), \
+             patch.object(preclose, "complete", return_value=0), \
+             patch("sys.stderr", new_callable=io.StringIO) as err, \
+             self.assertRaises(SystemExit) as done:
+            preclose.main()
+        self.assertEqual(done.exception.code, 2)
+        self.assertIn("--own-model", err.getvalue())
 
 if __name__ == "__main__":
     unittest.main()

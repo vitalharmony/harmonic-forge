@@ -61,6 +61,25 @@ def _redact(text: str) -> str:
     return flat
 
 CROSS_FAMILY = "Red-team provenance: cross-family ({family} / {model})"
+
+def model_family(model: object) -> str | None:
+    """The agent family a model id belongs to, or None when unrecognized.
+
+    harmonic-forge#848 AC8: used to refuse a cross-family label when the
+    reviewer's family is the calling session's own. Unrecognized is None, and
+    `classify` treats None as undecidable: it refuses the cross-family label
+    rather than waving it through (sticky-wicket PATCH, preclose pass 2).
+    """
+    if not isinstance(model, str):
+        return None
+    m = model.casefold()
+    if m.startswith("gpt-") or m.startswith("codex"):
+        return "codex"
+    if m.startswith("gemini"):
+        return "gemini"
+    if any(token in m for token in ("claude", "opus", "fable", "sonnet", "haiku")):
+        return "claude"
+    return None
 FALLBACK = "Red-team provenance: in-family fallback ({own_model}) — {reason}"
 NOT_TRIGGERED = (
     "Red-team provenance: in-family only ({own_model}) — cross-family branch "
@@ -96,8 +115,25 @@ def iter_envelopes(text: str):
             yield value
 
 
+class CallerMismatch(Exception):
+    """`--caller` named a family other than the calling session's own.
+
+    An invocation error, not a review that could not run: the caller re-runs
+    `cross_family_call.sh` with the right `--caller`. So no label is printed
+    and nothing downstream can record it as a terminal fallback (sticky-wicket
+    PATCH item 3, harmonic-forge#848 preclose pass 2 survivor 3)."""
+
+
 def classify(envelope: dict, model: str, own_model: str) -> str:
     """The provenance line for one envelope."""
+    own_family = model_family(own_model)
+    caller_family = envelope.get("caller_family")
+    if own_family and caller_family and caller_family != own_family:
+        raise CallerMismatch(
+            f"--caller {caller_family} does not match the calling session's family "
+            f"({own_family}, from --own-model {own_model}). Re-run cross_family_call.sh "
+            f"with --caller {own_family}; no provenance label was printed, so nothing "
+            f"was recorded.")
     status = envelope.get("status")
     if status != "ok" or not isinstance(envelope.get("report"), dict):
         detail = _redact(f"{status or 'no envelope'}, "
@@ -129,7 +165,30 @@ def classify(envelope: dict, model: str, own_model: str) -> str:
         )
 
     family = envelope.get("family")
-    reviewer_model = envelope.get("verify_model") if family == "claude" else model
+    # harmonic-forge#848 AC8: a review by the calling session's own family is
+    # not cross-family, whatever --caller claimed. The caller is self-declared
+    # on the command line, so the label checks the session's model instead.
+    # An --own-model this cannot place in a family is undecidable, and
+    # undecidable refuses the cross-family label (preclose pass 2 survivor 2).
+    if own_family is None:
+        return FALLBACK.format(
+            own_model=own_model,
+            reason=f"--own-model {own_model!r} names no known model family, so "
+                   f"whether this review was cross-family cannot be decided -- pass "
+                   f"the calling session's real model id",
+        )
+    if family and own_family == family:
+        return FALLBACK.format(
+            own_model=own_model,
+            reason=f"the reviewer ({family}) is the calling session's own family, "
+                   f"so this was not a cross-family check -- --caller must name the "
+                   f"family that implemented the diff",
+        )
+    # harmonic-forge#848: the envelope records the model that actually ran,
+    # for every family. `model` (the Codex default) is only the fallback for a
+    # Codex envelope written before Codex verify calls carried `verify_model`;
+    # it is never put in another family's label.
+    reviewer_model = envelope.get("verify_model") or (model if family == "codex" else "unknown")
     label = CROSS_FAMILY.format(family=family, model=reviewer_model)
     unchecked = len(assumptions) - len(checked)
     return (f"{label} — {len(checked)} of {len(assumptions)} assumption(s) "
@@ -141,8 +200,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--envelope", required=True,
                         help="path to the JSON-lines envelope cross_family_call.sh wrote")
-    parser.add_argument("--model", default="gpt-5.6-sol")
-    parser.add_argument("--own-model", default="claude-opus-5")
+    parser.add_argument("--model", default="gpt-6-sol",
+                        help="fallback reviewer model, used only when the envelope "
+                             "carries no verify_model (envelopes from before harmonic-forge#848)")
+    # harmonic-forge#848 preclose pass 2 survivor 1: required, never defaulted.
+    # A default named one family, so an omitted flag certified that family's
+    # self-review as cross-family.
+    parser.add_argument("--own-model", required=True,
+                        help="the calling session's model id (e.g. claude-opus-5-5, gpt-6-sol)")
     parser.add_argument("--not-triggered", action="store_true",
                         help="print the not-triggered label and exit; --envelope is ignored")
     args = parser.parse_args(argv)
@@ -162,8 +227,13 @@ def main(argv: list[str] | None = None) -> int:
             own_model=args.own_model,
             reason="cross-family call did not run: envelope was not JSON"))
         return 0
-    for envelope in envelopes:
-        print(classify(envelope, args.model, args.own_model))
+    try:
+        labels = [classify(envelope, args.model, args.own_model) for envelope in envelopes]
+    except CallerMismatch as exc:
+        print(f"cross_family_provenance: {exc}", file=sys.stderr)
+        return 2
+    for label in labels:
+        print(label)
     return 0
 
 

@@ -129,12 +129,15 @@ _MUTATION_MISE_TASKS = {"l1-comment", "post-comment", "gh-new-issue", "lane-comm
 # the reviewer starts, not what it may reach. The value is still required to
 # be a non-flag token, so it cannot smuggle another option in.
 _CROSS_FAMILY_BASENAME = "cross_family_call.sh"
-_CROSS_FAMILY_PERMITTED_ARGS = (
-    "--caller", "claude",
-    "--families", "2",
-    "--posture", "verify",
-    "--brief",
-)
+# harmonic-forge#848 (R-0358): exactly two head sequences, differing only in
+# the --caller value -- the family that implemented the diff or wrote the
+# handoff, so the reviewer is always the OTHER family. Same length, so the
+# exact-length check below is unchanged.
+_CROSS_FAMILY_PERMITTED_HEADS = frozenset({
+    ("--caller", "claude", "--families", "2", "--posture", "verify", "--brief"),
+    ("--caller", "codex", "--families", "2", "--posture", "verify", "--brief"),
+})
+_CROSS_FAMILY_HEAD_LEN = 7
 _CROSS_FAMILY_TRAILING_ARGS = ("--cwd",)
 
 _READ_METHOD_TOKENS = {"-x", "--method"}
@@ -205,23 +208,24 @@ def _cross_family_argv(tokens: list[str]) -> list[str] | None:
 
 
 def _cross_family_permitted(argv: list[str]) -> bool:
-    """Exactly one invocation shape is permitted, in exactly this order:
+    """Exactly two invocation shapes are permitted, in exactly this order,
+    differing only in the caller (harmonic-forge#848, R-0358):
 
-        <path>/cross_family_call.sh --caller claude --families 2 \\
+        <path>/cross_family_call.sh --caller <claude|codex> --families 2 \\
             --posture verify --brief <path> --cwd <path>
 
-    Anything else — a different posture, a third family, a different caller,
+    Anything else — a different posture, a third family, any other caller,
     a reordering, or a single extra token — is denied. Order is required
     rather than parsed into a flag map on purpose: this is an allowlist in a
     security gate, and an exact-sequence match has no argument-parsing
     surface of its own to get wrong.
     """
     args = argv[1:]
-    head = len(_CROSS_FAMILY_PERMITTED_ARGS)
+    head = _CROSS_FAMILY_HEAD_LEN
     expected = head + 1 + len(_CROSS_FAMILY_TRAILING_ARGS) + 1
     if len(args) != expected:
         return False
-    if tuple(args[:head]) != _CROSS_FAMILY_PERMITTED_ARGS:
+    if tuple(args[:head]) not in _CROSS_FAMILY_PERMITTED_HEADS:
         return False
     if tuple(args[head + 1:-1]) != _CROSS_FAMILY_TRAILING_ARGS:
         return False

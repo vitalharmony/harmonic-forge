@@ -242,9 +242,32 @@ class TestCrossFamilyPermitBranch(unittest.TestCase):
             f"{_XF} --caller claude --families 3 --posture verify{_TAIL}"
         )
 
-    def test_non_claude_caller_denied(self):
+    def test_codex_caller_permitted(self):
+        """harmonic-forge#848 AC8: a Codex-implemented diff is reviewed by
+        Claude, so `--caller codex` is the second permitted shape."""
+        self._assert_permitted(
+            f"{_XF} --caller codex --families 2 --posture verify "
+            f"--brief /tmp/brief.md --cwd /tmp/scratch"
+        )
+
+    def test_any_other_caller_denied(self):
+        for caller in ("gemini", "Claude", "claude,codex", ""):
+            with self.subTest(caller=caller):
+                self._assert_denied(
+                    f"{_XF} --caller {caller} --families 2 --posture verify "
+                    f"--brief /tmp/brief.md --cwd /tmp/scratch"
+                )
+
+    def test_reordered_two_family_shape_denied(self):
         self._assert_denied(
-            f"{_XF} --caller codex --families 2 --posture verify{_TAIL}"
+            f"{_XF} --families 2 --caller codex --posture verify "
+            f"--brief /tmp/brief.md --cwd /tmp/scratch"
+        )
+
+    def test_codex_caller_with_three_families_denied(self):
+        self._assert_denied(
+            f"{_XF} --caller codex --families 3 --posture verify "
+            f"--brief /tmp/brief.md --cwd /tmp/scratch"
         )
 
     def test_extra_trailing_token_denied(self):

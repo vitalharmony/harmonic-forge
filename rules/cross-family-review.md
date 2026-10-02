@@ -24,17 +24,24 @@ asked in one line.
 So the second family is not a second opinion. It is a check on the claims the
 first family had no reason to doubt.
 
-## The call — one shape, and it is the only one permitted
+## The call — two shapes, and they are the only ones permitted
 
 <!-- R-0358 -->
 ```
-~/harmonic-forge/tools/lane/cross_family_call.sh --caller claude --families 2 \
+~/harmonic-forge/tools/lane/cross_family_call.sh --caller <claude|codex> --families 2 \
     --posture verify --brief <brief path> --cwd <scratch dir>
 ```
 
-`deny_advisory_subagent_gh_writes.py` permits exactly this argument sequence
-and nothing else — a different posture, a third family, a reordering, or one
-extra token is denied. Do not attempt to work around a denial; report it.
+`--caller` is **the family of the session that implemented the diff
+(preclose) or wrote the handoff (pitch-inspection)** — never the reviewer's.
+`--caller claude` targets Codex; `--caller codex` targets Claude. So the
+review always comes from the family that did not do the work
+(harmonic-forge#848, operator ruling 2026-10-01).
+
+`deny_advisory_subagent_gh_writes.py` permits exactly these two argument
+sequences, differing only in the `--caller` value, and nothing else — a
+different posture, a third family, a reordering, or one extra token is
+denied. Do not attempt to work around a denial; report it.
 <!-- /R-0358 -->
 
 **`--cwd` is the repository checkout the artifact lives in.** Not a scratch
@@ -170,9 +177,9 @@ whole value of the branch is that a reader can tell them apart.
 **Do not compose the label yourself — compute it and paste it:**
 
 ```
-python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope <envelope path>
+python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope <envelope path> --own-model <your session's model>
 # or, when the branch did not trigger:
-python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope /dev/null --not-triggered
+python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope /dev/null --not-triggered --own-model <your session's model>
 ```
 
 A label derived by reading prose is a label that will sometimes be derived

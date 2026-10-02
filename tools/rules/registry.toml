@@ -2357,8 +2357,8 @@ exception_to = ["R-0356"]
 id = "R-0358"
 file = "rules/cross-family-review.md"
 anchor = "the-call"
-statement = "A cross-family advisory call uses exactly one argument sequence -- --caller claude --families 2 --posture verify --brief <path> --cwd <path> -- and a denial is reported, never worked around."
-text_sha = "2ad368553235740a"
+statement = "A cross-family advisory call uses exactly one of two argument sequences -- --caller claude or --caller codex, then --families 2 --posture verify --brief <path> --cwd <path> -- where --caller is the family that implemented the diff or wrote the handoff; a denial is reported, never worked around."
+text_sha = "d23e10afea03775a"
 hooks = ["tools/hooks/deny_advisory_subagent_gh_writes.py"]
 
 [[rule]]

@@ -37,8 +37,114 @@ class ClassifyTests(unittest.TestCase):
 
     def test_claude_verify_label_uses_the_recorded_pinned_model(self):
         envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5"}
-        label = m.classify(envelope, _MODEL, _OWN)
+        label = m.classify(envelope, _MODEL, "gpt-6-sol")  # a Codex session, reviewed by Claude
         self.assertIn("claude / claude-opus-5-5", label)
+
+    def test_codex_label_uses_the_recorded_model_not_the_flag(self):
+        """harmonic-forge#848 AC7: the envelope's verify_model wins for every
+        family; --model is only the fallback for pre-#848 envelopes."""
+        envelope = _ok([_a("confirmed")]) | {"family": "codex", "verify_model": "gpt-6-sol"}
+        label = m.classify(envelope, "gpt-5.6-sol", _OWN)
+        self.assertIn("gpt-6-sol", label)
+        self.assertNotIn("gpt-5.6-sol", label)
+
+    def test_codex_label_falls_back_to_the_flag_without_verify_model(self):
+        envelope = _ok([_a("confirmed")]) | {"family": "codex"}
+        self.assertIn("gpt-fallback-x", m.classify(envelope, "gpt-fallback-x", _OWN))
+
+    def test_model_flag_default_is_gpt_6_sol(self):
+        import contextlib, io, json as _json, tempfile as _tf
+        with _tf.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "envelope.jsonl"
+            path.write_text(_json.dumps(_ok([_a("confirmed")]) | {"family": "codex"}) + "\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                m.main(["--envelope", str(path), "--own-model", _OWN])
+        self.assertIn("gpt-6-sol", out.getvalue())
+
+    def test_same_family_review_is_not_labelled_cross_family(self):
+        """Preclose finding 1: a Claude session that passes `--caller codex`
+        gets a Claude reviewer. The label checks --own-model, not the
+        self-declared caller, and refuses to call that cross-family."""
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5",
+                                             "caller_family": "codex", "target_family": "claude"}
+        # Sticky-wicket PATCH item 3: a --caller that is not the session's own
+        # family is an invocation error, raised rather than labeled.
+        with self.assertRaises(m.CallerMismatch):
+            m.classify(envelope, "gpt-6-sol", "claude-opus-5-5")
+
+    def test_same_family_review_without_caller_field_is_refused(self):
+        """The equality refusal still holds for an envelope with no caller_family."""
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5"}
+        label = m.classify(envelope, "gpt-6-sol", "claude-opus-5-5")
+        self.assertNotIn("cross-family (", label)
+        self.assertIn("in-family fallback", label)
+
+    def test_unrecognized_own_model_refuses_the_cross_family_label(self):
+        """Preclose pass 2 survivor 2: undecidable identity refuses the label."""
+        for own in ("sol", "5.5", "mystery"):
+            with self.subTest(own=own):
+                label = m.classify(_ok([_a("confirmed")]) | {"verify_model": "gpt-6-sol"},
+                                   "gpt-6-sol", own)
+                self.assertNotIn("cross-family (", label)
+                self.assertIn("names no known model family", label)
+
+    def test_caller_mismatch_exits_2_and_prints_no_label(self):
+        """Preclose pass 2 survivor 3: nothing reaches stdout, so nothing is recorded."""
+        import contextlib, io, json as _json, tempfile as _tf
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "caller_family": "codex",
+                                             "target_family": "claude"}
+        with _tf.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "envelope.jsonl"
+            path.write_text(_json.dumps(envelope) + "\n")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = m.main(["--envelope", str(path), "--own-model", "claude-opus-5-5"])
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("--caller claude", err.getvalue())
+
+    def test_own_model_is_required(self):
+        """Preclose pass 2 survivor 1: no default family, ever."""
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as done:
+            m.main(["--envelope", "/dev/null", "--not-triggered"])
+        self.assertEqual(done.exception.code, 2)
+
+    def test_codex_session_reviewed_by_codex_is_not_cross_family(self):
+        label = m.classify(_ok([_a("confirmed")]) | {"verify_model": "gpt-6-sol"},
+                           "gpt-6-sol", "gpt-6-sol")
+        self.assertIn("in-family fallback", label)
+
+    def test_claude_envelope_without_verify_model_never_names_the_codex_flag(self):
+        """Preclose finding 4: the --model fallback is Codex's default and is
+        never put in another family's label."""
+        envelope = _ok([_a("confirmed")]) | {"family": "claude"}
+        label = m.classify(envelope, "gpt-6-sol", "gpt-6-sol")
+        self.assertIn("claude / unknown", label)
+        self.assertNotIn("gpt-6-sol)", label)
+
+    def test_model_family(self):
+        cases = {"gpt-6-sol": "codex", "codex-mini": "codex", "claude-opus-5-5": "claude",
+                 "opus": "claude", "claude-fable-5-1": "claude", "gemini-3": "gemini",
+                 "mystery": None, None: None}
+        for model, family in cases.items():
+            with self.subTest(model=model):
+                self.assertEqual(m.model_family(model), family)
+
+    def test_not_triggered_label_names_the_calling_model(self):
+        """harmonic-forge#848 AC8: --own-model is the calling session's model."""
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            m.main(["--envelope", "/dev/null", "--not-triggered", "--own-model", "gpt-6-sol"])
+        self.assertIn("gpt-6-sol", out.getvalue())
+
+    def test_codex_caller_review_is_labelled_claude(self):
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5",
+                                             "caller_family": "codex", "target_family": "claude"}
+        self.assertIn("cross-family (claude / claude-opus-5-5)",
+                      m.classify(envelope, "gpt-6-sol", "gpt-6-sol"))
 
     def test_all_uncheckable_does_not_earn_the_cross_family_label(self):
         """The state the prose had no name for: exit 0, `status: ok`, and no

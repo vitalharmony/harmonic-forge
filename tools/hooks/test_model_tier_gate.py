@@ -433,6 +433,75 @@ class ModelTierFamilies(unittest.TestCase):
         self.assertFalse(m.required_tier_met({"model": "gpt-5.6-terra"}, True))
 
 
+class CodexSolFamilyTests(unittest.TestCase):
+    """harmonic-forge#848: Codex's high tier is the `sol` FAMILY, not one
+    pinned version, so the current model (gpt-6-sol) passes a `deep` gate."""
+
+    def test_any_sol_version_satisfies_deep(self):
+        for model in ("gpt-6-sol", "gpt-5.6-sol", "GPT-6-SOL"):
+            with self.subTest(model=model):
+                self.assertTrue(m.required_tier_met({"model": model}, True))
+
+    def test_other_shapes_do_not_satisfy_deep(self):
+        # `gpt-6-solar` contains "sol" but is a different family token.
+        for model in ("gpt-6-terra", "gpt-6-solar", "sol", "gpt-sol", "", None, 42):
+            with self.subTest(model=model):
+                self.assertFalse(m.required_tier_met({"model": model}, True))
+
+    def test_non_string_model_returns_false_without_raising(self):
+        # NC2: a TypeError here would reach main()'s blanket except and ALLOW.
+        self.assertIs(m._codex_family(None), None)
+        self.assertFalse(m.required_tier_met({"model": None}, True))
+
+    def test_gate_has_no_version_literal_in_code(self):
+        """AC2/TC4: no executable string names a Codex version. Comments and
+        docstrings may cite one as history; a string constant may not."""
+        import ast
+        tree = ast.parse(Path(m.__file__).read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef))
+            and node.body and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        offenders = [
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in docstrings and re.search(r"gpt-[0-9]", node.value)
+        ]
+        self.assertEqual(offenders, [])
+
+
+class CodexSwitchHintTests(unittest.TestCase):
+    """harmonic-forge#848 AC2: Codex denials name the configured model when
+    its family is high, otherwise the family set -- never a hardcoded version."""
+
+    def _hint(self, config_text: str | None) -> str:
+        with tempfile.TemporaryDirectory() as home:
+            if config_text is not None:
+                Path(home, "config.toml").write_text(config_text, encoding="utf-8")
+            with patch.dict(os.environ, {"CODEX_HOME": home}):
+                return m._codex_switch_hint()
+
+    def test_names_configured_model_when_its_family_is_high(self):
+        self.assertIn("/model gpt-7-sol", self._hint('model = "gpt-7-sol"\n'))
+
+    def test_names_the_family_set_when_configured_model_is_not_high(self):
+        hint = self._hint('model = "gpt-6-terra"\n')
+        self.assertIn("Sol-family", hint)
+        self.assertIn("CODEX_HIGH_FAMILIES", hint)
+        self.assertIn("sol", hint)
+        self.assertIsNone(re.search(r"gpt-[0-9]", hint), hint)
+
+    def test_missing_or_unparseable_config_does_not_raise(self):
+        for text in (None, "model = = broken"):
+            with self.subTest(text=text):
+                hint = self._hint(text)
+                self.assertIn("Sol-family", hint)
+                self.assertIsNone(re.search(r"gpt-[0-9]", hint), hint)
+
+
 class BranchReplayTests(unittest.TestCase):
     """harmonic-forge#367 Lane 1 spec, "Test oracle" section: a bidirectional
     replay over the last 100 merged head refs in each repo, fixture-frozen
@@ -1109,6 +1178,42 @@ class PrecloseFindingRegressionTests(unittest.TestCase):
                 pass
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("no tracked issue resolved", stderr.getvalue())
+
+
+class CodexDenialCallSiteTests(unittest.TestCase):
+    """harmonic-forge#848 preclose finding 5: the Codex denial reaches the user
+    through `_main()`'s two call sites, not just through the helper."""
+
+    def _codex_home(self, model: str) -> str:
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        Path(home, "config.toml").write_text(f'model = "{model}"\n')
+        return home
+
+    def _payload(self) -> dict:
+        return {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "model": "gpt-6-terra",
+        }
+
+    def _run(self, tier) -> str:
+        env = {"CODEX_HOME": self._codex_home("gpt-7-sol")}
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value=tier):
+            return MainBashGatingTests._run_main(self, self._payload(), env)
+
+    def test_escalating_denial_names_the_configured_high_model(self):
+        out = self._run("deep")
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("/model gpt-7-sol", out)
+        self.assertNotIn("/model opus", out)
+
+    def test_lookup_failed_denial_names_the_configured_high_model(self):
+        out = self._run(m.LOOKUP_FAILED)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("/model gpt-7-sol", out)
+        self.assertNotIn("/model opus", out)
 
 
 if __name__ == "__main__":
