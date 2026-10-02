@@ -684,6 +684,14 @@ class ReworkRoundBoundaryTests(unittest.TestCase):
         self._main([rework] + self.APPROVED + [_comment(14, "ready-for-l3", self.T, sha="2222222")])
 
 
+def _attest(prefix: str, fields: str) -> str:
+    """A body whose footer genuinely attests it, the way l1_post/post_lane_
+    discussion write it: digest of the rstripped prefix, footer appended."""
+    import hashlib
+    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+    return f"{prefix.rstrip(chr(10))}\n\n<!-- l1-post v1; {fields}; body-sha256={digest} -->\n"
+
+
 class AutoAeAuthorityTests(unittest.TestCase):
     """harmonic-forge#851 AC3.6: the consumer half of the fixed carve-out."""
 
@@ -696,19 +704,18 @@ class AutoAeAuthorityTests(unittest.TestCase):
     def _handoff(self, cid: int, mutates_live: str | None) -> dict:
         field = f" mutates-live={mutates_live};" if mutates_live else ""
         return {"id": cid, "created_at": "2026-10-02T01:00:00Z", "html_url": self._url(cid),
-                "body": f"## Handoff\n\n<!-- l1-post v1; kind=handoff; plan-first=false;{field} "
-                        f"sha={DEFAULT_SHA} -->"}
+                "body": _attest("## Handoff\n\nbody",
+                                f"kind=handoff; plan-first=false;{field} sha={DEFAULT_SHA}")}
 
     def _auto_ae(self, cid: int) -> dict:
         return {"id": cid, "created_at": "2026-10-02T02:00:00Z", "html_url": self._url(cid),
-                "body": "**Authorized under:** the standing auto-AE toggle\n\n"
-                        f"<!-- l1-post v1; kind=ae; authorized-by=auto-ae; sha={DEFAULT_SHA} -->"}
+                "body": _attest("**Authorized:** x\n**Authorized under:** the standing auto-AE toggle",
+                                f"kind=ae; authorized-by=auto-ae; sha={DEFAULT_SHA}")}
 
     def _spec(self, cid: int, tier: str | None) -> dict:
         line = f"Write tier: {tier}\n\n" if tier else ""
         return {"id": cid, "created_at": "2026-10-02T01:30:00Z", "html_url": self._url(cid),
-                "body": f"## Lane 3 Test Spec — H1\n\n{line}1. TC1\n\n"
-                        f"<!-- l1-post v1; kind=spec; posted-by=LANE3; body-sha256={'0' * 64} -->"}
+                "body": _attest(f"## Lane 3 Test Spec — H1\n\n{line}1. TC1", "kind=spec; posted-by=LANE3")}
 
     def _thread(self, mutates_live="false", tier="W", spec_tier="W"):
         return [self._handoff(1, mutates_live), self._spec(5, spec_tier) if spec_tier != "none"
@@ -792,6 +799,82 @@ class AutoAeAuthorityTests(unittest.TestCase):
         digest = hashlib.sha256(prefix.encode()).hexdigest()
         comment = {"body": f"{prefix}\n\n<!-- l1-post v1; kind=sweep; sha={'a' * 40}; body-sha256={digest} -->\n"}
         self.assertTrue(c.verify_body_sha256(comment))
+
+
+class ContentBoundFooterConsumerTests(unittest.TestCase):
+    """harmonic-forge#851 REFORGE: every consumer reads a comment's own
+    attested footer, and an unreadable one refuses -- never permits."""
+
+    def setUp(self):
+        self.t = AutoAeAuthorityTests()
+
+    def _gate(self, comments):
+        return c.resolve_gate_authority(comments, DEFAULT_SHA)
+
+    def test_text_appended_after_an_auto_ae_keeps_it_an_auto_ae(self):
+        ae = self.t._auto_ae(6)
+        ae["body"] += "\n(edited)\n"
+        thread = [self.t._handoff(1, "true"), self.t._spec(5, "W"), ae,
+                  _comment(7, "sweep", "2026-10-02T02:00:01Z", tier="W")]
+        authority, message = self._gate(thread)
+        self.assertIsNone(authority)
+        self.assertIn("mutates-live=true", message)
+
+    def test_an_edited_auto_ae_refuses_rather_than_reading_as_manual(self):
+        ae = self.t._auto_ae(6)
+        ae["body"] = ae["body"].replace("**Authorized:** x", "**Authorized:** x, widened", 1)
+        thread = [self.t._handoff(1, "true"), self.t._spec(5, "W"), ae,
+                  _comment(7, "sweep", "2026-10-02T02:00:01Z", tier="P")]
+        authority, message = self._gate(thread)
+        self.assertIsNone(authority)
+        self.assertIn("does not match its recorded body-sha256", message)
+
+    def test_a_forged_tier_r_sweep_refuses(self):
+        sweep = {"id": 7, "created_at": "2026-10-02T02:00:01Z",
+                 "html_url": self.t._url(7),
+                 "body": _attest("Write tier P throughout.\n\n1. TC1", f"kind=sweep; sha={DEFAULT_SHA}")}
+        sweep["body"] = sweep["body"].replace("Write tier P", "Write tier R", 1) + "\n.\n"
+        authority, message = self._gate([sweep])
+        self.assertIsNone(authority)
+        self.assertIn("does not match its recorded body-sha256", message)
+        self.assertFalse(c.verify_body_sha256(sweep))
+
+    def test_an_attested_sweep_with_text_appended_still_verifies(self):
+        sweep = {"id": 7, "body": _attest("Write tier R throughout.", f"kind=sweep; sha={DEFAULT_SHA}") + "\nnote\n"}
+        self.assertTrue(c.verify_body_sha256(sweep))
+
+    def test_a_quoted_spec_footer_never_nominates_the_quoting_comment(self):
+        """Pass-2 survivor 4: a discussion quoting the spec footer is not a spec."""
+        spec = self.t._spec(5, "P")
+        quoted = spec["body"][spec["body"].index("<!--"):].strip()
+        discussion = {"id": 8, "created_at": "2026-10-02T02:30:00Z", "html_url": self.t._url(8),
+                      "body": f"Write tier: W\n\n```\n{quoted}\n```\n\n"
+                              "<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->\n"}
+        thread = [self.t._handoff(1, "false"), spec, self.t._auto_ae(6),
+                  _comment(7, "sweep", "2026-10-02T02:00:01Z", tier="W"), discussion]
+        authority, message = self._gate(thread)
+        self.assertIsNone(authority)
+        self.assertIn("ceiling over the sweep and the newest spec is P", message)
+
+    def test_an_edited_newer_spec_refuses_instead_of_using_the_older_one(self):
+        old = self.t._spec(4, "W")
+        newer = self.t._spec(5, "P")
+        newer["body"] = newer["body"].replace("Write tier: P", "Write tier: W", 1)
+        thread = [self.t._handoff(1, "false"), old, newer, self.t._auto_ae(6),
+                  _comment(7, "sweep", "2026-10-02T02:00:01Z", tier="W")]
+        authority, message = self._gate(thread)
+        self.assertIsNone(authority)
+        self.assertIn("spec", message)
+        self.assertIn("does not match its recorded body-sha256", message)
+
+    def test_a_legacy_digestless_ae_still_authorizes_as_a_manual_ae(self):
+        """ABSENT keeps its legacy meaning: a manual AE with no digest works,
+        and can never be an auto-AE."""
+        thread = [_comment(2, "ae", "2026-10-02T02:00:00Z"),
+                  _comment(3, "sweep", "2026-10-02T02:00:01Z", tier="P")]
+        authority, message = self._gate(thread)
+        self.assertIsNotNone(authority, message)
+        self.assertFalse(c.is_auto_ae(thread[0]))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from _handoff_footer import newest_handoff_mutates_live
+from _handoff_footer import UNREADABLE_HANDOFF, newest_handoff_mutates_live
 from _sweep_tier import NO_TIER_MESSAGE, TIER_RANK, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
@@ -1804,7 +1804,9 @@ def validate_auto_ae(repo: str, issue: int, sweep_body: str, spec_body: str) -> 
              "nothing relaxes it (harmonic-forge#851). " + manual)
     mutates_live = newest_handoff_mutates_live(_thread_bodies(repo, issue))
     if mutates_live is not False:
-        why = ("says mutates-live=true" if mutates_live
+        why = ("does not match its body-sha256 (edited after posting, or a quoted footer), "
+               "so it cannot be trusted" if mutates_live == UNREADABLE_HANDOFF
+               else "says mutates-live=true" if mutates_live is True
                else "carries no mutates-live field (posted before harmonic-forge#851)")
         fail(f"--auto-ae refused: the newest handoff footer {why}. A live-data handoff "
              f"always needs the operator's manual AE. {manual}")

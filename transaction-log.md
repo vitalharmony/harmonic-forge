@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): REFORGE (operator --force --reforge) -- a comment's own footer is decided by its body-sha256, never its position; Attested/Unreadable/Absent, with Unreadable refusing on every auto-AE path, and latest_by_kind/footer_sha/verify_body_sha256/the newest-handoff scan reading only attested footers (harmonic-forge#851)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/l1_post.py                |   6 +-
+- tools/gh/test_check_lane3_ready.py |  95 ++++++++++++++++++++++--
+- tools/gh/test_handoff_footer.py    | 108 +++++++++++++++++++++-------
+- 5 files changed, 350 insertions(+), 92 deletions(-)
+
 ## fix(preclose): sticky-wicket PATCH for preclose pass 2 -- --own-model required with no default, an unrecognized model refuses the cross-family label, a --caller mismatch exits 2 with no label, the post-verdict hint carries --own-model, and the hint tests parse printed output (harmonic-forge#848)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
