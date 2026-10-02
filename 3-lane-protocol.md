@@ -1052,7 +1052,8 @@ categorically not authorized to run — and both refusals were correct.
 
 <!-- R-0208 -->
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
-TCs in an already-approved test spec, distinct from approving the spec's
+TCs in an already-approved test spec (or Lane 1's, citing the operator's
+standing grant, R-0374), distinct from approving the spec's
 content (that's the `L3S` → HITL-approval step itself). Like every other
 trigger phrase in this section, `AE` must be posted as an actual issue
 comment, not only said to Lane 1 in chat — Lane 3 verifies it
@@ -1065,13 +1066,67 @@ After posting, Lane 1 reports the two comment links and says Lane 3 executes;
 it does not list a relay to the Lane 3 session as an operator next action, and
 does not phrase one as a question (harmonic-forge#824). The next actions it does
 list are what the operator still owns: a production AE for a case this AE did
-not authorize, a `BATCH`, or a `close`. A Lane 3 session that is not watching
+not authorize (unless R-0374 lets Lane 1 post it), a `BATCH`, or a `close`. A Lane 3 session that is not watching
 the issue is Lane 3's gap to report, by arming its belt or naming the relay it
 needs (`skills/lane3-gate-platform/SKILL.md`), not a step Lane 1 assigns to the
 operator. A Claude Code Lane 3 belt prints the posted pair as
 `queued-for-l3 kind=sweep owes=gate` (harmonic-forge#851); that event is this
 trigger, not a new authority.
 <!-- /R-0208 -->
+
+<!-- R-0374 -->
+**The operator's standing production AE grant** (harmonic-forge#858; granted
+2026-09-26). When a Tier R gate on an issue has passed and the next step is the
+production write that gate verified, Lane 1 posts that write step's AE and its
+sweep together (R-0208), in the same turn, without asking the operator, only
+when all of these hold:
+
+- the AE's **Authorized:** line links the passing Tier R gate-result comment
+  and names the SHA it gated ("gated SHA <sha>", the gate-result's `Head-SHA`);
+- the commit the write step runs is that SHA, or a later commit whose tree is
+  byte-identical to it in every file the gated change touched and every file
+  the AE names on an `Apply path:` line, which a later commit must carry (a
+  squash merge qualifies, as in R-0354; such an AE posts from the current
+  `main` tip without an open PR);
+- the AE names the exact production sequence, its stop conditions and the
+  expected counts the Tier R gate measured;
+- the write step's sweep lists only the cases that Tier R gate verified.
+
+If any of these cannot be shown on the thread, the operator's AE is required:
+the grant fails closed. `tools/gh/l1_post.py` checks the first two before a
+grant AE posts (a passing, unedited Tier R gate report linked on this issue,
+its gated SHA named, and tree identity; `tools/gh/_standing_grant.py`), and refuses
+a grant AE carrying `--ack-no-pr-required`, an operator acknowledgment no
+operator gave. An AE under this grant never carries forward under R-0209
+(`check_lane3_ready` refuses the carry): a new SHA needs a fresh Tier R PASS
+before Lane 1 may post another. It
+authorizes only the cases the sweep lists, at the tier the sweep declares, and
+never uses R-0210's widening. Its **Authorized:** line cites "the operator's
+standing AE grant, R-0374", the gate-result comment and the gated SHA, never an
+operator message the operator did not send. It excepts R-0208 only as to who
+may post the AE; the AE and its sweep stay one atomic action.
+
+The grant reaches only a production write that a passing Tier R gate verified.
+It does not reach: a spec whose purpose is a data migration, a step needing the
+operator physically present (such as an OAuth consent), any spec approval, or a
+write no passing Tier R gate preceded; each keeps the operator's AE. R-0124 and
+R-0165 are unchanged. In a grant AE, Lane 1 still surfaces, as information
+rather than a question, anything genuinely new: a scope far past the expected
+count, possibly non-personal items in a delete, or a data gap that changes what
+the write touches.
+
+**That code is a mistake-detector, not an authorization boundary** (operator
+decision, 2026-10-02). Every lane posts as the same GitHub account, so no check
+on a comment can show who wrote it. The guard catches the honest mistake (an AE
+for an ungated SHA, a FAIL or Tier W gate cited, a changed file, an edited
+report); it does not stop a session that sets out to forge the evidence. A
+grant AE is claimed only on its **Authorized:** line; mentioning this rule
+elsewhere claims nothing.
+
+Only the operator can withdraw the grant, and withdrawal takes effect by
+removing this rule and its registry row; the operator-memory note is not the
+authority once this rule exists.
+<!-- /R-0374 -->
 
 <!-- R-0209 -->
 **A routine retest after a FAIL does not need a new AE/sweep pair.**

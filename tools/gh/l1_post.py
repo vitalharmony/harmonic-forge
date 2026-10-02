@@ -727,6 +727,35 @@ def _exact_heading_pattern(label: str, repo: str, issue: int) -> re.Pattern[str]
     return re.compile(rf"#{{1,4}}\s*{re.escape(label)}\s*—\s*{re.escape(prefix)}{issue}\b")
 
 
+def grant_on_main(body: str, sha: str) -> bool:
+    """harmonic-forge#858: an AE citing R-0374 posted at the current
+    origin/main tip (the production step after the squash merge). Only the
+    tip: an older main commit reached through another branch name is not it."""
+    import _standing_grant  # noqa: PLC0415
+    if not _standing_grant.cites_grant(body):
+        return False
+    tip = run("git", "rev-parse", "origin/main")
+    return tip.returncode == 0 and tip.stdout.strip() == sha
+
+
+def validate_grant_ae(body: str, repo: str, issue: int, sha: str,
+                      ack_no_pr_required: str | None) -> None:
+    """harmonic-forge#858: an AE claiming the operator's standing grant
+    (R-0374) is checked against the thread before it posts, and never rides
+    an operator-attributed no-PR override no operator gave."""
+    import _standing_grant  # noqa: PLC0415
+    import check_lane3_ready  # noqa: PLC0415
+    if not _standing_grant.cites_grant(body):
+        return
+    if ack_no_pr_required is not None:
+        fail("--ack-no-pr-required is an operator acknowledgment; an AE under the "
+             "operator's standing grant (R-0374) cannot carry one -- post the operator's AE instead")
+    reason = _standing_grant.grant_refusal(
+        body, repo, issue, sha, check_lane3_ready.fetch_comments(repo, issue))
+    if reason:
+        fail(reason)
+
+
 def validate_ae(body: str, repo: str, issue: int) -> None:
     """a private-repo incident: AE previously went out via plain `lane-comment`, with no
     reserved-marker footer and no structural check -- indistinguishable from
@@ -1645,6 +1674,7 @@ def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
+    grant_on_main: bool = False,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -1665,7 +1695,12 @@ def post_kind(
     # (standalone) always follows an `ae` on the same SHA that already
     # required one.
     pr_warnings: list[str] = []
-    if kind in ("ready-for-l3", "ae"):
+    if kind == "ae" and grant_on_main:
+        # harmonic-forge#858: a grant AE for a production step after the squash
+        # merge runs at a commit already on origin/main, where CI runs on push;
+        # validate_grant_ae has already shown it tree-identical to the gated SHA.
+        checks.append("merged-to-main")
+    elif kind in ("ready-for-l3", "ae"):
         pr_check_names, pr_warnings = require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required)
         checks += pr_check_names
     # Two distinct override classes, two distinct headings -- a reader
@@ -1852,6 +1887,7 @@ def main() -> None:
         reject_reserved_marker(ae_body)
         reject_reserved_marker(sweep_body)
         validate_ae(ae_body, repo, args.issue)
+        validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required)
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
@@ -1864,7 +1900,8 @@ def main() -> None:
         validate_sweep(sweep_body, spec.stdout, repo, args.issue)
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
-                              ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required)
+                              ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
+                              grant_on_main=grant_on_main(ae_body, sha))
         print(f"[l1-post] AE posted {ae_url}")
         record_queue_candidate(repo, args.issue, "ae")
         try:
@@ -1933,11 +1970,13 @@ def main() -> None:
         validate_sweep(body, spec.stdout, repo, args.issue)
     if args.kind == "ae":
         validate_ae(body, repo, args.issue)
+        validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required)
 
     url, _ = post_kind(
         repo, args.issue, args.kind, body, sha, args.branch,
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
+        grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)),
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)
