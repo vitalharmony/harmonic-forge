@@ -553,8 +553,13 @@ emit_envelope() {
   # just the final message: measured at 754,034 bytes on 2026-09-04, 5.75x the
   # cap. The helper broke precisely when it was doing its job.
   local native_norm text_file unfenced_file report_file report_tmp
-  native_norm="$(mktemp)"; text_file="$(mktemp)"
-  unfenced_file="$(mktemp)"; report_file="$(mktemp)"; report_tmp="$(mktemp)"
+  # harmonic-forge#857 post-verdict: inside a run these live in the per-run
+  # scratch dir, so a signal mid-function (which skips the RETURN trap below)
+  # still leaves nothing behind once the EXIT trap removes the dir.
+  local tmp_dir="${scratch:-${TMPDIR:-/tmp}}"
+  native_norm="$(mktemp -p "$tmp_dir")"; text_file="$(mktemp -p "$tmp_dir")"
+  unfenced_file="$(mktemp -p "$tmp_dir")"; report_file="$(mktemp -p "$tmp_dir")"
+  report_tmp="$(mktemp -p "$tmp_dir")"
   # Cleanup is local to this function and restores nothing, because
   # `emit_envelope` is never called from a trap-bearing subshell -- the only
   # existing trap belongs to the Gemini home dir (line 314) and is scoped to

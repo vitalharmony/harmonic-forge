@@ -1827,3 +1827,23 @@ class SignalForwardingTests(PromptFileHygieneTests):
         time.sleep(0.3)
         survivors = [p for p in self.tmpdir.rglob("*") if p.is_file()]
         self.assertEqual(survivors, [])
+
+    def test_envelope_temp_files_live_in_the_scratch_dir(self) -> None:
+        # harmonic-forge#857 post-verdict: emit_envelope's own temp files are
+        # created inside the per-run scratch dir, so a signal mid-envelope
+        # (which skips its RETURN trap) leaves nothing once EXIT removes the
+        # dir. A jq wrapper records any loose file at TMPDIR's top level.
+        real_jq = shutil.which("jq")
+        if real_jq is None:
+            self.skipTest("jq not installed")
+        record = self.root / "loose.txt"
+        (self.stub_dir / "jq").write_text(
+            "#!/usr/bin/env bash\n"
+            f'find "$TMPDIR" -maxdepth 1 -type f >> "{record}"\n'
+            f'exec "{real_jq}" "$@"\n')
+        (self.stub_dir / "jq").chmod(0o755)
+        self._stub(DegradedBriefFailsClosedTests.OK_STUB)
+        proc = self._start("2")
+        proc.wait(timeout=30)
+        self.assertTrue(record.exists())
+        self.assertEqual(record.read_text(), "")
