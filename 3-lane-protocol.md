@@ -1252,11 +1252,14 @@ same posture: explicit, per-issue, never assumed.
 from harmonic-forge#851). File one issue per mechanism when either holds: (i) the
 issue is estimated at Tier `deep` (8 points or more), or (ii) at any Tier, two or
 more of its mechanisms each touch a high-blast surface as
-`tools/gh/preclose_check.py`'s `HIGH_BLAST_PATTERNS` defines it.
+`tools/gh/preclose_check.py`'s `HIGH_BLAST_PATTERNS` defines it, or `tools/gh/`
+(which those patterns do not cover, and where harmonic-forge#851's defect lived).
 
-- **One mechanism** is one AC-bearing unit with its own kill check: a single stub
-  patch that removes it and one test that must fail (`tools/gh/kill_check.py`).
-  Two kill checks means two mechanisms.
+- **One mechanism** is one design that a single change could remove whole, such
+  as one hook, one filter or one rule. It may carry several ACs and several kill
+  checks (`tools/gh/kill_check.py` takes one per AC); two kill checks on the same
+  design are still one mechanism. Two designs that can be removed independently
+  are two mechanisms.
 - Dependent children are linked with blocked-by.
 - Each child carries its own handoff in the same filing action (R-0039). A child
   whose handoff cannot be written yet is declared with R-0352's deferral shape
@@ -1283,7 +1286,10 @@ authorization path.
 (harmonic-forge#856). Any mechanism that mints, relaxes or bypasses an
 authorization is filed as its own issue at any Tier, carries board Tier `deep`
 whatever its point estimate, and runs `preclose-check` with `--tier deep`.
-Isolating it must not shrink its review: the panel is 1, 3 or 5 refuters by Tier
+This Tier overrides HRSE2 `.claude/rules/planning.md`'s point-to-Tier table for
+such an issue; the free-text estimate still records the points, and a lane
+session on it needs the high-tier model the `deep` Tier routes to. Isolating it
+must not shrink its review: the panel is 1, 3 or 5 refuters by Tier
 (`tools/gh/preclose_check.py`), and `HIGH_BLAST_PATTERNS` does not cover
 `tools/gh/`, where harmonic-forge#851's auto-AE defect lived.
 

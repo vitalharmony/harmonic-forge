@@ -2437,16 +2437,16 @@ hooks = []
 id = "R-0370"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
-statement = "A Tooling Exception issue is filed as one issue per mechanism when it is Tier deep (8+ points) or when two or more of its mechanisms each touch a HIGH_BLAST_PATTERNS surface; one mechanism is one AC-bearing unit with its own kill check; dependent children are linked blocked-by and each carries its own handoff in the same filing (or R-0352's deferral shape); a single deep mechanism stays one issue; it applies at filing, and an already-filed issue is re-split only on the operator's word; planning.md's exceptions do not carry over, only the operator's override (harmonic-forge#856, from harmonic-forge#851)."
-text_sha = "f97e79d9a4b484da"
+statement = "A Tooling Exception issue is filed as one issue per mechanism when it is Tier deep (8+ points) or when two or more of its mechanisms each touch a HIGH_BLAST_PATTERNS surface or tools/gh/; one mechanism is one independently removable design, which may carry several ACs and kill checks; dependent children are linked blocked-by and each carries its own handoff in the same filing (or R-0352's deferral shape); a single deep mechanism stays one issue; it applies at filing, and an already-filed issue is re-split only on the operator's word; planning.md's exceptions do not carry over, only the operator's override (harmonic-forge#856, from harmonic-forge#851)."
+text_sha = "f133c5cfe9f9742b"
 hooks = []
 
 [[rule]]
 id = "R-0371"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
-statement = "Any mechanism that mints, relaxes or bypasses an authorization (an AE or ready-for-l3, a batch_auth merge grant, the preclose-inspected label gate, the model-tier gate, auto-AE, a review waiver, any PreToolUse deny-hook relaxation) is its own issue at any Tier, carries board Tier deep, and runs preclose-check with --tier deep; when in doubt it is its own issue (harmonic-forge#856)."
-text_sha = "55e6af6d96ee400d"
+statement = "Any mechanism that mints, relaxes or bypasses an authorization (an AE or ready-for-l3, a batch_auth merge grant, the preclose-inspected label gate, the model-tier gate, auto-AE, a review waiver, any PreToolUse deny-hook relaxation) is its own issue at any Tier, carries board Tier deep (overriding HRSE2 planning.md's point-to-Tier table for it), and runs preclose-check with --tier deep; when in doubt it is its own issue (harmonic-forge#856)."
+text_sha = "0b9b1ca29972a340"
 hooks = []
 
 [[rule]]
