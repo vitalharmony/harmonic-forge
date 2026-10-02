@@ -7,6 +7,10 @@ Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transacti
 - tools/gh/test_watch_lane_posts.py | 84 +++++++++++++++++++++++++++++++++++++++
 - tools/gh/watch_lane_posts.py      | 30 ++++++++++++--
 - 2 files changed, 110 insertions(+), 4 deletions(-)
+## test(belt): stub the issue read in the batch-view queue_cycle tests, which reached live GitHub once discover_queue read issue state (harmonic-forge#854)
+- tools/gh/test_belt_batch_view.py | 1 +
+- 1 file changed, 1 insertion(+)
+
 ## fix(belt): a closed issue leaves every queue and its candidate file is retired -- discover_queue reads state and labels from the one per-candidate issue read (_issue_meta), skips a closed issue before the label exclusion, remembers it in _CLOSED_SEEN, and on a successful cycle archives then unlinks its candidate file unless the entry was posted after the store was read; unit tests stub the issue read so none reaches live GitHub (harmonic-forge#854)
 - tools/gh/belt_candidates.py       |  27 +++++++
 - tools/gh/test_watch_lane_posts.py | 160 ++++++++++++++++++++++++++++++++++----
