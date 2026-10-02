@@ -61,6 +61,24 @@ def _redact(text: str) -> str:
     return flat
 
 CROSS_FAMILY = "Red-team provenance: cross-family ({family} / {model})"
+
+def model_family(model: object) -> str | None:
+    """The agent family a model id belongs to, or None when unrecognized.
+
+    harmonic-forge#848 AC8: used to refuse a cross-family label when the
+    reviewer's family is the calling session's own. Unrecognized is None, so an
+    unknown model never blocks a label it cannot reason about.
+    """
+    if not isinstance(model, str):
+        return None
+    m = model.casefold()
+    if m.startswith("gpt-") or m.startswith("codex"):
+        return "codex"
+    if m.startswith("gemini"):
+        return "gemini"
+    if any(token in m for token in ("claude", "opus", "fable", "sonnet", "haiku")):
+        return "claude"
+    return None
 FALLBACK = "Red-team provenance: in-family fallback ({own_model}) — {reason}"
 NOT_TRIGGERED = (
     "Red-team provenance: in-family only ({own_model}) — cross-family branch "
@@ -129,10 +147,21 @@ def classify(envelope: dict, model: str, own_model: str) -> str:
         )
 
     family = envelope.get("family")
+    # harmonic-forge#848 AC8: a review by the calling session's own family is
+    # not cross-family, whatever --caller claimed. The caller is self-declared
+    # on the command line, so the label checks the session's model instead.
+    if family and model_family(own_model) == family:
+        return FALLBACK.format(
+            own_model=own_model,
+            reason=f"the reviewer ({family}) is the calling session's own family, "
+                   f"so this was not a cross-family check -- --caller must name the "
+                   f"family that implemented the diff",
+        )
     # harmonic-forge#848: the envelope records the model that actually ran,
-    # for every family; `model` is only the fallback for an envelope written
-    # before Codex verify calls carried `verify_model`.
-    reviewer_model = envelope.get("verify_model") or model
+    # for every family. `model` (the Codex default) is only the fallback for a
+    # Codex envelope written before Codex verify calls carried `verify_model`;
+    # it is never put in another family's label.
+    reviewer_model = envelope.get("verify_model") or (model if family == "codex" else "unknown")
     label = CROSS_FAMILY.format(family=family, model=reviewer_model)
     unchecked = len(assumptions) - len(checked)
     return (f"{label} — {len(checked)} of {len(assumptions)} assumption(s) "

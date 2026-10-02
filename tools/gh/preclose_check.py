@@ -493,7 +493,8 @@ def gate(args: argparse.Namespace) -> int:
     print()
     print("Then record the pass with the same --findings. The label is computed from the")
     print("envelope, never typed:")
-    tail = "--envelope <envelope path>" if required else "--not-triggered"
+    tail = ("--envelope <envelope path>" if required else "--not-triggered") + \
+        " --own-model <your session's model>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
           f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} {tail}"
           + (" --cross-family" if args.cross_family else ""))
@@ -866,7 +867,7 @@ def main() -> None:
                         help="With --complete: the gate did not trigger; records the computed label.")
     parser.add_argument("--own-model",
                         help="The calling session's model (harmonic-forge#848). Required with "
-                             "--envelope; optional with --not-triggered.")
+                             "--complete and --post-verdict.")
     parser.add_argument("--cross-family", action="store_true",
                         help="Operator asked for the cross-family branch (gate criterion 3).")
     parser.add_argument("--force", action="store_true",
@@ -889,8 +890,9 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
-    if args.envelope and not args.own_model and (args.complete or args.post_verdict):
-        parser.error("--envelope needs --own-model <the calling session's model> (harmonic-forge#848)")
+    if (args.complete or args.post_verdict) and not args.own_model:
+        parser.error("--complete/--post-verdict need --own-model <the calling session's model>: "
+                     "the receipt's label names the family that did the work (harmonic-forge#848)")
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")

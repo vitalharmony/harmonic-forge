@@ -37,7 +37,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_claude_verify_label_uses_the_recorded_pinned_model(self):
         envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5"}
-        label = m.classify(envelope, _MODEL, _OWN)
+        label = m.classify(envelope, _MODEL, "gpt-6-sol")  # a Codex session, reviewed by Claude
         self.assertIn("claude / claude-opus-5-5", label)
 
     def test_codex_label_uses_the_recorded_model_not_the_flag(self):
@@ -54,12 +54,44 @@ class ClassifyTests(unittest.TestCase):
 
     def test_model_flag_default_is_gpt_6_sol(self):
         import contextlib, io, json as _json, tempfile as _tf
-        with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fh:
-            fh.write(_json.dumps(_ok([_a("confirmed")]) | {"family": "codex"}) + "\n")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            m.main(["--envelope", fh.name])
+        with _tf.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "envelope.jsonl"
+            path.write_text(_json.dumps(_ok([_a("confirmed")]) | {"family": "codex"}) + "\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                m.main(["--envelope", str(path), "--own-model", _OWN])
         self.assertIn("gpt-6-sol", out.getvalue())
+
+    def test_same_family_review_is_not_labelled_cross_family(self):
+        """Preclose finding 1: a Claude session that passes `--caller codex`
+        gets a Claude reviewer. The label checks --own-model, not the
+        self-declared caller, and refuses to call that cross-family."""
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5",
+                                             "caller_family": "codex", "target_family": "claude"}
+        label = m.classify(envelope, "gpt-6-sol", "claude-opus-5-5")
+        self.assertNotIn("cross-family (", label)
+        self.assertIn("in-family fallback", label)
+
+    def test_codex_session_reviewed_by_codex_is_not_cross_family(self):
+        label = m.classify(_ok([_a("confirmed")]) | {"verify_model": "gpt-6-sol"},
+                           "gpt-6-sol", "gpt-6-sol")
+        self.assertIn("in-family fallback", label)
+
+    def test_claude_envelope_without_verify_model_never_names_the_codex_flag(self):
+        """Preclose finding 4: the --model fallback is Codex's default and is
+        never put in another family's label."""
+        envelope = _ok([_a("confirmed")]) | {"family": "claude"}
+        label = m.classify(envelope, "gpt-6-sol", "gpt-6-sol")
+        self.assertIn("claude / unknown", label)
+        self.assertNotIn("gpt-6-sol)", label)
+
+    def test_model_family(self):
+        cases = {"gpt-6-sol": "codex", "codex-mini": "codex", "claude-opus-5-5": "claude",
+                 "opus": "claude", "claude-fable-5-1": "claude", "gemini-3": "gemini",
+                 "mystery": None, None: None}
+        for model, family in cases.items():
+            with self.subTest(model=model):
+                self.assertEqual(m.model_family(model), family)
 
     def test_not_triggered_label_names_the_calling_model(self):
         """harmonic-forge#848 AC8: --own-model is the calling session's model."""

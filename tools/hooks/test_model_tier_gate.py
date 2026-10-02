@@ -1180,5 +1180,41 @@ class PrecloseFindingRegressionTests(unittest.TestCase):
         self.assertIn("no tracked issue resolved", stderr.getvalue())
 
 
+class CodexDenialCallSiteTests(unittest.TestCase):
+    """harmonic-forge#848 preclose finding 5: the Codex denial reaches the user
+    through `_main()`'s two call sites, not just through the helper."""
+
+    def _codex_home(self, model: str) -> str:
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        Path(home, "config.toml").write_text(f'model = "{model}"\n')
+        return home
+
+    def _payload(self) -> dict:
+        return {
+            "tool_name": "Edit",
+            "cwd": "/tmp/hrse2-1438-impl",
+            "model": "gpt-6-terra",
+        }
+
+    def _run(self, tier) -> str:
+        env = {"CODEX_HOME": self._codex_home("gpt-7-sol")}
+        with patch.object(m, "_run", return_value=_completed("")), \
+             patch.object(m, "resolve_tier", return_value=tier):
+            return MainBashGatingTests._run_main(self, self._payload(), env)
+
+    def test_escalating_denial_names_the_configured_high_model(self):
+        out = self._run("deep")
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("/model gpt-7-sol", out)
+        self.assertNotIn("/model opus", out)
+
+    def test_lookup_failed_denial_names_the_configured_high_model(self):
+        out = self._run(m.LOOKUP_FAILED)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("/model gpt-7-sol", out)
+        self.assertNotIn("/model opus", out)
+
+
 if __name__ == "__main__":
     unittest.main()

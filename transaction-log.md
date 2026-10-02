@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(preclose): bind the cross-family label to the calling session's family, require --own-model on every --complete, and test the call sites (harmonic-forge#848 preclose pass 1 survivors 1-5)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/hooks/test_model_tier_gate.py        | 36 +++++++++++++++
+- tools/lane/cross_family_provenance.py      | 35 +++++++++++++--
+- tools/lane/test_cross_family_provenance.py | 44 +++++++++++++++---
+- 6 files changed, 188 insertions(+), 18 deletions(-)
+
 ## fix(model-tier-gate): Codex high tier is the sol family, not gpt-5.6-sol; reviewer re-pinned to gpt-6-sol with its label read from the envelope; R-0358 permits --caller codex so the reviewer is always the other family (harmonic-forge#848)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -97,8 +97,8 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    comes from the other family (R-0358, harmonic-forge#848). That file is the
    whole mechanism, and this skill deliberately does not restate it. The
    branch is part of this **one** pass, not a second round. Record the pass
-   with `--envelope <envelope path> --own-model <your session's model>` when the
-   branch ran (`--own-model` is required with `--envelope`), or `--not-triggered`
+   with `--envelope <envelope path>` when the branch ran, or `--not-triggered`
+   (`--own-model <your session's model>` is required on every `--complete`)
    when it did not. The script runs `cross_family_provenance.py` itself: there
    is no flag to type a label. It refuses a label that contradicts the gate,
    and it refuses a second `--complete` on the same diff. A call that could not
@@ -107,7 +107,8 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    ```
    python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \
        --repo <owner/repo> --issue <N> --complete \
-       --findings <file> (--envelope <envelope path> | --not-triggered)
+       --findings <file> (--envelope <envelope path> | --not-triggered) \
+       --own-model <your session's model>
    ```
 
 6. **Post to the issue, verbatim** — via whichever wrapper this repo declares
@@ -155,7 +156,7 @@ A third pass never runs:
   third panel, **after one post-verdict check** (harmonic-forge#838): a
   single cross-family refuter, run per `rules/cross-family-review.md`, reads
   only the patch (`<pass-2 head>...<final head>`), and
-  `preclose_check.py --post-verdict --base <pass-2 head> --envelope <path>
+  `preclose_check.py --post-verdict --base <pass-2 head> --envelope <path> --own-model <model>
   --findings <file>` records it. It is not a pass and never counts toward the
   cap. Until it is recorded for the final head, `--force` refuses and names
   it. A surviving finding from it goes to the operator with the `--force`
