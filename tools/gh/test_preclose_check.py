@@ -797,7 +797,10 @@ class OwnModelCallSiteTests(unittest.TestCase):
         args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, findings="f.json",
                                   base="origin/main", head="HEAD", force=False, envelope=None,
                                   not_triggered=True, own_model="gpt-6-sol")
+        # receipt_lock is stubbed: the real one flocks the shared per-issue
+        # lock, which a concurrent kill-check run on this issue holds.
         with patch.object(preclose, "require_writable"), \
+             patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
              patch.object(preclose, "registered_repo", return_value=args.repo), \
              patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
              patch.object(preclose, "local_patch_id", return_value="p"), \
@@ -817,6 +820,7 @@ class OwnModelCallSiteTests(unittest.TestCase):
                                   own_model="claude-opus-5-5")
         passes = preclose.preclose_passes
         with patch.object(preclose, "require_writable"), \
+             patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
              patch.object(preclose, "registered_repo", return_value=args.repo), \
              patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
              patch.object(preclose, "run", return_value=MagicMock(stdout="b" * 40)), \
