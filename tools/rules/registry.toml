@@ -2464,3 +2464,19 @@ anchor = "lane-1-handoff-artifact"
 statement = "Before filing a Tooling Exception issue with its handoff, Lane 1 splits it by mechanism where R-0370 requires and files any authorization mechanism alone at Tier deep (R-0371)."
 text_sha = "4b693652133572b1"
 hooks = []
+
+[[rule]]
+id = "R-0375"
+file = "rules/lane-shorthand.md"
+anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
+statement = "A belt event on another issue arriving mid-task queues behind the current task in every lane, which runs to its status post; the chat carve-outs do not apply and NOW stays the operator's interrupt. A belt event on the issue in hand is read immediately (it amends the task, and the belt never re-offers it). A background wait is not an in-flight step: R-0376 has precedence during it. Deferral is safe only where the belt re-offers: Lane 2/3 inbound on another issue, never Lane 1's own waits."
+text_sha = "9535f63e289f6c37"
+hooks = []
+
+[[rule]]
+id = "R-0376"
+file = "3-lane-protocol.md"
+anchor = "Long waits run in the background"
+statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes, and a step whose output is a post ends when the post lands. Recovery is the lane's own task entry, never a belt re-offer, which Lane 1's own waits do not have. A Codex lane never ends a turn with an unpolled background session."
+text_sha = "c135da27db1b0796"
+hooks = []

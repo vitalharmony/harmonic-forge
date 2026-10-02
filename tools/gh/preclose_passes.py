@@ -36,7 +36,7 @@ MAX_PASSES = 2
 STICKY_WICKET = (
     "Two preclose passes are complete, and both left surviving findings. Do not run a "
     "third. Invoke the sticky-wicket agent on this issue: 'patch' means one cross-family "
-    "post-verdict check reads just the patch (preclose_check.py --post-verdict), then the "
+    "post-verdict check reads just the patch (preclose_check.py's --post-verdict), then the "
     "operator --forces the final head; 'reforge' means a new branch, and the pass count "
     "restarts."
 )
@@ -47,9 +47,9 @@ OPERATOR = (
 CLUSTER_ROUTE = (
     "Pass 1 has multiple surviving findings from the same mechanism: {mechanisms}. "
     "Invoke the sticky-wicket agent now, before fixing anything, then record its "
-    "verdict with preclose_check.py --cluster-verdict PATCH|REFORGE --comment-url "
-    "<url>. The operator may bypass an unresolved cluster with --force; a REFORGE "
-    "verdict proceeds only with the operator's --force --reforge."
+    "verdict with preclose_check.py --repo {repo} --issue {issue} --cluster-verdict "
+    "PATCH --comment-url <url> (or REFORGE, which proceeds only with the operator's "
+    "--force --reforge). The operator may bypass an unresolved cluster with --force."
 )
 
 
@@ -133,13 +133,15 @@ def covered(passes: list[dict], sha: str, current_patch_id: str | None) -> bool:
 
 
 def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
-            reforge: bool = False, force: bool = False) -> str | None:
-    """Why a new pass must not run, or None when it may."""
+            reforge: bool = False, force: bool = False, *, repo: str,
+            issue: int | str) -> str | None:
+    """Why a new pass must not run, or None when it may. ``repo``/``issue``
+    are required: the cluster route it may return is a runnable command."""
     passes = current(history(receipt))
     if reforge and not force:
         return ("--reforge is the operator's instruction, never Lane 1's own: it runs only "
                 "with --force, after sticky-wicket's reforge verdict.")
-    cluster = cluster_message(receipt)
+    cluster = cluster_message(receipt, repo, issue)
     if force and not reforge:
         if (cluster
                 and (receipt or {}).get("mechanism_cluster", {}).get("verdict") == "REFORGE"):
@@ -204,7 +206,7 @@ def _mechanism_cluster(receipt: dict | None, epoch: int) -> dict | None:
     return None
 
 
-def cluster_message(receipt: dict | None) -> str | None:
+def cluster_message(receipt: dict | None, repo: str, issue: int | str) -> str | None:
     """Route an unresolved/current-epoch cluster, or enforce its REFORGE verdict."""
     passes = history(receipt)
     epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)
@@ -218,7 +220,7 @@ def cluster_message(receipt: dict | None) -> str | None:
     if verdict == "REFORGE":
         return (f"Sticky-wicket ruled REFORGE for the pass 1 mechanism cluster ({mechanisms}). "
                 "Only the operator's --force --reforge starts the new epoch.")
-    return CLUSTER_ROUTE.format(mechanisms=mechanisms)
+    return CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)
 
 
 # harmonic-forge#838 AC5: after a sticky-wicket PATCH verdict, one cross-family
@@ -230,10 +232,18 @@ def cluster_message(receipt: dict | None) -> str | None:
 POST_VERDICT_REQUIRED = (
     "Two passes both left surviving findings (the sticky-wicket case). Before the "
     "operator's --force covers this head, one cross-family refuter must read the patch "
-    "since pass 2: preclose_check.py --post-verdict --base <pass-2 head> --envelope <path> "
-    "--findings <file> --own-model <your session's model>. It never counts as a pass "
+    "since pass 2: preclose_check.py --repo {repo} --issue {issue} --post-verdict "
+    "--base <pass-2 head> --envelope <path> --findings <file> "
+    "--own-model <your session's model>. It never counts as a pass "
     "(harmonic-forge#838)."
 )
+
+#: Every printed hint that is a runnable preclose_check.py command. Each is
+#: formatted with the real repo and issue before printing, and
+#: test_preclose_check asserts every member parses exactly as printed and
+#: that no other module-level string here carries such a command
+#: (harmonic-forge#852 preclose, the class of the #848 follow-up).
+COMMAND_HINTS = (CLUSTER_ROUTE, POST_VERDICT_REQUIRED)
 
 
 def _post_verdict(receipt: dict | None) -> dict:
@@ -241,7 +251,7 @@ def _post_verdict(receipt: dict | None) -> dict:
     return {"post_verdict_check": check} if isinstance(check, dict) else {}
 
 
-def post_verdict_refusal(receipt: dict | None, sha: str) -> str | None:
+def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int) -> str | None:
     """Why a forced receipt at ``sha`` must not be written yet, or None.
     Only the sticky-wicket case needs the check; the operator case (not both
     passes with survivors) is unchanged."""
@@ -251,7 +261,9 @@ def post_verdict_refusal(receipt: dict | None, sha: str) -> str | None:
     check = _post_verdict(receipt).get("post_verdict_check") or {}
     if check.get("head_sha") == sha:
         return None
-    return POST_VERDICT_REQUIRED
+    # The hint is a runnable command, so it names this repo and issue
+    # (harmonic-forge#848 follow-up, folded into #852).
+    return POST_VERDICT_REQUIRED.format(repo=repo, issue=issue)
 
 
 def reviewed_head(receipt: dict | None) -> str | None:

@@ -33,7 +33,7 @@ that session had no directive entrypoint at all.
 | `rules/universal-lane1.md` | Lane 1 role requirements and the handoff format. |
 | `rules/universal-claude.md` | Claude-Code-CLI mechanics specifically. |
 | `rules/testing-gate.md` | What a verification claim has to be backed by. |
-| `rules/lane-shorthand.md` | `L2P`/`L3F`/`H<N>`/`F<N>` shorthand, and the `BATCH` keyword. |
+| `rules/lane-shorthand.md` | Lane shorthand (`L2S`/`L3F`/`H<N>`/`F<N>`), `BATCH`, and EOQ for chat and belt events. |
 
 `transaction-log.md` holds per-commit deltas since the last version bump —
 read it for what other sessions have done that is not yet reflected

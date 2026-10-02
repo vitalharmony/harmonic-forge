@@ -599,16 +599,18 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
     re-armed on every head change and so allowed unbounded passes."""
     if force and not reforge:
         receipt = find_receipt(repo, issue)
-        reason = preclose_passes.refusal(receipt, head_sha, patch, reforge, force)
+        reason = preclose_passes.refusal(receipt, head_sha, patch, reforge, force,
+                                         repo=repo, issue=issue)
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         # harmonic-forge#838 AC5: the operator's --force still needs the
         # post-verdict check in the sticky-wicket case.
-        reason = preclose_passes.post_verdict_refusal(receipt, head_sha)
+        reason = preclose_passes.post_verdict_refusal(receipt, head_sha, repo, issue)
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
-    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force)
+    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force,
+                                     repo=repo, issue=issue)
     if reason:
         raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 
@@ -833,7 +835,7 @@ def complete(args: argparse.Namespace) -> int:
     print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
     print(f"  {provenance}")
     print(f"  mechanisms: {', '.join(sorted(set(mechanisms))) or '(none)'}")
-    route = preclose_passes.cluster_message(read_receipt(path))
+    route = preclose_passes.cluster_message(read_receipt(path), repo, args.issue)
     if route:
         print(f"  {route}")
     print()

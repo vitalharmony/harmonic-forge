@@ -297,6 +297,19 @@ class MechanismClusterTests(ScratchRepo):
                          ["re-parsing shell text"])
         self.assertIn("sticky-wicket", output)
 
+    def test_an_unresolved_cluster_refusal_prints_a_runnable_command(self) -> None:
+        """harmonic-forge#852 pass 2: the refusal path (every attempt after the
+        cluster pass) prints the cluster route with the real repo and issue,
+        never placeholders, and that command parses as printed."""
+        self.run_pass("scripts/a.py", self.findings("same mechanism", "same mechanism"))
+        self.commit("scripts/b.py")
+        with self.assertRaises(SystemExit) as refused:
+            self.plan(tier="fast")
+        text = str(refused.exception)
+        self.assertIn(f"--repo {REPO} --issue {ISSUE} --cluster-verdict PATCH", text)
+        self.assertNotIn("<owner/repo>", text)
+        self.assertNotIn("<N>", text)
+
     def test_different_and_near_synonym_mechanisms_do_not_cluster(self) -> None:
         output = self.run_pass("scripts/a.py", self.findings(
             "re-parse shell text", "re-parsing shell text"))
@@ -354,7 +367,7 @@ class MechanismClusterTests(ScratchRepo):
         receipt = self.receipt()
         self.assertIn("--force --reforge", preclose_passes.refusal(
             receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
-            preclose.local_patch_id("base", "HEAD"), force=True))
+            preclose.local_patch_id("base", "HEAD"), force=True, repo=REPO, issue=ISSUE))
         self.plan(tier="fast", force=True, reforge=True)
         preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
                                 findings=self.findings_file(self.findings("new")), envelope=None,

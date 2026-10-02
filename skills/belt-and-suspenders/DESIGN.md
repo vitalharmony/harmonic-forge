@@ -439,6 +439,12 @@ posted. Two hours, a one-line thread, while the lane carried it forward as done.
   is the explicit interrupt marker — it, and only it (plus the three
   carve-outs), suspends in-flight work instead of queueing behind it. State
   which you chose, in one line, at the moment you decide.
+  The same default covers belt events (R-0375): a `queued-for-<lane>` line
+  arriving mid-task waits until the current task's status post, in every
+  lane; the chat carve-outs do not apply to it, except an event on the issue
+  the lane is working now, which is read immediately: it amends the task in
+  hand and the belt will not re-offer it. During a background wait (R-0376) the
+  lane may pick up a queued event as read-only work.
 - **Quiet ticks produce no chat output** — but **always write a tick record**
   (`TickLog`), including on a quiet tick. A quiet tick that writes nothing is
   indistinguishable from a dead monitor.
@@ -481,7 +487,8 @@ only a silent state change. A `gate-result` FAIL/BLOCKED, a `## L2 Finding`, an
 `l2.done`, or a `discussion` on such an issue goes unseen by Lane 1's belt
 until something else surfaces it (the operator, a different lane's own belt,
 or Lane 1 re-arming after noticing); it is not compensated for with a wider
-scan. The retired sweep
+scan. EOQ (R-0375) does not defer these comment-watch events: they are emitted
+once, so deferring one would hold the work only in a chat sentence. The retired sweep
 really does filter nothing — no precedence table, no exclusion list, newest
 wins outright — which is exactly the property that makes it too broad to run
 unbounded.

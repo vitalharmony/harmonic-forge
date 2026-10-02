@@ -156,8 +156,8 @@ A third pass never runs:
   third panel, **after one post-verdict check** (harmonic-forge#838): a
   single cross-family refuter, run per `rules/cross-family-review.md`, reads
   only the patch (`<pass-2 head>...<final head>`), and
-  `preclose_check.py --post-verdict --base <pass-2 head> --envelope <path> --own-model <model>
-  --findings <file>` records it. It is not a pass and never counts toward the
+  `preclose_check.py --repo <owner/repo> --issue <N> --post-verdict --base <pass-2 head>
+  --envelope <path> --findings <file> --own-model <model>` records it. It is not a pass and never counts toward the
   cap. Until it is recorded for the final head, `--force` refuses and names
   it. A surviving finding from it goes to the operator with the `--force`
   request. "Reforge" means a new approach, and the pass count restarts —

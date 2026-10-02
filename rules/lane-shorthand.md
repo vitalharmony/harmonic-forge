@@ -231,6 +231,45 @@ misclassification then costs one line of operator attention instead of
 being discovered after the wrong thing happened.
 <!-- /R-0116 -->
 
+<!-- R-0375 -->
+**Belt events queue the same way, in all three lanes.** A belt event that
+arrives while a lane is mid-task (a Monitor line, or work the suspenders loop
+discovers) waits behind the current task. The task runs to its finish line,
+which is that lane's status post: `L2D`/`L2S`/`L2B` for Lane 2,
+`L3S`/`L3P`/`L3F`/`L3B` for Lane 3, and for Lane 1 the post that ends the
+task (a handoff, a review, a `ready-for-l3`, an AE and sweep, a rework, or
+the close comment). The three carve-outs above apply to operator chat only,
+and `NOW` remains the operator's interrupt; a belt event on **another** issue
+is not a carve-out. **A belt event on the issue the lane is working right now
+is read immediately, before the finish line.** It is not a new item: it amends
+the task in hand (a `rework` changes the spec being implemented; a FAIL
+`gate-result` changes what done means), so deferring it finishes the task on
+the wrong premise. It is also the one case the belt never re-offers: the
+lane's own status post becomes the newest classified comment, so
+`queue_cycle` drops the issue and emits `left-queue-for-<lane>`.
+The honesty line above applies: name the queued event and what it waits
+behind, e.g. `"queued-for-l2 H1897 — queued behind H1887, finishing to L2D"`.
+
+**A background wait is not an in-flight step.** Where the current task's only
+remaining work is a wait running in the background (R-0376), the lane is not
+mid-task for this rule, and R-0376 has precedence for the wait's duration: a
+queued belt event may be picked up as read-only work, including its post.
+What this rule reserves to the waiting task is the lane's writes (the one
+checkout, which R-0376 fences), not its attention. The waiting task resumes
+ahead of the picked-up item the moment its wait completes. Handing another
+lane work on a second item during a wait is intended.
+
+Deferring a `queued-for-<lane>` line on another issue is safe because the
+belt re-emits it on every re-arm while its marker is still the newest
+classified comment, retracting it with `left-queue-for-<lane>` only once it
+clears. That holds for Lane 2's and Lane 3's inbound, whose markers Lane 1
+posts. It does not hold for Lane 1's own waits (see R-0376's recovery line),
+nor for a same-issue event. A comment-watch line is emitted once against a
+persistent watermark, so a lane handles one carrying owed work as it does
+today: for Lane 1, every owed kind except `plan` and `spec`; for Lane 2, the
+Plan-First ratification `discussion`.
+<!-- /R-0375 -->
+
 ## `NOW` — interrupt
 
 Grammar: **`NOW` + trailing instruction**, e.g. `NOW stop and look at

@@ -9,7 +9,6 @@ description: Arm a lane's proactive work-discovery protocol — a persistent Mon
 3. Report the monitor task id and the loop job id, as its `report` says.
 4. The belt never stops and never asks the operator whether to stop. When the Monitor expires, re-arm the same call unchanged. A hook denies any other arming call: no `CronCreate` of your own, no hand-written prompt, no repo-wide sweep.
 5. Pacing back-off between ticks uses `ScheduleWakeup`, never a new `/loop` or `CronCreate`.
-
 ## Tick output — silence is the default
 Every Monitor event and every loop tick ends in exactly one of two ways.
 
@@ -28,3 +27,4 @@ Every Monitor event and every loop tick ends in exactly one of two ways.
    | l2 | `fix` | A `rework` or a FAIL `gate-result`: re-read the issue thread, then do the work on the branch. |
    | l1 | `plan-review` | Review Lane 2's plan and post the verdict and Implementation Spec. |
    | l1 | `spec-review` | Review Lane 3's spec. Post the AE and sweep together once the operator's AE arrives. |
+10. **A belt event that arrives mid-task waits behind it** (R-0375), in every lane: finish the current task to its status post first. Defer only `queued-for-<lane>` lines, which the belt re-offers; a comment-watch line carrying owed work is handled as today, and an event on the issue the lane is working now is read immediately (it amends the task in hand, and the belt will not re-offer it). Say what was queued, in one line: "`queued-for-l2 H1897` — queued behind H1887, finishing to L2D".

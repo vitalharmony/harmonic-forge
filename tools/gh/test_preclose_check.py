@@ -875,7 +875,7 @@ class OwnModelTests(unittest.TestCase):
     @staticmethod
     def _parses(command: str) -> int:
         """Feed a printed preclose_check.py command through main()'s own parser
-        with every `<placeholder>` filled in; complete/post_verdict are stubbed,
+        with every `<placeholder>` filled in; complete/post_verdict/cluster_verdict are stubbed,
         so the exit code is the parser's verdict alone."""
         import re as _re
         import shlex
@@ -886,6 +886,7 @@ class OwnModelTests(unittest.TestCase):
         with patch.object(sys, "argv", argv), \
              patch.object(preclose, "complete", return_value=0), \
              patch.object(preclose, "post_verdict", return_value=0), \
+             patch.object(preclose, "cluster_verdict", return_value=0), \
              patch("sys.stderr", new_callable=io.StringIO), \
              patch("sys.stdout", new_callable=io.StringIO):
             try:
@@ -913,10 +914,30 @@ class OwnModelTests(unittest.TestCase):
     def test_post_verdict_hint_parses(self) -> None:
         """Pass-2 survivor 4: the sticky-wicket remediation command must run."""
         import preclose_passes
-        text = preclose_passes.POST_VERDICT_REQUIRED
-        command = text[text.index("preclose_check.py --post-verdict"):text.index(". It never")]
-        command = "--repo vitalharmony/harmonic-forge --issue 848 " + command.split("preclose_check.py", 1)[1]
-        self.assertEqual(self._parses("python3 preclose_check.py " + command), 0, command)
+        text = preclose_passes.POST_VERDICT_REQUIRED.format(repo="vitalharmony/harmonic-forge", issue=848)
+        # Parsed exactly as printed: the hint must name --repo and --issue itself.
+        command = text[text.index("preclose_check.py --repo"):text.index(". It never")]
+        self.assertEqual(self._parses("python3 " + command), 0, command)
+
+    def test_every_command_hint_parses_as_printed(self) -> None:
+        """harmonic-forge#852 preclose: every runnable hint, not only the one
+        a test happened to cover, parses exactly as printed; and no other
+        module-level string in preclose_passes carries a runnable command."""
+        import preclose_passes
+        for hint in preclose_passes.COMMAND_HINTS:
+            text = hint.format(repo="vitalharmony/harmonic-forge", issue=848, mechanisms="m")
+            start = text.index("preclose_check.py --")
+            end = min(i for i in (text.find(" (", start), text.find(". ", start)) if i != -1)
+            with self.subTest(hint=text[:60]):
+                self.assertEqual(self._parses("python3 " + text[start:end]), 0, text[start:end])
+        # Scope: module-level constants of preclose_passes only. An inline
+        # f-string hint built elsewhere (e.g. preclose_check.py's own prints)
+        # is not seen here; those are covered by their own printed-output
+        # tests (test_gate_hint_carries_own_model). Known gap, not widened in #852.
+        strays = [name for name, value in vars(preclose_passes).items()
+                  if isinstance(value, str) and "preclose_check.py --" in value
+                  and value not in preclose_passes.COMMAND_HINTS]
+        self.assertEqual(strays, [])
 
     def test_envelope_without_own_model_is_a_parser_error(self) -> None:
         argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",

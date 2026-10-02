@@ -53,6 +53,11 @@ Project dev/test tooling uses the narrower Tooling Exception in
 requirement or permits self-grading.
 <!-- /R-0090 -->
 
+Lane 1's own Tooling Exception runs (kill checks, the preclose panel, CI)
+follow `3-lane-protocol.md`'s background-wait rule (R-0376), including its
+recovery line: for Lane 1's own runs the record is the lane's task entry, not
+a belt re-offer.
+
 ## Role boundary — Lane 1 never closes its own review loop
 
 <!-- R-0091 -->
