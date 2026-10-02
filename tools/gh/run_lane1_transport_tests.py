@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,8 @@ from run_tests import hermetic_identity_probe, redirected_belt_candidates_dir  #
 
 
 def main() -> int:
+    # harmonic-forge#865: inherited by any writer a test spawns as a subprocess.
+    os.environ["HARMONIC_FORGE_TESTING"] = "1"
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     for pattern in ("test_l1_post*.py", "test_post_lane_discussion*.py"):

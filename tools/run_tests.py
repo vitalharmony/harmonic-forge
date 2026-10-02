@@ -174,6 +174,9 @@ def main() -> int:
     archive_tmp = tempfile.TemporaryDirectory(prefix="hf-telemetry-test-")
     (Path(archive_tmp.name) / ".hf-telemetry-test-root").write_text("test archive root\n", encoding="utf-8")
     os.environ.setdefault("HARMONIC_FORGE_TELEMETRY_ARCHIVE", archive_tmp.name)
+    # harmonic-forge#865: inherited by any writer a test spawns, which cannot
+    # see this process's redirect or its loaded `unittest`.
+    os.environ["HARMONIC_FORGE_TESTING"] = "1"
     # ... and failures go to a throwaway state dir, never the real failure log.
     # Forced, not setdefault: XDG_STATE_HOME is commonly already exported.
     os.environ["XDG_STATE_HOME"] = str(Path(archive_tmp.name) / "state")
