@@ -1013,7 +1013,7 @@ def discover_queue(repo: str, lane: str,
     read_before = store_read_at or dt.datetime.now(dt.timezone.utc)
     excluded = queue_qualifiers(repo, lane)
     queued: dict[int, str] = {}
-    closed: list[int] = []
+    fetch_failed = False
     for issue in candidates:
         # harmonic-forge#854 (REFORGE): a closed issue is queued to no lane,
         # checked before the label exclusion so closed epics and Tooling
@@ -1024,7 +1024,12 @@ def discover_queue(repo: str, lane: str,
         # unreadable state is treated as open (AC4).
         state, labels = _issue_meta(repo, issue)
         if state == "closed":
-            closed.append(issue)
+            # Marked at detection, which depends only on this issue's own
+            # state read: another issue's failed comment fetch below still
+            # reports the repo unreliable, but no longer stops this mark
+            # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
+            # after the store was read.
+            belt_candidates.retire_candidate(repo, issue, read_before=read_before)
             continue
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
@@ -1051,7 +1056,10 @@ def discover_queue(repo: str, lane: str,
             # tells the lane the ball moved on. Repo-level `fetch_ok` was the
             # fix for a repo-level failure and does not reach an issue-level
             # one, so this reports the repo as unreliable for this cycle.
-            return {}, False
+            # harmonic-forge#854: the loop still finishes, so a closed issue
+            # later in the set is marked whatever this issue's fetch did.
+            fetch_failed = True
+            continue
         for comment in comments:
             # harmonic-forge#579 introduced the `None` (failed) vs `[]`
             # (genuinely zero) distinction this loop now depends on; #602
@@ -1079,11 +1087,8 @@ def discover_queue(repo: str, lane: str,
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
             continue
         queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"
-    # harmonic-forge#854: mark closed issues' candidate entries only on a
-    # successful cycle (the failure returns above never reach here), and never
-    # an entry posted after the store was read.
-    for issue in closed:
-        belt_candidates.retire_candidate(repo, issue, read_before=read_before)
+    if fetch_failed:
+        return {}, False
     return queued, True
 
 

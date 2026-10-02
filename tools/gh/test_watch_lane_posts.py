@@ -3126,6 +3126,120 @@ class ClosedIssueRetirementTests(unittest.TestCase):
         self.assertEqual(self._entry(path)["kind"], "ready-for-l3")
         self.assertNotIn("closed_at", self._entry(path))
 
+    def test_record_candidate_holds_the_lock_retire_waits_on(self):
+        # The other side of the race, driven through record_candidate itself:
+        # while its write is in progress, retire_candidate must be blocked.
+        import threading
+        self._write(16)
+        entered, release = threading.Event(), threading.Event()
+        real_replace = belt_candidates._replace
+        recorder = {}
+
+        def slow_replace(path, entry):
+            if threading.current_thread() is recorder.get("thread"):
+                entered.set()
+                release.wait(5)
+            real_replace(path, entry)
+        result = {}
+        with patch.object(belt_candidates, "_replace", side_effect=slow_replace):
+            record = threading.Thread(target=lambda: belt_candidates.record_candidate(
+                self.REPO, 16, "ready-for-l3", "l1", base_dir=self.dir))
+            recorder["thread"] = record
+            record.start()
+            self.assertTrue(entered.wait(5))
+            retire = threading.Thread(target=lambda: result.setdefault(
+                "marked", belt_candidates.retire_candidate(
+                    self.REPO, 16, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc))))
+            retire.start()
+            retire.join(timeout=0.3)
+            blocked = retire.is_alive()
+            release.set()
+            record.join(timeout=5)
+            retire.join(timeout=5)
+        self.assertTrue(blocked, "retire_candidate ran while record_candidate was writing")
+        self.assertFalse(result["marked"])
+        entry = self._entry(belt_candidates._candidate_path(self.dir, self.REPO, 16))
+        self.assertEqual(entry["kind"], "ready-for-l3")
+        self.assertNotIn("closed_at", entry)
+
+    def test_every_store_mutation_happens_under_the_lock(self):
+        # 1b: the three mutation sites -- record, retire, prune -- each write
+        # or unlink only while _store_lock is held.
+        held = {"depth": 0}
+        real_lock, real_replace, real_unlink = (
+            belt_candidates._store_lock, belt_candidates._replace, Path.unlink)
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def counting_lock(base):
+            with real_lock(base):
+                held["depth"] += 1
+                try:
+                    yield
+                finally:
+                    held["depth"] -= 1
+
+        def guarded_replace(path, entry):
+            self.assertGreater(held["depth"], 0, "_replace outside the store lock")
+            real_replace(path, entry)
+
+        def guarded_unlink(path, *a, **kw):
+            if path.parent == self.dir:
+                self.assertGreater(held["depth"], 0, "unlink outside the store lock")
+            return real_unlink(path, *a, **kw)
+        stale = self._write(17, posted_at="2026-01-01T00:00:00Z")
+        self._write(18)
+        with patch.object(belt_candidates, "_store_lock", counting_lock), \
+             patch.object(belt_candidates, "_replace", guarded_replace), \
+             patch.object(Path, "unlink", guarded_unlink), \
+             patch.object(belt_candidates, "_archive_candidate", return_value=1):
+            belt_candidates.record_candidate(self.REPO, 19, "handoff", "l1", base_dir=self.dir)
+            self.assertTrue(belt_candidates.retire_candidate(
+                self.REPO, 18, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
+            self._candidates_pruned()
+        self.assertFalse(stale.exists())
+
+    def _candidates_pruned(self):
+        return belt_candidates.read_candidates(
+            [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
+            now=dt.datetime(2026, 10, 2, 1, tzinfo=dt.timezone.utc), base_dir=self.dir, prune=True)
+
+    def test_a_post_landing_before_the_prune_takes_the_lock_is_kept(self):
+        # 1a: the age prune re-reads under the lock. A record_candidate that
+        # refreshed the entry after read_candidates' unlocked read keeps it,
+        # and nothing is archived.
+        import contextlib
+        stale = self._write(20, posted_at="2026-01-01T00:00:00Z")
+        real_lock = belt_candidates._store_lock
+
+        @contextlib.contextmanager
+        def lock_after_a_post(base):
+            stale.write_text(json.dumps({"repo": self.REPO, "issue": 20, "kind": "handoff",
+                                         "posted_by": "l1", "posted_at": "2026-10-02T00:30:00Z"}))
+            with real_lock(base):
+                yield
+        with patch.object(belt_candidates, "_store_lock", lock_after_a_post), \
+             patch.object(belt_candidates, "_archive_candidate", return_value=1) as archived:
+            self._candidates_pruned()
+        self.assertTrue(stale.exists())
+        self.assertEqual(self._entry(stale)["posted_at"], "2026-10-02T00:30:00Z")
+        archived.assert_not_called()
+
+    def test_a_failed_mark_is_logged(self):
+        path = self._write(21)
+        path.write_text("{not json")
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertFalse(belt_candidates.retire_candidate(
+                self.REPO, 21, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
+        self.assertIn("could not mark closed", err.getvalue())
+
+    def test_a_missing_entry_is_not_logged(self):
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertFalse(belt_candidates.retire_candidate(
+                self.REPO, 22, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
+        self.assertEqual(err.getvalue(), "")
+
     def test_a_failed_issue_read_keeps_the_issue_open_and_unmarked(self):
         path = self._write(6)
         with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
@@ -3135,17 +3249,24 @@ class ClosedIssueRetirementTests(unittest.TestCase):
         self.assertEqual(queue, {6: "handoff owes=implement"})
         self.assertNotIn("closed_at", self._entry(path))
 
-    def test_nothing_is_marked_on_a_failed_cycle(self):
-        closed_path = self._write(7)
-        self._write(8)
+    def test_a_failed_comment_fetch_does_not_stop_another_issues_closed_mark(self):
+        # AC4 as amended by the sticky-wicket ruling: marking depends only on
+        # the per-issue state read. The repo is still reported unreliable.
+        # Both roles: small ints iterate in value order, so the (8, 7) case
+        # visits the failing fetch before the closed issue (AC5).
+        for closed, failing in ((7, 8), (8, 7)):
+            with self.subTest(closed=closed):
+                closed_path = self._write(closed)
+                self._write(failing)
 
-        def meta(repo, issue):
-            return ("closed", set()) if issue == 7 else ("open", set())
-        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=None):
-            queue, ok = self._discover({7, 8})
-        self.assertFalse(ok)
-        self.assertNotIn("closed_at", self._entry(closed_path))
+                def meta(repo, issue, closed=closed):
+                    return ("closed", set()) if issue == closed else ("open", set())
+                with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+                     patch("watch_lane_posts._fetch_all_comments", return_value=None):
+                    queue, ok = self._discover({7, 8})
+                self.assertFalse(ok)
+                self.assertEqual(queue, {})
+                self.assertIn("closed_at", self._entry(closed_path))
 
     def test_an_entry_posted_after_the_store_was_read_is_not_marked(self):
         path = self._write(9, posted_at="2026-10-02T00:00:05Z")
