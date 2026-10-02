@@ -3075,18 +3075,56 @@ class ClosedIssueRetirementTests(unittest.TestCase):
             [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
             base_dir=self.dir))
 
-    def test_a_reopened_issue_is_read_fresh_every_cycle(self):
-        # No cache: a pair read closed once is read again next cycle and
-        # queued as soon as it is open.
-        self._write(5, posted_at="2026-10-02T00:00:05Z")  # posted after the first read
+    def test_a_reopened_issue_with_no_new_post_is_offered_again_after_the_recheck_window(self):
+        # Preclose (reforge pass 1): the mark is not a permanent latch. A pair
+        # marked closed is skipped for CLOSED_RECHECK, then offered again so
+        # its state is re-read; a reopen with no new post is queued then.
+        self._write(5)
         with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
             self._discover({5})
-        with patch("watch_lane_posts._issue_meta", return_value=("open", set())) as m, \
+        marked = belt_candidates._parse_iso(self._entry(
+            belt_candidates._candidate_path(self.dir, self.REPO, 5))["closed_at"])
+        kw = dict(queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)}, base_dir=self.dir)
+        soon = marked + dt.timedelta(minutes=30)
+        later = marked + belt_candidates.CLOSED_RECHECK + dt.timedelta(minutes=1)
+        self.assertEqual(belt_candidates.read_candidates([self.REPO], "l2", now=soon, **kw), set())
+        self.assertEqual(belt_candidates.read_candidates([self.REPO], "l2", now=later, **kw),
+                         {(self.REPO, 5)})
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
             queue, ok = self._discover({5}, read_at="2026-10-02T00:10:00Z")
-        self.assertEqual(m.call_count, 1)
         self.assertEqual(queue, {5: "handoff owes=implement"})
+
+    def test_a_still_closed_recheck_refreshes_the_mark(self):
+        path = self._write(12)
+        first = dt.datetime(2026, 10, 2, 1, tzinfo=dt.timezone.utc)
+        read = dt.datetime(2026, 10, 2, 0, tzinfo=dt.timezone.utc)
+        self.assertTrue(belt_candidates.retire_candidate(self.REPO, 12, read_before=read, now=first))
+        second = first + dt.timedelta(hours=2)
+        self.assertTrue(belt_candidates.retire_candidate(self.REPO, 12, read_before=read, now=second))
+        self.assertEqual(self._entry(path)["closed_at"], "2026-10-02T03:00:00Z")
+
+    def test_a_post_landing_during_retirement_is_never_overwritten(self):
+        # retire_candidate reads and rewrites under the store lock; a writer
+        # holding the lock first lands its fresh entry, and retire then sees
+        # it (posted after the store read) and leaves it unmarked.
+        import threading
+        path = self._write(13)
+        read_before = dt.datetime(2026, 10, 2, 0, tzinfo=dt.timezone.utc)
+        result = {}
+        with belt_candidates._store_lock(self.dir):
+            worker = threading.Thread(target=lambda: result.setdefault(
+                "marked", belt_candidates.retire_candidate(self.REPO, 13, read_before=read_before)))
+            worker.start()
+            worker.join(timeout=0.3)
+            self.assertTrue(worker.is_alive())  # blocked on the lock
+            path.write_text(json.dumps({"repo": self.REPO, "issue": 13, "kind": "ready-for-l3",
+                                        "posted_by": "l1", "posted_at": "2026-10-02T00:00:09Z"}))
+        worker.join(timeout=5)
+        self.assertFalse(result["marked"])
+        self.assertEqual(self._entry(path)["kind"], "ready-for-l3")
+        self.assertNotIn("closed_at", self._entry(path))
 
     def test_a_failed_issue_read_keeps_the_issue_open_and_unmarked(self):
         path = self._write(6)

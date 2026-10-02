@@ -81,7 +81,8 @@ class RecordCandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             bc.record_candidate("vitalharmony/hrse", 1, "handoff", "l1", base_dir=base)
-            names = {p.name for p in base.iterdir()}
+            # `.lock` is the store's writer lock (harmonic-forge#854), not a temp file.
+            names = {p.name for p in base.iterdir()} - {".lock"}
             self.assertEqual(names, {"vitalharmony__hrse__1.json"})
 
 

@@ -65,6 +65,8 @@ scratch dir instead of the operator's real state. F706's focused
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import sys
@@ -83,6 +85,13 @@ DEFAULT_CANDIDATES_DIR = Path.home() / ".claude" / "state" / "belt" / "candidate
 #: re-litigated -- 14 days safely spans a long weekend without an entry
 #: aging out from under a lane that was simply offline.
 DEFAULT_MAX_AGE_DAYS = 14
+
+#: harmonic-forge#854 preclose: a closed-marked entry is skipped for this long,
+#: then offered again so `discover_queue` re-reads the issue's state. An issue
+#: reopened with no new post is queued again within this window; one still
+#: closed is re-marked (the stamp refreshed), so a closed issue costs at most
+#: one issue read per window.
+CLOSED_RECHECK = timedelta(hours=1)
 
 
 def _candidate_path(base_dir: Path, repo: str, issue: int) -> Path:
@@ -126,12 +135,32 @@ def record_candidate(
     path = _candidate_path(base, repo, issue)
     try:
         base.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(entry), encoding="utf-8")
-        os.replace(tmp, path)
+        with _store_lock(base):
+            _replace(path, entry)
     except OSError as exc:
         print(f"[belt-candidates] record failed (non-fatal): {exc}",
               file=sys.stderr)
+
+
+@contextlib.contextmanager
+def _store_lock(base: Path):
+    """An exclusive lock over the candidate store's writers (harmonic-forge#854
+    preclose). `retire_candidate` reads an entry and rewrites it; holding this
+    lock across both steps, and across every `record_candidate` write, means a
+    fresh post can never land between them and be overwritten."""
+    base.mkdir(parents=True, exist_ok=True)
+    with open(base / ".lock", "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _replace(path: Path, entry: dict) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(entry), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _parse_iso(stamp: str) -> datetime:
@@ -212,9 +241,11 @@ def read_candidates(
                 except OSError:
                     pass
             continue
-        if entry.get("closed_at"):
+        if _recently_closed(entry, now):
             # harmonic-forge#854: retired by `retire_candidate` because the
-            # issue was closed; a fresh `record_candidate` clears the mark.
+            # issue was closed. Skipped for CLOSED_RECHECK, then offered again
+            # so its state is re-read (a reopen with no new post is not lost);
+            # a fresh `record_candidate` clears the mark at once.
             continue
         if repo not in wanted_repos:
             continue
@@ -222,6 +253,16 @@ def read_candidates(
             continue
         candidates.add((repo, issue))
     return candidates
+
+
+def _recently_closed(entry: dict, now: datetime) -> bool:
+    stamp = entry.get("closed_at")
+    if not stamp:
+        return False
+    try:
+        return now - _parse_iso(stamp) < CLOSED_RECHECK
+    except (ValueError, TypeError):
+        return False  # an unreadable mark is not a mark: offer the pair
 
 
 def _archive_candidate(path: Path, entry: dict) -> int:
@@ -238,31 +279,31 @@ def _archive_candidate(path: Path, entry: dict) -> int:
 
 
 def retire_candidate(repo: str, issue: int, *, read_before: datetime,
-                     base_dir: Path | None = None) -> bool:
+                     base_dir: Path | None = None, now: datetime | None = None) -> bool:
     """Mark a CLOSED issue's candidate entry closed, in place (harmonic-forge#854).
 
-    The entry gains a `closed_at` stamp through the same atomic temp-file and
-    `os.replace` as `record_candidate`; nothing is archived or unlinked here.
-    `read_candidates` skips a marked entry, so the pair costs no read on any
-    later cycle, in this process or a fresh one, and a later `record_candidate`
-    (a new post on a reopened issue) writes a whole fresh entry without the
-    mark. An entry posted at or after `read_before` (the moment the cycle read
-    the store, compared to the second as `posted_at` is stored) is left
-    unmarked, so a post landing mid-cycle keeps its candidacy. Archive-then-
-    unlink stays solely the 14-day age prune. Returns whether it marked."""
-    path = _candidate_path(base_dir or DEFAULT_CANDIDATES_DIR, repo, issue)
+    The entry gains (or refreshes) a `closed_at` stamp; nothing is archived or
+    unlinked here. `read_candidates` skips a marked entry for CLOSED_RECHECK,
+    then offers it again so its state is re-read, and a later
+    `record_candidate` writes a whole fresh entry without the mark. The read
+    and the rewrite happen under the store lock, so a concurrent post cannot be
+    overwritten. An entry posted at or after `read_before` (the moment the
+    cycle read the store, compared to the second as `posted_at` is stored) is
+    left unmarked. Archive-then-unlink stays solely the 14-day age prune.
+    Returns whether it marked."""
+    base = base_dir or DEFAULT_CANDIDATES_DIR
+    path = _candidate_path(base, repo, issue)
     try:
-        entry = json.loads(path.read_text(encoding="utf-8"))
-        posted_at = _parse_iso(entry["posted_at"])
-    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
-        return False
-    if entry.get("closed_at") or posted_at >= read_before.replace(microsecond=0):
-        return False
-    entry["closed_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    try:
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(entry), encoding="utf-8")
-        os.replace(tmp, path)
+        with _store_lock(base):
+            try:
+                entry = json.loads(path.read_text(encoding="utf-8"))
+                posted_at = _parse_iso(entry["posted_at"])
+            except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+                return False
+            if posted_at >= read_before.replace(microsecond=0):
+                return False
+            entry["closed_at"] = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _replace(path, entry)
     except OSError:
         return False
     return True
