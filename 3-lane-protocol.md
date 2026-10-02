@@ -1263,7 +1263,8 @@ more of its mechanisms each touch a high-blast surface as
 - Dependent children are linked with blocked-by.
 - Each child carries its own handoff in the same filing action (R-0039). A child
   whose handoff's file and line citations would be written against code a
-  sibling that has not landed is about to change is R-0039's third exception,
+  prerequisite that has not landed (a sibling or any other issue) is about to
+  change is R-0039's third exception,
   declared with R-0352's deferral shape (trigger, owner, record); that is the
   only reason a child's handoff defers. A child whose handoff cannot be written
   for any other reason is not split out yet: per R-0039, that inability is the

@@ -2438,7 +2438,7 @@ id = "R-0370"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
 statement = "A Tooling Exception issue is filed as one issue per mechanism when it is Tier deep (8+ points) or when two or more of its mechanisms each touch a HIGH_BLAST_PATTERNS surface or tools/gh/; one mechanism is one independently removable design, which may carry several ACs and kill checks; dependent children are linked blocked-by and each carries its own handoff in the same filing (or R-0352's deferral shape); a single deep mechanism stays one issue; it applies at filing, and an already-filed issue is re-split only on the operator's word; planning.md's exceptions do not carry over, only the operator's override (harmonic-forge#856, from harmonic-forge#851)."
-text_sha = "03ae23dda29e06ba"
+text_sha = "2ee5c622e18933e7"
 hooks = []
 
 [[rule]]
