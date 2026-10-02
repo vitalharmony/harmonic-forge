@@ -233,6 +233,11 @@ def _archive_candidate(path: Path, entry: dict) -> int:
         return 0
 
 
+def has_candidate(repo: str, issue: int, base_dir: Path | None = None) -> bool:
+    """Whether `(repo, issue)` has a candidate file in the store (harmonic-forge#854)."""
+    return _candidate_path(base_dir or DEFAULT_CANDIDATES_DIR, repo, issue).is_file()
+
+
 def retire_candidate(repo: str, issue: int, *, read_before: datetime,
                      base_dir: Path | None = None) -> bool:
     """Archive, then unlink, a CLOSED issue's candidate file (harmonic-forge#854).
@@ -248,7 +253,10 @@ def retire_candidate(repo: str, issue: int, *, read_before: datetime,
         posted_at = _parse_iso(entry["posted_at"])
     except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
         return False
-    if posted_at >= read_before:
+    # `posted_at` is stored to the second (`record_candidate`), so compare
+    # against the read time truncated the same way: an entry stamped in the
+    # same second as the read is kept, never assumed older (preclose pass 1).
+    if posted_at >= read_before.replace(microsecond=0):
         return False
     try:
         if _archive_candidate(path, entry) == 1:

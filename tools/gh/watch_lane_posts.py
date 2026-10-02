@@ -1017,15 +1017,23 @@ def discover_queue(repo: str, lane: str,
     for issue in candidates:
         # harmonic-forge#854: a closed issue is queued to no lane, checked
         # before the label exclusion so closed epics and Tooling Exception
-        # issues are retired too. A pair already known closed costs no call.
-        if (repo, issue) in _CLOSED_SEEN:
-            closed.append(issue)
+        # issues are retired too. A pair already known closed, with no
+        # candidate file left to retire, costs no call. A cached pair that
+        # HAS a file is re-read first: the cache never expires, and a reopened
+        # issue's fresh post must not be deleted on its word alone (preclose
+        # pass 1). A reopened pair leaves the cache and is queued normally.
+        cached = (repo, issue) in _CLOSED_SEEN
+        if cached and not belt_candidates.has_candidate(repo, issue):
             continue
         state, labels = _issue_meta(repo, issue)
         if state == "closed":
             _CLOSED_SEEN.add((repo, issue))
             closed.append(issue)
             continue
+        if cached:
+            if state is None:
+                continue  # cannot confirm either way: queue nothing, delete nothing
+            _CLOSED_SEEN.discard((repo, issue))
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
             # preclose finding): an epic, or -- for l2/l3 -- a Lane-1-owned

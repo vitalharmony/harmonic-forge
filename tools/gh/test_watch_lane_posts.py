@@ -2966,6 +2966,7 @@ class FailChannelAgreementTests(unittest.TestCase):
 #: GitHub and a genuinely closed issue (hrse#1530) changed its result. Unit
 #: tests never call GitHub: default every test to an open, unlabelled issue;
 #: a test that needs another answer patches `_issue_meta` itself.
+_REAL_ISSUE_META = watch_lane_posts._issue_meta
 _ISSUE_META_PATCHER = patch("watch_lane_posts._issue_meta", return_value=("open", set()))
 
 
@@ -2975,6 +2976,26 @@ def setUpModule():
 
 def tearDownModule():
     _ISSUE_META_PATCHER.stop()
+
+
+class IssueMetaReadTests(unittest.TestCase):
+    """harmonic-forge#854 preclose pass 1: the module-wide stub above hides
+    `_issue_meta` itself, so its one read and its parse are tested here
+    against the real function, with only the gh transport faked."""
+
+    def test_one_read_returns_state_and_labels(self):
+        with patch("watch_lane_posts.gh_as",
+                   return_value='{"state": "closed", "labels": ["epic", "bug"]}') as g:
+            got = _REAL_ISSUE_META("vitalharmony/hrse", 7)
+        self.assertEqual(got, ("closed", {"epic", "bug"}))
+        g.assert_called_once()
+        argv = g.call_args.args[1]
+        self.assertIn("repos/vitalharmony/hrse/issues/7", argv)
+        self.assertEqual(argv[argv.index("--jq") + 1], "{state: .state, labels: [.labels[].name]}")
+
+    def test_a_read_without_state_fails_open(self):
+        with patch("watch_lane_posts.gh_as", return_value='["epic"]'):
+            self.assertEqual(_REAL_ISSUE_META("vitalharmony/hrse", 7), (None, None))
 
 
 class ClosedIssueRetirementTests(unittest.TestCase):
@@ -3034,15 +3055,55 @@ class ClosedIssueRetirementTests(unittest.TestCase):
                     self._discover({2})
                 self.assertFalse(path.exists())
 
-    def test_a_pair_already_known_closed_costs_no_call_and_is_still_retired(self):
-        path = self._write(3)
+    def test_a_known_closed_pair_with_no_file_costs_no_call(self):
         watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
         with patch("watch_lane_posts._issue_meta") as m, \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
             queue, ok = self._discover({3})
         m.assert_not_called()
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+
+    def test_a_known_closed_pair_with_a_file_is_reread_before_it_is_retired(self):
+        path = self._write(3)
+        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())) as m, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            queue, ok = self._discover({3})
+        self.assertEqual(m.call_count, 1)
         self.assertEqual(queue, {})
         self.assertFalse(path.exists())
+
+    def test_a_reopened_issue_keeps_its_fresh_file_and_is_queued(self):
+        # Preclose pass 1: the cache never expires, so a reopened issue's new
+        # post must survive a stale cache entry.
+        path = self._write(3)
+        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
+            queue, ok = self._discover({3})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {3: "handoff owes=implement"})
+        self.assertTrue(path.exists())
+        self.assertNotIn((self.REPO, 3), watch_lane_posts._CLOSED_SEEN)
+
+    def test_a_failed_reread_of_a_known_closed_pair_deletes_nothing(self):
+        path = self._write(3)
+        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
+        with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
+            queue, ok = self._discover({3})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+        self.assertTrue(path.exists())
+
+    def test_an_entry_stamped_in_the_same_second_as_the_read_is_kept(self):
+        # posted_at is stored to the second; a sub-second read time must not
+        # make a post from that same second look older (preclose pass 1).
+        path = self._write(10, posted_at="2026-10-02T12:00:00Z")
+        read_before = dt.datetime(2026, 10, 2, 12, 0, 0, 100000, tzinfo=dt.timezone.utc)
+        self.assertFalse(belt_candidates.retire_candidate(self.REPO, 10, read_before=read_before))
+        self.assertTrue(path.exists())
 
     def test_a_closed_pair_is_remembered_for_the_next_cycle(self):
         self._write(4)
