@@ -539,7 +539,7 @@ lock (Lane 1's belt does not mutate a shared worktree).
 
 ## Role: Lane 2
 
-Fires on `handoff`, `rework`, `gate-result` (a FAIL only, from any poster). Silent on `ready-for-l3`, `ae`,
+Fires on `handoff`, `rework`, `gate-result` (from any poster, unless its verdict, read by `gate_ci.verdict_of` from the heading or the lead block, is PASS or BLOCKED). Silent on `ready-for-l3`, `ae`,
 `sweep`, `ae-and-sweep`, `spec`, and a PASS `gate-result` — that is the Lane 1 ↔ Lane 3
 channel. Since harmonic-forge#851 the comment-watch enforces this itself:
 `watch_lane_posts.KIND_OWNER` maps each kind to the lane that owes the next

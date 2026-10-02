@@ -43,6 +43,15 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/lane/test_cross_family_provenance.py         | 35 +++++++++++
 - tools/rules/registry.toml                          |  4 +-
 - 16 files changed, 331 insertions(+), 49 deletions(-)
+## fix(belt): sticky-wicket PATCH for preclose pass 1 -- one shared trailing-footer reader for the handoff footer, is_auto_ae and verify_body_sha256; FAIL read by gate_ci.verdict_of across every accepted shape; the consumer's auto-AE ceiling includes the newest spec (harmonic-forge#851)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/test_handoff_footer.py      | 63 ++++++++++++++++++++++++++++++++++++
+- tools/gh/test_watch_lane_posts.py    | 28 ++++++++++++++++
+- tools/gh/watch_lane_posts.py         | 35 ++++++++++++++------
+- 7 files changed, 221 insertions(+), 33 deletions(-)
+
 ## fix(belt): keep SKILL.md within its 30-line cap and align the batch-view row with the owes= suffix (harmonic-forge#851)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -202,9 +202,7 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: harmonic-forge#851: the FAIL/PASS reader for a gate result is
 #: `lane_state.py`'s, imported rather than restated -- a second regex is how
 #: two readers of one heading drift apart.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent
-                       / "skills" / "sprint-plan" / "scripts"))
-from lane_state import _GATE_RESULT  # noqa: E402
+import gate_ci  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
     CallCounter,
@@ -469,10 +467,23 @@ def _queue_owes(lane: str, kind: str, body: str) -> str:
     return OWES[lane][kind]
 
 
-def _is_failed_gate_result(body: str) -> bool:
-    """A gate result whose `## Lane 3 Gate Results` heading says FAIL."""
-    match = _GATE_RESULT.search(body)
-    return bool(match) and match.group(1) == "FAIL"
+#: Any `Lane 3 Gate Results` heading the posting tool accepts (`#{1,4}`, no
+#: verdict required -- `post_lane_discussion.py`), so a markerless gate report
+#: is still recognized as one.
+_GATE_RESULT_HEADING = re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.IGNORECASE)
+
+
+def _gate_result_owes_fix(body: str) -> bool:
+    """Does Lane 2 owe a fix on this gate result? (harmonic-forge#851 AC1.6)
+
+    The verdict is read by `gate_ci.verdict_of`, the platform's canonical
+    reader: the heading OR the `**Verdict:**` lead block, because most real
+    reports carry a bare heading (preclose pass 1 survivor 1). Only a stated
+    PASS (Lane 1 owes the close) or BLOCKED (Lane 1 owes the unblock) owes
+    Lane 2 nothing. FAIL, a heading/lead CONFLICT, and an unreadable verdict
+    all queue: an undecidable report is emitted for the lane to read, never
+    silently dropped."""
+    return gate_ci.verdict_of(body) not in ("PASS", "BLOCKED")
 
 
 #: Overlap `K`, in minutes. `query_since` reads from `min(watermark, now - K)`,
@@ -989,12 +1000,18 @@ def discover_queue(repo: str, lane: str,
             if classified is not None and not _is_l2_finding(*classified):
                 last_kind = classified
                 last_body = comment.get("body", "")
-        if not last_kind or last_kind[1] not in kinds:
+        if not last_kind:
             continue
         poster, kind = last_kind
+        if kind.startswith("#") and _GATE_RESULT_HEADING.match(kind):
+            # A markerless gate report (most of the historical corpus carries
+            # no kind footer) is still a gate result for queueing purposes.
+            kind = "gate-result"
+        if kind not in kinds:
+            continue
         if poster not in posters and kind not in any_poster:
             continue
-        if kind == "gate-result" and not _is_failed_gate_result(last_body):
+        if kind == "gate-result" and not _gate_result_owes_fix(last_body):
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
             continue
         queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"

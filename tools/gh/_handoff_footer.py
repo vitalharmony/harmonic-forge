@@ -10,10 +10,29 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})[^\n]*\n.*?^\1[ \t]*$", re.DOTALL | re.MULTILINE)
-_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;.*?-->", re.DOTALL)
+#: One marker, never spanning a `-->` boundary: a footer carries no `>` before
+#: its own close, so `[^>]*?` cannot run from one marker into the next.
+_ANY_MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;[^>]*?-->")
 _KIND_RE = re.compile(r"kind=([\w-]+)")
 _MUTATES_LIVE_RE = re.compile(r"mutates-live=(\w+)")
+
+
+def trailing_footer(body: str | None) -> str | None:
+    """The body's OWN attestation footer: the last `l1-post` marker, and only
+    when nothing but whitespace follows it. None otherwise -- never an earlier
+    marker (harmonic-forge#851 preclose pass 1 survivors 3 and 4).
+
+    Every posting tool appends its footer last, and `reject_reserved_marker`
+    keeps a second, tool-written one out of the body, so the trailing span is
+    the only authoritative one. A marker quoted anywhere else -- in a fence, a
+    `>` blockquote, inline backticks or bare prose -- is evidence, not state."""
+    text = body or ""
+    last = None
+    for last in _ANY_MARKER_RE.finditer(text):
+        pass
+    if last is None or text[last.end():].strip():
+        return None
+    return last.group(0)
 
 
 def newest_handoff_mutates_live(bodies: Iterable[str]) -> bool | None:
@@ -23,12 +42,12 @@ def newest_handoff_mutates_live(bodies: Iterable[str]) -> bool | None:
     `True`: a legacy handoff is refused, never assumed safe."""
     found: bool | None = None
     for body in bodies:
-        marker = _MARKER_RE.search(_FENCE_RE.sub("", body or ""))
+        marker = trailing_footer(body)
         if not marker:
             continue
-        kind = _KIND_RE.search(marker.group(0))
+        kind = _KIND_RE.search(marker)
         if not kind or kind.group(1) != "handoff":
             continue
-        field = _MUTATES_LIVE_RE.search(marker.group(0))
+        field = _MUTATES_LIVE_RE.search(marker)
         found = None if field is None else field.group(1) == "true"
     return found

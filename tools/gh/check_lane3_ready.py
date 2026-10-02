@@ -27,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
 
-from _handoff_footer import newest_handoff_mutates_live  # noqa: E402
-from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
+from _handoff_footer import newest_handoff_mutates_live, trailing_footer  # noqa: E402
+from _sweep_tier import NO_TIER_MESSAGE, TIER_RANK, parse_write_tier  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
 #: harmonic-forge#791: a spec/handoff is recognized by its OWN heading too,
@@ -126,8 +126,8 @@ def is_auto_ae(comment: dict) -> bool:
     """harmonic-forge#851: an AE `l1_post.py --auto-ae` posted. Read from the
     body's own trailing attestation footer only, so a marker quoted in the
     body never counts."""
-    match = FOOTER_MARKER.search(comment.get("body", ""))
-    return bool(match) and "authorized-by=auto-ae" in match.group(0)
+    footer = trailing_footer(comment.get("body", ""))
+    return footer is not None and "authorized-by=auto-ae" in footer
 
 
 def auto_ae_refusal(comments: list[dict], ae: dict, tier: str) -> str | None:
@@ -139,9 +139,20 @@ def auto_ae_refusal(comments: list[dict], ae: dict, tier: str) -> str | None:
     above Tier W, or on an issue whose newest handoff is live-mutating or
     predates the `mutates-live` field. A manual AE never reaches here."""
     manual = "the operator's manual AE is required (post it without --auto-ae)"
-    if tier not in ("R", "W"):
-        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but its sweep "
-                f"declares tier {tier}; an auto-AE authorizes Tier R or W only -- {manual}")
+    # harmonic-forge#851 preclose pass 1 survivor 2: the same ceiling the poster
+    # computes -- the sweep AND the newest spec -- so a spec revised to add a
+    # Tier P case after the auto-AE cannot ride carry-forward past this guard.
+    spec = latest_by_kind(comments, "spec")
+    spec_tier = parse_write_tier(spec.get("body", "")) if spec else None
+    if spec_tier is None:
+        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but the newest "
+                f"Lane 3 spec declares no write tier (or none was found); auto-AE never "
+                f"reads silence as Tier R -- {manual}")
+    ceiling = max((tier, spec_tier), key=TIER_RANK.__getitem__)
+    if ceiling not in ("R", "W"):
+        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but the write-tier "
+                f"ceiling over the sweep and the newest spec is {ceiling}; an auto-AE "
+                f"authorizes Tier R or W only -- {manual}")
     mutates_live = newest_handoff_mutates_live(c.get("body", "") for c in comments)
     if mutates_live is not False:
         why = ("says mutates-live=true" if mutates_live
@@ -166,10 +177,15 @@ def verify_body_sha256(comment: dict) -> bool:
     there is nothing to verify against (no body-sha256 marker) -- absence
     is a missing-marker problem the caller already checks for separately,
     not a mismatch."""
-    recorded = FOOTER_BODY_SHA.search(comment.get("body", ""))
+    body = comment.get("body", "")
+    # harmonic-forge#851 sticky-wicket: read the body's OWN trailing footer, so
+    # a quoted marker earlier in the body neither supplies the recorded digest
+    # nor gets stripped from quote-to-end before hashing.
+    footer = trailing_footer(body)
+    recorded = FOOTER_BODY_SHA.search(footer) if footer else None
     if recorded is None:
         return True
-    prefix = FOOTER_MARKER.sub("", comment.get("body", ""))
+    prefix = body[:body.rindex(footer)]
     digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
     return digest == recorded.group(1)
 

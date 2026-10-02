@@ -704,9 +704,16 @@ class AutoAeAuthorityTests(unittest.TestCase):
                 "body": "**Authorized under:** the standing auto-AE toggle\n\n"
                         f"<!-- l1-post v1; kind=ae; authorized-by=auto-ae; sha={DEFAULT_SHA} -->"}
 
-    def _thread(self, mutates_live="false", tier="W"):
-        return [self._handoff(1, mutates_live), self._auto_ae(2),
-                _comment(3, "sweep", "2026-10-02T02:00:01Z", tier=tier)]
+    def _spec(self, cid: int, tier: str | None) -> dict:
+        line = f"Write tier: {tier}\n\n" if tier else ""
+        return {"id": cid, "created_at": "2026-10-02T01:30:00Z", "html_url": self._url(cid),
+                "body": f"## Lane 3 Test Spec — H1\n\n{line}1. TC1\n\n"
+                        f"<!-- l1-post v1; kind=spec; posted-by=LANE3; body-sha256={'0' * 64} -->"}
+
+    def _thread(self, mutates_live="false", tier="W", spec_tier="W"):
+        return [self._handoff(1, mutates_live), self._spec(5, spec_tier) if spec_tier != "none"
+                else self._spec(5, None), self._auto_ae(6),
+                _comment(7, "sweep", "2026-10-02T02:00:01Z", tier=tier)]
 
     def test_accepts_auto_ae_over_tier_w_on_a_safe_handoff(self):
         authority, message = c.resolve_gate_authority(self._thread(), DEFAULT_SHA)
@@ -716,6 +723,17 @@ class AutoAeAuthorityTests(unittest.TestCase):
         authority, message = c.resolve_gate_authority(self._thread(tier="P"), DEFAULT_SHA)
         self.assertIsNone(authority)
         self.assertIn("auto-AE authorizes Tier R or W only", message)
+
+    def test_refuses_auto_ae_when_only_the_spec_is_tier_p(self):
+        """Preclose pass 1 survivor 2: the consumer's ceiling includes the spec."""
+        authority, message = c.resolve_gate_authority(self._thread(spec_tier="P"), DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("ceiling over the sweep and the newest spec is P", message)
+
+    def test_refuses_auto_ae_when_the_spec_declares_no_tier(self):
+        authority, message = c.resolve_gate_authority(self._thread(spec_tier="none"), DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("declares no write tier", message)
 
     def test_refuses_auto_ae_on_mutates_live_handoff(self):
         authority, message = c.resolve_gate_authority(self._thread("true"), DEFAULT_SHA)
@@ -729,7 +747,7 @@ class AutoAeAuthorityTests(unittest.TestCase):
 
     def test_ready_for_l3_does_not_carry_refused_auto_ae(self):
         thread = self._thread("true") + [
-            _comment(4, "ready-for-l3", "2026-10-02T03:00:00Z", sha=self.NEW_SHA)]
+            _comment(8, "ready-for-l3", "2026-10-02T03:00:00Z", sha=self.NEW_SHA)]
         authority, message = c.resolve_gate_authority(thread, self.NEW_SHA)
         self.assertIsNone(authority)
         self.assertIn("auto-AE toggle", message)
@@ -740,13 +758,40 @@ class AutoAeAuthorityTests(unittest.TestCase):
         authority, message = c.resolve_gate_authority(thread, DEFAULT_SHA)
         self.assertIsNotNone(authority, message)
 
-    def test_quoted_auto_ae_marker_does_not_count(self):
-        ae = _comment(2, "ae", "2026-10-02T02:00:00Z")
-        ae["body"] = "```\nkind=ae; authorized-by=auto-ae;\n```\n" + ae["body"]
-        thread = [self._handoff(1, "true"), ae,
-                  _comment(3, "sweep", "2026-10-02T02:00:01Z", tier="P")]
+    QUOTED = f"<!-- l1-post v1; kind=ae; authorized-by=auto-ae; sha={'a' * 40} -->"
+
+    def _manual_ae_quoting(self, wrapper: str, trailing: bool = True) -> dict:
+        ae = _comment(6, "ae", "2026-10-02T02:00:00Z")
+        footer = ae["body"][ae["body"].index("<!--"):]
+        quoted = wrapper.format(self.QUOTED)
+        ae["body"] = f"**Authorized:** x\n\n{quoted}\n\nmore prose" + (f"\n\n{footer}" if trailing else "")
+        return ae
+
+    def test_a_quoted_auto_ae_marker_never_counts(self):
+        """Sticky-wicket PATCH (survivor 4): only the body's own trailing footer
+        is read. Each wrapper quotes a REAL marker this time."""
+        wrappers = {"fence": "```\n{}\n```", "blockquote": "> {}", "inline": "`{}`",
+                    "prose": "see {} above"}
+        for name, wrapper in wrappers.items():
+            with self.subTest(wrapper=name):
+                self.assertFalse(c.is_auto_ae(self._manual_ae_quoting(wrapper)))
+
+    def test_a_quoted_marker_with_no_trailing_footer_reads_as_absent(self):
+        self.assertFalse(c.is_auto_ae(self._manual_ae_quoting("> {}", trailing=False)))
+
+    def test_manual_ae_quoting_auto_ae_over_tier_p_still_authorizes(self):
+        thread = [self._handoff(1, "true"), self._manual_ae_quoting("```\n{}\n```"),
+                  _comment(7, "sweep", "2026-10-02T02:00:01Z", tier="P")]
         authority, message = c.resolve_gate_authority(thread, DEFAULT_SHA)
         self.assertIsNotNone(authority, message)
+
+    def test_body_sha256_ignores_a_quoted_marker(self):
+        """The third site the sticky-wicket ruling named: verify_body_sha256."""
+        import hashlib
+        prefix = f"body\n\n> {self.QUOTED}\n\nmore"
+        digest = hashlib.sha256(prefix.encode()).hexdigest()
+        comment = {"body": f"{prefix}\n\n<!-- l1-post v1; kind=sweep; sha={'a' * 40}; body-sha256={digest} -->\n"}
+        self.assertTrue(c.verify_body_sha256(comment))
 
 
 if __name__ == "__main__":

@@ -2412,6 +2412,34 @@ class QueueCycleOwesTests(unittest.TestCase):
                     self._queue([self.FAIL + _marker("gate-result", poster)], "l2"),
                     {851: "gate-result owes=fix"})
 
+    def test_fail_shapes_the_poster_accepts_all_queue_to_l2(self):
+        """Preclose pass 1 survivor 1: the verdict is read the way gate_ci reads
+        it -- heading OR lead block -- and any heading level the poster takes."""
+        shapes = {
+            "lead-block verdict": "## Lane 3 Gate Results — H851\n\n**Verdict:** FAIL\n**Finding:** x\n\n",
+            "### heading": "### Lane 3 Gate Results — FAIL\n\nTC2 failed.\n\n",
+        }
+        for name, body in shapes.items():
+            with self.subTest(shape=name):
+                self.assertEqual(self._queue([body + _marker("gate-result", "LANE3")], "l2"),
+                                 {851: "gate-result owes=fix"})
+
+    def test_markerless_fail_gate_result_queues_to_l2(self):
+        """Most of the historical corpus carries no kind footer."""
+        self.assertEqual(self._queue(["## Lane 3 Gate Results — FAIL\n\nTC2 failed."], "l2"),
+                         {851: "gate-result owes=fix"})
+
+    def test_unreadable_verdict_queues_rather_than_drops(self):
+        body = "## Lane 3 Gate Results — H851\n\nNo verdict stated anywhere.\n\n"
+        self.assertEqual(self._queue([body + _marker("gate-result", "LANE3")], "l2"),
+                         {851: "gate-result owes=fix"})
+
+    def test_lead_block_pass_and_blocked_do_not_queue_to_l2(self):
+        for verdict in ("PASS", "BLOCKED"):
+            with self.subTest(verdict=verdict):
+                body = f"## Lane 3 Gate Results — H851\n\n**Verdict:** {verdict}\n\n"
+                self.assertEqual(self._queue([body + _marker("gate-result", "LANE3")], "l2"), {})
+
     def test_pass_gate_result_does_not_queue_to_l2(self):
         self.assertEqual(self._queue([self.PASS + _marker("gate-result", "LANE3")], "l2"), {})
 
