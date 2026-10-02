@@ -26,6 +26,8 @@ from __future__ import annotations
 import re
 import shutil
 import json
+import sys
+import time
 import os
 import subprocess
 import tempfile
@@ -742,10 +744,13 @@ class TestOversizedNativeStream(unittest.TestCase):
         families need the `[0]` index. Without it `native` would silently
         become a one-element list — valid JSON, wrong shape, and invisible to
         any test that only checked the envelope's keys."""
-        env = emit_envelope("claude", "read-only", 0,
-                            json.dumps({"result": json.dumps({"findings": []})}))
+        # harmonic-forge#857 (sticky-wicket PATCH): Claude now has one
+        # extractor for both postures, by event type, so its native value is
+        # the slurped event list (like Codex); Gemini stays the single object.
+        env = emit_envelope("gemini", "read-only", 0,
+                            json.dumps({"response": json.dumps({"findings": []})}))
         self.assertIsInstance(env["native"], dict)
-        self.assertIn("result", env["native"])
+        self.assertIn("response", env["native"])
 
     def test_a_malformed_native_stream_still_produces_an_envelope(self):
         """The `|| null` fallback the Codex branch already had, now on all
@@ -1471,3 +1476,374 @@ class TestPermittedShapeIsRunnable(unittest.TestCase):
         envelope = json.loads(result.stdout.strip())
         self.assertEqual("codex", envelope["family"])
         self.assertEqual("verify", envelope["posture"])
+
+
+class StdinPromptTests(unittest.TestCase):
+    """harmonic-forge#857: every reviewer CLI reads the prompt on stdin, never
+    as an argument. Linux caps one argument at 128 KiB, so a brief embedding a
+    large diff died with `Argument list too long` before the review began.
+    Behavioral: a recording stub per family drains stdin to EOF and records it
+    and its own argv; the brief is 300 KiB."""
+
+    BRIEF_BYTES = 300 * 1024
+    CONTRACT_TAIL = 'If you find nothing, reply {"summary": "no defect found", "findings": []}.'
+
+    REPLY = {
+        "codex": 'echo \'{"type":"item.completed","item":{"type":"agent_message",'
+                 '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n',
+        # `claude -p --output-format json` prints one object (verified live,
+        # harmonic-forge#857 AC4), which the read-only branch must parse.
+        "claude": 'echo \'{"type":"result","subtype":"success","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
+        "gemini": 'echo \'{"response":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
+    }
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.stub_dir = root / "stubbin"
+        self.stub_dir.mkdir()
+        for name, reply in self.REPLY.items():
+            stub = self.stub_dir / name
+            stub.write_text(
+                '#!/usr/bin/env bash\n'
+                f'cat > "{root}/{name}.stdin"\n'
+                f'printf "%s\\0" "$@" > "{root}/{name}.argv"\n'
+                + reply)
+            stub.chmod(0o755)
+        line = "brief line: a large diff the reviewer must see in full.\n"
+        self.brief_text = (line * (self.BRIEF_BYTES // len(line) + 1))[:self.BRIEF_BYTES - 1] + "\n"
+        self.brief = root / "brief.md"
+        self.brief.write_text(self.brief_text)
+        self.cwd = root / "scratch"
+        self.cwd.mkdir()
+
+    def _run(self, caller: str, families: str, family: str) -> dict:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   GEMINI_API_KEY="test-key")
+        env.pop("GEMINI_CLI_HOME", None)
+        out = Path(self.tmp.name) / f"{family}-envelope.json"
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", caller, "--families", families,
+             "--posture", "read-only", "--brief", str(self.brief), "--cwd", str(self.cwd),
+             "--out", str(out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelopes = [json.loads(ln) for ln in out.read_text().splitlines() if ln.strip()]
+        return next(e for e in envelopes if e["family"] == family)
+
+    def _assert_prompt_on_stdin(self, family: str, envelope: dict) -> None:
+        root = Path(self.tmp.name)
+        stdin = (root / f"{family}.stdin").read_text()
+        argv = (root / f"{family}.argv").read_bytes()
+        self.assertTrue(stdin.startswith(self.brief_text.rstrip("\n")),
+                        "the full brief must arrive on stdin")
+        self.assertTrue(stdin.endswith(self.CONTRACT_TAIL), "the report contract must follow it")
+        self.assertGreaterEqual(len(stdin.encode()), self.BRIEF_BYTES)
+        self.assertLess(len(argv), 4096, "the argument list must not carry the prompt")
+        self.assertNotIn(b"brief line", argv)
+        self.assertEqual(envelope["status"], "ok", envelope)
+
+    def test_codex_prompt_on_stdin(self) -> None:
+        self._assert_prompt_on_stdin("codex", self._run("claude", "2", "codex"))
+
+    def test_claude_prompt_on_stdin(self) -> None:
+        self._assert_prompt_on_stdin("claude", self._run("codex", "2", "claude"))
+
+    def test_gemini_prompt_on_stdin(self) -> None:
+        self._assert_prompt_on_stdin("gemini", self._run("claude", "3", "gemini"))
+
+
+class ClaudeExtractorByTypeTests(unittest.TestCase):
+    """harmonic-forge#857 sticky-wicket PATCH: Claude's report is the LAST
+    successful `result` event, selected by type, in every posture."""
+
+    REPORT = json.dumps({"summary": "s", "findings": [{"claim": "real"}]})
+    EMPTY = json.dumps({"summary": "no defect found", "findings": []})
+
+    def test_a_system_event_before_the_result_does_not_hide_the_report(self):
+        native = "\n".join([json.dumps({"type": "system", "subtype": "init"}),
+                            json.dumps({"type": "result", "subtype": "success", "result": self.REPORT})])
+        env = emit_envelope("claude", "read-only", 0, native)
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(env["report"]["findings"], [{"claim": "real"}])
+
+    def test_a_non_success_result_is_never_a_report(self):
+        native = json.dumps({"type": "result", "subtype": "error_during_execution",
+                             "is_error": True, "result": self.EMPTY})
+        env = emit_envelope("claude", "read-only", 0, native)
+        self.assertEqual(env["status"], "invalid-report")
+
+    def test_the_last_success_result_wins(self):
+        native = "\n".join([json.dumps({"type": "result", "subtype": "success", "result": self.EMPTY}),
+                            json.dumps({"type": "result", "subtype": "success", "result": self.REPORT})])
+        env = emit_envelope("claude", "read-only", 0, native)
+        self.assertEqual(env["report"]["findings"], [{"claim": "real"}])
+
+
+class PromptFileHygieneTests(unittest.TestCase):
+    """harmonic-forge#857 preclose: the prompt file never outlives the run,
+    and an unreadable brief fails closed instead of reviewing the contract."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.tmpdir = self.root / "tmp"
+        self.tmpdir.mkdir()
+        self.stub_dir = self.root / "stubbin"
+        self.stub_dir.mkdir()
+        self.brief = self.root / "brief.md"
+        self.brief.write_text("UNIQUE-BRIEF-MARKER-857\n")
+        self.cwd = self.root / "scratch"
+        self.cwd.mkdir()
+
+    def _stub(self, body: str) -> None:
+        for name in ("codex", "claude", "gemini"):
+            stub = self.stub_dir / name
+            stub.write_text("#!/usr/bin/env bash\n" + body)
+            stub.chmod(0o755)
+
+    def _run(self) -> subprocess.CompletedProcess:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   TMPDIR=str(self.tmpdir))
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "claude", "--families", "2", "--posture", "read-only",
+             "--brief", str(self.brief), "--cwd", str(self.cwd)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=60)
+
+    def _leaked(self) -> list[Path]:
+        return [f for f in self.tmpdir.rglob("*")
+                if f.is_file() and "UNIQUE-BRIEF-MARKER-857" in f.read_text(errors="ignore")]
+
+    def test_a_killed_run_leaves_no_prompt_file(self) -> None:
+        # The stub drains stdin, then TERMs the script that launched it.
+        self._stub('cat >/dev/null\nkill -TERM "$PPID"\nsleep 2\n')
+        self._run()
+        self.assertEqual(self._leaked(), [])
+
+    def test_an_unreadable_brief_fails_closed(self) -> None:
+        self._stub('cat >/dev/null\necho \'{"type":"item.completed","item":{"type":"agent_message",'
+                   '"text":"{\\"summary\\":\\"no defect found\\",\\"findings\\":[]}"}}\'\n')
+        self.brief.chmod(0)
+        self.addCleanup(self.brief.chmod, 0o644)
+        if os.access(self.brief, os.R_OK):
+            self.skipTest("running as a user who can read mode-000 files")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("readable", result.stderr)
+        self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+
+
+class VerifyPostureStdinTests(StdinPromptTests):
+    """harmonic-forge#857 preclose (test-honesty): the Claude VERIFY arm reads
+    the prompt on stdin too; reverting only that line must fail here."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        root = Path(self.tmp.name)
+        report = json.dumps({"summary": "ok", "findings": [], "assumptions": [
+            {"assumption": "a", "verdict": "confirmed", "evidence": "Read x"}]})
+        events = [
+            {"type": "system", "subtype": "init", "tools": ["Glob", "Grep", "Read"],
+             "mcp_servers": [], "model": "claude-opus-5-5"},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "u1", "name": "Read"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u1"}]}},
+            {"type": "result", "subtype": "success", "result": report},
+        ]
+        native = root / "verify-native.jsonl"
+        native.write_text("".join(json.dumps(e) + "\n" for e in events))
+        stub = self.stub_dir / "claude"
+        stub.write_text('#!/usr/bin/env bash\n'
+                        f'cat > "{root}/claude.stdin"\n'
+                        f'printf "%s\\0" "$@" > "{root}/claude.argv"\n'
+                        f'cat "{native}"\n')
+        stub.chmod(0o755)
+
+    def test_codex_prompt_on_stdin(self) -> None:
+        self.skipTest("verify posture routes Codex callers to Claude only")
+
+    def test_gemini_prompt_on_stdin(self) -> None:
+        self.skipTest("verify is unavailable for Gemini")
+
+    def test_claude_prompt_on_stdin(self) -> None:
+        envelope = self._run_verify()
+        root = Path(self.tmp.name)
+        stdin = (root / "claude.stdin").read_text()
+        argv = (root / "claude.argv").read_bytes()
+        self.assertTrue(stdin.startswith(self.brief_text.rstrip("\n")))
+        self.assertLess(len(argv), 4096)
+        self.assertNotIn(b"brief line", argv)
+        self.assertEqual(envelope["status"], "ok", envelope)
+
+    def _run_verify(self) -> dict:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+        out = Path(self.tmp.name) / "verify-envelope.json"
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "codex", "--families", "2", "--posture", "verify",
+             "--brief", str(self.brief), "--cwd", str(self.cwd), "--out", str(out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(out.read_text().splitlines()[0])
+
+
+
+class ClaudeNativeShapeContractTests(unittest.TestCase):
+    """harmonic-forge#857 sticky-wicket PATCH: Claude's native value is the
+    slurped event list, which `preclose_check._claude_verify_trace` requires.
+    Asserted for Claude itself, not moved to another family."""
+
+    def test_claude_native_is_the_event_list(self):
+        events = [{"type": "system", "subtype": "init", "tools": ["Read"], "mcp_servers": []},
+                  {"type": "result", "subtype": "success",
+                   "result": json.dumps({"summary": "s", "findings": []})}]
+        env = emit_envelope("claude", "verify", 0, "\n".join(json.dumps(e) for e in events))
+        self.assertIsInstance(env["native"], list)
+        self.assertEqual(len(env["native"]), 2)
+
+    def test_preclose_check_accepts_a_claude_verify_native(self):
+        sys.path.insert(0, str(SCRIPT.parents[1] / "gh"))
+        import preclose_check  # noqa: PLC0415
+        events = [{"type": "system", "subtype": "init", "tools": ["Glob", "Grep", "Read"],
+                   "mcp_servers": [], "model": "claude-opus-5-5"},
+                  {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "u1", "name": "Read"}]}},
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u1"}]}},
+                  {"type": "result", "subtype": "success",
+                   "result": json.dumps({"summary": "s", "findings": [], "assumptions": [
+                       {"assumption": "a", "verdict": "confirmed", "evidence": "Read x"}]})}]
+        env = emit_envelope("claude", "verify", 0, "\n".join(json.dumps(e) for e in events))
+        self.assertTrue(preclose_check._claude_verify_trace(env["native"], "claude-opus-5-5"))
+
+
+class DegradedBriefFailsClosedTests(PromptFileHygieneTests):
+    """harmonic-forge#857 sticky-wicket PATCH, INV-A: an empty, whitespace-only
+    or unreadable-at-dispatch brief never reaches a reviewer as 'ok'."""
+
+    OK_STUB = ('cat >/dev/null\necho \'{"type":"item.completed","item":{"type":"agent_message",'
+               '"text":"{\\"summary\\":\\"no defect found\\",\\"findings\\":[]}"}}\'\n')
+
+    def test_a_killed_run_leaves_no_prompt_file(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def test_an_unreadable_brief_fails_closed(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def test_an_empty_brief_fails_closed(self) -> None:
+        self._stub(self.OK_STUB)
+        self.brief.write_text("")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+        # The preflight's own -s test stops it, not the dispatch-time backstop.
+        self.assertIn("readable, non-empty file", result.stderr)
+
+    def test_a_whitespace_only_brief_fails_closed(self) -> None:
+        self._stub(self.OK_STUB)
+        self.brief.write_text("   \n\t\n")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("empty at dispatch", result.stderr)
+        self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+
+    def test_a_brief_made_unreadable_after_preflight_fails_closed(self) -> None:
+        # --families 3: the first reviewer's stub makes the brief unreadable,
+        # so the SECOND family's prompt assembly (not the preflight) must stop.
+        if os.geteuid() == 0:
+            self.skipTest("root can read mode-000 files")
+        brief = self.brief
+        for name in ("codex", "claude", "gemini"):
+            stub = self.stub_dir / name
+            stub.write_text("#!/usr/bin/env bash\n" + f'chmod 000 "{brief}"\n' + self.OK_STUB)
+            stub.chmod(0o755)
+        self.addCleanup(brief.chmod, 0o644)
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   TMPDIR=str(self.tmpdir), GEMINI_API_KEY="x")
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "claude", "--families", "3", "--posture", "read-only",
+             "--brief", str(brief), "--cwd", str(self.cwd)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("readable, non-empty file", result.stderr)  # not the preflight
+        # The failed read stops it, not the empty-text backstop behind it.
+        self.assertNotIn("empty at dispatch", result.stderr)
+        ok_rows = [ln for ln in result.stdout.splitlines() if '"status":"ok"' in ln.replace(" ", "")]
+        self.assertLessEqual(len(ok_rows), 1)  # only the first family ran
+
+
+class SignalForwardingTests(PromptFileHygieneTests):
+    """harmonic-forge#857 sticky-wicket PATCH, INV-B: a TERM reaches the running
+    reviewer at once, and no per-run temp file survives."""
+
+    def test_a_killed_run_leaves_no_prompt_file(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def test_an_unreadable_brief_fails_closed(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def _start(self, families: str) -> subprocess.Popen:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   TMPDIR=str(self.tmpdir), GEMINI_API_KEY="x")
+        return subprocess.Popen(
+            ["bash", str(SCRIPT), "--caller", "claude", "--families", families, "--posture", "read-only",
+             "--brief", str(self.brief), "--cwd", str(self.cwd)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env)
+
+    def test_term_stops_the_run_and_its_reviewer_promptly(self) -> None:
+        marker = self.root / "reviewer.pid"
+        self._stub(f'echo $$ > "{marker}"\ncat >/dev/null\nsleep 60\n')
+        proc = self._start("2")
+        for _ in range(100):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        proc.terminate()
+        started = time.monotonic()
+        proc.wait(timeout=10)
+        self.assertLess(time.monotonic() - started, 5)
+        reviewer = int(marker.read_text().strip())
+        time.sleep(0.3)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(reviewer, 0)
+        self.assertEqual(self._leaked(), [])
+
+    def test_no_per_run_temp_file_survives_a_term_mid_families(self) -> None:
+        marker = self.root / "second.started"
+        # codex (first family) returns at once; gemini (second) blocks.
+        (self.stub_dir / "codex").write_text(
+            "#!/usr/bin/env bash\n" + DegradedBriefFailsClosedTests.OK_STUB)
+        (self.stub_dir / "codex").chmod(0o755)
+        (self.stub_dir / "gemini").write_text(
+            f'#!/usr/bin/env bash\ntouch "{marker}"\ncat >/dev/null\nsleep 60\n')
+        (self.stub_dir / "gemini").chmod(0o755)
+        (self.stub_dir / "claude").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (self.stub_dir / "claude").chmod(0o755)
+        proc = self._start("3")
+        for _ in range(200):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        proc.terminate()
+        proc.wait(timeout=10)
+        time.sleep(0.3)
+        survivors = [p for p in self.tmpdir.rglob("*") if p.is_file()]
+        self.assertEqual(survivors, [])
+
+    def test_envelope_temp_files_live_in_the_scratch_dir(self) -> None:
+        # harmonic-forge#857 post-verdict: emit_envelope's own temp files are
+        # created inside the per-run scratch dir, so a signal mid-envelope
+        # (which skips its RETURN trap) leaves nothing once EXIT removes the
+        # dir. A jq wrapper records any loose file at TMPDIR's top level.
+        real_jq = shutil.which("jq")
+        if real_jq is None:
+            self.skipTest("jq not installed")
+        record = self.root / "loose.txt"
+        (self.stub_dir / "jq").write_text(
+            "#!/usr/bin/env bash\n"
+            f'find "$TMPDIR" -maxdepth 1 -type f >> "{record}"\n'
+            f'exec "{real_jq}" "$@"\n')
+        (self.stub_dir / "jq").chmod(0o755)
+        self._stub(DegradedBriefFailsClosedTests.OK_STUB)
+        proc = self._start("2")
+        proc.wait(timeout=30)
+        self.assertTrue(record.exists())
+        self.assertEqual(record.read_text(), "")

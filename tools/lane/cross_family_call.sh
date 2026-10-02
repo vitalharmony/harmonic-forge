@@ -98,8 +98,8 @@ case "$posture" in
   read-only|probe|verify) ;;
   *) abort_preflight "--posture must be read-only, probe, or verify" ;;
 esac
-if [ -z "$brief" ] || [ ! -f "$brief" ]; then
-  abort_preflight "--brief PATH must name an existing file"
+if [ -z "$brief" ] || [ ! -f "$brief" ] || [ ! -r "$brief" ] || [ ! -s "$brief" ]; then
+  abort_preflight "--brief PATH must name an existing, readable, non-empty file"
 fi
 if [ "$posture" = probe ] || [ "$posture" = verify ]; then
   if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
@@ -297,32 +297,53 @@ an "assumptions" array with one verdict object for every asserted assumption
 in the brief, in the same order.
 EOF
 
+#: Gemini's `-p` is appended to stdin's input (`gemini --help`), and headless
+#: mode needs a `-p`; the brief itself arrives on stdin (harmonic-forge#857).
+GEMINI_STDIN_INSTRUCTION="Carry out the instructions above, from stdin, exactly."
+
 prompt_text() {
-  local posture="$1" brief="$2" family="${3:-}"
+  local posture="$1" brief="$2" family="${3:-}" brief_text
+  # harmonic-forge#857 preclose: read the brief in an assignment, whose exit
+  # status survives (a `$(cat)` inside printf's arguments did not), so an
+  # unreadable brief fails the run instead of sending the contract alone.
+  brief_text="$(cat "$brief")" || return 1
+  # harmonic-forge#857 (sticky-wicket PATCH, INV-A): a degraded brief never
+  # reaches a reviewer. An empty or whitespace-only brief would send the
+  # contract alone, whose own last line invites "no defect found".
+  if [ -z "${brief_text//[[:space:]]/}" ]; then
+    echo "cross_family_call: --brief $brief is empty at dispatch; nothing to review" >&2
+    return 1
+  fi
   if [ "$posture" = verify ]; then
     if [ "$family" = claude ]; then
-      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
+      printf '%s%s%s' "$brief_text" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
     else
-      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
+      printf '%s%s%s' "$brief_text" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
     fi
   else
-    printf '%s%s' "$(cat "$brief")" "$REPORT_CONTRACT"
+    printf '%s%s' "$brief_text" "$REPORT_CONTRACT"
   fi
 }
 
 # --- per-family invocation, native stdout on fd 1, native stderr discarded ---
 
+# harmonic-forge#857: every CLI reads the prompt from `$prompt_file` (set by
+# the dispatch loop, read here from its scope) on stdin,
+# never from an argument. Linux caps one argument at 128 KiB (MAX_ARG_STRLEN),
+# so a brief embedding a large diff died with "Argument list too long" before
+# the reviewer started. A redirected file, not a pipe: under `set -o pipefail`
+# a CLI that closes stdin early would turn a finished review into exit 141.
 invoke_claude() {
   local posture="$1" brief="$2" cwd="$3"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
     if [ "$posture" = verify ]; then
-      claude -p "$(prompt_text "$posture" "$brief" claude)" \
+      claude -p \
         --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
         --model "claude-opus-5-5" \
-        --no-session-persistence --output-format stream-json --verbose </dev/null
+        --no-session-persistence --output-format stream-json --verbose <"$prompt_file"
     else
-      claude -p "$(prompt_text "$posture" "$brief" claude)" --output-format json </dev/null
+      claude -p --output-format json <"$prompt_file"
     fi
   )
 }
@@ -409,7 +430,7 @@ invoke_codex() {
     search_args=(--search)
   fi
   "${env_args[@]}" codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
-    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief" codex)" </dev/null
+    --sandbox "$sandbox" --json - <"$prompt_file"
 }
 
 invoke_gemini() {
@@ -485,7 +506,7 @@ SETTINGS
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
-        -p "$(prompt_text "$posture" "$brief" gemini)" -o json </dev/null
+        -p "$GEMINI_STDIN_INSTRUCTION" -o json <"$prompt_file"
   )
 }
 
@@ -532,8 +553,13 @@ emit_envelope() {
   # just the final message: measured at 754,034 bytes on 2026-09-04, 5.75x the
   # cap. The helper broke precisely when it was doing its job.
   local native_norm text_file unfenced_file report_file report_tmp
-  native_norm="$(mktemp)"; text_file="$(mktemp)"
-  unfenced_file="$(mktemp)"; report_file="$(mktemp)"; report_tmp="$(mktemp)"
+  # harmonic-forge#857 post-verdict: inside a run these live in the per-run
+  # scratch dir, so a signal mid-function (which skips the RETURN trap below)
+  # still leaves nothing behind once the EXIT trap removes the dir.
+  local tmp_dir="${scratch:-${TMPDIR:-/tmp}}"
+  native_norm="$(mktemp -p "$tmp_dir")"; text_file="$(mktemp -p "$tmp_dir")"
+  unfenced_file="$(mktemp -p "$tmp_dir")"; report_file="$(mktemp -p "$tmp_dir")"
+  report_tmp="$(mktemp -p "$tmp_dir")"
   # Cleanup is local to this function and restores nothing, because
   # `emit_envelope` is never called from a trap-bearing subshell -- the only
   # existing trap belongs to the Gemini home dir (line 314) and is scoped to
@@ -548,13 +574,12 @@ emit_envelope() {
   # envelope, which is strictly better than the old behaviour on that path.
   case "$family" in
     claude)
-      if [ "$posture" = verify ]; then
-        jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-        jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
-      else
-        jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-        jq -r '.[0].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
-      fi
+      # harmonic-forge#857 (sticky-wicket PATCH): one extractor for both
+      # postures, by TYPE, never by position: the last successful `result`
+      # event. `--output-format json` prints one such object and stream-json
+      # prints several events; a non-success result is never a report.
+      jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+      jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       ;;
     codex)
       jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
@@ -666,9 +691,31 @@ emit_envelope() {
 overall_status=0
 preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
-result_tmp="$(mktemp)"
+# harmonic-forge#857 (sticky-wicket PATCH, INV-B): every per-run temp file lives
+# in one scratch directory removed on exit. The prompt file holds the brief and,
+# on verify, `tmp_out` holds the native stream quoting it, so neither may
+# outlive the run. A trapped INT/TERM is forwarded to the running reviewer's
+# whole process tree (bash would otherwise defer the trap until that foreground
+# child returns, minutes on a real call), then exits through the EXIT trap.
+scratch="$(mktemp -d)"
+keep_scratch=""
+reviewer_pid=""
+kill_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do kill_tree "$child"; done
+  kill -TERM "$pid" 2>/dev/null || :
+}
+on_signal() {
+  if [ -n "$reviewer_pid" ]; then kill_tree "$reviewer_pid"; fi
+  exit "$1"
+}
+trap '[ -n "$keep_scratch" ] || rm -rf "$scratch"' EXIT
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+result_tmp="$(mktemp -p "$scratch")"
+prompt_file=""
 for family in "${targets[@]}"; do
-  tmp_out="$(mktemp)"
+  tmp_out="$(mktemp -p "$scratch")"
   # harmonic-forge#483: captured here rather than discarded inside each
   # `invoke_*`. The entire diagnosis of this issue was ONE line the CLI wrote
   # to stderr and `2>/dev/null` deleted, which turned a five-second read into
@@ -683,20 +730,32 @@ for family in "${targets[@]}"; do
   # one dispatch site rather than in three functions, and the hole it closes
   # is identical in each -- the same reason `verify` is fixed alongside
   # `probe` above.
-  tmp_err="$(mktemp)"
+  tmp_err="$(mktemp -p "$scratch")"
+  # harmonic-forge#857: the prompt goes to the CLI on stdin from this file,
+  # which every `invoke_*` reads as `$prompt_file` from this scope (their
+  # call shape is unchanged). Created and removed here, outside `invoke_gemini`'s subshell, whose own
+  # EXIT trap restores the API-key HOME.
+  prompt_file="$(mktemp -p "$scratch")"
+  prompt_text "$posture" "$brief" "$family" >"$prompt_file"
   exit_code=0
+  # Run in the background and wait, so a trapped signal runs at once and is
+  # forwarded (see INV-B above); the call shape of each `invoke_*` is unchanged.
   case "$family" in
-    claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
-    codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
-    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
+    claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
+    codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
+    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
   esac
+  reviewer_pid=$!
+  wait "$reviewer_pid" || exit_code=$?
+  reviewer_pid=""
+  rm -f "$prompt_file"
 
   # Buffered, not streamed: a half-written envelope emitted before the failure
   # would be worse than none, because it parses as truncated JSON rather than
   # failing outright. `if cmd; then` is also what suspends `set -e` for this
   # one call so the failure can be handled here instead of killing the run.
-  envelope_out="$(mktemp)"
-  envelope_err="$(mktemp)"
+  envelope_out="$(mktemp -p "$scratch")"
+  envelope_err="$(mktemp -p "$scratch")"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
            --arg verify_model "claude-opus-5-5" --arg codex_model "$VERIFY_MODEL" \
@@ -746,7 +805,7 @@ for family in "${targets[@]}"; do
     # recovered only because such a file happened to survive. Luck is now a
     # mechanism.
     case "$preserved" in
-      "(could not preserve"*) : ;;
+      "(could not preserve"*) keep_scratch=1 ;;
       *) rm -f "$tmp_out" ;;
     esac
   fi

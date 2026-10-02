@@ -63,6 +63,25 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - rules/universal-lane1.md  |  6 ++++++
 - tools/rules/registry.toml | 32 ++++++++++++++++++++++++++++++++
 - 4 files changed, 92 insertions(+)
+## fix(cross-family): sticky-wicket PATCH (both passes with survivors) -- a degraded brief (empty, whitespace-only, unreadable at dispatch) never reaches a reviewer; every per-run temp file lives in one scratch dir removed on exit, and INT/TERM are forwarded to the running reviewer's process tree instead of waiting for it; Claude's native-shape contract with preclose_check is asserted for Claude itself (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      |  63 +++++++++++-----
+- tools/lane/test_cross_family_call.py | 139 +++++++++++++++++++++++++++++++++++
+- 2 files changed, 184 insertions(+), 18 deletions(-)
+
+## fix(cross-family): sticky-wicket PATCH (pass-1 cluster) -- Claude has one extractor for both postures, the last successful result event selected by type; an EXIT trap (INT/TERM exit through it) removes the prompt file; an unreadable brief fails preflight and prompt assembly instead of sending the contract alone; a verify-posture stdin test covers the Claude verify line (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      |  39 ++++++----
+- tools/lane/test_cross_family_call.py | 145 ++++++++++++++++++++++++++++++++++-
+- 2 files changed, 164 insertions(+), 20 deletions(-)
+
+## fix(cross-family): the Claude read-only branch parses the single JSON object 'claude -p --output-format json' prints (it read .[0].result, so every read-only Claude report was invalid-report); found by the AC4 live call (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      | 5 ++++-
+- tools/lane/test_cross_family_call.py | 6 +++---
+- 2 files changed, 7 insertions(+), 4 deletions(-)
+
+## fix(cross-family): every reviewer CLI reads the prompt on stdin from a prompt file, never as one argument -- `--json "$(prompt_text "$posture" "$brief" codex)" </dev/null` (cross_family_call.sh:411-412) passed the whole brief as a single argv element, and Linux caps one argument at 128 KiB, so a large brief failed with "Argument list too long" before the review began (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      | 27 ++++++++++---
+- tools/lane/test_cross_family_call.py | 76 ++++++++++++++++++++++++++++++++++++
+- 2 files changed, 98 insertions(+), 5 deletions(-)
 
 ## fix(preclose): sticky-wicket PATCH for preclose pass 2 -- --own-model required with no default, an unrecognized model refuses the cross-family label, a --caller mismatch exits 2 with no label, the post-verdict hint carries --own-model, and the hint tests parse printed output (harmonic-forge#848)
 
