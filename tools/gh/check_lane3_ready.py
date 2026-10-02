@@ -280,6 +280,15 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     tier = parse_write_tier(sweep.get("body", ""))
     if tier is None:
         return None, f"sweep ({sweep['html_url']}) {NO_TIER_MESSAGE}"
+    if not verify_body_sha256(sweep):
+        # harmonic-forge#861: the sweep's text names the cases and the tier the
+        # gate runs at, so an edited sweep refuses at every tier, not only where
+        # it is itself the authority (tier R).
+        return None, (
+            f"sweep ({sweep['html_url']}) body does not match its recorded body-sha256 -- it "
+            "may have been edited since posting; a gate cannot start on an "
+            "unverifiable sweep"
+        )
 
     ae = latest_by_kind(comments, "ae")
     if ae is not None:
@@ -304,12 +313,6 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     if tier != "R":
         return None, f"no AE comment and its sweep declares tier {tier} -- an AE is required above tier R"
 
-    if not verify_body_sha256(sweep):
-        return None, (
-            f"sweep ({sweep['html_url']}) body does not match its recorded body-sha256 -- it "
-            "may have been edited since posting; a tier-R gate cannot start on an "
-            "unverifiable authorization anchor"
-        )
     sweep_sha = footer_sha(sweep)
     if sweep_sha is None:
         return None, f"sweep ({sweep['html_url']}) has no parseable sha= marker"

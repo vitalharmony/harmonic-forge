@@ -433,6 +433,34 @@ class BodySha256VerificationTests(unittest.TestCase):
                 c.main(["--issue", "1145"])
 
 
+class EveryTierSweepIntegrityTests(unittest.TestCase):
+    """harmonic-forge#861: `resolve_gate_authority` refuses an edited sweep at
+    every tier, not only on the tier-R branch where the sweep is the authority."""
+
+    WRONG = "0" * 64
+
+    def test_an_edited_tier_w_sweep_under_an_ae_refuses(self):
+        comments = [_comment(1, "ae", "2026-08-15T10:00:00Z"),
+                    _comment(2, "sweep", "2026-08-15T10:01:00Z", tier="W", body_sha256=self.WRONG)]
+        authority, message = c.resolve_gate_authority(comments, DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("body-sha256", message)
+
+    def test_an_edited_tier_r_sweep_refuses(self):
+        comments = [_comment(2, "sweep", "2026-08-15T10:01:00Z", tier="R", body_sha256=self.WRONG)]
+        authority, message = c.resolve_gate_authority(comments, DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("body-sha256", message)
+
+    def test_an_unedited_tier_w_sweep_under_an_ae_is_authorized(self):
+        body = "Write tier W throughout.\n\nbody text"
+        digest = __import__("hashlib").sha256(body.encode()).hexdigest()
+        comments = [_comment(1, "ae", "2026-08-15T10:00:00Z"),
+                    _comment(2, "sweep", "2026-08-15T10:01:00Z", tier="W", body_sha256=digest)]
+        authority, _ = c.resolve_gate_authority(comments, DEFAULT_SHA)
+        self.assertIsNotNone(authority)
+
+
 class L1PostDigestRoundTripTests(unittest.TestCase):
     """Regression guard for the l1_post.py fix Lane 1 required
     -- the recorded body-sha256 must match what verify_body_sha256() (i.e.

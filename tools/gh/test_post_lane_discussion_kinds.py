@@ -554,6 +554,17 @@ class RoundApprovalTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._check(comments)
 
+    def test_a_pass_under_a_tampered_tier_w_sweep_is_refused(self):
+        """harmonic-forge#861: the body-sha256 check applies at every tier, in
+        the one shared function, so an edited above-tier-R sweep refuses too."""
+        digest = __import__("hashlib").sha256(b"Write tier W throughout.\n\nother cases").hexdigest()
+        tampered = {"id": 3, "html_url": "https://x/issues/1#issuecomment-3",
+                    "body": f"Write tier W throughout.\n\nb\n\n<!-- l1-post v1; kind=sweep; "
+                            f"sha=21e587db; body-sha256={digest} -->"}
+        comments = [self._c(1, "handoff"), self._c(2, "ae"), tampered]
+        with self.assertRaises(SystemExit):
+            self._check(comments)
+
     def test_a_pass_under_a_genuine_tier_r_sweep_posts(self):
         comments = [self._c(1, "spec"), self._c(2, "sweep", tier="R")]
         self._check(comments)
