@@ -230,8 +230,9 @@ def cluster_message(receipt: dict | None) -> str | None:
 POST_VERDICT_REQUIRED = (
     "Two passes both left surviving findings (the sticky-wicket case). Before the "
     "operator's --force covers this head, one cross-family refuter must read the patch "
-    "since pass 2: preclose_check.py --post-verdict --base <pass-2 head> --envelope <path> "
-    "--findings <file> --own-model <your session's model>. It never counts as a pass "
+    "since pass 2: preclose_check.py --repo {repo} --issue {issue} --post-verdict "
+    "--base <pass-2 head> --envelope <path> --findings <file> "
+    "--own-model <your session's model>. It never counts as a pass "
     "(harmonic-forge#838)."
 )
 
@@ -241,7 +242,7 @@ def _post_verdict(receipt: dict | None) -> dict:
     return {"post_verdict_check": check} if isinstance(check, dict) else {}
 
 
-def post_verdict_refusal(receipt: dict | None, sha: str) -> str | None:
+def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int) -> str | None:
     """Why a forced receipt at ``sha`` must not be written yet, or None.
     Only the sticky-wicket case needs the check; the operator case (not both
     passes with survivors) is unchanged."""
@@ -251,7 +252,9 @@ def post_verdict_refusal(receipt: dict | None, sha: str) -> str | None:
     check = _post_verdict(receipt).get("post_verdict_check") or {}
     if check.get("head_sha") == sha:
         return None
-    return POST_VERDICT_REQUIRED
+    # The hint is a runnable command, so it names this repo and issue
+    # (harmonic-forge#848 follow-up, folded into #852).
+    return POST_VERDICT_REQUIRED.format(repo=repo, issue=issue)
 
 
 def reviewed_head(receipt: dict | None) -> str | None:

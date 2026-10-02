@@ -913,10 +913,10 @@ class OwnModelTests(unittest.TestCase):
     def test_post_verdict_hint_parses(self) -> None:
         """Pass-2 survivor 4: the sticky-wicket remediation command must run."""
         import preclose_passes
-        text = preclose_passes.POST_VERDICT_REQUIRED
-        command = text[text.index("preclose_check.py --post-verdict"):text.index(". It never")]
-        command = "--repo vitalharmony/harmonic-forge --issue 848 " + command.split("preclose_check.py", 1)[1]
-        self.assertEqual(self._parses("python3 preclose_check.py " + command), 0, command)
+        text = preclose_passes.POST_VERDICT_REQUIRED.format(repo="vitalharmony/harmonic-forge", issue=848)
+        # Parsed exactly as printed: the hint must name --repo and --issue itself.
+        command = text[text.index("preclose_check.py --repo"):text.index(". It never")]
+        self.assertEqual(self._parses("python3 " + command), 0, command)
 
     def test_envelope_without_own_model_is_a_parser_error(self) -> None:
         argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
