@@ -563,7 +563,10 @@ emit_envelope() {
         jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       else
         jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-        jq -r '.[0].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
+        # `claude -p --output-format json` prints ONE object (verified live,
+        # harmonic-forge#857 AC4); `.[0]` on it errored, so every read-only
+        # Claude report was `invalid-report`. An array is still tolerated.
+        jq -r 'if type == "array" then .[0] else . end | .result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       fi
       ;;
     codex)

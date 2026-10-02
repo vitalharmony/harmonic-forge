@@ -63,6 +63,11 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - rules/universal-lane1.md  |  6 ++++++
 - tools/rules/registry.toml | 32 ++++++++++++++++++++++++++++++++
 - 4 files changed, 92 insertions(+)
+## fix(cross-family): the Claude read-only branch parses the single JSON object 'claude -p --output-format json' prints (it read .[0].result, so every read-only Claude report was invalid-report); found by the AC4 live call (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      | 5 ++++-
+- tools/lane/test_cross_family_call.py | 6 +++---
+- 2 files changed, 7 insertions(+), 4 deletions(-)
+
 ## fix(cross-family): every reviewer CLI reads the prompt on stdin from a prompt file, never as one argument -- `--json "$(prompt_text "$posture" "$brief" codex)" </dev/null` (cross_family_call.sh:411-412) passed the whole brief as a single argv element, and Linux caps one argument at 128 KiB, so a large brief failed with "Argument list too long" before the review began (harmonic-forge#857)
 - tools/lane/cross_family_call.sh      | 27 ++++++++++---
 - tools/lane/test_cross_family_call.py | 76 ++++++++++++++++++++++++++++++++++++

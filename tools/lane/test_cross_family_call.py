@@ -1486,9 +1486,9 @@ class StdinPromptTests(unittest.TestCase):
     REPLY = {
         "codex": 'echo \'{"type":"item.completed","item":{"type":"agent_message",'
                  '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n',
-        # `claude --output-format json` prints an array of events; the
-        # read-only branch reads `.[0].result`.
-        "claude": 'echo \'[{"type":"result","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}]\'\n',
+        # `claude -p --output-format json` prints one object (verified live,
+        # harmonic-forge#857 AC4), which the read-only branch must parse.
+        "claude": 'echo \'{"type":"result","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
         "gemini": 'echo \'{"response":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
     }
 
