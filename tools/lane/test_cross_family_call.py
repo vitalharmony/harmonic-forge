@@ -1734,6 +1734,8 @@ class DegradedBriefFailsClosedTests(PromptFileHygieneTests):
         result = self._run()
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+        # The preflight's own -s test stops it, not the dispatch-time backstop.
+        self.assertIn("readable, non-empty file", result.stderr)
 
     def test_a_whitespace_only_brief_fails_closed(self) -> None:
         self._stub(self.OK_STUB)
@@ -1762,6 +1764,8 @@ class DegradedBriefFailsClosedTests(PromptFileHygieneTests):
             capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=60)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("readable, non-empty file", result.stderr)  # not the preflight
+        # The failed read stops it, not the empty-text backstop behind it.
+        self.assertNotIn("empty at dispatch", result.stderr)
         ok_rows = [ln for ln in result.stdout.splitlines() if '"status":"ok"' in ln.replace(" ", "")]
         self.assertLessEqual(len(ok_rows), 1)  # only the first family ran
 
