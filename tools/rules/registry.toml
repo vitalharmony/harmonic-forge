@@ -2487,6 +2487,6 @@ id = "R-0374"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "The operator's standing production AE grant: when a passing Tier R gate verified the next production write, Lane 1 posts that step's AE with its sweep, same turn, only when the AE links the gate-result and gated SHA, the run commit is that SHA or tree-identical in the swept files, the sequence, stop conditions and counts are named, and the sweep lists only the verified cases; otherwise the operator's AE (fails closed). A grant AE never carries forward under R-0209, never widens past the sweep (R-0210), and excepts R-0208 only as to who posts the AE, never AE/sweep atomicity. It never reaches a data-migration spec, an operator-present step, any spec approval or a write no Tier R PASS preceded (harmonic-forge#858)."
-text_sha = "c7f762ba1647ab33"
+text_sha = "db3b27d74d0869d3"
 exception_to = ["R-0208"]
 hooks = []

@@ -55,6 +55,16 @@ def _unquoted(body: str) -> str:
     return _FENCE.sub("", body or "")
 
 
+_AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized\**:?\**[^\n]*$")
+
+
+def _authorized_line(body: str) -> str:
+    """The AE's **Authorized:** line(s): the gate link and the gated SHA are
+    read only here, so a correct value elsewhere cannot mask a wrong one on
+    the line that states the authority (post-verdict check)."""
+    return "\n".join(m.group(0) for m in _AUTHORIZED_LINE.finditer(_unquoted(body)))
+
+
 def cites_grant(body: str) -> bool:
     """Whether an AE body claims R-0374 outside any fenced block."""
     return bool(_CITES.search(_unquoted(body)))
@@ -67,7 +77,7 @@ def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
 def _gate_result(body: str, repo: str, issue: int, comments: list[dict]) -> dict | None:
     """The gate-result comment on this issue that the AE links to, or None."""
     by_id = {int(c["id"]): c for c in comments}
-    for match in _COMMENT_LINK.finditer(_unquoted(body)):
+    for match in _COMMENT_LINK.finditer(_authorized_line(body)):
         if match.group(1).lower() != repo.lower() or int(match.group(2)) != issue:
             continue
         comment = by_id.get(int(match.group(3)))
@@ -132,8 +142,9 @@ def grant_refusal(body: str, repo: str, issue: int, sha: str, comments: list[dic
     prefix = f"this AE cites {GRANT_RULE}, but"
     gate = _gate_result(body, repo, issue, comments)
     if gate is None:
-        return (f"{prefix} links no gate-result comment on {repo}#{issue}; R-0374 requires the "
-                "AE to link the passing Tier R gate-result. Otherwise the operator's AE is required.")
+        return (f"{prefix} its Authorized: line links no gate-result comment on {repo}#{issue}; "
+                "R-0374 requires that line to link the passing Tier R gate report. Otherwise the "
+                "operator's AE is required.")
     if not _BODY_SHA_MARKER.search(gate.get("body", "")):
         return (f"{prefix} the linked gate report ({gate.get('html_url')}) carries no body-sha256 "
                 "marker, so it cannot be shown unedited")
@@ -148,10 +159,10 @@ def grant_refusal(body: str, repo: str, issue: int, sha: str, comments: list[dic
     gated = gate_ci.gated_sha(gate.get("body", ""))
     if gated is None:
         return f"{prefix} the linked gate-result names no Head-SHA"
-    named = _GATED_SHA.search(_unquoted(body))
+    named = _GATED_SHA.search(_authorized_line(body))
     if named is None or not clr.same_sha(named.group(1), gated):
         return (f"{prefix} it does not name the gated SHA {gated[:12]} "
-                "(\"gated SHA <sha>\" in the Authorized: line)")
+                "(\"gated SHA <sha>\" on the Authorized: line)")
     if not clr.same_sha(gated, sha):
         why = _tree_identical(gated, sha, git, cwd, _apply_files(body))
         if why:

@@ -1081,8 +1081,8 @@ production write that gate verified, Lane 1 posts that write step's AE and its
 sweep together (R-0208), in the same turn, without asking the operator, only
 when all of these hold:
 
-- the AE links the passing Tier R gate-result comment and names the SHA it
-  gated ("gated SHA <sha>", the gate-result's `Head-SHA`);
+- the AE's **Authorized:** line links the passing Tier R gate-result comment
+  and names the SHA it gated ("gated SHA <sha>", the gate-result's `Head-SHA`);
 - the commit the write step runs is that SHA, or a later commit whose tree is
   byte-identical to it in every file the gated change touched and every file
   the AE names on an `Apply path:` line (a squash merge qualifies, as in

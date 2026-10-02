@@ -116,6 +116,16 @@ class GrantRefusalTests(unittest.TestCase):
         self.assertIn("differs from the gated commit", reason)
         self.assertEqual(sorted(seen["files"]), ["scripts/_lib.py", "scripts/apply.py"])
 
+    def test_a_wrong_sha_on_the_authorized_line_is_not_masked_by_text_elsewhere(self):
+        body = ae_body(sha="d" * 40) + f"\n\nBackground: gated SHA {GATED}."
+        self.assertIn("does not name the gated SHA", self.refusal(body=body))
+
+    def test_a_gate_link_only_outside_the_authorized_line_does_not_count(self):
+        link = f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-100"
+        body = (f"## AE — H{ISSUE}\n\n**Authorized:** the operator's standing AE grant, R-0374, "
+                f"gated SHA {GATED}.\n\nSee {link}.")
+        self.assertIn("links no gate-result", self.refusal(body=body))
+
     def test_an_edited_gate_result_refuses(self):
         self.assertIn("edited", self.refusal(comments=[gate(edited=True)]))
 
