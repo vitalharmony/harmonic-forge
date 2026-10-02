@@ -231,3 +231,30 @@ def _archive_candidate(path: Path, entry: dict) -> int:
                                origin=archive.origin_for_repo(entry.get("repo")))
     except Exception:
         return 0
+
+
+def retire_candidate(repo: str, issue: int, *, read_before: datetime,
+                     base_dir: Path | None = None) -> bool:
+    """Archive, then unlink, a CLOSED issue's candidate file (harmonic-forge#854).
+
+    Same archive-then-unlink contract as an aged-out entry in
+    `read_candidates`: the file is unlinked only when `_archive_candidate`
+    returns 1. It is left alone when its entry was posted at or after
+    `read_before` (the moment the cycle read the store), so a post that
+    lands mid-cycle is never deleted. Returns whether the file was removed."""
+    path = _candidate_path(base_dir or DEFAULT_CANDIDATES_DIR, repo, issue)
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+        posted_at = _parse_iso(entry["posted_at"])
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return False
+    if posted_at >= read_before:
+        return False
+    try:
+        if _archive_candidate(path, entry) == 1:
+            path.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+

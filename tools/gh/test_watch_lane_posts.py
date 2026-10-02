@@ -434,12 +434,12 @@ class DiscoverQueueTests(unittest.TestCase):
                 issue = int(path.rsplit("/", 2)[-2])
                 bodies = comments.get(issue, [])
                 return _fake_completed(json.dumps([{"body": b} for b in bodies]))
-            if "api" in gh_argv and "--jq" in gh_argv and ".labels[].name" in gh_argv:
-                # harmonic-forge#686 preclose finding: `_issue_labels`'
-                # single-issue label lookup. Bounded (one issue's own label
-                # list, no pagination needed) -- distinct from the comments
-                # fetch above, which lists an unbounded, growing collection.
-                return _fake_completed("")
+            if "api" in gh_argv and "--jq" in gh_argv and any(
+                    "labels" in a for a in gh_argv):
+                # harmonic-forge#686/#854: `_issue_meta`'s single-issue read
+                # (state + labels, one call). Bounded -- distinct from the
+                # comments fetch above, which lists an unbounded collection.
+                return _fake_completed('{"state": "open", "labels": []}')
             raise AssertionError(f"unexpected gh call: {argv}")
         return run
 
@@ -942,6 +942,9 @@ class DropClosedTargetsTests(unittest.TestCase):
 
     def setUp(self):
         watch_lane_posts._CLOSED_SEEN.clear()
+        # harmonic-forge#854: discover_queue now honors _CLOSED_SEEN, so a
+        # pair left behind here would hide a later test's candidate.
+        self.addCleanup(watch_lane_posts._CLOSED_SEEN.clear)
 
     def _rows(self):
         return [("/tmp/hf-568-impl", ("vitalharmony/harmonic-forge", 568), "resolved"),
@@ -2400,7 +2403,7 @@ class QueueCycleOwesTests(unittest.TestCase):
     def _queue(self, bodies, lane, issue=851):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": b} for b in bodies]), \
-             patch("watch_lane_posts._issue_labels", return_value=set()):
+             patch("watch_lane_posts._issue_meta", return_value=("open", set())):
             return discover_queue("vitalharmony/harmonic-forge", lane, {issue})[0]
 
     FAIL = "## Lane 3 Gate Results — FAIL\n\nTC2 failed.\n\n"
@@ -2560,7 +2563,7 @@ class QueueNoiseFilterTests(unittest.TestCase):
             calls.append((repo, lane))
             return frozenset({"epic"})
         with patch("watch_lane_posts.queue_qualifiers", side_effect=spy), \
-             patch("watch_lane_posts._issue_labels", return_value=set()), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
             discover_queue("vitalharmony/hrse", "l3", {1530})
         self.assertIn(("vitalharmony/hrse", "l3"), calls)
@@ -2582,7 +2585,7 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
     HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
 
     def test_an_epic_labeled_candidate_is_never_queued(self):
-        with patch("watch_lane_posts._issue_labels", return_value={"epic"}), \
+        with patch("watch_lane_posts._issue_meta", return_value=("open", {"epic"})), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self.HANDOFF}]):
             queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
@@ -2590,8 +2593,8 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
         self.assertEqual(queue, {})
 
     def test_a_tooling_exception_candidate_is_never_queued_for_l2_or_l3(self):
-        with patch("watch_lane_posts._issue_labels",
-                   return_value={"tooling-exception"}), \
+        with patch("watch_lane_posts._issue_meta",
+                   return_value=("open", {"tooling-exception"})), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self.HANDOFF}]):
             for lane in ("l2", "l3"):
@@ -2603,8 +2606,8 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
     def test_a_tooling_exception_candidate_still_queues_for_l1(self):
         """Lane 1 owns Tooling Exception issues -- the filter is asymmetric,
         matching `queue_qualifiers`."""
-        with patch("watch_lane_posts._issue_labels",
-                   return_value={"tooling-exception"}), \
+        with patch("watch_lane_posts._issue_meta",
+                   return_value=("open", {"tooling-exception"})), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body":
                        "## Plan\n\n<!-- l1-post v1; kind=plan; posted-by=LANE2 -->"}]):
@@ -2617,7 +2620,7 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
         failure, which still fails the repo per `DiscoverQueueFailsClosed
         PerIssueTests`): an unfetchable label set must not make real,
         classifiable work disappear."""
-        with patch("watch_lane_posts._issue_labels", return_value=None), \
+        with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self.HANDOFF}]):
             queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
@@ -2898,7 +2901,8 @@ class FailChannelAgreementTests(unittest.TestCase):
         root = Path(tmp.name)
         comments = [{"id": "1", "body": body, "created_at": self.NOW}]
         with patch("watch_lane_posts._fetch_comments", return_value=comments), \
-             patch("watch_lane_posts._issue_labels", return_value=labels):
+             patch("watch_lane_posts._issue_meta",
+                   return_value=("open", labels) if labels is not None else (None, None)):
             lines, _ = watch_lane_posts.comment_watch_cycle(
                 [(self.REPO, 851)], {"l1"}, self.NOW, Watermarks(root / "wm"),
                 SeenSet(root / "seen.tsv"), set(), allow_priming=False,
@@ -2906,8 +2910,11 @@ class FailChannelAgreementTests(unittest.TestCase):
         return bool(lines)
 
     def _queued(self, body, labels):
+        # harmonic-forge#854: discover_queue reads labels from _issue_meta's
+        # one issue read; an unreadable read is (None, None), failing open.
+        meta = ("open", labels) if labels is not None else (None, None)
         with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
-             patch("watch_lane_posts._issue_labels", return_value=labels):
+             patch("watch_lane_posts._issue_meta", return_value=meta):
             queue, ok = discover_queue(self.REPO, "l2", {851})
         self.assertTrue(ok)
         return 851 in queue
@@ -2952,3 +2959,132 @@ class FailChannelAgreementTests(unittest.TestCase):
                 self.assertFalse(self._emitted(body, {label}))
         self.assertTrue(self._emitted(body, set()))
         self.assertTrue(self._emitted(body, None))  # unreadable labels fail open
+
+
+#: harmonic-forge#854: `discover_queue`'s per-issue read now also returns the
+#: issue's STATE, so a test that left `_issue_meta` unpatched reached live
+#: GitHub and a genuinely closed issue (hrse#1530) changed its result. Unit
+#: tests never call GitHub: default every test to an open, unlabelled issue;
+#: a test that needs another answer patches `_issue_meta` itself.
+_ISSUE_META_PATCHER = patch("watch_lane_posts._issue_meta", return_value=("open", set()))
+
+
+def setUpModule():
+    _ISSUE_META_PATCHER.start()
+
+
+def tearDownModule():
+    _ISSUE_META_PATCHER.stop()
+
+
+class ClosedIssueRetirementTests(unittest.TestCase):
+    """harmonic-forge#854: a closed issue leaves every queue, and its
+    candidate file is retired (archived, then unlinked) on a successful
+    cycle only. Runs against a temp candidates directory, never the live
+    store, because the kill-check runner bypasses tools/run_tests.py."""
+
+    HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; plan-first=false; sha=abc -->"
+    REPO = "vitalharmony/hrse"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        patcher = patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        watch_lane_posts._CLOSED_SEEN.clear()
+        self.addCleanup(watch_lane_posts._CLOSED_SEEN.clear)
+        self.archived: list[str] = []
+        arch = patch.object(belt_candidates, "_archive_candidate",
+                            side_effect=lambda path, entry: self.archived.append(path.name) or 1)
+        arch.start()
+        self.addCleanup(arch.stop)
+
+    def _write(self, issue: int, posted_at: str = "2026-10-01T00:00:00Z") -> Path:
+        path = belt_candidates._candidate_path(self.dir, self.REPO, issue)
+        path.write_text(json.dumps({"repo": self.REPO, "issue": issue, "kind": "handoff",
+                                    "posted_by": "l1", "posted_at": posted_at}))
+        return path
+
+    def _discover(self, issues, read_at="2026-10-02T00:00:00Z"):
+        when = dt.datetime.strptime(read_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+        return discover_queue(self.REPO, "l2", set(issues), when)
+
+    def test_a_closed_issue_is_queued_to_no_lane_from_the_same_read(self):
+        path = self._write(1)
+        meta = patch("watch_lane_posts._issue_meta", return_value=("closed", set()))
+        comments = patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}])
+        with meta as m, comments as c:
+            queue, ok = self._discover({1})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+        self.assertEqual(m.call_count, 1)
+        c.assert_not_called()
+        self.assertFalse(path.exists())
+        self.assertEqual(self.archived, [path.name])
+
+    def test_a_closed_epic_or_tooling_exception_issue_is_retired_too(self):
+        for label in ("epic", "tooling-exception"):
+            with self.subTest(label=label):
+                watch_lane_posts._CLOSED_SEEN.clear()
+                path = self._write(2)
+                with patch("watch_lane_posts._issue_meta", return_value=("closed", {label})), \
+                     patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+                    self._discover({2})
+                self.assertFalse(path.exists())
+
+    def test_a_pair_already_known_closed_costs_no_call_and_is_still_retired(self):
+        path = self._write(3)
+        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
+        with patch("watch_lane_posts._issue_meta") as m, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            queue, ok = self._discover({3})
+        m.assert_not_called()
+        self.assertEqual(queue, {})
+        self.assertFalse(path.exists())
+
+    def test_a_closed_pair_is_remembered_for_the_next_cycle(self):
+        self._write(4)
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())) as m, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({4})
+            self._discover({4})
+        self.assertEqual(m.call_count, 1)
+
+    def test_a_failed_issue_read_keeps_the_issue_open_and_its_file(self):
+        path = self._write(5)
+        with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
+            queue, ok = self._discover({5})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {5: "handoff owes=implement"})
+        self.assertTrue(path.exists())
+
+    def test_nothing_is_retired_on_a_failed_cycle(self):
+        closed_path = self._write(6)
+        self._write(7)
+
+        def meta(repo, issue):
+            return ("closed", set()) if issue == 6 else ("open", set())
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            queue, ok = self._discover({6, 7})
+        self.assertFalse(ok)
+        self.assertTrue(closed_path.exists())
+
+    def test_a_file_posted_after_the_store_was_read_is_kept(self):
+        path = self._write(8, posted_at="2026-10-02T00:00:05Z")
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({8}, read_at="2026-10-02T00:00:00Z")
+        self.assertTrue(path.exists())
+
+    def test_a_file_is_never_unlinked_when_archiving_fails(self):
+        path = self._write(9)
+        with patch.object(belt_candidates, "_archive_candidate", return_value=0), \
+             patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({9})
+        self.assertTrue(path.exists())
+

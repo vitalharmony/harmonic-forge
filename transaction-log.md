@@ -7,6 +7,11 @@ Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transacti
 - tools/gh/test_watch_lane_posts.py | 84 +++++++++++++++++++++++++++++++++++++++
 - tools/gh/watch_lane_posts.py      | 30 ++++++++++++--
 - 2 files changed, 110 insertions(+), 4 deletions(-)
+## fix(belt): a closed issue leaves every queue and its candidate file is retired -- discover_queue reads state and labels from the one per-candidate issue read (_issue_meta), skips a closed issue before the label exclusion, remembers it in _CLOSED_SEEN, and on a successful cycle archives then unlinks its candidate file unless the entry was posted after the store was read; unit tests stub the issue read so none reaches live GitHub (harmonic-forge#854)
+- tools/gh/belt_candidates.py       |  27 +++++++
+- tools/gh/test_watch_lane_posts.py | 160 ++++++++++++++++++++++++++++++++++----
+- tools/gh/watch_lane_posts.py      |  44 ++++++++---
+- 3 files changed, 207 insertions(+), 24 deletions(-)
 
 ## fix(belt): sticky-wicket PATCH (epoch 2 pass-1 cluster) -- one predicate in comment_watch_cycle so a FAIL owed to Lane 2 reaches it whoever posted it (LANE3 and markerless included), and one shared _own_marker reader for _classify's kind and _queue_owes' plan-first; tests drive every poster and the quoted-footer cases through the queued kind (harmonic-forge#851)
 - tools/gh/test_watch_lane_posts.py | 32 ++++++++++++++++++++++++++++++++
