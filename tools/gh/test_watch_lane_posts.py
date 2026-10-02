@@ -2868,3 +2868,87 @@ class ReadQueueCandidatesTests(unittest.TestCase):
                     ["vitalharmony/hrse"], "l2",
                     now=dt.datetime(2026, 9, 18, 12, tzinfo=dt.timezone.utc), base_dir=base)
         self.assertEqual(got, {("vitalharmony/hrse", 1)})
+
+
+class FailChannelAgreementTests(unittest.TestCase):
+    """harmonic-forge#851 sticky-wicket PATCH (epoch 2, pass 2): Lane 2's two
+    channels must agree on "does Lane 2 owe a fix?". For every gate report
+    across poster x footer kind x heading x verdict x labels, the comment
+    watch emits it iff `discover_queue` queues it. Two named differences: the
+    comment watch still emits after a later comment (covered by
+    `CommentWatchOwnershipTests`), and a Lane 1 `discussion` always reaches
+    Lane 2's comment watch (skipped below)."""
+
+    NOW = "2026-10-02T04:00:00Z"
+    REPO = "vitalharmony/hrse"
+
+    def _body(self, poster, footer, heading, verdict):
+        lines = []
+        if heading:
+            lines.append(f"## Lane 3 Gate Results — H851 — {verdict}")
+        lines.append(f"**Verdict:** {verdict}" if verdict != "unreadable" else "Results below.")
+        if footer:
+            by = f" posted-by={poster};" if poster else ""
+            lines.append(f"<!-- l1-post v1; kind={footer};{by} sha=abc -->")
+        return "\n\n".join(lines)
+
+    def _emitted(self, body, labels):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        comments = [{"id": "1", "body": body, "created_at": self.NOW}]
+        with patch("watch_lane_posts._fetch_comments", return_value=comments), \
+             patch("watch_lane_posts._issue_labels", return_value=labels):
+            lines, _ = watch_lane_posts.comment_watch_cycle(
+                [(self.REPO, 851)], {"l1"}, self.NOW, Watermarks(root / "wm"),
+                SeenSet(root / "seen.tsv"), set(), allow_priming=False,
+                deferred_advances=[], self_lane="l2")
+        return bool(lines)
+
+    def _queued(self, body, labels):
+        with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
+             patch("watch_lane_posts._issue_labels", return_value=labels):
+            queue, ok = discover_queue(self.REPO, "l2", {851})
+        self.assertTrue(ok)
+        return 851 in queue
+
+    def test_both_channels_agree_on_every_gate_report(self):
+        import itertools
+        posters = ("LANE1", "LANE3", "LANE-unset")
+        footers = ("gate-result", "discussion", None)
+        headings = (True, False)
+        verdicts = ("FAIL", "PASS", "unreadable")
+        label_sets = ({"tooling-exception"}, set(), None)
+        checked = 0
+        for poster, footer, heading, verdict, labels in itertools.product(
+                posters, footers, headings, verdicts, label_sets):
+            if footer != "gate-result" and not heading:
+                continue  # not a gate report at all
+            if footer == "discussion" and poster != "LANE3":
+                # The second named difference: a Lane 1 `discussion` is always
+                # Lane 2's news on the comment watch (it carries a Plan-First
+                # ratification, `test_lane2_still_hears_plan_ratification_
+                # discussion`), whatever its body says.
+                continue
+            body = self._body(poster, footer, heading, verdict)
+            with self.subTest(poster=poster, footer=footer, heading=heading,
+                              verdict=verdict, labels=labels):
+                self.assertEqual(self._emitted(body, labels), self._queued(body, labels))
+                checked += 1
+        self.assertGreater(checked, 40)
+
+    def test_a_discussion_footered_fail_report_reaches_lane2_on_both_channels(self):
+        body = self._body("LANE3", "discussion", True, "FAIL")
+        self.assertTrue(self._emitted(body, set()))
+        self.assertTrue(self._queued(body, set()))
+        passing = self._body("LANE3", "discussion", True, "PASS")
+        self.assertFalse(self._emitted(passing, set()))
+        self.assertFalse(self._queued(passing, set()))
+
+    def test_a_fail_on_a_lane1_only_issue_never_wakes_lane2(self):
+        body = self._body("LANE3", "gate-result", True, "FAIL")
+        for label in ("tooling-exception", "epic"):
+            with self.subTest(label=label):
+                self.assertFalse(self._emitted(body, {label}))
+        self.assertTrue(self._emitted(body, set()))
+        self.assertTrue(self._emitted(body, None))  # unreadable labels fail open

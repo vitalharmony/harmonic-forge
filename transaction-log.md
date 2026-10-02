@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): sticky-wicket PATCH (epoch 2, both passes with survivors) -- one shared _is_gate_report recognizer for both Lane 2 channels (a gate report footered kind=discussion now reaches Lane 2 on the watch and the queue), and the FAIL path applies the same label exclusion as discover_queue (a Lane-1-only Tooling Exception or epic issue never wakes Lane 2); an agreement-matrix test binds the two channels across poster x footer x heading x verdict x labels (harmonic-forge#851)
+- tools/gh/test_watch_lane_posts.py | 84 +++++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 30 ++++++++++++--
+- 2 files changed, 110 insertions(+), 4 deletions(-)
+
 ## fix(belt): sticky-wicket PATCH (epoch 2 pass-1 cluster) -- one predicate in comment_watch_cycle so a FAIL owed to Lane 2 reaches it whoever posted it (LANE3 and markerless included), and one shared _own_marker reader for _classify's kind and _queue_owes' plan-first; tests drive every poster and the quoted-footer cases through the queued kind (harmonic-forge#851)
 - tools/gh/test_watch_lane_posts.py | 32 ++++++++++++++++++++++++++++++++
 - tools/gh/watch_lane_posts.py      | 26 +++++++++++++++++---------

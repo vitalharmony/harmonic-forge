@@ -491,6 +491,19 @@ def _gate_result_owes_fix(body: str) -> bool:
     return gate_ci.verdict_of(body) not in ("PASS", "BLOCKED")
 
 
+def _is_gate_report(detail: str, body: str) -> bool:
+    """Is this comment a Lane 3 gate report? One answer for both channels
+    (sticky-wicket PATCH, epoch 2 pass 2): a `kind=gate-result` footer, or a
+    `Lane 3 Gate Results` heading as the detail or as the body's first
+    unquoted line, whatever the footer's kind. 74 of 98 real gate reports carry
+    no gate-result footer (`post_lane_discussion.py`), and
+    `mise run lane-comment` stamps `kind=discussion` by default."""
+    if detail == "gate-result" or _GATE_RESULT_HEADING.match(detail):
+        return True
+    first = _strip_quoted(body).strip().split("\n", 1)[0]
+    return bool(_GATE_RESULT_HEADING.match(first))
+
+
 def _fail_owed_to_l2(self_lane: str | None, detail: str, body: str) -> bool:
     """A gate result that owes a fix is always Lane 2's news on the comment
     watch, whoever posted it (reforge ruling, fix 1). The queue entry stays
@@ -498,7 +511,7 @@ def _fail_owed_to_l2(self_lane: str | None, detail: str, body: str) -> bool:
     comment would otherwise hide the FAIL from Lane 2 on both channels."""
     if self_lane != "l2":
         return False
-    if detail != "gate-result" and not _GATE_RESULT_HEADING.match(detail):
+    if not _is_gate_report(detail, body):
         return False
     return _gate_result_owes_fix(body)
 
@@ -1036,9 +1049,10 @@ def discover_queue(repo: str, lane: str,
         if not last_kind:
             continue
         poster, kind = last_kind
-        if kind.startswith("#") and _GATE_RESULT_HEADING.match(kind):
-            # A markerless gate report (most of the historical corpus carries
-            # no kind footer) is still a gate result for queueing purposes.
+        if _is_gate_report(kind, last_body):
+            # A gate report is a gate result for queueing purposes whatever its
+            # footer says: markerless, or footered kind=discussion (the shared
+            # `_is_gate_report`, so both channels recognize the same comments).
             kind = "gate-result"
         if kind not in kinds:
             continue
@@ -1500,6 +1514,14 @@ def comment_watch_cycle(
             # owes Lane 2 a fix is its news whoever posted it, so neither the
             # poster-lane watch filter nor the ownership filter may drop it.
             fail_for_l2 = _fail_owed_to_l2(self_lane, detail, comment.get("body", ""))
+            if fail_for_l2:
+                # The same label exclusion `discover_queue` applies (an epic, or
+                # a Lane-1-owned Tooling Exception issue, never wakes Lane 2),
+                # read only on this rare path; an unreadable label set fails
+                # open, as there.
+                labels = _issue_labels(repo, issue)
+                if labels is not None and labels & set(queue_qualifiers(repo, self_lane)):
+                    fail_for_l2 = False
             if not fail_for_l2 and (lane not in watch or not _owed_to(self_lane, detail)):
                 continue
             cid = str(comment.get("id", ""))
