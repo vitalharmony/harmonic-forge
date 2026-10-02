@@ -29,6 +29,7 @@ from manifest_identity import apply_project_identity  # noqa: E402
 
 from _handoff_footer import (  # noqa: E402
     UNREADABLE_HANDOFF, FooterState, attested_footer, newest_handoff_mutates_live,
+    thread_footers,
 )
 from _sweep_tier import NO_TIER_MESSAGE, TIER_RANK, parse_write_tier  # noqa: E402
 
@@ -110,13 +111,20 @@ def fetch_comments(repo: str, issue: int) -> list[dict]:
         fail(f"unexpected response fetching comments for {repo}#{issue}")
 
 
-def _own_kind(comment: dict) -> str | None:
-    """The comment's own kind, from its own footer only (harmonic-forge#851
-    REFORGE): an ATTESTED footer, or a legacy digest-less one (ABSENT). An
-    UNREADABLE footer has no trustworthy kind, and a quoted marker never
-    nominates the comment it is quoted in."""
-    footer = attested_footer(comment.get("body", ""))
-    if footer.state is FooterState.UNREADABLE or footer.kind is None:
+def _thread_footer_map(comments: list[dict]) -> dict:
+    """`{comment id: Footer}` in id order, first attestation winning, so a
+    replayed copy of an earlier comment is UNREADABLE (reforge pass 1)."""
+    ordered = sorted(comments, key=lambda c: c["id"])
+    return {c["id"]: f for c, f in zip(ordered, thread_footers(c.get("body", "") for c in ordered))}
+
+
+def _own_kind(comment: dict, footers: dict | None = None) -> str | None:
+    """The comment's own kind, from its own ATTESTED footer only
+    (harmonic-forge#851). ABSENT (no digest) and UNREADABLE footers nominate
+    nothing, so neither a quoted marker nor a digest-less one can make a
+    comment an AE, sweep, spec, ready-for-l3, rework or handoff."""
+    footer = (footers or {}).get(comment["id"]) or attested_footer(comment.get("body", ""))
+    if footer.state is not FooterState.ATTESTED or footer.kind is None:
         return None
     return footer.kind.lower()
 
@@ -133,9 +141,10 @@ def unreadable_after(comments: list[dict], kind: str, after: dict | None) -> dic
     footer does not attest -- edited, forged, or hand-posted with a quote. A
     caller refuses on it instead of falling back to an older, valid one
     (harmonic-forge#851 preclose pass 2: never skip an unreadable candidate)."""
+    footers = _thread_footer_map(comments)
     bad = [comment for comment in comments
            if (after is None or comment["id"] > after["id"])
-           and (footer := attested_footer(comment.get("body", ""))).state is FooterState.UNREADABLE
+           and (footer := footers[comment["id"]]).state is FooterState.UNREADABLE
            and kind in {k.lower() for k in footer.claimed_kinds}]
     return max(bad, key=lambda c: c["id"]) if bad else None
 
@@ -147,7 +156,8 @@ def _unreadable_message(kind: str, comment: dict) -> str:
 
 
 def latest_by_kind(comments: list[dict], kind: str) -> dict | None:
-    matches = [comment for comment in comments if _own_kind(comment) == kind]
+    footers = _thread_footer_map(comments)
+    matches = [comment for comment in comments if _own_kind(comment, footers) == kind]
     if not matches:
         return None
     # `id`, not `created_at` -- GitHub's REST created_at has one-second
@@ -204,7 +214,7 @@ def footer_sha(comment: dict) -> str | None:
     """The `sha=` from the comment's OWN footer (attested or legacy), never
     from a marker quoted in its body."""
     footer = attested_footer(comment.get("body", ""))
-    if footer.state is FooterState.UNREADABLE or footer.marker is None:
+    if footer.state is not FooterState.ATTESTED or footer.marker is None:
         return None
     match = FOOTER_SHA.search(footer.marker)
     return match.group(1) if match else None
@@ -273,14 +283,35 @@ def same_sha(a: str | None, b: str | None) -> bool:
 
 
 def _is_round_artifact(comment: dict) -> bool:
+    """Does this comment start a new round (new scope or a new test plan)?
+
+    harmonic-forge#851 reforge pass 1 survivor 4: read from the comment's own
+    attested footer and attested text, never the raw body's first marker, and
+    never a `**Test cases:** unchanged` line quoted in a fence or blockquote.
+    A comment that claims a round kind but does not attest counts as a round
+    artifact: that blocks a carry-forward, the fail-closed side."""
     body = comment.get("body", "")
-    kind_match = FOOTER_KIND.search(body)
-    kind = kind_match.group(1).lower() if kind_match else None
-    if kind in ROUND_KINDS:
+    footer = attested_footer(body)
+    if footer.state is FooterState.ATTESTED:
+        kind = (footer.kind or "").lower()
+        text = footer.prefix or ""
+        if kind in ROUND_KINDS:
+            return True
+        if kind == "rework":
+            return not TC_UNCHANGED.search(_unquoted(text))
+        return bool(ROUND_HEADING.search(text))
+    claimed = {k.lower() for k in footer.claimed_kinds}
+    if footer.state is FooterState.UNREADABLE and claimed & (set(ROUND_KINDS) | {"rework"}):
         return True
-    if kind == "rework":
-        return not TC_UNCHANGED.search(body)
     return bool(ROUND_HEADING.search(body))
+
+
+_QUOTED_RE = re.compile(r"^(`{3,}|~{3,})[^\n]*\n.*?^\1[ \t]*$|^>.*$", re.DOTALL | re.MULTILINE)
+
+
+def _unquoted(text: str) -> str:
+    """`text` with fenced blocks and `>` blockquote lines removed."""
+    return _QUOTED_RE.sub("", text)
 
 
 def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dict | None:

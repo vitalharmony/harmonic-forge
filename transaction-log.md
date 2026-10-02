@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): sticky-wicket PATCH for reforge pass 1 -- only a comment's last marker can be its footer; a digest-less footer never nominates a kind; a repeated attested digest is a replay and is UNREADABLE (first attestation wins); _is_round_artifact reads the attested footer and unquoted text, failing closed on an unreadable round kind (harmonic-forge#851)
+- tools/gh/test_check_lane3_ready.py    | 96 ++++++++++++++++++++++++++++++-----
+- tools/gh/test_handoff_footer.py       | 65 +++++++++++++++++-------
+- tools/gh/test_l1_post_ae_and_sweep.py | 11 +++-
+- 5 files changed, 240 insertions(+), 84 deletions(-)
+
 ## fix(belt): REFORGE (operator --force --reforge) -- a comment's own footer is decided by its body-sha256, never its position; Attested/Unreadable/Absent, with Unreadable refusing on every auto-AE path, and latest_by_kind/footer_sha/verify_body_sha256/the newest-handoff scan reading only attested footers (harmonic-forge#851)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

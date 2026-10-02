@@ -269,9 +269,18 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertNotIn("kind=ae-and-sweep", captured_body["body"])
 
 
+_HANDOFF_SEQ = iter(range(1, 10_000))
+
+
 def _handoff(mutates_live: str | None) -> str:
+    """An attested handoff, the way l1_post writes it. Each body is unique:
+    identical attested text in one thread is refused as a replay (#851)."""
+    import hashlib
     field = f" mutates-live={mutates_live};" if mutates_live else ""
-    return f"## Handoff\n\n<!-- l1-post v1; kind=handoff; plan-first=false;{field} sha={FAKE_SHA} -->"
+    prefix = f"## Handoff\n\nhandoff body {next(_HANDOFF_SEQ)}"
+    digest = hashlib.sha256(prefix.encode()).hexdigest()
+    return (f"{prefix}\n\n<!-- l1-post v1; kind=handoff; plan-first=false;{field} "
+            f"sha={FAKE_SHA}; body-sha256={digest} -->")
 
 
 class AutoAeTests(unittest.TestCase):

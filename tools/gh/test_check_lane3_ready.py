@@ -20,6 +20,14 @@ SPEC.loader.exec_module(c)
 DEFAULT_SHA = "a" * 40
 
 
+def _attest(prefix: str, fields: str) -> str:
+    """A body whose footer genuinely attests it, the way l1_post/post_lane_
+    discussion write it: digest of the rstripped prefix, footer appended."""
+    import hashlib
+    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+    return f"{prefix.rstrip(chr(10))}\n\n<!-- l1-post v1; {fields}; body-sha256={digest} -->\n"
+
+
 def _comment(
     comment_id: int,
     kind: str | None,
@@ -42,8 +50,15 @@ def _comment(
             "html_url": f"https://github.com/vitalharmony/hrse/issues/1#issuecomment-{comment_id}",
         }
     prefix = f"Write tier {tier} throughout.\n\n" if kind == "sweep" and tier else ""
-    body_sha256_field = f"; body-sha256={body_sha256}" if body_sha256 else ""
-    body = f"{prefix}body text\n\n<!-- l1-post v1; kind={kind}; sha={sha}{body_sha256_field} -->"
+    text = f"{prefix}body text {comment_id}"
+    # harmonic-forge#851: a footer is a comment's own only when its digest
+    # matches the text before it, so fixtures attest for real (text unique
+    # per comment, or every fixture would collide as a replay). An explicit
+    # `body_sha256` is the tamper case: it is embedded as given.
+    if body_sha256 is None:
+        import hashlib as _h
+        body_sha256 = _h.sha256(text.encode()).hexdigest()
+    body = f"{text}\n\n<!-- l1-post v1; kind={kind}; sha={sha}; body-sha256={body_sha256} -->"
     return {
         "id": comment_id,
         "body": body,
@@ -407,7 +422,7 @@ class BodySha256VerificationTests(unittest.TestCase):
         self.assertTrue(c.verify_body_sha256(comment))
 
     def test_matching_digest_verifies(self):
-        prefix = "Write tier R throughout.\n\nbody text"
+        prefix = "Write tier R throughout.\n\nbody text 1"
         digest = self._digest_for(prefix)
         comment = _comment(1, "sweep", "2026-08-15T10:00:00Z", tier="R", body_sha256=digest)
         self.assertTrue(c.verify_body_sha256(comment))
@@ -624,7 +639,8 @@ class ReworkRoundBoundaryTests(unittest.TestCase):
 
     def _rework(self, lead: str) -> dict:
         rework = _comment(13, "rework", self.T, sha="1111111")
-        rework["body"] = f"## Rework\n\n**Finding:** TC2 fails.\n{lead}**Next:** fix.\n\n" + rework["body"]
+        rework["body"] = _attest(f"## Rework\n\n**Finding:** TC2 fails.\n{lead}**Next:** fix.",
+                                 "kind=rework; sha=1111111")
         return rework
 
     def _main(self, comments):
@@ -682,14 +698,6 @@ class ReworkRoundBoundaryTests(unittest.TestCase):
         rework = self._rework("")
         rework["id"] = 9
         self._main([rework] + self.APPROVED + [_comment(14, "ready-for-l3", self.T, sha="2222222")])
-
-
-def _attest(prefix: str, fields: str) -> str:
-    """A body whose footer genuinely attests it, the way l1_post/post_lane_
-    discussion write it: digest of the rstripped prefix, footer appended."""
-    import hashlib
-    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
-    return f"{prefix.rstrip(chr(10))}\n\n<!-- l1-post v1; {fields}; body-sha256={digest} -->\n"
 
 
 class AutoAeAuthorityTests(unittest.TestCase):
@@ -769,9 +777,9 @@ class AutoAeAuthorityTests(unittest.TestCase):
 
     def _manual_ae_quoting(self, wrapper: str, trailing: bool = True) -> dict:
         ae = _comment(6, "ae", "2026-10-02T02:00:00Z")
-        footer = ae["body"][ae["body"].index("<!--"):]
         quoted = wrapper.format(self.QUOTED)
-        ae["body"] = f"**Authorized:** x\n\n{quoted}\n\nmore prose" + (f"\n\n{footer}" if trailing else "")
+        text = f"**Authorized:** x\n\n{quoted}\n\nmore prose"
+        ae["body"] = _attest(text, f"kind=ae; sha={DEFAULT_SHA}") if trailing else text
         return ae
 
     def test_a_quoted_auto_ae_marker_never_counts(self):
@@ -875,6 +883,66 @@ class ContentBoundFooterConsumerTests(unittest.TestCase):
         authority, message = self._gate(thread)
         self.assertIsNotNone(authority, message)
         self.assertFalse(c.is_auto_ae(thread[0]))
+
+
+class ReforgePass1SurvivorTests(unittest.TestCase):
+    """harmonic-forge#851 reforge pass 1 survivors 1-4: each asserts REFUSE."""
+
+    T = "2026-10-02T02:00:00Z"
+
+    @staticmethod
+    def _c(cid: int, body: str) -> dict:
+        return {"id": cid, "created_at": "2026-10-02T02:00:00Z", "body": body,
+                "html_url": f"https://github.com/vitalharmony/hrse/issues/1#issuecomment-{cid}"}
+
+    def test_quoted_digestless_ae_and_sweep_never_authorize(self):
+        """Survivor 1: hand-written comments quoting legacy markers."""
+        ae = self._c(2, f"> <!-- l1-post v1; kind=ae; sha={DEFAULT_SHA} -->\n")
+        sweep = self._c(3, f"Write tier R\n\n> <!-- l1-post v1; kind=sweep; sha={DEFAULT_SHA} -->\n")
+        authority, message = c.resolve_gate_authority([ae, sweep], DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("no gate-readiness sweep", message)
+
+    def test_a_broken_footer_over_an_embedded_attested_sweep_refuses(self):
+        """Survivor 2: no fall-through to the embedded older footer."""
+        older = _attest("Write tier R throughout.\n\nolder", f"kind=sweep; sha={DEFAULT_SHA}")
+        edited = self._c(3, f"{older}\nedit\n\n<!-- l1-post v1; kind=sweep; sha={DEFAULT_SHA}; "
+                            f"body-sha256={'3' * 64} -->\n")
+        self.assertFalse(c.verify_body_sha256(edited))
+        authority, message = c.resolve_gate_authority([edited], DEFAULT_SHA)
+        self.assertIsNone(authority)
+
+    def test_a_verbatim_replay_of_an_older_tier_r_sweep_is_refused(self):
+        """Survivor 3: the copy re-attests, but first attestation wins."""
+        tier_r = _attest("Write tier R throughout.\n\nround 1", f"kind=sweep; sha={DEFAULT_SHA}")
+        tier_p = _attest("Write tier P throughout.\n\nround 2", f"kind=sweep; sha={DEFAULT_SHA}")
+        thread = [self._c(3, tier_r), self._c(5, tier_p), self._c(7, tier_r)]
+        authority, message = c.resolve_gate_authority(thread, DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("does not match its recorded body-sha256", message)
+
+    def test_identical_attested_text_in_two_comments_refuses_the_newer(self):
+        """The named residual risk: a genuine collision fails closed."""
+        same = _attest("Write tier R throughout.\n\nsame", f"kind=sweep; sha={DEFAULT_SHA}")
+        authority, message = c.resolve_gate_authority([self._c(3, same), self._c(4, same)], DEFAULT_SHA)
+        self.assertIsNone(authority)
+
+    def test_an_attested_rework_quoting_test_cases_unchanged_is_a_round_artifact(self):
+        """Survivor 4: a fence-quoted `Test cases: unchanged` is not the declaration."""
+        rework = self._c(9, _attest("## Rework\n\n**Finding:** x\n**Next:** y\n\n"
+                                    "```\n**Test cases:** unchanged\n```", "kind=rework; sha=1111111"))
+        self.assertTrue(c._is_round_artifact(rework))
+
+    def test_an_attested_rework_quoting_a_footer_is_still_a_round_artifact(self):
+        quoted = f"<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+        rework = self._c(9, _attest(f"## Rework\n\n**Finding:** x\n**Next:** y\n\n> {quoted}",
+                                    "kind=rework; sha=1111111"))
+        self.assertTrue(c._is_round_artifact(rework))
+
+    def test_an_attested_rework_declaring_unchanged_is_not_a_round_artifact(self):
+        rework = self._c(9, _attest("## Rework\n\n**Finding:** x\n**Test cases:** unchanged\n**Next:** y",
+                                    "kind=rework; sha=1111111"))
+        self.assertFalse(c._is_round_artifact(rework))
 
 
 if __name__ == "__main__":
