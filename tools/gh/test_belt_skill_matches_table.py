@@ -180,5 +180,62 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
         self.assertNotIn("--sweep-for", entries[0]["argv"])
 
 
+class ObligationsTableMatchesOwesTests(unittest.TestCase):
+    """harmonic-forge#851 AC2.3: `SKILL.md` rule 9's table is the code's
+    `OWES` table, row for row. A session acts on the doc; the belt prints
+    the code. They must never name different obligations."""
+
+    _ROW_RE = re.compile(r"^\s*\|\s*(l[123])\s*\|\s*`([\w-]+)`\s*\|", re.MULTILINE)
+
+    def test_rule_9_rows_equal_owes(self):
+        documented = set(self._ROW_RE.findall(_SKILL_MD.read_text(encoding="utf-8")))
+        expected = {(lane, owes) for lane, kinds in watch_lane_posts.OWES.items()
+                    for owes in kinds.values()}
+        expected.add(("l2", watch_lane_posts.PLAN_FIRST_OWES))
+        self.assertEqual(documented, expected)
+
+    #: Reforge ruling, fix 4: each row's action is bound to its `(lane, owes)`
+    #: key, so swapping two rows' steps fails rather than passing on the same
+    #: vocabulary. One phrase per row that only that row's step contains.
+    _ACTION_PHRASE = {
+        ("l3", "spec"): "fetch_lane1_context.py",
+        ("l3", "gate"): "lane3-begin",
+        ("l3", "sweep-missing"): "L3B",
+        ("l2", "implement"): "implement from the handoff",
+        ("l2", "plan"): "l2_post.py --kind plan",
+        ("l2", "fix"): "do the work on the branch",
+        ("l1", "plan-review"): "Implementation Spec",
+        ("l1", "spec-review"): "Review Lane 3's spec",
+    }
+    _FULL_ROW_RE = re.compile(r"^\s*\|\s*(l[123])\s*\|\s*`([\w-]+)`\s*\|(.*)\|\s*$", re.MULTILINE)
+
+    def _rows(self) -> dict[tuple[str, str], str]:
+        return {(lane, owes): step for lane, owes, step
+                in self._FULL_ROW_RE.findall(_SKILL_MD.read_text(encoding="utf-8"))}
+
+    def test_each_row_carries_its_own_step(self):
+        rows = self._rows()
+        self.assertEqual(set(rows), set(self._ACTION_PHRASE))
+        for key, phrase in self._ACTION_PHRASE.items():
+            with self.subTest(row=key):
+                self.assertIn(phrase, rows[key])
+                for other, other_phrase in self._ACTION_PHRASE.items():
+                    if other != key:
+                        self.assertNotIn(other_phrase, rows[key])
+
+    def test_every_l2_post_kind_named_is_a_valid_choice(self):
+        """Reforge ruling, fix 3: a `l2_post.py --kind <x>` the doc names must
+        be one `l2_post.py` accepts (`spec` is not, and argparse exits 2)."""
+        source = (_SKILL_MD.parents[2] / "tools" / "gh" / "l2_post.py").read_text(encoding="utf-8")
+        found = re.search(r'"--kind"[^)]*?choices=\(([^)]*)\)', source, re.DOTALL)
+        self.assertIsNotNone(found, "l2_post.py --kind choices not found")
+        choices = set(re.findall(r'"([\w-]+)"', found.group(1)))
+        named = re.findall(r"l2_post\.py --kind ([\w-]+)", _SKILL_MD.read_text(encoding="utf-8"))
+        self.assertTrue(named)
+        for kind in named:
+            with self.subTest(kind=kind):
+                self.assertIn(kind, choices)
+
+
 if __name__ == "__main__":
     unittest.main()

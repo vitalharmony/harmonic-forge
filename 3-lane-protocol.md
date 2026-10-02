@@ -1019,7 +1019,9 @@ list are what the operator still owns: a production AE for a case this AE did
 not authorize, a `BATCH`, or a `close`. A Lane 3 session that is not watching
 the issue is Lane 3's gap to report, by arming its belt or naming the relay it
 needs (`skills/lane3-gate-platform/SKILL.md`), not a step Lane 1 assigns to the
-operator.
+operator. A Claude Code Lane 3 belt prints the posted pair as
+`queued-for-l3 kind=sweep owes=gate` (harmonic-forge#851); that event is this
+trigger, not a new authority.
 <!-- /R-0208 -->
 
 <!-- R-0209 -->
@@ -1156,7 +1158,8 @@ preview is not the document.
    structurally). Lane 3 derives a test spec from that output and submits
    it for HITL approval (`templates/hitl-test-review.md`) before executing
    anything. After approval, Lane 3 executes and posts its gate report as
-   a comment on #N.
+   a comment on #N. A `queued-for-l3 kind=ready-for-l3 owes=spec` belt event
+   (harmonic-forge#851) is equivalent to "Spec H<N>".
 <!-- /R-0220 -->
 <!-- R-0221 -->
 5. **HITL says "Lane 3 done for #N"** (→ Lane 1). Lane 1 reads #N's Lane 3

@@ -539,16 +539,25 @@ lock (Lane 1's belt does not mutate a shared worktree).
 
 ## Role: Lane 2
 
-Fires on `handoff`, `rework`. Silent on `ready-for-l3`, `ae`,
-`sweep`, `ae-and-sweep`, `spec`, `gate-result` — that is the Lane 1 ↔ Lane 3
-channel. (`discussion` was removed from `QUEUE_KINDS["l2"]` in
+Fires on `handoff`, `rework`, `gate-result` (from any poster, unless its verdict, read by `gate_ci.verdict_of` from the heading or the lead block, is PASS or BLOCKED). Silent on `ready-for-l3`, `ae`,
+`sweep`, `ae-and-sweep`, `spec`, and a PASS `gate-result` — that is the Lane 1 ↔ Lane 3
+channel. Since harmonic-forge#851 the comment-watch enforces this itself:
+`watch_lane_posts.KIND_OWNER` maps each kind to the lane that owes the next
+step, keyed on `kind=` and never on `posted-by`, and a belt prints only its own
+lane's kinds plus unowned ones (`discussion`, which carries a Plan-First
+ratification, and any kind the table does not know). A gate result that owes a
+fix is the one exception: Lane 2's comment watch prints it whoever posted it
+(`_fail_owed_to_l2`), as the primary channel. It also queues as
+`queued-for-l2 kind=gate-result owes=fix` through `QUEUE_ANY_POSTER_KINDS`, as a
+second channel only, because the queue is newest-marker-wins and a later
+unrelated comment supersedes it. (`discussion` was removed from `QUEUE_KINDS["l2"]` in
 harmonic-forge#570 — R-0337/`lane-shorthand.md` measured 63 issues on
 `vitalharmony/hrse` whose newest marker after `l2.done` was a `discussion`,
-none of them actionable — so it fires on neither belt now.)
+none of them actionable — so it never queues.)
 
-**A `plan-first=true` handoff must render as PLAN-FIRST in the event line.**
-Implementing one is a protocol violation and the event line is the last place to
-catch it.
+**A `plan-first=true` handoff renders as `owes=plan` in the event line**
+(harmonic-forge#851), as does a handoff whose footer has no `plan-first` field
+(fail-safe). Only `plan-first=false` renders `owes=implement`.
 
 **Run diagnostics from a freshly provisioned per-issue worktree off
 `origin/main`**, never the long-lived lane worktree.
@@ -577,9 +586,18 @@ its own separately.
 
 - **Check A — spec owed.** Newest `kind=ready-for-l3` with no spec of mine after
   it on the thread means a spec is owed *now*. Do not wait for a sweep or an AE;
-  neither exists until the spec does.
+  neither exists until the spec does. The belt prints it as
+  `queued-for-l3 kind=ready-for-l3 owes=spec` (harmonic-forge#851), which is
+  equivalent to `Spec H<N>` (R-0220).
 - **Check B — execute ready.** `mise run gate-checkout <branch>` **first**, never
-  assumed still-current from a prior tick.
+  assumed still-current from a prior tick. The belt prints it as `owes=gate`
+  (a newest `sweep` or `ae-and-sweep`), with R-0208's posted AE as the trigger;
+  a bare `ae` prints `owes=sweep-missing`, and Lane 3 reports `L3B`.
+
+The per-event steps are `SKILL.md` rule 9's table, which
+`test_belt_skill_matches_table.py` keeps equal to `watch_lane_posts.OWES`. The
+comment-watch prints Lane 3 only the kinds it owes (`KIND_OWNER`): `ready-for-l3`,
+`ae`, `sweep`, `ae-and-sweep`, plus `discussion` and unknown kinds.
 
 **Check C (harmonic-forge#629) — did a FAIL/BLOCKED verdict ever get a
 response? — is retired (harmonic-forge#766), not merely undocumented.** Its

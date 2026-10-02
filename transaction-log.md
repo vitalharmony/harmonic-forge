@@ -3,6 +3,42 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): sticky-wicket PATCH (epoch 2, both passes with survivors) -- one shared _is_gate_report recognizer for both Lane 2 channels (a gate report footered kind=discussion now reaches Lane 2 on the watch and the queue), and the FAIL path applies the same label exclusion as discover_queue (a Lane-1-only Tooling Exception or epic issue never wakes Lane 2); an agreement-matrix test binds the two channels across poster x footer x heading x verdict x labels (harmonic-forge#851)
+- tools/gh/test_watch_lane_posts.py | 84 +++++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 30 ++++++++++++--
+- 2 files changed, 110 insertions(+), 4 deletions(-)
+
+## fix(belt): sticky-wicket PATCH (epoch 2 pass-1 cluster) -- one predicate in comment_watch_cycle so a FAIL owed to Lane 2 reaches it whoever posted it (LANE3 and markerless included), and one shared _own_marker reader for _classify's kind and _queue_owes' plan-first; tests drive every poster and the quoted-footer cases through the queued kind (harmonic-forge#851)
+- tools/gh/test_watch_lane_posts.py | 32 ++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 26 +++++++++++++++++---------
+- 2 files changed, 49 insertions(+), 9 deletions(-)
+
+## fix(belt): REFORGE (sticky-wicket, operator --force --reforge) -- excise the auto-AE carve-out and the content-bound footer reader (_handoff_footer, check_lane3_ready, l1_post --auto-ae, projects.toml toggle, R-0370 and its exception pairs) back to origin/main; a FAIL gate result is Lane 2's news on the comment watch whoever posted it; owes= reads the handoff's last unquoted marker; rule 9 names l2_post.py --kind plan; the doc-sync test binds each row's step and checks l2_post kinds (harmonic-forge#851)
+- tools/onboard/manifest_protocol.py              |   8 -
+- tools/onboard/test_manifest.py                  |  34 ---
+- tools/rules/registry.toml                       |  31 +--
+- 23 files changed, 165 insertions(+), 1119 deletions(-)
+
+## test(belt): round-approval fixtures in post_lane_discussion and the raw-post hook attest their own unique bodies, as #851's content-bound footers require (harmonic-forge#851)
+- tools/gh/test_post_lane_discussion_kinds.py     | 6 +++++-
+- tools/hooks/test_enforce_gate_ci_on_raw_post.py | 5 ++++-
+- 2 files changed, 9 insertions(+), 2 deletions(-)
+
+## fix(belt): sticky-wicket PATCH for reforge pass 1 -- only a comment's last marker can be its footer; a digest-less footer never nominates a kind; a repeated attested digest is a replay and is UNREADABLE (first attestation wins); _is_round_artifact reads the attested footer and unquoted text, failing closed on an unreadable round kind (harmonic-forge#851)
+- tools/gh/test_check_lane3_ready.py    | 96 ++++++++++++++++++++++++++++++-----
+- tools/gh/test_handoff_footer.py       | 65 +++++++++++++++++-------
+- tools/gh/test_l1_post_ae_and_sweep.py | 11 +++-
+- 5 files changed, 240 insertions(+), 84 deletions(-)
+
+## fix(belt): REFORGE (operator --force --reforge) -- a comment's own footer is decided by its body-sha256, never its position; Attested/Unreadable/Absent, with Unreadable refusing on every auto-AE path, and latest_by_kind/footer_sha/verify_body_sha256/the newest-handoff scan reading only attested footers (harmonic-forge#851)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/l1_post.py                |   6 +-
+- tools/gh/test_check_lane3_ready.py |  95 ++++++++++++++++++++++--
+- tools/gh/test_handoff_footer.py    | 108 +++++++++++++++++++++-------
+- 5 files changed, 350 insertions(+), 92 deletions(-)
+
 ## fix(preclose): sticky-wicket PATCH for preclose pass 2 -- --own-model required with no default, an unrecognized model refuses the cross-family label, a --caller mismatch exits 2 with no label, the post-verdict hint carries --own-model, and the hint tests parse printed output (harmonic-forge#848)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -43,6 +79,35 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/lane/test_cross_family_provenance.py         | 35 +++++++++++
 - tools/rules/registry.toml                          |  4 +-
 - 16 files changed, 331 insertions(+), 49 deletions(-)
+## fix(belt): sticky-wicket PATCH for preclose pass 1 -- one shared trailing-footer reader for the handoff footer, is_auto_ae and verify_body_sha256; FAIL read by gate_ci.verdict_of across every accepted shape; the consumer's auto-AE ceiling includes the newest spec (harmonic-forge#851)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/test_handoff_footer.py      | 63 ++++++++++++++++++++++++++++++++++++
+- tools/gh/test_watch_lane_posts.py    | 28 ++++++++++++++++
+- tools/gh/watch_lane_posts.py         | 35 ++++++++++++++------
+- 7 files changed, 221 insertions(+), 33 deletions(-)
+
+## fix(belt): keep SKILL.md within its 30-line cap and align the batch-view row with the owes= suffix (harmonic-forge#851)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- skills/belt-and-suspenders/SKILL.md | 16 ++++------------
+- tools/gh/test_belt_batch_view.py    |  2 +-
+- 2 files changed, 5 insertions(+), 13 deletions(-)
+
+## feat(belt): lane-owned event filtering, owes= obligations and Lane 3 belt pickup, per-repo auto-AE toggle with a fixed Tier P / mutates-live carve-out (harmonic-forge#851)
+
+Root cause, quoted per the handoff: watch_lane_posts.py comment_watch_cycle filtered only on 'if lane not in watch: continue' -- who posted, never who owes the next step.
+
+HITL grep (git grep -n -i HITL -- rules/ skills/ templates/ 3-lane-protocol.md, 71 hits) dispositioned: amended R-0124, R-0125, R-0165, R-0208, R-0220, testing-gate.md:10, frontend-ui-golden-path.md:11 (same row, extra hit), lane3-gate-platform/SKILL.md:262/264/292. Out of scope: the remaining hits describe HITL relaying triggers, the HITL gate-language section, Plan-First, data-migration approval and templates, none of which states spec approval as the only gate before execution.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/onboard/manifest_protocol.py        |   8 ++
+- tools/onboard/test_manifest.py            |  34 ++++++
+- tools/rules/registry.toml                 |  39 +++++--
+- 22 files changed, 906 insertions(+), 59 deletions(-)
 
 ## fix(hooks): F843 sticky-wicket PATCH -- unknown open state suppresses, suffixed impl worktrees, test-runner output is never a receipt, flag-first gh api POST, bare-gh receipts kept beside named posters; all 26 AC mechanisms kill-checked (harmonic-forge#843)
 

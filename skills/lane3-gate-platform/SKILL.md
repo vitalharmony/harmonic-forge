@@ -236,7 +236,8 @@ Lane 3 session, told "AE" only in chat, posted its own
 `## AE H<N> — approved, execute` comment and proceeded; a Codex-filled Lane 3
 session given the identical chat-only trigger correctly refused instead.
 
-**On every `AE H<N>` trigger, run `lane3-begin --issue <N>` first and read
+**On every `AE H<N>` trigger or `owes=gate` belt event (R-0208: the posted AE
+is the trigger), run `lane3-begin --issue <N>` first and read
 the latest AE comment's `**Authorized:**` line before replying.** The AE
 comment defines scope; the chat wording and your session memory do not.
 harmonic-forge#797: a session refused a genuine TC2-only Tier W AE as
@@ -253,6 +254,22 @@ watcher armed is a promise nobody is keeping — a real instance sat idle for
 something Lane 1 owes (a rebase, a corrected AE, a missing sweep), either
 arm the belt for this issue or name the exact relay the operator needs to
 send — never assert that the gap will close itself.
+
+**Belt-queued pickup** (harmonic-forge#851). With the belt armed, a
+`queued-for-l3 … owes=<action>` event is the trigger. Act on it without asking
+and without relaying it to the operator:
+
+- `owes=spec`: fetch with `fetch_lane1_context.py`, then derive and post the
+  spec (`--kind spec`), then stop for review. R-0220 makes this event
+  equivalent to `Spec H<N>`.
+- `owes=gate`: run `lane3-begin --issue <N>` and the readiness check, then
+  execute only the AE's **Authorized:** cases.
+- `owes=sweep-missing`: report `L3B` naming the missing sweep.
+
+The preconditions (the sweep heading, an AE authored by Lane 1 or the
+operator, a matching SHA) stay checks, never questions. This reaches Claude
+Code Lane 3 sessions only: a Codex Lane 3 session has no belt, so it keeps
+today's behavior and names the relay it needs.
 
 ## Role
 

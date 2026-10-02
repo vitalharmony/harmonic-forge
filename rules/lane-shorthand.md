@@ -348,6 +348,8 @@ The vocabulary is fixed: `Plan H<N>`, `Implement H<N>` / `Fix H<N>` (Lane 2),
 `Spec H<N>` (Lane 3), `AE H<N>` and `close H<N>` (Lane 1). Never invent a
 trigger to fill a gap — naming the wrong lane sends real work to the wrong
 session (hrse#1636 precedent: `Test #N` was the wrong name for `Spec H<N>`).
+One equivalence (harmonic-forge#851): a `queued-for-l3 kind=ready-for-l3
+owes=spec` belt event is `Spec H<N>`.
 <!-- /R-0343 -->
 
 ## Repo prefixes
