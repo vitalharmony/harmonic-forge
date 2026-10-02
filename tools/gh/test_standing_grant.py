@@ -25,24 +25,28 @@ def _footered(prefix: str, kind: str, extra: str = "") -> str:
 
 
 def gate(comment_id: int = 100, verdict: str = "PASS", tier: str = "R",
-         head: str | None = GATED, edited: bool = False) -> dict:
+         head: str | None = GATED, edited: bool = False, kind: str = "gate-result",
+         marker: bool = True) -> dict:
     lines = [f"## Lane 3 Gate Results — H{ISSUE}", "", f"**Verdict:** {verdict}. All cases ran.", ""]
     if tier:
         lines.append(f"Write tier {tier} throughout.")
     if head:
-        lines.append(f"Head-SHA: {head}")
-    body = _footered("\n".join(lines), "gate-result", " posted-by=LANE3;")
+        lines.append(f"**Head-SHA:** {head}")  # the bolded form real reports use
+    body = _footered("\n".join(lines), kind, " posted-by=LANE3;")
+    if not marker:
+        body = body.split("\n\n<!--")[0]
     if edited:
         body = body.replace("All cases ran.", "All cases ran, edited.")
     return {"id": comment_id, "body": body,
             "html_url": f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-{comment_id}"}
 
 
-def ae_body(comment_id: int = 100, sha: str = GATED, cite: bool = True) -> str:
+def ae_body(comment_id: int = 100, sha: str = GATED, cite: bool = True, apply: str = "") -> str:
     link = f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-{comment_id}"
     authorized = (f"**Authorized:** the operator's standing AE grant, R-0374 — gate-result "
                   f"{link}, gated SHA {sha}." if cite else "**Authorized:** the operator, in chat.")
-    return f"## AE — H{ISSUE}\n\n{authorized}\n\nSequence: apply, then verify counts."
+    extra = f"\nApply path: {apply}" if apply else ""
+    return f"## AE — H{ISSUE}\n\n{authorized}{extra}\n\nSequence: apply, then verify counts."
 
 
 def fake_git(merge_base: int = 0, files: str = "scripts/apply.py\n", diff: int = 0):
@@ -61,6 +65,10 @@ class CitesGrantTests(unittest.TestCase):
 
     def test_a_citation_only_inside_a_fence_is_quoted_evidence(self):
         self.assertFalse(grant.cites_grant("## AE — H42\n\n```\nAuthorized: ... R-0374\n```\n"))
+
+    def test_a_mention_off_the_authorized_line_is_not_a_claim(self):
+        body = "## AE — H42\n\n**Authorized:** the operator, in chat.\n\nR-0374 does not apply here."
+        self.assertFalse(grant.cites_grant(body))
 
     def test_no_citation_is_not_a_claim(self):
         self.assertFalse(grant.cites_grant(ae_body(cite=False)))
@@ -81,6 +89,32 @@ class GrantRefusalTests(unittest.TestCase):
     def test_a_link_to_another_issue_does_not_count(self):
         body = ae_body().replace(f"/issues/{ISSUE}#", "/issues/7#")
         self.assertIn("links no gate-result", self.refusal(body=body))
+
+    def test_a_gate_report_without_a_body_sha256_marker_refuses(self):
+        self.assertIn("no body-sha256", self.refusal(comments=[gate(marker=False)]))
+
+    def test_a_gate_report_footered_as_another_kind_is_recognized_by_its_heading(self):
+        self.assertIsNone(self.refusal(comments=[gate(kind="discussion")]))
+
+    def test_an_unbolded_head_sha_also_parses(self):
+        g = gate()
+        g["body"] = g["body"].replace("**Head-SHA:**", "Head-SHA:")
+        g["body"] = _footered(g["body"].split("\n\n<!--")[0], "gate-result", " posted-by=LANE3;")
+        self.assertIsNone(self.refusal(comments=[g]))
+
+    def test_a_later_commit_changing_a_named_apply_file_refuses(self):
+        seen = {}
+
+        def git(*args, cwd=None):
+            if args[0] == "merge-base":
+                return subprocess.CompletedProcess(args, 0, "c" * 40, "")
+            if args[1] == "--name-only":
+                return subprocess.CompletedProcess(args, 0, "scripts/apply.py\n", "")
+            seen["files"] = args[args.index("--") + 1:]
+            return subprocess.CompletedProcess(args, 1 if "scripts/_lib.py" in seen["files"] else 0, "", "")
+        reason = self.refusal(body=ae_body(apply="scripts/_lib.py"), sha=LATER, git=git)
+        self.assertIn("differs from the gated commit", reason)
+        self.assertEqual(sorted(seen["files"]), ["scripts/_lib.py", "scripts/apply.py"])
 
     def test_an_edited_gate_result_refuses(self):
         self.assertIn("edited", self.refusal(comments=[gate(edited=True)]))
@@ -139,6 +173,13 @@ class ValidateGrantAeTests(unittest.TestCase):
     def test_a_non_grant_ae_reads_nothing(self):
         with patch.object(clr, "fetch_comments", side_effect=AssertionError("no fetch")):
             l1_post.validate_grant_ae(ae_body(cite=False), REPO, ISSUE, GATED, None)
+
+    def test_a_grant_ae_on_main_needs_no_open_pr(self):
+        with patch.object(l1_post, "run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+            self.assertTrue(l1_post.grant_on_main(ae_body(), GATED))
+            self.assertFalse(l1_post.grant_on_main(ae_body(cite=False), GATED))
+        with patch.object(l1_post, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertFalse(l1_post.grant_on_main(ae_body(), GATED))
 
     def test_a_grant_ae_without_its_gate_refuses(self):
         with patch.object(clr, "fetch_comments", return_value=[]), \

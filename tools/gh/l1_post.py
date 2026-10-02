@@ -727,6 +727,15 @@ def _exact_heading_pattern(label: str, repo: str, issue: int) -> re.Pattern[str]
     return re.compile(rf"#{{1,4}}\s*{re.escape(label)}\s*—\s*{re.escape(prefix)}{issue}\b")
 
 
+def grant_on_main(body: str, sha: str) -> bool:
+    """harmonic-forge#858: an AE citing R-0374 whose commit is already on
+    origin/main (the production step after the squash merge)."""
+    import _standing_grant  # noqa: PLC0415
+    if not _standing_grant.cites_grant(body):
+        return False
+    return run("git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
+
+
 def validate_grant_ae(body: str, repo: str, issue: int, sha: str,
                       ack_no_pr_required: str | None) -> None:
     """harmonic-forge#858: an AE claiming the operator's standing grant
@@ -1663,6 +1672,7 @@ def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
+    grant_on_main: bool = False,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -1683,7 +1693,12 @@ def post_kind(
     # (standalone) always follows an `ae` on the same SHA that already
     # required one.
     pr_warnings: list[str] = []
-    if kind in ("ready-for-l3", "ae"):
+    if kind == "ae" and grant_on_main:
+        # harmonic-forge#858: a grant AE for a production step after the squash
+        # merge runs at a commit already on origin/main, where CI runs on push;
+        # validate_grant_ae has already shown it tree-identical to the gated SHA.
+        checks.append("merged-to-main")
+    elif kind in ("ready-for-l3", "ae"):
         pr_check_names, pr_warnings = require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required)
         checks += pr_check_names
     # Two distinct override classes, two distinct headings -- a reader
@@ -1883,7 +1898,8 @@ def main() -> None:
         validate_sweep(sweep_body, spec.stdout, repo, args.issue)
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
-                              ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required)
+                              ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
+                              grant_on_main=grant_on_main(ae_body, sha))
         print(f"[l1-post] AE posted {ae_url}")
         record_queue_candidate(repo, args.issue, "ae")
         try:
@@ -1958,6 +1974,7 @@ def main() -> None:
         repo, args.issue, args.kind, body, sha, args.branch,
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
+        grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)),
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

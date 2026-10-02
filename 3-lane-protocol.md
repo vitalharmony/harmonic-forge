@@ -1084,16 +1084,17 @@ when all of these hold:
 - the AE links the passing Tier R gate-result comment and names the SHA it
   gated ("gated SHA <sha>", the gate-result's `Head-SHA`);
 - the commit the write step runs is that SHA, or a later commit whose tree is
-  byte-identical to it in every file the gated change touched (a squash merge
-  qualifies, as in R-0354);
+  byte-identical to it in every file the gated change touched and every file
+  the AE names on an `Apply path:` line (a squash merge qualifies, as in
+  R-0354; such an AE posts from `main` without an open PR);
 - the AE names the exact production sequence, its stop conditions and the
   expected counts the Tier R gate measured;
 - the write step's sweep lists only the cases that Tier R gate verified.
 
 If any of these cannot be shown on the thread, the operator's AE is required:
 the grant fails closed. `tools/gh/l1_post.py` checks the first two before a
-grant AE posts (a passing, unedited Tier R gate-result linked on this issue, its
-gated SHA named, and tree identity; `tools/gh/_standing_grant.py`), and refuses
+grant AE posts (a passing, unedited Tier R gate report linked on this issue,
+its gated SHA named, and tree identity; `tools/gh/_standing_grant.py`), and refuses
 a grant AE carrying `--ack-no-pr-required`, an operator acknowledgment no
 operator gave. An AE under this grant never carries forward under R-0209
 (`check_lane3_ready` refuses the carry): a new SHA needs a fresh Tier R PASS
@@ -1112,6 +1113,14 @@ R-0165 are unchanged. In a grant AE, Lane 1 still surfaces, as information
 rather than a question, anything genuinely new: a scope far past the expected
 count, possibly non-personal items in a delete, or a data gap that changes what
 the write touches.
+
+**That code is a mistake-detector, not an authorization boundary** (operator
+decision, 2026-10-02). Every lane posts as the same GitHub account, so no check
+on a comment can show who wrote it. The guard catches the honest mistake (an AE
+for an ungated SHA, a FAIL or Tier W gate cited, a changed file, an edited
+report); it does not stop a session that sets out to forge the evidence. A
+grant AE is claimed only on its **Authorized:** line; mentioning this rule
+elsewhere claims nothing.
 
 Only the operator can withdraw the grant, and withdrawal takes effect by
 removing this rule and its registry row; the operator-memory note is not the
