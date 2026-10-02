@@ -1066,7 +1066,7 @@ After posting, Lane 1 reports the two comment links and says Lane 3 executes;
 it does not list a relay to the Lane 3 session as an operator next action, and
 does not phrase one as a question (harmonic-forge#824). The next actions it does
 list are what the operator still owns: a production AE for a case this AE did
-not authorize, a `BATCH`, or a `close`. A Lane 3 session that is not watching
+not authorize (unless R-0374 lets Lane 1 post it), a `BATCH`, or a `close`. A Lane 3 session that is not watching
 the issue is Lane 3's gap to report, by arming its belt or naming the relay it
 needs (`skills/lane3-gate-platform/SKILL.md`), not a step Lane 1 assigns to the
 operator. A Claude Code Lane 3 belt prints the posted pair as
@@ -1076,30 +1076,37 @@ trigger, not a new authority.
 
 <!-- R-0374 -->
 **The operator's standing production AE grant** (harmonic-forge#858; granted
-2026-09-26). When a Tier R gate on an issue has passed, Lane 1 posts the AE for
-the production step that gate verified, in the same turn, without asking the
-operator, only when all of these hold:
+2026-09-26). When a Tier R gate on an issue has passed and the next step is the
+production write that gate verified, Lane 1 posts that write step's AE and its
+sweep together (R-0208), in the same turn, without asking the operator, only
+when all of these hold:
 
-- the AE names the passing Tier R gate-result comment and the SHA it gated;
-- that SHA is the PR head now, and the apply path is unchanged since that gate;
+- the AE links the passing Tier R gate-result comment and names the SHA it
+  gated;
+- the commit the write step runs is that SHA, or a later commit whose tree is
+  byte-identical to it in every file the Tier R sweep listed (a squash merge
+  qualifies, as in R-0354);
 - the AE names the exact production sequence, its stop conditions and the
-  expected counts the Tier R gate measured.
+  expected counts the Tier R gate measured;
+- the write step's sweep lists only the cases that Tier R gate verified.
 
 If any of these cannot be shown on the thread, the operator's AE is required:
 the grant fails closed. An AE under this grant never carries forward under
 R-0209: a new SHA needs a fresh Tier R PASS before Lane 1 may post another. It
 authorizes only the cases the sweep lists, at the tier the sweep declares, and
 never uses R-0210's widening. Its **Authorized:** line cites "the operator's
-standing AE grant, R-0374" and the gated SHA, never an operator message the
-operator did not send.
+standing AE grant, R-0374", the gate-result comment and the gated SHA, never an
+operator message the operator did not send. It excepts R-0208 only as to who
+may post the AE; the AE and its sweep stay one atomic action.
 
-The grant does not reach: a data-migration spec (R-0168), a step needing the
-operator physically present (such as an OAuth consent), or any spec approval.
-It is an AE on a spec already approved and gated; R-0124 and R-0165 are
-unchanged. Tier W work stays outside this rule. In a grant AE, Lane 1 still
-surfaces, as information rather than a question, anything genuinely new: a
-scope far past the expected count, possibly non-personal items in a delete, or
-a data gap that changes what the write touches.
+The grant reaches only a production write that a passing Tier R gate verified.
+It does not reach: a spec whose purpose is a data migration, a step needing the
+operator physically present (such as an OAuth consent), any spec approval, or a
+write no passing Tier R gate preceded; each keeps the operator's AE. R-0124 and
+R-0165 are unchanged. In a grant AE, Lane 1 still surfaces, as information
+rather than a question, anything genuinely new: a scope far past the expected
+count, possibly non-personal items in a delete, or a data gap that changes what
+the write touches.
 
 Only the operator can withdraw the grant, and withdrawal takes effect by
 removing this rule and its registry row; the operator-memory note is not the

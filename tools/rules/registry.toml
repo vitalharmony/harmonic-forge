@@ -1763,7 +1763,7 @@ id = "R-0208"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "AE must be posted as an actual issue comment, not only said in chat, and AE and its gate-readiness sweep are one atomic action in the same turn with the sweep strictly after; the posted AE is Lane 3's trigger (a belt owes=gate event is that trigger, not a new authority), so Lane 1 does not list a relay to Lane 3 as an operator next action."
-text_sha = "4ff9bb98f9e94cfb"
+text_sha = "a05d46ff80758eb5"
 excepted_by = "R-0374"
 hooks = [
   { script = "remind_gate_readiness_sweep.py", events = ["PostToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
@@ -2486,7 +2486,7 @@ hooks = []
 id = "R-0374"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "The operator's standing production AE grant: after a Tier R gate passes, Lane 1 posts the AE for the production step it verified, same turn, only when the AE names the gate-result comment and gated SHA, that SHA is the PR head with the apply path unchanged, and the sequence, stop conditions and expected counts are named; otherwise the operator's AE (fails closed). A grant AE never carries forward under R-0209, never widens past the sweep (R-0210), cites the grant and SHA, and never reaches a data migration, an operator-present step or any spec approval; Tier W is outside it; withdrawal is by removing this rule (harmonic-forge#858)."
-text_sha = "1d259bc4879da829"
+statement = "The operator's standing production AE grant: when a passing Tier R gate verified the next production write, Lane 1 posts that step's AE with its sweep, same turn, only when the AE links the gate-result and gated SHA, the run commit is that SHA or tree-identical in the swept files, the sequence, stop conditions and counts are named, and the sweep lists only the verified cases; otherwise the operator's AE (fails closed). A grant AE never carries forward under R-0209, never widens past the sweep (R-0210), and excepts R-0208 only as to who posts the AE, never AE/sweep atomicity. It never reaches a data-migration spec, an operator-present step, any spec approval or a write no Tier R PASS preceded (harmonic-forge#858)."
+text_sha = "ee21463e18dd9b21"
 exception_to = ["R-0208"]
 hooks = []
