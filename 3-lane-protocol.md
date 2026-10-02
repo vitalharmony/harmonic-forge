@@ -1262,15 +1262,14 @@ more of its mechanisms each touch a high-blast surface as
   are two mechanisms.
 - Dependent children are linked with blocked-by.
 - Each child carries its own handoff in the same filing action (R-0039). A child
-  blocked on a sibling that has not landed is R-0039's third exception, declared
-  with R-0352's deferral shape (trigger, owner, record); that is the only reason
-  a child's handoff defers. A child whose handoff cannot be written for any other
-  reason is not split out yet: per R-0039, that inability is the answer.
-- R-0228's "No Lane 1 handoff document" removes the lane relay, not the filing
-  artifact: it governs implementation after filing. R-0039 states the overlap
-  directly (Tooling-Exception eligibility "does not reach this exception"), so a
-  Tooling Exception issue owes its filing artifact and skips the relay and the
-  per-round gates.
+  whose handoff's file and line citations would be written against code a
+  sibling that has not landed is about to change is R-0039's third exception,
+  declared with R-0352's deferral shape (trigger, owner, record); that is the
+  only reason a child's handoff defers. A child whose handoff cannot be written
+  for any other reason is not split out yet: per R-0039, that inability is the
+  answer.
+- R-0228 removes the relay of that handoff to another lane, not the filing
+  artifact itself (R-0228 now says so).
 - A single mechanism that is itself deep stays one issue: the rule splits
   bundles, not single mechanisms.
 - It applies at filing. An issue already filed is re-split only on the operator's
@@ -1316,7 +1315,9 @@ own issue.
 - **Single implementer.** One agent (whichever lane the operator assigns,
   including Lane 1/Claude Code as an explicit exception to "Lane 1 never
   implements") designs and writes the tooling in one pass. No Lane 1
-  handoff document, no Lane 2 relay, no per-round Lane 3 gates.
+  handoff relayed to another lane, no Lane 2 relay, no per-round Lane 3 gates.
+  The filing artifact R-0039 requires is still posted with the issue
+  (Tooling-Exception eligibility "does not reach this exception").
 - **A batch may be delegated to a subagent — its merge and close may
   not.** Running a Tooling Exception batch inside a subagent so the parent
   session stays interruptible is endorsed, not merely tolerated: the

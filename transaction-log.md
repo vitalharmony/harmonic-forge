@@ -38,6 +38,11 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/gh/test_check_lane3_ready.py |  95 ++++++++++++++++++++++--
 - tools/gh/test_handoff_footer.py    | 108 +++++++++++++++++++++-------
 - 5 files changed, 350 insertions(+), 92 deletions(-)
+## docs(rules): widen per operator ('2 yes') -- R-0228 now says the Tooling Exception skips the relay of a handoff, not the filing artifact R-0039 requires; R-0370 cites R-0039's third exception with its full condition (citations against code a sibling is about to change) (harmonic-forge#856)
+- 3-lane-protocol.md        | 21 +++++++++++----------
+- tools/rules/registry.toml |  6 +++---
+- 2 files changed, 14 insertions(+), 13 deletions(-)
+
 ## docs(rules): sticky-wicket PATCH for R-0370/R-0371 -- a child's handoff defers only under R-0039's third exception; R-0228 removes the relay, not the filing artifact; R-0371's Tier deep uses planning.md's model-routing field as designed (harmonic-forge#856)
 - 3-lane-protocol.md        | 19 +++++++++++++++----
 - tools/rules/registry.toml |  4 ++--
