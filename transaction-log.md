@@ -82,6 +82,23 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/lane/cross_family_call.sh      | 27 ++++++++++---
 - tools/lane/test_cross_family_call.py | 76 ++++++++++++++++++++++++++++++++++++
 - 2 files changed, 98 insertions(+), 5 deletions(-)
+## docs(rules): REFORGE (sticky-wicket, operator '1 yes') -- R-0374 narrowed to the Tier R -> production AE only: anchored to the passing gate-result and its SHA (PR head, apply path unchanged), fails closed, never carried forward under R-0209, no spec-approval coverage; clause (a) Tier W and the R-0124/R-0165/table exception edits removed; withdrawal is by removing the rule (harmonic-forge#858)
+- rules/frontend-ui-golden-path.md |  2 +-
+- rules/testing-gate.md            |  5 ++-
+- tools/rules/registry.toml        | 12 +++----
+- 4 files changed, 38 insertions(+), 58 deletions(-)
+
+## docs(rules): R-0374 folds the cross-family pitch findings on F858 (issuecomment on #858) -- clause (a) requires every writing case to name a disposable write target and no live-store write (CREATE included), not the W letter alone; the per-case lines are the spec-review record; an AE under the grant never widens past the sweep (R-0210); it cites the grant and date; the composition with R-0209/R-0351 is stated; R-0343 is deliberately unchanged; the Lane 3 skill's AE remedy names the grant (harmonic-forge#858)
+- 3-lane-protocol.md                  | 57 +++++++++++++++++++++++++------------
+- skills/lane3-gate-platform/SKILL.md |  4 +--
+- tools/rules/registry.toml           |  4 +--
+- 3 files changed, 43 insertions(+), 22 deletions(-)
+
+## docs(rules): R-0374 codifies the operator's standing AE grant -- Lane 1 approves a Tier W spec and posts its AE+sweep (sweep ceiling W, handoff states no live data, fails closed otherwise), and posts the Tier R -> production AE; R-0124/R-0165/R-0208 and both approval tables name it, with the reciprocal exception pair. Root: R-0208 (3-lane-protocol.md:1005) names only 'the operator's go-ahead' as an AE (harmonic-forge#858)
+- rules/frontend-ui-golden-path.md |  2 +-
+- rules/testing-gate.md            |  5 +++--
+- tools/rules/registry.toml        | 18 +++++++++++++++---
+- 4 files changed, 50 insertions(+), 8 deletions(-)
 
 ## fix(preclose): sticky-wicket PATCH for preclose pass 2 -- --own-model required with no default, an unrecognized model refuses the cross-family label, a --caller mismatch exits 2 with no label, the post-verdict hint carries --own-model, and the hint tests parse printed output (harmonic-forge#848)
 

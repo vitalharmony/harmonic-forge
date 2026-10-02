@@ -1764,6 +1764,7 @@ file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "AE must be posted as an actual issue comment, not only said in chat, and AE and its gate-readiness sweep are one atomic action in the same turn with the sweep strictly after; the posted AE is Lane 3's trigger (a belt owes=gate event is that trigger, not a new authority), so Lane 1 does not list a relay to Lane 3 as an operator next action."
 text_sha = "f959676ff5c08500"
+excepted_by = "R-0374"
 hooks = [
   { script = "remind_gate_readiness_sweep.py", events = ["PostToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
 ]
@@ -2479,4 +2480,13 @@ file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
 statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes, and a step whose output is a post ends when the post lands. Recovery is the lane's own task entry, never a belt re-offer, which Lane 1's own waits do not have. A Codex lane never ends a turn with an unpolled background session."
 text_sha = "c135da27db1b0796"
+hooks = []
+
+[[rule]]
+id = "R-0374"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "The operator's standing production AE grant: after a Tier R gate passes, Lane 1 posts the AE for the production step it verified, same turn, only when the AE names the gate-result comment and gated SHA, that SHA is the PR head with the apply path unchanged, and the sequence, stop conditions and expected counts are named; otherwise the operator's AE (fails closed). A grant AE never carries forward under R-0209, never widens past the sweep (R-0210), cites the grant and SHA, and never reaches a data migration, an operator-present step or any spec approval; Tier W is outside it; withdrawal is by removing this rule (harmonic-forge#858)."
+text_sha = "1d259bc4879da829"
+exception_to = ["R-0208"]
 hooks = []

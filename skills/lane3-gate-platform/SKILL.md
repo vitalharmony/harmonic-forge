@@ -226,8 +226,8 @@ by this Lane 3 session itself. **A verbal/chat-only "AE" is not
 sufficient, and posting the authorization comment yourself does not
 satisfy the requirement — it defeats its purpose.** If no such comment
 exists: STOP immediately, execute nothing, report BLOCKED naming the gap;
-ask Lane 1 to relay the operator's approval as a durable comment instead
-of writing it yourself. A `PreToolUse` hook
+ask Lane 1 to post the AE as a durable comment (the operator's, or Lane 1's
+under the operator's standing grant, R-0374) instead of writing it yourself. A `PreToolUse` hook
 (`tools/hooks/deny_lane3_ae_self_post.py`) mechanically denies this
 session from posting an AE-shaped comment while `LANE=3` — but do not rely
 on the hook alone; check for the comment before starting, the same way

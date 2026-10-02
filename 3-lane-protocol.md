@@ -1052,7 +1052,8 @@ categorically not authorized to run — and both refusals were correct.
 
 <!-- R-0208 -->
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
-TCs in an already-approved test spec, distinct from approving the spec's
+TCs in an already-approved test spec (or Lane 1's, citing the operator's
+standing grant, R-0374), distinct from approving the spec's
 content (that's the `L3S` → HITL-approval step itself). Like every other
 trigger phrase in this section, `AE` must be posted as an actual issue
 comment, not only said to Lane 1 in chat — Lane 3 verifies it
@@ -1072,6 +1073,38 @@ operator. A Claude Code Lane 3 belt prints the posted pair as
 `queued-for-l3 kind=sweep owes=gate` (harmonic-forge#851); that event is this
 trigger, not a new authority.
 <!-- /R-0208 -->
+
+<!-- R-0374 -->
+**The operator's standing production AE grant** (harmonic-forge#858; granted
+2026-09-26). When a Tier R gate on an issue has passed, Lane 1 posts the AE for
+the production step that gate verified, in the same turn, without asking the
+operator, only when all of these hold:
+
+- the AE names the passing Tier R gate-result comment and the SHA it gated;
+- that SHA is the PR head now, and the apply path is unchanged since that gate;
+- the AE names the exact production sequence, its stop conditions and the
+  expected counts the Tier R gate measured.
+
+If any of these cannot be shown on the thread, the operator's AE is required:
+the grant fails closed. An AE under this grant never carries forward under
+R-0209: a new SHA needs a fresh Tier R PASS before Lane 1 may post another. It
+authorizes only the cases the sweep lists, at the tier the sweep declares, and
+never uses R-0210's widening. Its **Authorized:** line cites "the operator's
+standing AE grant, R-0374" and the gated SHA, never an operator message the
+operator did not send.
+
+The grant does not reach: a data-migration spec (R-0168), a step needing the
+operator physically present (such as an OAuth consent), or any spec approval.
+It is an AE on a spec already approved and gated; R-0124 and R-0165 are
+unchanged. Tier W work stays outside this rule. In a grant AE, Lane 1 still
+surfaces, as information rather than a question, anything genuinely new: a
+scope far past the expected count, possibly non-personal items in a delete, or
+a data gap that changes what the write touches.
+
+Only the operator can withdraw the grant, and withdrawal takes effect by
+removing this rule and its registry row; the operator-memory note is not the
+authority once this rule exists.
+<!-- /R-0374 -->
 
 <!-- R-0209 -->
 **A routine retest after a FAIL does not need a new AE/sweep pair.**
