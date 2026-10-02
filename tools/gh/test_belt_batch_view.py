@@ -130,6 +130,7 @@ class QueueCycleEmitsTheNoticeTests(unittest.TestCase):
             path = _state(tmp, state_payload)
             err = io.StringIO()
             with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
+                 patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
                  contextlib.redirect_stderr(err):
                 queue, lines, ok = watch_lane_posts.queue_cycle(
                     ["vitalharmony/hrse"], "l3", {},

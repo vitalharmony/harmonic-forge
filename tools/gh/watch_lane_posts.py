@@ -880,8 +880,11 @@ def read_queue_candidates(
 #: the account-wide sweep (harmonic-forge#659) removed one flag and the
 #: same call simply continued under `--queue-for`, which is how it survived.
 
-def _issue_labels(repo: str, issue: int) -> set[str] | None:
-    """Every label name on `issue`, or `None` if the fetch failed.
+def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None]:
+    """`(state, label names)` for `issue` from ONE issue read, or
+    `(None, None)` if the fetch failed (harmonic-forge#854: the state comes
+    from the same call that already read the labels, so retiring a closed
+    issue costs no extra REST call).
 
     A per-issue, bounded lookup — enrichment on a number `discover_queue`'s
     caller already holds, never a search. Restores the `queue_qualifiers`
@@ -895,14 +898,15 @@ def _issue_labels(repo: str, issue: int) -> set[str] | None:
         raw = gh_as(
             _account_of(repo),
             ["api", "-X", "GET", f"repos/{repo}/issues/{issue}",
-             "--jq", ".labels[].name"],
+             "--jq", "{state: .state, labels: [.labels[].name]}"],
             counter=_COUNTER,
         )
+        meta = json.loads(raw)
+        return str(meta["state"]), {str(name) for name in meta["labels"]}
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
-        print(f"[watch_lane_posts] label fetch failed for #{issue}: {exc}",
+        print(f"[watch_lane_posts] issue read failed for #{issue}: {exc}",
               file=sys.stderr)
-        return None
-    return {line for line in raw.splitlines() if line}
+        return None, None
 
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
@@ -966,7 +970,8 @@ def _issue_is_open(repo: str, issue: int) -> bool:
 
 
 def discover_queue(repo: str, lane: str,
-                   candidates_for_repo: set[int]) -> tuple[dict[int, str], bool]:
+                   candidates_for_repo: set[int],
+                   store_read_at: "dt.datetime | None" = None) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
     LATEST classified comment on that issue. Self-clearing: once anything
@@ -1005,10 +1010,27 @@ def discover_queue(repo: str, lane: str,
     if not candidates:
         return {}, True
 
+    read_before = store_read_at or dt.datetime.now(dt.timezone.utc)
     excluded = queue_qualifiers(repo, lane)
     queued: dict[int, str] = {}
+    fetch_failed = False
     for issue in candidates:
-        labels = _issue_labels(repo, issue)
+        # harmonic-forge#854 (REFORGE): a closed issue is queued to no lane,
+        # checked before the label exclusion so closed epics and Tooling
+        # Exception issues are retired too. No in-process cache decides this:
+        # the state comes from this cycle's read, and a retired pair leaves the
+        # candidate set because its store entry is marked closed, which
+        # `read_candidates` skips and a fresh `record_candidate` clears. An
+        # unreadable state is treated as open (AC4).
+        state, labels = _issue_meta(repo, issue)
+        if state == "closed":
+            # Marked at detection, which depends only on this issue's own
+            # state read: another issue's failed comment fetch below still
+            # reports the repo unreliable, but no longer stops this mark
+            # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
+            # after the store was read.
+            belt_candidates.retire_candidate(repo, issue, read_before=read_before)
+            continue
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
             # preclose finding): an epic, or -- for l2/l3 -- a Lane-1-owned
@@ -1034,7 +1056,10 @@ def discover_queue(repo: str, lane: str,
             # tells the lane the ball moved on. Repo-level `fetch_ok` was the
             # fix for a repo-level failure and does not reach an issue-level
             # one, so this reports the repo as unreliable for this cycle.
-            return {}, False
+            # harmonic-forge#854: the loop still finishes, so a closed issue
+            # later in the set is marked whatever this issue's fetch did.
+            fetch_failed = True
+            continue
         for comment in comments:
             # harmonic-forge#579 introduced the `None` (failed) vs `[]`
             # (genuinely zero) distinction this loop now depends on; #602
@@ -1062,6 +1087,8 @@ def discover_queue(repo: str, lane: str,
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
             continue
         queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"
+    if fetch_failed:
+        return {}, False
     return queued, True
 
 
@@ -1519,7 +1546,7 @@ def comment_watch_cycle(
                 # a Lane-1-owned Tooling Exception issue, never wakes Lane 2),
                 # read only on this rare path; an unreadable label set fails
                 # open, as there.
-                labels = _issue_labels(repo, issue)
+                _, labels = _issue_meta(repo, issue)
                 if labels is not None and labels & set(queue_qualifiers(repo, self_lane)):
                     fail_for_l2 = False
             if not fail_for_l2 and (lane not in watch or not _owed_to(self_lane, detail)):
@@ -1741,6 +1768,7 @@ def queue_cycle(
     batch_state_path: Path | None = None,
     candidate_pairs: set[tuple[str, int]] | None = None,
     recorded_only: bool = False,
+    store_read_at: "dt.datetime | None" = None,
 ) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
     """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
 
@@ -1773,7 +1801,7 @@ def queue_cycle(
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
         checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}
-        raw, fetch_ok = discover_queue(repo, lane, checked)
+        raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at)
         found = dict(raw)
         if not fetch_ok:
             # Carry this repo's previous queue forward untouched, and keep it
@@ -1822,6 +1850,11 @@ def queue_cycle(
                     #: retraction pass below emits `left-queue-for-<lane>`
                     #: for it, same as any other genuinely-resolved issue.
                     if recorded_only:
+                        continue
+                    if belt_candidates.closed_marked(repo, issue):
+                        # harmonic-forge#854 post-verdict: marked closed (it
+                        # may have been, on a failed cycle that carried it
+                        # forward), so it left the candidate set on purpose.
                         continue
                     queue[(repo, issue)] = marker
 
@@ -2494,11 +2527,12 @@ def main() -> int:
             #: just above, so a worktree that switches branches changes the
             #: set without any GitHub call; `read_queue_candidates` is
             #: likewise a local file read, never a GitHub call.
+            store_read_at = dt.datetime.now(dt.timezone.utc)
             posted_candidates = read_queue_candidates(repos, mode)
             queue, lines, ok_repos = queue_cycle(
                 repos, mode, last_queue, now,
                 candidate_pairs=discovered | static_pairs | posted_candidates,
-                recorded_only=recorded_only)
+                recorded_only=recorded_only, store_read_at=store_read_at)
             if first_queue_report:
                 # Reports repos that ACTUALLY REPORTED, not len(argv). A run
                 # where every search failed used to print a line byte-identical

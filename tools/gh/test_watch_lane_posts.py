@@ -434,12 +434,12 @@ class DiscoverQueueTests(unittest.TestCase):
                 issue = int(path.rsplit("/", 2)[-2])
                 bodies = comments.get(issue, [])
                 return _fake_completed(json.dumps([{"body": b} for b in bodies]))
-            if "api" in gh_argv and "--jq" in gh_argv and ".labels[].name" in gh_argv:
-                # harmonic-forge#686 preclose finding: `_issue_labels`'
-                # single-issue label lookup. Bounded (one issue's own label
-                # list, no pagination needed) -- distinct from the comments
-                # fetch above, which lists an unbounded, growing collection.
-                return _fake_completed("")
+            if "api" in gh_argv and "--jq" in gh_argv and any(
+                    "labels" in a for a in gh_argv):
+                # harmonic-forge#686/#854: `_issue_meta`'s single-issue read
+                # (state + labels, one call). Bounded -- distinct from the
+                # comments fetch above, which lists an unbounded collection.
+                return _fake_completed('{"state": "open", "labels": []}')
             raise AssertionError(f"unexpected gh call: {argv}")
         return run
 
@@ -942,6 +942,9 @@ class DropClosedTargetsTests(unittest.TestCase):
 
     def setUp(self):
         watch_lane_posts._CLOSED_SEEN.clear()
+        # harmonic-forge#854: discover_queue now honors _CLOSED_SEEN, so a
+        # pair left behind here would hide a later test's candidate.
+        self.addCleanup(watch_lane_posts._CLOSED_SEEN.clear)
 
     def _rows(self):
         return [("/tmp/hf-568-impl", ("vitalharmony/harmonic-forge", 568), "resolved"),
@@ -2400,7 +2403,7 @@ class QueueCycleOwesTests(unittest.TestCase):
     def _queue(self, bodies, lane, issue=851):
         with patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": b} for b in bodies]), \
-             patch("watch_lane_posts._issue_labels", return_value=set()):
+             patch("watch_lane_posts._issue_meta", return_value=("open", set())):
             return discover_queue("vitalharmony/harmonic-forge", lane, {issue})[0]
 
     FAIL = "## Lane 3 Gate Results — FAIL\n\nTC2 failed.\n\n"
@@ -2560,7 +2563,7 @@ class QueueNoiseFilterTests(unittest.TestCase):
             calls.append((repo, lane))
             return frozenset({"epic"})
         with patch("watch_lane_posts.queue_qualifiers", side_effect=spy), \
-             patch("watch_lane_posts._issue_labels", return_value=set()), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
             discover_queue("vitalharmony/hrse", "l3", {1530})
         self.assertIn(("vitalharmony/hrse", "l3"), calls)
@@ -2582,7 +2585,7 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
     HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
 
     def test_an_epic_labeled_candidate_is_never_queued(self):
-        with patch("watch_lane_posts._issue_labels", return_value={"epic"}), \
+        with patch("watch_lane_posts._issue_meta", return_value=("open", {"epic"})), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self.HANDOFF}]):
             queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
@@ -2590,8 +2593,8 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
         self.assertEqual(queue, {})
 
     def test_a_tooling_exception_candidate_is_never_queued_for_l2_or_l3(self):
-        with patch("watch_lane_posts._issue_labels",
-                   return_value={"tooling-exception"}), \
+        with patch("watch_lane_posts._issue_meta",
+                   return_value=("open", {"tooling-exception"})), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self.HANDOFF}]):
             for lane in ("l2", "l3"):
@@ -2603,8 +2606,8 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
     def test_a_tooling_exception_candidate_still_queues_for_l1(self):
         """Lane 1 owns Tooling Exception issues -- the filter is asymmetric,
         matching `queue_qualifiers`."""
-        with patch("watch_lane_posts._issue_labels",
-                   return_value={"tooling-exception"}), \
+        with patch("watch_lane_posts._issue_meta",
+                   return_value=("open", {"tooling-exception"})), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body":
                        "## Plan\n\n<!-- l1-post v1; kind=plan; posted-by=LANE2 -->"}]):
@@ -2617,7 +2620,7 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
         failure, which still fails the repo per `DiscoverQueueFailsClosed
         PerIssueTests`): an unfetchable label set must not make real,
         classifiable work disappear."""
-        with patch("watch_lane_posts._issue_labels", return_value=None), \
+        with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
              patch("watch_lane_posts._fetch_all_comments",
                    return_value=[{"body": self.HANDOFF}]):
             queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
@@ -2898,7 +2901,8 @@ class FailChannelAgreementTests(unittest.TestCase):
         root = Path(tmp.name)
         comments = [{"id": "1", "body": body, "created_at": self.NOW}]
         with patch("watch_lane_posts._fetch_comments", return_value=comments), \
-             patch("watch_lane_posts._issue_labels", return_value=labels):
+             patch("watch_lane_posts._issue_meta",
+                   return_value=("open", labels) if labels is not None else (None, None)):
             lines, _ = watch_lane_posts.comment_watch_cycle(
                 [(self.REPO, 851)], {"l1"}, self.NOW, Watermarks(root / "wm"),
                 SeenSet(root / "seen.tsv"), set(), allow_priming=False,
@@ -2906,8 +2910,11 @@ class FailChannelAgreementTests(unittest.TestCase):
         return bool(lines)
 
     def _queued(self, body, labels):
+        # harmonic-forge#854: discover_queue reads labels from _issue_meta's
+        # one issue read; an unreadable read is (None, None), failing open.
+        meta = ("open", labels) if labels is not None else (None, None)
         with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
-             patch("watch_lane_posts._issue_labels", return_value=labels):
+             patch("watch_lane_posts._issue_meta", return_value=meta):
             queue, ok = discover_queue(self.REPO, "l2", {851})
         self.assertTrue(ok)
         return 851 in queue
@@ -2952,3 +2959,362 @@ class FailChannelAgreementTests(unittest.TestCase):
                 self.assertFalse(self._emitted(body, {label}))
         self.assertTrue(self._emitted(body, set()))
         self.assertTrue(self._emitted(body, None))  # unreadable labels fail open
+
+
+#: harmonic-forge#854: `discover_queue`'s per-issue read now also returns the
+#: issue's STATE, so a test that left `_issue_meta` unpatched reached live
+#: GitHub and a genuinely closed issue (hrse#1530) changed its result. Unit
+#: tests never call GitHub: default every test to an open, unlabelled issue;
+#: a test that needs another answer patches `_issue_meta` itself.
+_REAL_ISSUE_META = watch_lane_posts._issue_meta
+_ISSUE_META_PATCHER = patch("watch_lane_posts._issue_meta", return_value=("open", set()))
+
+
+def setUpModule():
+    _ISSUE_META_PATCHER.start()
+
+
+def tearDownModule():
+    _ISSUE_META_PATCHER.stop()
+
+
+class IssueMetaReadTests(unittest.TestCase):
+    """harmonic-forge#854 preclose pass 1: the module-wide stub above hides
+    `_issue_meta` itself, so its one read and its parse are tested here
+    against the real function, with only the gh transport faked."""
+
+    def test_one_read_returns_state_and_labels(self):
+        with patch("watch_lane_posts.gh_as",
+                   return_value='{"state": "closed", "labels": ["epic", "bug"]}') as g:
+            got = _REAL_ISSUE_META("vitalharmony/hrse", 7)
+        self.assertEqual(got, ("closed", {"epic", "bug"}))
+        g.assert_called_once()
+        argv = g.call_args.args[1]
+        self.assertIn("repos/vitalharmony/hrse/issues/7", argv)
+        self.assertEqual(argv[argv.index("--jq") + 1], "{state: .state, labels: [.labels[].name]}")
+
+    def test_a_read_without_state_fails_open(self):
+        with patch("watch_lane_posts.gh_as", return_value='["epic"]'):
+            self.assertEqual(_REAL_ISSUE_META("vitalharmony/hrse", 7), (None, None))
+
+
+class ClosedIssueRetirementTests(unittest.TestCase):
+    """harmonic-forge#854 (REFORGE): a closed issue leaves every queue, and its
+    candidate entry is marked closed in place on a successful cycle only. No
+    in-process cache and no unlink. Runs against a temp candidates directory,
+    never the live store, because the kill-check runner bypasses
+    tools/run_tests.py."""
+
+    HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; plan-first=false; sha=abc -->"
+    REPO = "vitalharmony/hrse"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        patcher = patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write(self, issue: int, posted_at: str = "2026-10-01T00:00:00Z") -> Path:
+        path = belt_candidates._candidate_path(self.dir, self.REPO, issue)
+        path.write_text(json.dumps({"repo": self.REPO, "issue": issue, "kind": "handoff",
+                                    "posted_by": "l1", "posted_at": posted_at}))
+        return path
+
+    def _entry(self, path: Path) -> dict:
+        return json.loads(path.read_text())
+
+    def _discover(self, issues, read_at="2026-10-02T00:00:00Z"):
+        when = dt.datetime.strptime(read_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+        return discover_queue(self.REPO, "l2", set(issues), when)
+
+    def _candidates(self):
+        return belt_candidates.read_candidates(
+            [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
+            now=dt.datetime(2026, 10, 2, 1, tzinfo=dt.timezone.utc), base_dir=self.dir)
+
+    def test_a_closed_issue_is_queued_to_no_lane_from_the_same_read(self):
+        path = self._write(1)
+        meta = patch("watch_lane_posts._issue_meta", return_value=("closed", set()))
+        comments = patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}])
+        with meta as m, comments as c:
+            queue, ok = self._discover({1})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+        self.assertEqual(m.call_count, 1)
+        c.assert_not_called()
+        self.assertTrue(path.exists())
+        self.assertIn("closed_at", self._entry(path))
+
+    def test_a_closed_epic_or_tooling_exception_issue_is_marked_too(self):
+        for number, label in enumerate(("epic", "tooling-exception"), start=2):
+            with self.subTest(label=label):
+                path = self._write(number)
+                with patch("watch_lane_posts._issue_meta", return_value=("closed", {label})), \
+                     patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+                    self._discover({number})
+                self.assertIn("closed_at", self._entry(path))
+
+    def test_a_marked_entry_is_no_longer_a_candidate(self):
+        self._write(3)
+        self.assertEqual(self._candidates(), {(self.REPO, 3)})
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({3})
+        self.assertEqual(self._candidates(), set())
+
+    def test_a_fresh_post_after_a_mark_restores_candidacy(self):
+        path = self._write(4)
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({4})
+        belt_candidates.record_candidate(self.REPO, 4, "handoff", "l1", base_dir=self.dir)
+        self.assertNotIn("closed_at", self._entry(path))
+        self.assertIn((self.REPO, 4), belt_candidates.read_candidates(
+            [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
+            base_dir=self.dir))
+
+    def test_a_reopened_issue_with_no_new_post_is_offered_again_after_the_recheck_window(self):
+        # Preclose (reforge pass 1): the mark is not a permanent latch. A pair
+        # marked closed is skipped for CLOSED_RECHECK, then offered again so
+        # its state is re-read; a reopen with no new post is queued then.
+        self._write(5)
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({5})
+        marked = belt_candidates._parse_iso(self._entry(
+            belt_candidates._candidate_path(self.dir, self.REPO, 5))["closed_at"])
+        kw = dict(queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)}, base_dir=self.dir)
+        soon = marked + dt.timedelta(minutes=30)
+        later = marked + belt_candidates.CLOSED_RECHECK + dt.timedelta(minutes=1)
+        self.assertEqual(belt_candidates.read_candidates([self.REPO], "l2", now=soon, **kw), set())
+        self.assertEqual(belt_candidates.read_candidates([self.REPO], "l2", now=later, **kw),
+                         {(self.REPO, 5)})
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
+            queue, ok = self._discover({5}, read_at="2026-10-02T00:10:00Z")
+        self.assertEqual(queue, {5: "handoff owes=implement"})
+
+    def test_a_still_closed_recheck_refreshes_the_mark(self):
+        path = self._write(12)
+        first = dt.datetime(2026, 10, 2, 1, tzinfo=dt.timezone.utc)
+        read = dt.datetime(2026, 10, 2, 0, tzinfo=dt.timezone.utc)
+        self.assertTrue(belt_candidates.retire_candidate(self.REPO, 12, read_before=read, now=first))
+        second = first + dt.timedelta(hours=2)
+        self.assertTrue(belt_candidates.retire_candidate(self.REPO, 12, read_before=read, now=second))
+        self.assertEqual(self._entry(path)["closed_at"], "2026-10-02T03:00:00Z")
+
+    def test_a_post_landing_during_retirement_is_never_overwritten(self):
+        # retire_candidate reads and rewrites under the store lock; a writer
+        # holding the lock first lands its fresh entry, and retire then sees
+        # it (posted after the store read) and leaves it unmarked.
+        import threading
+        path = self._write(13)
+        read_before = dt.datetime(2026, 10, 2, 0, tzinfo=dt.timezone.utc)
+        result = {}
+        with belt_candidates._store_lock(self.dir):
+            worker = threading.Thread(target=lambda: result.setdefault(
+                "marked", belt_candidates.retire_candidate(self.REPO, 13, read_before=read_before)))
+            worker.start()
+            worker.join(timeout=0.3)
+            self.assertTrue(worker.is_alive())  # blocked on the lock
+            path.write_text(json.dumps({"repo": self.REPO, "issue": 13, "kind": "ready-for-l3",
+                                        "posted_by": "l1", "posted_at": "2026-10-02T00:00:09Z"}))
+        worker.join(timeout=5)
+        self.assertFalse(result["marked"])
+        self.assertEqual(self._entry(path)["kind"], "ready-for-l3")
+        self.assertNotIn("closed_at", self._entry(path))
+
+    def test_record_candidate_holds_the_lock_retire_waits_on(self):
+        # The other side of the race, driven through record_candidate itself:
+        # while its write is in progress, retire_candidate must be blocked.
+        import threading
+        self._write(16)
+        entered, release = threading.Event(), threading.Event()
+        real_replace = belt_candidates._replace
+        recorder = {}
+
+        def slow_replace(path, entry):
+            if threading.current_thread() is recorder.get("thread"):
+                entered.set()
+                release.wait(5)
+            real_replace(path, entry)
+        result = {}
+        with patch.object(belt_candidates, "_replace", side_effect=slow_replace):
+            record = threading.Thread(target=lambda: belt_candidates.record_candidate(
+                self.REPO, 16, "ready-for-l3", "l1", base_dir=self.dir))
+            recorder["thread"] = record
+            record.start()
+            self.assertTrue(entered.wait(5))
+            retire = threading.Thread(target=lambda: result.setdefault(
+                "marked", belt_candidates.retire_candidate(
+                    self.REPO, 16, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc))))
+            retire.start()
+            retire.join(timeout=0.3)
+            blocked = retire.is_alive()
+            release.set()
+            record.join(timeout=5)
+            retire.join(timeout=5)
+        self.assertTrue(blocked, "retire_candidate ran while record_candidate was writing")
+        self.assertFalse(result["marked"])
+        entry = self._entry(belt_candidates._candidate_path(self.dir, self.REPO, 16))
+        self.assertEqual(entry["kind"], "ready-for-l3")
+        self.assertNotIn("closed_at", entry)
+
+    def test_every_store_mutation_happens_under_the_lock(self):
+        # 1b: the three mutation sites -- record, retire, prune -- each write
+        # or unlink only while _store_lock is held.
+        held = {"depth": 0}
+        real_lock, real_replace, real_unlink = (
+            belt_candidates._store_lock, belt_candidates._replace, Path.unlink)
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def counting_lock(base):
+            with real_lock(base):
+                held["depth"] += 1
+                try:
+                    yield
+                finally:
+                    held["depth"] -= 1
+
+        def guarded_replace(path, entry):
+            self.assertGreater(held["depth"], 0, "_replace outside the store lock")
+            real_replace(path, entry)
+
+        def guarded_unlink(path, *a, **kw):
+            if path.parent == self.dir:
+                self.assertGreater(held["depth"], 0, "unlink outside the store lock")
+            return real_unlink(path, *a, **kw)
+        def guarded_archive(path, entry):
+            self.assertGreater(held["depth"], 0, "archive outside the store lock")
+            return 1
+        stale = self._write(17, posted_at="2026-01-01T00:00:00Z")
+        self._write(18)
+        with patch.object(belt_candidates, "_store_lock", counting_lock), \
+             patch.object(belt_candidates, "_replace", guarded_replace), \
+             patch.object(Path, "unlink", guarded_unlink), \
+             patch.object(belt_candidates, "_archive_candidate", guarded_archive):
+            belt_candidates.record_candidate(self.REPO, 19, "handoff", "l1", base_dir=self.dir)
+            self.assertTrue(belt_candidates.retire_candidate(
+                self.REPO, 18, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
+            self._candidates_pruned()
+        self.assertFalse(stale.exists())
+
+    def _candidates_pruned(self):
+        return belt_candidates.read_candidates(
+            [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
+            now=dt.datetime(2026, 10, 2, 1, tzinfo=dt.timezone.utc), base_dir=self.dir, prune=True)
+
+    def test_a_post_landing_before_the_prune_takes_the_lock_is_kept(self):
+        # 1a: the age prune re-reads under the lock. A record_candidate that
+        # refreshed the entry after read_candidates' unlocked read keeps it,
+        # and nothing is archived.
+        import contextlib
+        stale = self._write(20, posted_at="2026-01-01T00:00:00Z")
+        real_lock = belt_candidates._store_lock
+
+        @contextlib.contextmanager
+        def lock_after_a_post(base):
+            stale.write_text(json.dumps({"repo": self.REPO, "issue": 20, "kind": "handoff",
+                                         "posted_by": "l1", "posted_at": "2026-10-02T00:30:00Z"}))
+            with real_lock(base):
+                yield
+        with patch.object(belt_candidates, "_store_lock", lock_after_a_post), \
+             patch.object(belt_candidates, "_archive_candidate", return_value=1) as archived:
+            self._candidates_pruned()
+        self.assertTrue(stale.exists())
+        self.assertEqual(self._entry(stale)["posted_at"], "2026-10-02T00:30:00Z")
+        archived.assert_not_called()
+
+    def test_a_closed_issue_carried_forward_by_a_failed_cycle_leaves_a_mixed_source_queue(self):
+        # Post-verdict: a failed cycle marks the closed issue and carries the
+        # repo's prior queue forward. The next successful cycle no longer has
+        # the pair as a candidate; it must still drop it, not carry it again.
+        self._write(23)
+        self._write(24)
+        prior = {(self.REPO, 23): "handoff owes=implement"}
+
+        def meta(repo, issue):
+            return ("closed", set()) if issue == 23 else ("open", set())
+        when = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            queue, _lines, ok = watch_lane_posts.queue_cycle([self.REPO], "l2", prior, "t",
+                                            candidate_pairs={(self.REPO, 23), (self.REPO, 24)},
+                                            store_read_at=when)
+        self.assertEqual(ok, set())
+        self.assertIn((self.REPO, 23), queue)  # carried forward on the failed cycle
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            queue2, lines, ok2 = watch_lane_posts.queue_cycle([self.REPO], "l2", queue, "t",
+                                             candidate_pairs={(self.REPO, 24)},
+                                             recorded_only=False, store_read_at=when)
+        self.assertEqual(ok2, {self.REPO})
+        self.assertNotIn((self.REPO, 23), queue2)
+        self.assertIn(f"{self.REPO}#23 left-queue-for-l2", lines)
+
+    def test_a_failed_mark_is_logged(self):
+        path = self._write(21)
+        path.write_text("{not json")
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertFalse(belt_candidates.retire_candidate(
+                self.REPO, 21, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
+        self.assertIn("could not mark closed", err.getvalue())
+
+    def test_a_missing_entry_is_not_logged(self):
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertFalse(belt_candidates.retire_candidate(
+                self.REPO, 22, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_failed_issue_read_keeps_the_issue_open_and_unmarked(self):
+        path = self._write(6)
+        with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
+            queue, ok = self._discover({6})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {6: "handoff owes=implement"})
+        self.assertNotIn("closed_at", self._entry(path))
+
+    def test_a_failed_comment_fetch_does_not_stop_another_issues_closed_mark(self):
+        # AC4 as amended by the sticky-wicket ruling: marking depends only on
+        # the per-issue state read. The repo is still reported unreliable.
+        # Both roles: small ints iterate in value order, so the (8, 7) case
+        # visits the failing fetch before the closed issue (AC5).
+        for closed, failing in ((7, 8), (8, 7)):
+            with self.subTest(closed=closed):
+                closed_path = self._write(closed)
+                self._write(failing)
+
+                def meta(repo, issue, closed=closed):
+                    return ("closed", set()) if issue == closed else ("open", set())
+                with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+                     patch("watch_lane_posts._fetch_all_comments", return_value=None):
+                    queue, ok = self._discover({7, 8})
+                self.assertFalse(ok)
+                self.assertEqual(queue, {})
+                self.assertIn("closed_at", self._entry(closed_path))
+
+    def test_an_entry_posted_after_the_store_was_read_is_not_marked(self):
+        path = self._write(9, posted_at="2026-10-02T00:00:05Z")
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({9}, read_at="2026-10-02T00:00:00Z")
+        self.assertNotIn("closed_at", self._entry(path))
+
+    def test_an_entry_stamped_in_the_same_second_as_the_read_is_not_marked(self):
+        path = self._write(10, posted_at="2026-10-02T12:00:00Z")
+        read_before = dt.datetime(2026, 10, 2, 12, 0, 0, 100000, tzinfo=dt.timezone.utc)
+        self.assertFalse(belt_candidates.retire_candidate(self.REPO, 10, read_before=read_before))
+        self.assertNotIn("closed_at", self._entry(path))
+
+    def test_retirement_never_unlinks(self):
+        path = self._write(11)
+        with patch.object(Path, "unlink", side_effect=AssertionError("unlink")), \
+             patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({11})
+        self.assertTrue(path.exists())
