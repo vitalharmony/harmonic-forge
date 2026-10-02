@@ -1763,7 +1763,7 @@ id = "R-0208"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "AE must be posted as an actual issue comment, not only said in chat, and AE and its gate-readiness sweep are one atomic action in the same turn with the sweep strictly after; the posted AE is Lane 3's trigger (a belt owes=gate event is that trigger, not a new authority), so Lane 1 does not list a relay to Lane 3 as an operator next action."
-text_sha = "f959676ff5c08500"
+text_sha = "4ff9bb98f9e94cfb"
 excepted_by = "R-0374"
 hooks = [
   { script = "remind_gate_readiness_sweep.py", events = ["PostToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
