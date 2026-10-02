@@ -1247,6 +1247,53 @@ tooling/documentation work directly to Claude Code."), and carries the
 same posture: explicit, per-issue, never assumed.
 <!-- /R-0227 -->
 
+<!-- R-0370 -->
+**A Tooling Exception issue is split by mechanism at filing** (harmonic-forge#856,
+from harmonic-forge#851). File one issue per mechanism when either holds: (i) the
+issue is estimated at Tier `deep` (8 points or more), or (ii) at any Tier, two or
+more of its mechanisms each touch a high-blast surface as
+`tools/gh/preclose_check.py`'s `HIGH_BLAST_PATTERNS` defines it.
+
+- **One mechanism** is one AC-bearing unit with its own kill check: a single stub
+  patch that removes it and one test that must fail (`tools/gh/kill_check.py`).
+  Two kill checks means two mechanisms.
+- Dependent children are linked with blocked-by.
+- Each child carries its own handoff in the same filing action (R-0039). A child
+  whose handoff cannot be written yet is declared with R-0352's deferral shape
+  (trigger, owner, record), or it is not split out yet.
+- A single mechanism that is itself deep stays one issue: the rule splits
+  bundles, not single mechanisms.
+- It applies at filing. An issue already filed is re-split only on the operator's
+  word.
+- HRSE2's `.claude/rules/planning.md` 13-point decomposition threshold still
+  applies to all issues; this rule is narrower and earlier (Tooling Exception
+  only, from 8 points). planning.md's three exceptions (research spike,
+  production fire, single-line fix) do not carry over here; only the operator's
+  override does.
+
+harmonic-forge#851 bundled lane-owned event filtering, Lane 3 auto-pickup and a
+per-repo auto-AE toggle in one deep issue. It ran two preclose passes, two
+sticky-wicket rulings and a reforge, and the filtering and pickup mechanisms were
+re-reviewed at full-panel size every round although the defects sat in the one
+authorization path.
+<!-- /R-0370 -->
+
+<!-- R-0371 -->
+**An authorization mechanism is its own issue and is reviewed at full depth**
+(harmonic-forge#856). Any mechanism that mints, relaxes or bypasses an
+authorization is filed as its own issue at any Tier, carries board Tier `deep`
+whatever its point estimate, and runs `preclose-check` with `--tier deep`.
+Isolating it must not shrink its review: the panel is 1, 3 or 5 refuters by Tier
+(`tools/gh/preclose_check.py`), and `HIGH_BLAST_PATTERNS` does not cover
+`tools/gh/`, where harmonic-forge#851's auto-AE defect lived.
+
+Authorizations, enumerated: an AE or `ready-for-l3`; a `tools/hooks/batch_auth.py`
+merge grant; the `preclose-inspected` label gate (R-0233/R-0234); the model-tier
+gate (`tools/hooks/model_tier_gate.py`); auto-AE; a waiver of a review
+requirement; any relaxation of a `PreToolUse` deny hook. When in doubt, it is its
+own issue.
+<!-- /R-0371 -->
+
 <!-- R-0228 -->
 **Process under the exception:**
 - **Single implementer.** One agent (whichever lane the operator assigns,

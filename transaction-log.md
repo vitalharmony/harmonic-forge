@@ -38,6 +38,11 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/gh/test_check_lane3_ready.py |  95 ++++++++++++++++++++++--
 - tools/gh/test_handoff_footer.py    | 108 +++++++++++++++++++++-------
 - 5 files changed, 350 insertions(+), 92 deletions(-)
+## docs(rules): R-0370 splits a Tooling Exception issue by mechanism at filing (Tier deep, or two high-blast mechanisms) and R-0371 files any authorization mechanism alone at Tier deep with a deep preclose; pointers at R-0039 (R-0372) and in the Lane 1 handoff section (R-0373). Root: '3-lane-protocol.md' Tooling Exception (R-0226-R-0234) says nothing about how wide one issue may be (harmonic-forge#856)
+- rules/universal-agent.md  |  7 +++++++
+- rules/universal-lane1.md  |  6 ++++++
+- tools/rules/registry.toml | 32 ++++++++++++++++++++++++++++++++
+- 4 files changed, 92 insertions(+)
 
 ## fix(preclose): sticky-wicket PATCH for preclose pass 2 -- --own-model required with no default, an unrecognized model refuses the cross-family label, a --caller mismatch exits 2 with no label, the post-verdict hint carries --own-model, and the hint tests parse printed output (harmonic-forge#848)
 
