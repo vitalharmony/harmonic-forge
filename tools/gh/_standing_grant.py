@@ -166,8 +166,17 @@ def grant_refusal(body: str, repo: str, issue: int, sha: str, comments: list[dic
     if named is None or not clr.same_sha(named.group(1), gated):
         return (f"{prefix} it does not name the gated SHA {gated[:12]} "
                 "(\"gated SHA <sha>\" on the Authorized: line)")
-    if not clr.same_sha(gated, sha):
-        why = _tree_identical(gated, sha, git, cwd, _apply_files(body))
+    full_gated = git("rev-parse", "--verify", f"{gated}^{{commit}}", cwd=cwd)
+    full_sha = git("rev-parse", "--verify", f"{sha}^{{commit}}", cwd=cwd)
+    if full_gated.returncode or full_sha.returncode:
+        return f"{prefix} cannot resolve the gated commit {gated[:12]} and {sha[:12]} to full commits locally"
+    gated_full, sha_full = full_gated.stdout.strip(), full_sha.stdout.strip()
+    if gated_full != sha_full:
+        apply = _apply_files(body)
+        if not apply:
+            return (f"{prefix} it runs at {sha_full[:12]}, a later commit than the gated "
+                    f"{gated_full[:12]}, and names no `Apply path:` files to hold identical")
+        why = _tree_identical(gated_full, sha_full, git, cwd, apply)
         if why:
             return f"{prefix} {why}"
     return None

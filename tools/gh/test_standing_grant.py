@@ -51,6 +51,9 @@ def ae_body(comment_id: int = 100, sha: str = GATED, cite: bool = True, apply: s
 
 def fake_git(merge_base: int = 0, files: str = "scripts/apply.py\n", diff: int = 0):
     def run(*args, cwd=None):
+        if args[0] == "rev-parse":
+            ref = args[-1].split("^")[0]
+            return subprocess.CompletedProcess(args, 0, (ref + "0" * 40)[:40] + "\n", "")
         if args[0] == "merge-base":
             return subprocess.CompletedProcess(args, merge_base, "c" * 40 if merge_base == 0 else "", "")
         if args[0] == "diff" and args[1] == "--name-only":
@@ -102,10 +105,27 @@ class GrantRefusalTests(unittest.TestCase):
         g["body"] = _footered(g["body"].split("\n\n<!--")[0], "gate-result", " posted-by=LANE3;")
         self.assertIsNone(self.refusal(comments=[g]))
 
+    def test_a_later_commit_with_no_apply_path_refuses(self):
+        self.assertIn("names no `Apply path:`", self.refusal(sha=LATER))
+
+    def test_a_prefix_match_to_a_different_commit_is_compared_in_full(self):
+        def git(*args, cwd=None):
+            if args[0] == "rev-parse":
+                full = {"aaaaaaa": "a" * 40, LATER: "aaaaaaa" + "e" * 33}
+                ref = args[-1].split("^")[0]
+                return subprocess.CompletedProcess(args, 0, full.get(ref, ref) + "\n", "")
+            return fake_git()(*args, cwd=cwd)
+        g = gate(head="aaaaaaa")
+        body = ae_body(sha="aaaaaaa")
+        reason = grant.grant_refusal(body, REPO, ISSUE, "aaaaaaa" + "e" * 33, [g], git=git)
+        self.assertIn("names no `Apply path:`", reason)
+
     def test_a_later_commit_changing_a_named_apply_file_refuses(self):
         seen = {}
 
         def git(*args, cwd=None):
+            if args[0] == "rev-parse":
+                return subprocess.CompletedProcess(args, 0, (args[-1].split("^")[0] + "0" * 40)[:40] + "\n", "")
             if args[0] == "merge-base":
                 return subprocess.CompletedProcess(args, 0, "c" * 40, "")
             if args[1] == "--name-only":
@@ -150,13 +170,15 @@ class GrantRefusalTests(unittest.TestCase):
         self.assertIn("does not name the gated SHA", self.refusal(body=ae_body(sha="d" * 40)))
 
     def test_a_later_commit_tree_identical_in_the_touched_files_is_accepted(self):
-        self.assertIsNone(self.refusal(sha=LATER, git=fake_git(diff=0)))
+        self.assertIsNone(self.refusal(body=ae_body(apply="scripts/apply.py"), sha=LATER, git=fake_git(diff=0)))
 
     def test_a_later_commit_that_differs_in_the_touched_files_refuses(self):
-        self.assertIn("differs from the gated commit", self.refusal(sha=LATER, git=fake_git(diff=1)))
+        self.assertIn("differs from the gated commit",
+                      self.refusal(body=ae_body(apply="scripts/apply.py"), sha=LATER, git=fake_git(diff=1)))
 
     def test_an_unresolvable_gated_commit_refuses(self):
-        self.assertIn("cannot resolve", self.refusal(sha=LATER, git=fake_git(merge_base=128)))
+        self.assertIn("cannot resolve",
+                      self.refusal(body=ae_body(apply="scripts/apply.py"), sha=LATER, git=fake_git(merge_base=128)))
 
 
 class CarryForwardTests(unittest.TestCase):

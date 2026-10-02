@@ -1085,8 +1085,9 @@ when all of these hold:
   and names the SHA it gated ("gated SHA <sha>", the gate-result's `Head-SHA`);
 - the commit the write step runs is that SHA, or a later commit whose tree is
   byte-identical to it in every file the gated change touched and every file
-  the AE names on an `Apply path:` line (a squash merge qualifies, as in
-  R-0354; such an AE posts from `main` without an open PR);
+  the AE names on an `Apply path:` line, which a later commit must carry (a
+  squash merge qualifies, as in R-0354; such an AE posts from the current
+  `main` tip without an open PR);
 - the AE names the exact production sequence, its stop conditions and the
   expected counts the Tier R gate measured;
 - the write step's sweep lists only the cases that Tier R gate verified.
