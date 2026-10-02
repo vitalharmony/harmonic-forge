@@ -124,9 +124,14 @@ def _tree_identical(gated: str, sha: str, git: GitRunner, cwd: Path | None,
     files = git("diff", "--name-only", base.stdout.strip(), gated, cwd=cwd)
     if files.returncode:
         return f"cannot list the files the gated change {gated[:12]} touched"
-    names = sorted({line for line in files.stdout.splitlines() if line.strip()} | set(extra or []))
-    if not names:
-        return f"the gated commit {gated[:12]} touches no files relative to origin/main"
+    touched = {line for line in files.stdout.splitlines() if line.strip()}
+    if not touched:
+        # Empty once the gated commit is itself an ancestor of origin/main (a
+        # non-squash merge): the Apply path files alone would then be compared,
+        # so this fails closed rather than shrinking the set (post-verdict #4).
+        return (f"the gated commit {gated[:12]} touches no files relative to its merge base "
+                "with origin/main, so the gated change cannot be compared")
+    names = sorted(touched | set(extra or []))
     diff = git("diff", "--quiet", gated, sha, "--", *names, cwd=cwd)
     if diff.returncode == 0:
         return None

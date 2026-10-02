@@ -120,6 +120,14 @@ class GrantRefusalTests(unittest.TestCase):
         reason = grant.grant_refusal(body, REPO, ISSUE, "aaaaaaa" + "e" * 33, [g], git=git)
         self.assertIn("names no `Apply path:`", reason)
 
+    def test_an_empty_gated_change_refuses_even_with_apply_files(self):
+        # A gated commit already merged without squashing has no files relative
+        # to its merge base; comparing only the Apply path files would pass a
+        # later commit that changed another gated file.
+        reason = self.refusal(body=ae_body(apply="scripts/apply.py"), sha="e" * 40,
+                              git=fake_git(files=""))
+        self.assertIn("touches no files", reason)
+
     def test_a_later_commit_changing_a_named_apply_file_refuses(self):
         seen = {}
 
