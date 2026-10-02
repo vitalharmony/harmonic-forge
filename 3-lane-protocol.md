@@ -1262,8 +1262,15 @@ more of its mechanisms each touch a high-blast surface as
   are two mechanisms.
 - Dependent children are linked with blocked-by.
 - Each child carries its own handoff in the same filing action (R-0039). A child
-  whose handoff cannot be written yet is declared with R-0352's deferral shape
-  (trigger, owner, record), or it is not split out yet.
+  blocked on a sibling that has not landed is R-0039's third exception, declared
+  with R-0352's deferral shape (trigger, owner, record); that is the only reason
+  a child's handoff defers. A child whose handoff cannot be written for any other
+  reason is not split out yet: per R-0039, that inability is the answer.
+- R-0228's "No Lane 1 handoff document" removes the lane relay, not the filing
+  artifact: it governs implementation after filing. R-0039 states the overlap
+  directly (Tooling-Exception eligibility "does not reach this exception"), so a
+  Tooling Exception issue owes its filing artifact and skips the relay and the
+  per-round gates.
 - A single mechanism that is itself deep stays one issue: the rule splits
   bundles, not single mechanisms.
 - It applies at filing. An issue already filed is re-split only on the operator's
@@ -1287,8 +1294,12 @@ authorization path.
 authorization is filed as its own issue at any Tier, carries board Tier `deep`
 whatever its point estimate, and runs `preclose-check` with `--tier deep`.
 This Tier overrides HRSE2 `.claude/rules/planning.md`'s point-to-Tier table for
-such an issue; the free-text estimate still records the points, and a lane
-session on it needs the high-tier model the `deep` Tier routes to. Isolating it
+such an issue. That table is a default mapping from points, and planning.md
+itself calls Tier "a model-routing signal, not a forecast" whose one live
+consumer is the model-tier gate, so routing an authorization mechanism to `deep`
+at a low point count uses the field as designed. The free-text estimate still
+records the actual points, and a lane session on the issue needs the high-tier
+model `deep` routes to. Isolating it
 must not shrink its review: the panel is 1, 3 or 5 refuters by Tier
 (`tools/gh/preclose_check.py`), and `HIGH_BLAST_PATTERNS` does not cover
 `tools/gh/`, where harmonic-forge#851's auto-AE defect lived.

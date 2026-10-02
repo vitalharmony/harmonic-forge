@@ -38,6 +38,11 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/gh/test_check_lane3_ready.py |  95 ++++++++++++++++++++++--
 - tools/gh/test_handoff_footer.py    | 108 +++++++++++++++++++++-------
 - 5 files changed, 350 insertions(+), 92 deletions(-)
+## docs(rules): sticky-wicket PATCH for R-0370/R-0371 -- a child's handoff defers only under R-0039's third exception; R-0228 removes the relay, not the filing artifact; R-0371's Tier deep uses planning.md's model-routing field as designed (harmonic-forge#856)
+- 3-lane-protocol.md        | 19 +++++++++++++++----
+- tools/rules/registry.toml |  4 ++--
+- 2 files changed, 17 insertions(+), 6 deletions(-)
+
 ## docs(rules): preclose pass 1 fixes for R-0370/R-0371 -- a mechanism is one independently removable design (several ACs and kill checks may share it), criterion (ii) also counts tools/gh/, and R-0371's Tier deep overrides planning.md's point-to-Tier table for an authorization mechanism (harmonic-forge#856)
 - 3-lane-protocol.md        | 18 ++++++++++++------
 - tools/rules/registry.toml |  8 ++++----
