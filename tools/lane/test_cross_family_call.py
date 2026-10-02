@@ -26,6 +26,8 @@ from __future__ import annotations
 import re
 import shutil
 import json
+import sys
+import time
 import os
 import subprocess
 import tempfile
@@ -1684,3 +1686,140 @@ class VerifyPostureStdinTests(StdinPromptTests):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(out.read_text().splitlines()[0])
 
+
+
+class ClaudeNativeShapeContractTests(unittest.TestCase):
+    """harmonic-forge#857 sticky-wicket PATCH: Claude's native value is the
+    slurped event list, which `preclose_check._claude_verify_trace` requires.
+    Asserted for Claude itself, not moved to another family."""
+
+    def test_claude_native_is_the_event_list(self):
+        events = [{"type": "system", "subtype": "init", "tools": ["Read"], "mcp_servers": []},
+                  {"type": "result", "subtype": "success",
+                   "result": json.dumps({"summary": "s", "findings": []})}]
+        env = emit_envelope("claude", "verify", 0, "\n".join(json.dumps(e) for e in events))
+        self.assertIsInstance(env["native"], list)
+        self.assertEqual(len(env["native"]), 2)
+
+    def test_preclose_check_accepts_a_claude_verify_native(self):
+        sys.path.insert(0, str(SCRIPT.parents[1] / "gh"))
+        import preclose_check  # noqa: PLC0415
+        events = [{"type": "system", "subtype": "init", "tools": ["Glob", "Grep", "Read"],
+                   "mcp_servers": [], "model": "claude-opus-5-5"},
+                  {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "u1", "name": "Read"}]}},
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u1"}]}},
+                  {"type": "result", "subtype": "success",
+                   "result": json.dumps({"summary": "s", "findings": [], "assumptions": [
+                       {"assumption": "a", "verdict": "confirmed", "evidence": "Read x"}]})}]
+        env = emit_envelope("claude", "verify", 0, "\n".join(json.dumps(e) for e in events))
+        self.assertTrue(preclose_check._claude_verify_trace(env["native"], "claude-opus-5-5"))
+
+
+class DegradedBriefFailsClosedTests(PromptFileHygieneTests):
+    """harmonic-forge#857 sticky-wicket PATCH, INV-A: an empty, whitespace-only
+    or unreadable-at-dispatch brief never reaches a reviewer as 'ok'."""
+
+    OK_STUB = ('cat >/dev/null\necho \'{"type":"item.completed","item":{"type":"agent_message",'
+               '"text":"{\\"summary\\":\\"no defect found\\",\\"findings\\":[]}"}}\'\n')
+
+    def test_a_killed_run_leaves_no_prompt_file(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def test_an_unreadable_brief_fails_closed(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def test_an_empty_brief_fails_closed(self) -> None:
+        self._stub(self.OK_STUB)
+        self.brief.write_text("")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+
+    def test_a_whitespace_only_brief_fails_closed(self) -> None:
+        self._stub(self.OK_STUB)
+        self.brief.write_text("   \n\t\n")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("empty at dispatch", result.stderr)
+        self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+
+    def test_a_brief_made_unreadable_after_preflight_fails_closed(self) -> None:
+        # --families 3: the first reviewer's stub makes the brief unreadable,
+        # so the SECOND family's prompt assembly (not the preflight) must stop.
+        if os.geteuid() == 0:
+            self.skipTest("root can read mode-000 files")
+        brief = self.brief
+        for name in ("codex", "claude", "gemini"):
+            stub = self.stub_dir / name
+            stub.write_text("#!/usr/bin/env bash\n" + f'chmod 000 "{brief}"\n' + self.OK_STUB)
+            stub.chmod(0o755)
+        self.addCleanup(brief.chmod, 0o644)
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   TMPDIR=str(self.tmpdir), GEMINI_API_KEY="x")
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "claude", "--families", "3", "--posture", "read-only",
+             "--brief", str(brief), "--cwd", str(self.cwd)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("readable, non-empty file", result.stderr)  # not the preflight
+        ok_rows = [ln for ln in result.stdout.splitlines() if '"status":"ok"' in ln.replace(" ", "")]
+        self.assertLessEqual(len(ok_rows), 1)  # only the first family ran
+
+
+class SignalForwardingTests(PromptFileHygieneTests):
+    """harmonic-forge#857 sticky-wicket PATCH, INV-B: a TERM reaches the running
+    reviewer at once, and no per-run temp file survives."""
+
+    def test_a_killed_run_leaves_no_prompt_file(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def test_an_unreadable_brief_fails_closed(self) -> None:
+        self.skipTest("inherited; covered by PromptFileHygieneTests")
+
+    def _start(self, families: str) -> subprocess.Popen:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   TMPDIR=str(self.tmpdir), GEMINI_API_KEY="x")
+        return subprocess.Popen(
+            ["bash", str(SCRIPT), "--caller", "claude", "--families", families, "--posture", "read-only",
+             "--brief", str(self.brief), "--cwd", str(self.cwd)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env)
+
+    def test_term_stops_the_run_and_its_reviewer_promptly(self) -> None:
+        marker = self.root / "reviewer.pid"
+        self._stub(f'echo $$ > "{marker}"\ncat >/dev/null\nsleep 60\n')
+        proc = self._start("2")
+        for _ in range(100):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        proc.terminate()
+        started = time.monotonic()
+        proc.wait(timeout=10)
+        self.assertLess(time.monotonic() - started, 5)
+        reviewer = int(marker.read_text().strip())
+        time.sleep(0.3)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(reviewer, 0)
+        self.assertEqual(self._leaked(), [])
+
+    def test_no_per_run_temp_file_survives_a_term_mid_families(self) -> None:
+        marker = self.root / "second.started"
+        # codex (first family) returns at once; gemini (second) blocks.
+        (self.stub_dir / "codex").write_text(
+            "#!/usr/bin/env bash\n" + DegradedBriefFailsClosedTests.OK_STUB)
+        (self.stub_dir / "codex").chmod(0o755)
+        (self.stub_dir / "gemini").write_text(
+            f'#!/usr/bin/env bash\ntouch "{marker}"\ncat >/dev/null\nsleep 60\n')
+        (self.stub_dir / "gemini").chmod(0o755)
+        (self.stub_dir / "claude").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (self.stub_dir / "claude").chmod(0o755)
+        proc = self._start("3")
+        for _ in range(200):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        proc.terminate()
+        proc.wait(timeout=10)
+        time.sleep(0.3)
+        survivors = [p for p in self.tmpdir.rglob("*") if p.is_file()]
+        self.assertEqual(survivors, [])

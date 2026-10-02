@@ -98,8 +98,8 @@ case "$posture" in
   read-only|probe|verify) ;;
   *) abort_preflight "--posture must be read-only, probe, or verify" ;;
 esac
-if [ -z "$brief" ] || [ ! -f "$brief" ] || [ ! -r "$brief" ]; then
-  abort_preflight "--brief PATH must name an existing, readable file"
+if [ -z "$brief" ] || [ ! -f "$brief" ] || [ ! -r "$brief" ] || [ ! -s "$brief" ]; then
+  abort_preflight "--brief PATH must name an existing, readable, non-empty file"
 fi
 if [ "$posture" = probe ] || [ "$posture" = verify ]; then
   if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
@@ -307,6 +307,13 @@ prompt_text() {
   # status survives (a `$(cat)` inside printf's arguments did not), so an
   # unreadable brief fails the run instead of sending the contract alone.
   brief_text="$(cat "$brief")" || return 1
+  # harmonic-forge#857 (sticky-wicket PATCH, INV-A): a degraded brief never
+  # reaches a reviewer. An empty or whitespace-only brief would send the
+  # contract alone, whose own last line invites "no defect found".
+  if [ -z "${brief_text//[[:space:]]/}" ]; then
+    echo "cross_family_call: --brief $brief is empty at dispatch; nothing to review" >&2
+    return 1
+  fi
   if [ "$posture" = verify ]; then
     if [ "$family" = claude ]; then
       printf '%s%s%s' "$brief_text" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
@@ -679,16 +686,31 @@ emit_envelope() {
 overall_status=0
 preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
-result_tmp="$(mktemp)"
-# harmonic-forge#857 preclose: the prompt file holds the whole brief (often an
-# unmerged diff), so a killed run must not leave it behind. INT and TERM exit,
-# which runs the EXIT trap.
+# harmonic-forge#857 (sticky-wicket PATCH, INV-B): every per-run temp file lives
+# in one scratch directory removed on exit. The prompt file holds the brief and,
+# on verify, `tmp_out` holds the native stream quoting it, so neither may
+# outlive the run. A trapped INT/TERM is forwarded to the running reviewer's
+# whole process tree (bash would otherwise defer the trap until that foreground
+# child returns, minutes on a real call), then exits through the EXIT trap.
+scratch="$(mktemp -d)"
+keep_scratch=""
+reviewer_pid=""
+kill_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do kill_tree "$child"; done
+  kill -TERM "$pid" 2>/dev/null || :
+}
+on_signal() {
+  if [ -n "$reviewer_pid" ]; then kill_tree "$reviewer_pid"; fi
+  exit "$1"
+}
+trap '[ -n "$keep_scratch" ] || rm -rf "$scratch"' EXIT
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+result_tmp="$(mktemp -p "$scratch")"
 prompt_file=""
-trap 'rm -f "${prompt_file:-}"' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 for family in "${targets[@]}"; do
-  tmp_out="$(mktemp)"
+  tmp_out="$(mktemp -p "$scratch")"
   # harmonic-forge#483: captured here rather than discarded inside each
   # `invoke_*`. The entire diagnosis of this issue was ONE line the CLI wrote
   # to stderr and `2>/dev/null` deleted, which turned a five-second read into
@@ -703,27 +725,32 @@ for family in "${targets[@]}"; do
   # one dispatch site rather than in three functions, and the hole it closes
   # is identical in each -- the same reason `verify` is fixed alongside
   # `probe` above.
-  tmp_err="$(mktemp)"
+  tmp_err="$(mktemp -p "$scratch")"
   # harmonic-forge#857: the prompt goes to the CLI on stdin from this file,
   # which every `invoke_*` reads as `$prompt_file` from this scope (their
   # call shape is unchanged). Created and removed here, outside `invoke_gemini`'s subshell, whose own
   # EXIT trap restores the API-key HOME.
-  prompt_file="$(mktemp)"
+  prompt_file="$(mktemp -p "$scratch")"
   prompt_text "$posture" "$brief" "$family" >"$prompt_file"
   exit_code=0
+  # Run in the background and wait, so a trapped signal runs at once and is
+  # forwarded (see INV-B above); the call shape of each `invoke_*` is unchanged.
   case "$family" in
-    claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
-    codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
-    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
+    claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
+    codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
+    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
   esac
+  reviewer_pid=$!
+  wait "$reviewer_pid" || exit_code=$?
+  reviewer_pid=""
   rm -f "$prompt_file"
 
   # Buffered, not streamed: a half-written envelope emitted before the failure
   # would be worse than none, because it parses as truncated JSON rather than
   # failing outright. `if cmd; then` is also what suspends `set -e` for this
   # one call so the failure can be handled here instead of killing the run.
-  envelope_out="$(mktemp)"
-  envelope_err="$(mktemp)"
+  envelope_out="$(mktemp -p "$scratch")"
+  envelope_err="$(mktemp -p "$scratch")"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
            --arg verify_model "claude-opus-5-5" --arg codex_model "$VERIFY_MODEL" \
@@ -773,7 +800,7 @@ for family in "${targets[@]}"; do
     # recovered only because such a file happened to survive. Luck is now a
     # mechanism.
     case "$preserved" in
-      "(could not preserve"*) : ;;
+      "(could not preserve"*) keep_scratch=1 ;;
       *) rm -f "$tmp_out" ;;
     esac
   fi

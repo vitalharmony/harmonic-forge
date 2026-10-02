@@ -63,6 +63,11 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - rules/universal-lane1.md  |  6 ++++++
 - tools/rules/registry.toml | 32 ++++++++++++++++++++++++++++++++
 - 4 files changed, 92 insertions(+)
+## fix(cross-family): sticky-wicket PATCH (both passes with survivors) -- a degraded brief (empty, whitespace-only, unreadable at dispatch) never reaches a reviewer; every per-run temp file lives in one scratch dir removed on exit, and INT/TERM are forwarded to the running reviewer's process tree instead of waiting for it; Claude's native-shape contract with preclose_check is asserted for Claude itself (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      |  63 +++++++++++-----
+- tools/lane/test_cross_family_call.py | 139 +++++++++++++++++++++++++++++++++++
+- 2 files changed, 184 insertions(+), 18 deletions(-)
+
 ## fix(cross-family): sticky-wicket PATCH (pass-1 cluster) -- Claude has one extractor for both postures, the last successful result event selected by type; an EXIT trap (INT/TERM exit through it) removes the prompt file; an unreadable brief fails preflight and prompt assembly instead of sending the contract alone; a verify-posture stdin test covers the Claude verify line (harmonic-forge#857)
 - tools/lane/cross_family_call.sh      |  39 ++++++----
 - tools/lane/test_cross_family_call.py | 145 ++++++++++++++++++++++++++++++++++-
