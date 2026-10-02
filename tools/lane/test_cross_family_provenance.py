@@ -40,6 +40,41 @@ class ClassifyTests(unittest.TestCase):
         label = m.classify(envelope, _MODEL, _OWN)
         self.assertIn("claude / claude-opus-5-5", label)
 
+    def test_codex_label_uses_the_recorded_model_not_the_flag(self):
+        """harmonic-forge#848 AC7: the envelope's verify_model wins for every
+        family; --model is only the fallback for pre-#848 envelopes."""
+        envelope = _ok([_a("confirmed")]) | {"family": "codex", "verify_model": "gpt-6-sol"}
+        label = m.classify(envelope, "gpt-5.6-sol", _OWN)
+        self.assertIn("gpt-6-sol", label)
+        self.assertNotIn("gpt-5.6-sol", label)
+
+    def test_codex_label_falls_back_to_the_flag_without_verify_model(self):
+        envelope = _ok([_a("confirmed")]) | {"family": "codex"}
+        self.assertIn("gpt-fallback-x", m.classify(envelope, "gpt-fallback-x", _OWN))
+
+    def test_model_flag_default_is_gpt_6_sol(self):
+        import contextlib, io, json as _json, tempfile as _tf
+        with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fh:
+            fh.write(_json.dumps(_ok([_a("confirmed")]) | {"family": "codex"}) + "\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            m.main(["--envelope", fh.name])
+        self.assertIn("gpt-6-sol", out.getvalue())
+
+    def test_not_triggered_label_names_the_calling_model(self):
+        """harmonic-forge#848 AC8: --own-model is the calling session's model."""
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            m.main(["--envelope", "/dev/null", "--not-triggered", "--own-model", "gpt-6-sol"])
+        self.assertIn("gpt-6-sol", out.getvalue())
+
+    def test_codex_caller_review_is_labelled_claude(self):
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5",
+                                             "caller_family": "codex", "target_family": "claude"}
+        self.assertIn("cross-family (claude / claude-opus-5-5)",
+                      m.classify(envelope, "gpt-6-sol", "gpt-6-sol"))
+
     def test_all_uncheckable_does_not_earn_the_cross_family_label(self):
         """The state the prose had no name for: exit 0, `status: ok`, and no
         checking whatsoever."""

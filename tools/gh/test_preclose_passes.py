@@ -211,7 +211,7 @@ class PassCapTests(ScratchRepo):
         """Through `main()`'s --post-verdict dispatch, not the function."""
         argv = ["preclose_check.py", "--repo", REPO, "--issue", str(ISSUE), "--post-verdict",
                 "--base", base, "--main", "base", "--findings", self.findings_file([]),
-                "--envelope", self.envelope(label)]
+                "--envelope", self.envelope(label), "--own-model", "claude-opus-5-5"]
         with patch.object(sys, "argv", argv), self.assertRaises(SystemExit) as done:
             preclose.main()
         if done.exception.code not in (0, None):

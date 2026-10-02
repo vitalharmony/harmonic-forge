@@ -326,11 +326,19 @@ def check_provenance(required: bool, label: str) -> None:
             f"be the not-triggered one (cross_family_provenance.py --not-triggered), got:\n  {label!r}")
 
 
-def compute_provenance(envelope: str | None, not_triggered: bool) -> str:
-    """Run `cross_family_provenance.py` and return the label it prints."""
+def compute_provenance(envelope: str | None, not_triggered: bool,
+                       own_model: str | None = None) -> str:
+    """Run `cross_family_provenance.py` and return the label it prints.
+
+    harmonic-forge#848 AC8: `own_model` is the CALLING session's model, so a
+    fallback or not-triggered label names the family that actually did the
+    work rather than the tool's `claude-opus-5` default.
+    """
     if not_triggered == bool(envelope):
         raise SystemExit("preclose-check: pass exactly one of --envelope <path> or --not-triggered.")
     argv = ["python3", str(PROVENANCE_TOOL), "--envelope", envelope or "/dev/null"]
+    if own_model:
+        argv += ["--own-model", own_model]
     if not_triggered:
         argv.append("--not-triggered")
     result = run(*argv)
@@ -806,7 +814,7 @@ def complete(args: argparse.Namespace) -> int:
     required, why, surviving, _ = gate_decision(args)
     if required and args.envelope:
         require_recorded_envelope(args.envelope)
-    provenance = compute_provenance(args.envelope, args.not_triggered)
+    provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
     check_provenance(required, provenance)
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
@@ -856,6 +864,9 @@ def main() -> None:
                         help="With --complete: the cross-family call's envelope; its label is computed.")
     parser.add_argument("--not-triggered", action="store_true",
                         help="With --complete: the gate did not trigger; records the computed label.")
+    parser.add_argument("--own-model",
+                        help="The calling session's model (harmonic-forge#848). Required with "
+                             "--envelope; optional with --not-triggered.")
     parser.add_argument("--cross-family", action="store_true",
                         help="Operator asked for the cross-family branch (gate criterion 3).")
     parser.add_argument("--force", action="store_true",
@@ -878,6 +889,8 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    if args.envelope and not args.own_model and (args.complete or args.post_verdict):
+        parser.error("--envelope needs --own-model <the calling session's model> (harmonic-forge#848)")
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")
@@ -970,7 +983,7 @@ def post_verdict(args: argparse.Namespace) -> int:
     if patch is None:
         raise SystemExit("preclose-check: there is no patch between --base and --head to check.")
     require_recorded_envelope(args.envelope)
-    provenance = compute_provenance(args.envelope, False)
+    provenance = compute_provenance(args.envelope, False, getattr(args, "own_model", None))
     check_provenance(True, provenance)
     # This check IS the one refuter, so it has no in-family fallback: a
     # cross-family call that did not run means nobody read the patch.

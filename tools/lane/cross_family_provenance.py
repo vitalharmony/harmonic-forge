@@ -129,7 +129,10 @@ def classify(envelope: dict, model: str, own_model: str) -> str:
         )
 
     family = envelope.get("family")
-    reviewer_model = envelope.get("verify_model") if family == "claude" else model
+    # harmonic-forge#848: the envelope records the model that actually ran,
+    # for every family; `model` is only the fallback for an envelope written
+    # before Codex verify calls carried `verify_model`.
+    reviewer_model = envelope.get("verify_model") or model
     label = CROSS_FAMILY.format(family=family, model=reviewer_model)
     unchecked = len(assumptions) - len(checked)
     return (f"{label} — {len(checked)} of {len(assumptions)} assumption(s) "
@@ -141,7 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--envelope", required=True,
                         help="path to the JSON-lines envelope cross_family_call.sh wrote")
-    parser.add_argument("--model", default="gpt-5.6-sol")
+    parser.add_argument("--model", default="gpt-6-sol",
+                        help="fallback reviewer model, used only when the envelope "
+                             "carries no verify_model (envelopes from before harmonic-forge#848)")
     parser.add_argument("--own-model", default="claude-opus-5")
     parser.add_argument("--not-triggered", action="store_true",
                         help="print the not-triggered label and exit; --envelope is ignored")

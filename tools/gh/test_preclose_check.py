@@ -783,3 +783,33 @@ class CrossFamilyReceiptTests(ScratchRepo):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnModelTests(unittest.TestCase):
+    """harmonic-forge#848 AC8: the calling session's model reaches the label."""
+
+    def test_compute_provenance_forwards_own_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "prov.py"
+            tool.write_text("import sys\nprint(' '.join(sys.argv[1:]))\n")
+            with patch.object(preclose, "PROVENANCE_TOOL", tool):
+                label = preclose.compute_provenance(None, True, "gpt-6-sol")
+        self.assertIn("--own-model gpt-6-sol", label)
+
+    def test_compute_provenance_omits_own_model_when_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "prov.py"
+            tool.write_text("import sys\nprint(' '.join(sys.argv[1:]) or 'x')\n")
+            with patch.object(preclose, "PROVENANCE_TOOL", tool):
+                label = preclose.compute_provenance(None, True)
+        self.assertNotIn("--own-model", label)
+
+    def test_envelope_without_own_model_is_a_parser_error(self) -> None:
+        argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
+                "--complete", "--findings", "/dev/null", "--envelope", "/dev/null"]
+        with patch.object(sys, "argv", argv), \
+             patch("sys.stderr", new_callable=io.StringIO) as err, \
+             self.assertRaises(SystemExit) as done:
+            preclose.main()
+        self.assertEqual(done.exception.code, 2)
+        self.assertIn("--own-model", err.getvalue())

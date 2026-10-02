@@ -92,10 +92,13 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    the operator asking (`--cross-family`), also triggers it. Tier never does.
 
    When it triggers, take the branch exactly as
-   `~/harmonic-forge/rules/cross-family-review.md` states. That file is the
+   `~/harmonic-forge/rules/cross-family-review.md` states. Its `--caller` is
+   the family of the session that **implemented the diff**, so the review
+   comes from the other family (R-0358, harmonic-forge#848). That file is the
    whole mechanism, and this skill deliberately does not restate it. The
    branch is part of this **one** pass, not a second round. Record the pass
-   with `--envelope <envelope path>` when the branch ran, or `--not-triggered`
+   with `--envelope <envelope path> --own-model <your session's model>` when the
+   branch ran (`--own-model` is required with `--envelope`), or `--not-triggered`
    when it did not. The script runs `cross_family_provenance.py` itself: there
    is no flag to type a label. It refuses a label that contradicts the gate,
    and it refuses a second `--complete` on the same diff. A call that could not

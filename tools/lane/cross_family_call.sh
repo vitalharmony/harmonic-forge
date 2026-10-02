@@ -173,8 +173,8 @@ done
 # `--ignore-user-config`, so without an explicit `-m` the reviewer would fall
 # back to a packaged default rather than the model this posture was validated
 # against. Overridable for a deliberate experiment; never left to ambient
-# config (harmonic-forge#448).
-VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-gpt-5.6-sol}"
+# config (harmonic-forge#448). Re-pinned to gpt-6-sol by harmonic-forge#848.
+VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-gpt-6-sol}"
 
 # harmonic-forge#482. The previous pin, `gemini-2.5-pro`, was hardcoded at the
 # call site since harmonic-forge#366 and now fails every Gemini invocation:
@@ -699,9 +699,11 @@ for family in "${targets[@]}"; do
   envelope_err="$(mktemp)"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
-           --arg verify_model "claude-opus-5-5" \
+           --arg verify_model "claude-opus-5-5" --arg codex_model "$VERIFY_MODEL" \
            '. + {caller_family:$caller, target_family:$target} +
-            (if $target == "claude" and .posture == "verify" then {verify_model:$verify_model} else {} end)' \
+            (if $target == "claude" and .posture == "verify" then {verify_model:$verify_model}
+             elif $target == "codex" and .posture == "verify" then {verify_model:$codex_model}
+             else {} end)' \
        >"$envelope_out" 2>"$envelope_err"; then
     cat "$envelope_out" >>"$result_tmp"
     cat "$envelope_out"

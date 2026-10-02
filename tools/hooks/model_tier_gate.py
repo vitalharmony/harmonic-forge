@@ -109,9 +109,13 @@ ESCALATING_TIERS = frozenset({"deep"})
 _CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
 _CACHE_TTL = 120
 
+# Both agents' high tiers are FAMILY allowlists; versions float.
 # Claude Code model families are substring-matched against message.model
-# (e.g. "claude-opus-5", "claude-sonnet-5"); Codex models are matched
-# exactly against payload["model"] (e.g. "gpt-5.6-sol", "gpt-5.6-terra").
+# (e.g. "claude-opus-5", "claude-sonnet-5"). Codex models are matched on
+# their family token -- the last `-`-separated token of a `gpt-` id, so
+# "gpt-6-sol" and "gpt-5.6-sol" are both family "sol" (harmonic-forge#848:
+# this was a pinned `CODEX_HIGH = "gpt-5.6-sol"`, which stopped matching the
+# moment gpt-6-sol shipped -- the same staleness #314 fixed for Claude).
 # Families that satisfy a `deep`-tier requirement -- Opus and above.
 # harmonic-forge#314: this was a single `CLAUDE_HIGH = "opus"` substring,
 # correct only while Opus was the family's ceiling. Fable 5 is above Opus,
@@ -119,12 +123,13 @@ _CACHE_TTL = 120
 # deep-tier issue denied the most capable model available and told it to
 # `/model opus`, i.e. to downgrade, on the work that most needs capability.
 #
-# Deliberately an explicit allowlist, not a wider pattern: model names are
-# fluid as new models ship, and a new top tier should require a reviewed
-# one-line addition here rather than being granted implicitly by a match
-# that happens to be broad enough. Do not seed it with speculative names.
+# Deliberately an explicit allowlist of FAMILIES, not a wider pattern: a new
+# version of an allowed family passes with no edit, but a new top FAMILY
+# should require a reviewed one-line addition here rather than being granted
+# implicitly by a match that happens to be broad enough (`gpt-6-solar` must
+# not pass as `sol`). Do not seed either set with speculative names.
 CLAUDE_HIGH_FAMILIES = frozenset({"opus", "fable"})
-CODEX_HIGH = "gpt-5.6-sol"
+CODEX_HIGH_FAMILIES = frozenset({"sol"})
 
 # The former `CLAUDE_LOW`/`CODEX_LOW` constants are gone, not relocated.
 # Both were defined and never read: the gate only ever asks "is this high
@@ -495,6 +500,50 @@ def claude_model_is_high(model: str | None) -> bool:
     return any(family in lowered for family in CLAUDE_HIGH_FAMILIES)
 
 
+def _codex_family(model: object) -> str | None:
+    """The family token of a Codex model id, or None for any other shape.
+
+    `gpt-6-sol` -> `sol`. Case-insensitive, like `claude_model_is_high`. A
+    non-string (None, a number) is None rather than a TypeError: `main()`'s
+    blanket except would turn that exception into an ALLOW (#848 NC2), so an
+    unrecognized shape must read as "not high" and fail closed on `deep`.
+    """
+    if not isinstance(model, str):
+        return None
+    lowered = model.casefold()
+    if not lowered.startswith("gpt-") or "-" not in lowered[len("gpt-"):]:
+        return None
+    return lowered.rsplit("-", 1)[-1]
+
+
+def _codex_is_high(model: object) -> bool:
+    """True when a Codex model id's family is in CODEX_HIGH_FAMILIES."""
+    return _codex_family(model) in CODEX_HIGH_FAMILIES
+
+
+def _codex_switch_hint() -> str:
+    """What a denied Codex session should switch to, naming no version.
+
+    The model configured in `$CODEX_HOME/config.toml` when its family is
+    high; otherwise the family set itself, so a family rename is a visible
+    one-line edit of CODEX_HIGH_FAMILIES rather than an unexplained denial.
+    Any read or parse failure is treated as no configured model.
+    """
+    configured = None
+    try:
+        import tomllib
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        with open(home / "config.toml", "rb") as fh:
+            configured = tomllib.load(fh).get("model")
+    except Exception:
+        configured = None
+    if _codex_is_high(configured):
+        return f"`/model {configured}`"
+    families = ", ".join(sorted(CODEX_HIGH_FAMILIES))
+    return (f"a Sol-family model (a model whose family is in "
+            f"CODEX_HIGH_FAMILIES: {families})")
+
+
 # harmonic-forge#440: a redirection token, optionally fd-prefixed
 # (`>`, `>>`, `2>`, `>>file`, `2>file.log`) but not an fd-duplication
 # target (`&1`, `&2`, ...). Applied per-token after `command_segments`/
@@ -643,7 +692,7 @@ def bash_command_writes_files(command: str) -> bool:
 def required_tier_met(payload: dict, high_required: bool) -> bool:
     if "model" in payload:  # Codex: model is a direct field
         model = payload["model"]
-        is_high = CODEX_HIGH in model
+        is_high = _codex_is_high(model)
     else:  # Claude Code: no model on the payload (harmonic-forge#656 AC4)
         model = session_model.current_model(
             payload.get("transcript_path", ""), payload.get("cwd") or "",
@@ -736,10 +785,11 @@ def _main() -> None:
         # override.
         if required_tier_met(payload, high_required=True):
             _allow()
+        high_hint = _codex_switch_hint() if "model" in payload else "`/model opus`"
         _deny(
             f"Tier lookup failed for issue #{lookup_failed_issue}; refusing a "
             f"code write rather than risking a deep issue on the wrong "
-            f"model. A high-tier model (`/model opus`) is not affected."
+            f"model. A high-tier model ({high_hint}) is not affected."
         )
     if escalating_issue is None:
         _allow()
@@ -747,11 +797,11 @@ def _main() -> None:
     if required_tier_met(payload, high_required=True):
         _allow()
 
-    switch_cmd = "/model gpt-5.6-sol" if "model" in payload else "/model opus"
+    switch_to = _codex_switch_hint() if "model" in payload else "`/model opus`"
     _deny(
         f"Issue #{escalating_issue} is Tier '{escalating_tier}' "
         f"-- harmonic-forge#202 requires the high-tier model for this work. "
-        f"Run `{switch_cmd}` and retry, or set LANE_MODEL to override."
+        f"Switch to {switch_to} and retry, or set LANE_MODEL to override."
     )
 
 

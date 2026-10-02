@@ -31,6 +31,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parent / "cross_family_call.sh"
 
@@ -191,6 +192,11 @@ class TestVerifyPostureGuards(unittest.TestCase):
                      b"--output-format", b"stream-json", b"--verbose"):
             self.assertIn(flag, argv)
         self.assertEqual(argv[argv.index(b"--model") + 1], b"claude-opus-5-5")
+        # harmonic-forge#848 AC8: a Codex caller is reviewed by Claude.
+        envelope = json.loads([ln for ln in result.stdout.splitlines() if ln.startswith("{")][-1])
+        self.assertEqual(envelope["caller_family"], "codex")
+        self.assertEqual(envelope["target_family"], "claude")
+        self.assertEqual(envelope.get("verify_model"), "claude-opus-5-5")
 
     def test_verify_rejects_gemini_caller(self):
         result = run_script("--caller", "gemini", "--families", "2",
@@ -1253,6 +1259,38 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
         model = argv.index("-m")
         self.assertTrue(argv[model + 1], "the verify model stays pinned")
 
+    def _envelope(self, *args: str) -> dict:
+        result = run_script(*args, "--brief", str(self.brief), path=self.path)
+        lines = [ln for ln in result.stdout.splitlines() if ln.startswith("{")]
+        self.assertTrue(lines, result.stderr)
+        return json.loads(lines[-1])
+
+    def test_codex_verify_defaults_to_gpt_6_sol_and_records_it(self) -> None:
+        """harmonic-forge#848 AC7: the reviewer is re-pinned, and the envelope
+        records the model that actually ran so the label can name it."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CROSS_FAMILY_VERIFY_MODEL", None)
+            argv = self.codex_argv("--caller", "claude", "--families", "2",
+                                   "--posture", "verify", "--cwd", self.tmp.name)
+            self.assertEqual(argv[argv.index("-m") + 1], "gpt-6-sol")
+            env = self._envelope("--caller", "claude", "--families", "2",
+                                 "--posture", "verify", "--cwd", self.tmp.name)
+        self.assertEqual(env.get("verify_model"), "gpt-6-sol")
+
+    def test_codex_verify_override_flows_to_argv_and_envelope(self) -> None:
+        with patch.dict(os.environ, {"CROSS_FAMILY_VERIFY_MODEL": "gpt-x-test"}):
+            argv = self.codex_argv("--caller", "claude", "--families", "2",
+                                   "--posture", "verify", "--cwd", self.tmp.name)
+            env = self._envelope("--caller", "claude", "--families", "2",
+                                 "--posture", "verify", "--cwd", self.tmp.name)
+        self.assertEqual(argv[argv.index("-m") + 1], "gpt-x-test")
+        self.assertEqual(env.get("verify_model"), "gpt-x-test")
+
+    def test_non_verify_codex_posture_records_no_verify_model(self) -> None:
+        env = self._envelope("--caller", "claude", "--families", "2",
+                             "--posture", "read-only")
+        self.assertNotIn("verify_model", env)
+
     def test_read_only_posture_gets_no_search(self) -> None:
         argv = self.codex_argv("--caller", "claude", "--families", "2",
                                "--posture", "read-only")
@@ -1401,7 +1439,8 @@ class TestPermittedShapeIsRunnable(unittest.TestCase):
         """The argv the hook permits, built from its own constants rather than
         retyped here — a copy would drift silently, which is the defect."""
         module = self._hook_module()
-        argv = list(module._CROSS_FAMILY_PERMITTED_ARGS) + [str(self.brief)]
+        head = next(h for h in module._CROSS_FAMILY_PERMITTED_HEADS if h[1] == "claude")
+        argv = list(head) + [str(self.brief)]
         for flag in module._CROSS_FAMILY_TRAILING_ARGS:
             argv.append(flag)
             argv.append(str(self.scratch))
