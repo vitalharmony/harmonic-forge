@@ -98,8 +98,8 @@ case "$posture" in
   read-only|probe|verify) ;;
   *) abort_preflight "--posture must be read-only, probe, or verify" ;;
 esac
-if [ -z "$brief" ] || [ ! -f "$brief" ]; then
-  abort_preflight "--brief PATH must name an existing file"
+if [ -z "$brief" ] || [ ! -f "$brief" ] || [ ! -r "$brief" ]; then
+  abort_preflight "--brief PATH must name an existing, readable file"
 fi
 if [ "$posture" = probe ] || [ "$posture" = verify ]; then
   if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
@@ -302,15 +302,19 @@ EOF
 GEMINI_STDIN_INSTRUCTION="Carry out the instructions above, from stdin, exactly."
 
 prompt_text() {
-  local posture="$1" brief="$2" family="${3:-}"
+  local posture="$1" brief="$2" family="${3:-}" brief_text
+  # harmonic-forge#857 preclose: read the brief in an assignment, whose exit
+  # status survives (a `$(cat)` inside printf's arguments did not), so an
+  # unreadable brief fails the run instead of sending the contract alone.
+  brief_text="$(cat "$brief")" || return 1
   if [ "$posture" = verify ]; then
     if [ "$family" = claude ]; then
-      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
+      printf '%s%s%s' "$brief_text" "$REPORT_CONTRACT" "$CLAUDE_VERIFY_CONTRACT"
     else
-      printf '%s%s%s' "$(cat "$brief")" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
+      printf '%s%s%s' "$brief_text" "$REPORT_CONTRACT" "$VERIFY_CONTRACT"
     fi
   else
-    printf '%s%s' "$(cat "$brief")" "$REPORT_CONTRACT"
+    printf '%s%s' "$brief_text" "$REPORT_CONTRACT"
   fi
 }
 
@@ -558,16 +562,12 @@ emit_envelope() {
   # envelope, which is strictly better than the old behaviour on that path.
   case "$family" in
     claude)
-      if [ "$posture" = verify ]; then
-        jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-        jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
-      else
-        jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-        # `claude -p --output-format json` prints ONE object (verified live,
-        # harmonic-forge#857 AC4); `.[0]` on it errored, so every read-only
-        # Claude report was `invalid-report`. An array is still tolerated.
-        jq -r 'if type == "array" then .[0] else . end | .result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
-      fi
+      # harmonic-forge#857 (sticky-wicket PATCH): one extractor for both
+      # postures, by TYPE, never by position: the last successful `result`
+      # event. `--output-format json` prints one such object and stream-json
+      # prints several events; a non-success result is never a report.
+      jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
+      jq -rs '[.[] | select(.type == "result" and .subtype == "success")][-1].result // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       ;;
     codex)
       jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
@@ -680,6 +680,13 @@ overall_status=0
 preserve_dir="${CROSS_FAMILY_PRESERVE_DIR:-${TMPDIR:-/tmp}}"
 
 result_tmp="$(mktemp)"
+# harmonic-forge#857 preclose: the prompt file holds the whole brief (often an
+# unmerged diff), so a killed run must not leave it behind. INT and TERM exit,
+# which runs the EXIT trap.
+prompt_file=""
+trap 'rm -f "${prompt_file:-}"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 for family in "${targets[@]}"; do
   tmp_out="$(mktemp)"
   # harmonic-forge#483: captured here rather than discarded inside each

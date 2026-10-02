@@ -63,6 +63,11 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - rules/universal-lane1.md  |  6 ++++++
 - tools/rules/registry.toml | 32 ++++++++++++++++++++++++++++++++
 - 4 files changed, 92 insertions(+)
+## fix(cross-family): sticky-wicket PATCH (pass-1 cluster) -- Claude has one extractor for both postures, the last successful result event selected by type; an EXIT trap (INT/TERM exit through it) removes the prompt file; an unreadable brief fails preflight and prompt assembly instead of sending the contract alone; a verify-posture stdin test covers the Claude verify line (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      |  39 ++++++----
+- tools/lane/test_cross_family_call.py | 145 ++++++++++++++++++++++++++++++++++-
+- 2 files changed, 164 insertions(+), 20 deletions(-)
+
 ## fix(cross-family): the Claude read-only branch parses the single JSON object 'claude -p --output-format json' prints (it read .[0].result, so every read-only Claude report was invalid-report); found by the AC4 live call (harmonic-forge#857)
 - tools/lane/cross_family_call.sh      | 5 ++++-
 - tools/lane/test_cross_family_call.py | 6 +++---

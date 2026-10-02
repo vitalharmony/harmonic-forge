@@ -742,10 +742,13 @@ class TestOversizedNativeStream(unittest.TestCase):
         families need the `[0]` index. Without it `native` would silently
         become a one-element list — valid JSON, wrong shape, and invisible to
         any test that only checked the envelope's keys."""
-        env = emit_envelope("claude", "read-only", 0,
-                            json.dumps({"result": json.dumps({"findings": []})}))
+        # harmonic-forge#857 (sticky-wicket PATCH): Claude now has one
+        # extractor for both postures, by event type, so its native value is
+        # the slurped event list (like Codex); Gemini stays the single object.
+        env = emit_envelope("gemini", "read-only", 0,
+                            json.dumps({"response": json.dumps({"findings": []})}))
         self.assertIsInstance(env["native"], dict)
-        self.assertIn("result", env["native"])
+        self.assertIn("response", env["native"])
 
     def test_a_malformed_native_stream_still_produces_an_envelope(self):
         """The `|| null` fallback the Codex branch already had, now on all
@@ -1488,7 +1491,7 @@ class StdinPromptTests(unittest.TestCase):
                  '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n',
         # `claude -p --output-format json` prints one object (verified live,
         # harmonic-forge#857 AC4), which the read-only branch must parse.
-        "claude": 'echo \'{"type":"result","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
+        "claude": 'echo \'{"type":"result","subtype":"success","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
         "gemini": 'echo \'{"response":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
     }
 
@@ -1547,3 +1550,137 @@ class StdinPromptTests(unittest.TestCase):
 
     def test_gemini_prompt_on_stdin(self) -> None:
         self._assert_prompt_on_stdin("gemini", self._run("claude", "3", "gemini"))
+
+
+class ClaudeExtractorByTypeTests(unittest.TestCase):
+    """harmonic-forge#857 sticky-wicket PATCH: Claude's report is the LAST
+    successful `result` event, selected by type, in every posture."""
+
+    REPORT = json.dumps({"summary": "s", "findings": [{"claim": "real"}]})
+    EMPTY = json.dumps({"summary": "no defect found", "findings": []})
+
+    def test_a_system_event_before_the_result_does_not_hide_the_report(self):
+        native = "\n".join([json.dumps({"type": "system", "subtype": "init"}),
+                            json.dumps({"type": "result", "subtype": "success", "result": self.REPORT})])
+        env = emit_envelope("claude", "read-only", 0, native)
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(env["report"]["findings"], [{"claim": "real"}])
+
+    def test_a_non_success_result_is_never_a_report(self):
+        native = json.dumps({"type": "result", "subtype": "error_during_execution",
+                             "is_error": True, "result": self.EMPTY})
+        env = emit_envelope("claude", "read-only", 0, native)
+        self.assertEqual(env["status"], "invalid-report")
+
+    def test_the_last_success_result_wins(self):
+        native = "\n".join([json.dumps({"type": "result", "subtype": "success", "result": self.EMPTY}),
+                            json.dumps({"type": "result", "subtype": "success", "result": self.REPORT})])
+        env = emit_envelope("claude", "read-only", 0, native)
+        self.assertEqual(env["report"]["findings"], [{"claim": "real"}])
+
+
+class PromptFileHygieneTests(unittest.TestCase):
+    """harmonic-forge#857 preclose: the prompt file never outlives the run,
+    and an unreadable brief fails closed instead of reviewing the contract."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.tmpdir = self.root / "tmp"
+        self.tmpdir.mkdir()
+        self.stub_dir = self.root / "stubbin"
+        self.stub_dir.mkdir()
+        self.brief = self.root / "brief.md"
+        self.brief.write_text("UNIQUE-BRIEF-MARKER-857\n")
+        self.cwd = self.root / "scratch"
+        self.cwd.mkdir()
+
+    def _stub(self, body: str) -> None:
+        for name in ("codex", "claude", "gemini"):
+            stub = self.stub_dir / name
+            stub.write_text("#!/usr/bin/env bash\n" + body)
+            stub.chmod(0o755)
+
+    def _run(self) -> subprocess.CompletedProcess:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   TMPDIR=str(self.tmpdir))
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "claude", "--families", "2", "--posture", "read-only",
+             "--brief", str(self.brief), "--cwd", str(self.cwd)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=60)
+
+    def _leaked(self) -> list[Path]:
+        return [f for f in self.tmpdir.rglob("*")
+                if f.is_file() and "UNIQUE-BRIEF-MARKER-857" in f.read_text(errors="ignore")]
+
+    def test_a_killed_run_leaves_no_prompt_file(self) -> None:
+        # The stub drains stdin, then TERMs the script that launched it.
+        self._stub('cat >/dev/null\nkill -TERM "$PPID"\nsleep 2\n')
+        self._run()
+        self.assertEqual(self._leaked(), [])
+
+    def test_an_unreadable_brief_fails_closed(self) -> None:
+        self._stub('cat >/dev/null\necho \'{"type":"item.completed","item":{"type":"agent_message",'
+                   '"text":"{\\"summary\\":\\"no defect found\\",\\"findings\\":[]}"}}\'\n')
+        self.brief.chmod(0)
+        self.addCleanup(self.brief.chmod, 0o644)
+        if os.access(self.brief, os.R_OK):
+            self.skipTest("running as a user who can read mode-000 files")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("readable", result.stderr)
+        self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
+
+
+class VerifyPostureStdinTests(StdinPromptTests):
+    """harmonic-forge#857 preclose (test-honesty): the Claude VERIFY arm reads
+    the prompt on stdin too; reverting only that line must fail here."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        root = Path(self.tmp.name)
+        report = json.dumps({"summary": "ok", "findings": [], "assumptions": [
+            {"assumption": "a", "verdict": "confirmed", "evidence": "Read x"}]})
+        events = [
+            {"type": "system", "subtype": "init", "tools": ["Glob", "Grep", "Read"],
+             "mcp_servers": [], "model": "claude-opus-5-5"},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "u1", "name": "Read"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u1"}]}},
+            {"type": "result", "subtype": "success", "result": report},
+        ]
+        native = root / "verify-native.jsonl"
+        native.write_text("".join(json.dumps(e) + "\n" for e in events))
+        stub = self.stub_dir / "claude"
+        stub.write_text('#!/usr/bin/env bash\n'
+                        f'cat > "{root}/claude.stdin"\n'
+                        f'printf "%s\\0" "$@" > "{root}/claude.argv"\n'
+                        f'cat "{native}"\n')
+        stub.chmod(0o755)
+
+    def test_codex_prompt_on_stdin(self) -> None:
+        self.skipTest("verify posture routes Codex callers to Claude only")
+
+    def test_gemini_prompt_on_stdin(self) -> None:
+        self.skipTest("verify is unavailable for Gemini")
+
+    def test_claude_prompt_on_stdin(self) -> None:
+        envelope = self._run_verify()
+        root = Path(self.tmp.name)
+        stdin = (root / "claude.stdin").read_text()
+        argv = (root / "claude.argv").read_bytes()
+        self.assertTrue(stdin.startswith(self.brief_text.rstrip("\n")))
+        self.assertLess(len(argv), 4096)
+        self.assertNotIn(b"brief line", argv)
+        self.assertEqual(envelope["status"], "ok", envelope)
+
+    def _run_verify(self) -> dict:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+        out = Path(self.tmp.name) / "verify-envelope.json"
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "codex", "--families", "2", "--posture", "verify",
+             "--brief", str(self.brief), "--cwd", str(self.cwd), "--out", str(out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(out.read_text().splitlines()[0])
+
