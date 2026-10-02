@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(belt): round-approval fixtures in post_lane_discussion and the raw-post hook attest their own unique bodies, as #851's content-bound footers require (harmonic-forge#851)
+- tools/gh/test_post_lane_discussion_kinds.py     | 6 +++++-
+- tools/hooks/test_enforce_gate_ci_on_raw_post.py | 5 ++++-
+- 2 files changed, 9 insertions(+), 2 deletions(-)
+
 ## fix(belt): sticky-wicket PATCH for reforge pass 1 -- only a comment's last marker can be its footer; a digest-less footer never nominates a kind; a repeated attested digest is a replay and is UNREADABLE (first attestation wins); _is_round_artifact reads the attested footer and unquoted text, failing closed on an unreadable round kind (harmonic-forge#851)
 - tools/gh/test_check_lane3_ready.py    | 96 ++++++++++++++++++++++++++++++-----
 - tools/gh/test_handoff_footer.py       | 65 +++++++++++++++++-------

@@ -517,9 +517,13 @@ class RoundApprovalTests(unittest.TestCase):
 
     @staticmethod
     def _c(cid, kind, sha="21e587db", tier="W"):
+        # harmonic-forge#851: an authority footer must attest its own body, and
+        # each body is unique (identical attested text is refused as a replay).
         prefix = f"Write tier {tier} throughout.\n\n" if kind == "sweep" else ""
+        text = f"{prefix}b {cid}"
+        digest = __import__("hashlib").sha256(text.encode()).hexdigest()
         return {"id": cid, "html_url": f"https://x/issues/1#issuecomment-{cid}",
-                "body": f"{prefix}b\n\n<!-- l1-post v1; kind={kind}; sha={sha} -->"}
+                "body": f"{text}\n\n<!-- l1-post v1; kind={kind}; sha={sha}; body-sha256={digest} -->"}
 
     def _check(self, comments, body=None):
         # Patch the module object `post_lane_discussion` actually holds, not
