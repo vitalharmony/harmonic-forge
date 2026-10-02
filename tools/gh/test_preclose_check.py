@@ -861,7 +861,10 @@ class OwnModelTests(unittest.TestCase):
         not-triggered branch too, so --own-model is required there as well."""
         argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
                 "--complete", "--findings", "/dev/null", "--not-triggered"]
+        # complete() is stubbed so a parser that wrongly lets this through
+        # fails fast here instead of running a real pass.
         with patch.object(sys, "argv", argv), \
+             patch.object(preclose, "complete", return_value=0), \
              patch("sys.stderr", new_callable=io.StringIO) as err, \
              self.assertRaises(SystemExit) as done:
             preclose.main()
@@ -878,6 +881,7 @@ class OwnModelTests(unittest.TestCase):
         argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
                 "--complete", "--findings", "/dev/null", "--envelope", "/dev/null"]
         with patch.object(sys, "argv", argv), \
+             patch.object(preclose, "complete", return_value=0), \
              patch("sys.stderr", new_callable=io.StringIO) as err, \
              self.assertRaises(SystemExit) as done:
             preclose.main()

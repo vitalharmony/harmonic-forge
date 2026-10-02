@@ -3,6 +3,13 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(preclose): stub complete() in the --own-model parser tests so a regressed parser fails fast instead of running a pass (harmonic-forge#848)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/test_preclose_check.py | 4 ++++
+- 1 file changed, 4 insertions(+)
+
 ## fix(preclose): bind the cross-family label to the calling session's family, require --own-model on every --complete, and test the call sites (harmonic-forge#848 preclose pass 1 survivors 1-5)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
