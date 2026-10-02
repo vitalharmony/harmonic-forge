@@ -137,7 +137,8 @@ class GrantRefusalTests(unittest.TestCase):
         self.assertEqual(sorted(seen["files"]), ["scripts/_lib.py", "scripts/apply.py"])
 
     def test_a_wrong_sha_on_the_authorized_line_is_not_masked_by_text_elsewhere(self):
-        body = ae_body(sha="d" * 40) + f"\n\nBackground: gated SHA {GATED}."
+        # The correct SHA comes first, so a whole-body search would find it.
+        body = f"Background: gated SHA {GATED}.\n\n" + ae_body(sha="d" * 40)
         self.assertIn("does not name the gated SHA", self.refusal(body=body))
 
     def test_a_gate_link_only_outside_the_authorized_line_does_not_count(self):
@@ -198,7 +199,9 @@ class CarryForwardTests(unittest.TestCase):
 
 class ValidateGrantAeTests(unittest.TestCase):
     def test_a_grant_ae_cannot_carry_a_no_pr_override(self):
+        # The thread check passes, so only the override refusal can stop it.
         with patch.object(clr, "fetch_comments", return_value=[gate()]), \
+             patch.object(grant, "grant_refusal", return_value=None), \
              self.assertRaises(SystemExit):
             l1_post.validate_grant_ae(ae_body(), REPO, ISSUE, GATED, "merged already")
 
