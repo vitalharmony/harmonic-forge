@@ -231,6 +231,28 @@ misclassification then costs one line of operator attention instead of
 being discovered after the wrong thing happened.
 <!-- /R-0116 -->
 
+<!-- R-0375 -->
+**Belt events queue the same way, in all three lanes.** A belt event that
+arrives while a lane is mid-task (a Monitor line, or work the suspenders loop
+discovers) waits behind the current task. The task runs to its finish line,
+which is that lane's status post: `L2D`/`L2S`/`L2B` for Lane 2,
+`L3S`/`L3P`/`L3F`/`L3B` for Lane 3, and for Lane 1 the post that ends the
+task (a handoff, a review, a `ready-for-l3`, an AE and sweep, a rework, or
+the close comment). The three carve-outs above apply to operator chat only,
+and `NOW` remains the operator's interrupt; a belt event is not a carve-out.
+The honesty line above applies: name the queued event and what it waits
+behind, e.g. `"queued-for-l2 H1897 — queued behind H1887, finishing to L2D"`.
+
+Only an event the belt re-offers is deferred. A `queued-for-<lane>` line is
+re-emitted on every belt re-arm while its marker is still the newest
+classified comment, and retracted with `left-queue-for-<lane>` when it
+clears, so deferring it loses nothing. A comment-watch line is emitted once,
+so a lane handles one that carries owed work as it does today: for Lane 1,
+every owed kind except `plan` and `spec`; for Lane 2, the Plan-First
+ratification `discussion`. While a deferred task's wait runs, see the
+background-wait rule in `3-lane-protocol.md` (R-0376).
+<!-- /R-0375 -->
+
 ## `NOW` — interrupt
 
 Grammar: **`NOW` + trailing instruction**, e.g. `NOW stop and look at

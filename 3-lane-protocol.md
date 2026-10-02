@@ -892,6 +892,41 @@ Moved to `universal-agent.md`'s "Shared Working Directory — Commit Before
 You Yield" section (harmonic-forge#170) — this is a cross-lane discipline
 rule, not protocol-specific, and applies identically to every lane/tool.
 
+## Long waits run in the background
+
+<!-- R-0376 -->
+**A step expected to take more than about two minutes runs in the
+background**: a CI run, the preclose panel, `kill-check`, a cross-family
+call, a full test suite, a pitch-inspection or sticky-wicket agent.
+
+**While it runs, the lane does read-only work on other items.** Reading
+threads, reviewing a plan or a completion, drafting a handoff or spec,
+preparing a brief, and posting lane comments (a review, handoff, AE and
+sweep, `ready-for-l3`, rework) are allowed. Nothing that writes to git in
+any checkout is: no commit, push, rebase, branch switch, `gh pr create`,
+`gh pr merge` or `mise run restart` on another item. A lane has one
+checkout, and it belongs to the waiting task.
+
+**The waiting task resumes as soon as its wait completes**, at the end of
+the read-only step in hand, ahead of any other queued item.
+
+| | Claude Code | Codex |
+|---|---|---|
+| Start in the background | `Monitor` for an external, indeterminate wait (CI, a comment landing); `Bash` with `run_in_background: true` for a bounded local command (R-0086); `Agent` for a subagent | `exec_command` with a short `yield_time_ms` (e.g. 1000); a still-running command returns a `session_id` |
+| Learn it finished | The harness re-invokes the session with a notification; do not poll | No notification. Poll with `write_stdin` (`session_id`, `chars: ""`, `yield_time_ms`), which returns new output and, once finished, `exit_code` |
+| When to check | On the notification | After each read-only step |
+| Parallel agents | `Agent` tool | `collaboration.spawn_agent` (at most four active, including the session); `collaboration.wait_agent` (`timeout_ms`) |
+
+**A Codex lane does not end a turn with an unpolled background session.**
+When the read-only work runs out first, it foregrounds the rest of the wait
+(polls until `exit_code`) and takes no further item. In a `codex exec` lane
+(`tools/lane/lane-queue-run`) the turn is the process, so this keeps the
+wait inside the run that started it.
+
+**Recovery after compaction or restart** is the belt's `queued-for-<lane>`
+re-offer for the waiting task's issue; this rule adds no state.
+<!-- /R-0376 -->
+
 ## HITL Gate Language
 
 <!-- R-0202 -->
