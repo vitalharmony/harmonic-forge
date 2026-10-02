@@ -277,7 +277,9 @@ harmonic-forge#317's capability-tier work for Gemini's version of this.*
 <!-- /R-0164 -->
 <!-- R-0165 -->
 - Submits the test spec for Tech Lead HITL approval
-  (`templates/hitl-test-review.md`) before executing anything.
+  (`templates/hitl-test-review.md`) before executing anything. At Tier R or
+  Tier W, in a repo that sets `protocol.auto_ae`, Lane 1's acceptance under
+  R-0370 substitutes for that approval; Tier P and live-mutating work never.
 <!-- /R-0165 -->
 <!-- R-0166 -->
 - After approval, executes tests against Lane 2's implementation. See
@@ -1003,7 +1005,8 @@ categorically not authorized to run — and both refusals were correct.
 
 <!-- R-0208 -->
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
-TCs in an already-approved test spec, distinct from approving the spec's
+TCs in an already-approved test spec (or Lane 1's, under R-0370's auto-AE
+toggle at Tier R/W only), distinct from approving the spec's
 content (that's the `L3S` → HITL-approval step itself). Like every other
 trigger phrase in this section, `AE` must be posted as an actual issue
 comment, not only said to Lane 1 in chat — Lane 3 verifies it
@@ -1019,8 +1022,39 @@ list are what the operator still owns: a production AE for a case this AE did
 not authorize, a `BATCH`, or a `close`. A Lane 3 session that is not watching
 the issue is Lane 3's gap to report, by arming its belt or naming the relay it
 needs (`skills/lane3-gate-platform/SKILL.md`), not a step Lane 1 assigns to the
-operator.
+operator. A Claude Code Lane 3 belt prints the posted pair as
+`queued-for-l3 kind=sweep owes=gate` (harmonic-forge#851); that event is this
+trigger, not a new authority.
 <!-- /R-0208 -->
+
+<!-- R-0370 -->
+**Auto-AE: a per-repo toggle lets Lane 1 post a routine AE itself, at Tier R
+or Tier W only** (harmonic-forge#851). A repo opts in with
+`[project.protocol] auto_ae = true` in `projects.toml`. It is absent, meaning
+off, by default, and no shipped entry sets it. When it is on, Lane 1 may post
+the AE and its sweep together with `l1-post --kind ae-and-sweep --auto-ae`.
+Lane 1's acceptance of the spec then substitutes for HITL approval (R-0124,
+R-0165), and its AE for the operator's (R-0208).
+
+**The carve-out is fixed, not configurable.** Tier P, or a handoff posted
+`--mutates-live`, always needs the operator's manual AE. So does a spec that
+declares no write tier, because silence is never read as Tier R. So does a
+handoff whose footer predates the `mutates-live` field. No flag, manifest key
+or environment variable relaxes this. A spec's declared tier is its author's
+statement, not an inspection of what each case runs.
+
+**Enforced twice.** `l1_post.py` refuses at the poster, posting neither half.
+`check_lane3_ready.resolve_gate_authority` refuses at the consumer, before the
+SHA match and before carry-forward, so a later `ready-for-l3` cannot carry a
+refused auto-AE onto a new SHA. An auto-AE's footer carries
+`authorized-by=auto-ae`, and its body a fixed, tool-written
+**Authorized under:** line.
+
+**The operator's standing production grant of 2026-09-26** (Tier R PASS → Lane
+1 posts the production AE in the same turn) is an operator-given AE. It stays
+on the manual path, citing the grant, and never carries `authorized-by=auto-ae`.
+This toggle neither creates, widens nor revokes it.
+<!-- /R-0370 -->
 
 <!-- R-0209 -->
 **A routine retest after a FAIL does not need a new AE/sweep pair.**
@@ -1156,7 +1190,8 @@ preview is not the document.
    structurally). Lane 3 derives a test spec from that output and submits
    it for HITL approval (`templates/hitl-test-review.md`) before executing
    anything. After approval, Lane 3 executes and posts its gate report as
-   a comment on #N.
+   a comment on #N. A `queued-for-l3 kind=ready-for-l3 owes=spec` belt event
+   (harmonic-forge#851) is equivalent to "Spec H<N>".
 <!-- /R-0220 -->
 <!-- R-0221 -->
 5. **HITL says "Lane 3 done for #N"** (→ Lane 1). Lane 1 reads #N's Lane 3

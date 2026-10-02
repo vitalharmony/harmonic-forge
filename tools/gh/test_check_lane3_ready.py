@@ -684,6 +684,71 @@ class ReworkRoundBoundaryTests(unittest.TestCase):
         self._main([rework] + self.APPROVED + [_comment(14, "ready-for-l3", self.T, sha="2222222")])
 
 
+class AutoAeAuthorityTests(unittest.TestCase):
+    """harmonic-forge#851 AC3.6: the consumer half of the fixed carve-out."""
+
+    NEW_SHA = "b" * 40
+
+    @staticmethod
+    def _url(cid: int) -> str:
+        return f"https://github.com/vitalharmony/hrse/issues/1#issuecomment-{cid}"
+
+    def _handoff(self, cid: int, mutates_live: str | None) -> dict:
+        field = f" mutates-live={mutates_live};" if mutates_live else ""
+        return {"id": cid, "created_at": "2026-10-02T01:00:00Z", "html_url": self._url(cid),
+                "body": f"## Handoff\n\n<!-- l1-post v1; kind=handoff; plan-first=false;{field} "
+                        f"sha={DEFAULT_SHA} -->"}
+
+    def _auto_ae(self, cid: int) -> dict:
+        return {"id": cid, "created_at": "2026-10-02T02:00:00Z", "html_url": self._url(cid),
+                "body": "**Authorized under:** the standing auto-AE toggle\n\n"
+                        f"<!-- l1-post v1; kind=ae; authorized-by=auto-ae; sha={DEFAULT_SHA} -->"}
+
+    def _thread(self, mutates_live="false", tier="W"):
+        return [self._handoff(1, mutates_live), self._auto_ae(2),
+                _comment(3, "sweep", "2026-10-02T02:00:01Z", tier=tier)]
+
+    def test_accepts_auto_ae_over_tier_w_on_a_safe_handoff(self):
+        authority, message = c.resolve_gate_authority(self._thread(), DEFAULT_SHA)
+        self.assertIsNotNone(authority, message)
+
+    def test_refuses_auto_ae_over_tier_p_sweep(self):
+        authority, message = c.resolve_gate_authority(self._thread(tier="P"), DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("auto-AE authorizes Tier R or W only", message)
+
+    def test_refuses_auto_ae_on_mutates_live_handoff(self):
+        authority, message = c.resolve_gate_authority(self._thread("true"), DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("mutates-live=true", message)
+
+    def test_refuses_auto_ae_on_legacy_handoff(self):
+        authority, message = c.resolve_gate_authority(self._thread(None), DEFAULT_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("carries no mutates-live field", message)
+
+    def test_ready_for_l3_does_not_carry_refused_auto_ae(self):
+        thread = self._thread("true") + [
+            _comment(4, "ready-for-l3", "2026-10-02T03:00:00Z", sha=self.NEW_SHA)]
+        authority, message = c.resolve_gate_authority(thread, self.NEW_SHA)
+        self.assertIsNone(authority)
+        self.assertIn("auto-AE toggle", message)
+
+    def test_manual_ae_over_tier_p_unchanged(self):
+        thread = [self._handoff(1, None), _comment(2, "ae", "2026-10-02T02:00:00Z"),
+                  _comment(3, "sweep", "2026-10-02T02:00:01Z", tier="P")]
+        authority, message = c.resolve_gate_authority(thread, DEFAULT_SHA)
+        self.assertIsNotNone(authority, message)
+
+    def test_quoted_auto_ae_marker_does_not_count(self):
+        ae = _comment(2, "ae", "2026-10-02T02:00:00Z")
+        ae["body"] = "```\nkind=ae; authorized-by=auto-ae;\n```\n" + ae["body"]
+        thread = [self._handoff(1, "true"), ae,
+                  _comment(3, "sweep", "2026-10-02T02:00:01Z", tier="P")]
+        authority, message = c.resolve_gate_authority(thread, DEFAULT_SHA)
+        self.assertIsNotNone(authority, message)
+
+
 if __name__ == "__main__":
     unittest.main()
 

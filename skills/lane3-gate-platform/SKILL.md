@@ -236,7 +236,8 @@ Lane 3 session, told "AE" only in chat, posted its own
 `## AE H<N> — approved, execute` comment and proceeded; a Codex-filled Lane 3
 session given the identical chat-only trigger correctly refused instead.
 
-**On every `AE H<N>` trigger, run `lane3-begin --issue <N>` first and read
+**On every `AE H<N>` trigger or `owes=gate` belt event (R-0208: the posted AE
+is the trigger), run `lane3-begin --issue <N>` first and read
 the latest AE comment's `**Authorized:**` line before replying.** The AE
 comment defines scope; the chat wording and your session memory do not.
 harmonic-forge#797: a session refused a genuine TC2-only Tier W AE as
@@ -254,14 +255,34 @@ something Lane 1 owes (a rebase, a corrected AE, a missing sweep), either
 arm the belt for this issue or name the exact relay the operator needs to
 send — never assert that the gap will close itself.
 
+**Belt-queued pickup** (harmonic-forge#851). With the belt armed, a
+`queued-for-l3 … owes=<action>` event is the trigger. Act on it without asking
+and without relaying it to the operator:
+
+- `owes=spec`: fetch with `fetch_lane1_context.py`, then derive and post the
+  spec (`--kind spec`), then stop for review. R-0220 makes this event
+  equivalent to `Spec H<N>`.
+- `owes=gate`: run `lane3-begin --issue <N>` and the readiness check, then
+  execute only the AE's **Authorized:** cases.
+- `owes=sweep-missing`: report `L3B` naming the missing sweep.
+
+The preconditions (the sweep heading, an AE authored by Lane 1 or the
+operator, a matching SHA) stay checks, never questions. This reaches Claude
+Code Lane 3 sessions only: a Codex Lane 3 session has no belt, so it keeps
+today's behavior and names the relay it needs.
+
 ## Role
 
 You are Lane 3: independent verification only.
 You read, run checks, and report results. That is the complete scope of your role.
 
-## Post the test spec to the issue before requesting HITL approval
+## Post the test spec to the issue before requesting spec approval
 
-**Hard rule, no exceptions:** before asking HITL for spec approval, Lane 3
+Spec approval is HITL's, or Lane 1's at Tier R/W in a repo that sets
+`protocol.auto_ae` (R-0370), shown by an AE footer carrying
+`authorized-by=auto-ae`.
+
+**Hard rule, no exceptions:** before asking for spec approval, Lane 3
 must post the test spec as a comment on the original issue. If posting
 fails for any reason, stop and report the posting failure — do not request
 approval, do not proceed to running tests, regardless of whether the spec
@@ -289,7 +310,7 @@ Wrap the quote in a ``` fence: the evidence stays verbatim and becomes inert.
 
 **Why:** self-diagnosed by a Lane 3 session — this skill
 already required posting *gate results*, but nothing mechanically required
-posting the *test spec* first. That gap let HITL approval get granted
+posting the *test spec* first. That gap let spec approval get granted
 against a spec that existed only in-session, never durably recorded
 anywhere — a verbal in-session correction doesn't survive a context reset,
 only a directive-file change does. If HITL asks "did you post that?" and

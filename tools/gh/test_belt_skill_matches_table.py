@@ -180,5 +180,20 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
         self.assertNotIn("--sweep-for", entries[0]["argv"])
 
 
+class ObligationsTableMatchesOwesTests(unittest.TestCase):
+    """harmonic-forge#851 AC2.3: `SKILL.md` rule 9's table is the code's
+    `OWES` table, row for row. A session acts on the doc; the belt prints
+    the code. They must never name different obligations."""
+
+    _ROW_RE = re.compile(r"^\s*\|\s*(l[123])\s*\|\s*`([\w-]+)`\s*\|", re.MULTILINE)
+
+    def test_rule_9_rows_equal_owes(self):
+        documented = set(self._ROW_RE.findall(_SKILL_MD.read_text(encoding="utf-8")))
+        expected = {(lane, owes) for lane, kinds in watch_lane_posts.OWES.items()
+                    for owes in kinds.values()}
+        expected.add(("l2", watch_lane_posts.PLAN_FIRST_OWES))
+        self.assertEqual(documented, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

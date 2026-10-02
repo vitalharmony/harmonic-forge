@@ -199,6 +199,14 @@ def by_repo(path: Path | None = None) -> dict[str, Project]:
     return {p.repo: p for p in load(path) if p.repo}
 
 
+def auto_ae_enabled(repo: str, path: Path | None = None) -> bool:
+    """harmonic-forge#851: True only when `repo`'s `[project.protocol]` sets
+    `auto_ae = true`. An absent repo, a repo with no protocol table, and an
+    unset key are all off."""
+    project = by_repo(path).get(normalize_repo(repo))
+    return bool(project and project.protocol and project.protocol.auto_ae)
+
+
 def repo_boards(path: Path | None = None) -> dict[str, tuple[str, str]]:
     """`{owner/name: (board_owner, board_number)}` — replaces the two copies."""
     return {repo: project.board

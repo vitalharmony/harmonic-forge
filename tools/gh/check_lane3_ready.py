@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
 
+from _handoff_footer import newest_handoff_mutates_live  # noqa: E402
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
@@ -119,6 +120,35 @@ def latest_by_kind(comments: list[dict], kind: str) -> dict | None:
     # resolution, and harmonic-forge#381's atomic ae-and-sweep can post two
     # comments inside the same second. `id` is strictly monotonic.
     return max(matches, key=lambda c: c["id"])
+
+
+def is_auto_ae(comment: dict) -> bool:
+    """harmonic-forge#851: an AE `l1_post.py --auto-ae` posted. Read from the
+    body's own trailing attestation footer only, so a marker quoted in the
+    body never counts."""
+    match = FOOTER_MARKER.search(comment.get("body", ""))
+    return bool(match) and "authorized-by=auto-ae" in match.group(0)
+
+
+def auto_ae_refusal(comments: list[dict], ae: dict, tier: str) -> str | None:
+    """The consumer half of the fixed auto-AE carve-out (harmonic-forge#851).
+
+    `l1_post.py --auto-ae` refuses these cases at the poster, but that is the
+    tool Lane 1 itself invokes with Lane-1-authored inputs. This is the half
+    that holds when the poster is bypassed: an auto-AE never authorizes a gate
+    above Tier W, or on an issue whose newest handoff is live-mutating or
+    predates the `mutates-live` field. A manual AE never reaches here."""
+    manual = "the operator's manual AE is required (post it without --auto-ae)"
+    if tier not in ("R", "W"):
+        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but its sweep "
+                f"declares tier {tier}; an auto-AE authorizes Tier R or W only -- {manual}")
+    mutates_live = newest_handoff_mutates_live(c.get("body", "") for c in comments)
+    if mutates_live is not False:
+        why = ("says mutates-live=true" if mutates_live
+               else "carries no mutates-live field")
+        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but the newest "
+                f"handoff footer {why} -- {manual}")
+    return None
 
 
 def footer_sha(comment: dict) -> str | None:
@@ -277,6 +307,10 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
 
     ae = latest_by_kind(comments, "ae")
     if ae is not None:
+        # harmonic-forge#851: before the SHA match and before carry_forward, so
+        # a later ready-for-l3 can never carry a refused auto-AE onto a new SHA.
+        if is_auto_ae(ae) and (refusal := auto_ae_refusal(comments, ae, tier)):
+            return None, refusal
         if sweep["id"] <= ae["id"]:
             return None, f"no gate-readiness sweep posted after the most recent AE ({ae['html_url']})"
         ae_sha = footer_sha(ae)

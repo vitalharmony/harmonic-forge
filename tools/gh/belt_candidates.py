@@ -144,6 +144,7 @@ def read_candidates(
     *,
     queue_kinds: dict[str, tuple[str, ...]],
     queue_posters: dict[str, tuple[str, ...]],
+    any_poster_kinds: dict[str, tuple[str, ...]] | None = None,
     max_age_days: int = DEFAULT_MAX_AGE_DAYS,
     now: datetime | None = None,
     base_dir: Path | None = None,
@@ -182,6 +183,9 @@ def read_candidates(
     wanted_repos = set(repos)
     kinds = set(queue_kinds.get(lane, ()))
     posters = set(queue_posters.get(lane, ()))
+    #: harmonic-forge#851: kinds that queue to `lane` from any poster (a
+    #: FAIL gate result to Lane 2), mirroring `discover_queue`'s exception.
+    any_poster = set((any_poster_kinds or {}).get(lane, ()))
     candidates: set[tuple[str, int]] = set()
     try:
         paths = sorted(base.glob("*.json"))
@@ -210,7 +214,7 @@ def read_candidates(
             continue
         if repo not in wanted_repos:
             continue
-        if kind not in kinds or posted_by not in posters:
+        if kind not in kinds or (posted_by not in posters and kind not in any_poster):
             continue
         candidates.add((repo, issue))
     return candidates

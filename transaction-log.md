@@ -43,6 +43,18 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/lane/test_cross_family_provenance.py         | 35 +++++++++++
 - tools/rules/registry.toml                          |  4 +-
 - 16 files changed, 331 insertions(+), 49 deletions(-)
+## feat(belt): lane-owned event filtering, owes= obligations and Lane 3 belt pickup, per-repo auto-AE toggle with a fixed Tier P / mutates-live carve-out (harmonic-forge#851)
+
+Root cause, quoted per the handoff: watch_lane_posts.py comment_watch_cycle filtered only on 'if lane not in watch: continue' -- who posted, never who owes the next step.
+
+HITL grep (git grep -n -i HITL -- rules/ skills/ templates/ 3-lane-protocol.md, 71 hits) dispositioned: amended R-0124, R-0125, R-0165, R-0208, R-0220, testing-gate.md:10, frontend-ui-golden-path.md:11 (same row, extra hit), lane3-gate-platform/SKILL.md:262/264/292. Out of scope: the remaining hits describe HITL relaying triggers, the HITL gate-language section, Plan-First, data-migration approval and templates, none of which states spec approval as the only gate before execution.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/onboard/manifest_protocol.py        |   8 ++
+- tools/onboard/test_manifest.py            |  34 ++++++
+- tools/rules/registry.toml                 |  39 +++++--
+- 22 files changed, 906 insertions(+), 59 deletions(-)
 
 ## fix(hooks): F843 sticky-wicket PATCH -- unknown open state suppresses, suffixed impl worktrees, test-runner output is never a receipt, flag-first gh api POST, bare-gh receipts kept beside named posters; all 26 AC mechanisms kill-checked (harmonic-forge#843)
 

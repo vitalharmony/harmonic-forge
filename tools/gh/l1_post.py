@@ -15,11 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
+from _handoff_footer import newest_handoff_mutates_live
+from _sweep_tier import NO_TIER_MESSAGE, TIER_RANK, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
-from manifest import ManifestError, require_onboarded_repo  # noqa: E402
+from manifest import ManifestError, auto_ae_enabled, require_onboarded_repo  # noqa: E402
 from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
 
 # harmonic-forge#219: shared item-list cache, consolidating 4 previously
@@ -1645,6 +1646,7 @@ def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
+    mutates_live: bool = False, authorized_by: str | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -1703,12 +1705,22 @@ def post_kind(
     # nobody afterwards, so the derivation has to happen here.
     plan_first_field = ""
     if kind == "handoff":
-        plan_first_field = f" plan-first={'true' if plan_first else 'false'};"
-    footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha}; "
+        # harmonic-forge#851: `--mutates-live` was recorded nowhere after
+        # posting, so nothing downstream could tell a live-data handoff from a
+        # safe one. `--auto-ae` and `check_lane3_ready` both refuse on it.
+        plan_first_field = (f" plan-first={'true' if plan_first else 'false'};"
+                            f" mutates-live={'true' if mutates_live else 'false'};")
+    # harmonic-forge#851: the audit marker for an AE Lane 1 posted under the
+    # standing auto-AE toggle. Absent on every other post, so the default
+    # path's footer is byte-identical to before.
+    authorized_field = f" authorized-by={authorized_by};" if authorized_by else ""
+    footer = (f"\n\n<!-- l1-post v1; kind={kind};{authorized_field}{plan_first_field} sha={sha}; "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
-                   **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
+                   **({"plan_first": bool(plan_first), "mutates_live": bool(mutates_live)}
+                      if kind == "handoff" else {}),
+                   **({"authorized_by": authorized_by} if authorized_by else {}),
                    "sha": sha, "branch": branch, "body_sha256": digest, "checks": checks,
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
     if kind == "handoff":
@@ -1749,6 +1761,69 @@ def _discharge_handoff_owed(repo: str, issue: int) -> None:
         pass
 
 
+AUTO_AE_LINE = ("**Authorized under:** the standing auto-AE toggle "
+                "(projects.toml protocol.auto_ae), write tier {tier}.")
+
+
+def _thread_bodies(repo: str, issue: int) -> list[str]:
+    """Every comment body on the issue, oldest first (one paginated REST read)."""
+    result = run("gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments",
+                 "--jq", "[.[].body]")
+    if result.returncode:
+        fail("cannot read the issue thread to check the newest handoff's mutates-live: "
+             + result.stderr.strip())
+    bodies: list[str] = []
+    for line in result.stdout.splitlines():
+        if line.strip():
+            bodies.extend(json.loads(line))
+    return bodies
+
+
+def validate_auto_ae(repo: str, issue: int, sweep_body: str, spec_body: str) -> str:
+    """harmonic-forge#851 refusals (a)-(c), before either half posts. Returns
+    the write tier (`R` or `W`) the AE is authorized under.
+
+    The carve-out is fixed: no flag, manifest key or env var relaxes it. A
+    spec's declared tier is its author's statement, not an inspection of what
+    each case runs -- which is why a spec that declares none is refused rather
+    than read as Tier R (`_sweep_tier`: silence is never tier R)."""
+    manual = ("Post it the manual way instead, after the operator's AE: "
+              "`l1-post --kind ae-and-sweep` without `--auto-ae`.")
+    if not auto_ae_enabled(repo):
+        fail(f"--auto-ae refused: {repo} does not set protocol.auto_ae = true in "
+             f"projects.toml. {manual}")
+    spec_tier = parse_write_tier(spec_body)
+    if spec_tier is None:
+        fail("--auto-ae refused: the Lane 3 spec declares no write tier, and auto-AE never "
+             "reads silence as Tier R. The spec needs a `Write tier: R|W|P` line. " + manual)
+    tiers = [t for t in (parse_write_tier(sweep_body), spec_tier) if t]
+    ceiling = max(tiers, key=TIER_RANK.__getitem__)
+    if ceiling == "P":
+        fail("--auto-ae refused: the write-tier ceiling over the sweep and the spec is P. "
+             "Tier P always needs the operator's manual AE; that carve-out is fixed and "
+             "nothing relaxes it (harmonic-forge#851). " + manual)
+    mutates_live = newest_handoff_mutates_live(_thread_bodies(repo, issue))
+    if mutates_live is not False:
+        why = ("says mutates-live=true" if mutates_live
+               else "carries no mutates-live field (posted before harmonic-forge#851)")
+        fail(f"--auto-ae refused: the newest handoff footer {why}. A live-data handoff "
+             f"always needs the operator's manual AE. {manual}")
+    return ceiling
+
+
+def with_auto_ae_line(ae_body: str, tier: str) -> str:
+    """The fixed, tool-written line, placed right after `**Next:**` so it sits
+    inside the lead region and `**Authorized:**` still leads."""
+    line = AUTO_AE_LINE.format(tier=tier)
+    lines = ae_body.split("\n")
+    for index, text in enumerate(lines):
+        if re.match(r"^\*\*Next:\*\*", text):
+            lines.insert(index + 1, line)
+            return "\n".join(lines)
+    fail("--auto-ae: the AE body has no `**Next:**` line to place the authorization after")
+    return ae_body
+
+
 def write_receipt(record: dict) -> None:
     root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "harmonic-forge/l1-post"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1784,6 +1859,11 @@ def main() -> None:
     parser.add_argument("--sweep-file", type=Path, help="Sweep body file, --kind ae-and-sweep only")
     parser.add_argument("--spec-comment", type=int)
     parser.add_argument("--mutates-live", action="store_true")
+    parser.add_argument(
+        "--auto-ae", action="store_true",
+        help="harmonic-forge#851: post the AE under the repo's standing auto-AE toggle "
+             "(projects.toml protocol.auto_ae). --kind ae-and-sweep only; refused for "
+             "Tier P, a spec with no write tier, or a mutates-live handoff.")
     # a private-repo incident. Deliberately a required tri-state rather than a `store_true`
     # flag: `--plan-first` absent would be indistinguishable from
     # `--plan-first false`, and "the author did not answer" is exactly the
@@ -1822,6 +1902,9 @@ def main() -> None:
         fail("--spec-comment is valid only for sweep / ae-and-sweep")
     if args.ack_overlap is not None and not args.ack_overlap.strip():
         fail("--ack-overlap requires a non-empty reason")
+    if args.auto_ae and args.kind != "ae-and-sweep":
+        fail("--auto-ae is valid only with --kind ae-and-sweep: R-0208 makes the AE and its "
+             "sweep one atomic action, and an auto-AE without its sweep is not one")
     if args.kind == "ae-and-sweep":
         if args.file or not (args.ae_file and args.sweep_file):
             fail("--kind ae-and-sweep requires --ae-file and --sweep-file, not --file")
@@ -1862,9 +1945,16 @@ def main() -> None:
         if spec.returncode:
             fail("cannot fetch referenced Lane 3 spec")
         validate_sweep(sweep_body, spec.stdout, repo, args.issue)
+        authorized_by = None
+        if args.auto_ae:
+            tier = validate_auto_ae(repo, args.issue, sweep_body, spec.stdout)
+            ae_body = with_auto_ae_line(ae_body, tier)
+            validate_lead("ae", ae_body)
+            authorized_by = "auto-ae"
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
-                              ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required)
+                              ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
+                              authorized_by=authorized_by)
         print(f"[l1-post] AE posted {ae_url}")
         record_queue_candidate(repo, args.issue, "ae")
         try:
@@ -1938,6 +2028,7 @@ def main() -> None:
         repo, args.issue, args.kind, body, sha, args.branch,
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
+        mutates_live=args.mutates_live,
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

@@ -450,7 +450,7 @@ class DiscoverQueueTests(unittest.TestCase):
                   )):
             self.assertEqual(
                 discover_queue("vitalharmony/hrse", "l3", {1530})[0],
-                {1530: "ready-for-l3"})
+                {1530: "ready-for-l3 owes=spec"})
 
     def test_issue_superseded_by_a_later_comment_is_not_queued(self):
         """The self-clearing property: once Lane 3 (or anyone) posts after
@@ -482,7 +482,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       comments={1530: [self._l1("ae"), self._l1("ready-for-l3")]},
                   )):
             queue, _ok = discover_queue("vitalharmony/hrse", "l3", {1530})
-            self.assertEqual(queue, {1530: "ready-for-l3"})
+            self.assertEqual(queue, {1530: "ready-for-l3 owes=spec"})
 
     def test_two_real_currently_queued_issues_hrse1058_and_1531(self):
         """Live shape observed 2026-09-03: two separate issues, each with
@@ -497,7 +497,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       },
                   )):
             queue, _ok = discover_queue("vitalharmony/hrse", "l3", {1058, 1531})
-            self.assertEqual(queue, {1058: "ready-for-l3", 1531: "ready-for-l3"})
+            self.assertEqual(queue, {1058: "ready-for-l3 owes=spec", 1531: "ready-for-l3 owes=spec"})
 
     def test_ae_and_sweep_marker_is_queued_for_l3(self):
         """harmonic-forge#579 AC2 -- live reproduction: `kind=ae-and-sweep`
@@ -510,7 +510,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       comments={1725: [self._l1("ae-and-sweep")]},
                   )):
             queue, _ok = discover_queue("vitalharmony/hrse", "l3", {1725})
-            self.assertEqual(queue, {1725: "ae-and-sweep"})
+            self.assertEqual(queue, {1725: "ae-and-sweep owes=gate"})
 
     def test_l2_finding_after_ready_for_l3_does_not_drop_the_issue(self):
         """harmonic-forge#580 AC1 -- live reproduction: a `## L2 Finding`
@@ -526,7 +526,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       ]},
                   )):
             queue, _ok = discover_queue("vitalharmony/hrse", "l3", {571})
-            self.assertEqual(queue, {571: "ready-for-l3"})
+            self.assertEqual(queue, {571: "ready-for-l3 owes=spec"})
 
     def test_l2_finding_does_not_resurrect_a_superseded_issue(self):
         """The finding-skip must not go too far the other direction: an
@@ -584,7 +584,7 @@ class DiscoverQueueTests(unittest.TestCase):
                       comments={571: [self._l1("ready-for-l3"), finding_body]},
                   )):
             queue, _ok = discover_queue("vitalharmony/hrse", "l3", {571})
-            self.assertEqual(queue, {571: "ready-for-l3"})
+            self.assertEqual(queue, {571: "ready-for-l3 owes=spec"})
 
 
 class BranchAheadWithoutCompletionTests(unittest.TestCase):
@@ -1297,7 +1297,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
                 recorded_only=True)
         self.assertEqual(ok1, {"vitalharmony/hrse"})
         self.assertIn(("vitalharmony/hrse", 1530), queue1)
-        self.assertIn("vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3", lines1)
+        self.assertIn("vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3 owes=spec", lines1)
 
         # Tick 2: 1530 no longer a recorded candidate at all (file overwritten
         # with a non-queue-eligible kind, e.g. Lane 3's own gate-result).
@@ -1325,7 +1325,7 @@ class RecordedOnlyCandidateCarryForwardTests(unittest.TestCase):
                 recorded_only=True)
         self.assertEqual(ok3, {"vitalharmony/hrse"})
         self.assertIn(("vitalharmony/hrse", 1530), queue3)
-        self.assertIn("vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3", lines3,
+        self.assertIn("vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3 owes=spec", lines3,
                        "a genuine re-post must not be suppressed as a duplicate "
                        "of a marker that was already dropped from the queue")
 
@@ -1622,7 +1622,7 @@ class Lane1InboundQueueTests(unittest.TestCase):
             return discover_queue("vitalharmony/hrse", lane, {1383})[0]
 
     def test_a_lane2_plan_queues_to_lane1(self):
-        self.assertEqual(self._queue([self.PLAN]), {1383: "plan"})
+        self.assertEqual(self._queue([self.PLAN]), {1383: "plan owes=plan-review"})
 
     def test_it_clears_once_lane1_answers(self):
         """Self-clearing, the same way every other lane's queue is."""
@@ -1647,7 +1647,7 @@ class Lane1InboundQueueTests(unittest.TestCase):
         self.assertNotIn("l1", watch_lane_posts.QUEUE_POSTERS["l1"])
 
     def test_lane2_and_lane3_are_unchanged(self):
-        self.assertEqual(self._queue([self.HANDOFF], "l2"), {1383: "handoff"})
+        self.assertEqual(self._queue([self.HANDOFF], "l2"), {1383: "handoff owes=plan"})
 
     def test_discussion_is_not_a_lane1_queue_kind(self):
         """Adding it would reintroduce the 63-issue noise on the lane with the
@@ -2273,6 +2273,170 @@ class PerRepoAccountTests(unittest.TestCase):
         self.assertEqual((verified, skipped), (["vitalharmony", "harmonicarchitect"], []))
 
 
+def _marker(kind: str, posted_by: str | None = "LANE1", extra: str = "") -> str:
+    by = f" posted-by={posted_by};" if posted_by else ""
+    return f"<!-- l1-post v1; kind={kind};{extra}{by} sha=abc -->"
+
+
+class CommentWatchOwnershipTests(unittest.TestCase):
+    """harmonic-forge#851 Part 1: a belt hears only the kinds its own lane owes
+    (`KIND_OWNER`), plus unowned kinds -- never another lane's channel."""
+
+    NOW = "2026-10-02T04:00:00Z"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.wm = Watermarks(root / "wm")
+        self.seen = SeenSet(root / "seen.tsv")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _emitted(self, bodies, self_lane, watch):
+        comments = [{"id": str(i), "body": b, "created_at": self.NOW}
+                    for i, b in enumerate(bodies, 1)]
+        with patch("watch_lane_posts._fetch_comments", return_value=comments):
+            lines, _ = watch_lane_posts.comment_watch_cycle(
+                [("vitalharmony/hrse", 851)], set(watch), self.NOW, self.wm, self.seen,
+                set(), allow_priming=False, deferred_advances=[], self_lane=self_lane)
+        return [line.rsplit(" — ", 1)[1] for line in lines]
+
+    def test_lane2_belt_suppresses_lane3_channel_kinds(self):
+        """AC1.1: the exact relay observed live on hrse#1888/#1897."""
+        kinds = ["ready-for-l3", "ae", "sweep", "ae-and-sweep"]
+        self.assertEqual(self._emitted([_marker(k) for k in kinds], "l2", {"l1"}), [])
+
+    def test_lane2_belt_still_hears_its_own_kinds(self):
+        bodies = [_marker("handoff"), _marker("rework"), _marker("discussion")]
+        self.assertEqual(self._emitted(bodies, "l2", {"l1"}),
+                         ["handoff", "rework", "discussion"])
+
+    def test_lane2_belt_suppresses_misattributed_gate_result(self):
+        """AC1.1: a gate result stamped LANE1 or LANE-unset classifies as `l1`;
+        ownership keys on `kind=`, so it is suppressed whoever posted it."""
+        bodies = [_marker("gate-result", "LANE1"), _marker("gate-result", "LANE-unset")]
+        self.assertEqual(self._emitted(bodies, "l2", {"l1"}), [])
+
+    def test_lane2_still_hears_plan_ratification_discussion(self):
+        """A Plan-First ratification is a Lane 1 `discussion` (hrse#1584)."""
+        self.assertEqual(self._emitted([_marker("discussion")], "l2", {"l1"}), ["discussion"])
+
+    def test_lane3_belt_emits_its_own_channel_kinds(self):
+        """AC1.2."""
+        kinds = ["ready-for-l3", "ae", "sweep", "ae-and-sweep", "discussion"]
+        self.assertEqual(self._emitted([_marker(k) for k in kinds], "l3", {"l1"}), kinds)
+
+    def test_lane3_belt_suppresses_lane2_kinds(self):
+        """AC1.2."""
+        self.assertEqual(
+            self._emitted([_marker("handoff"), _marker("rework")], "l3", {"l1"}), [])
+
+    def test_lane1_belt_output_unchanged(self):
+        """AC1.3: every kind Lane 2 or Lane 3 posts still reaches Lane 1, and so
+        does a markerless status heading."""
+        bodies = [_marker(k, "LANE2") for k in ("plan", "completion", "blocked", "finding",
+                                                 "discussion")]
+        bodies += [_marker(k, "LANE3") for k in ("spec", "gate-result", "discussion")]
+        bodies.append("## L2D -- legacy, no marker")
+        bodies.append("## Lane 3 Gate Results -- PASS")
+        emitted = self._emitted(bodies, "l1", {"l2", "l3"})
+        self.assertEqual(len(emitted), len(bodies), emitted)
+
+    def test_unknown_kind_emitted_on_every_lane(self):
+        """AC1.5: noise is recoverable; a silently dropped kind is not."""
+        for lane, watch in (("l1", {"l2", "l3"}), ("l2", {"l1"}), ("l3", {"l1"})):
+            with self.subTest(lane=lane):
+                self.seen = SeenSet(Path(self.tmp.name) / f"seen-{lane}.tsv")
+                poster = {"l1": "LANE2", "l2": "LANE1", "l3": "LANE1"}[lane]
+                self.assertEqual(
+                    self._emitted([_marker("brand-new-kind", poster)], lane, watch),
+                    ["brand-new-kind"])
+
+    def test_no_queue_lane_keeps_every_comment(self):
+        """A non-queue invocation (`self_lane=None`) is unchanged."""
+        self.assertEqual(self._emitted([_marker("ae")], None, {"l1"}), ["ae"])
+
+
+class QueueCycleOwesTests(unittest.TestCase):
+    """harmonic-forge#851 AC1.6, AC2.1, AC2.2: what a queued line obliges."""
+
+    def _queue(self, bodies, lane, issue=851):
+        with patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"body": b} for b in bodies]), \
+             patch("watch_lane_posts._issue_labels", return_value=set()):
+            return discover_queue("vitalharmony/harmonic-forge", lane, {issue})[0]
+
+    FAIL = "## Lane 3 Gate Results — FAIL\n\nTC2 failed.\n\n"
+    PASS = "## Lane 3 Gate Results — PASS\n\nAll green.\n\n"
+
+    def test_l3_owes_values(self):
+        cases = {"ready-for-l3": "spec", "sweep": "gate", "ae-and-sweep": "gate",
+                 "ae": "sweep-missing"}
+        for kind, owes in cases.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(self._queue([_marker(kind)], "l3"),
+                                 {851: f"{kind} owes={owes}"})
+
+    def test_queue_cycle_line_carries_owes(self):
+        with patch("watch_lane_posts.discover_queue",
+                   return_value=({851: "ready-for-l3 owes=spec"}, True)):
+            _, lines, _ = watch_lane_posts.queue_cycle(
+                ["vitalharmony/harmonic-forge"], "l3", {}, "2026-10-02T04:00:00Z",
+                candidate_pairs={("vitalharmony/harmonic-forge", 851)})
+        self.assertEqual(lines, ["vitalharmony/harmonic-forge#851 queued-for-l3 "
+                                 "kind=ready-for-l3 owes=spec"])
+
+    def test_plan_first_handoff_renders_owes_plan(self):
+        self.assertEqual(self._queue([_marker("handoff", extra=" plan-first=true;")], "l2"),
+                         {851: "handoff owes=plan"})
+
+    def test_implement_handoff_renders_owes_implement(self):
+        self.assertEqual(self._queue([_marker("handoff", extra=" plan-first=false;")], "l2"),
+                         {851: "handoff owes=implement"})
+
+    def test_handoff_without_plan_first_field_is_fail_safe_plan(self):
+        self.assertEqual(self._queue([_marker("handoff")], "l2"), {851: "handoff owes=plan"})
+
+    def test_rework_owes_fix(self):
+        self.assertEqual(self._queue([_marker("rework")], "l2"), {851: "rework owes=fix"})
+
+    def test_fail_gate_result_queues_to_l2_owes_fix(self):
+        self.assertEqual(self._queue([self.FAIL + _marker("gate-result", "LANE1")], "l2"),
+                         {851: "gate-result owes=fix"})
+
+    def test_fail_gate_result_queues_to_l2_from_lane3_poster(self):
+        for poster in ("LANE3", "LANE-unset"):
+            with self.subTest(poster=poster):
+                self.assertEqual(
+                    self._queue([self.FAIL + _marker("gate-result", poster)], "l2"),
+                    {851: "gate-result owes=fix"})
+
+    def test_pass_gate_result_does_not_queue_to_l2(self):
+        self.assertEqual(self._queue([self.PASS + _marker("gate-result", "LANE3")], "l2"), {})
+
+    def test_any_poster_exception_does_not_widen_handoff(self):
+        """The per-kind exception never lets a Lane 2 `handoff` queue to Lane 2."""
+        self.assertEqual(self._queue([_marker("handoff", "LANE2")], "l2"), {})
+
+    def test_l3_spec_queues_to_l1(self):
+        """AC2.2."""
+        self.assertEqual(self._queue([_marker("spec", "LANE3")], "l1"),
+                         {851: "spec owes=spec-review"})
+        self.assertIn("l3", watch_lane_posts.QUEUE_POSTERS["l1"])
+
+    def test_recorded_fail_gate_result_is_a_candidate_for_l2(self):
+        """The no-network pre-filter honors the same any-poster exception."""
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "a.json").write_text(json.dumps({
+                "repo": "vitalharmony/harmonic-forge", "issue": 851, "kind": "gate-result",
+                "posted_by": "l3", "posted_at": "2026-10-02T03:00:00Z"}))
+            got = watch_lane_posts.read_queue_candidates(
+                ["vitalharmony/harmonic-forge"], "l2",
+                now=dt.datetime(2026, 10, 2, 4, tzinfo=dt.UTC), base_dir=Path(tmp))
+        self.assertEqual(got, {("vitalharmony/harmonic-forge", 851)})
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -2358,7 +2522,7 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
                        "## Plan\n\n<!-- l1-post v1; kind=plan; posted-by=LANE2 -->"}]):
             queue, ok = discover_queue("vitalharmony/hrse", "l1", {1})
         self.assertTrue(ok)
-        self.assertEqual(queue, {1: "plan"})
+        self.assertEqual(queue, {1: "plan owes=plan-review"})
 
     def test_a_label_fetch_failure_does_not_drop_the_repo(self):
         """Fail open on the filter itself (distinct from a comment-fetch
@@ -2370,7 +2534,7 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
                    return_value=[{"body": self.HANDOFF}]):
             queue, ok = discover_queue("vitalharmony/hrse", "l2", {1})
         self.assertTrue(ok)
-        self.assertEqual(queue, {1: "handoff"})
+        self.assertEqual(queue, {1: "handoff owes=plan"})
 
 
 class DeadlineAwareSleep(unittest.TestCase):

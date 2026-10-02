@@ -1068,16 +1068,17 @@ hooks = []
 id = "R-0124"
 file = "rules/testing-gate.md"
 anchor = "rules"
-statement = "The test spec goes to the Tech Lead for HITL approval before any test executes."
-text_sha = "e2cc480d02f5068b"
+statement = "The test spec goes to the Tech Lead for HITL approval before any test executes; at Tier R or W in a repo that sets protocol.auto_ae, Lane 1's acceptance under R-0370 substitutes for it, never at Tier P or for live-mutating work."
+text_sha = "9c12f9e7161eabb3"
+excepted_by = "R-0370"
 hooks = []
 
 [[rule]]
 id = "R-0125"
 file = "rules/testing-gate.md"
 anchor = "rules"
-statement = "Immediately after HITL approval and before Lane 3's first execution, Lane 1 sweeps every test case in the approved spec for environment and fixture blockers."
-text_sha = "64b1332853334fff"
+statement = "Immediately after spec approval (HITL, or Lane 1's acceptance under R-0370 with the sweep posted atomically with the AE) and before Lane 3's first execution, Lane 1 sweeps every test case in the approved spec for environment and fixture blockers."
+text_sha = "5ba15ba30e8d72d6"
 hooks = [
   { script = "remind_gate_readiness_sweep.py", events = ["PostToolUse"], wired_in = ["HRSE2", "HRSE2-lane2", "HRSE2-lane3"] },
 ]
@@ -1403,8 +1404,9 @@ hooks = []
 id = "R-0165"
 file = "3-lane-protocol.md"
 anchor = "Lane 3 — Control Gate"
-statement = "Lane 3 submits the test spec for Tech Lead HITL approval before executing anything."
-text_sha = "672f9cdbc3a60e62"
+statement = "Lane 3 submits the test spec for Tech Lead HITL approval before executing anything; at Tier R or W in a repo that sets protocol.auto_ae, Lane 1's acceptance under R-0370 substitutes, never at Tier P or for live-mutating work."
+text_sha = "6b77c7f9abdeff2f"
+excepted_by = "R-0370"
 hooks = []
 
 [[rule]]
@@ -1762,12 +1764,25 @@ hooks = []
 id = "R-0208"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "AE must be posted as an actual issue comment, not only said in chat, and AE and its gate-readiness sweep are one atomic action in the same turn with the sweep strictly after; the posted AE is Lane 3's trigger, so Lane 1 does not list a relay to Lane 3 as an operator next action."
-text_sha = "29dcc0f3a60a61d3"
+statement = "AE (the operator's, or Lane 1's under R-0370's auto-AE toggle at Tier R/W only) must be posted as an actual issue comment, not only said in chat, and AE and its gate-readiness sweep are one atomic action in the same turn with the sweep strictly after; the posted AE is Lane 3's trigger (a belt owes=gate event is that trigger, not a new authority), so Lane 1 does not list a relay to Lane 3 as an operator next action."
+text_sha = "8eb76750dec78283"
+excepted_by = "R-0370"
 hooks = [
   { script = "remind_gate_readiness_sweep.py", events = ["PostToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
 ]
 restates = "R-0125"
+
+[[rule]]
+id = "R-0370"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Auto-AE: a repo that sets [project.protocol] auto_ae = true (default off, no shipped entry sets it) lets Lane 1 post the AE and sweep together with l1-post --kind ae-and-sweep --auto-ae at Tier R or W only; Tier P, a spec declaring no write tier, and a mutates-live or pre-field handoff always need the operator's manual AE, a fixed carve-out no flag or key relaxes, refused at the poster and again at the consumer (check_lane3_ready.resolve_gate_authority, before carry-forward). The footer carries authorized-by=auto-ae; a spec's declared tier is its author's statement; the 2026-09-26 standing production grant stays on the manual path."
+text_sha = "f07bbca3f433d42f"
+hooks = [
+  { script = "tools/gh/l1_post.py", events = ["l1-post --kind ae-and-sweep --auto-ae"], wired_in = ["mise.toml"] },
+  { script = "tools/gh/check_lane3_ready.py", events = ["lane3-begin"], wired_in = ["mise.toml"] },
+]
+exception_to = ["R-0124", "R-0165", "R-0208"]
 
 [[rule]]
 id = "R-0209"
@@ -1864,8 +1879,8 @@ hooks = []
 id = "R-0220"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "On \"Test #N\" Lane 3 fetches only the issue body and Lane 1's comments via fetch_lane1_context.py, never a manual gh read of the full thread."
-text_sha = "92d263611c08638c"
+statement = "On \"Spec H<N>\" (or the equivalent queued-for-l3 owes=spec belt event) Lane 3 fetches only the issue body and Lane 1's comments via fetch_lane1_context.py, never a manual gh read of the full thread."
+text_sha = "703b32c388e62734"
 hooks = []
 
 [[rule]]
@@ -2239,8 +2254,8 @@ hooks = [{ script = "tools/hooks/batch_auth.py", events = ["PreToolUse"], wired_
 id = "R-0343"
 file = "rules/lane-shorthand.md"
 anchor = "operator-to-lane-triggers"
-statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close; AE and close go to Lane 1, which posts the AE, and Lane 3 runs from the posted comment); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session."
-text_sha = "e59f622785468731"
+statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close; AE and close go to Lane 1, which posts the AE, and Lane 3 runs from the posted comment); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session. One equivalence: a queued-for-l3 owes=spec belt event is Spec H<N>."
+text_sha = "b207217db19b35e8"
 
 [[rule]]
 id = "R-0344"

@@ -40,6 +40,11 @@ class Protocol:
     #: equivalent of `ci-check`, rather than flagging a missing `ci-check`.
     #: `None` means the repo follows the default `ci-check` convention.
     ci_parity_task: str | None = None
+    #: harmonic-forge#851 Part 3. When true, Lane 1 may post a routine AE itself
+    #: (`l1_post.py --kind ae-and-sweep --auto-ae`) for a Tier R or Tier W gate.
+    #: Absent means off, and every shipped entry is off. The Tier P and
+    #: mutates-live carve-out is fixed in code, not configurable here.
+    auto_ae: bool = False
 
     def worktree_names(self, checkout: str) -> list[str]:
         lanes = (2, 3) if self.runs_lane3 else (2,)
@@ -100,6 +105,9 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
     if not isinstance(protocol.runs_lane3, bool):
         raise ManifestError(
             f"{target}: {project} protocol.runs_lane3 must be boolean")
+    if not isinstance(protocol.auto_ae, bool):
+        raise ManifestError(
+            f"{target}: {project} protocol.auto_ae must be boolean")
     names = protocol.worktree_names("checkout")
     if len(names) != len(set(names)) or any("/" in name or not name for name in names):
         raise ManifestError(

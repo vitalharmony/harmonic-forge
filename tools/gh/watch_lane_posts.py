@@ -161,6 +161,15 @@ rejected combination is `--issues` with more than one repo -- an issue number
 means nothing without exactly one repo to resolve it against. Exits only on
 error or Ctrl-C; runs until stopped otherwise.
 
+**What each belt prints (harmonic-forge#851).** The comment-watch prints a
+comment only when the belt's own `--queue-for` lane owes its kind
+(`KIND_OWNER`), or the kind is unowned (`discussion`, or any kind the table
+does not know). So Lane 2 no longer hears the Lane 1 <-> Lane 3 channel.
+Every queued line names its obligation:
+`<repo>#<n> queued-for-<lane> kind=<k> owes=<action>`, from `OWES`.
+`SKILL.md` rule 9 is the matching action table. A FAIL gate result queues to
+Lane 2 from any poster, as `kind=gate-result owes=fix`.
+
 DO NOT paste a `--worktrees <static path>` command for a lane's belt. A
 hardcoded worktree list goes stale the moment an ephemeral checkout appears
 (harmonic-forge#590), and for Lane 2 the shared checkout it would name is the
@@ -190,6 +199,12 @@ import manifest as onboard_manifest  # noqa: E402
 import belt_batch_view  # noqa: E402
 import belt_candidates  # noqa: E402
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
+#: harmonic-forge#851: the FAIL/PASS reader for a gate result is
+#: `lane_state.py`'s, imported rather than restated -- a second regex is how
+#: two readers of one heading drift apart.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent
+                       / "skills" / "sprint-plan" / "scripts"))
+from lane_state import _GATE_RESULT  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
     CallCounter,
@@ -244,6 +259,7 @@ _COUNTER = CallCounter()
 _MARKER_RE = re.compile(r"<!--\s*l1-post\s+v\d+;.*?-->", re.DOTALL)
 _KIND_RE = re.compile(r"kind=([\w-]+)")
 _POSTED_BY_RE = re.compile(r"posted-by=([\w-]+)")
+_PLAN_FIRST_RE = re.compile(r"plan-first=(\w+)")
 #: harmonic-forge#583 AC1/AC2. `l2_post.py` now stamps this same marker on
 #: every kind it posts -- so the marker's mere presence no longer implies
 #: Lane 1 the way it safely could before. `posted-by`, when present, says
@@ -329,7 +345,9 @@ _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git
 #: actionable) and it was removed.
 QUEUE_KINDS = {
     "l3": ("ready-for-l3", "ae", "sweep", "ae-and-sweep"),
-    "l2": ("handoff", "rework"),
+    # harmonic-forge#851: `gate-result` queues from any poster
+    # (`QUEUE_ANY_POSTER_KINDS`), and only a FAIL -- a PASS owes Lane 2 nothing.
+    "l2": ("handoff", "rework", "gate-result"),
     # harmonic-forge#618. Lane 1's belt is worktrees-first (#590), and a
     # Plan-First issue HAS NO WORKTREE until Lane 1 approves the plan -- the
     # branch is created in response to the approval. So the single most
@@ -348,7 +366,7 @@ QUEUE_KINDS = {
     # noise on the lane with the least capacity to absorb it. The four stalled
     # plans were posted as `discussion`; harmonic-forge#618's guard in
     # `post_lane_discussion.py` is what makes `plan` the marker they carry.
-    "l1": ("plan",),
+    "l1": ("plan", "spec"),
 }
 
 #: WHO must have posted the marker for it to queue work TO a lane.
@@ -367,6 +385,94 @@ QUEUE_POSTERS: dict[str, tuple[str, ...]] = {
     "l2": ("l1",),
     "l1": ("l2", "l3"),
 }
+
+#: harmonic-forge#851. Kinds that queue to a lane WHOEVER posted them -- a
+#: per-kind exception that never widens `QUEUE_POSTERS` for the lane's other
+#: kinds. A gate result is stamped `posted-by=LANE1` or `LANE-unset` when it is
+#: posted outside a `LANE=3` session (`post_lane_discussion.py`), and Lane 2
+#: owes the fix on a FAIL no matter which of those it says. `kind=` is stamped
+#: only after the posting tool validated the body, so it is the authority.
+QUEUE_ANY_POSTER_KINDS: dict[str, tuple[str, ...]] = {
+    "l2": ("gate-result",),
+}
+
+#: harmonic-forge#851 Part 1. Which lane OWES the next action on each marker
+#: kind. `comment_watch_cycle` emits a comment to a belt only when that belt's
+#: own `--queue-for` lane owns its kind, or the kind is unowned. The poster is
+#: never consulted: `posted-by` is not authoritative (an unlaned session stamps
+#: `LANE-unset`), and a filter keyed on who posted is the defect this fixes --
+#: Lane 2's `--watch l1` belt relayed every Lane 3 channel event.
+#:
+#: `discussion` is unowned: a Plan-First ratification is posted as a Lane 1
+#: discussion, and Lane 2 must hear it. A kind ABSENT from this table is
+#: unowned too, so every belt emits it -- a kind added later (as `finding` and
+#: `rework` both were) shows up as recoverable noise rather than vanishing
+#: silently from the belt that owes it.
+KIND_OWNER: dict[str, str | None] = {
+    "handoff": "l2",
+    "rework": "l2",
+    "ready-for-l3": "l3",
+    "ae": "l3",
+    "sweep": "l3",
+    "ae-and-sweep": "l3",
+    "plan": "l1",
+    "spec": "l1",
+    "gate-result": "l1",
+    "completion": "l1",
+    "blocked": "l1",
+    "finding": "l1",
+    "discussion": None,
+}
+
+#: harmonic-forge#851 Part 2. The obligation a `queued-for-<lane>` line names,
+#: rendered as its ` owes=<action>` suffix. `skills/belt-and-suspenders/SKILL.md`
+#: rule 9 carries the matching table (one row per lane and value), and
+#: `test_belt_skill_matches_table.py` fails when the two diverge. A Lane 2
+#: `handoff` is the one row that depends on the marker: `plan` when its footer
+#: says `plan-first=true` or carries no `plan-first` field (fail-safe),
+#: otherwise `implement` -- see `_queue_owes`.
+OWES: dict[str, dict[str, str]] = {
+    "l3": {"ready-for-l3": "spec", "sweep": "gate", "ae-and-sweep": "gate",
+           "ae": "sweep-missing"},
+    "l2": {"handoff": "implement", "rework": "fix", "gate-result": "fix"},
+    "l1": {"plan": "plan-review", "spec": "spec-review"},
+}
+#: The one value a Lane 2 `handoff` renders instead of `OWES["l2"]["handoff"]`.
+PLAN_FIRST_OWES = "plan"
+
+
+def _owed_to(self_lane: str | None, detail: str) -> bool:
+    """True when a classified comment is this belt's news (harmonic-forge#851).
+
+    `detail` is `_classify`'s second field: a marker's `kind=` value, or the
+    first-line heading of a markerless post (always an `L2*`/`L3`/`Lane 3`
+    status heading, which Lane 1 owes). `self_lane` is the belt's own
+    `--queue-for` lane; `None` (a non-queue invocation) keeps every comment,
+    exactly as before."""
+    if self_lane is None:
+        return True
+    if detail.startswith("##"):
+        owner: str | None = "l1"
+    elif detail in KIND_OWNER:
+        owner = KIND_OWNER[detail]
+    else:
+        return True
+    return owner is None or owner == self_lane
+
+
+def _queue_owes(lane: str, kind: str, body: str) -> str:
+    """The ` owes=` value for a queued marker (harmonic-forge#851 AC2.1)."""
+    if lane == "l2" and kind == "handoff":
+        marker = _MARKER_RE.search(_strip_fenced_blocks(body))
+        field = _PLAN_FIRST_RE.search(marker.group(0)) if marker else None
+        return "implement" if field and field.group(1) == "false" else PLAN_FIRST_OWES
+    return OWES[lane][kind]
+
+
+def _is_failed_gate_result(body: str) -> bool:
+    """A gate result whose `## Lane 3 Gate Results` heading says FAIL."""
+    match = _GATE_RESULT.search(body)
+    return bool(match) and match.group(1) == "FAIL"
 
 
 #: Overlap `K`, in minutes. `query_since` reads from `min(watermark, now - K)`,
@@ -696,6 +802,7 @@ def read_queue_candidates(
     return belt_candidates.read_candidates(
         repos, lane,
         queue_kinds=QUEUE_KINDS, queue_posters=QUEUE_POSTERS,
+        any_poster_kinds=QUEUE_ANY_POSTER_KINDS,
         now=now, base_dir=base_dir,
         #: Opt into the safe reader-side unlink (AC3') here, the one real
         #: call site that runs against the production directory -- a test
@@ -819,6 +926,7 @@ def discover_queue(repo: str, lane: str,
     exact live reproduction the issue's own AC1 names."""
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
+    any_poster = QUEUE_ANY_POSTER_KINDS.get(lane, ())
     #: harmonic-forge#686. `candidates` was an account-wide `search/issues`
     #: scan -- one call per repo per kind per cycle, with no worktree and no
     #: issue number anywhere in it. That is precisely what DESIGN.md's own
@@ -855,6 +963,7 @@ def discover_queue(repo: str, lane: str,
             # that, leaving `queue_qualifiers` itself an untested orphan).
             continue
         last_kind: tuple[str, str] | None = None
+        last_body = ""
         comments = _fetch_all_comments(repo, issue)
         if comments is None:
             # harmonic-forge#602 (found by an out-of-family review). `None` is
@@ -879,8 +988,16 @@ def discover_queue(repo: str, lane: str,
             classified = _classify(comment.get("body", ""))
             if classified is not None and not _is_l2_finding(*classified):
                 last_kind = classified
-        if last_kind and last_kind[0] in posters and last_kind[1] in kinds:
-            queued[issue] = last_kind[1]
+                last_body = comment.get("body", "")
+        if not last_kind or last_kind[1] not in kinds:
+            continue
+        poster, kind = last_kind
+        if poster not in posters and kind not in any_poster:
+            continue
+        if kind == "gate-result" and not _is_failed_gate_result(last_body):
+            # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
+            continue
+        queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"
     return queued, True
 
 
@@ -1256,8 +1373,13 @@ def comment_watch_cycle(
     tick: "TickLog | None" = None,
     allow_priming: bool = True,
     deferred_advances: "list[tuple[str, str, dt.datetime]] | None" = None,
+    self_lane: str | None = None,
 ) -> tuple[list[str], bool]:
     """One comment-watch poll over `targets`, returning `(lines, fetch_failed)`.
+
+    `self_lane` (harmonic-forge#851) is the belt's own `--queue-for` lane. A
+    comment whose kind another lane owes (`KIND_OWNER`) is treated exactly like
+    a comment from an unwatched lane: not printed, not recorded as seen.
 
     Extracted from `main()`'s loop by harmonic-forge#599's preclose finding:
     every behavior AC1/AC3/AC4/AC6 name lived inside `while True:` with no seam
@@ -1325,6 +1447,8 @@ def comment_watch_cycle(
                 continue
             lane, detail = classified
             if lane not in watch:
+                continue
+            if not _owed_to(self_lane, detail):
                 continue
             cid = str(comment.get("id", ""))
             if cid and seen.settled(cid):
@@ -2327,7 +2451,8 @@ def main() -> int:
         comment_lines, comment_fetch_failed = comment_watch_cycle(
             sorted(discovered | static_pairs), watch,
             now, watermarks, seen, primed_targets, tick,
-            allow_priming=allow_priming, deferred_advances=deferred_advances)
+            allow_priming=allow_priming, deferred_advances=deferred_advances,
+            self_lane=args.queue_for)
         # harmonic-forge#697: flush, then promote, then advance -- in that
         # order, inside one tested function.
         deliver_comment_lines(comment_lines, seen, watermarks, deferred_advances)
