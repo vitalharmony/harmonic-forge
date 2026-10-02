@@ -133,13 +133,15 @@ def covered(passes: list[dict], sha: str, current_patch_id: str | None) -> bool:
 
 
 def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
-            reforge: bool = False, force: bool = False) -> str | None:
-    """Why a new pass must not run, or None when it may."""
+            reforge: bool = False, force: bool = False, *, repo: str,
+            issue: int | str) -> str | None:
+    """Why a new pass must not run, or None when it may. ``repo``/``issue``
+    are required: the cluster route it may return is a runnable command."""
     passes = current(history(receipt))
     if reforge and not force:
         return ("--reforge is the operator's instruction, never Lane 1's own: it runs only "
                 "with --force, after sticky-wicket's reforge verdict.")
-    cluster = cluster_message(receipt)
+    cluster = cluster_message(receipt, repo, issue)
     if force and not reforge:
         if (cluster
                 and (receipt or {}).get("mechanism_cluster", {}).get("verdict") == "REFORGE"):
@@ -204,8 +206,7 @@ def _mechanism_cluster(receipt: dict | None, epoch: int) -> dict | None:
     return None
 
 
-def cluster_message(receipt: dict | None, repo: str = "<owner/repo>",
-                    issue: int | str = "<N>") -> str | None:
+def cluster_message(receipt: dict | None, repo: str, issue: int | str) -> str | None:
     """Route an unresolved/current-epoch cluster, or enforce its REFORGE verdict."""
     passes = history(receipt)
     epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)

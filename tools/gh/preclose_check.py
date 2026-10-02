@@ -599,7 +599,8 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
     re-armed on every head change and so allowed unbounded passes."""
     if force and not reforge:
         receipt = find_receipt(repo, issue)
-        reason = preclose_passes.refusal(receipt, head_sha, patch, reforge, force)
+        reason = preclose_passes.refusal(receipt, head_sha, patch, reforge, force,
+                                         repo=repo, issue=issue)
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         # harmonic-forge#838 AC5: the operator's --force still needs the
@@ -608,7 +609,8 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
-    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force)
+    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force,
+                                     repo=repo, issue=issue)
     if reason:
         raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 

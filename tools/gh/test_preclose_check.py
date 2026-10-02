@@ -930,6 +930,10 @@ class OwnModelTests(unittest.TestCase):
             end = min(i for i in (text.find(" (", start), text.find(". ", start)) if i != -1)
             with self.subTest(hint=text[:60]):
                 self.assertEqual(self._parses("python3 " + text[start:end]), 0, text[start:end])
+        # Scope: module-level constants of preclose_passes only. An inline
+        # f-string hint built elsewhere (e.g. preclose_check.py's own prints)
+        # is not seen here; those are covered by their own printed-output
+        # tests (test_gate_hint_carries_own_model). Known gap, not widened in #852.
         strays = [name for name, value in vars(preclose_passes).items()
                   if isinstance(value, str) and "preclose_check.py --" in value
                   and value not in preclose_passes.COMMAND_HINTS]
