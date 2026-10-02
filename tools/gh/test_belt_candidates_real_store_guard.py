@@ -131,12 +131,46 @@ class SubprocessGuardTests(unittest.TestCase):
 
 
 class RunnersSetTheFlagTests(unittest.TestCase):
-    def test_each_runner_exports_the_flag(self):
-        tools = GH_DIR.parent
-        for path in (tools / "run_tests.py", GH_DIR / "run_lane1_transport_tests.py",
-                     GH_DIR / "kill_check.py"):
-            with self.subTest(runner=path.name):
-                self.assertIn('"HARMONIC_FORGE_TESTING"', path.read_text())
+    """Each runner's real code path exports `HARMONIC_FORGE_TESTING=1` (read
+    from the environment it leaves or passes on, never from its source text)."""
+
+    def test_run_tests_main_exports_the_flag(self):
+        sys.path.insert(0, str(GH_DIR.parent))
+        import run_tests
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(bc.TESTING_ENV, None)
+            with mock.patch.object(run_tests, "_test_files", return_value=[]), \
+                 mock.patch.object(sys, "stderr", io.StringIO()):
+                self.assertEqual(run_tests.main(), 2)  # returns early, after the export
+            self.assertEqual(os.environ.get(bc.TESTING_ENV), "1")
+
+    def test_run_lane1_transport_tests_main_exports_the_flag(self):
+        import run_lane1_transport_tests as transport
+        result = mock.Mock(wasSuccessful=mock.Mock(return_value=True), testsRun=0)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(bc.TESTING_ENV, None)
+            with mock.patch.object(unittest.TestLoader, "discover", return_value=unittest.TestSuite()), \
+                 mock.patch.object(unittest.TextTestRunner, "run", return_value=result), \
+                 mock.patch.object(sys, "stdout", io.StringIO()):
+                transport.main()
+            self.assertEqual(os.environ.get(bc.TESTING_ENV), "1")
+
+    def test_kill_check_passes_the_flag_to_the_test_command(self):
+        import kill_check
+        seen = []
+
+        def fake_run(argv, *, cwd, env, timeout):
+            seen.append(env.get(bc.TESTING_ENV))
+            return mock.Mock(returncode=1)
+        with tempfile.TemporaryDirectory() as parent, \
+             mock.patch.object(kill_check, "materialize"), \
+             mock.patch.object(kill_check, "run_command", side_effect=fake_run), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(bc.TESTING_ENV, None)
+            kill_check.one_check({"test": ["true"], "patch_text": ""}, sha="a" * 40, origin="o",
+                                 repo="vitalharmony/harmonic-forge", parent=Path(parent), timeout=5)
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {"1"})
 
 
 if __name__ == "__main__":
