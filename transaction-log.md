@@ -3,6 +3,11 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): sticky-wicket PATCH (epoch 2 pass-1 cluster) -- one predicate in comment_watch_cycle so a FAIL owed to Lane 2 reaches it whoever posted it (LANE3 and markerless included), and one shared _own_marker reader for _classify's kind and _queue_owes' plan-first; tests drive every poster and the quoted-footer cases through the queued kind (harmonic-forge#851)
+- tools/gh/test_watch_lane_posts.py | 32 ++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 26 +++++++++++++++++---------
+- 2 files changed, 49 insertions(+), 9 deletions(-)
+
 ## fix(belt): REFORGE (sticky-wicket, operator --force --reforge) -- excise the auto-AE carve-out and the content-bound footer reader (_handoff_footer, check_lane3_ready, l1_post --auto-ae, projects.toml toggle, R-0370 and its exception pairs) back to origin/main; a FAIL gate result is Lane 2's news on the comment watch whoever posted it; owes= reads the handoff's last unquoted marker; rule 9 names l2_post.py --kind plan; the doc-sync test binds each row's step and checks l2_post kinds (harmonic-forge#851)
 - tools/onboard/manifest_protocol.py              |   8 -
 - tools/onboard/test_manifest.py                  |  34 ---

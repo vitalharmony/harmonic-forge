@@ -2329,6 +2329,26 @@ class CommentWatchOwnershipTests(unittest.TestCase):
         self.assertEqual(self._emitted([fail, _marker("discussion")], "l2", {"l1"}),
                          ["gate-result", "discussion"])
 
+    def test_lane2_belt_hears_a_fail_from_every_poster_before_a_later_discussion(self):
+        """Sticky-wicket PATCH (epoch 2): the invariant is "whoever posted it",
+        so drive every poster, including LANE3 (lane l3, which Lane 2's
+        --watch l1 belt does not watch) and a markerless report."""
+        head = "## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
+        for poster in ("LANE1", "LANE-unset", "LANE3"):
+            with self.subTest(poster=poster):
+                fail = head + _marker("gate-result", poster)
+                self.assertEqual(self._emitted([fail, _marker("discussion")], "l2", {"l1"}),
+                                 ["gate-result", "discussion"])
+        markerless = "## Lane 3 Gate Results — H851 — FAIL\n\n**Verdict:** FAIL\n"
+        # `_emitted` keeps the text after the last " — ", so the markerless
+        # heading "## Lane 3 Gate Results — H851 — FAIL" reads back as "FAIL".
+        self.assertEqual(self._emitted([markerless], "l2", {"l1"}), ["FAIL"])
+
+    def test_lane2_belt_still_ignores_lane3_pass_and_ae(self):
+        pass_body = "## Lane 3 Gate Results — H1 — PASS\n\n**Verdict:** PASS\n\n"
+        bodies = [pass_body + _marker("gate-result", "LANE3"), _marker("ae", "LANE3")]
+        self.assertEqual(self._emitted(bodies, "l2", {"l1"}), [])
+
     def test_lane3_belt_never_hears_a_fail_meant_for_lane2(self):
         fail = ("## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
                 + _marker("gate-result", "LANE-unset"))
@@ -2422,6 +2442,18 @@ class QueueCycleOwesTests(unittest.TestCase):
                          {851: "handoff owes=implement"})
         self.assertEqual(self._queue([f"{quoted_false}\n\nNew handoff.\n\n{own_true}"], "l2"),
                          {851: "handoff owes=plan"})
+
+    def test_a_quoted_footer_never_sets_the_queued_kind(self):
+        """Sticky-wicket PATCH (epoch 2): `_classify` and `_queue_owes` share
+        one reader, so the kind and `owes=` both come from the own footer."""
+        quoted_handoff = "> " + _marker("handoff", extra=" plan-first=true;")
+        own_rework = _marker("rework")
+        self.assertEqual(self._queue([f"{quoted_handoff}\n\nRework.\n\n{own_rework}"], "l2"),
+                         {851: "rework owes=fix"})
+        quoted_rework = "> " + _marker("rework")
+        own_handoff = _marker("handoff", extra=" plan-first=false;")
+        self.assertEqual(self._queue([f"{quoted_rework}\n\nHandoff.\n\n{own_handoff}"], "l2"),
+                         {851: "handoff owes=implement"})
 
     def test_handoff_without_plan_first_field_is_fail_safe_plan(self):
         self.assertEqual(self._queue([_marker("handoff")], "l2"), {851: "handoff owes=plan"})

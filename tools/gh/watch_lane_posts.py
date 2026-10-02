@@ -466,8 +466,7 @@ def _queue_owes(lane: str, kind: str, body: str) -> str:
     above its own must not take the quoted one's value (reforge ruling, fix 2).
     """
     if lane == "l2" and kind == "handoff":
-        markers = _MARKER_RE.findall(_strip_quoted(body))
-        marker = markers[-1] if markers else None
+        marker = _own_marker(body)
         field = _PLAN_FIRST_RE.search(marker) if marker else None
         return "implement" if field and field.group(1) == "false" else PLAN_FIRST_OWES
     return OWES[lane][kind]
@@ -670,6 +669,15 @@ def _strip_quoted(body: str) -> str:
     return _QUOTE_LINE_RE.sub("", _strip_fenced_blocks(body))
 
 
+def _own_marker(body: str) -> str | None:
+    """The comment's own footer: the LAST `l1-post` marker once fenced
+    blocks and `>` quote lines are removed. The one reader `_classify` (the
+    kind) and `_queue_owes` (`plan-first`) share, so a quoted older footer can
+    never set either (sticky-wicket PATCH, epoch 2)."""
+    markers = _MARKER_RE.findall(_strip_quoted(body))
+    return markers[-1] if markers else None
+
+
 def _classify(body: str) -> tuple[str, str] | None:
     """Returns `(lane, detail)` -- `detail` is the `kind=` value when a
     marker is present, or the matched heading text for a markerless l2/l3
@@ -690,9 +698,8 @@ def _classify(body: str) -> tuple[str, str] | None:
     heading check below intentionally still uses the RAW body's first
     line: a heading is only ever meaningful as literally the first line of
     a real post, and no legitimate heading is fenced."""
-    marker_match = _MARKER_RE.search(_strip_fenced_blocks(body))
-    if marker_match:
-        marker = marker_match.group(0)
+    marker = _own_marker(body)
+    if marker:
         kind_match = _KIND_RE.search(marker)
         if kind_match:
             kind = kind_match.group(1)
@@ -1489,10 +1496,11 @@ def comment_watch_cycle(
             if classified is None:
                 continue
             lane, detail = classified
-            if lane not in watch:
-                continue
-            if not _owed_to(self_lane, detail) and not _fail_owed_to_l2(
-                    self_lane, detail, comment.get("body", "")):
+            # One predicate (sticky-wicket PATCH, epoch 2): a gate result that
+            # owes Lane 2 a fix is its news whoever posted it, so neither the
+            # poster-lane watch filter nor the ownership filter may drop it.
+            fail_for_l2 = _fail_owed_to_l2(self_lane, detail, comment.get("body", ""))
+            if not fail_for_l2 and (lane not in watch or not _owed_to(self_lane, detail)):
                 continue
             cid = str(comment.get("id", ""))
             if cid and seen.settled(cid):
