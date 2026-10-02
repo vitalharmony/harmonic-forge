@@ -3188,12 +3188,15 @@ class ClosedIssueRetirementTests(unittest.TestCase):
             if path.parent == self.dir:
                 self.assertGreater(held["depth"], 0, "unlink outside the store lock")
             return real_unlink(path, *a, **kw)
+        def guarded_archive(path, entry):
+            self.assertGreater(held["depth"], 0, "archive outside the store lock")
+            return 1
         stale = self._write(17, posted_at="2026-01-01T00:00:00Z")
         self._write(18)
         with patch.object(belt_candidates, "_store_lock", counting_lock), \
              patch.object(belt_candidates, "_replace", guarded_replace), \
              patch.object(Path, "unlink", guarded_unlink), \
-             patch.object(belt_candidates, "_archive_candidate", return_value=1):
+             patch.object(belt_candidates, "_archive_candidate", guarded_archive):
             belt_candidates.record_candidate(self.REPO, 19, "handoff", "l1", base_dir=self.dir)
             self.assertTrue(belt_candidates.retire_candidate(
                 self.REPO, 18, read_before=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)))
@@ -3225,6 +3228,33 @@ class ClosedIssueRetirementTests(unittest.TestCase):
         self.assertTrue(stale.exists())
         self.assertEqual(self._entry(stale)["posted_at"], "2026-10-02T00:30:00Z")
         archived.assert_not_called()
+
+    def test_a_closed_issue_carried_forward_by_a_failed_cycle_leaves_a_mixed_source_queue(self):
+        # Post-verdict: a failed cycle marks the closed issue and carries the
+        # repo's prior queue forward. The next successful cycle no longer has
+        # the pair as a candidate; it must still drop it, not carry it again.
+        self._write(23)
+        self._write(24)
+        prior = {(self.REPO, 23): "handoff owes=implement"}
+
+        def meta(repo, issue):
+            return ("closed", set()) if issue == 23 else ("open", set())
+        when = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            queue, _lines, ok = watch_lane_posts.queue_cycle([self.REPO], "l2", prior, "t",
+                                            candidate_pairs={(self.REPO, 23), (self.REPO, 24)},
+                                            store_read_at=when)
+        self.assertEqual(ok, set())
+        self.assertIn((self.REPO, 23), queue)  # carried forward on the failed cycle
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            queue2, lines, ok2 = watch_lane_posts.queue_cycle([self.REPO], "l2", queue, "t",
+                                             candidate_pairs={(self.REPO, 24)},
+                                             recorded_only=False, store_read_at=when)
+        self.assertEqual(ok2, {self.REPO})
+        self.assertNotIn((self.REPO, 23), queue2)
+        self.assertIn(f"{self.REPO}#23 left-queue-for-l2", lines)
 
     def test_a_failed_mark_is_logged(self):
         path = self._write(21)

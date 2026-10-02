@@ -287,6 +287,20 @@ def _prune_if_stale(base: Path, path: Path, cutoff: datetime) -> None:
         pass
 
 
+def closed_marked(repo: str, issue: int, *, base_dir: Path | None = None,
+                  now: datetime | None = None) -> bool:
+    """Whether `repo`#`issue`'s entry carries a live closed mark (harmonic-forge
+    #854 post-verdict). `queue_cycle` drops a carried-forward queue entry for a
+    marked pair: the mark is why the pair left the candidate set, so its absence
+    from this cycle's check is not "never looked at"."""
+    path = _candidate_path(base_dir or DEFAULT_CANDIDATES_DIR, repo, issue)
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(entry, dict) and _recently_closed(entry, now or datetime.now(UTC))
+
+
 def _archive_candidate(path: Path, entry: dict) -> int:
     """Archive one aged-out candidate file by its repo; 0 means keep it."""
     try:

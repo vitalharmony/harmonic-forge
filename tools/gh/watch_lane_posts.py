@@ -1851,6 +1851,11 @@ def queue_cycle(
                     #: for it, same as any other genuinely-resolved issue.
                     if recorded_only:
                         continue
+                    if belt_candidates.closed_marked(repo, issue):
+                        # harmonic-forge#854 post-verdict: marked closed (it
+                        # may have been, on a failed cycle that carried it
+                        # forward), so it left the candidate set on purpose.
+                        continue
                     queue[(repo, issue)] = marker
 
     lines: list[str] = []
