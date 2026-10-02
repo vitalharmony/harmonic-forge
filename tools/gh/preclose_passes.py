@@ -231,7 +231,8 @@ POST_VERDICT_REQUIRED = (
     "Two passes both left surviving findings (the sticky-wicket case). Before the "
     "operator's --force covers this head, one cross-family refuter must read the patch "
     "since pass 2: preclose_check.py --post-verdict --base <pass-2 head> --envelope <path> "
-    "--findings <file>. It never counts as a pass (harmonic-forge#838)."
+    "--findings <file> --own-model <your session's model>. It never counts as a pass "
+    "(harmonic-forge#838)."
 )
 
 

@@ -68,9 +68,48 @@ class ClassifyTests(unittest.TestCase):
         self-declared caller, and refuses to call that cross-family."""
         envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5",
                                              "caller_family": "codex", "target_family": "claude"}
+        # Sticky-wicket PATCH item 3: a --caller that is not the session's own
+        # family is an invocation error, raised rather than labeled.
+        with self.assertRaises(m.CallerMismatch):
+            m.classify(envelope, "gpt-6-sol", "claude-opus-5-5")
+
+    def test_same_family_review_without_caller_field_is_refused(self):
+        """The equality refusal still holds for an envelope with no caller_family."""
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "verify_model": "claude-opus-5-5"}
         label = m.classify(envelope, "gpt-6-sol", "claude-opus-5-5")
         self.assertNotIn("cross-family (", label)
         self.assertIn("in-family fallback", label)
+
+    def test_unrecognized_own_model_refuses_the_cross_family_label(self):
+        """Preclose pass 2 survivor 2: undecidable identity refuses the label."""
+        for own in ("sol", "5.5", "mystery"):
+            with self.subTest(own=own):
+                label = m.classify(_ok([_a("confirmed")]) | {"verify_model": "gpt-6-sol"},
+                                   "gpt-6-sol", own)
+                self.assertNotIn("cross-family (", label)
+                self.assertIn("names no known model family", label)
+
+    def test_caller_mismatch_exits_2_and_prints_no_label(self):
+        """Preclose pass 2 survivor 3: nothing reaches stdout, so nothing is recorded."""
+        import contextlib, io, json as _json, tempfile as _tf
+        envelope = _ok([_a("confirmed")]) | {"family": "claude", "caller_family": "codex",
+                                             "target_family": "claude"}
+        with _tf.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "envelope.jsonl"
+            path.write_text(_json.dumps(envelope) + "\n")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = m.main(["--envelope", str(path), "--own-model", "claude-opus-5-5"])
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("--caller claude", err.getvalue())
+
+    def test_own_model_is_required(self):
+        """Preclose pass 2 survivor 1: no default family, ever."""
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as done:
+            m.main(["--envelope", "/dev/null", "--not-triggered"])
+        self.assertEqual(done.exception.code, 2)
 
     def test_codex_session_reviewed_by_codex_is_not_cross_family(self):
         label = m.classify(_ok([_a("confirmed")]) | {"verify_model": "gpt-6-sol"},

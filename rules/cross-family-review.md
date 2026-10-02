@@ -177,9 +177,9 @@ whole value of the branch is that a reader can tell them apart.
 **Do not compose the label yourself — compute it and paste it:**
 
 ```
-python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope <envelope path>
+python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope <envelope path> --own-model <your session's model>
 # or, when the branch did not trigger:
-python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope /dev/null --not-triggered
+python3 ~/harmonic-forge/tools/lane/cross_family_provenance.py --envelope /dev/null --not-triggered --own-model <your session's model>
 ```
 
 A label derived by reading prose is a label that will sometimes be derived

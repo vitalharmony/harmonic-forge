@@ -837,9 +837,6 @@ class OwnModelCallSiteTests(unittest.TestCase):
         self.assertEqual(fake.call_args.args[2], "claude-opus-5-5")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OwnModelTests(unittest.TestCase):
     """harmonic-forge#848 AC8: the calling session's model reaches the label."""
@@ -875,11 +872,51 @@ class OwnModelTests(unittest.TestCase):
         self.assertEqual(done.exception.code, 2)
         self.assertIn("--own-model", err.getvalue())
 
+    @staticmethod
+    def _parses(command: str) -> int:
+        """Feed a printed preclose_check.py command through main()'s own parser
+        with every `<placeholder>` filled in; complete/post_verdict are stubbed,
+        so the exit code is the parser's verdict alone."""
+        import re as _re
+        import shlex
+        filled = _re.sub(r"<[^>]*>", "X", command)
+        tokens = shlex.split(filled)
+        argv = ["preclose_check.py"] + tokens[tokens.index(next(t for t in tokens
+                                                                if t.endswith("preclose_check.py"))) + 1:]
+        with patch.object(sys, "argv", argv), \
+             patch.object(preclose, "complete", return_value=0), \
+             patch.object(preclose, "post_verdict", return_value=0), \
+             patch("sys.stderr", new_callable=io.StringIO), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            try:
+                preclose.main()
+            except SystemExit as done:
+                return done.code or 0
+        return 0
+
     def test_gate_hint_carries_own_model(self) -> None:
-        """Preclose finding 3: the command --gate prints must be runnable."""
-        src = Path(preclose.__file__).read_text()
-        hint = src[src.index('tail = ("--envelope'):]
-        self.assertIn("--own-model", hint[:200])
+        """Pass-2 survivor 5: the command --gate actually PRINTS must parse --
+        captured from stdout, never read from the source text."""
+        for required in (True, False):
+            with self.subTest(required=required):
+                out = io.StringIO()
+                with patch.object(preclose, "require_writable"), \
+                     patch.object(preclose, "registered_repo", return_value="vitalharmony/harmonic-forge"), \
+                     patch.object(preclose, "gate_decision", return_value=(required, "why", 1, [])), \
+                     patch("sys.stdout", out):
+                    preclose.gate(_Args(repo="vitalharmony/harmonic-forge", issue=848,
+                                        findings="f.json", cross_family=False))
+                line = next(l for l in out.getvalue().splitlines() if "--complete" in l)
+                self.assertIn("--own-model", line)
+                self.assertEqual(self._parses(line), 0, line)
+
+    def test_post_verdict_hint_parses(self) -> None:
+        """Pass-2 survivor 4: the sticky-wicket remediation command must run."""
+        import preclose_passes
+        text = preclose_passes.POST_VERDICT_REQUIRED
+        command = text[text.index("preclose_check.py --post-verdict"):text.index(". It never")]
+        command = "--repo vitalharmony/harmonic-forge --issue 848 " + command.split("preclose_check.py", 1)[1]
+        self.assertEqual(self._parses("python3 preclose_check.py " + command), 0, command)
 
     def test_envelope_without_own_model_is_a_parser_error(self) -> None:
         argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "848",
@@ -891,3 +928,6 @@ class OwnModelTests(unittest.TestCase):
             preclose.main()
         self.assertEqual(done.exception.code, 2)
         self.assertIn("--own-model", err.getvalue())
+
+if __name__ == "__main__":
+    unittest.main()
