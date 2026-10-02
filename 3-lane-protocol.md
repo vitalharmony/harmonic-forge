@@ -1082,17 +1082,22 @@ sweep together (R-0208), in the same turn, without asking the operator, only
 when all of these hold:
 
 - the AE links the passing Tier R gate-result comment and names the SHA it
-  gated;
+  gated ("gated SHA <sha>", the gate-result's `Head-SHA`);
 - the commit the write step runs is that SHA, or a later commit whose tree is
-  byte-identical to it in every file the Tier R sweep listed (a squash merge
+  byte-identical to it in every file the gated change touched (a squash merge
   qualifies, as in R-0354);
 - the AE names the exact production sequence, its stop conditions and the
   expected counts the Tier R gate measured;
 - the write step's sweep lists only the cases that Tier R gate verified.
 
 If any of these cannot be shown on the thread, the operator's AE is required:
-the grant fails closed. An AE under this grant never carries forward under
-R-0209: a new SHA needs a fresh Tier R PASS before Lane 1 may post another. It
+the grant fails closed. `tools/gh/l1_post.py` checks the first two before a
+grant AE posts (a passing, unedited Tier R gate-result linked on this issue, its
+gated SHA named, and tree identity; `tools/gh/_standing_grant.py`), and refuses
+a grant AE carrying `--ack-no-pr-required`, an operator acknowledgment no
+operator gave. An AE under this grant never carries forward under R-0209
+(`check_lane3_ready` refuses the carry): a new SHA needs a fresh Tier R PASS
+before Lane 1 may post another. It
 authorizes only the cases the sweep lists, at the tier the sweep declares, and
 never uses R-0210's widening. Its **Authorized:** line cites "the operator's
 standing AE grant, R-0374", the gate-result comment and the gated SHA, never an

@@ -727,6 +727,24 @@ def _exact_heading_pattern(label: str, repo: str, issue: int) -> re.Pattern[str]
     return re.compile(rf"#{{1,4}}\s*{re.escape(label)}\s*—\s*{re.escape(prefix)}{issue}\b")
 
 
+def validate_grant_ae(body: str, repo: str, issue: int, sha: str,
+                      ack_no_pr_required: str | None) -> None:
+    """harmonic-forge#858: an AE claiming the operator's standing grant
+    (R-0374) is checked against the thread before it posts, and never rides
+    an operator-attributed no-PR override no operator gave."""
+    import _standing_grant  # noqa: PLC0415
+    import check_lane3_ready  # noqa: PLC0415
+    if not _standing_grant.cites_grant(body):
+        return
+    if ack_no_pr_required is not None:
+        fail("--ack-no-pr-required is an operator acknowledgment; an AE under the "
+             "operator's standing grant (R-0374) cannot carry one -- post the operator's AE instead")
+    reason = _standing_grant.grant_refusal(
+        body, repo, issue, sha, check_lane3_ready.fetch_comments(repo, issue))
+    if reason:
+        fail(reason)
+
+
 def validate_ae(body: str, repo: str, issue: int) -> None:
     """a private-repo incident: AE previously went out via plain `lane-comment`, with no
     reserved-marker footer and no structural check -- indistinguishable from
@@ -1852,6 +1870,7 @@ def main() -> None:
         reject_reserved_marker(ae_body)
         reject_reserved_marker(sweep_body)
         validate_ae(ae_body, repo, args.issue)
+        validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required)
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
@@ -1933,6 +1952,7 @@ def main() -> None:
         validate_sweep(body, spec.stdout, repo, args.issue)
     if args.kind == "ae":
         validate_ae(body, repo, args.issue)
+        validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required)
 
     url, _ = post_kind(
         repo, args.issue, args.kind, body, sha, args.branch,

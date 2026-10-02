@@ -237,7 +237,13 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
     Generalized from `ae`-only to any authorizing comment --
     parameter rename only, same body (it only ever read `authority["id"]`,
     nothing AE-specific) -- so the identical staleness protection applies
-    when a tier-R sweep is the authority instead of an AE."""
+    when a tier-R sweep is the authority instead of an AE.
+
+    harmonic-forge#858: an AE claiming the operator's standing grant (R-0374)
+    never carries forward -- a new SHA needs a fresh Tier R PASS."""
+    import _standing_grant  # noqa: PLC0415 -- imports this module
+    if _standing_grant.cites_grant(authority.get("body", "")):
+        return None
     candidates = [
         comment for comment in comments
         if comment["id"] > authority["id"]
