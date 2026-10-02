@@ -460,7 +460,7 @@ def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) ->
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         receipt = _receipt(repo, issue)
-        cluster = preclose_passes.cluster_message(receipt)
+        cluster = preclose_passes.cluster_message(receipt, repo, issue)
         if cluster:
             return cluster
         passes = preclose_passes.current(preclose_passes.history(receipt))

@@ -36,7 +36,7 @@ MAX_PASSES = 2
 STICKY_WICKET = (
     "Two preclose passes are complete, and both left surviving findings. Do not run a "
     "third. Invoke the sticky-wicket agent on this issue: 'patch' means one cross-family "
-    "post-verdict check reads just the patch (preclose_check.py --post-verdict), then the "
+    "post-verdict check reads just the patch (preclose_check.py's --post-verdict), then the "
     "operator --forces the final head; 'reforge' means a new branch, and the pass count "
     "restarts."
 )
@@ -47,9 +47,9 @@ OPERATOR = (
 CLUSTER_ROUTE = (
     "Pass 1 has multiple surviving findings from the same mechanism: {mechanisms}. "
     "Invoke the sticky-wicket agent now, before fixing anything, then record its "
-    "verdict with preclose_check.py --cluster-verdict PATCH|REFORGE --comment-url "
-    "<url>. The operator may bypass an unresolved cluster with --force; a REFORGE "
-    "verdict proceeds only with the operator's --force --reforge."
+    "verdict with preclose_check.py --repo {repo} --issue {issue} --cluster-verdict "
+    "PATCH --comment-url <url> (or REFORGE, which proceeds only with the operator's "
+    "--force --reforge). The operator may bypass an unresolved cluster with --force."
 )
 
 
@@ -204,7 +204,8 @@ def _mechanism_cluster(receipt: dict | None, epoch: int) -> dict | None:
     return None
 
 
-def cluster_message(receipt: dict | None) -> str | None:
+def cluster_message(receipt: dict | None, repo: str = "<owner/repo>",
+                    issue: int | str = "<N>") -> str | None:
     """Route an unresolved/current-epoch cluster, or enforce its REFORGE verdict."""
     passes = history(receipt)
     epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)
@@ -218,7 +219,7 @@ def cluster_message(receipt: dict | None) -> str | None:
     if verdict == "REFORGE":
         return (f"Sticky-wicket ruled REFORGE for the pass 1 mechanism cluster ({mechanisms}). "
                 "Only the operator's --force --reforge starts the new epoch.")
-    return CLUSTER_ROUTE.format(mechanisms=mechanisms)
+    return CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)
 
 
 # harmonic-forge#838 AC5: after a sticky-wicket PATCH verdict, one cross-family
@@ -235,6 +236,13 @@ POST_VERDICT_REQUIRED = (
     "--own-model <your session's model>. It never counts as a pass "
     "(harmonic-forge#838)."
 )
+
+#: Every printed hint that is a runnable preclose_check.py command. Each is
+#: formatted with the real repo and issue before printing, and
+#: test_preclose_check asserts every member parses exactly as printed and
+#: that no other module-level string here carries such a command
+#: (harmonic-forge#852 preclose, the class of the #848 follow-up).
+COMMAND_HINTS = (CLUSTER_ROUTE, POST_VERDICT_REQUIRED)
 
 
 def _post_verdict(receipt: dict | None) -> dict:

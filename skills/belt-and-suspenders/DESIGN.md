@@ -441,7 +441,10 @@ posted. Two hours, a one-line thread, while the lane carried it forward as done.
   which you chose, in one line, at the moment you decide.
   The same default covers belt events (R-0375): a `queued-for-<lane>` line
   arriving mid-task waits until the current task's status post, in every
-  lane; the chat carve-outs do not apply to it.
+  lane; the chat carve-outs do not apply to it, except an event on the issue
+  the lane is working now, which is read immediately: it amends the task in
+  hand and the belt will not re-offer it. During a background wait (R-0376) the
+  lane may pick up a queued event as read-only work.
 - **Quiet ticks produce no chat output** — but **always write a tick record**
   (`TickLog`), including on a quiet tick. A quiet tick that writes nothing is
   indistinguishable from a dead monitor.

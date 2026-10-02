@@ -908,7 +908,11 @@ any checkout is: no commit, push, rebase, branch switch, `gh pr create`,
 checkout, and it belongs to the waiting task.
 
 **The waiting task resumes as soon as its wait completes**, at the end of
-the read-only step in hand, ahead of any other queued item.
+the read-only step in hand, ahead of any other queued item. **A read-only step
+whose output is a post is indivisible: it ends when the post lands**, never
+with a drafted-but-unposted verdict. A step with no posted output (reading a
+thread, preparing a brief) is set down where it stands and picked up again
+after the waiting task reaches its own finish line.
 
 | | Claude Code | Codex |
 |---|---|---|
@@ -923,8 +927,18 @@ When the read-only work runs out first, it foregrounds the rest of the wait
 (`tools/lane/lane-queue-run`) the turn is the process, so this keeps the
 wait inside the run that started it.
 
-**Recovery after compaction or restart** is the belt's `queued-for-<lane>`
-re-offer for the waiting task's issue; this rule adds no state.
+**Recovery after compaction or restart is the lane's own durable record, not
+the belt.** Before backgrounding, the lane writes the wait as an open task
+entry naming the issue and what is being waited on (the session's task list),
+and the entry stays open until the wait is consumed. The belt's
+`queued-for-<lane>` re-offer is a second chance over part of this, not the
+mechanism: it fires only where the waiting issue's newest classified comment
+is a `QUEUE_KINDS[<lane>]` kind from a `QUEUE_POSTERS[<lane>]` poster. Lane 1's
+own Tooling Exception waits have no re-offer at all: `QUEUE_KINDS["l1"]` is
+`plan`/`spec` only and `QUEUE_POSTERS["l1"]` excludes Lane 1's own markers, so
+a backgrounded preclose panel, `kill-check` or CI run on an issue whose newest
+marker is a PASS or Lane 1's own post is never re-announced. There the task
+entry is the only record. This rule adds no shared state.
 <!-- /R-0376 -->
 
 ## HITL Gate Language

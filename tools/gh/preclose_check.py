@@ -833,7 +833,7 @@ def complete(args: argparse.Namespace) -> int:
     print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
     print(f"  {provenance}")
     print(f"  mechanisms: {', '.join(sorted(set(mechanisms))) or '(none)'}")
-    route = preclose_passes.cluster_message(read_receipt(path))
+    route = preclose_passes.cluster_message(read_receipt(path), repo, args.issue)
     if route:
         print(f"  {route}")
     print()

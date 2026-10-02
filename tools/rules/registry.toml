@@ -2469,14 +2469,14 @@ hooks = []
 id = "R-0375"
 file = "rules/lane-shorthand.md"
 anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
-statement = "A belt event arriving mid-task queues behind the current task in every lane, which runs to its status post; the chat carve-outs do not apply and NOW stays the operator's interrupt. Only a re-offered queued-for-<lane> line is deferred; a once-emitted comment-watch line carrying owed work is handled as before."
-text_sha = "ff9e2a48b668b7cd"
+statement = "A belt event on another issue arriving mid-task queues behind the current task in every lane, which runs to its status post; the chat carve-outs do not apply and NOW stays the operator's interrupt. A belt event on the issue in hand is read immediately (it amends the task, and the belt never re-offers it). A background wait is not an in-flight step: R-0376 has precedence during it. Deferral is safe only where the belt re-offers: Lane 2/3 inbound on another issue, never Lane 1's own waits."
+text_sha = "9535f63e289f6c37"
 hooks = []
 
 [[rule]]
 id = "R-0376"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes. A Codex lane never ends a turn with an unpolled background session."
-text_sha = "1707b7150bc0481e"
+statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes, and a step whose output is a post ends when the post lands. Recovery is the lane's own task entry, never a belt re-offer, which Lane 1's own waits do not have. A Codex lane never ends a turn with an unpolled background session."
+text_sha = "c135da27db1b0796"
 hooks = []
