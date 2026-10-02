@@ -63,6 +63,10 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - rules/universal-lane1.md  |  6 ++++++
 - tools/rules/registry.toml | 32 ++++++++++++++++++++++++++++++++
 - 4 files changed, 92 insertions(+)
+## fix(cross-family): every reviewer CLI reads the prompt on stdin from a prompt file, never as one argument -- `--json "$(prompt_text "$posture" "$brief" codex)" </dev/null` (cross_family_call.sh:411-412) passed the whole brief as a single argv element, and Linux caps one argument at 128 KiB, so a large brief failed with "Argument list too long" before the review began (harmonic-forge#857)
+- tools/lane/cross_family_call.sh      | 27 ++++++++++---
+- tools/lane/test_cross_family_call.py | 76 ++++++++++++++++++++++++++++++++++++
+- 2 files changed, 98 insertions(+), 5 deletions(-)
 
 ## fix(preclose): sticky-wicket PATCH for preclose pass 2 -- --own-model required with no default, an unrecognized model refuses the cross-family label, a --caller mismatch exits 2 with no label, the post-verdict hint carries --own-model, and the hint tests parse printed output (harmonic-forge#848)
 

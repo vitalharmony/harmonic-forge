@@ -297,6 +297,10 @@ an "assumptions" array with one verdict object for every asserted assumption
 in the brief, in the same order.
 EOF
 
+#: Gemini's `-p` is appended to stdin's input (`gemini --help`), and headless
+#: mode needs a `-p`; the brief itself arrives on stdin (harmonic-forge#857).
+GEMINI_STDIN_INSTRUCTION="Carry out the instructions above, from stdin, exactly."
+
 prompt_text() {
   local posture="$1" brief="$2" family="${3:-}"
   if [ "$posture" = verify ]; then
@@ -312,17 +316,23 @@ prompt_text() {
 
 # --- per-family invocation, native stdout on fd 1, native stderr discarded ---
 
+# harmonic-forge#857: every CLI reads the prompt from `$prompt_file` (set by
+# the dispatch loop, read here from its scope) on stdin,
+# never from an argument. Linux caps one argument at 128 KiB (MAX_ARG_STRLEN),
+# so a brief embedding a large diff died with "Argument list too long" before
+# the reviewer started. A redirected file, not a pipe: under `set -o pipefail`
+# a CLI that closes stdin early would turn a finished review into exit 141.
 invoke_claude() {
   local posture="$1" brief="$2" cwd="$3"
   (
     if [ -n "$cwd" ]; then cd "$cwd"; fi
     if [ "$posture" = verify ]; then
-      claude -p "$(prompt_text "$posture" "$brief" claude)" \
+      claude -p \
         --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
         --model "claude-opus-5-5" \
-        --no-session-persistence --output-format stream-json --verbose </dev/null
+        --no-session-persistence --output-format stream-json --verbose <"$prompt_file"
     else
-      claude -p "$(prompt_text "$posture" "$brief" claude)" --output-format json </dev/null
+      claude -p --output-format json <"$prompt_file"
     fi
   )
 }
@@ -409,7 +419,7 @@ invoke_codex() {
     search_args=(--search)
   fi
   "${env_args[@]}" codex "${search_args[@]}" exec "${cd_args[@]}" "${model_args[@]}" "${config_args[@]}" \
-    --sandbox "$sandbox" --json "$(prompt_text "$posture" "$brief" codex)" </dev/null
+    --sandbox "$sandbox" --json - <"$prompt_file"
 }
 
 invoke_gemini() {
@@ -485,7 +495,7 @@ SETTINGS
       "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
       GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
       gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
-        -p "$(prompt_text "$posture" "$brief" gemini)" -o json </dev/null
+        -p "$GEMINI_STDIN_INSTRUCTION" -o json <"$prompt_file"
   )
 }
 
@@ -684,12 +694,19 @@ for family in "${targets[@]}"; do
   # is identical in each -- the same reason `verify` is fixed alongside
   # `probe` above.
   tmp_err="$(mktemp)"
+  # harmonic-forge#857: the prompt goes to the CLI on stdin from this file,
+  # which every `invoke_*` reads as `$prompt_file` from this scope (their
+  # call shape is unchanged). Created and removed here, outside `invoke_gemini`'s subshell, whose own
+  # EXIT trap restores the API-key HOME.
+  prompt_file="$(mktemp)"
+  prompt_text "$posture" "$brief" "$family" >"$prompt_file"
   exit_code=0
   case "$family" in
     claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
     codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
     gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" || exit_code=$? ;;
   esac
+  rm -f "$prompt_file"
 
   # Buffered, not streamed: a half-written envelope emitted before the failure
   # would be worse than none, because it parses as truncated JSON rather than

@@ -1471,3 +1471,79 @@ class TestPermittedShapeIsRunnable(unittest.TestCase):
         envelope = json.loads(result.stdout.strip())
         self.assertEqual("codex", envelope["family"])
         self.assertEqual("verify", envelope["posture"])
+
+
+class StdinPromptTests(unittest.TestCase):
+    """harmonic-forge#857: every reviewer CLI reads the prompt on stdin, never
+    as an argument. Linux caps one argument at 128 KiB, so a brief embedding a
+    large diff died with `Argument list too long` before the review began.
+    Behavioral: a recording stub per family drains stdin to EOF and records it
+    and its own argv; the brief is 300 KiB."""
+
+    BRIEF_BYTES = 300 * 1024
+    CONTRACT_TAIL = 'If you find nothing, reply {"summary": "no defect found", "findings": []}.'
+
+    REPLY = {
+        "codex": 'echo \'{"type":"item.completed","item":{"type":"agent_message",'
+                 '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n',
+        # `claude --output-format json` prints an array of events; the
+        # read-only branch reads `.[0].result`.
+        "claude": 'echo \'[{"type":"result","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}]\'\n',
+        "gemini": 'echo \'{"response":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
+    }
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.stub_dir = root / "stubbin"
+        self.stub_dir.mkdir()
+        for name, reply in self.REPLY.items():
+            stub = self.stub_dir / name
+            stub.write_text(
+                '#!/usr/bin/env bash\n'
+                f'cat > "{root}/{name}.stdin"\n'
+                f'printf "%s\\0" "$@" > "{root}/{name}.argv"\n'
+                + reply)
+            stub.chmod(0o755)
+        line = "brief line: a large diff the reviewer must see in full.\n"
+        self.brief_text = (line * (self.BRIEF_BYTES // len(line) + 1))[:self.BRIEF_BYTES - 1] + "\n"
+        self.brief = root / "brief.md"
+        self.brief.write_text(self.brief_text)
+        self.cwd = root / "scratch"
+        self.cwd.mkdir()
+
+    def _run(self, caller: str, families: str, family: str) -> dict:
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                   GEMINI_API_KEY="test-key")
+        env.pop("GEMINI_CLI_HOME", None)
+        out = Path(self.tmp.name) / f"{family}-envelope.json"
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", caller, "--families", families,
+             "--posture", "read-only", "--brief", str(self.brief), "--cwd", str(self.cwd),
+             "--out", str(out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelopes = [json.loads(ln) for ln in out.read_text().splitlines() if ln.strip()]
+        return next(e for e in envelopes if e["family"] == family)
+
+    def _assert_prompt_on_stdin(self, family: str, envelope: dict) -> None:
+        root = Path(self.tmp.name)
+        stdin = (root / f"{family}.stdin").read_text()
+        argv = (root / f"{family}.argv").read_bytes()
+        self.assertTrue(stdin.startswith(self.brief_text.rstrip("\n")),
+                        "the full brief must arrive on stdin")
+        self.assertTrue(stdin.endswith(self.CONTRACT_TAIL), "the report contract must follow it")
+        self.assertGreaterEqual(len(stdin.encode()), self.BRIEF_BYTES)
+        self.assertLess(len(argv), 4096, "the argument list must not carry the prompt")
+        self.assertNotIn(b"brief line", argv)
+        self.assertEqual(envelope["status"], "ok", envelope)
+
+    def test_codex_prompt_on_stdin(self) -> None:
+        self._assert_prompt_on_stdin("codex", self._run("claude", "2", "codex"))
+
+    def test_claude_prompt_on_stdin(self) -> None:
+        self._assert_prompt_on_stdin("claude", self._run("codex", "2", "claude"))
+
+    def test_gemini_prompt_on_stdin(self) -> None:
+        self._assert_prompt_on_stdin("gemini", self._run("claude", "3", "gemini"))
