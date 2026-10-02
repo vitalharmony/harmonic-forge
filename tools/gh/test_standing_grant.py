@@ -185,11 +185,21 @@ class ValidateGrantAeTests(unittest.TestCase):
             l1_post.validate_grant_ae(ae_body(cite=False), REPO, ISSUE, GATED, None)
 
     def test_a_grant_ae_on_main_needs_no_open_pr(self):
-        with patch.object(l1_post, "run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+        with patch.object(l1_post, "run", return_value=subprocess.CompletedProcess([], 0, GATED + "\n", "")):
             self.assertTrue(l1_post.grant_on_main(ae_body(), GATED))
             self.assertFalse(l1_post.grant_on_main(ae_body(cite=False), GATED))
         with patch.object(l1_post, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
             self.assertFalse(l1_post.grant_on_main(ae_body(), GATED))
+
+    def test_an_older_main_commit_is_not_the_tip(self):
+        with patch.object(l1_post, "run", return_value=subprocess.CompletedProcess([], 0, LATER + "\n", "")):
+            self.assertFalse(l1_post.grant_on_main(ae_body(), GATED))
+
+    def test_two_authorized_lines_refuse(self):
+        link = f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-100"
+        body = ae_body(comment_id=999) + f"\n**Authorized:** see {link}, gated SHA {GATED}."
+        reason = grant.grant_refusal(body, REPO, ISSUE, GATED, [gate()], git=fake_git())
+        self.assertIn("more than one Authorized", reason)
 
     def test_a_grant_ae_without_its_gate_refuses(self):
         with patch.object(clr, "fetch_comments", return_value=[]), \

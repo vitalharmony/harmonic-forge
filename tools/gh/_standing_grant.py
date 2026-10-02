@@ -140,6 +140,9 @@ def grant_refusal(body: str, repo: str, issue: int, sha: str, comments: list[dic
                   git: GitRunner = _git, cwd: Path | None = None) -> str | None:
     """Why an AE claiming R-0374 must not be posted at `sha`, or None."""
     prefix = f"this AE cites {GRANT_RULE}, but"
+    if len(_AUTHORIZED_LINE.findall(_unquoted(body))) != 1:
+        return (f"{prefix} it has more than one Authorized: line; a grant AE states its authority, "
+                "gate link and gated SHA on exactly one")
     gate = _gate_result(body, repo, issue, comments)
     if gate is None:
         return (f"{prefix} its Authorized: line links no gate-result comment on {repo}#{issue}; "

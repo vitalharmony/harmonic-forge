@@ -728,12 +728,14 @@ def _exact_heading_pattern(label: str, repo: str, issue: int) -> re.Pattern[str]
 
 
 def grant_on_main(body: str, sha: str) -> bool:
-    """harmonic-forge#858: an AE citing R-0374 whose commit is already on
-    origin/main (the production step after the squash merge)."""
+    """harmonic-forge#858: an AE citing R-0374 posted at the current
+    origin/main tip (the production step after the squash merge). Only the
+    tip: an older main commit reached through another branch name is not it."""
     import _standing_grant  # noqa: PLC0415
     if not _standing_grant.cites_grant(body):
         return False
-    return run("git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
+    tip = run("git", "rev-parse", "origin/main")
+    return tip.returncode == 0 and tip.stdout.strip() == sha
 
 
 def validate_grant_ae(body: str, repo: str, issue: int, sha: str,
