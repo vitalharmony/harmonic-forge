@@ -4,7 +4,6 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest import mock
 
 ROOT = Path(__file__).parent
 
@@ -97,42 +96,6 @@ class HandoffTests(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             post.validate_handoff(body, requires_preflight=True)
-
-
-class MutatesLiveFooterTests(unittest.TestCase):
-    """harmonic-forge#851 AC3.5: the handoff footer records `--mutates-live`."""
-
-    def _post(self, mutates_live: bool) -> tuple[str, dict]:
-        posted: dict = {}
-        def comment(repo, issue, body):
-            posted["body"] = body
-            return f"https://github.com/{repo}/issues/{issue}#issuecomment-9", 9
-        with mock.patch.object(post, "world_checks", return_value=([], [])), \
-             mock.patch.object(post, "comment_body", side_effect=comment), \
-             mock.patch.object(post, "write_receipt") as receipt, \
-             mock.patch.object(post, "_discharge_handoff_owed"), \
-             mock.patch.object(post.pitch_receipt, "consume"):
-            post.post_kind("vitalharmony/harmonic-forge", 851, "handoff", "## Handoff\n\nbody",
-                           "a" * 40, "main", is_handoff_extra_checks=True,
-                           plan_first=False, mutates_live=mutates_live)
-        return posted["body"], receipt.call_args.args[0]
-
-    def test_mutates_live_true_is_recorded(self) -> None:
-        body, receipt = self._post(True)
-        self.assertIn("kind=handoff; plan-first=false; mutates-live=true; sha=", body)
-        self.assertTrue(receipt["mutates_live"])
-
-    def test_mutates_live_false_is_recorded(self) -> None:
-        body, receipt = self._post(False)
-        self.assertIn("kind=handoff; plan-first=false; mutates-live=false; sha=", body)
-        self.assertFalse(receipt["mutates_live"])
-
-    def test_the_footer_reader_round_trips(self) -> None:
-        import _handoff_footer
-        for value in (True, False):
-            with self.subTest(value=value):
-                body, _ = self._post(value)
-                self.assertIs(_handoff_footer.newest_handoff_mutates_live([body]), value)
 
 
 if __name__ == "__main__":

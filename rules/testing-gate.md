@@ -7,7 +7,7 @@ for the UI-only variant.
 |---|---|---|
 | Test pass rate | 100% | Devin AA — hard block on commit |
 | Line coverage | ≥ 80% | Devin AA — hard block on commit |
-| Test spec approval | HITL (Tech Lead), or Lane 1 under R-0370 at Tier R/W | Required before test execution begins |
+| Test spec approval | HITL (Tech Lead) | Required before test execution begins |
 | Max auto-fix retries | 3 | Escalates to Tech Lead on failure |
 
 ## Rules
@@ -21,14 +21,11 @@ for the UI-only variant.
 <!-- /R-0123 -->
 <!-- R-0124 -->
 2. The test spec goes to the Tech Lead for HITL approval (see
-   `templates/hitl-test-review.md`) before any test executes. At Tier R or
-   Tier W, in a repo that sets `protocol.auto_ae`, Lane 1's acceptance under
-   R-0370 substitutes for it; Tier P and live-mutating work never.
+   `templates/hitl-test-review.md`) before any test executes.
 <!-- /R-0124 -->
 <!-- R-0125 -->
-3. **Immediately after spec approval (HITL, or Lane 1's acceptance under
-   R-0370, where the sweep posts atomically with the AE), before Lane 3's
-   first execution attempt, Lane 1 sweeps every test case in the approved spec for
+3. **Immediately after HITL approval, before Lane 3's first execution
+   attempt, Lane 1 sweeps every test case in the approved spec for
    environment/fixture readiness** — what each TC actually needs to run
    (disposable containers, live local services, worktree-local config
    files, installed dependencies/browser binaries, etc.) — and provisions

@@ -80,13 +80,6 @@
 #                       it as this repo's own equivalent of `ci-check` rather
 #                       than flagging a missing one. Absent means the repo
 #                       follows the default `ci-check` convention.
-#   auto_ae             Optional (harmonic-forge#851). When `true`, Lane 1 may
-#                       post a routine AE itself (`l1-post --kind ae-and-sweep
-#                       --auto-ae`) for a Tier R or Tier W gate. Absent means
-#                       off; no entry below sets it. A Tier P sweep or spec, a
-#                       spec declaring no write tier, and a `mutates-live`
-#                       handoff always need the operator's AE -- that carve-out
-#                       is fixed in code and no key here relaxes it.
 #
 # ## The lane task layer (harmonic-forge#730)
 #

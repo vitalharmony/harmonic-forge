@@ -545,9 +545,12 @@ channel. Since harmonic-forge#851 the comment-watch enforces this itself:
 `watch_lane_posts.KIND_OWNER` maps each kind to the lane that owes the next
 step, keyed on `kind=` and never on `posted-by`, and a belt prints only its own
 lane's kinds plus unowned ones (`discussion`, which carries a Plan-First
-ratification, and any kind the table does not know). A FAIL reaches Lane 2 as
-`queued-for-l2 kind=gate-result owes=fix`, through `QUEUE_ANY_POSTER_KINDS`,
-whoever posted it. (`discussion` was removed from `QUEUE_KINDS["l2"]` in
+ratification, and any kind the table does not know). A gate result that owes a
+fix is the one exception: Lane 2's comment watch prints it whoever posted it
+(`_fail_owed_to_l2`), as the primary channel. It also queues as
+`queued-for-l2 kind=gate-result owes=fix` through `QUEUE_ANY_POSTER_KINDS`, as a
+second channel only, because the queue is newest-marker-wins and a later
+unrelated comment supersedes it. (`discussion` was removed from `QUEUE_KINDS["l2"]` in
 harmonic-forge#570 — R-0337/`lane-shorthand.md` measured 63 issues on
 `vitalharmony/hrse` whose newest marker after `l2.done` was a `discussion`,
 none of them actionable — so it never queues.)

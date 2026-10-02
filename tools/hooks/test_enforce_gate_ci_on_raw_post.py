@@ -243,13 +243,10 @@ ROUND_FAIL = ROUND_PASS.replace("PASS", "FAIL")
 
 
 def _c(comment_id: int, kind: str, sha: str = SHA, extra: str = "") -> dict:
-    # harmonic-forge#851: an authority footer must attest its own unique body.
     prefix = "Write tier W throughout.\n\n" if kind == "sweep" else ""
-    text = f"{prefix}{extra}body {comment_id}"
-    digest = __import__("hashlib").sha256(text.encode()).hexdigest()
     return {
         "id": comment_id,
-        "body": f"{text}\n\n<!-- l1-post v1; kind={kind}; sha={sha}; body-sha256={digest} -->",
+        "body": f"{prefix}{extra}body\n\n<!-- l1-post v1; kind={kind}; sha={sha} -->",
         "html_url": f"https://github.com/vitalharmony/hrse/issues/999#issuecomment-{comment_id}",
     }
 

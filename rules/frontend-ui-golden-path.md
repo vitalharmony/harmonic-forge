@@ -8,7 +8,7 @@ not touch business logic, data contracts, or backend behavior.
 | Visual regression | 0 unreviewed diffs | Playwright screenshot comparison |
 | Component smoke tests | 100% pass | Render + key interaction per component |
 | Unit test requirement | Not required for pure UI | Waived for UI-only tickets |
-| Test spec approval | HITL (Tech Lead), or Lane 1 under R-0370 at Tier R/W | Required before test execution begins |
+| Test spec approval | HITL (Tech Lead) | Required before test execution begins |
 
 ## Rules
 

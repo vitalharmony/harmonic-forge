@@ -2312,11 +2312,27 @@ class CommentWatchOwnershipTests(unittest.TestCase):
         self.assertEqual(self._emitted(bodies, "l2", {"l1"}),
                          ["handoff", "rework", "discussion"])
 
-    def test_lane2_belt_suppresses_misattributed_gate_result(self):
-        """AC1.1: a gate result stamped LANE1 or LANE-unset classifies as `l1`;
-        ownership keys on `kind=`, so it is suppressed whoever posted it."""
-        bodies = [_marker("gate-result", "LANE1"), _marker("gate-result", "LANE-unset")]
+    def test_lane2_belt_suppresses_misattributed_pass_gate_result(self):
+        """AC1.1: a PASS gate result stamped LANE1 or LANE-unset classifies as
+        `l1`; ownership keys on `kind=`, so it is suppressed whoever posted it."""
+        pass_body = "## Lane 3 Gate Results — H1 — PASS\n\n**Verdict:** PASS\n\n"
+        bodies = [pass_body + _marker("gate-result", "LANE1"),
+                  pass_body + _marker("gate-result", "LANE-unset")]
         self.assertEqual(self._emitted(bodies, "l2", {"l1"}), [])
+
+    def test_lane2_belt_hears_a_misattributed_fail_before_a_later_discussion(self):
+        """Reforge ruling, fix 1: a FAIL stamped LANE-unset, followed by an
+        ordinary Lane 1 discussion, still reaches Lane 2 on the comment watch.
+        The queue alone loses it, because its newest marker is the discussion."""
+        fail = ("## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
+                + _marker("gate-result", "LANE-unset"))
+        self.assertEqual(self._emitted([fail, _marker("discussion")], "l2", {"l1"}),
+                         ["gate-result", "discussion"])
+
+    def test_lane3_belt_never_hears_a_fail_meant_for_lane2(self):
+        fail = ("## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
+                + _marker("gate-result", "LANE-unset"))
+        self.assertEqual(self._emitted([fail], "l3", {"l1"}), [])
 
     def test_lane2_still_hears_plan_ratification_discussion(self):
         """A Plan-First ratification is a Lane 1 `discussion` (hrse#1584)."""
@@ -2394,6 +2410,18 @@ class QueueCycleOwesTests(unittest.TestCase):
     def test_implement_handoff_renders_owes_implement(self):
         self.assertEqual(self._queue([_marker("handoff", extra=" plan-first=false;")], "l2"),
                          {851: "handoff owes=implement"})
+
+    def test_a_quoted_superseded_footer_never_sets_owes(self):
+        """Reforge ruling, fix 2: the handoff's own (last) footer decides,
+        never a `>`-quoted older one above it, in either direction."""
+        quoted_true = "> " + _marker("handoff", extra=" plan-first=true;")
+        quoted_false = "> " + _marker("handoff", extra=" plan-first=false;")
+        own_false = _marker("handoff", extra=" plan-first=false;")
+        own_true = _marker("handoff", extra=" plan-first=true;")
+        self.assertEqual(self._queue([f"{quoted_true}\n\nNew handoff.\n\n{own_false}"], "l2"),
+                         {851: "handoff owes=implement"})
+        self.assertEqual(self._queue([f"{quoted_false}\n\nNew handoff.\n\n{own_true}"], "l2"),
+                         {851: "handoff owes=plan"})
 
     def test_handoff_without_plan_first_field_is_fail_safe_plan(self):
         self.assertEqual(self._queue([_marker("handoff")], "l2"), {851: "handoff owes=plan"})

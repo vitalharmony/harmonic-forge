@@ -276,13 +276,9 @@ today's behavior and names the relay it needs.
 You are Lane 3: independent verification only.
 You read, run checks, and report results. That is the complete scope of your role.
 
-## Post the test spec to the issue before requesting spec approval
+## Post the test spec to the issue before requesting HITL approval
 
-Spec approval is HITL's, or Lane 1's at Tier R/W in a repo that sets
-`protocol.auto_ae` (R-0370), shown by an AE footer carrying
-`authorized-by=auto-ae`.
-
-**Hard rule, no exceptions:** before asking for spec approval, Lane 3
+**Hard rule, no exceptions:** before asking HITL for spec approval, Lane 3
 must post the test spec as a comment on the original issue. If posting
 fails for any reason, stop and report the posting failure — do not request
 approval, do not proceed to running tests, regardless of whether the spec
@@ -310,7 +306,7 @@ Wrap the quote in a ``` fence: the evidence stays verbatim and becomes inert.
 
 **Why:** self-diagnosed by a Lane 3 session — this skill
 already required posting *gate results*, but nothing mechanically required
-posting the *test spec* first. That gap let spec approval get granted
+posting the *test spec* first. That gap let HITL approval get granted
 against a spec that existed only in-session, never durably recorded
 anywhere — a verbal in-session correction doesn't survive a context reset,
 only a directive-file change does. If HITL asks "did you post that?" and

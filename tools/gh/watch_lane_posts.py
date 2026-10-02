@@ -459,10 +459,16 @@ def _owed_to(self_lane: str | None, detail: str) -> bool:
 
 
 def _queue_owes(lane: str, kind: str, body: str) -> str:
-    """The ` owes=` value for a queued marker (harmonic-forge#851 AC2.1)."""
+    """The ` owes=` value for a queued marker (harmonic-forge#851 AC2.1).
+
+    `plan-first` is read from the body's LAST marker once fenced blocks and
+    `>` quote lines are stripped: a handoff that quotes a superseded footer
+    above its own must not take the quoted one's value (reforge ruling, fix 2).
+    """
     if lane == "l2" and kind == "handoff":
-        marker = _MARKER_RE.search(_strip_fenced_blocks(body))
-        field = _PLAN_FIRST_RE.search(marker.group(0)) if marker else None
+        markers = _MARKER_RE.findall(_strip_quoted(body))
+        marker = markers[-1] if markers else None
+        field = _PLAN_FIRST_RE.search(marker) if marker else None
         return "implement" if field and field.group(1) == "false" else PLAN_FIRST_OWES
     return OWES[lane][kind]
 
@@ -484,6 +490,18 @@ def _gate_result_owes_fix(body: str) -> bool:
     all queue: an undecidable report is emitted for the lane to read, never
     silently dropped."""
     return gate_ci.verdict_of(body) not in ("PASS", "BLOCKED")
+
+
+def _fail_owed_to_l2(self_lane: str | None, detail: str, body: str) -> bool:
+    """A gate result that owes a fix is always Lane 2's news on the comment
+    watch, whoever posted it (reforge ruling, fix 1). The queue entry stays
+    as a second channel, but it is newest-marker-wins, so a later unrelated
+    comment would otherwise hide the FAIL from Lane 2 on both channels."""
+    if self_lane != "l2":
+        return False
+    if detail != "gate-result" and not _GATE_RESULT_HEADING.match(detail):
+        return False
+    return _gate_result_owes_fix(body)
 
 
 #: Overlap `K`, in minutes. `query_since` reads from `min(watermark, now - K)`,
@@ -642,6 +660,14 @@ _FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 
 def _strip_fenced_blocks(body: str) -> str:
     return _FENCED_BLOCK_RE.sub("", body)
+
+
+_QUOTE_LINE_RE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
+
+
+def _strip_quoted(body: str) -> str:
+    """`body` without fenced blocks or `>` quote lines."""
+    return _QUOTE_LINE_RE.sub("", _strip_fenced_blocks(body))
 
 
 def _classify(body: str) -> tuple[str, str] | None:
@@ -1465,7 +1491,8 @@ def comment_watch_cycle(
             lane, detail = classified
             if lane not in watch:
                 continue
-            if not _owed_to(self_lane, detail):
+            if not _owed_to(self_lane, detail) and not _fail_owed_to_l2(
+                    self_lane, detail, comment.get("body", "")):
                 continue
             cid = str(comment.get("id", ""))
             if cid and seen.settled(cid):

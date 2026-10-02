@@ -27,11 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
 
-from _handoff_footer import (  # noqa: E402
-    UNREADABLE_HANDOFF, FooterState, attested_footer, newest_handoff_mutates_live,
-    thread_footers,
-)
-from _sweep_tier import NO_TIER_MESSAGE, TIER_RANK, parse_write_tier  # noqa: E402
+from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
 #: harmonic-forge#791: a spec/handoff is recognized by its OWN heading too,
@@ -111,53 +107,12 @@ def fetch_comments(repo: str, issue: int) -> list[dict]:
         fail(f"unexpected response fetching comments for {repo}#{issue}")
 
 
-def _thread_footer_map(comments: list[dict]) -> dict:
-    """`{comment id: Footer}` in id order, first attestation winning, so a
-    replayed copy of an earlier comment is UNREADABLE (reforge pass 1)."""
-    ordered = sorted(comments, key=lambda c: c["id"])
-    return {c["id"]: f for c, f in zip(ordered, thread_footers(c.get("body", "") for c in ordered))}
-
-
-def _own_kind(comment: dict, footers: dict | None = None) -> str | None:
-    """The comment's own kind, from its own ATTESTED footer only
-    (harmonic-forge#851). ABSENT (no digest) and UNREADABLE footers nominate
-    nothing, so neither a quoted marker nor a digest-less one can make a
-    comment an AE, sweep, spec, ready-for-l3, rework or handoff."""
-    footer = (footers or {}).get(comment["id"]) or attested_footer(comment.get("body", ""))
-    if footer.state is not FooterState.ATTESTED or footer.kind is None:
-        return None
-    return footer.kind.lower()
-
-
-def _attested_text(comment: dict) -> str:
-    """The text a consumer may read content from: the attested prefix when
-    the footer attests, else the whole (legacy) body."""
-    footer = attested_footer(comment.get("body", ""))
-    return footer.prefix if footer.state is FooterState.ATTESTED else comment.get("body", "")
-
-
-def unreadable_after(comments: list[dict], kind: str, after: dict | None) -> dict | None:
-    """The newest comment newer than `after` that claims `kind` but whose own
-    footer does not attest -- edited, forged, or hand-posted with a quote. A
-    caller refuses on it instead of falling back to an older, valid one
-    (harmonic-forge#851 preclose pass 2: never skip an unreadable candidate)."""
-    footers = _thread_footer_map(comments)
-    bad = [comment for comment in comments
-           if (after is None or comment["id"] > after["id"])
-           and (footer := footers[comment["id"]]).state is FooterState.UNREADABLE
-           and kind in {k.lower() for k in footer.claimed_kinds}]
-    return max(bad, key=lambda c: c["id"]) if bad else None
-
-
-def _unreadable_message(kind: str, comment: dict) -> str:
-    return (f"{kind} ({comment['html_url']}) body does not match its recorded body-sha256 -- it "
-            f"may have been edited since posting, or it quotes another comment's footer; an "
-            f"unverifiable {kind} is never read past to an older one. Re-post it.")
-
-
 def latest_by_kind(comments: list[dict], kind: str) -> dict | None:
-    footers = _thread_footer_map(comments)
-    matches = [comment for comment in comments if _own_kind(comment, footers) == kind]
+    matches = []
+    for comment in comments:
+        match = FOOTER_KIND.search(comment.get("body", ""))
+        if match and match.group(1).lower() == kind:
+            matches.append(comment)
     if not matches:
         return None
     # `id`, not `created_at` -- GitHub's REST created_at has one-second
@@ -166,57 +121,8 @@ def latest_by_kind(comments: list[dict], kind: str) -> dict | None:
     return max(matches, key=lambda c: c["id"])
 
 
-def is_auto_ae(comment: dict) -> bool:
-    """harmonic-forge#851: an AE `l1_post.py --auto-ae` posted. Read from the
-    body's own trailing attestation footer only, so a marker quoted in the
-    body never counts."""
-    footer = attested_footer(comment.get("body", ""))
-    return footer.state is FooterState.ATTESTED and "authorized-by=auto-ae" in (footer.marker or "")
-
-
-def auto_ae_refusal(comments: list[dict], ae: dict, tier: str) -> str | None:
-    """The consumer half of the fixed auto-AE carve-out (harmonic-forge#851).
-
-    `l1_post.py --auto-ae` refuses these cases at the poster, but that is the
-    tool Lane 1 itself invokes with Lane-1-authored inputs. This is the half
-    that holds when the poster is bypassed: an auto-AE never authorizes a gate
-    above Tier W, or on an issue whose newest handoff is live-mutating or
-    predates the `mutates-live` field. A manual AE never reaches here."""
-    manual = "the operator's manual AE is required (post it without --auto-ae)"
-    # harmonic-forge#851 preclose pass 1 survivor 2: the same ceiling the poster
-    # computes -- the sweep AND the newest spec -- so a spec revised to add a
-    # Tier P case after the auto-AE cannot ride carry-forward past this guard.
-    spec = latest_by_kind(comments, "spec")
-    if (bad := unreadable_after(comments, "spec", spec)) is not None:
-        return _unreadable_message("spec", bad)
-    spec_tier = parse_write_tier(_attested_text(spec)) if spec else None
-    if spec_tier is None:
-        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but the newest "
-                f"Lane 3 spec declares no write tier (or none was found); auto-AE never "
-                f"reads silence as Tier R -- {manual}")
-    ceiling = max((tier, spec_tier), key=TIER_RANK.__getitem__)
-    if ceiling not in ("R", "W"):
-        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but the write-tier "
-                f"ceiling over the sweep and the newest spec is {ceiling}; an auto-AE "
-                f"authorizes Tier R or W only -- {manual}")
-    mutates_live = newest_handoff_mutates_live(c.get("body", "") for c in comments)
-    if mutates_live is not False:
-        why = ("does not match its body-sha256 (edited or quoted), so it cannot be trusted"
-               if mutates_live == UNREADABLE_HANDOFF
-               else "says mutates-live=true" if mutates_live is True
-               else "carries no mutates-live field")
-        return (f"AE ({ae['html_url']}) was posted under the auto-AE toggle, but the newest "
-                f"handoff footer {why} -- {manual}")
-    return None
-
-
 def footer_sha(comment: dict) -> str | None:
-    """The `sha=` from the comment's OWN footer (attested or legacy), never
-    from a marker quoted in its body."""
-    footer = attested_footer(comment.get("body", ""))
-    if footer.state is not FooterState.ATTESTED or footer.marker is None:
-        return None
-    match = FOOTER_SHA.search(footer.marker)
+    match = FOOTER_SHA.search(comment.get("body", ""))
     return match.group(1) if match else None
 
 
@@ -230,11 +136,12 @@ def verify_body_sha256(comment: dict) -> bool:
     there is nothing to verify against (no body-sha256 marker) -- absence
     is a missing-marker problem the caller already checks for separately,
     not a mismatch."""
-    # harmonic-forge#851 REFORGE: the footer is the body's own only when its
-    # digest matches the text before it. A digest that matches nothing is a
-    # mismatch (False), never "nothing to verify"; only a genuinely
-    # digest-less (legacy) body passes on absence.
-    return attested_footer(comment.get("body", "")).state is not FooterState.UNREADABLE
+    recorded = FOOTER_BODY_SHA.search(comment.get("body", ""))
+    if recorded is None:
+        return True
+    prefix = FOOTER_MARKER.sub("", comment.get("body", ""))
+    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+    return digest == recorded.group(1)
 
 
 def current_head_sha() -> str:
@@ -283,35 +190,14 @@ def same_sha(a: str | None, b: str | None) -> bool:
 
 
 def _is_round_artifact(comment: dict) -> bool:
-    """Does this comment start a new round (new scope or a new test plan)?
-
-    harmonic-forge#851 reforge pass 1 survivor 4: read from the comment's own
-    attested footer and attested text, never the raw body's first marker, and
-    never a `**Test cases:** unchanged` line quoted in a fence or blockquote.
-    A comment that claims a round kind but does not attest counts as a round
-    artifact: that blocks a carry-forward, the fail-closed side."""
     body = comment.get("body", "")
-    footer = attested_footer(body)
-    if footer.state is FooterState.ATTESTED:
-        kind = (footer.kind or "").lower()
-        text = footer.prefix or ""
-        if kind in ROUND_KINDS:
-            return True
-        if kind == "rework":
-            return not TC_UNCHANGED.search(_unquoted(text))
-        return bool(ROUND_HEADING.search(text))
-    claimed = {k.lower() for k in footer.claimed_kinds}
-    if footer.state is FooterState.UNREADABLE and claimed & (set(ROUND_KINDS) | {"rework"}):
+    kind_match = FOOTER_KIND.search(body)
+    kind = kind_match.group(1).lower() if kind_match else None
+    if kind in ROUND_KINDS:
         return True
+    if kind == "rework":
+        return not TC_UNCHANGED.search(body)
     return bool(ROUND_HEADING.search(body))
-
-
-_QUOTED_RE = re.compile(r"^(`{3,}|~{3,})[^\n]*\n.*?^\1[ \t]*$|^>.*$", re.DOTALL | re.MULTILINE)
-
-
-def _unquoted(text: str) -> str:
-    """`text` with fenced blocks and `>` blockquote lines removed."""
-    return _QUOTED_RE.sub("", text)
 
 
 def _round_artifact_between(comments: list[dict], lo_id: int, hi_id: int) -> dict | None:
@@ -355,7 +241,8 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
     candidates = [
         comment for comment in comments
         if comment["id"] > authority["id"]
-        and _own_kind(comment) == "ready-for-l3"
+        and (match := FOOTER_KIND.search(comment.get("body", "")))
+        and match.group(1).lower() == "ready-for-l3"
         and same_sha(footer_sha(comment), head_sha)
         and _round_artifact_between(comments, authority["id"], comment["id"]) is None
     ]
@@ -382,22 +269,14 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     was factored out.
     """
     sweep = latest_by_kind(comments, "sweep")
-    if (bad := unreadable_after(comments, "sweep", sweep)) is not None:
-        return None, _unreadable_message("sweep", bad)
     if sweep is None:
         return None, "no gate-readiness sweep"
-    tier = parse_write_tier(_attested_text(sweep))
+    tier = parse_write_tier(sweep.get("body", ""))
     if tier is None:
         return None, f"sweep ({sweep['html_url']}) {NO_TIER_MESSAGE}"
 
     ae = latest_by_kind(comments, "ae")
-    if (bad := unreadable_after(comments, "ae", ae)) is not None:
-        return None, _unreadable_message("AE", bad)
     if ae is not None:
-        # harmonic-forge#851: before the SHA match and before carry_forward, so
-        # a later ready-for-l3 can never carry a refused auto-AE onto a new SHA.
-        if is_auto_ae(ae) and (refusal := auto_ae_refusal(comments, ae, tier)):
-            return None, refusal
         if sweep["id"] <= ae["id"]:
             return None, f"no gate-readiness sweep posted after the most recent AE ({ae['html_url']})"
         ae_sha = footer_sha(ae)

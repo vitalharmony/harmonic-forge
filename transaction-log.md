@@ -3,6 +3,12 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): REFORGE (sticky-wicket, operator --force --reforge) -- excise the auto-AE carve-out and the content-bound footer reader (_handoff_footer, check_lane3_ready, l1_post --auto-ae, projects.toml toggle, R-0370 and its exception pairs) back to origin/main; a FAIL gate result is Lane 2's news on the comment watch whoever posted it; owes= reads the handoff's last unquoted marker; rule 9 names l2_post.py --kind plan; the doc-sync test binds each row's step and checks l2_post kinds (harmonic-forge#851)
+- tools/onboard/manifest_protocol.py              |   8 -
+- tools/onboard/test_manifest.py                  |  34 ---
+- tools/rules/registry.toml                       |  31 +--
+- 23 files changed, 165 insertions(+), 1119 deletions(-)
+
 ## test(belt): round-approval fixtures in post_lane_discussion and the raw-post hook attest their own unique bodies, as #851's content-bound footers require (harmonic-forge#851)
 - tools/gh/test_post_lane_discussion_kinds.py     | 6 +++++-
 - tools/hooks/test_enforce_gate_ci_on_raw_post.py | 5 ++++-

@@ -442,40 +442,6 @@ class LiveManifestTests(unittest.TestCase):
         self.assertTrue(any(f.startswith("Q:") for f in findings), findings)
 
 
-class AutoAeManifestTests(unittest.TestCase):
-    """harmonic-forge#851 AC3.4: `protocol.auto_ae` is an optional boolean."""
-
-    HEAD = ('[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\naccount = "x"\n'
-            'onboarded = true\n')
-
-    def _body(self, line: str = "") -> str:
-        return self.HEAD + textwrap.dedent(PROTOCOL) + line
-
-    def test_absent_is_off(self) -> None:
-        path = write(self._body())
-        self.assertFalse(mf.load(path)[0].protocol.auto_ae)
-        self.assertFalse(mf.auto_ae_enabled("o/a", path))
-
-    def test_true_and_false_are_accepted(self) -> None:
-        self.assertTrue(mf.auto_ae_enabled("o/a", write(self._body("auto_ae = true\n"))))
-        self.assertFalse(mf.auto_ae_enabled("o/a", write(self._body("auto_ae = false\n"))))
-
-    def test_rejects_non_bool(self) -> None:
-        with self.assertRaises(mf.ManifestError) as ctx:
-            mf.load(write(self._body('auto_ae = "true"\n')))
-        self.assertIn("protocol.auto_ae must be boolean", str(ctx.exception))
-
-    def test_unknown_repo_and_no_protocol_are_off(self) -> None:
-        path = write(self.HEAD.replace("onboarded = true\n", ""))
-        self.assertFalse(mf.auto_ae_enabled("o/a", path))
-        self.assertFalse(mf.auto_ae_enabled("o/nope", path))
-
-    def test_every_shipped_entry_is_off(self) -> None:
-        for project in mf.load(LIVE):
-            with self.subTest(project=project.name):
-                self.assertFalse(bool(project.protocol and project.protocol.auto_ae))
-
-
 if __name__ == "__main__":
     unittest.main()
 
