@@ -154,7 +154,7 @@ class QueueCycleEmitsTheNoticeTests(unittest.TestCase):
         _, with_batch, _ = self._run({"F326": self._wallclock_entry(5)})
         _, without_batch, _ = self._run({"F326": self._wallclock_entry(-5)})
         self.assertEqual(without_batch, with_batch)
-        self.assertEqual(["vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3"],
+        self.assertEqual(["vitalharmony/hrse#1530 queued-for-l3 kind=ready-for-l3 owes=spec"],
                          with_batch)
 
     def test_the_belt_does_not_import_batch_auth(self):

@@ -43,6 +43,14 @@ Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
 - tools/lane/test_cross_family_provenance.py         | 35 +++++++++++
 - tools/rules/registry.toml                          |  4 +-
 - 16 files changed, 331 insertions(+), 49 deletions(-)
+## fix(belt): keep SKILL.md within its 30-line cap and align the batch-view row with the owes= suffix (harmonic-forge#851)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- skills/belt-and-suspenders/SKILL.md | 16 ++++------------
+- tools/gh/test_belt_batch_view.py    |  2 +-
+- 2 files changed, 5 insertions(+), 13 deletions(-)
+
 ## feat(belt): lane-owned event filtering, owes= obligations and Lane 3 belt pickup, per-repo auto-AE toggle with a fixed Tier P / mutates-live carve-out (harmonic-forge#851)
 
 Root cause, quoted per the handoff: watch_lane_posts.py comment_watch_cycle filtered only on 'if lane not in watch: continue' -- who posted, never who owes the next step.
