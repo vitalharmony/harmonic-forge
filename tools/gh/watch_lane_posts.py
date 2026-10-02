@@ -1015,25 +1015,17 @@ def discover_queue(repo: str, lane: str,
     queued: dict[int, str] = {}
     closed: list[int] = []
     for issue in candidates:
-        # harmonic-forge#854: a closed issue is queued to no lane, checked
-        # before the label exclusion so closed epics and Tooling Exception
-        # issues are retired too. A pair already known closed, with no
-        # candidate file left to retire, costs no call. A cached pair that
-        # HAS a file is re-read first: the cache never expires, and a reopened
-        # issue's fresh post must not be deleted on its word alone (preclose
-        # pass 1). A reopened pair leaves the cache and is queued normally.
-        cached = (repo, issue) in _CLOSED_SEEN
-        if cached and not belt_candidates.has_candidate(repo, issue):
-            continue
+        # harmonic-forge#854 (REFORGE): a closed issue is queued to no lane,
+        # checked before the label exclusion so closed epics and Tooling
+        # Exception issues are retired too. No in-process cache decides this:
+        # the state comes from this cycle's read, and a retired pair leaves the
+        # candidate set because its store entry is marked closed, which
+        # `read_candidates` skips and a fresh `record_candidate` clears. An
+        # unreadable state is treated as open (AC4).
         state, labels = _issue_meta(repo, issue)
         if state == "closed":
-            _CLOSED_SEEN.add((repo, issue))
             closed.append(issue)
             continue
-        if cached:
-            if state is None:
-                continue  # cannot confirm either way: queue nothing, delete nothing
-            _CLOSED_SEEN.discard((repo, issue))
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
             # preclose finding): an epic, or -- for l2/l3 -- a Lane-1-owned
@@ -1087,9 +1079,9 @@ def discover_queue(repo: str, lane: str,
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
             continue
         queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"
-    # harmonic-forge#854: retire closed issues' candidate files only on a
+    # harmonic-forge#854: mark closed issues' candidate entries only on a
     # successful cycle (the failure returns above never reach here), and never
-    # a file whose entry was posted after the store was read.
+    # an entry posted after the store was read.
     for issue in closed:
         belt_candidates.retire_candidate(repo, issue, read_before=read_before)
     return queued, True

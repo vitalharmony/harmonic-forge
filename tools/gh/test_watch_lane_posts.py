@@ -2999,10 +2999,11 @@ class IssueMetaReadTests(unittest.TestCase):
 
 
 class ClosedIssueRetirementTests(unittest.TestCase):
-    """harmonic-forge#854: a closed issue leaves every queue, and its
-    candidate file is retired (archived, then unlinked) on a successful
-    cycle only. Runs against a temp candidates directory, never the live
-    store, because the kill-check runner bypasses tools/run_tests.py."""
+    """harmonic-forge#854 (REFORGE): a closed issue leaves every queue, and its
+    candidate entry is marked closed in place on a successful cycle only. No
+    in-process cache and no unlink. Runs against a temp candidates directory,
+    never the live store, because the kill-check runner bypasses
+    tools/run_tests.py."""
 
     HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; plan-first=false; sha=abc -->"
     REPO = "vitalharmony/hrse"
@@ -3014,13 +3015,6 @@ class ClosedIssueRetirementTests(unittest.TestCase):
         patcher = patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.dir)
         patcher.start()
         self.addCleanup(patcher.stop)
-        watch_lane_posts._CLOSED_SEEN.clear()
-        self.addCleanup(watch_lane_posts._CLOSED_SEEN.clear)
-        self.archived: list[str] = []
-        arch = patch.object(belt_candidates, "_archive_candidate",
-                            side_effect=lambda path, entry: self.archived.append(path.name) or 1)
-        arch.start()
-        self.addCleanup(arch.stop)
 
     def _write(self, issue: int, posted_at: str = "2026-10-01T00:00:00Z") -> Path:
         path = belt_candidates._candidate_path(self.dir, self.REPO, issue)
@@ -3028,9 +3022,17 @@ class ClosedIssueRetirementTests(unittest.TestCase):
                                     "posted_by": "l1", "posted_at": posted_at}))
         return path
 
+    def _entry(self, path: Path) -> dict:
+        return json.loads(path.read_text())
+
     def _discover(self, issues, read_at="2026-10-02T00:00:00Z"):
         when = dt.datetime.strptime(read_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
         return discover_queue(self.REPO, "l2", set(issues), when)
+
+    def _candidates(self):
+        return belt_candidates.read_candidates(
+            [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
+            now=dt.datetime(2026, 10, 2, 1, tzinfo=dt.timezone.utc), base_dir=self.dir)
 
     def test_a_closed_issue_is_queued_to_no_lane_from_the_same_read(self):
         path = self._write(1)
@@ -3042,110 +3044,88 @@ class ClosedIssueRetirementTests(unittest.TestCase):
         self.assertEqual(queue, {})
         self.assertEqual(m.call_count, 1)
         c.assert_not_called()
-        self.assertFalse(path.exists())
-        self.assertEqual(self.archived, [path.name])
+        self.assertTrue(path.exists())
+        self.assertIn("closed_at", self._entry(path))
 
-    def test_a_closed_epic_or_tooling_exception_issue_is_retired_too(self):
-        for label in ("epic", "tooling-exception"):
+    def test_a_closed_epic_or_tooling_exception_issue_is_marked_too(self):
+        for number, label in enumerate(("epic", "tooling-exception"), start=2):
             with self.subTest(label=label):
-                watch_lane_posts._CLOSED_SEEN.clear()
-                path = self._write(2)
+                path = self._write(number)
                 with patch("watch_lane_posts._issue_meta", return_value=("closed", {label})), \
                      patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-                    self._discover({2})
-                self.assertFalse(path.exists())
+                    self._discover({number})
+                self.assertIn("closed_at", self._entry(path))
 
-    def test_a_known_closed_pair_with_no_file_costs_no_call(self):
-        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
-        with patch("watch_lane_posts._issue_meta") as m, \
+    def test_a_marked_entry_is_no_longer_a_candidate(self):
+        self._write(3)
+        self.assertEqual(self._candidates(), {(self.REPO, 3)})
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-            queue, ok = self._discover({3})
-        m.assert_not_called()
-        self.assertTrue(ok)
-        self.assertEqual(queue, {})
+            self._discover({3})
+        self.assertEqual(self._candidates(), set())
 
-    def test_a_known_closed_pair_with_a_file_is_reread_before_it_is_retired(self):
-        path = self._write(3)
-        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
-        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())) as m, \
+    def test_a_fresh_post_after_a_mark_restores_candidacy(self):
+        path = self._write(4)
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-            queue, ok = self._discover({3})
-        self.assertEqual(m.call_count, 1)
-        self.assertEqual(queue, {})
-        self.assertFalse(path.exists())
+            self._discover({4})
+        belt_candidates.record_candidate(self.REPO, 4, "handoff", "l1", base_dir=self.dir)
+        self.assertNotIn("closed_at", self._entry(path))
+        self.assertIn((self.REPO, 4), belt_candidates.read_candidates(
+            [self.REPO], "l2", queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)},
+            base_dir=self.dir))
 
-    def test_a_reopened_issue_keeps_its_fresh_file_and_is_queued(self):
-        # Preclose pass 1: the cache never expires, so a reopened issue's new
-        # post must survive a stale cache entry.
-        path = self._write(3)
-        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
-        with patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
+    def test_a_reopened_issue_is_read_fresh_every_cycle(self):
+        # No cache: a pair read closed once is read again next cycle and
+        # queued as soon as it is open.
+        self._write(5, posted_at="2026-10-02T00:00:05Z")  # posted after the first read
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({5})
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set())) as m, \
              patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
-            queue, ok = self._discover({3})
-        self.assertTrue(ok)
-        self.assertEqual(queue, {3: "handoff owes=implement"})
-        self.assertTrue(path.exists())
-        self.assertNotIn((self.REPO, 3), watch_lane_posts._CLOSED_SEEN)
+            queue, ok = self._discover({5}, read_at="2026-10-02T00:10:00Z")
+        self.assertEqual(m.call_count, 1)
+        self.assertEqual(queue, {5: "handoff owes=implement"})
 
-    def test_a_failed_reread_of_a_known_closed_pair_deletes_nothing(self):
-        path = self._write(3)
-        watch_lane_posts._CLOSED_SEEN.add((self.REPO, 3))
+    def test_a_failed_issue_read_keeps_the_issue_open_and_unmarked(self):
+        path = self._write(6)
         with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
-            queue, ok = self._discover({3})
+            queue, ok = self._discover({6})
         self.assertTrue(ok)
-        self.assertEqual(queue, {})
-        self.assertTrue(path.exists())
+        self.assertEqual(queue, {6: "handoff owes=implement"})
+        self.assertNotIn("closed_at", self._entry(path))
 
-    def test_an_entry_stamped_in_the_same_second_as_the_read_is_kept(self):
-        # posted_at is stored to the second; a sub-second read time must not
-        # make a post from that same second look older (preclose pass 1).
+    def test_nothing_is_marked_on_a_failed_cycle(self):
+        closed_path = self._write(7)
+        self._write(8)
+
+        def meta(repo, issue):
+            return ("closed", set()) if issue == 7 else ("open", set())
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None):
+            queue, ok = self._discover({7, 8})
+        self.assertFalse(ok)
+        self.assertNotIn("closed_at", self._entry(closed_path))
+
+    def test_an_entry_posted_after_the_store_was_read_is_not_marked(self):
+        path = self._write(9, posted_at="2026-10-02T00:00:05Z")
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
+            self._discover({9}, read_at="2026-10-02T00:00:00Z")
+        self.assertNotIn("closed_at", self._entry(path))
+
+    def test_an_entry_stamped_in_the_same_second_as_the_read_is_not_marked(self):
         path = self._write(10, posted_at="2026-10-02T12:00:00Z")
         read_before = dt.datetime(2026, 10, 2, 12, 0, 0, 100000, tzinfo=dt.timezone.utc)
         self.assertFalse(belt_candidates.retire_candidate(self.REPO, 10, read_before=read_before))
-        self.assertTrue(path.exists())
+        self.assertNotIn("closed_at", self._entry(path))
 
-    def test_a_closed_pair_is_remembered_for_the_next_cycle(self):
-        self._write(4)
-        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())) as m, \
-             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-            self._discover({4})
-            self._discover({4})
-        self.assertEqual(m.call_count, 1)
-
-    def test_a_failed_issue_read_keeps_the_issue_open_and_its_file(self):
-        path = self._write(5)
-        with patch("watch_lane_posts._issue_meta", return_value=(None, None)), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]):
-            queue, ok = self._discover({5})
-        self.assertTrue(ok)
-        self.assertEqual(queue, {5: "handoff owes=implement"})
-        self.assertTrue(path.exists())
-
-    def test_nothing_is_retired_on_a_failed_cycle(self):
-        closed_path = self._write(6)
-        self._write(7)
-
-        def meta(repo, issue):
-            return ("closed", set()) if issue == 6 else ("open", set())
-        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=None):
-            queue, ok = self._discover({6, 7})
-        self.assertFalse(ok)
-        self.assertTrue(closed_path.exists())
-
-    def test_a_file_posted_after_the_store_was_read_is_kept(self):
-        path = self._write(8, posted_at="2026-10-02T00:00:05Z")
-        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
-             patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-            self._discover({8}, read_at="2026-10-02T00:00:00Z")
-        self.assertTrue(path.exists())
-
-    def test_a_file_is_never_unlinked_when_archiving_fails(self):
-        path = self._write(9)
-        with patch.object(belt_candidates, "_archive_candidate", return_value=0), \
+    def test_retirement_never_unlinks(self):
+        path = self._write(11)
+        with patch.object(Path, "unlink", side_effect=AssertionError("unlink")), \
              patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
-            self._discover({9})
+            self._discover({11})
         self.assertTrue(path.exists())
-

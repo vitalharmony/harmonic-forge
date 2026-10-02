@@ -212,6 +212,10 @@ def read_candidates(
                 except OSError:
                     pass
             continue
+        if entry.get("closed_at"):
+            # harmonic-forge#854: retired by `retire_candidate` because the
+            # issue was closed; a fresh `record_candidate` clears the mark.
+            continue
         if repo not in wanted_repos:
             continue
         if kind not in kinds or (posted_by not in posters and kind not in any_poster):
@@ -233,36 +237,33 @@ def _archive_candidate(path: Path, entry: dict) -> int:
         return 0
 
 
-def has_candidate(repo: str, issue: int, base_dir: Path | None = None) -> bool:
-    """Whether `(repo, issue)` has a candidate file in the store (harmonic-forge#854)."""
-    return _candidate_path(base_dir or DEFAULT_CANDIDATES_DIR, repo, issue).is_file()
-
-
 def retire_candidate(repo: str, issue: int, *, read_before: datetime,
                      base_dir: Path | None = None) -> bool:
-    """Archive, then unlink, a CLOSED issue's candidate file (harmonic-forge#854).
+    """Mark a CLOSED issue's candidate entry closed, in place (harmonic-forge#854).
 
-    Same archive-then-unlink contract as an aged-out entry in
-    `read_candidates`: the file is unlinked only when `_archive_candidate`
-    returns 1. It is left alone when its entry was posted at or after
-    `read_before` (the moment the cycle read the store), so a post that
-    lands mid-cycle is never deleted. Returns whether the file was removed."""
+    The entry gains a `closed_at` stamp through the same atomic temp-file and
+    `os.replace` as `record_candidate`; nothing is archived or unlinked here.
+    `read_candidates` skips a marked entry, so the pair costs no read on any
+    later cycle, in this process or a fresh one, and a later `record_candidate`
+    (a new post on a reopened issue) writes a whole fresh entry without the
+    mark. An entry posted at or after `read_before` (the moment the cycle read
+    the store, compared to the second as `posted_at` is stored) is left
+    unmarked, so a post landing mid-cycle keeps its candidacy. Archive-then-
+    unlink stays solely the 14-day age prune. Returns whether it marked."""
     path = _candidate_path(base_dir or DEFAULT_CANDIDATES_DIR, repo, issue)
     try:
         entry = json.loads(path.read_text(encoding="utf-8"))
         posted_at = _parse_iso(entry["posted_at"])
     except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
         return False
-    # `posted_at` is stored to the second (`record_candidate`), so compare
-    # against the read time truncated the same way: an entry stamped in the
-    # same second as the read is kept, never assumed older (preclose pass 1).
-    if posted_at >= read_before.replace(microsecond=0):
+    if entry.get("closed_at") or posted_at >= read_before.replace(microsecond=0):
         return False
+    entry["closed_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        if _archive_candidate(path, entry) == 1:
-            path.unlink()
-            return True
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(entry), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
-        pass
-    return False
+        return False
+    return True
 
