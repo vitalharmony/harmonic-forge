@@ -84,7 +84,36 @@ UTC = timezone.utc
 #: Real, production location -- the same directory the pre-rescope design
 #: used for its single JSONL file. Every writer and the reader default
 #: here; every test passes `base_dir` instead (AC4').
-DEFAULT_CANDIDATES_DIR = Path.home() / ".claude" / "state" / "belt" / "candidates"
+REAL_CANDIDATES_DIR = Path.home() / ".claude" / "state" / "belt" / "candidates"
+#: One literal, so the guard's notion of "the real store" cannot drift from the
+#: default; `tools/run_tests.py` redirects by rebinding only this name.
+DEFAULT_CANDIDATES_DIR = REAL_CANDIDATES_DIR
+
+#: Set by the test runners (`tools/run_tests.py`,
+#: `tools/gh/run_lane1_transport_tests.py`, `tools/gh/kill_check.py`) and
+#: inherited by any writer a test spawns as a subprocess (harmonic-forge#865).
+TESTING_ENV = "HARMONIC_FORGE_TESTING"
+
+
+def _refuses_real_store(base: Path) -> bool:
+    """Whether a mutation of `base` must be refused because this is a test
+    process and `base` is the operator's real store (harmonic-forge#865).
+
+    In-process, `unittest` being imported marks a test (no production writer
+    imports it); a writer a test launched as a subprocess has its own
+    `sys.modules`, so it is marked by the inherited `HARMONIC_FORGE_TESTING=1`."""
+    under_test = "unittest" in sys.modules or os.environ.get(TESTING_ENV) == "1"
+    if not under_test:
+        return False
+    try:
+        return Path(base).resolve() == REAL_CANDIDATES_DIR.resolve()
+    except OSError:
+        return True  # cannot tell: refuse, never write the real store from a test
+
+
+def _refused(action: str) -> None:
+    print(f"[belt-candidates] test process: not {action} the real candidate store "
+          "(pass base_dir) -- harmonic-forge#865", file=sys.stderr)
 
 #: Same value the pre-rescope design used, preserved rather than
 #: re-litigated -- 14 days safely spans a long weekend without an entry
@@ -130,6 +159,9 @@ def record_candidate(
     instant in practice, but a crash mid-write must still never corrupt
     it)."""
     base = base_dir or DEFAULT_CANDIDATES_DIR
+    if _refuses_real_store(base):
+        _refused("writing")
+        return
     entry = {
         "repo": repo,
         "issue": issue,
@@ -269,7 +301,13 @@ def _prune_if_stale(base: Path, path: Path, cutoff: datetime) -> None:
     when a `record_candidate` refreshed it since the unlocked read. The lock is
     taken per path, never around `read_candidates`' loop: `flock` locks belong
     to the open file description, so a nested `_store_lock` in one process
-    blocks on itself."""
+    blocks on itself.
+
+    On the reader path (`read_candidates`), so under test it skips the archive
+    and unlink for the real store and returns without raising, leaving the
+    reader's results unchanged (harmonic-forge#865)."""
+    if _refuses_real_store(base):
+        return
     try:
         with _store_lock(base):
             try:
@@ -328,6 +366,9 @@ def retire_candidate(repo: str, issue: int, *, read_before: datetime,
     left unmarked. Archive-then-unlink stays solely the 14-day age prune.
     Returns whether it marked."""
     base = base_dir or DEFAULT_CANDIDATES_DIR
+    if _refuses_real_store(base):
+        _refused("marking")
+        return False
     path = _candidate_path(base, repo, issue)
     try:
         with _store_lock(base):

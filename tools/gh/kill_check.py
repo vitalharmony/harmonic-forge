@@ -233,7 +233,9 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
         leases.enter_context(scratch_lease(directory))
         try:
             materialize(directory, sha, origin)
-            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            # harmonic-forge#865: mark the child as a test so belt writers it
+            # reaches (in-process or spawned) never touch the real store.
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HARMONIC_FORGE_TESTING": "1"}
             if repo == "vitalharmony/harmonic-forge":
                 env["HARMONIC_FORGE_ROOT"] = str(directory)
             for _ in range(2):
