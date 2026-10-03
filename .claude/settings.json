@@ -100,6 +100,10 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
+          },
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_gate_prod_store_write.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
           }
         ]
       },

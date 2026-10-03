@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(gate): a production run is authorized only by an AE declaring that exact action -- l1_post --prod-run stamps it into the reserved footer, check_lane3_ready --require-prod-run matches it against the newest AE at exactly HEAD (no carry-forward, no sweep tier), deny_gate_prod_store_write guards the consumed-receipt store; R-0377 says the AE must carry --prod-run (harmonic-forge#878 preclose #1-#5)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- tools/hooks/test_deny_gate_prod_store_write.py |  61 +++++++++++++
+- tools/lane/lane3_safety_additions.txt          |   5 +-
+- tools/rules/registry.toml                      |   4 +-
+- 12 files changed, 662 insertions(+), 22 deletions(-)
+
 ## fix(lane): Lane 3 Claude launches with a --settings policy whose one allow rule is HRSE2's AE-checked gate_production_run.py; a caller --settings is refused at every Claude lane; check_lane3_ready gains --require-tier/--json; R-0377 (harmonic-forge#878)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

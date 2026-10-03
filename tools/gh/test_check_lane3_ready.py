@@ -539,10 +539,13 @@ class RequireTierAndJsonTests(unittest.TestCase):
     def test_json_prints_exactly_the_structured_verdict(self):
         out = self._run_main(self._ae_and_sweep("P"), ["--require-tier", "P", "--json"])
         self.assertEqual(json.loads(out), {
+            "repo": "vitalharmony/hrse",
             "issue": 1867,
             "head_sha": DEFAULT_SHA,
             "tier": "P",
             "authority_url": "https://github.com/vitalharmony/hrse/issues/1#issuecomment-1",
+            "authority_id": 1,
+            "prod_run": None,
         })
         self.assertNotIn("AVAILABILITY LINE", out)
 
@@ -551,6 +554,124 @@ class RequireTierAndJsonTests(unittest.TestCase):
         self.assertIn("[check-lane3-ready] vitalharmony/hrse#1867: sweep", out)
         self.assertIn("tier P -- ready, authorized for", out)
         self.assertIn("AVAILABILITY LINE", out)
+
+
+def _prod_ae(comment_id: int, action: str | None, sha: str = DEFAULT_SHA, issue: int = 1867,
+             footer_sha: str | None = None) -> dict:
+    """An AE as `l1_post.py --prod-run` posts it: the declaration is a field of
+    the reserved footer, never of the body."""
+    import _prod_run
+    field = ""
+    if action is not None:
+        field = f" {_prod_run.footer_field(issue, sha, _prod_run.parse_spec(action))};"
+    body = (f"## AE — H{issue}\n\nApproved, execute.\n\n<!-- l1-post v1; kind=ae; "
+            f"sha={footer_sha or sha};{field} checks=body-validation -->")
+    return {"id": comment_id, "body": body, "created_at": "2026-08-15T09:00:00Z",
+            "html_url": f"https://github.com/vitalharmony/hrse/issues/1#issuecomment-{comment_id}"}
+
+
+class RequireProdRunTests(unittest.TestCase):
+    """harmonic-forge#878 (R-0377), F878 preclose pass 1 survivors #1-#3: a
+    production run is authorized by the newest AE's own declaration of that
+    exact action at exactly HEAD -- never a tier, never a carried-forward
+    ready-for-l3, never another action."""
+
+    SCRIPT_A = "script=scripts/1-1891-backfill-task-surface-on.py"
+    _run_main = RequireTierAndJsonTests._run_main
+
+    def _thread(self, action: str | None, sweep_tier: str = "P") -> list[dict]:
+        return [_prod_ae(1, action), _comment(2, "sweep", "2026-08-15T10:00:00Z", tier=sweep_tier)]
+
+    def _refused(self, comments: list[dict], spec: str) -> str:
+        import contextlib
+        import io
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            self._run_main(comments, ["--require-prod-run", spec, "--json"])
+        return err.getvalue()
+
+    def test_the_declared_action_passes_and_is_in_the_json(self):
+        out = self._run_main(self._thread(self.SCRIPT_A + ",apply"),
+                             ["--require-tier", "P", "--require-prod-run", self.SCRIPT_A + ",apply", "--json"])
+        verdict = json.loads(out)
+        self.assertEqual(verdict["prod_run"], {"issue": 1867, "sha": DEFAULT_SHA,
+                                               "script": "scripts/1-1891-backfill-task-surface-on.py",
+                                               "apply": True})
+        self.assertEqual(verdict["authority_id"], 1)
+
+    def test_count_label_passes(self):
+        out = self._run_main(self._thread("count-label=Interpretation"),
+                             ["--require-prod-run", "count-label=Interpretation", "--json"])
+        self.assertEqual(json.loads(out)["prod_run"]["count_label"], "Interpretation")
+
+    def test_an_ae_naming_script_a_refuses_script_b(self):
+        err = self._refused(self._thread(self.SCRIPT_A),
+                            "script=scripts/1-1867-rewrite-interpretations.py")
+        self.assertIn("authorizes script=scripts/1-1891", err)
+
+    def test_apply_is_refused_under_apply_false(self):
+        err = self._refused(self._thread(self.SCRIPT_A), self.SCRIPT_A + ",apply")
+        self.assertIn("not script=scripts/1-1891-backfill-task-surface-on.py,apply", err)
+
+    def test_a_dry_run_is_refused_under_apply_true(self):
+        self._refused(self._thread(self.SCRIPT_A + ",apply"), self.SCRIPT_A)
+
+    def test_a_count_ae_refuses_a_script(self):
+        self._refused(self._thread("count-label=Interpretation"), self.SCRIPT_A)
+
+    def test_a_carried_forward_ready_for_l3_at_a_new_sha_is_refused(self):
+        """Survivor #1: the AE+sweep name SHA B; a ready-for-l3 naming HEAD
+        carries the gate authority (R-0209) but never a production run."""
+        old = "b" * 40
+        comments = [_prod_ae(1, self.SCRIPT_A + ",apply", sha=old),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", sha=old, tier="P"),
+                    _comment(3, "ready-for-l3", "2026-08-15T11:00:00Z", sha=DEFAULT_SHA)]
+        # The gate itself is authorized at HEAD through the carry...
+        self._run_main(comments, ["--require-tier", "P"])
+        # ...but a production run is not.
+        err = self._refused(comments, self.SCRIPT_A + ",apply")
+        self.assertIn("never carried forward", err)
+
+    def test_a_declaration_at_another_sha_is_refused(self):
+        """The footer's sha= matches HEAD by prefix but the declaration names
+        another commit -- the declaration's own SHA must be HEAD exactly."""
+        comments = [_prod_ae(1, self.SCRIPT_A, sha="b" * 40, footer_sha=DEFAULT_SHA),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self.assertIn("never carried to a new SHA", self._refused(comments, self.SCRIPT_A))
+
+    def test_a_declaration_for_another_issue_is_refused(self):
+        comments = [_prod_ae(1, self.SCRIPT_A, issue=1891),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self.assertIn("for issue 1891", self._refused(comments, self.SCRIPT_A))
+
+    def test_a_mixed_prose_sweep_no_longer_grants_p(self):
+        """Survivor #3: the sweep's ceiling parses to P from a sentence saying
+        no Tier P operation occurs; the AE declares nothing."""
+        sweep = _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="R")
+        sweep["body"] = sweep["body"].replace(
+            "Write tier R throughout.", "Write tier R throughout; no write tier P operation occurs in TC4.")
+        comments = [_prod_ae(1, None), sweep]
+        self._run_main(comments, ["--require-tier", "P"])  # the ceiling still reads P...
+        err = self._refused(comments, "count-label=Interpretation")  # ...and grants nothing
+        self.assertIn("declares no production run", err)
+
+    def test_prose_naming_the_action_is_not_a_declaration(self):
+        ae = _prod_ae(1, None)
+        ae["body"] = ae["body"].replace(
+            "Approved, execute.",
+            f"Approved, execute.\n\nprod-run=issue:1867,sha:{DEFAULT_SHA},count-label:Interpretation\n"
+            f"```\n<!-- l1-post v1; kind=ae; sha={DEFAULT_SHA}; prod-run=issue:1867,sha:{DEFAULT_SHA},"
+            "count-label:Interpretation; -->\n```")
+        comments = [ae, _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self._refused(comments, "count-label=Interpretation")
+
+    def test_a_tier_r_sweep_authority_is_refused(self):
+        comments = [_comment(1, "sweep", "2026-08-15T10:00:00Z", tier="R")]
+        self.assertIn("not the newest AE", self._refused(comments, "count-label=Interpretation"))
+
+    def test_a_malformed_spec_refuses(self):
+        with self.assertRaises(SystemExit):
+            self._run_main(self._thread(self.SCRIPT_A), ["--require-prod-run", "script=scripts/x.py"])
 
 
 class L1PostDigestRoundTripTests(unittest.TestCase):
