@@ -137,5 +137,27 @@ class NeverRaises(unittest.TestCase):
             self.assertEqual(result.stdout.strip(), "")
 
 
+class RegisteredInThisRepo(unittest.TestCase):
+    """AC5. An unregistered probe is indistinguishable from "no prompt matched
+    yet", and #874 would draw its conclusion from an empty log. Scoped to THIS
+    repo's settings file, found relative to this test, for the reason
+    `test_belt_wakeup.py`'s matcher test gives: a repo's CI speaks only for that
+    repo; `forge_onboard.check_hooks` is the cross-repo guard."""
+
+    def test_the_probe_is_wired_on_user_prompt_submit(self):
+        path = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
+        if not path.is_file():
+            self.skipTest(f"no settings at {path}")
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        commands = [hook.get("command", "")
+                    for block in (settings.get("hooks") or {}).get("UserPromptSubmit") or []
+                    for hook in block.get("hooks") or []]
+        wired = [c for c in commands if "auto_ae_toggle.py" in c]
+        self.assertEqual(len(wired), 1, "auto_ae_toggle.py is not wired exactly once")
+        # The guarded form: a missing script is a no-op, never a failed prompt.
+        self.assertIn('[ -f "$f" ]', wired[0])
+        self.assertTrue(wired[0].rstrip().endswith("|| true"))
+
+
 if __name__ == "__main__":
     unittest.main()
