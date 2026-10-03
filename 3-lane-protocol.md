@@ -1151,18 +1151,31 @@ authority once this rule exists.
 <!-- /R-0374 -->
 
 <!-- R-0377 -->
-**A Lane 3 production run goes through one sanctioned entrypoint, and the AE
-stays its authorization** (harmonic-forge#878). A Lane 3 case at Tier P in
-HRSE2 runs as `backend/.venv/bin/python scripts/gate_production_run.py --issue
-<N> --script scripts/1-<name>.py [--apply]` or `... --issue <N> --count-label
-<Label>`, never as a hand-composed command naming the main checkout's
-`backend/.env`. Before it touches anything, the script refuses unless `LANE=3`,
-it runs in a `*-lane3` worktree, its own file is tracked and unmodified at
-HEAD, the target script is a tracked, unmodified `scripts/1-*.py` (or the label
-is one the ontology declares), and `check_lane3_ready.py --issue <N>
---require-tier P --json` authorizes the checked-out SHA. A post-merge
-production step therefore needs its AE and sweep to name the merged `main`
-SHA, checked out with `gate-checkout`.
+**A Lane 3 production run goes through one sanctioned entrypoint, and an AE
+declaring that exact run is its authorization, once** (harmonic-forge#878). A
+Lane 3 case at Tier P in HRSE2 runs as `backend/.venv/bin/python
+scripts/gate_production_run.py --issue <N> --script scripts/1-<name>.py
+[--apply]` or `... --issue <N> --count-label <Label>`, never as a hand-composed
+command naming the main checkout's `backend/.env`. **The AE must carry
+`--prod-run`:** Lane 1 posts it with `l1-post --kind ae[-and-sweep] --prod-run
+script=scripts/1-<name>.py[,apply]` (or `count-label=<Label>`) at exactly the SHA
+Lane 3 checks out, and `l1-post` stamps that action into the AE's reserved
+footer, the only place it is read (never prose, never a fenced quote). Before it
+touches anything, the script refuses unless `LANE=3`, it runs in a `*-lane3`
+worktree, it and the files its decision runs through (the readiness shim,
+`_lane3_env.py`, `_migration_env.py`) are tracked and unmodified at HEAD, the
+target is a tracked, unmodified `scripts/1-*.py` that resolves its graph through
+`_migration_env.ensure_env()` to the main checkout's env file (or the label is
+one the ontology declares), and `check_lane3_ready.py --issue <N>
+--require-prod-run <action> --json`, run with `HARMONIC_FORGE_ROOT` scrubbed,
+finds that action declared by the newest AE at exactly HEAD. A sweep's tier
+never grants a production run, and a carried-forward `ready-for-l3` (R-0209)
+never authorizes one. One AE is one run: the run's receipt, keyed (repo, issue,
+SHA, action, AE comment id), is written under `~/.claude/state/gate-prod/`
+before it starts, a second run on that key is refused `already consumed`, and a
+hook denies any tool call that touches the store. A dry run and its `--apply`
+are two AEs, and a post-merge step's AE names the merged `main` SHA, checked
+out with `gate-checkout`.
 
 The `lane3` launcher passes `tools/lane/policies/claude-lane3.json` with
 `--settings` to Claude at Lane 3 only, and refuses a caller `--settings` at

@@ -321,3 +321,64 @@ class LeadOnBothHalves(unittest.TestCase):
             self._run(stripped, SWEEP_BODY)
         self.assertIn("harmonic-forge#472", str(ctx.exception))
         self.assertEqual(self.posted, [])
+
+
+class ProdRunFooterTests(MainIntegrationTests):
+    """harmonic-forge#878 (R-0377): `--prod-run` stamps the one production
+    action an AE authorizes into its reserved footer -- the AE half only."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.bodies: list[str] = []
+
+    def _fake_comment_body(self, repo, issue, body):
+        self.bodies.append(body)
+        return super()._fake_comment_body(repo, issue, body)
+
+    def _post(self, *extra: str) -> None:
+        self.ae_file.write_text(AE_BODY)
+        self.sweep_file.write_text(SWEEP_BODY)
+        with patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+             patch.object(post, "write_receipt"), \
+             patch.object(sys, "argv", self._argv() + list(extra)):
+            post.main()
+
+    def test_prod_run_is_stamped_on_the_ae_footer_only(self) -> None:
+        import _prod_run
+        self._post("--prod-run", "script=scripts/1-1891-backfill.py,apply")
+        ae, sweep = self.bodies
+        self.assertEqual(_prod_run.declared(ae), {
+            "issue": 1, "sha": FAKE_SHA, "script": "scripts/1-1891-backfill.py", "apply": True})
+        self.assertIn(f"prod-run=issue:1,sha:{FAKE_SHA},script:scripts/1-1891-backfill.py,apply:true;", ae)
+        self.assertIsNone(_prod_run.declared(sweep))
+        self.assertNotIn("prod-run", sweep)
+
+    def test_count_label_form(self) -> None:
+        import _prod_run
+        self._post("--prod-run", "count-label=Interpretation")
+        self.assertEqual(_prod_run.declared(self.bodies[0]),
+                         {"issue": 1, "sha": FAKE_SHA, "count_label": "Interpretation"})
+
+    def test_no_prod_run_no_field(self) -> None:
+        self._post()
+        self.assertNotIn("prod-run", self.bodies[0])
+
+    def test_malformed_spec_refuses_before_anything_runs(self) -> None:
+        for spec in ("script=scripts/check_lane3_ready.py", "script=scripts/1-x.py,force",
+                     "count-label=Person`) DETACH DELETE n", "cypher=MATCH (n) DETACH DELETE n"):
+            with self.subTest(spec=spec), patch.object(post, "run") as mock_run, \
+                    patch.object(sys, "argv", self._argv() + ["--prod-run", spec]):
+                with self.assertRaises(SystemExit) as ctx:
+                    post.main()
+                self.assertIn("--prod-run", str(ctx.exception))
+                mock_run.assert_not_called()
+
+    def test_prod_run_refused_on_a_non_ae_kind(self) -> None:
+        argv = ["l1_post.py", "--issue", "1", "--kind", "ready-for-l3", "--sha", FAKE_SHA,
+                "--branch", "x", "--file", "/tmp/x.md", "--prod-run", "count-label=Person"]
+        with patch.object(post, "run") as mock_run, patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as ctx:
+                post.main()
+        self.assertIn("valid only for --kind ae", str(ctx.exception))
+        mock_run.assert_not_called()

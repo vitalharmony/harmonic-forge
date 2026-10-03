@@ -195,7 +195,8 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # a caller `--settings` at every Claude lane. Unlike every earlier policy entry
 # it WIDENS one thing rather than removing access: a single `permissions.allow`
 # rule for HRSE2's `scripts/gate_production_run.py`, which checks LANE=3, its
-# own integrity and a Tier P AE for the checked-out SHA in code, so the
-# auto-mode classifier no longer denies the AE-authorized production run.
+# own integrity and an AE declaring that exact run (`l1-post --prod-run`) at the
+# checked-out SHA in code, consumed once, so the auto-mode classifier no longer
+# denies the AE-authorized production run.
 --settings
 <LANEDIR>/policies/claude-lane3.json

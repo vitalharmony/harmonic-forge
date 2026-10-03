@@ -87,6 +87,7 @@ except ImportError:
 # however this file is loaded (tests load it by file location).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pitch_receipt  # noqa: E402
+import _prod_run  # noqa: E402
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -1674,7 +1675,7 @@ def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
-    grant_on_main: bool = False,
+    grant_on_main: bool = False, prod_run: dict | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -1739,11 +1740,20 @@ def post_kind(
     plan_first_field = ""
     if kind == "handoff":
         plan_first_field = f" plan-first={'true' if plan_first else 'false'};"
-    footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha}; "
+    # harmonic-forge#878: the one production action this AE authorizes, as a
+    # footer field -- the reserved namespace no body may contain, so only this
+    # script can mint it (`_prod_run.declared` reads it back from here alone).
+    prod_run_field = ""
+    if prod_run is not None:
+        if kind != "ae":
+            fail(f"--prod-run is an AE declaration; it cannot ride a {kind}")
+        prod_run_field = f" {_prod_run.footer_field(issue, sha, prod_run)};"
+    footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
+                   **({"prod_run": _prod_run.footer_field(issue, sha, prod_run)} if prod_run else {}),
                    "sha": sha, "branch": branch, "body_sha256": digest, "checks": checks,
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
     if kind == "handoff":
@@ -1848,7 +1858,23 @@ def main() -> None:
              "deliberately not required before this gate. Never a bare "
              "boolean escape hatch.",
     )
+    parser.add_argument(
+        "--prod-run", default=None, metavar="SPEC",
+        help="harmonic-forge#878 (R-0377): the ONE production run this AE authorizes, "
+             "stamped into the AE's footer: script=scripts/1-<name>.py (dry run), "
+             "script=scripts/1-<name>.py,apply, or count-label=<Label>. HRSE2's "
+             "gate_production_run.py runs only an action an AE at the checked-out "
+             "SHA declares this way, once. --kind ae / ae-and-sweep only.",
+    )
     args = parser.parse_args()
+    prod_run = None
+    if args.prod_run is not None:
+        if args.kind not in ("ae", "ae-and-sweep"):
+            fail("--prod-run is valid only for --kind ae / ae-and-sweep")
+        try:
+            prod_run = _prod_run.parse_spec(args.prod_run)
+        except ValueError as exc:
+            fail(f"--prod-run: {exc}")
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
     if args.kind in ("sweep", "ae-and-sweep") and not args.spec_comment:
@@ -1901,7 +1927,7 @@ def main() -> None:
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
                               ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
-                              grant_on_main=grant_on_main(ae_body, sha))
+                              grant_on_main=grant_on_main(ae_body, sha), prod_run=prod_run)
         print(f"[l1-post] AE posted {ae_url}")
         record_queue_candidate(repo, args.issue, "ae")
         try:
@@ -1976,7 +2002,7 @@ def main() -> None:
         repo, args.issue, args.kind, body, sha, args.branch,
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
-        grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)),
+        grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)), prod_run=prod_run,
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)
