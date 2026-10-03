@@ -476,13 +476,11 @@ class AuditTransactionLogTests(unittest.TestCase):
     """
 
     def _run_audit(self, has_file, recent_commits, history_patch, fetch_ok=True,
-                   on_disk=None):
-        """has_file: git tracks transaction-log.md. on_disk: it exists on disk
-        (defaults to has_file)."""
-        on_disk = has_file if on_disk is None else on_disk
-        """recent_commits: list of (subject, touched_log: bool)."""
+                   ls_tree_ok=True):
+        """has_file: origin/main tracks transaction-log.md -- the only signal the
+        gate may read. recent_commits: list of (subject, touched_log: bool)."""
         report = rh.Report()
-        calls = {"fetch": 0}
+        calls = {"fetch": 0, "order": []}
 
         recent_lines = []
         for i, (subject, touched) in enumerate(recent_commits):
@@ -493,39 +491,57 @@ class AuditTransactionLogTests(unittest.TestCase):
         recent_text = "\n".join(recent_lines) + ("\n" if recent_lines else "")
 
         def fake_run(args, cwd=None):
-            if args[:2] == ["git", "ls-files"]:
-                return "transaction-log.md\n" if has_file else ""
+            calls["order"].append(args[1])
             if args[:2] == ["git", "fetch"]:
                 calls["fetch"] += 1
                 if not fetch_ok:
                     raise rh.GhError("no network")
                 return ""
+            if args[:3] == ["git", "ls-tree", "--name-only"]:
+                if not ls_tree_ok:
+                    raise rh.GhError("bad ref")
+                return "transaction-log.md\n" if has_file else ""
             if args[:3] == ["git", "log", "origin/main"]:
                 return recent_text
             if args[:3] == ["git", "log", "-p"]:
                 return history_patch
+            # Any other call -- including `git ls-files` or a working-tree read
+            # -- means the gate consulted something other than origin/main.
             raise AssertionError(f"unexpected call: {args}")
 
         with patch.object(rh, "_run", side_effect=fake_run), \
-             patch.object(rh.Path, "is_file", return_value=on_disk):
+             patch.object(rh.Path, "is_file", side_effect=AssertionError("working tree read")):
             rh.audit_transaction_log("/some/checkout", report)
         return report, calls
 
-    def test_repo_without_the_file_is_silently_skipped(self):
+    def test_repo_whose_origin_main_does_not_track_the_file_is_skipped(self):
+        """Covers all three local states at once: no file, an untracked
+        `--out` copy on disk (pass-1 B), and a stale checkout whose index still
+        tracks it (pass-2 D). The gate reads only origin/main, so none of the
+        local states is even consulted -- the helper raises if one is."""
         report, calls = self._run_audit(
             has_file=False, recent_commits=[("fix: x", False)], history_patch="")
         self.assertEqual(report.missing_transaction_log, [])
-        self.assertEqual(calls["fetch"], 0, "must not even fetch for a repo with no log")
+        self.assertEqual(calls["fetch"], 1)
 
-    def test_an_untracked_copy_on_disk_does_not_rearm_the_audit(self):
-        """harmonic-forge#883 preclose: a repo that renders its log at read time
-        ignores the file. `mise run transaction-log --out transaction-log.md`
-        leaves an untracked copy on disk, which must not flag every merge."""
-        report, calls = self._run_audit(
-            has_file=False, on_disk=True,
-            recent_commits=[("fix: x", False)], history_patch="")
+    def test_gate_reads_origin_main_after_the_fetch(self):
+        _, calls = self._run_audit(
+            has_file=True, recent_commits=[("fix: x", True)], history_patch="")
+        self.assertLess(calls["order"].index("fetch"), calls["order"].index("ls-tree"))
+
+    def test_upstream_tracking_arms_the_audit_regardless_of_local_state(self):
+        """The pair to the skip case above: identical inputs except upstream
+        state, so a stale or missing local copy cannot disarm HRSE2's audit."""
+        report, _ = self._run_audit(
+            has_file=True, recent_commits=[("fix: real bug (#900)", False)],
+            history_patch="")
+        self.assertEqual(len(report.missing_transaction_log), 1)
+
+    def test_ls_tree_failure_skips_without_crashing(self):
+        report, _ = self._run_audit(
+            has_file=True, ls_tree_ok=False,
+            recent_commits=[("fix: real bug (#900)", False)], history_patch="")
         self.assertEqual(report.missing_transaction_log, [])
-        self.assertEqual(calls["fetch"], 0)
 
     def test_commit_that_never_touched_the_file_and_has_no_backfill_is_flagged(self):
         report, _ = self._run_audit(
