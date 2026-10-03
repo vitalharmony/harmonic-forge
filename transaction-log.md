@@ -3,6 +3,21 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(gate): the F871 materialize test reads the scratch repo's own config with --local, so ambient host git config cannot pass the unfixed code (harmonic-forge#871 preclose pass 1)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/test_kill_check.py | 9 ++++++---
+- 1 file changed, 6 insertions(+), 3 deletions(-)
+
+## fix(gate): kill-check's scratch repo disables git auto-maintenance, so a detached repack no longer deletes its objects mid-copy (harmonic-forge#871)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/kill_check.py      |  9 +++++++-
+- tools/gh/test_kill_check.py | 51 +++++++++++++++++++++++++++++++++++++++++++++
+- 2 files changed, 59 insertions(+), 1 deletion(-)
+
 ## fix(belt): a worktree whose issue is confirmed missing is dropped before the comment watch, so its 404 no longer keeps the belt from going quiet (harmonic-forge#866 preclose pass 1)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

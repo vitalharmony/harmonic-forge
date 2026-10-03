@@ -345,5 +345,59 @@ class KillCheckTests(unittest.TestCase):
             self.assertEqual(preclose.plan(args), 0)
 
 
+
+class MaterializeDisablesMaintenanceTests(unittest.TestCase):
+    """harmonic-forge#871: `materialize()`'s commit must not start git's
+    detached auto-maintenance, whose `repack --cruft` deleted the scratch
+    repo's loose objects while `one_check` copied the tree. The fixture needs
+    600+ files: on git 2.55.0, 20 and 100 never repack and 300 and 600 do, and
+    `gc.auto` samples one `objects/NN` directory, so stay well above the line.
+    Same cwd/HOME isolation as `KillCheckTests.setUp`, without inheriting its
+    tests: `materialize()` runs `git archive` in the process cwd. The keys are
+    read with `--local`: an effective-value read is satisfied by a system or
+    XDG git config that already disables maintenance, which would pass the
+    unfixed code (harmonic-forge#871 preclose pass 1)."""
+
+    FILES = 700
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        cwd = Path.cwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
+        home = patch.dict(os.environ, {"HOME": str(self.root / "home")})
+        home.start()
+        self.addCleanup(home.stop)
+        git(self.repo, "init", "-q", "-b", "main")
+        git(self.repo, "config", "user.name", "test")
+        git(self.repo, "config", "user.email", "test@example.test")
+        for i in range(self.FILES):
+            (self.repo / f"f{i}.txt").write_text(f"{i}\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "base")
+
+    def loose(self, repo: Path) -> tuple[int, int]:
+        stats = dict(line.split(": ", 1) for line in git(repo, "count-objects", "-v").splitlines())
+        return int(stats["count"]), int(stats["packs"])
+
+    def test_scratch_repo_keeps_its_loose_objects(self) -> None:
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        kill.materialize(scratch, git(self.repo, "rev-parse", "HEAD"), "https://example.invalid/r.git")
+        self.assertEqual(git(scratch, "config", "--local", "--get", "gc.auto"), "0")
+        self.assertEqual(git(scratch, "config", "--local", "--get", "maintenance.auto"), "false")
+        start, _ = self.loose(scratch)
+        self.assertGreater(start, self.FILES)
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            count, packs = self.loose(scratch)
+            self.assertEqual((count, packs), (start, 0), "a detached repack emptied the scratch repo")
+            time.sleep(0.25)
+
+
 if __name__ == "__main__":
     unittest.main()
