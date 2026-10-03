@@ -1151,48 +1151,45 @@ authority once this rule exists.
 <!-- /R-0374 -->
 
 <!-- R-0377 -->
-**A Lane 3 production run goes through one sanctioned entrypoint, and an AE
-declaring that exact run is its authorization, once** (harmonic-forge#878). A
-Lane 3 case at Tier P in HRSE2 runs as `backend/.venv/bin/python
-scripts/gate_production_run.py --issue <N> --script scripts/1-<name>.py
-[--apply]` or `... --issue <N> --count-label <Label>`, never as a hand-composed
-command naming the main checkout's `backend/.env`. **The AE must carry
-`--prod-run`:** Lane 1 posts it with `l1-post --kind ae[-and-sweep] --prod-run
-script=scripts/1-<name>.py[,apply]` (or `count-label=<Label>`) at exactly the SHA
-Lane 3 checks out, and `l1-post` stamps that action into the AE's reserved
-footer, the only place it is read (never prose, never a fenced quote). Before it
-touches anything, the script refuses unless `LANE=3`, it runs in a `*-lane3`
-worktree, it and the files its decision runs through (the readiness shim,
-`_lane3_env.py`, `_migration_env.py`) are tracked and unmodified at HEAD, the
-target is a tracked, unmodified `scripts/1-*.py` that resolves its graph through
-`_migration_env.ensure_env()` to the main checkout's env file (or the label is
-one the ontology declares), and `check_lane3_ready.py --issue <N>
---require-prod-run <action> --json`, run with `HARMONIC_FORGE_ROOT` scrubbed,
-finds that action declared by the newest AE at exactly HEAD. A sweep's tier
-never grants a production run, and a carried-forward `ready-for-l3` (R-0209)
-never authorizes one. **The AE is the record; the grant is the operator's.**
-Before it touches anything the script also spends one grant through the
-`hrse-gate` broker (`tools/gate/hrse_gate_broker.py`, installed root-owned per
-`tools/gate/install-hrse-gate.md`): `sudo -n -u hrse-gate
-/usr/local/libexec/hrse-gate consume <issue> <sha> <action>`, which succeeds
-only by atomically moving a grant for that exact issue, SHA and action out of
-`/var/lib/hrse-gate/grants/`. Only the operator mints a grant (`grant` runs as
-root); the store is owned by a separate account, so a lane cannot create,
-restore or read one. One grant is one run, and the grant is spent before the
-run starts, so an interrupted run does not reopen it. The script also refuses
-when the installed broker's `--version` digest differs from the tracked source.
-A dry run and its `--apply` are two AEs and two grants, and a post-merge
-step's AE names the merged `main` SHA, checked out with `gate-checkout`.
+**A Lane 3 production run goes through one root-owned runner, spends one
+operator-minted grant, and the AE is its record** (harmonic-forge#878). A Lane 3
+case at Tier P in HRSE2 runs only as `/usr/local/libexec/hrse-gate-run --issue
+<N> --script scripts/1-<name>.py [--mode apply]` or `... --issue <N>
+--count-label <Label>`, never as a hand-composed command naming the main
+checkout's `backend/.env`. **The authorization is the grant:** the operator mints
+it as root (`sudo /usr/local/libexec/hrse-gate grant <issue> <sha> <action>`)
+into `/var/lib/hrse-gate`, a store owned by the `hrse-gate` account, so a lane can
+neither create, restore nor read one. One approval holds at most one live
+grant, and the runner spends it atomically before the run, so an interrupted
+run does not reopen it. Before spending it, the runner refuses unless `LANE=3`,
+its root-owned manifest's digests match the gate worktree's
+`scripts/gate_production_run.py` and the installed broker, and the host's own
+`sudo -n -l` shows exactly the one consume-only rule naming the broker. **The AE
+is the record:** Lane 1 posts it with `l1-post --kind ae[-and-sweep] --prod-run
+script=scripts/1-<name>.py[,apply]` (or `count-label=<Label>`) at exactly the
+SHA Lane 3 checks out; the declaration lives in the reserved footer, inside the
+AE's `body-sha256`, and `check_lane3_ready --require-prod-run` refuses an AE whose
+digest is missing or does not match. A sweep's tier never grants a production
+run, and a carried-forward `ready-for-l3` (R-0209) never authorizes one. A dry
+run and its `--mode apply` are two AEs and two grants; a post-merge step's AE
+names the merged `main` SHA, checked out with `gate-checkout`.
 
-The `lane3` launcher passes `tools/lane/policies/claude-lane3.json` with
-`--settings` to Claude at Lane 3 only, and refuses a caller `--settings` at
-every Claude lane. That file holds exactly one `permissions.allow` rule, for
-that script. It removes only the auto-mode classifier's second block on an
-action the AE already authorized; it authorizes nothing itself. Any other
-production read (an ad hoc `cypher-shell`, a `python -c` with the main env, a
-`cat` of the env file) stays denied. A gate worktree without the script is
-reported BLOCKED with that reason, and Lane 3 never improvises a production
-read in its place.
+The `lane3` launcher passes `--settings` to Claude at Lane 3 only, from the
+root-owned `/usr/local/share/hrse-gate/claude-lane3.json`, and refuses a caller
+`--settings` at every Claude lane. That file holds exactly one rule,
+`Bash(/usr/local/libexec/hrse-gate-run:*)`, an absolute path to an object the
+agent cannot replace. The launcher refuses to launch if the installed file or
+its directory is writable by anyone but root, and launches without it if it is
+not installed (the classifier then keeps prompting). The rule removes only the
+classifier's second block on a run the grant already authorizes; it authorizes
+nothing itself. `--mode apply`, not `--apply`, so HRSE2's `ask` rules keep
+prompting for every ad hoc `--apply`. Every input an authorization decision
+reads is enumerated, with who can write it, in `tools/gate/install-hrse-gate.md`.
+Any other production read (an ad hoc `cypher-shell`, a `python -c` with the
+main env, a `cat` of the env file) stays guarded only by the classifier, as
+before #878, which is the residual that file states. A gate worktree without
+the runner installed is reported BLOCKED with that reason, and Lane 3 never
+improvises a production read in its place.
 <!-- /R-0377 -->
 
 <!-- R-0209 -->

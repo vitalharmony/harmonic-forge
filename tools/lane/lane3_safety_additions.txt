@@ -186,17 +186,21 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # sandbox was its only confinement.  The baseline's three Codex
 # `quoted-with-spaces` cells (`-p "two words here"`) now record a refusal.
 
-# AMENDMENT 8 -- harmonic-forge#878, 2026-10-02.  Claude gains `--settings
-# <LANEDIR>/policies/claude-lane3.json` at Lane 3 only (see `_agent_registry.sh`'s
-# AGENT_POLICY_FLAG/AGENT_POLICY_CHECK and `AGENT_LANE_POLICY[claude:3]`).
+# AMENDMENT 8 -- harmonic-forge#878, 2026-10-02, revised by its sticky-wicket
+# PATCH 2026-10-03.  Claude gains `--settings
+# /usr/local/share/hrse-gate/claude-lane3.json` at Lane 3 only (see
+# `_agent_registry.sh`'s AGENT_POLICY_FLAG/AGENT_POLICY_CHECK and
+# `AGENT_LANE_POLICY[claude:3]`).
 #
 # Same kind as `--admin-policy` above: a PERMISSION policy, and un-removable --
 # the slot feeds `registry_lane_denied_tokens`, and AGENT_SESSION_DENIED refuses
 # a caller `--settings` at every Claude lane. Unlike every earlier policy entry
-# it WIDENS one thing rather than removing access: a single `permissions.allow`
-# rule for HRSE2's `scripts/gate_production_run.py`, which checks LANE=3, its
-# own integrity and an AE declaring that exact run (`l1-post --prod-run`) at the
-# checked-out SHA in code, consumed once, so the auto-mode classifier no longer
-# denies the AE-authorized production run.
+# it WIDENS one thing rather than removing access: a single absolute
+# `permissions.allow` rule for the root-owned /usr/local/libexec/hrse-gate-run,
+# which verifies the gate script and broker by digest and spends one
+# operator-minted grant before the run. Because it widens, its check is
+# `json-immutable`: the installed copy must be root-owned and not group/other-
+# writable, and when it is not installed the launch proceeds WITHOUT it (absence
+# of a widening policy is the safe direction), so fixture runs record no token.
 --settings
-<LANEDIR>/policies/claude-lane3.json
+/usr/local/share/hrse-gate/claude-lane3.json

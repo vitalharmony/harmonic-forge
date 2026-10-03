@@ -94,12 +94,29 @@ class SingleUseTests(_StoreCase):
         with mock.patch.object(b.os, "rename", side_effect=FileNotFoundError):
             self.refused(b.EXIT_NO_GRANT)
 
-    def test_two_grants_buy_two_runs(self):
-        self.grant()
+    def test_a_second_mint_of_one_approval_is_refused(self):
+        """Survivor S3: an operator retry after an unrelated refusal must not
+        buy a second run of the same irreversible action."""
+        first = self.grant()
+        with self.assertRaises(b.Refused) as ctx:
+            self.grant()
+        self.assertEqual(ctx.exception.code, b.EXIT_DUPLICATE)
+        self.assertIn(first, str(ctx.exception))
+        self.assertEqual(len(list((self.root / "grants").iterdir())), 1)
+
+    def test_a_new_grant_is_allowed_once_the_first_is_spent_or_expired(self):
         self.grant()
         b.consume("1892", SHA, RUN)
+        self.grant()  # a deliberate second approval, after the first run
+        self.grant(action=DRY)  # a different action is a different approval
+        self.assertEqual(len(list((self.root / "grants").iterdir())), 2)
+
+    def test_status_reports_live_grants_and_receipts(self):
+        self.assertEqual(b.status("1892", SHA, RUN), "none")
+        nonce = self.grant()
+        self.assertIn(f"grant {nonce}", b.status("1892", SHA, RUN))
         b.consume("1892", SHA, RUN)
-        self.refused(b.EXIT_CONSUMED)
+        self.assertIn(f"receipt {nonce}", b.status("1892", SHA, RUN))
 
 
 class ExactActionTests(_StoreCase):
@@ -184,8 +201,9 @@ class ArgumentSurfaceTests(_StoreCase):
                      ("consume", "1892", SHA, "script=/etc/passwd"),
                      ("consume", "1892", SHA, "script=scripts/1-x.py,apply,force"),
                      ("consume", "1892", "HEAD", RUN),
-                     ("cons", "1892", SHA, RUN)):
-            self.assertNotEqual(self.run_main(*argv), 0, argv)
+                     ("cons", "1892", SHA, RUN),
+                     ("consume", "\u00b2", SHA, RUN)):  # S4: isdigit() would accept it
+            self.assertEqual(self.run_main(*argv), b.EXIT_REFUSED, argv)
         # The grant survived every refused call.
         self.assertEqual(len(list((self.root / "grants").iterdir())), 1)
 
@@ -200,7 +218,10 @@ class ArgumentSurfaceTests(_StoreCase):
 
 
 class SudoersScopeTests(unittest.TestCase):
-    def test_consume_is_the_only_password_free_verb(self):
+    def test_the_install_doc_names_only_the_consume_rule(self):
+        """Doc consistency only. The host invariant -- exactly one NOPASSWD
+        rule naming the broker -- is enforced at run time by hrse-gate-run's
+        `sudo -n -l` check (survivor S5), not asserted about markdown."""
         doc = (HERE / "install-hrse-gate.md").read_text(encoding="utf-8")
         rules = [line for line in doc.splitlines() if "NOPASSWD" in line]
         self.assertEqual(len(rules), 1, rules)

@@ -150,8 +150,11 @@ def verify_body_sha256(comment: dict) -> bool:
     recorded = FOOTER_BODY_SHA.search(comment.get("body", ""))
     if recorded is None:
         return True
-    prefix = FOOTER_MARKER.sub("", comment.get("body", ""))
-    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+    body = comment.get("body", "")
+    prefix = FOOTER_MARKER.sub("", body)
+    # harmonic-forge#878 (C1c): a `prod-run` footer token is inside the digest.
+    covered = _prod_run.covered_text(prefix, _prod_run.raw_field(body))
+    digest = hashlib.sha256(covered.encode()).hexdigest()
     return digest == recorded.group(1)
 
 
@@ -363,6 +366,12 @@ def prod_run_refusal(comments: list[dict], authority: dict, issue: int,
         return (f"the authority ({authority.get('html_url')}) is a {kind or 'non-l1-post'} comment, "
                 "not the newest AE -- a production run is never carried forward or "
                 f"sweep-authorized; post an AE with --prod-run at {head_sha}")
+    # harmonic-forge#878 sticky-wicket PATCH (C1c): the AE is the record of
+    # what was approved, so it must be the record as posted. A missing digest
+    # or a mismatch -- including an edited prod-run field -- refuses.
+    if FOOTER_BODY_SHA.search(ae.get("body", "")) is None or not verify_body_sha256(ae):
+        return (f"AE ({ae['html_url']}) has no body-sha256 or does not match it -- it may have "
+                "been edited since posting; re-post the AE with l1-post")
     declaration = _prod_run.declared(ae.get("body", ""))
     if declaration is None:
         return (f"AE ({ae['html_url']}) declares no production run -- post the AE with "

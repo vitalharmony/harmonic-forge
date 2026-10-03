@@ -266,9 +266,21 @@ declare -A AGENT_POLICY_FLAG=(
   [gemini]="--admin-policy"
 )
 declare -A AGENT_POLICY_CHECK=(
-  [claude]="json"
+  [claude]="json-immutable"
   [codex]="none"
   [gemini]="toml"
+)
+# harmonic-forge#878 sticky-wicket PATCH: a policy that WIDENS (an allow rule)
+# must be unwritable by the agent's own uid, or any session can widen it before
+# the next launch. json-immutable reads an absolute, installed path and refuses
+# unless it is owned by this uid and not group/other-writable, in a directory
+# with the same property. A MISSING installed policy launches without it: for a
+# widening policy, absence only means the classifier keeps prompting -- the
+# opposite of a restricting policy, where absence is the unsafe direction.
+declare -A AGENT_POLICY_REQUIRED_OWNER=(
+  [claude]="0"
+  [codex]=""
+  [gemini]=""
 )
 
 # Every agent x lane slot is declared, including the empty ones. An absent key
@@ -276,12 +288,15 @@ declare -A AGENT_POLICY_CHECK=(
 # silently-unprotected lane.
 declare -A AGENT_LANE_POLICY=(
   # harmonic-forge#878: the first Claude lane policy. A `--settings` file whose
-  # only content is one narrow `permissions.allow` rule for HRSE2's
-  # scripts/gate_production_run.py, so a Lane 3 session's sanctioned Tier P run
-  # is not denied by the auto-mode classifier. `--settings` merges
+  # only content is one `permissions.allow` rule for the root-owned
+  # /usr/local/libexec/hrse-gate-run wrapper, so a Lane 3 session's sanctioned
+  # Tier P run is not denied by the auto-mode classifier. `--settings` merges
   # `permissions.allow` with the user's file (probed live on #878), so the file
-  # carries only its own rule. Lanes 1 and 2 stay empty: they gain nothing.
-  [claude:1]="" [claude:2]="" [claude:3]="claude-lane3.json"
+  # carries only its own rule. An ABSOLUTE value is the installed, root-owned
+  # copy (tools/gate/install-hrse-gate.md); the repo's
+  # policies/claude-lane3.json is only its reviewed source. Lanes 1 and 2 stay
+  # empty: they gain nothing.
+  [claude:1]="" [claude:2]="" [claude:3]="/usr/local/share/hrse-gate/claude-lane3.json"
   [codex:1]=""  [codex:2]=""  [codex:3]=""
   [gemini:1]="gemini-lane1.toml"
   [gemini:2]="gemini-lane2.toml"

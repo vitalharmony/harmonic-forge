@@ -5,6 +5,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import re
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -560,12 +561,18 @@ def _prod_ae(comment_id: int, action: str | None, sha: str = DEFAULT_SHA, issue:
              footer_sha: str | None = None) -> dict:
     """An AE as `l1_post.py --prod-run` posts it: the declaration is a field of
     the reserved footer, never of the body."""
+    import hashlib
     import _prod_run
-    field = ""
+    token = None
     if action is not None:
-        field = f" {_prod_run.footer_field(issue, sha, _prod_run.parse_spec(action))};"
-    body = (f"## AE — H{issue}\n\nApproved, execute.\n\n<!-- l1-post v1; kind=ae; "
-            f"sha={footer_sha or sha};{field} checks=body-validation -->")
+        token = _prod_run.footer_field(issue, sha, _prod_run.parse_spec(action))
+    text = f"## AE — H{issue}\n\nApproved, execute."
+    # A real digest, computed exactly as l1_post.py does (harmonic-forge#878 C1c):
+    # an AE fixture with no body-sha256 could never survive the digest check.
+    digest = hashlib.sha256(_prod_run.covered_text(text, token).encode()).hexdigest()
+    field = f" {token};" if token else ""
+    body = (f"{text}\n\n<!-- l1-post v1; kind=ae; "
+            f"sha={footer_sha or sha};{field} body-sha256={digest}; checks=body-validation -->")
     return {"id": comment_id, "body": body, "created_at": "2026-08-15T09:00:00Z",
             "html_url": f"https://github.com/vitalharmony/hrse/issues/1#issuecomment-{comment_id}"}
 
@@ -598,6 +605,22 @@ class RequireProdRunTests(unittest.TestCase):
                                                "script": "scripts/1-1891-backfill-task-surface-on.py",
                                                "apply": True})
         self.assertEqual(verdict["authority_id"], 1)
+
+    def test_an_edited_ae_footer_is_refused(self):
+        """harmonic-forge#878 C1c: PATCHing a posted AE's prod-run field to a
+        different script with apply:true must not authorize that action."""
+        thread = self._thread("script=scripts/1-1892-revive.py")
+        ae = thread[0]
+        ae["body"] = ae["body"].replace("script:scripts/1-1892-revive.py,apply:false",
+                                        "script:scripts/1-1892-nuke.py,apply:true")
+        self.assertIn("1-1892-nuke.py", ae["body"])
+        err = self._refused(thread, "script=scripts/1-1892-nuke.py,apply")
+        self.assertIn("does not match", err)
+
+    def test_an_ae_without_a_digest_is_refused(self):
+        thread = self._thread("count-label=Task")
+        thread[0]["body"] = re.sub(r" body-sha256=[0-9a-f]+;", "", thread[0]["body"])
+        self.assertIn("no body-sha256", self._refused(thread, "count-label=Task"))
 
     def test_count_label_passes(self):
         out = self._run_main(self._thread("count-label=Interpretation"),

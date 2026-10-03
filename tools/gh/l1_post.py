@@ -1725,7 +1725,15 @@ def post_kind(
     # and re-hashing could never reconstruct the original digest correctly --
     # a false tamper-mismatch on a sweep/AE that was never edited. Verified
     # live against a real posted comment before this fix; see a private-repo incident.
-    digest = hashlib.sha256(body.rstrip("\n").encode()).hexdigest()
+    # harmonic-forge#878 sticky-wicket PATCH (C1c): an AE's production-run
+    # declaration lives in the footer, so the digest must cover it too, or a
+    # PATCHed footer authorizes a different action with the digest intact.
+    prod_run_token = None
+    if prod_run is not None:
+        if kind != "ae":
+            fail(f"--prod-run is an AE declaration; it cannot ride a {kind}")
+        prod_run_token = _prod_run.footer_field(issue, sha, prod_run)
+    digest = hashlib.sha256(_prod_run.covered_text(body, prod_run_token).encode()).hexdigest()
     # a private-repo incident: a handoff DECLARES whether it is Plan-First rather than
     # leaving it to be inferred from prose downstream. `lane_state.py` used to
     # decide with a whole-body `re.compile(r"Plan-First")` search, which
@@ -1743,11 +1751,7 @@ def post_kind(
     # harmonic-forge#878: the one production action this AE authorizes, as a
     # footer field -- the reserved namespace no body may contain, so only this
     # script can mint it (`_prod_run.declared` reads it back from here alone).
-    prod_run_field = ""
-    if prod_run is not None:
-        if kind != "ae":
-            fail(f"--prod-run is an AE declaration; it cannot ride a {kind}")
-        prod_run_field = f" {_prod_run.footer_field(issue, sha, prod_run)};"
+    prod_run_field = f" {prod_run_token};" if prod_run_token else ""
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)

@@ -942,12 +942,18 @@ class SafetyFlagsUnremovable(unittest.TestCase):
 
 class ClaudeLane3Settings(unittest.TestCase):
     """harmonic-forge#878: the first Claude lane policy -- a `--settings` file
-    whose only rule allows HRSE2's scripts/gate_production_run.py, injected at
-    Lane 3 alone and un-removable at every Claude lane."""
+    whose only rule allows the root-owned /usr/local/libexec/hrse-gate-run
+    wrapper, injected at Lane 3 alone, un-removable at every Claude lane, and
+    read only from an installed copy the agent's uid cannot write (sticky-wicket
+    PATCH, cluster C1b)."""
 
     POLICY = LANE_DIR / "policies" / "claude-lane3.json"
+    INSTALLED = "/usr/local/share/hrse-gate/claude-lane3.json"
 
-    def _copy_lane_dir(self, tree: _FixtureTree) -> Path:
+    def _copy_lane_dir(self, tree: _FixtureTree, policy_path: Path, owner: int) -> Path:
+        """A lane dir whose registry points the Claude Lane 3 policy at
+        `policy_path` and requires `owner` -- the only way a test can exercise
+        an "installed" policy without root."""
         lane_dir = tree.root / "lanedir"
         lane_dir.mkdir()
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
@@ -955,20 +961,46 @@ class ClaudeLane3Settings(unittest.TestCase):
                      "_gh_config_dir.sh", "_lane_refresh.sh"):
             (lane_dir / name).write_text((LANE_DIR / name).read_text())
         (lane_dir / "policies").mkdir()
+        reg = lane_dir / "_agent_registry.sh"
+        text = reg.read_text()
+        assert text.count(self.INSTALLED) == 1 and text.count('[claude]="0"') == 1
+        reg.write_text(text.replace(self.INSTALLED, str(policy_path))
+                       .replace('[claude]="0"', f'[claude]="{owner}"'))
         return lane_dir
 
-    def test_only_lane3_gets_the_claude_policy(self):
+    def _install(self, tree: _FixtureTree, content: str, mode: int = 0o444,
+                 dir_mode: int = 0o755) -> Path:
+        d = tree.root / "installed"
+        d.mkdir()
+        f = d / "claude-lane3.json"
+        f.write_text(content)
+        f.chmod(mode)
+        d.chmod(dir_mode)
+        return f
+
+    def _run(self, tree, lane_dir, lane="3"):
+        return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, lane, [],
+                               env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
+
+    def test_only_lane3_gets_the_installed_claude_policy(self):
         with _FixtureTree() as tree:
+            policy = self._install(tree, self.POLICY.read_text())
+            lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
             for lane in ("1", "2"):
                 with self.subTest(lane=lane):
-                    cell = tree.run(lane, [], LANE_CLI="claude")
+                    cell = self._run(tree, lane_dir, lane)
                     self.assertTrue(cell["launched"], cell.get("stderr"))
                     self.assertNotIn("--settings", _agent_args(cell))
-            cell = tree.run("3", [], LANE_CLI="claude")
+            cell = self._run(tree, lane_dir)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             args = _agent_args(cell)
             self.assertEqual(args.count("--settings"), 1)
-            self.assertEqual(Path(args[args.index("--settings") + 1]), self.POLICY)
+            self.assertEqual(Path(args[args.index("--settings") + 1]), policy)
+
+    def test_the_registry_names_an_absolute_installed_path(self):
+        """C1b: never the repo copy, which any session can edit."""
+        text = (LANE_DIR / "_agent_registry.sh").read_text()
+        self.assertIn(f'[claude:3]="{self.INSTALLED}"', text)
 
     def test_a_caller_cannot_replace_the_lane3_settings(self):
         """`--settings` is single-valued, so a caller's own would replace the
@@ -984,32 +1016,51 @@ class ClaudeLane3Settings(unittest.TestCase):
                         self.assertIn("cannot be set, removed, or contradicted",
                                       cell["stderr"])
 
-    def test_the_policy_carries_exactly_the_one_allow_rule(self):
-        """AC3: the allowance is narrow. Anything else in this file reaches every
-        Lane 3 session, so its whole content is pinned, not just the rule."""
+    def test_the_policy_carries_exactly_the_one_absolute_allow_rule(self):
+        """AC3 and C1a: one rule, naming an absolute path under
+        /usr/local/libexec/ -- a relative or wildcard command specifier names
+        whatever file the agent's cwd supplies."""
         self.assertEqual(json.loads(self.POLICY.read_text()), {
-            "permissions": {"allow": [
-                "Bash(backend/.venv/bin/python scripts/gate_production_run.py:*)",
-            ]},
+            "permissions": {"allow": ["Bash(/usr/local/libexec/hrse-gate-run:*)"]},
         })
 
-    def test_missing_claude_policy_refuses_to_launch(self):
+    def test_an_uninstalled_policy_launches_without_it(self):
+        """A widening policy's absence is the safe direction: no allow rule,
+        the classifier keeps prompting."""
         with _FixtureTree() as tree:
-            lane_dir = self._copy_lane_dir(tree)  # policies/ deliberately empty
-            cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3", [],
-                                   env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
-            self.assertFalse(cell["launched"])
-            self.assertIn("policy file missing", cell["stderr"])
+            lane_dir = self._copy_lane_dir(tree, tree.root / "nowhere" / "p.json", os.getuid())
+            cell = self._run(tree, lane_dir)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertNotIn("--settings", _agent_args(cell))
+            self.assertIn("not installed", cell["stderr"])
 
-    def test_invalid_claude_policy_refuses_to_launch(self):
+    def test_a_policy_the_agent_could_widen_refuses_to_launch(self):
+        cases = {
+            "group-writable file": dict(mode=0o664),
+            "other-writable file": dict(mode=0o646),
+            "writable directory": dict(dir_mode=0o777),
+        }
+        for name, kw in cases.items():
+            with self.subTest(name), _FixtureTree() as tree:
+                policy = self._install(tree, self.POLICY.read_text(), **kw)
+                cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid()))
+                self.assertFalse(cell["launched"])
+                self.assertIn("not an immutable JSON object", cell["stderr"])
+
+    def test_a_policy_not_owned_by_the_required_uid_refuses_to_launch(self):
+        with _FixtureTree() as tree:
+            policy = self._install(tree, self.POLICY.read_text())
+            cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid() + 1))
+            self.assertFalse(cell["launched"])
+            self.assertIn("not an immutable JSON object", cell["stderr"])
+
+    def test_an_invalid_installed_policy_refuses_to_launch(self):
         for content in ('{"permissions": ', "[]"):
             with self.subTest(content=content), _FixtureTree() as tree:
-                lane_dir = self._copy_lane_dir(tree)
-                (lane_dir / "policies" / "claude-lane3.json").write_text(content)
-                cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3", [],
-                                       env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
+                policy = self._install(tree, content)
+                cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid()))
                 self.assertFalse(cell["launched"])
-                self.assertIn("not a valid JSON object", cell["stderr"])
+                self.assertIn("not an immutable JSON object", cell["stderr"])
 
 
 # ---------------------------------------------------------------------------

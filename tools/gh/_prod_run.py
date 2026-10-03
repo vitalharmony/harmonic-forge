@@ -76,6 +76,23 @@ def footer_field(issue: int, sha: str, action: dict) -> str:
     return f"{head},count-label:{action['count_label']}"
 
 
+def raw_field(body: str) -> str | None:
+    """The literal `prod-run=...` token from `body`'s own trailing l1-post
+    footer, or None. What the body digest covers alongside the body text."""
+    footer = _TRAILING_FOOTER.search(_FENCE.sub("", body or ""))
+    field = _FIELD.search(footer.group(1)) if footer else None
+    return f"prod-run={field.group(1)}" if field else None
+
+
+def covered_text(prefix: str, field: str | None) -> str:
+    """The text an l1-post `body-sha256` is computed over (harmonic-forge#878
+    sticky-wicket PATCH, C1c): the rstripped body, plus the `prod-run` footer
+    token when there is one -- so editing the declaration after posting breaks
+    the digest. Comments without a declaration hash exactly as before."""
+    text = prefix.rstrip("\n")
+    return f"{text}\n{field}" if field else text
+
+
 def declared(body: str) -> dict | None:
     """The `prod-run` declaration in `body`'s own trailing l1-post footer, as
     `{"issue", "sha", "script", "apply"}` or `{"issue", "sha", "count_label"}`;

@@ -17,6 +17,11 @@ Two verbs:
         which this host's `Defaults targetpw` makes ask for the root password).
         Prints the nonce.
 
+    status <issue> <sha> <action>
+        Read-only: the live grants and spent receipts for that exact action,
+        so an operator whose run was refused can see whether the grant is
+        still live before minting (a second live grant is refused anyway).
+
     consume <issue> <sha> <action>
         Run as hrse-gate through the single NOPASSWD sudoers rule. Finds a
         grant matching the action exactly and renames it into receipts/.
@@ -69,6 +74,7 @@ EXIT_CONSUMED = 4
 EXIT_EXPIRED = 5
 EXIT_MISMATCH = 6
 EXIT_REFUSED = 7
+EXIT_DUPLICATE = 8
 
 
 class Refused(Exception):
@@ -108,7 +114,7 @@ def parse_action(text: str) -> dict:
 
 
 def _key(issue: str, sha: str, action: str) -> dict:
-    if not issue.isdigit() or int(issue) < 1:
+    if not issue.isdecimal() or int(issue) < 1:
         raise Refused(EXIT_REFUSED, f"issue must be a positive integer, got {issue!r}")
     if not FULL_SHA.match(sha):
         raise Refused(EXIT_REFUSED, "sha must be a full 40-hex commit id")
@@ -133,8 +139,14 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
     if not 1 <= ttl_minutes <= MAX_TTL_MINUTES:
         raise Refused(EXIT_REFUSED, f"--ttl-minutes must be 1..{MAX_TTL_MINUTES}")
     key = _key(issue, sha, action)
-    nonce = secrets.token_hex(16)
     now = _now()
+    # One approval, one live grant (survivor S3): a retry after an unrelated
+    # refusal must not mint a second run of the same irreversible action.
+    for live in _matching(STORE_ROOT / "grants", key):
+        if dt.datetime.fromisoformat(live["expires"]) > now:
+            raise Refused(EXIT_DUPLICATE, f"duplicate: grant {live['nonce']} for this exact action is "
+                          f"still live until {live['expires']}; nothing minted")
+    nonce = secrets.token_hex(16)
     record = {**key, "nonce": nonce, "granted_at": now.isoformat(),
               "expires": (now + dt.timedelta(minutes=ttl_minutes)).isoformat()}
     path = STORE_ROOT / "grants" / f"{nonce}.json"
@@ -148,6 +160,29 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
     finally:
         os.close(fd)
     return nonce
+
+
+def _matching(directory: Path, key: dict) -> list[dict]:
+    found = []
+    for path in sorted(directory.glob("*.json")):
+        record = _read(path) if NONCE.match(path.stem) else None
+        if record is not None and _same_action(record, key):
+            found.append(record)
+    return found
+
+
+def status(issue: str, sha: str, action: str) -> str:
+    """Read-only: the live grants and spent receipts for one exact action."""
+    key = _key(issue, sha, action)
+    now = _now()
+    lines = []
+    for label, directory in (("grant", STORE_ROOT / "grants"), ("receipt", STORE_ROOT / "receipts")):
+        for record in _matching(directory, key):
+            state = label
+            if label == "grant" and dt.datetime.fromisoformat(record["expires"]) <= now:
+                state = "expired grant"
+            lines.append(f"{state} {record['nonce']} expires {record['expires']}")
+    return "\n".join(lines) or "none"
 
 
 def consume(issue: str, sha: str, action: str) -> str:
@@ -193,15 +228,30 @@ def version() -> str:
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
+class _Parser(argparse.ArgumentParser):
+    """Every malformed call exits with the declared refusal code, so a caller
+    (and a test) can tell a refusal from any other non-zero exit."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"hrse-gate: {message}", file=sys.stderr)
+        raise SystemExit(EXIT_REFUSED)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="hrse-gate", allow_abbrev=False)
+    parser = _Parser(prog="hrse-gate", allow_abbrev=False)
     parser.add_argument("--version", action="store_true", help="print this file's sha256")
     verbs = parser.add_subparsers(dest="verb")
+    verbs._parser_class = _Parser
     g = verbs.add_parser("grant", allow_abbrev=False)
     g.add_argument("issue")
     g.add_argument("sha")
     g.add_argument("action")
     g.add_argument("--ttl-minutes", type=int, default=DEFAULT_TTL_MINUTES)
+    st = verbs.add_parser("status", allow_abbrev=False)
+    st.add_argument("issue")
+    st.add_argument("sha")
+    st.add_argument("action")
     c = verbs.add_parser("consume", allow_abbrev=False)
     c.add_argument("issue")
     c.add_argument("sha")
@@ -220,10 +270,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "grant":
             print(grant(args.issue, args.sha, args.action, args.ttl_minutes))
+        elif args.verb == "status":
+            print(status(args.issue, args.sha, args.action))
         elif args.verb == "consume":
             print(f"consumed {consume(args.issue, args.sha, args.action)}")
         else:
-            print("hrse-gate: a verb is required (grant | consume)", file=sys.stderr)
+            print("hrse-gate: a verb is required (grant | status | consume)", file=sys.stderr)
             return EXIT_REFUSED
     except Refused as exc:
         print(f"hrse-gate: {exc}", file=sys.stderr)
