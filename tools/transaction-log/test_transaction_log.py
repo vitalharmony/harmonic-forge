@@ -33,6 +33,10 @@ class Repo:
         git(root, "config", "user.name", "t")
         git(root, "config", "commit.gpgsign", "false")
         git(root, "config", "core.hooksPath", "/dev/null")
+        # harmonic-forge#871's lesson: a detached auto-gc/maintenance run left
+        # writing into the repo races tearDown's rmtree under load.
+        git(root, "config", "gc.auto", "0")
+        git(root, "config", "maintenance.auto", "false")
 
     def commit(self, subject: str, body: str = "", version: str | None = None,
                touch: str | None = None) -> str:

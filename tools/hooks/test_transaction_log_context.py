@@ -39,6 +39,8 @@ class HookTests(unittest.TestCase):
         git("config", "user.name", "t")
         git("config", "commit.gpgsign", "false")
         git("config", "core.hooksPath", "/dev/null")
+        git("config", "gc.auto", "0")  # harmonic-forge#871: no detached gc racing cleanup
+        git("config", "maintenance.auto", "false")
         for i in range(commits):
             (self.dir / f"f{i}").write_text(str(i))
             git("add", "-A")
