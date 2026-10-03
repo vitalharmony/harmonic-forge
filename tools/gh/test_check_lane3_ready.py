@@ -202,6 +202,42 @@ class ExplicitIssueFlagTests(unittest.TestCase):
         issue_for_branch.assert_called_once_with("fix/1-x")
 
 
+class ShimLoadImportsSiblingsTests(unittest.TestCase):
+    """harmonic-forge#869: HRSE2 loads this file with `runpy.run_path`
+    from its own `scripts/`, so `tools/gh` is never on `sys.path` there.
+    Replays that load in a clean subprocess and reaches carry_forward's
+    function-level `import _standing_grant`, which crashed every
+    `lane3-begin` on 766a264."""
+
+    def test_runpy_load_from_foreign_dir_reaches_carry_forward(self) -> None:
+        import subprocess
+        here = Path(__file__).resolve().parent
+        canonical = here / "check_lane3_ready.py"
+        with tempfile.TemporaryDirectory() as foreign:
+            # A consumer `scripts/` dir carrying a same-named shim, first on
+            # sys.path exactly as HRSE2's shim leaves it.
+            (Path(foreign) / "check_lane3_ready.py").write_text(
+                "raise SystemExit('shim shadowed the canonical module')\n"
+            )
+            script = (
+                "import runpy, sys\n"
+                f"sys.path = [{foreign!r}] + [p for p in sys.path"
+                f" if p not in ({str(here)!r}, '')]\n"
+                f"g = runpy.run_path({str(canonical)!r}, run_name='_shim_load')\n"
+                "print(g['carry_forward']([], {'id': 1, 'body': ''}, 'a' * 40))\n"
+                "print(sys.modules['check_lane3_ready'].__file__)\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", script], cwd=foreign,
+                capture_output=True, text=True, timeout=60,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
+        verdict, clr_file = result.stdout.strip().splitlines()
+        self.assertEqual(verdict, "None")
+        self.assertEqual(Path(clr_file).resolve(), canonical)
+
+
 class ShaCarryForwardTests(unittest.TestCase):
     """The AE's own sha= marker must actually authorize the
     checked-out commit, not just exist. Fixtures replay two real issues'
