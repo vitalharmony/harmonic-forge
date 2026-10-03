@@ -909,8 +909,7 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None]:
         # account can see the repo itself; a private repo read with the wrong
         # account 404s too, and must stay unreadable, never retire a real issue.
         account = _account_of(repo)
-        if (_http_status(repo, f"repos/{repo}/issues/{issue}") == 404
-                and _http_status(repo, f"repos/{repo}") == 200):
+        if _confirmed_missing(repo, issue):
             print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
                   "retiring its candidate", file=sys.stderr)
             return "missing", None
@@ -935,6 +934,16 @@ def _fail_may_reach(repo: str, issue: int, lane: str) -> bool:
 
 
 _STATUS_LINE = re.compile(r"^HTTP/[\d.]+\s+(\d{3})\b")
+
+
+def _confirmed_missing(repo: str, issue: int) -> bool:
+    """Whether `issue` is definitely gone: its read 404s AND `repos/{repo}`
+    reads 200 under the same account (harmonic-forge#866). A private repo
+    read with the wrong account 404s too, so a 404 alone is never enough.
+    Every issue reader that fails open on an unreadable issue asks this
+    first, so no reader keeps a missing issue alive that another retires."""
+    return (_http_status(repo, f"repos/{repo}/issues/{issue}") == 404
+            and _http_status(repo, f"repos/{repo}") == 200)
 
 
 def _http_status(repo: str, path: str) -> int | None:
@@ -1000,11 +1009,22 @@ def _issue_is_open(repo: str, issue: int) -> bool:
     for as open. On fetch failure, treat
     the issue as still open (fail toward keeping it queued, not toward
     silently dropping it -- the same fail-safe direction as the rest of
-    this module's error handling)."""
+    this module's error handling), unless it is confirmed missing
+    (harmonic-forge#866: `_confirmed_missing`)."""
     try:
         raw = gh_as(_account_of(repo),
                     ["api", "-X", "GET", f"repos/{repo}/issues/{issue}", "--jq", ".state"],
                     counter=_COUNTER)
+    except GhAsError as exc:
+        # harmonic-forge#866 preclose: a missing issue is not open. Kept open,
+        # its worktree stayed in `discovered` and its comment fetch 404'd every
+        # tick, so the belt never went quiet and never backed off.
+        if _confirmed_missing(repo, issue):
+            print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as "
+                  f"{_account_of(repo)}): dropping its worktree", file=sys.stderr)
+            return False
+        print(f"[watch_lane_posts] _issue_is_open failed for #{issue}: {exc}", file=sys.stderr)
+        return True
     except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
         print(f"[watch_lane_posts] _issue_is_open failed for #{issue}: {exc}", file=sys.stderr)
         return True

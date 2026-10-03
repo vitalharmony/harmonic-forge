@@ -3415,3 +3415,41 @@ class MissingIssueRetiresTests(unittest.TestCase):
         with patch("watch_lane_posts.gh_as", self.fake_gh(502, 200)), \
              patch("sys.stderr", io.StringIO()):
             self.assertTrue(watch_lane_posts._fail_may_reach(self.REPO, 7, "l2"))
+
+    # harmonic-forge#866 preclose pass 1: a worktree whose issue is missing is
+    # dropped by `drop_closed_targets` too, so it never reaches the comment
+    # watch (whose 404 kept the belt from ever going quiet). `_issue_is_open`
+    # runs for real here; only `gh_as` is faked.
+
+    def drop(self, issue: int):
+        watch_lane_posts._CLOSED_SEEN.clear()
+        self.addCleanup(watch_lane_posts._CLOSED_SEEN.clear)
+        rows = [(f"/wt/forge-{issue}", (self.REPO, issue), "branch")]
+        return drop_closed_targets(rows)
+
+    def test_a_missing_issue_worktree_is_dropped_before_the_comment_watch(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200)), \
+             patch("sys.stderr", io.StringIO()):
+            kept = self.drop(2095)
+        self.assertIsNone(kept[0][1])
+        self.assertIn((self.REPO, 2095), watch_lane_posts._CLOSED_SEEN)
+
+    def test_a_dropped_missing_issue_is_not_probed_again(self):
+        with patch("watch_lane_posts.gh_as", wraps=self.fake_gh(404, 200)) as g, \
+             patch("sys.stderr", io.StringIO()):
+            self.drop(2095)
+            calls = g.call_count
+            drop_closed_targets([("/wt/forge-2095", (self.REPO, 2095), "branch")])
+        self.assertEqual(g.call_count, calls)
+
+    def test_a_404_worktree_with_an_unreadable_repo_stays_watched(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 404)), \
+             patch("sys.stderr", io.StringIO()):
+            kept = self.drop(7)
+        self.assertEqual(kept[0][1], (self.REPO, 7))
+
+    def test_a_502_worktree_stays_watched(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(502, 200)), \
+             patch("sys.stderr", io.StringIO()):
+            kept = self.drop(7)
+        self.assertEqual(kept[0][1], (self.REPO, 7))
