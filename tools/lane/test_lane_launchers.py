@@ -566,11 +566,11 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             self.assertIn("cannot be set, removed, or contradicted",
                           denied["stderr"])
 
-    def test_claude_lane3_remains_flagless(self):
-        """AC4 stays vacuous for Claude, and that is recorded rather than
-        mistaken for enforcement. Claude has no launcher safety flag at
-        Lane 3 at all (unchanged by harmonic-forge#644, which only touches
-        Codex)."""
+    def test_claude_lane3_carries_no_gemini_or_codex_flag(self):
+        """Claude Lane 3 gets neither Gemini's policy flag nor Codex's sandbox
+        (unchanged by harmonic-forge#644, which only touches Codex). Its own
+        policy, `--settings`, arrived with harmonic-forge#878 -- see
+        ClaudeLane3Settings."""
         with _FixtureTree() as tree:
             args = _agent_args(tree.run("3", [], LANE_CLI="claude"))
             self.assertNotIn("--admin-policy", args)
@@ -831,6 +831,78 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                                    env_overrides={"LANE_CLI": "gemini"})
             self.assertFalse(cell["launched"])
             self.assertIn("not valid TOML", cell["stderr"])
+
+
+class ClaudeLane3Settings(unittest.TestCase):
+    """harmonic-forge#878: the first Claude lane policy -- a `--settings` file
+    whose only rule allows HRSE2's scripts/gate_production_run.py, injected at
+    Lane 3 alone and un-removable at every Claude lane."""
+
+    POLICY = LANE_DIR / "policies" / "claude-lane3.json"
+
+    def _copy_lane_dir(self, tree: _FixtureTree) -> Path:
+        lane_dir = tree.root / "lanedir"
+        lane_dir.mkdir()
+        for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
+                     "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
+                     "_gh_config_dir.sh", "_lane_refresh.sh"):
+            (lane_dir / name).write_text((LANE_DIR / name).read_text())
+        (lane_dir / "policies").mkdir()
+        return lane_dir
+
+    def test_only_lane3_gets_the_claude_policy(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2"):
+                with self.subTest(lane=lane):
+                    cell = tree.run(lane, [], LANE_CLI="claude")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    self.assertNotIn("--settings", _agent_args(cell))
+            cell = tree.run("3", [], LANE_CLI="claude")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            args = _agent_args(cell)
+            self.assertEqual(args.count("--settings"), 1)
+            self.assertEqual(Path(args[args.index("--settings") + 1]), self.POLICY)
+
+    def test_a_caller_cannot_replace_the_lane3_settings(self):
+        """`--settings` is single-valued, so a caller's own would replace the
+        Lane 3 policy -- and at Lanes 1 and 2 it is the one passthrough that
+        could hand a session the same allow rule from an untracked file."""
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for form in (["--settings", "/dev/null"], ["--settings=/dev/null"],
+                             ["--", "--settings", "/dev/null"]):
+                    with self.subTest(lane=lane, form=form):
+                        cell = tree.run(lane, form, LANE_CLI="claude")
+                        self.assertFalse(cell["launched"])
+                        self.assertIn("cannot be set, removed, or contradicted",
+                                      cell["stderr"])
+
+    def test_the_policy_carries_exactly_the_one_allow_rule(self):
+        """AC3: the allowance is narrow. Anything else in this file reaches every
+        Lane 3 session, so its whole content is pinned, not just the rule."""
+        self.assertEqual(json.loads(self.POLICY.read_text()), {
+            "permissions": {"allow": [
+                "Bash(backend/.venv/bin/python scripts/gate_production_run.py:*)",
+            ]},
+        })
+
+    def test_missing_claude_policy_refuses_to_launch(self):
+        with _FixtureTree() as tree:
+            lane_dir = self._copy_lane_dir(tree)  # policies/ deliberately empty
+            cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3", [],
+                                   env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
+            self.assertFalse(cell["launched"])
+            self.assertIn("policy file missing", cell["stderr"])
+
+    def test_invalid_claude_policy_refuses_to_launch(self):
+        for content in ('{"permissions": ', "[]"):
+            with self.subTest(content=content), _FixtureTree() as tree:
+                lane_dir = self._copy_lane_dir(tree)
+                (lane_dir / "policies" / "claude-lane3.json").write_text(content)
+                cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3", [],
+                                       env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
+                self.assertFalse(cell["launched"])
+                self.assertIn("not a valid JSON object", cell["stderr"])
 
 
 # ---------------------------------------------------------------------------

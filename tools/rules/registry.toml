@@ -2490,3 +2490,11 @@ statement = "The operator's standing production AE grant: when a passing Tier R 
 text_sha = "bba726e79d0edb38"
 exception_to = ["R-0208"]
 hooks = []
+
+[[rule]]
+id = "R-0377"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "A Lane 3 Tier P production run in HRSE2 goes only through scripts/gate_production_run.py, which refuses unless LANE=3 in a *-lane3 worktree, itself and its tracked scripts/1-*.py target (or an ontology-declared count label) are unmodified at HEAD, and check_lane3_ready --require-tier P authorizes the checked-out SHA (a post-merge step's AE names the merged main SHA). The lane3 launcher passes claude-lane3.json via --settings at Lane 3 only and refuses a caller --settings at every Claude lane; its one allow rule removes only the classifier's second block on an AE-authorized action, authorizes nothing, and every other production read stays denied. A worktree without the script is BLOCKED, never improvised around (harmonic-forge#878)."
+text_sha = "a609919b95d92898"
+hooks = []

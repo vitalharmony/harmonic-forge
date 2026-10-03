@@ -497,6 +497,62 @@ class EveryTierSweepIntegrityTests(unittest.TestCase):
         self.assertIsNotNone(authority)
 
 
+class RequireTierAndJsonTests(unittest.TestCase):
+    """harmonic-forge#878: `--require-tier` refuses an authorization at any
+    other tier, and `--json` prints one structured verdict and nothing else --
+    what HRSE2's scripts/gate_production_run.py parses."""
+
+    def _run_main(self, comments: list[dict], argv: list[str]) -> str:
+        import contextlib
+        import io
+        out = io.StringIO()
+        with mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value=DEFAULT_SHA), \
+             mock.patch.object(c, "tier_w_availability", return_value="AVAILABILITY LINE"), \
+             contextlib.redirect_stdout(out):
+            c.main(["--issue", "1867", *argv])
+        return out.getvalue()
+
+    def _ae_and_sweep(self, tier: str) -> list[dict]:
+        return [_comment(1, "ae", "2026-08-15T09:00:00Z"),
+                _comment(2, "sweep", "2026-08-15T10:00:00Z", tier=tier)]
+
+    def test_require_tier_p_refuses_a_tier_w_sweep(self):
+        with self.assertRaises(SystemExit):
+            self._run_main(self._ae_and_sweep("W"), ["--require-tier", "P"])
+
+    def test_require_tier_p_refuses_a_tier_r_sweep_with_no_ae(self):
+        with self.assertRaises(SystemExit):
+            self._run_main([_comment(1, "sweep", "2026-08-15T10:00:00Z", tier="R")],
+                           ["--require-tier", "P"])
+
+    def test_require_tier_p_still_refuses_an_ae_at_another_sha(self):
+        comments = [_comment(1, "ae", "2026-08-15T09:00:00Z", sha="b" * 40),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", sha="b" * 40, tier="P")]
+        with self.assertRaises(SystemExit):
+            self._run_main(comments, ["--require-tier", "P", "--json"])
+
+    def test_require_tier_p_passes_a_tier_p_ae_and_sweep(self):
+        self._run_main(self._ae_and_sweep("P"), ["--require-tier", "P"])  # must not raise
+
+    def test_json_prints_exactly_the_structured_verdict(self):
+        out = self._run_main(self._ae_and_sweep("P"), ["--require-tier", "P", "--json"])
+        self.assertEqual(json.loads(out), {
+            "issue": 1867,
+            "head_sha": DEFAULT_SHA,
+            "tier": "P",
+            "authority_url": "https://github.com/vitalharmony/hrse/issues/1#issuecomment-1",
+        })
+        self.assertNotIn("AVAILABILITY LINE", out)
+
+    def test_default_output_is_unchanged(self):
+        out = self._run_main(self._ae_and_sweep("P"), [])
+        self.assertIn("[check-lane3-ready] vitalharmony/hrse#1867: sweep", out)
+        self.assertIn("tier P -- ready, authorized for", out)
+        self.assertIn("AVAILABILITY LINE", out)
+
+
 class L1PostDigestRoundTripTests(unittest.TestCase):
     """Regression guard for the l1_post.py fix Lane 1 required
     -- the recorded body-sha256 must match what verify_body_sha256() (i.e.

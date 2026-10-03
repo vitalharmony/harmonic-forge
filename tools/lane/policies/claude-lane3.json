@@ -1,0 +1,1 @@
+{"permissions":{"allow":["Bash(backend/.venv/bin/python scripts/gate_production_run.py:*)"]}}

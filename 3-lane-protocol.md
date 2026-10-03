@@ -1128,6 +1128,31 @@ removing this rule and its registry row; the operator-memory note is not the
 authority once this rule exists.
 <!-- /R-0374 -->
 
+<!-- R-0377 -->
+**A Lane 3 production run goes through one sanctioned entrypoint, and the AE
+stays its authorization** (harmonic-forge#878). A Lane 3 case at Tier P in
+HRSE2 runs as `backend/.venv/bin/python scripts/gate_production_run.py --issue
+<N> --script scripts/1-<name>.py [--apply]` or `... --issue <N> --count-label
+<Label>`, never as a hand-composed command naming the main checkout's
+`backend/.env`. Before it touches anything, the script refuses unless `LANE=3`,
+it runs in a `*-lane3` worktree, its own file is tracked and unmodified at
+HEAD, the target script is a tracked, unmodified `scripts/1-*.py` (or the label
+is one the ontology declares), and `check_lane3_ready.py --issue <N>
+--require-tier P --json` authorizes the checked-out SHA. A post-merge
+production step therefore needs its AE and sweep to name the merged `main`
+SHA, checked out with `gate-checkout`.
+
+The `lane3` launcher passes `tools/lane/policies/claude-lane3.json` with
+`--settings` to Claude at Lane 3 only, and refuses a caller `--settings` at
+every Claude lane. That file holds exactly one `permissions.allow` rule, for
+that script. It removes only the auto-mode classifier's second block on an
+action the AE already authorized; it authorizes nothing itself. Any other
+production read (an ad hoc `cypher-shell`, a `python -c` with the main env, a
+`cat` of the env file) stays denied. A gate worktree without the script is
+reported BLOCKED with that reason, and Lane 3 never improvises a production
+read in its place.
+<!-- /R-0377 -->
+
 <!-- R-0209 -->
 **A routine retest after a FAIL does not need a new AE/sweep pair.**
 HRSE2's `check_lane3_ready.py` (hrse#1102, generalized hrse#1359) already

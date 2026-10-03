@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane): Lane 3 Claude launches with a --settings policy whose one allow rule is HRSE2's AE-checked gate_production_run.py; a caller --settings is refused at every Claude lane; check_lane3_ready gains --require-tier/--json; R-0377 (harmonic-forge#878)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- tools/lane/policies/claude-lane3.json |  1 +
+- tools/lane/test_lane_launchers.py     | 82 ++++++++++++++++++++++++++++++++---
+- tools/rules/registry.toml             |  8 ++++
+- 9 files changed, 240 insertions(+), 10 deletions(-)
+
 ## test(gate): the F871 materialize test reads the scratch repo's own config with --local, so ambient host git config cannot pass the unfixed code (harmonic-forge#871 preclose pass 1)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
