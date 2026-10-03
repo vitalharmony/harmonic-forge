@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -57,7 +58,8 @@ class RecordsOneLine(unittest.TestCase):
             self.assertEqual(entry["payload_keys"],
                              ["cwd", "hook_event_name", "prompt", "session_id",
                               "transcript_path"])
-            self.assertIn("timestamp", entry)
+            # A real UTC instant, not merely a present key (#880 pass 1).
+            time.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
             raw = _probe(home).read_text()
             self.assertNotIn(SECRET_SESSION, raw)
             self.assertNotIn(SECRET_TRANSCRIPT, raw)
@@ -75,6 +77,23 @@ class RecordsOneLine(unittest.TestCase):
             self.assertIsNone(entry["CLAUDE_CODE_ENTRYPOINT"])
 
 
+class TimestampIsTheInjectedInstant(unittest.TestCase):
+    def test_now_seam_sets_the_recorded_timestamp(self):
+        with tempfile.TemporaryDirectory() as home:
+            old = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                self.assertTrue(auto_ae_toggle.record(
+                    _payload("/auto-ae"), "1", "cli", now=0))
+            finally:
+                if old is None:
+                    os.environ.pop("HOME")
+                else:
+                    os.environ["HOME"] = old
+            entry = json.loads(_probe(home).read_text())
+            self.assertEqual(entry["timestamp"], "1970-01-01T00:00:00Z")
+
+
 class DecidesAndGrantsNothing(unittest.TestCase):
     def test_output_carries_no_decision_or_context(self):
         with tempfile.TemporaryDirectory() as home:
@@ -83,11 +102,27 @@ class DecidesAndGrantsNothing(unittest.TestCase):
             self.assertIn("nothing toggled", out["systemMessage"])
 
     def test_writes_nothing_but_the_probe_log(self):
-        with tempfile.TemporaryDirectory() as home:
-            _run(json.dumps(_payload("/auto-ae on")), home)
+        """AC4 beyond $HOME: the hook's TMPDIR, its cwd and the system temp
+        root are watched too, since toggle state written to any of them is
+        exactly what AC4 forbids (#880 pass 1)."""
+        sys_tmp = Path("/tmp")
+        before = set(sys_tmp.iterdir())
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as tmpdir, \
+                tempfile.TemporaryDirectory() as cwd:
+            env = {k: v for k, v in os.environ.items() if k != "LANE"}
+            env.update(HOME=home, TMPDIR=tmpdir, LANE="1")
+            subprocess.run([sys.executable, str(HOOK)],
+                           input=json.dumps(_payload("/auto-ae on")), env=env,
+                           cwd=cwd, capture_output=True, text=True, check=True)
             written = sorted(str(p.relative_to(home)) for p in Path(home).rglob("*")
                              if p.is_file())
             self.assertEqual(written, [".local/state/auto-ae/probe.jsonl"])
+            self.assertEqual(list(Path(tmpdir).rglob("*")), [])
+            self.assertEqual(list(Path(cwd).rglob("*")), [])
+            # Our own three temp dirs are the only new /tmp entries allowed.
+            new = set(sys_tmp.iterdir()) - before - {Path(home), Path(tmpdir), Path(cwd)}
+            self.assertEqual([p for p in new if "auto" in p.name.lower()], [])
 
 
 class SilentWhenNotApplicable(unittest.TestCase):
@@ -118,8 +153,24 @@ class NeverRaises(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             result = _run("not json auto-ae", home)
             self.assertEqual(result.returncode, 0)
-            self.assertIn("NOT recorded", json.loads(result.stdout)["systemMessage"])
+            out = json.loads(result.stdout)
+            self.assertEqual(set(out), {"systemMessage"})  # AC3: never a decision
+            self.assertIn("NOT recorded", out["systemMessage"])
             self.assertFalse(_probe(home).exists())
+
+    def test_unparseable_lane1_prompt_without_the_token_is_silent(self):
+        """AC2. The failure message is gated like the success path: LANE=1
+        AND the token. Empty, truncated and undecodable stdin all stay silent
+        when nothing mentions auto-ae (#880 pass 1, reproduced cross-family)."""
+        for stdin in (b"", b'{"prompt": "deploy the', b"\xff\xfe not json"):
+            with self.subTest(stdin=stdin), tempfile.TemporaryDirectory() as home:
+                env = {k: v for k, v in os.environ.items() if k != "LANE"}
+                env.update(HOME=home, LANE="1")
+                result = subprocess.run([sys.executable, str(HOOK)], input=stdin,
+                                        env=env, capture_output=True)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.strip(), b"")
+                self.assertFalse(_probe(home).exists())
 
     def test_unwritable_probe_dir_exits_zero(self):
         with tempfile.TemporaryDirectory() as home:
@@ -128,7 +179,9 @@ class NeverRaises(unittest.TestCase):
             (Path(home) / ".local" / "state").write_text("blocker")
             result = _run(json.dumps(_payload("/auto-ae")), home)
             self.assertEqual(result.returncode, 0)
-            self.assertIn("NOT recorded", json.loads(result.stdout)["systemMessage"])
+            out = json.loads(result.stdout)
+            self.assertEqual(set(out), {"systemMessage"})  # AC3: never a decision
+            self.assertIn("NOT recorded", out["systemMessage"])
 
     def test_malformed_stdin_outside_lane1_is_silent(self):
         with tempfile.TemporaryDirectory() as home:
@@ -142,12 +195,14 @@ class RegisteredInThisRepo(unittest.TestCase):
     yet", and #874 would draw its conclusion from an empty log. Scoped to THIS
     repo's settings file, found relative to this test, for the reason
     `test_belt_wakeup.py`'s matcher test gives: a repo's CI speaks only for that
-    repo; `forge_onboard.check_hooks` is the cross-repo guard."""
+    repo. HRSE2 asserts its own registration in `scripts/test_auto_ae_registration.py`;
+    `forge_onboard.check_hooks` does NOT detect an absent entry."""
 
     def test_the_probe_is_wired_on_user_prompt_submit(self):
         path = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
-        if not path.is_file():
-            self.skipTest(f"no settings at {path}")
+        # Fail, never skip: a missing file is the unwired state this test
+        # exists to catch (#880 pass 1).
+        self.assertTrue(path.is_file(), f"no settings at {path}")
         settings = json.loads(path.read_text(encoding="utf-8"))
         commands = [hook.get("command", "")
                     for block in (settings.get("hooks") or {}).get("UserPromptSubmit") or []
