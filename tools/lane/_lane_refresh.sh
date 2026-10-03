@@ -26,12 +26,16 @@
 #                         branch that was detached); empty otherwise
 #   LANE_REFRESH_FROM     HEAD SHA before this call
 #   LANE_REFRESH_TO       HEAD SHA after this call (== FROM unless updated)
-#   LANE_REFRESH_ENV      relinked | ok | provisioned | provision-failed | n/a
+#   LANE_REFRESH_ENV      relinked | ok | provisioned | provision-failed
+#                         | owned-unexpected | n/a
 #                         (backend/.env; lane3 only, set by the caller, not
 #                         this file). `provisioned`/`provision-failed`: the
 #                         project declares `lane3_env_task` (harmonic-forge#875)
 #                         and that task ran instead of the relink, or it -- or
 #                         the lookup of it -- failed and the launch refused.
+#                         `owned-unexpected`: nothing declared, but the gate
+#                         worktree's backend/.env is a real file, not a
+#                         symlink; it is left untouched and the launch refused.
 #
 # The env status is part of the refresh.log record (its 8th field). A caller
 # that decides it after `lane_refresh` (lane3) sets `_lane_refresh_defer_log=1`

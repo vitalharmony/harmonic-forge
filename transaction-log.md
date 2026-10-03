@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane): lane3 and lane3-provision refuse a real, non-symlink backend/.env in a project declaring no lane3_env_task (owned-unexpected) and leave it untouched; the .env.pre-relink-* backup is removed (harmonic-forge#875 sticky-wicket patch)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- tools/lane/test_lane_launchers.py | 22 ++++++----
+- tools/lane/test_lane_refresh.py   | 90 +++++++++++++++++++++++++++++++++++----
+- tools/rules/registry.toml         |  4 +-
+- 8 files changed, 127 insertions(+), 29 deletions(-)
+
 ## fix(lane): lane3 resolves the declared lane3_env_task from the main checkout against the gate worktree, telling an undefined task from a failed one; the lookup reads stdout alone and only the launcher's own forge projects.toml (harmonic-forge#875 preclose pass 1)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -41,6 +41,16 @@ BASELINE = LANE_DIR / "baseline_launch_tuples.json"
 ADDITIONS = LANE_DIR / "lane3_safety_additions.txt"
 
 
+def _drift_lane3_env(tree) -> None:
+    """A gate-worktree backend/.env that has drifted: a symlink to some other
+    file. A real, non-symlink file there is refused, never relinked
+    (harmonic-forge#875 sticky-wicket), so drift is modeled as a symlink."""
+    stale = tree.root / "stale.env"
+    stale.write_text("KEY=stale\n")
+    (tree.lane3 / "backend").mkdir(exist_ok=True)
+    (tree.lane3 / "backend" / ".env").symlink_to(stale)
+
+
 class _FixtureTree:
     """A disposable project tree with stubbed CLIs, as a context manager."""
 
@@ -1040,8 +1050,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
     def test_an_untracked_backend_env_alone_never_blocks(self):
         with _FixtureTree(with_backend_env=True) as tree:
             self._advance_origin(tree)
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
 
@@ -1128,8 +1137,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
     def test_lane3_relinks_a_drifted_env_and_records_it(self):
         """TC12, AC6."""
         with _FixtureTree(with_backend_env=True) as tree:
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             link = tree.lane3 / "backend" / ".env"
@@ -1141,8 +1149,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
         """--ack-stale skips only the checkout; backend/.env has no
         legitimate per-worktree divergence."""
         with _FixtureTree(with_backend_env=True) as tree:
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             cell = self._run3(tree, ["--ack-stale", "deliberate"])
             self.assertTrue(cell["launched"], cell.get("stderr"))
             self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
@@ -1163,8 +1170,7 @@ class Lane3Provision(unittest.TestCase):
 
     def test_provision_repairs_staleness_and_the_env_symlink(self):
         with _FixtureTree(with_backend_env=True) as tree:
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             Lane3RefreshesAtLaunch._advance_origin(tree)
 
             proc = tree.run_script("lane3-provision")

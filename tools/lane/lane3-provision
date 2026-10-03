@@ -108,6 +108,11 @@ if [ -f "$main_root/backend/.env" ]; then
       exit 1
     fi
     echo "lane3-provision: backend/.env provisioned by 'mise run $LANE3_ENV_TASK'" >&2
+  elif [ -e "$target/backend/.env" ] && [ ! -L "$target/backend/.env" ]; then
+    # Same guard as `lane3`: never replace a real (owned) backend/.env.
+    echo "lane3-provision: backend/.env is a real file, not a symlink, but this project declares no Lane 3 env task -- $target/backend/.env was left untouched (owned-unexpected)" >&2
+    echo "lane3-provision: declare this project's lane3_env_task in the launcher's own forge checkout's projects.toml, or remove $target/backend/.env yourself if it is genuinely a stale copy, then re-run lane3-provision" >&2
+    exit 1
   else
     main_env_real="$(readlink -f "$main_root/backend/.env")"
     target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"

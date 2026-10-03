@@ -156,7 +156,7 @@ esac
 # a failed lookup as "declared nothing" would relink production credentials
 # back in, the exact bug this branch exists to stop.
 _lane3_env_refuse() {
-  LANE_REFRESH_ENV="provision-failed"
+  LANE_REFRESH_ENV="${4:-provision-failed}"
   export LANE_REFRESH_ENV
   lane_refresh_log_flush
   cat >&2 <<EOF
@@ -195,18 +195,22 @@ if [ -f "$main_root/backend/.env" ]; then
         "backend/.env was NOT relinked to the main checkout's -- this project's gate worktree owns its own." \
         "$(lane3_env_remedy "$main_root" "$target" "$LANE3_ENV_TASK" "relaunch lane3")"
     fi
+  elif [ -e "$target/backend/.env" ] && [ ! -L "$target/backend/.env" ]; then
+    # harmonic-forge#875 sticky-wicket: the relink only ever replaces an
+    # absent target or a symlink. A real file here is the #861 shape -- a gate
+    # worktree that owns its env -- so the manifest consulted is wrong, and
+    # replacing it would put production credentials back. Never moved aside,
+    # never replaced: evidence from the filesystem, not the manifest.
+    _lane3_env_refuse \
+      "backend/.env is a real file, not a symlink, but this project declares no Lane 3 env task" \
+      "$target/backend/.env was left untouched -- a gate worktree that owns its env must declare lane3_env_task in projects.toml." \
+      "declare this project's lane3_env_task in the launcher's own forge checkout's projects.toml, or remove $target/backend/.env yourself if it is genuinely a stale copy, then relaunch lane3" \
+      "owned-unexpected"
   else
     main_env_real="$(readlink -f "$main_root/backend/.env")"
     target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
     if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
       mkdir -p "$target/backend"
-      # Preclose finding: `ln -sfn` over a real file deletes it. Keep the only
-      # copy aside (never read or printed) before replacing it with the link.
-      if [ -f "$target/backend/.env" ] && [ ! -L "$target/backend/.env" ]; then
-        _lane3_env_backup="$target/backend/.env.pre-relink-$(date -u +%Y%m%dT%H%M%SZ)"
-        mv "$target/backend/.env" "$_lane3_env_backup"
-        echo "lane3: kept the previous backend/.env file as $_lane3_env_backup" >&2
-      fi
       ln -sfn "$main_env_real" "$target/backend/.env"
       LANE_REFRESH_ENV="relinked"
       echo "lane3: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2

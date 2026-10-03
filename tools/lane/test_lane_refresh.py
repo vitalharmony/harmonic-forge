@@ -239,17 +239,17 @@ class PrecloseFindings(unittest.TestCase):
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "skipped-busy")
             self.assertIn("NOT updated", cell["stderr"])
 
-    def test_a_real_env_file_is_kept_aside_not_deleted(self):
-        """M2."""
+    def test_a_real_env_file_is_never_replaced(self):
+        """M2, superseded by the harmonic-forge#875 sticky-wicket patch: a
+        real file is refused and left byte-unchanged, not kept aside."""
         with _FixtureTree(with_backend_env=True) as tree:
             (tree.lane3 / "backend").mkdir()
             (tree.lane3 / "backend" / ".env").write_text("KEY=only-copy\n")
             cell = self._run(tree, "3")
-            self.assertTrue(cell["launched"], cell.get("stderr"))
-            self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
-            kept = list((tree.lane3 / "backend").glob(".env.pre-relink-*"))
-            self.assertEqual(len(kept), 1)
-            self.assertEqual(kept[0].read_text(), "KEY=only-copy\n")
+            self.assertFalse(cell["launched"])
+            self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
+            self.assertEqual((tree.lane3 / "backend" / ".env").read_text(), "KEY=only-copy\n")
+            self.assertEqual(list((tree.lane3 / "backend").glob(".env.pre-relink-*")), [])
 
     def test_lane3_notice_never_claims_current_unless_current(self):
         """H2."""
@@ -496,7 +496,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
         noise is not a task name, so a project declaring nothing relinks."""
         with _FixtureTree(with_backend_env=True) as tree:
             _noisy_python(tree)
-            self._lane3_real_env(tree, "KEY=stale\n")
+            tll._drift_lane3_env(tree)
             cell = _run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             link = tree.lane3 / "backend" / ".env"
@@ -542,7 +542,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
 
     def test_a_project_without_the_key_is_still_relinked(self):
         with _FixtureTree(with_backend_env=True) as tree:
-            self._lane3_real_env(tree, "KEY=stale\n")
+            tll._drift_lane3_env(tree)
             cell = _run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             link = tree.lane3 / "backend" / ".env"
@@ -648,6 +648,78 @@ class Lane3ProvisionDeclaredEnv(unittest.TestCase):
             proc = tree.run_script("lane3-provision", FORGE_PROJECTS_MANIFEST=str(stale))
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class Lane3OwnedEnvRefusal(unittest.TestCase):
+    """harmonic-forge#875 sticky-wicket patch. The declaration is absent from
+    the consulted manifest (the survivor's premise), but the gate worktree
+    holds a real, non-symlink backend/.env: both launchers refuse and leave
+    it byte-unchanged. AC2 still holds for an absent or symlinked target."""
+
+    OWNED = "NEO4J_URI=bolt://localhost:7699\nNEO4J_PASSWORD=disposable\n"
+
+    def _owned(self, tree) -> Path:
+        (tree.lane3 / "backend").mkdir(exist_ok=True)
+        env_file = tree.lane3 / "backend" / ".env"
+        env_file.write_text(self.OWNED)
+        return env_file
+
+    def _assert_untouched(self, env_file, before):
+        self.assertTrue(env_file.is_file())
+        self.assertFalse(env_file.is_symlink())
+        self.assertEqual(_sha256(env_file), before)
+        self.assertEqual(list(env_file.parent.glob(".env.pre-relink-*")), [])
+
+    def test_lane3_refuses_an_owned_env_without_a_declaration(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            env_file = self._owned(tree)
+            before = _sha256(env_file)
+            cell = _run3(tree)
+            self.assertFalse(cell["launched"])
+            self.assertIn(str(env_file), cell["stderr"])
+            self.assertIn("left untouched", cell["stderr"])
+            self._assert_untouched(env_file, before)
+            self.assertEqual(_env_record(tree), ["owned-unexpected"])
+            self.assertEqual(tree.mise_calls(), [])
+
+    def test_provision_refuses_an_owned_env_without_a_declaration(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            env_file = self._owned(tree)
+            before = _sha256(env_file)
+            proc = tree.run_script("lane3-provision")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn(str(env_file), proc.stderr)
+            self.assertIn("left untouched", proc.stderr)
+            self._assert_untouched(env_file, before)
+
+    def test_an_absent_or_symlinked_target_is_still_relinked(self):
+        for shape in ("absent", "symlink"):
+            for runner in ("lane3", "lane3-provision"):
+                with self.subTest(shape=shape, runner=runner), \
+                        _FixtureTree(with_backend_env=True) as tree:
+                    main_env = (tree.main / "backend" / ".env").resolve()
+                    if shape == "symlink":
+                        tll._drift_lane3_env(tree)
+                    if runner == "lane3":
+                        cell = _run3(tree)
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
+                    else:
+                        proc = tree.run_script("lane3-provision")
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
+                    link = tree.lane3 / "backend" / ".env"
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(link.resolve(), main_env)
+
+    def test_owned_unexpected_is_rendered(self):
+        text = notice.build_notice({"LANE": "3", "LANE_REFRESH_STATUS": "current",
+                                    "LANE_REFRESH_ENV": "owned-unexpected"})
+        self.assertIn("left it untouched", text)
 
 
 class Lane3EnvTaskAccessor(unittest.TestCase):

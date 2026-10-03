@@ -647,7 +647,11 @@ declares nothing" relinks: a failed or undefined task, or any failure to
 look the declaration up (an unreadable `projects.toml`, a checkout matching
 no project, an answer that is not one task name), refuses the launch with a
 remedy naming which, since reading a failure as "declared nothing" would
-relink production credentials back in.
+relink production credentials back in. And the relink itself only ever
+replaces an absent target or a symlink: a real, non-symlink `backend/.env`
+in a project declaring nothing is refused (`owned-unexpected`) and left
+untouched — never moved aside or replaced — since a real file there is the
+#861 shape and means the manifest consulted is wrong.
 <!-- /R-0188 -->
 
 <!-- R-0189 -->

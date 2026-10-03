@@ -80,6 +80,9 @@ def build_notice(env: dict) -> str | None:
         # The launcher refuses on this status, so a session should never see
         # it -- rendered anyway so a session that somehow does is told.
         lines.append("backend/.env provisioning FAILED at launch -- this gate worktree's env is unverified; do not run a gate until `lane3-provision` succeeds.")
+    elif env_status == "owned-unexpected":
+        # Also a refusal status; rendered for the same reason.
+        lines.append("backend/.env is a real file but this project declares no Lane 3 env task -- the launch refused and left it untouched; do not run a gate until `lane3-provision` succeeds.")
 
     if lane == "1":
         lines.append("Open your first reply with: Run `mise run restart --no-bump --no-git`.")
