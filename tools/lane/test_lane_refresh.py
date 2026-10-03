@@ -681,6 +681,7 @@ class Lane3OwnedEnvRefusal(unittest.TestCase):
             before = _sha256(env_file)
             cell = _run3(tree)
             self.assertFalse(cell["launched"])
+            self.assertNotEqual(cell["returncode"], 0)
             self.assertIn(str(env_file), cell["stderr"])
             self.assertIn("left untouched", cell["stderr"])
             self._assert_untouched(env_file, before)

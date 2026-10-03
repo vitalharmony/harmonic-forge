@@ -3,6 +3,13 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## test(lane): the lane3 owned-env refusal test asserts a non-zero exit, closing the post-verdict cross-family finding (harmonic-forge#875)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- tools/lane/test_lane_refresh.py | 1 +
+- 1 file changed, 1 insertion(+)
+
 ## fix(lane): lane3 and lane3-provision refuse a real, non-symlink backend/.env in a project declaring no lane3_env_task (owned-unexpected) and leave it untouched; the .env.pre-relink-* backup is removed (harmonic-forge#875 sticky-wicket patch)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
