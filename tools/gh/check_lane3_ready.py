@@ -27,6 +27,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
 
+# harmonic-forge#869: consuming repos load this file through a
+# `runpy.run_path` shim, so `sys.path[0]` is the shim's directory, never
+# this one -- and carry_forward's `import _standing_grant` crashed every
+# HRSE2 `lane3-begin`. Siblings must resolve from here, not from the caller.
+# insert(0), not append: the shim's directory carries a same-named
+# `check_lane3_ready.py`, and `_standing_grant`'s `import check_lane3_ready`
+# must reach this file, not that shim. Placed before the `_sweep_tier`
+# import so that sibling resolves here too.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
