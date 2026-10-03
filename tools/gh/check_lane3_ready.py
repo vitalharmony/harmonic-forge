@@ -373,6 +373,23 @@ def main(argv: list[str] | None = None) -> None:
             "issue_for_branch() to resolve at all)."
         ),
     )
+    parser.add_argument(
+        "--require-tier", choices=("R", "W", "P"), default=None,
+        help=(
+            "harmonic-forge#878: refuse unless the newest sweep's declared write "
+            "tier is exactly this one, on top of every check the default run "
+            "makes. HRSE2's scripts/gate_production_run.py passes `P`, so a "
+            "production run needs a Tier P authorization for the checked-out SHA."
+        ),
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help=(
+            "harmonic-forge#878: on success print exactly one JSON object, "
+            "{issue, head_sha, tier, authority_url}, and nothing else on stdout. "
+            "A refusal still exits 1 with its reason on stderr."
+        ),
+    )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     repo = current_repo()
@@ -390,6 +407,22 @@ def main(argv: list[str] | None = None) -> None:
 
     sweep = latest_by_kind(comments, "sweep")
     tier = parse_write_tier(sweep.get("body", "")) if sweep else None
+    if args.require_tier is not None and tier != args.require_tier:
+        # harmonic-forge#878: an authorization at a different tier is not an
+        # authorization at this one -- a Tier W AE never licenses a production run.
+        fail(
+            f"{repo}#{issue}: sweep ({sweep['html_url']}) declares tier {tier}, "
+            f"but tier {args.require_tier} is required -- post an AE and sweep at "
+            f"tier {args.require_tier} naming {head_sha}"
+        )
+    if args.json:
+        print(json.dumps({
+            "issue": issue,
+            "head_sha": head_sha,
+            "tier": tier,
+            "authority_url": authority["html_url"],
+        }))
+        return
     print(f"[check-lane3-ready] {repo}#{issue}: sweep ({sweep['html_url']}), tier {tier} "
           f"-- ready, {message}")
     availability = tier_w_availability()

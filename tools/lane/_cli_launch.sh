@@ -371,6 +371,15 @@ if [ -n "$_lane_policy_file" ]; then
       python3 -c "import sys,tomllib; tomllib.load(open(sys.argv[1],'rb'))" "$_lane_policy_path" 2>/dev/null \
         || _lane_launch_die "policy file is not valid TOML: $_lane_policy_path -- refusing to launch an unprotected $lane_agent_display session (harmonic-forge#362)"
       ;;
+    json)
+      # harmonic-forge#878: same fail-closed shape as `toml`. A Claude
+      # `--settings` path that is missing or unparseable must refuse the launch
+      # rather than start a session whose policy silently did not load.
+      [ -f "$_lane_policy_path" ] \
+        || _lane_launch_die "policy file missing: $_lane_policy_path -- refusing to launch $lane_agent_display without its lane-$LANE policy (harmonic-forge#878)"
+      python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d, dict)" "$_lane_policy_path" 2>/dev/null \
+        || _lane_launch_die "policy file is not a valid JSON object: $_lane_policy_path -- refusing to launch $lane_agent_display without its lane-$LANE policy (harmonic-forge#878)"
+      ;;
     none)
       : # declared: this agent's policy needs no precondition check
       ;;
