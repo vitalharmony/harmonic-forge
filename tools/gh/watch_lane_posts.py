@@ -206,6 +206,7 @@ import gate_ci  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
     CallCounter,
+    GhAsError,
     IdentityMismatch,
     SeenSet,
     TickLog,
@@ -903,10 +904,51 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None]:
         )
         meta = json.loads(raw)
         return str(meta["state"]), {str(name) for name in meta["labels"]}
+    except GhAsError as exc:
+        # harmonic-forge#866: a 404 means the issue is gone only when this
+        # account can see the repo itself; a private repo read with the wrong
+        # account 404s too, and must stay unreadable, never retire a real issue.
+        account = _account_of(repo)
+        if (_http_status(repo, f"repos/{repo}/issues/{issue}") == 404
+                and _http_status(repo, f"repos/{repo}") == 200):
+            print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
+                  "retiring its candidate", file=sys.stderr)
+            return "missing", None
+        print(f"[watch_lane_posts] issue read failed for {repo}#{issue} as {account}: {exc}",
+              file=sys.stderr)
+        return None, None
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
         print(f"[watch_lane_posts] issue read failed for #{issue}: {exc}",
               file=sys.stderr)
         return None, None
+
+
+def _fail_may_reach(repo: str, issue: int, lane: str) -> bool:
+    """Whether a FAIL on `issue` may wake `lane`: never for a missing issue
+    (harmonic-forge#866, nothing to fix), nor for an epic or a Lane-1-owned
+    Tooling Exception issue (`queue_qualifiers`); an unreadable label set fails
+    open, as `discover_queue` does."""
+    state, labels = _issue_meta(repo, issue)
+    if state == "missing":
+        return False
+    return not (labels is not None and labels & set(queue_qualifiers(repo, lane)))
+
+
+_STATUS_LINE = re.compile(r"^HTTP/[\d.]+\s+(\d{3})\b")
+
+
+def _http_status(repo: str, path: str) -> int | None:
+    """The final HTTP status of a `gh api --include` read of `path`, from the
+    status line (never gh's error prose), or None when it cannot be read
+    (harmonic-forge#866). Any exception -- a timeout, gh missing -- is None:
+    this runs inside `_issue_meta`'s error path and must never escape it."""
+    try:
+        raw = gh_as(_account_of(repo), ["api", "--include", path], check=False, counter=_COUNTER)
+    except Exception:  # noqa: BLE001 -- unreadable is the safe answer here
+        return None
+    codes = [int(m.group(1)) for line in (raw or "").splitlines()
+             if (m := _STATUS_LINE.match(line.strip()))]
+    return codes[-1] if codes else None  # the last status line: a redirect's comes first
 
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
@@ -1023,7 +1065,7 @@ def discover_queue(repo: str, lane: str,
         # `read_candidates` skips and a fresh `record_candidate` clears. An
         # unreadable state is treated as open (AC4).
         state, labels = _issue_meta(repo, issue)
-        if state == "closed":
+        if state in ("closed", "missing"):
             # Marked at detection, which depends only on this issue's own
             # state read: another issue's failed comment fetch below still
             # reports the repo unreliable, but no longer stops this mark
@@ -1546,9 +1588,7 @@ def comment_watch_cycle(
                 # a Lane-1-owned Tooling Exception issue, never wakes Lane 2),
                 # read only on this rare path; an unreadable label set fails
                 # open, as there.
-                _, labels = _issue_meta(repo, issue)
-                if labels is not None and labels & set(queue_qualifiers(repo, self_lane)):
-                    fail_for_l2 = False
+                fail_for_l2 = _fail_may_reach(repo, issue, self_lane)
             if not fail_for_l2 and (lane not in watch or not _owed_to(self_lane, detail)):
                 continue
             cid = str(comment.get("id", ""))

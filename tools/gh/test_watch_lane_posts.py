@@ -3318,3 +3318,100 @@ class ClosedIssueRetirementTests(unittest.TestCase):
              patch("watch_lane_posts._fetch_all_comments", return_value=[]):
             self._discover({11})
         self.assertTrue(path.exists())
+
+
+class MissingIssueRetiresTests(unittest.TestCase):
+    """harmonic-forge#866: an issue that 404s while its repo reads 200 under the
+    same account is missing -- retired like a closed issue, never marking the
+    repo unreliable. Any other failure stays unreadable. `gh_as` is the only
+    thing faked; `_issue_meta` and `_http_status` run for real."""
+
+    REPO = "vitalharmony/harmonic-forge"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        # Only the default is redirected: REAL_CANDIDATES_DIR stays the real
+        # path, so harmonic-forge#865's guard does not refuse this temp dir.
+        for target, value in (("belt_candidates.DEFAULT_CANDIDATES_DIR", self.dir),
+                              ("watch_lane_posts._issue_meta", _REAL_ISSUE_META)):
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def fake_gh(self, issue_status: int | None, repo_status: int | None, *, raise_on=None):
+        from belt_mechanics import GhAsError
+
+        def gh(account, argv, check=True, counter=None, **_):
+            if raise_on and raise_on in argv:
+                raise subprocess.TimeoutExpired(argv, 5)
+            path = next(a for a in argv if a.startswith("repos/"))
+            if "--include" in argv:
+                code = issue_status if "/issues/" in path else repo_status
+                if code is None:
+                    return "garbage, no status line"
+                head = "HTTP/2.0 301 Moved Permanently\nlocation: x\n\n" if code == 404 else ""
+                return f"{head}HTTP/2.0 {code} Status\ncontent-type: application/json\n\n{{}}"
+            raise GhAsError(f"gh api {path} -> exit 1: gh: Not Found (HTTP 404)")
+        return gh
+
+    def write(self, issue: int) -> Path:
+        path = belt_candidates._candidate_path(self.dir, self.REPO, issue)
+        path.write_text(json.dumps({"repo": self.REPO, "issue": issue, "kind": "gate-result",
+                                    "posted_by": "l1", "posted_at": "2026-10-01T00:00:00Z"}))
+        return path
+
+    def discover(self, issues):
+        when = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)
+        return discover_queue(self.REPO, "l2", set(issues), when)
+
+    def test_404_with_a_readable_repo_is_missing_and_retired(self):
+        path = self.write(2095)
+        err = io.StringIO()
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200)), \
+             patch("watch_lane_posts._fetch_all_comments", side_effect=AssertionError("no fetch")), \
+             patch("sys.stderr", err):
+            queue, ok = self.discover({2095})
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+        self.assertIn("closed_at", json.loads(path.read_text()))
+        self.assertIn("readable as", err.getvalue())  # names the account queried
+
+    def test_404_with_an_unreadable_repo_stays_unreadable(self):
+        path = self.write(7)
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 404)), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None), \
+             patch("sys.stderr", io.StringIO()):
+            queue, ok = self.discover({7})
+        self.assertFalse(ok)
+        self.assertNotIn("closed_at", json.loads(path.read_text()))
+
+    def test_a_502_stays_unreadable(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(502, 200)), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None))
+
+    def test_an_unparseable_status_stays_unreadable(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(None, 200)), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None))
+
+    def test_a_probe_timeout_stays_unreadable_and_the_cycle_continues(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200, raise_on="--include")), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None))
+
+    def test_the_last_status_line_wins_after_a_redirect(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200)):
+            self.assertEqual(watch_lane_posts._http_status(self.REPO, f"repos/{self.REPO}/issues/7"), 404)
+
+    def test_the_fail_path_guard_drops_a_missing_issue(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200)), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertFalse(watch_lane_posts._fail_may_reach(self.REPO, 2095, "l2"))
+
+    def test_the_fail_path_guard_still_delivers_on_an_unreadable_issue(self):
+        with patch("watch_lane_posts.gh_as", self.fake_gh(502, 200)), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertTrue(watch_lane_posts._fail_may_reach(self.REPO, 7, "l2"))
