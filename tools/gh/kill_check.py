@@ -192,7 +192,14 @@ def materialize(directory: Path, sha: str, origin: str) -> None:
     extract = run_command(["tar", "-x", "-C", str(directory)], input_bytes=archive.stdout)
     if extract.returncode:
         raise RuntimeError(f"tar extraction failed: {extract.stderr.decode(errors='replace')}")
-    for argv in (["git", "init", "-q"], ["git", "add", "-A"],
+    # harmonic-forge#871: without these, the commit below starts a detached
+    # `git maintenance run --auto` -> `git repack --cruft` that deletes the
+    # loose objects while the checks copy this tree. Repo-level, so it also
+    # covers git that a check's own test command runs here.
+    for argv in (["git", "init", "-q"],
+                 ["git", "config", "gc.auto", "0"],
+                 ["git", "config", "maintenance.auto", "false"],
+                 ["git", "add", "-A"],
                  ["git", "-c", "user.name=kill-check", "-c", "user.email=kill-check@localhost",
                   "commit", "-q", "-m", "base"],
                  ["git", "branch", "-M", "main"],
