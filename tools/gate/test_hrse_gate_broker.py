@@ -111,6 +111,40 @@ class SingleUseTests(_StoreCase):
         self.grant(action=DRY)  # a different action is a different approval
         self.assertEqual(len(list((self.root / "grants").iterdir())), 2)
 
+    def test_a_reposted_ae_at_a_new_sha_mints_no_second_live_grant(self):
+        """Item 3: the approval is (issue, action); the agent controls the SHA."""
+        self.grant(sha=SHA)
+        with self.assertRaises(b.Refused) as ctx:
+            self.grant(sha=OTHER_SHA)
+        self.assertEqual(ctx.exception.code, b.EXIT_DUPLICATE)
+
+    def test_concurrent_mints_of_one_approval_succeed_once(self):
+        results = []
+        barrier = threading.Barrier(6)
+
+        def worker():
+            barrier.wait()
+            try:
+                results.append(self.grant())
+            except b.Refused as exc:
+                results.append(exc.code)
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(sum(1 for r in results if isinstance(r, str)), 1, results)
+
+    def test_an_expired_unspent_grant_never_wedges_its_action(self):
+        """Item 4: pruned at the next mint, so a new grant can be minted."""
+        self.grant(ttl=1)
+        later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=2)
+        with mock.patch.object(b, "_now", return_value=later):
+            self.assertIn("expired grant", b.status("1892", SHA, RUN))
+            self.grant()
+        self.assertEqual(len(list((self.root / "grants").iterdir())), 1)
+
     def test_status_reports_live_grants_and_receipts(self):
         self.assertEqual(b.status("1892", SHA, RUN), "none")
         nonce = self.grant()

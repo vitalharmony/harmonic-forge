@@ -969,12 +969,17 @@ class ClaudeLane3Settings(unittest.TestCase):
         return lane_dir
 
     def _install(self, tree: _FixtureTree, content: str, mode: int = 0o444,
-                 dir_mode: int = 0o755) -> Path:
+                 dir_mode: int = 0o755, manifest_sha: str | None = None) -> Path:
         d = tree.root / "installed"
         d.mkdir()
         f = d / "claude-lane3.json"
         f.write_text(content)
         f.chmod(mode)
+        m = d / "manifest.json"
+        digest = manifest_sha if manifest_sha is not None else \
+            __import__("hashlib").sha256(content.encode()).hexdigest()
+        m.write_text(json.dumps({"policy_sha256": digest}))
+        m.chmod(0o444)
         d.chmod(dir_mode)
         return f
 
@@ -1053,6 +1058,25 @@ class ClaudeLane3Settings(unittest.TestCase):
             cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid() + 1))
             self.assertFalse(cell["launched"])
             self.assertIn("not an immutable JSON object", cell["stderr"])
+
+    def test_a_policy_not_matching_the_manifest_digest_refuses(self):
+        """Item 8: the installed policy is checked against the reviewed digest,
+        so a stale or edited copy (even a root-owned one) refuses."""
+        with _FixtureTree() as tree:
+            policy = self._install(tree, self.POLICY.read_text(), manifest_sha="0" * 64)
+            cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid()))
+            self.assertFalse(cell["launched"])
+            self.assertIn("policy_sha256", cell["stderr"])
+
+    def test_the_check_holds_with_python_optimizations_on(self):
+        """Item 6: no assert statements for PYTHONOPTIMIZE to delete."""
+        with _FixtureTree() as tree:
+            policy = self._install(tree, self.POLICY.read_text(), mode=0o666)
+            lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
+            cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3", [],
+                                   env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home),
+                                                  "PYTHONOPTIMIZE": "2"})
+            self.assertFalse(cell["launched"])
 
     def test_an_invalid_installed_policy_refuses_to_launch(self):
         for content in ('{"permissions": ', "[]"):

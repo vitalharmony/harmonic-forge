@@ -48,7 +48,9 @@ single file under /usr/local/libexec.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -139,13 +141,49 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
     if not 1 <= ttl_minutes <= MAX_TTL_MINUTES:
         raise Refused(EXIT_REFUSED, f"--ttl-minutes must be 1..{MAX_TTL_MINUTES}")
     key = _key(issue, sha, action)
-    now = _now()
-    # One approval, one live grant (survivor S3): a retry after an unrelated
-    # refusal must not mint a second run of the same irreversible action.
-    for live in _matching(STORE_ROOT / "grants", key):
-        if dt.datetime.fromisoformat(live["expires"]) > now:
-            raise Refused(EXIT_DUPLICATE, f"duplicate: grant {live['nonce']} for this exact action is "
-                          f"still live until {live['expires']}; nothing minted")
+    with _store_lock():
+        now = _now()
+        _prune_expired(now)
+        # One approval, one live grant (sticky-wicket PATCH 2, item 3). The
+        # approval is (issue, action): the SHA is excluded because the agent
+        # controls it, so a re-posted AE at a new SHA must not open a second
+        # live grant while the first can still be spent at the old SHA.
+        approval = {k: v for k, v in key.items() if k != "sha"}
+        for path in sorted((STORE_ROOT / "grants").glob("*.json")):
+            live = _read(path) if NONCE.match(path.stem) else None
+            if live and {k: live.get(k) for k in approval} == approval:
+                raise Refused(EXIT_DUPLICATE, f"duplicate: grant {live['nonce']} for this action "
+                              f"(at {live['sha'][:12]}) is still live until {live['expires']}; "
+                              "nothing minted")
+        return _write_grant(key, now, ttl_minutes)
+
+
+@contextlib.contextmanager
+def _store_lock():
+    """Serialize minting (item 3): two concurrent grants for one approval must
+    not both succeed."""
+    fd = os.open(STORE_ROOT / ".mint.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _prune_expired(now: dt.datetime) -> None:
+    """Item 4: an expired, unspent grant is removed at the next mint, so it can
+    never wedge its action behind a stale 'duplicate'."""
+    for path in (STORE_ROOT / "grants").glob("*.json"):
+        record = _read(path)
+        try:
+            expired = record is None or dt.datetime.fromisoformat(record["expires"]) <= now
+        except (KeyError, TypeError, ValueError):
+            expired = True
+        if expired:
+            path.unlink(missing_ok=True)
+
+
+def _write_grant(key: dict, now: dt.datetime, ttl_minutes: int) -> str:
     nonce = secrets.token_hex(16)
     record = {**key, "nonce": nonce, "granted_at": now.isoformat(),
               "expires": (now + dt.timedelta(minutes=ttl_minutes)).isoformat()}

@@ -617,6 +617,22 @@ class RequireProdRunTests(unittest.TestCase):
         err = self._refused(thread, "script=scripts/1-1892-nuke.py,apply")
         self.assertIn("does not match", err)
 
+    def test_a_token_relocated_from_the_body_into_the_footer_is_refused(self):
+        """Item 5, the reproduced case: an AE posted WITHOUT --prod-run whose
+        body ends with the literal token, PATCHed to move the token into the
+        footer, must not verify."""
+        import hashlib
+        import _prod_run
+        token = _prod_run.footer_field(1867, DEFAULT_SHA, _prod_run.parse_spec("script=scripts/1-1867-nuke.py,apply"))
+        text = f"## AE — H1867\n\nApproved, execute.\n{token}"
+        digest = hashlib.sha256(_prod_run.covered_text(text, None).encode()).hexdigest()
+        moved = (f"## AE — H1867\n\nApproved, execute.\n\n<!-- l1-post v1; kind=ae; "
+                 f"sha={DEFAULT_SHA}; {token}; body-sha256={digest}; checks=body-validation -->")
+        thread = [{"id": 1, "body": moved, "created_at": "2026-08-15T09:00:00Z",
+                   "html_url": "https://github.com/vitalharmony/hrse/issues/1#issuecomment-1"},
+                  _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self.assertIn("does not match", self._refused(thread, "script=scripts/1-1867-nuke.py,apply"))
+
     def test_an_ae_without_a_digest_is_refused(self):
         thread = self._thread("count-label=Task")
         thread[0]["body"] = re.sub(r" body-sha256=[0-9a-f]+;", "", thread[0]["body"])

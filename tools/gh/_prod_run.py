@@ -90,7 +90,12 @@ def covered_text(prefix: str, field: str | None) -> str:
     token when there is one -- so editing the declaration after posting breaks
     the digest. Comments without a declaration hash exactly as before."""
     text = prefix.rstrip("\n")
-    return f"{text}\n{field}" if field else text
+    if not field:
+        return text
+    # Domain-separated (sticky-wicket PATCH 2, item 5): each part is
+    # length-prefixed, so the same token moved from the body's last line into
+    # the footer produces different covered bytes and fails verification.
+    return f"l1-post-covered v2\n{len(text)}:{text}\n{len(field)}:{field}"
 
 
 def declared(body: str) -> dict | None:

@@ -13,6 +13,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,8 @@ import hrse_gate_run as w  # noqa: E402
 
 SHA = "c" * 40
 RULE = "(hrse-gate) NOPASSWD: /usr/local/libexec/hrse-gate consume *"
+BASE_RULE = "(neo4j) NOPASSWD: /usr/bin/neo4j-admin database dump neo4j --to-stdout"
+SUDO, GIT = str(w.SUDO), str(w.GIT)
 
 
 class _Case(unittest.TestCase):
@@ -40,10 +43,14 @@ class _Case(unittest.TestCase):
             "worktree": str(self.worktree), "python": sys.executable,
             "script_sha256": hashlib.sha256(self.script.read_bytes()).hexdigest(),
             "broker_sha256": "b" * 64,
+            "python_sha256": hashlib.sha256(Path(os.path.realpath(sys.executable)).read_bytes()).hexdigest(),
+            "sudo_rules": [BASE_RULE, RULE],
         }
         self.calls: list[list[str]] = []
-        self.sudo_rules = [RULE]
+        self.envs: list[dict] = []
+        self.sudo_rules = [BASE_RULE, RULE]
         self.consume_rc = 0
+        self.payload_blob, self.payload_here = "1" * 40, "1" * 40
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -52,12 +59,17 @@ class _Case(unittest.TestCase):
         self.calls.append(argv)
         rc, out = 0, ""
         if argv[:2] == [str(w.BROKER), "--version"]:
-            out = self.manifest["broker_sha256"]
-        elif argv[:3] == ["sudo", "-n", "-l"]:
-            out = "\n".join(f"    {r}" for r in self.sudo_rules)
-        elif argv[:2] == ["git", "-C"]:
+            out = self.broker_version if hasattr(self, "broker_version") else self.manifest["broker_sha256"]
+        elif argv[:3] == [SUDO, "-n", "-l"]:
+            out = "User mmangus may run the following commands on host:\n" + \
+                "\n".join(f"    {r}" for r in self.sudo_rules)
+        elif argv[:2] == [GIT, "-C"] and argv[3] == "rev-parse" and argv[4] == "HEAD":
             out = SHA
-        elif argv[:4] == ["sudo", "-n", "-u", "hrse-gate"]:
+        elif argv[:2] == [GIT, "-C"] and argv[3] == "rev-parse":
+            out = self.payload_blob
+        elif argv[:2] == [GIT, "-C"] and argv[3] == "hash-object":
+            out = self.payload_here
+        elif argv[:4] == [SUDO, "-n", "-u", "hrse-gate"]:
             rc, out = self.consume_rc, "consumed abc"
         return mock.Mock(returncode=rc, stdout=out, stderr="refused" if rc else "")
 
@@ -65,6 +77,7 @@ class _Case(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LANE": lane}), \
                 mock.patch.object(w, "load_manifest", return_value=self.manifest), \
                 mock.patch.object(w, "_run", side_effect=self._fake_run), \
+                mock.patch.object(w, "_root_tool", side_effect=str), \
                 mock.patch.object(w.os, "execv") as execv, \
                 mock.patch.object(w.os, "chdir"), \
                 mock.patch("sys.stderr"):
@@ -72,7 +85,7 @@ class _Case(unittest.TestCase):
         return rc, execv
 
     def consumed(self):
-        return [c for c in self.calls if c[:4] == ["sudo", "-n", "-u", "hrse-gate"]]
+        return [c for c in self.calls if c[:4] == [SUDO, "-n", "-u", "hrse-gate"]]
 
 
 class HappyPathTests(_Case):
@@ -106,21 +119,79 @@ class RefusalTests(_Case):
         self.assert_refused_without_consuming("--issue", "1", "--count-label", "Task")
 
     def test_a_stale_broker(self):
-        self.manifest["broker_sha256"] = "d" * 64
-        with mock.patch.object(w, "_run", side_effect=lambda a: mock.Mock(
-                returncode=0, stdout="e" * 64, stderr="")):
-            rc, _ = self.run_wrapper("--issue", "1", "--count-label", "Task")
+        """Fails for the right reason (item 10): only the broker's --version
+        differs, and the refusal names the broker digest."""
+        self.broker_version = "e" * 64
+        with mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
+            with mock.patch.dict(os.environ, {"LANE": "3"}), \
+                    mock.patch.object(w, "load_manifest", return_value=self.manifest), \
+                    mock.patch.object(w, "_run", side_effect=self._fake_run), \
+                    mock.patch.object(w, "_root_tool", side_effect=str), \
+                    mock.patch.object(w.os, "execv") as execv:
+                rc = w.main(["--issue", "1", "--count-label", "Task"])
         self.assertEqual(rc, w.EXIT_REFUSED)
+        self.assertIn("broker_sha256", err.getvalue())
+        execv.assert_not_called()
+        self.assertEqual(self.consumed(), [])
 
     def test_a_widened_sudo_rule_on_the_host(self):
         """Survivor S5: the host's rules, not the install doc."""
-        for rules in ([RULE, "(root) NOPASSWD: /usr/local/libexec/hrse-gate grant *"],
-                      ["(root) NOPASSWD: /usr/local/libexec/hrse-gate consume *"],
+        for rules in ([BASE_RULE, RULE, "(root) NOPASSWD: /usr/local/libexec/hrse-gate grant *"],
+                      [BASE_RULE, "(root) NOPASSWD: /usr/local/libexec/hrse-gate consume *"],
+                      [BASE_RULE, RULE, "(ALL) NOPASSWD: ALL"],
+                      [BASE_RULE, RULE, "(root) NOPASSWD: /usr/local/libexec/*"],
+                      [BASE_RULE, RULE, "(root) NOPASSWD: /bin/sh"],
                       []):
             with self.subTest(rules=rules):
                 self.calls.clear()
                 self.sudo_rules = rules
                 self.assert_refused_without_consuming("--issue", "1", "--count-label", "Task")
+
+    def test_a_subsuming_rule_inside_the_reviewed_set_still_refuses(self):
+        """Item 2: even if the manifest itself records it, a password-free ALL
+        or wildcard rule could reach the broker's grant verb."""
+        for extra in ("(ALL) NOPASSWD: ALL", "(root) NOPASSWD: /usr/local/libexec/*"):
+            with self.subTest(extra=extra):
+                self.calls.clear()
+                self.sudo_rules = self.manifest["sudo_rules"] = [BASE_RULE, RULE, extra]
+                self.assert_refused_without_consuming("--issue", "1", "--count-label", "Task")
+
+    def test_tools_are_absolute_and_run_with_a_scrubbed_path(self):
+        """Item 1: a planted ~/.local/bin/sudo earlier on PATH is never called."""
+        recorded = []
+        real = subprocess.run
+        def spy(argv, **kw):
+            recorded.append((argv, kw.get("env")))
+            return mock.Mock(returncode=1, stdout="", stderr="")
+        with mock.patch.object(w.subprocess, "run", side_effect=spy):
+            w._run([SUDO, "-n", "-l"])
+        argv, env = recorded[0]
+        self.assertTrue(argv[0].startswith("/usr/bin/"))
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertNotIn("HOME", env)
+
+    def test_an_edited_payload_refuses(self):
+        """Item 9 (drift detector): the migration script must match HEAD."""
+        self.payload_here = "2" * 40
+        self.assert_refused_without_consuming("--issue", "1892", "--script", "scripts/1-1892-revive.py",
+                                              "--mode", "apply")
+
+    def test_a_substituted_interpreter_refuses(self):
+        """Item 9 (drift detector): the interpreter's resolved binary is pinned."""
+        self.manifest["python_sha256"] = "f" * 64
+        self.assert_refused_without_consuming("--issue", "1", "--count-label", "Task")
+
+    def test_absence_is_a_refusal_not_a_traceback(self):
+        """Item 7: a missing manifest, broker or script refuses with its cause."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"LANE": "3"}), \
+                    mock.patch.object(w, "MANIFEST", Path(tmp) / "absent.json"), \
+                    mock.patch("sys.stderr"):
+                self.assertEqual(w.main(["--issue", "1", "--count-label", "Task"]), w.EXIT_REFUSED)
+        self.script.unlink()
+        rc, execv = self.run_wrapper("--issue", "1", "--count-label", "Task")
+        self.assertEqual(rc, w.EXIT_REFUSED)
+        execv.assert_not_called()
 
     def test_a_non_migration_script_or_label(self):
         for argv in (("--script", "scripts/gate_production_run.py"), ("--script", "/etc/passwd"),
@@ -149,52 +220,30 @@ class RefusalTests(_Case):
                     w.load_manifest()  # owned by this uid, not root
 
 
-class PermissionDecisionTests(unittest.TestCase):
-    """Survivor S2: evaluate the permission DECISION for the sanctioned command,
-    not the bytes of one file. Claude Code checks deny, then ask, then allow; a
-    `Bash(prefix:*)` rule matches a command prefix and a `Bash(glob)` rule a
-    glob. HRSE2's tracked ask rules are read live when this checkout sits beside
-    it, and fall back to the copy below (hrse#2119)."""
+class SanctionedFormTests(unittest.TestCase):
+    """Item 11: the permission matcher's semantics are NOT asserted in-repo (a
+    reimplemented matcher only restates the author's assumptions). What is
+    checked is fact: the sanctioned forms never carry the `--apply` token that
+    HRSE2's tracked ask rules key on, and the policy names the runner by
+    absolute path. Whether a chained command (`hrse-gate-run ... && <other>`)
+    rides the allow rule is an accepted, documented residual
+    (install-hrse-gate.md, "Limits, stated")."""
 
-    HRSE2_ASK_FALLBACK = ["Bash(* --apply *)", "Bash(* --apply)"]
     POLICY = HERE.parent / "lane" / "policies" / "claude-lane3.json"
 
-    @staticmethod
-    def _matches(rule: str, command: str) -> bool:
-        body = rule[len("Bash("):-1]
-        if body.endswith(":*"):
-            return command == body[:-2] or command.startswith(body[:-2] + " ")
-        return fnmatch.fnmatchcase(command, body)
+    def test_the_sanctioned_forms_never_carry_the_apply_token(self):
+        for argv in (["--issue", "1892", "--script", "scripts/1-1892-revive.py", "--mode", "apply"],
+                     ["--issue", "1867", "--count-label", "Task"]):
+            self.assertNotIn("--apply", argv)
+            w._parser().parse_args(argv)  # and they parse
 
-    def _hrse2_ask(self) -> list[str]:
-        settings = Path.home() / "Harmonic_Projects" / "HRSE2" / ".claude" / "settings.json"
-        if settings.is_file():
-            ask = json.loads(settings.read_text()).get("permissions", {}).get("ask", [])
-            return [r for r in ask if r.startswith("Bash(")]
-        return self.HRSE2_ASK_FALLBACK
+    def test_the_runner_rejects_a_literal_apply_flag(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            w._parser().parse_args(["--issue", "1", "--script", "scripts/1-x.py", "--apply"])
 
-    def _decision(self, command: str) -> str:
-        if any(self._matches(r, command) for r in self._hrse2_ask()):
-            return "ask"
-        allow = json.loads(self.POLICY.read_text())["permissions"]["allow"]
-        return "allow" if any(self._matches(r, command) for r in allow) else "default"
-
-    def test_the_sanctioned_commands_are_allowed_not_asked(self):
-        for command in (
-            "/usr/local/libexec/hrse-gate-run --issue 1892 --script scripts/1-1892-revive.py --mode apply",
-            "/usr/local/libexec/hrse-gate-run --issue 1892 --script scripts/1-1892-revive.py",
-            "/usr/local/libexec/hrse-gate-run --issue 1867 --count-label Task",
-        ):
-            with self.subTest(command=command):
-                self.assertEqual(self._decision(command), "allow")
-
-    def test_an_ad_hoc_apply_still_asks_and_a_relative_path_is_not_allowed(self):
-        self.assertEqual(self._decision(
-            "backend/.venv/bin/python scripts/1-1892-revive.py --apply"), "ask")
-        self.assertEqual(self._decision(
-            "backend/.venv/bin/python scripts/gate_production_run.py --issue 1892"), "default")
-        self.assertEqual(self._decision(
-            "./hrse-gate-run --issue 1892 --count-label Task"), "default")
+    def test_the_policy_names_the_runner_by_absolute_path(self):
+        self.assertEqual(json.loads(self.POLICY.read_text())["permissions"]["allow"],
+                         ["Bash(/usr/local/libexec/hrse-gate-run:*)"])
 
 
 if __name__ == "__main__":

@@ -29,6 +29,10 @@ In order, it refuses unless:
   6. The broker consumes one operator-minted grant for this exact issue, the
      worktree's HEAD and the action.
 Only then does it exec the verified script with the manifest's interpreter.
+Steps 4 and the interpreter/payload checks are DRIFT DETECTORS, not a
+boundary: the lane venv's site-packages and __pycache__ stay writable by the
+lane's uid, which already holds the production credential. What this runner
+enforces is the grant: one operator approval, one spent grant, one run.
 A grant spent on step 6 stays spent if the script then refuses: an
 interrupted run never reopens its grant.
 
@@ -49,6 +53,12 @@ from pathlib import Path
 
 MANIFEST = Path("/usr/local/share/hrse-gate/manifest.json")
 BROKER = Path("/usr/local/libexec/hrse-gate")
+# Absolute, root-owned tools, run with a scrubbed environment (sticky-wicket
+# PATCH 2, item 1): a lane's PATH puts ~/.local/bin first, where a planted
+# `sudo` would fake both the rule check and the consume.
+SUDO = Path("/usr/bin/sudo")
+GIT = Path("/usr/bin/git")
+SAFE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
 GATE_SCRIPT = "scripts/gate_production_run.py"
 SCRIPT = re.compile(r"^scripts/1-[A-Za-z0-9._-]+\.py$")
 LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -74,22 +84,32 @@ def _sha256(path: Path) -> str:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60, env=SAFE_ENV)
+
+
+def _root_tool(path: Path) -> str:
+    """A tool the runner executes must be root-owned and not writable by the
+    agent; returns its absolute path for argv[0]."""
+    _immutable(path)
+    return str(path)
 
 
 def load_manifest() -> dict:
     _immutable(MANIFEST)
     data = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    for key in ("worktree", "python", "script_sha256", "broker_sha256"):
+    for key in ("worktree", "python", "script_sha256", "broker_sha256", "python_sha256"):
         if not isinstance(data.get(key), str) or not data[key]:
             raise Refused(f"manifest lacks {key}")
+    if not isinstance(data.get("sudo_rules"), list) or not data["sudo_rules"]:
+        raise Refused("manifest lacks sudo_rules (the host's reviewed sudo rule set)")
     return data
 
 
 def check_broker(manifest: dict) -> None:
-    result = _run([str(BROKER), "--version"])
+    result = _run([_root_tool(BROKER), "--version"])
     if result.returncode or result.stdout.strip() != manifest["broker_sha256"]:
-        raise Refused("installed broker does not match the manifest digest; reinstall from a reviewed SHA")
+        raise Refused("installed broker digest does not match the manifest's broker_sha256; "
+                      "reinstall from a reviewed SHA")
 
 
 def check_script(manifest: dict) -> Path:
@@ -99,12 +119,54 @@ def check_script(manifest: dict) -> Path:
     return script
 
 
-def check_sudo() -> None:
-    result = _run(["sudo", "-n", "-l"])
-    lines = [line.strip() for line in result.stdout.splitlines() if "hrse-gate" in line]
-    if len(lines) != 1 or not CONSUME_RULE.match(lines[0]):
-        raise Refused("sudo rules naming the broker are not exactly the one consume-only rule: "
-                      + " | ".join(lines or ["none"]))
+def check_interpreter(manifest: dict) -> str:
+    """DRIFT DETECTOR, not a boundary (sticky-wicket PATCH 2, item 9): the
+    interpreter's resolved binary must hash to the manifest's python_sha256. Its
+    venv's site-packages and every __pycache__ stay writable by the lane's uid,
+    so the executed closure is not integrity-bounded; see install-hrse-gate.md."""
+    real = Path(os.path.realpath(manifest["python"]))
+    if _sha256(real) != manifest["python_sha256"]:
+        raise Refused(f"interpreter {real} does not match the manifest's python_sha256")
+    return manifest["python"]
+
+
+def check_payload(manifest: dict, rel: str) -> None:
+    """DRIFT DETECTOR (item 9): the migration script must be unmodified against
+    the worktree's HEAD, so an edit after the grant was minted refuses."""
+    worktree = manifest["worktree"]
+    blob = _run([_root_tool(GIT), "-C", worktree, "rev-parse", f"HEAD:{rel}"])
+    here = _run([_root_tool(GIT), "-C", worktree, "hash-object", rel])
+    if blob.returncode or here.returncode or blob.stdout.strip() != here.stdout.strip():
+        raise Refused(f"{rel} differs from HEAD (or is not tracked); a grant buys the committed script only")
+
+
+def _sudo_rules(output: str) -> list[str]:
+    """The rule lines of `sudo -n -l`: everything after the 'may run' header."""
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        if "may run the following commands" in line:
+            return [r.strip() for r in lines[i + 1:] if r.strip()]
+    return []
+
+
+def check_sudo(manifest: dict) -> None:
+    """An allowlist, not a grep (sticky-wicket PATCH 2, item 2): the host's
+    whole rule set must equal the reviewed set recorded in the root-owned
+    manifest, contain the one consume rule, and contain no other password-free
+    rule that could reach the broker (ALL, or any wildcard)."""
+    result = _run([_root_tool(SUDO), "-n", "-l"])
+    if result.returncode:
+        raise Refused(f"cannot list sudo rules: {result.stderr.strip() or result.returncode}")
+    rules = _sudo_rules(result.stdout)
+    if sorted(rules) != sorted(manifest["sudo_rules"]):
+        raise Refused("the host's sudo rules differ from the reviewed set in the manifest: "
+                      + " | ".join(rules or ["none"]))
+    if sum(1 for r in rules if CONSUME_RULE.match(r)) != 1:
+        raise Refused("the one consume-only rule is not present exactly once")
+    for rule in rules:
+        if "NOPASSWD" in rule and not CONSUME_RULE.match(rule) \
+                and (rule.rstrip().endswith(" ALL") or "*" in rule):
+            raise Refused(f"a password-free rule could reach the broker: {rule}")
 
 
 def action(args) -> tuple[str, list[str]]:
@@ -143,20 +205,28 @@ def main(argv: list[str] | None = None) -> int:
         manifest = load_manifest()
         check_broker(manifest)
         script = check_script(manifest)
-        check_sudo()
-        head = _run(["git", "-C", manifest["worktree"], "rev-parse", "HEAD"])
+        python = check_interpreter(manifest)
+        if args.script:
+            check_payload(manifest, args.script)
+        check_sudo(manifest)
+        head = _run([_root_tool(GIT), "-C", manifest["worktree"], "rev-parse", "HEAD"])
         if head.returncode:
             raise Refused("cannot read the gate worktree's HEAD")
-        consume = _run(["sudo", "-n", "-u", "hrse-gate", str(BROKER), "consume",
+        consume = _run([_root_tool(SUDO), "-n", "-u", "hrse-gate", _root_tool(BROKER), "consume",
                         args.issue, head.stdout.strip(), broker_action])
         if consume.returncode:
             raise Refused(f"no grant was spent: {consume.stderr.strip() or consume.stdout.strip()}")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        # Item 7: an absent manifest, broker or script is a refusal with its
+        # cause, never a traceback.
+        print(f"hrse-gate-run: cannot decide, refusing: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
     except Refused as exc:
         print(f"hrse-gate-run: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     print(f"hrse-gate-run: {consume.stdout.strip()}", file=sys.stderr)
     os.chdir(manifest["worktree"])
-    os.execv(manifest["python"], [manifest["python"], str(script), "--issue", args.issue, *script_args])
+    os.execv(python, [python, str(script), "--issue", args.issue, *script_args])
     return EXIT_REFUSED  # unreachable
 
 

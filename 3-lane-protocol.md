@@ -1152,19 +1152,27 @@ authority once this rule exists.
 
 <!-- R-0377 -->
 **A Lane 3 production run goes through one root-owned runner, spends one
-operator-minted grant, and the AE is its record** (harmonic-forge#878). A Lane 3
+operator-minted grant, and the AE is its record** (harmonic-forge#878). This is
+a guard against an agent running a production step by accident, running the
+wrong action, or running one twice. It is **not** a boundary against an agent
+determined to misbehave: the lane already runs as the user that holds the
+production credential, so the code a grant executes is drift-detected, not
+enforced. A Lane 3
 case at Tier P in HRSE2 runs only as `/usr/local/libexec/hrse-gate-run --issue
 <N> --script scripts/1-<name>.py [--mode apply]` or `... --issue <N>
 --count-label <Label>`, never as a hand-composed command naming the main
 checkout's `backend/.env`. **The authorization is the grant:** the operator mints
 it as root (`sudo /usr/local/libexec/hrse-gate grant <issue> <sha> <action>`)
 into `/var/lib/hrse-gate`, a store owned by the `hrse-gate` account, so a lane can
-neither create, restore nor read one. One approval holds at most one live
-grant, and the runner spends it atomically before the run, so an interrupted
-run does not reopen it. Before spending it, the runner refuses unless `LANE=3`,
-its root-owned manifest's digests match the gate worktree's
-`scripts/gate_production_run.py` and the installed broker, and the host's own
-`sudo -n -l` shows exactly the one consume-only rule naming the broker. **The AE
+neither create, restore nor read one. One approval (issue and action, never
+the agent-controlled SHA) holds at most one live grant, and the runner spends
+it atomically before the run, so an interrupted run does not reopen it. Before
+spending it, the runner refuses unless `LANE=3`, its root-owned manifest's
+digests match the gate script, the migration script's committed blob, the
+interpreter binary and the installed broker, and the host's whole `sudo -n -l`
+rule set equals the manifest's reviewed set with no password-free `ALL` or
+wildcard rule. It runs `sudo` and `git` by absolute path with a scrubbed
+`PATH`. **The AE
 is the record:** Lane 1 posts it with `l1-post --kind ae[-and-sweep] --prod-run
 script=scripts/1-<name>.py[,apply]` (or `count-label=<Label>`) at exactly the
 SHA Lane 3 checks out; the declaration lives in the reserved footer, inside the

@@ -4,6 +4,26 @@ One-time host setup, run by the operator. It needs root, which no lane has.
 Afterwards, a Lane 3 Tier P run needs a grant you mint for that exact action,
 and each grant buys one run.
 
+## What this guarantees, and what it does not
+
+**Guaranteed** (kernel-enforced): through the sanctioned entrypoint, one
+operator-minted grant is spent per run, matched exactly against the approved
+issue, HEAD and action. The only auto-approved object is root-owned at an
+absolute path. The grant store is unreachable from the lane's uid (EPERM, not
+a regex). At most one live grant exists per approval (issue and action), and
+the receipt records which grant was spent. A lane cannot run a production step
+by accident, run the wrong action, or run one twice without a second grant
+from you.
+
+**Drift-detected, not enforced:** the code a spent grant executes. The gate
+script, the migration script and the interpreter binary are checked by digest
+before the run. But the lane's venv (`site-packages`, every `__pycache__`)
+stays writable by the lane's own uid, so a lane *determined* to misbehave can
+alter what runs. That is not a new capability: the backend already runs as
+`mmangus` and reads the production credential (see Limits). Protecting
+production from the agents themselves is a host-architecture change, filed
+separately.
+
 ## Why root ownership
 
 Every earlier design kept some part of the authorization where the agent's own
@@ -22,15 +42,17 @@ These are all the inputs an authorization decision reads, and who can write each
 |---|---|---|---|
 | Grant store | `/var/lib/hrse-gate/{grants,receipts}` | No: `hrse-gate` 0700 | **The authorization.** One operator-minted grant buys one run of one exact action. |
 | Broker | `/usr/local/libexec/hrse-gate` | No: root 0755 | Mints (as root) and consumes grants. |
-| Sudo rule | `/etc/sudoers.d/hrse-gate` | No: root 0440 | The only password-free route to `consume`. `hrse-gate-run` re-reads `sudo -n -l` on every run and refuses if any other rule names the broker. |
+| Sudo rules | `/etc/sudoers.d/hrse-gate` and the rest | No: root 0440 | The only password-free route to `consume`. On every run, `hrse-gate-run` compares the host's whole `sudo -n -l` rule set with the manifest's `sudo_rules`, and refuses any password-free `ALL` or wildcard rule. |
 | Runner | `/usr/local/libexec/hrse-gate-run` | No: root 0755 | The only auto-approved command. It verifies everything below before spending a grant. |
-| Manifest | `/usr/local/share/hrse-gate/manifest.json` | No: root 0444, root directory | Names the gate worktree, its interpreter, and the reviewed sha256 of `scripts/gate_production_run.py` and of the broker. |
-| Lane 3 Claude policy | `/usr/local/share/hrse-gate/claude-lane3.json` | No: root 0444 | One allow rule, `Bash(/usr/local/libexec/hrse-gate-run:*)`. The launcher refuses to launch if it is writable by anyone but root. |
-| Gate script | `HRSE2-lane3/scripts/gate_production_run.py` | Yes | Pinned by content: the runner refuses unless its sha256 equals the manifest's. Editing it only gets a refusal. |
+| Manifest | `/usr/local/share/hrse-gate/manifest.json` | No: root 0444, root directory | Names the gate worktree and its interpreter, the reviewed sha256 of the gate script, the broker, the interpreter binary and the Lane 3 policy, and the host's reviewed sudo rule set. |
+| Lane 3 Claude policy | `/usr/local/share/hrse-gate/claude-lane3.json` | No: root 0444 | One allow rule, `Bash(/usr/local/libexec/hrse-gate-run:*)`. The launcher refuses to launch unless it is root-owned, not writable by anyone else, and matches the manifest's `policy_sha256`. |
+| Gate script | `HRSE2-lane3/scripts/gate_production_run.py` | Yes | Drift-detected: the runner refuses unless its sha256 equals the manifest's. |
+| Migration script | `HRSE2-lane3/scripts/1-*.py` | Yes | Drift-detected: the runner refuses unless it matches HEAD's committed blob. |
+| `sudo`, `git` | `/usr/bin/sudo`, `/usr/bin/git` | No: root | Run by absolute path, root-ownership checked, with `PATH=/usr/bin:/bin`. A planted `~/.local/bin/sudo` is never called. |
 | AE footer (`prod-run=`) | the GitHub comment | Yes (via the API) | **Record only.** It is inside the AE's `body-sha256` and verified, but the grant is the authorization. An edited AE refuses; a forged one still needs a grant. |
 | Repo policy copy | `tools/lane/policies/claude-lane3.json` | Yes | None at runtime. It is the reviewed source the install step copies from. |
 | Launcher | `tools/lane/_cli_launch.sh`, `_agent_registry.sh` | Yes | None that buys capability. A tampered launcher can at most widen auto-approval over commands the classifier never hard-blocks. That is the residual below, not a grant. |
-| Interpreter | `HRSE2-lane3/backend/.venv/bin/python` | Yes | Same residual. The backend already runs as `mmangus` with the production credential (see Limits). |
+| Interpreter | `HRSE2-lane3/backend/.venv/bin/python` | Yes | Drift-detected: its resolved binary must match the manifest's `python_sha256`. Its `site-packages` and `__pycache__` are **not** covered (see What this guarantees). |
 
 ## Install from reviewed, pushed SHAs
 
@@ -57,11 +79,25 @@ Then write the manifest from the reviewed HRSE2 SHA:
 
 ```bash
 git -C ~/Harmonic_Projects/HRSE2 fetch -q origin
-SCRIPT_SHA=$(git -C ~/Harmonic_Projects/HRSE2 show <HRSE_SHA>:scripts/gate_production_run.py | sha256sum | cut -d' ' -f1)
-BROKER_SHA=$(sha256sum /usr/local/libexec/hrse-gate | cut -d' ' -f1)
-printf '{"worktree": "%s", "python": "%s", "script_sha256": "%s", "broker_sha256": "%s"}\n' \
-  "$HOME/Harmonic_Projects/HRSE2-lane3" "$HOME/Harmonic_Projects/HRSE2-lane3/backend/.venv/bin/python" \
-  "$SCRIPT_SHA" "$BROKER_SHA" > /tmp/hrse-gate-manifest.json
+LANE3="$HOME/Harmonic_Projects/HRSE2-lane3"
+python3 - "$LANE3" <HRSE_SHA> > /tmp/hrse-gate-manifest.json <<'PY'
+import hashlib, json, os, subprocess, sys
+lane3, hrse_sha = sys.argv[1], sys.argv[2]
+sha = lambda b: hashlib.sha256(b).hexdigest()
+script = subprocess.run(["git", "-C", os.path.expanduser("~/Harmonic_Projects/HRSE2"), "show",
+                         f"{hrse_sha}:scripts/gate_production_run.py"], capture_output=True, check=True).stdout
+python = f"{lane3}/backend/.venv/bin/python"
+rules = subprocess.run(["sudo", "-n", "-l"], capture_output=True, text=True).stdout.splitlines()
+start = next(i for i, l in enumerate(rules) if "may run the following commands" in l)
+print(json.dumps({
+    "worktree": lane3, "python": python,
+    "script_sha256": sha(script),
+    "python_sha256": sha(open(os.path.realpath(python), "rb").read()),
+    "broker_sha256": sha(open("/usr/local/libexec/hrse-gate", "rb").read()),
+    "policy_sha256": sha(open("/usr/local/share/hrse-gate/claude-lane3.json", "rb").read()),
+    "sudo_rules": [r.strip() for r in rules[start + 1:] if r.strip()],
+}, indent=1))
+PY
 sudo install -o root -g root -m 0444 /tmp/hrse-gate-manifest.json /usr/local/share/hrse-gate/manifest.json && rm /tmp/hrse-gate-manifest.json
 ```
 
@@ -110,6 +146,13 @@ Repeat the install steps and the manifest step from newer reviewed SHAs. Until
 you do, `hrse-gate-run` refuses with a digest-drift message. That is intended.
 
 ## Limits, stated
+
+- **Chained commands.** Claude Code's prefix rule `Bash(/usr/local/libexec/hrse-gate-run:*)`
+  is not asserted here to reject `hrse-gate-run … && <other command>`. A chained
+  command may ride the allow rule; whatever follows still runs as the lane's
+  user, which is the same residual as below. This is deliberately documented
+  rather than "tested": a reimplemented matcher would only restate an assumption.
+
 
 The broker and runner control the sanctioned route only. The HRSE2 backend
 still runs as `mmangus` and reads production credentials from `backend/.env`,

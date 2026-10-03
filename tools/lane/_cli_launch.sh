@@ -383,16 +383,28 @@ if [ -n "$_lane_policy_file" ]; then
         _lane_policy_file=""
       else
         _lane_policy_owner="$(registry_lookup AGENT_POLICY_REQUIRED_OWNER "$_lane_agent")"
-        python3 - "$_lane_policy_path" "$_lane_policy_owner" <<'PYCHECK' 2>/dev/null \
-          || _lane_launch_die "policy file is not an immutable JSON object: $_lane_policy_path must be owned by uid ${_lane_policy_owner:-?}, not group/other-writable, in a directory with the same property, and parse as a JSON object -- refusing to launch $lane_agent_display with a policy the agent could have widened (harmonic-forge#878)"
-import json, os, stat, sys
+        # Explicit exits, never `assert` (PYTHONOPTIMIZE would delete them), and
+        # -I -E so no environment variable can change what this check runs
+        # (sticky-wicket PATCH 2, item 6). The installed policy's digest must
+        # also equal the root-owned manifest's policy_sha256 (item 8).
+        python3 -I -E - "$_lane_policy_path" "$_lane_policy_owner" <<'PYCHECK' 2>/dev/null \
+          || _lane_launch_die "policy file is not an immutable JSON object: $_lane_policy_path must be owned by uid ${_lane_policy_owner:-?}, not group/other-writable, in a directory with the same property, parse as a JSON object, and match the policy_sha256 of manifest.json beside it -- refusing to launch $lane_agent_display with a policy the agent could have widened (harmonic-forge#878)"
+import hashlib, json, os, stat, sys
 path, owner = sys.argv[1], int(sys.argv[2])
-for p in (path, os.path.dirname(path)):
+manifest = os.path.join(os.path.dirname(path), "manifest.json")
+for p in (path, os.path.dirname(path), manifest):
     st = os.lstat(p)
-    assert not stat.S_ISLNK(st.st_mode)
-    assert st.st_uid == owner
-    assert not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-assert isinstance(json.load(open(path)), dict)
+    if stat.S_ISLNK(st.st_mode) or st.st_uid != owner or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        sys.exit(1)
+try:
+    policy_ok = isinstance(json.load(open(path)), dict)
+    expected = json.load(open(manifest)).get("policy_sha256")
+except Exception:
+    sys.exit(1)
+digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+if not policy_ok or not expected or digest != expected:
+    sys.exit(1)
+sys.exit(0)
 PYCHECK
         unset _lane_policy_owner
       fi
