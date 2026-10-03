@@ -1170,12 +1170,19 @@ one the ontology declares), and `check_lane3_ready.py --issue <N>
 --require-prod-run <action> --json`, run with `HARMONIC_FORGE_ROOT` scrubbed,
 finds that action declared by the newest AE at exactly HEAD. A sweep's tier
 never grants a production run, and a carried-forward `ready-for-l3` (R-0209)
-never authorizes one. One AE is one run: the run's receipt, keyed (repo, issue,
-SHA, action, AE comment id), is written under `~/.claude/state/gate-prod/`
-before it starts, a second run on that key is refused `already consumed`, and a
-hook denies any tool call that touches the store. A dry run and its `--apply`
-are two AEs, and a post-merge step's AE names the merged `main` SHA, checked
-out with `gate-checkout`.
+never authorizes one. **The AE is the record; the grant is the operator's.**
+Before it touches anything the script also spends one grant through the
+`hrse-gate` broker (`tools/gate/hrse_gate_broker.py`, installed root-owned per
+`tools/gate/install-hrse-gate.md`): `sudo -n -u hrse-gate
+/usr/local/libexec/hrse-gate consume <issue> <sha> <action>`, which succeeds
+only by atomically moving a grant for that exact issue, SHA and action out of
+`/var/lib/hrse-gate/grants/`. Only the operator mints a grant (`grant` runs as
+root); the store is owned by a separate account, so a lane cannot create,
+restore or read one. One grant is one run, and the grant is spent before the
+run starts, so an interrupted run does not reopen it. The script also refuses
+when the installed broker's `--version` digest differs from the tracked source.
+A dry run and its `--apply` are two AEs and two grants, and a post-merge
+step's AE names the merged `main` SHA, checked out with `gate-checkout`.
 
 The `lane3` launcher passes `tools/lane/policies/claude-lane3.json` with
 `--settings` to Claude at Lane 3 only, and refuses a caller `--settings` at
