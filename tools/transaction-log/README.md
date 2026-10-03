@@ -76,3 +76,17 @@ Rendering at read time removes the whole class: nothing is tracked, so
 there is nothing to conflict, clear, regenerate or detect as stale.
 `transaction-log.md` is in `.gitignore` so a stray local copy is never
 committed again.
+
+## Migrating a branch cut before the untrack
+
+A branch that still writes `transaction-log.md` (one committed through the
+old `mise run commit`, before harmonic-forge#883 or hrse#2186 merged) hits a
+`CONFLICT (modify/delete)` on that file when it is rebased onto or merged
+with `main`. The old `.gitattributes` union merge driver never covered a
+deletion. The resolution is always to keep the deletion:
+
+```
+git rm transaction-log.md && git rebase --continue    # or: git commit, for a merge
+```
+
+Nothing is lost; the view is rendered from the same history.

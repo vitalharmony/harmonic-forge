@@ -1294,7 +1294,15 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
     older than the last clear -- its entry is gone from the live file by
     design, not because it was skipped.
     """
-    if not (Path(checkout) / "transaction-log.md").is_file():
+    # Tracked, not merely present (harmonic-forge#883 preclose): a repo that
+    # renders its transaction log at read time ignores the file, so an
+    # untracked local copy (`mise run transaction-log --out transaction-log.md`)
+    # must not re-arm this audit and flag every merge since.
+    try:
+        tracked = _run(["git", "ls-files", "--", "transaction-log.md"], cwd=checkout).strip()
+    except GhError:
+        return
+    if not tracked:
         return
 
     try:

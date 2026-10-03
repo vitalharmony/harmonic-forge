@@ -475,7 +475,11 @@ class AuditTransactionLogTests(unittest.TestCase):
     then zero or more changed-file lines until the next marker.
     """
 
-    def _run_audit(self, has_file, recent_commits, history_patch, fetch_ok=True):
+    def _run_audit(self, has_file, recent_commits, history_patch, fetch_ok=True,
+                   on_disk=None):
+        """has_file: git tracks transaction-log.md. on_disk: it exists on disk
+        (defaults to has_file)."""
+        on_disk = has_file if on_disk is None else on_disk
         """recent_commits: list of (subject, touched_log: bool)."""
         report = rh.Report()
         calls = {"fetch": 0}
@@ -489,6 +493,8 @@ class AuditTransactionLogTests(unittest.TestCase):
         recent_text = "\n".join(recent_lines) + ("\n" if recent_lines else "")
 
         def fake_run(args, cwd=None):
+            if args[:2] == ["git", "ls-files"]:
+                return "transaction-log.md\n" if has_file else ""
             if args[:2] == ["git", "fetch"]:
                 calls["fetch"] += 1
                 if not fetch_ok:
@@ -501,7 +507,7 @@ class AuditTransactionLogTests(unittest.TestCase):
             raise AssertionError(f"unexpected call: {args}")
 
         with patch.object(rh, "_run", side_effect=fake_run), \
-             patch.object(rh.Path, "is_file", return_value=has_file):
+             patch.object(rh.Path, "is_file", return_value=on_disk):
             rh.audit_transaction_log("/some/checkout", report)
         return report, calls
 
@@ -510,6 +516,16 @@ class AuditTransactionLogTests(unittest.TestCase):
             has_file=False, recent_commits=[("fix: x", False)], history_patch="")
         self.assertEqual(report.missing_transaction_log, [])
         self.assertEqual(calls["fetch"], 0, "must not even fetch for a repo with no log")
+
+    def test_an_untracked_copy_on_disk_does_not_rearm_the_audit(self):
+        """harmonic-forge#883 preclose: a repo that renders its log at read time
+        ignores the file. `mise run transaction-log --out transaction-log.md`
+        leaves an untracked copy on disk, which must not flag every merge."""
+        report, calls = self._run_audit(
+            has_file=False, on_disk=True,
+            recent_commits=[("fix: x", False)], history_patch="")
+        self.assertEqual(report.missing_transaction_log, [])
+        self.assertEqual(calls["fetch"], 0)
 
     def test_commit_that_never_touched_the_file_and_has_no_backfill_is_flagged(self):
         report, _ = self._run_audit(
