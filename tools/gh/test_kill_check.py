@@ -353,7 +353,10 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
     600+ files: on git 2.55.0, 20 and 100 never repack and 300 and 600 do, and
     `gc.auto` samples one `objects/NN` directory, so stay well above the line.
     Same cwd/HOME isolation as `KillCheckTests.setUp`, without inheriting its
-    tests: `materialize()` runs `git archive` in the process cwd."""
+    tests: `materialize()` runs `git archive` in the process cwd. The keys are
+    read with `--local`: an effective-value read is satisfied by a system or
+    XDG git config that already disables maintenance, which would pass the
+    unfixed code (harmonic-forge#871 preclose pass 1)."""
 
     FILES = 700
 
@@ -385,8 +388,8 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
         scratch = self.root / "scratch"
         scratch.mkdir()
         kill.materialize(scratch, git(self.repo, "rev-parse", "HEAD"), "https://example.invalid/r.git")
-        self.assertEqual(git(scratch, "config", "gc.auto"), "0")
-        self.assertEqual(git(scratch, "config", "maintenance.auto"), "false")
+        self.assertEqual(git(scratch, "config", "--local", "--get", "gc.auto"), "0")
+        self.assertEqual(git(scratch, "config", "--local", "--get", "maintenance.auto"), "false")
         start, _ = self.loose(scratch)
         self.assertGreater(start, self.FILES)
         deadline = time.monotonic() + 4
