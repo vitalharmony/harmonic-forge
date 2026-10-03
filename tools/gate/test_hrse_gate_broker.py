@@ -87,6 +87,13 @@ class SingleUseTests(_StoreCase):
             t.join()
         self.assertEqual(sum(1 for r in results if isinstance(r, str)), 1, results)
 
+    def test_a_lost_rename_race_is_not_a_success(self):
+        """Deterministic twin of the threaded race: another consumer renamed
+        the grant between our listing and our rename."""
+        self.grant()
+        with mock.patch.object(b.os, "rename", side_effect=FileNotFoundError):
+            self.refused(b.EXIT_NO_GRANT)
+
     def test_two_grants_buy_two_runs(self):
         self.grant()
         self.grant()
