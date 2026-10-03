@@ -410,6 +410,7 @@ whether it was invoked and why.
 
 <!-- R-0111 -->
 Before assuming a project matches prior context, read its recent-context
-delta record (for example HRSE2's `transaction-log.md`) and the project
-rules that assign the current Lane 2/Lane 3 runtime.
+delta record (the transaction-log view injected at session start, or
+`mise run transaction-log`) and the project rules that assign the current
+Lane 2/Lane 3 runtime.
 <!-- /R-0111 -->

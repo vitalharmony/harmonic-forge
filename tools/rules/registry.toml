@@ -960,7 +960,7 @@ id = "R-0111"
 file = "rules/universal-lane1.md"
 anchor = "session-start-ritual"
 statement = "Before assuming a project matches prior context, read its recent-context delta record and the project rules that assign the current lane runtimes."
-text_sha = "7cd737b8570a6451"
+text_sha = "092bb795663f4dec"
 hooks = []
 
 [[rule]]

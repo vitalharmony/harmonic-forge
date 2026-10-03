@@ -48,6 +48,7 @@ ROOT = Path(__file__).resolve().parent
 # `tools/gh` suite survived review. A doc guard nobody runs is the same
 # failure class this comment already describes one level up.
 TEST_DIRS = ["gate", "gh", "hooks", "lane", "memory", "onboard", "rules", "telemetry",
+             "transaction-log",
              "../scripts", "../skills/belt-and-suspenders", "../skills/verification-gate"]
 PATTERN = "test_*.py"
 

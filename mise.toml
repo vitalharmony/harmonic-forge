@@ -209,10 +209,10 @@ python3 tools/memory/backfill_frontmatter.py ${usage_apply:+--apply} ${usage_sto
 """
 
 [tasks.commit]
-description = "Stage, append a transaction-log entry, and commit — in that order, one commit total"
+description = "Stage and commit"
 usage = '''
 flag "--message <message>" help="Override the auto-generated commit message"
-flag "--push" help="Push to remote (also clears transaction-log.md, main only — see script header)"
+flag "--push" help="Push to remote"
 '''
 run = """
 set -e
@@ -220,6 +220,16 @@ set --
 [ -n "${usage_message:-}" ] && set -- "$@" "--message=${usage_message}"
 [ "${usage_push:-false}" = "true" ] && set -- "$@" "--push"
 python3 scripts/git_commit.py "$@"
+"""
+
+[tasks.transaction-log]
+description = "Print the transaction-log view, rendered from git now (harmonic-forge#883). There is no transaction-log.md."
+usage = '''
+flag "--all" help="No caps (default: 40 entries / 6000 chars)"
+flag "--out <path>" help="Write to this file instead of stdout"
+'''
+run = """
+python3 tools/transaction-log/transaction_log.py --project-root . --boundary recent:30 ${usage_all:+--all} ${usage_out:+--out "$usage_out"}
 """
 
 [tasks.gh-new-issue]

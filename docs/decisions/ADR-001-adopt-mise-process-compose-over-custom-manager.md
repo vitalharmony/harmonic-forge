@@ -7,6 +7,11 @@ the HRSE2 repo; see hrse#237 for the final cutover)
 **Decider:** Marc Mangus (platform owner)
 **Supersedes:** the original scope of epic #34 and child issues #36–#39, #41–#43, #45–#46
 
+> **Note, 2026-10-03 (harmonic-forge#883):** the transaction-log
+> delta-summary pattern this ADR names (lines 15, 50 and 84) is superseded.
+> The view is now rendered from git at read time and no file is committed;
+> see `tools/transaction-log/README.md`. The text below is left as written.
+
 ## Context
 
 HRSE2's `hrse_manager.py` (~1,360 lines across six modules) is the project's

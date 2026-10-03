@@ -1,165 +1,168 @@
 #!/usr/bin/env python3
-"""transaction-log.md helpers — generic, project-agnostic (harmonic-forge#40).
+"""Transaction-log view, rendered from git at read time (harmonic-forge#883).
 
-Extracted from HRSE2's implementation (scripts/transaction_log.py,
-scripts/git_commit.py) after it proved itself live across the hrse#224
-cutover epic. Two differences from a bespoke per-project copy:
-  - project root is a CLI flag / constructor argument, never hardcoded.
-  - usable both as a library (import transaction_log) and as a CLI, so a
-    project's own mise task can shell out to it directly.
+There is no `transaction-log.md`. The view is a summary of git history, so it
+is derived from git whenever it is read instead of being committed back into
+git — a committed copy is stale the moment the next commit lands, and any two
+branches that write it collide (README.md has the full history of why).
 
-See README.md in this directory for the pattern this implements and why.
+    render(repo, boundary, max_entries=None, max_chars=None) -> str
+
+`boundary` picks where the view starts:
+  - `recent:<N>`                 the last N first-parent commits on HEAD.
+  - `version-minor:<relpath>`    every first-parent commit since the one that
+                                 introduced `"version": "X.Y.0"` in <relpath>,
+                                 where X.Y comes from HEAD's committed copy.
+                                 Patch bumps never move the boundary.
+
+Usable as a library (a SessionStart hook imports it by path) and as a CLI
+(a project's `mise run transaction-log` task shells out to it).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
-START_MARKER = "<!-- TRANSACTION_LOG_START -->"
-END_MARKER = "<!-- TRANSACTION_LOG_END -->"
+DEFAULT_MAX_ENTRIES = 40
+DEFAULT_MAX_CHARS = 6000
 
-_FILLER_RE = re.compile(
-    r"^[\s\-*]*("
-    r"n/?a|none|no (other |additional |further )?(significant |notable )?changes( detected| made)?|"
-    r"nothing else changed"
-    r")[\s.():,]*("
-    r"n/?a|no (other |additional |further )?(significant |notable )?changes( detected| made)?|"
-    r"nothing else changed"
-    r")?[\s.():,]*$",
-    re.IGNORECASE,
-)
+_RECORD_SEP = "\x1e"
+_FIELD_SEP = "\x1f"
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.\d+")
 
 
-def _strip_filler_bullets(summary: str) -> str:
-    """Drop zero-information bullets (e.g. '- N/A (no other significant changes)')."""
-    kept = [line for line in summary.splitlines() if not _FILLER_RE.match(line)]
-    return "\n".join(kept).strip()
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False
+    )
+    if result.returncode:
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
 
 
-def newest_entry_header(log_path: Path) -> str | None:
-    """Return the header line (e.g. '## msg') of the newest log entry, or
-    None if the file/markers are missing or the log is empty. Never raises.
+def _committed_version(repo: Path, sha: str, relpath: str) -> str:
+    """`version` from <relpath> as committed at <sha> — never the working tree.
 
-    Used to detect a duplicate append after a failed-commit retry: if a
-    prior invocation appended an entry but the commit itself then failed
-    (e.g. a hook rejection), a naive re-run would append a second,
-    duplicate entry before the retried commit succeeds.
+    A `bump b` pass writes the next version into the working tree before any
+    commit exists, so reading the working tree would ask for an X.Y.0 that no
+    commit has introduced yet.
     """
     try:
-        raw = log_path.read_text()
-    except FileNotFoundError:
-        return None
-    if START_MARKER not in raw or END_MARKER not in raw:
-        return None
-    between = raw.split(START_MARKER, 1)[1].split(END_MARKER, 1)[0]
-    for line in between.splitlines():
-        if line.startswith("## "):
-            return line
-    return None
+        version = json.loads(_git(repo, "show", f"{sha}:{relpath}"))["version"]
+    except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"cannot read version from {sha}:{relpath}: {exc}") from exc
+    if not isinstance(version, str):
+        raise ValueError(f"{sha}:{relpath} version is not a string: {version!r}")
+    return version
 
 
-def append_log_entry(log_path: Path, commit_msg: str, summary: str) -> bool:
-    """Insert a new entry immediately after START_MARKER (newest-first).
+def _minor_bump_commit(repo: Path, relpath: str) -> tuple[str, str]:
+    """(sha, "X.Y.0") of the commit that introduced HEAD's minor version."""
+    match = _VERSION_RE.match(_committed_version(repo, "HEAD", relpath))
+    if not match:
+        raise ValueError(f"HEAD:{relpath} version is not X.Y.Z")
+    minor = f"{match.group(1)}.{match.group(2)}.0"
+    hits = _git(
+        repo, "log", "--format=%H", f'-S"version": "{minor}"', "--", relpath
+    ).split()
+    if not hits:
+        raise ValueError(f'no commit introduced "version": "{minor}" in {relpath}')
+    # -S also matches the commit that later REMOVED the string, so take the
+    # oldest hit and confirm it actually carries X.Y.0.
+    sha = hits[-1]
+    found = _committed_version(repo, sha, relpath)
+    if found != minor:
+        raise ValueError(
+            f"oldest pickaxe hit {sha[:8]} has version {found}, not {minor}"
+        )
+    return sha, minor
 
-    The header is the commit message itself, not a commit hash — a hash
-    can't be known before the commit exists, but the message can, which is
-    what lets the entry be written and staged in the *same* commit as the
-    change it describes (see README.md — this is the fix for the two-phase-
-    commit bug the original hrse_manager.py had).
 
-    Returns True on success; prints a warning and False if the file or
-    markers are missing. Never raises.
+def resolve_boundary(repo: Path, boundary: str) -> tuple[list[str], str]:
+    """Return (git log range args, human description) for <boundary>.
+
+    Raises ValueError on an unknown or unresolvable boundary. Never falls back
+    to full history.
     """
-    try:
-        raw = log_path.read_text()
-    except FileNotFoundError:
-        print(f"[WARN] {log_path} not found; skipping append", file=sys.stderr)
-        return False
-
-    if START_MARKER not in raw or END_MARKER not in raw:
-        print(f"[WARN] {log_path} markers missing; skipping append", file=sys.stderr)
-        return False
-
-    summary = _strip_filler_bullets(summary) or "- No substantive changes in this commit"
-    entry = f"\n## {commit_msg}\n{summary}\n"
-    new_raw = raw.replace(START_MARKER, f"{START_MARKER}{entry}", 1)
-    try:
-        log_path.write_text(new_raw)
-    except Exception as exc:
-        print(f"[WARN] Could not write {log_path}: {exc}", file=sys.stderr)
-        return False
-    return True
+    kind, _, value = boundary.partition(":")
+    if kind == "recent":
+        if not value.isdigit() or int(value) < 1:
+            raise ValueError(f"recent:<N> needs a positive integer, got {boundary!r}")
+        return ["-n", value, "HEAD"], f"Last {value} first-parent commits on HEAD"
+    if kind == "version-minor":
+        if not value:
+            raise ValueError("version-minor:<relpath> needs a path")
+        sha, minor = _minor_bump_commit(repo, value)
+        return [f"{sha}..HEAD"], f"Commits on HEAD since the {minor} bump ({sha[:8]})"
+    raise ValueError(f"unknown boundary {boundary!r} (expected recent:<N> or version-minor:<relpath>)")
 
 
-def clear_log(log_path: Path) -> str:
-    """Clear all entries between the markers (call on version bumps).
-
-    Prior content needs no separate archive — the file is committed before
-    each clear, so `git log -p <log_path>` replays all of it.
-
-    Returns one of "cleared", "empty", or "failed". Never raises.
-    """
-    try:
-        raw = log_path.read_text()
-    except FileNotFoundError:
-        print(f"[WARN] {log_path} not found; skipping clear", file=sys.stderr)
-        return "failed"
-
-    if START_MARKER not in raw or END_MARKER not in raw:
-        print(f"[WARN] {log_path} markers missing; skipping clear", file=sys.stderr)
-        return "failed"
-
-    between = raw.split(START_MARKER, 1)[1].split(END_MARKER, 1)[0]
-    if not between.strip():
-        return "empty"
-
-    pre = raw.split(START_MARKER, 1)[0]
-    post = raw.split(END_MARKER, 1)[1]
-    try:
-        log_path.write_text(f"{pre}{START_MARKER}\n{END_MARKER}{post}")
-    except Exception as exc:
-        print(f"[WARN] Could not clear {log_path}: {exc}", file=sys.stderr)
-        return "failed"
-    return "cleared"
+def _entries(repo: Path, range_args: list[str]) -> list[str]:
+    """One `git log` pass; each entry is `## <subject>` plus its shortstat line."""
+    raw = _git(
+        repo, "log", "--first-parent", "--diff-merges=first-parent", "--shortstat",
+        f"--format={_RECORD_SEP}%H{_FIELD_SEP}%s", *range_args,
+    )
+    entries = []
+    for record in raw.split(_RECORD_SEP)[1:]:
+        head, _, rest = record.partition("\n")
+        subject = head.split(_FIELD_SEP, 1)[1] if _FIELD_SEP in head else head
+        stat = next((line.strip() for line in rest.splitlines() if line.strip()), "")
+        entries.append(f"## {subject}\n- {stat or '(no file changes)'}")
+    return entries
 
 
-def _default_log_path(project_root: Path) -> Path:
-    return project_root / "transaction-log.md"
+def render(repo: Path, boundary: str, max_entries: int | None = None,
+           max_chars: int | None = None) -> str:
+    """The view as markdown, newest first. Empty string when no commits."""
+    range_args, _ = resolve_boundary(Path(repo), boundary)
+    entries = _entries(Path(repo), range_args)
+    kept: list[str] = []
+    used = 0
+    for entry in entries:
+        if max_entries is not None and len(kept) >= max_entries:
+            break
+        cost = len(entry) + 1
+        if max_chars is not None and used + cost > max_chars:
+            break
+        kept.append(entry)
+        used += cost
+    out = "\n".join(kept)
+    omitted = len(entries) - len(kept)
+    if omitted:
+        out += (f"\n- … {omitted} older entries omitted; "
+                "run mise run transaction-log --all")
+    return out
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="transaction-log.md helpers")
-    parser.add_argument("--project-root", type=Path, default=Path.cwd(), help="Project root (default: cwd)")
-    parser.add_argument("--log-path", type=Path, default=None, help="Override the log file path (default: <project-root>/transaction-log.md)")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_append = sub.add_parser("append", help="Append a new entry")
-    p_append.add_argument("--message", required=True, help="Entry header (typically the commit message)")
-    p_append.add_argument("--summary", required=True, help="Entry body (typically a diffstat summary)")
-
-    sub.add_parser("clear", help="Clear all entries (call on version bumps)")
-    sub.add_parser("newest-header", help="Print the newest entry's header line, or nothing if empty/missing")
-
+    parser = argparse.ArgumentParser(description="Render the transaction-log view from git")
+    parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    parser.add_argument("--boundary", required=True,
+                        help="recent:<N> or version-minor:<relpath>")
+    parser.add_argument("--all", action="store_true",
+                        help=f"No caps (default {DEFAULT_MAX_ENTRIES} entries / {DEFAULT_MAX_CHARS} chars)")
+    parser.add_argument("--out", type=Path, help="Write to this file instead of stdout")
     args = parser.parse_args()
-    log_path = args.log_path or _default_log_path(args.project_root)
 
-    if args.command == "append":
-        ok = append_log_entry(log_path, args.message, args.summary)
-        return 0 if ok else 1
-    if args.command == "clear":
-        result = clear_log(log_path)
-        print(result)
-        return 0 if result != "failed" else 1
-    if args.command == "newest-header":
-        header = newest_entry_header(log_path)
-        if header:
-            print(header)
-        return 0
-
-    return 1
+    caps = {} if args.all else {"max_entries": DEFAULT_MAX_ENTRIES, "max_chars": DEFAULT_MAX_CHARS}
+    try:
+        _, description = resolve_boundary(args.project_root, args.boundary)
+        body = render(args.project_root, args.boundary, **caps)
+    except (ValueError, RuntimeError) as exc:
+        print(f"transaction-log: {exc}", file=sys.stderr)
+        return 1
+    text = f"# Transaction log — {description}, newest first\n\n{body}\n"
+    if args.out:
+        args.out.write_text(text)
+    else:
+        sys.stdout.write(text)
+    return 0
 
 
 if __name__ == "__main__":

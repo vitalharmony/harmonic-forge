@@ -682,8 +682,8 @@ This applies explicitly to every Lane 3 runtime's agent-maintained standing
 instructions and memory surfaces — they need the same entry-quality bar to
 avoid becoming a pile of unverified failure notes.
 
-Does **not** apply to a project's `transaction-log.md` (or equivalent delta
-log) — that is rung-1-by-design, a record of what changed, not a memory. The
+Does **not** apply to a project's transaction-log view (or equivalent delta
+record) — that is rung-1-by-design, a record of what changed, not a memory. The
 ladder applies to whatever gets promoted *out of* a delta log into a real
 rule, not to the log itself.
 

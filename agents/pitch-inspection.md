@@ -101,7 +101,7 @@ the call gets no retry budget of its own and does not extend it.
    actual code the assumption is about. The most expensive failure in the
    incident this agent exists because of was an unwritten behavioral
    constraint nobody verified until round ~6 (`hrse_manager.py` only
-   commits — and only appends a transaction-log entry — when the tree is
+   commits when the tree is
    dirty; a gitignored/out-of-repo write can never trigger that path). If
    an assumption is wrong, the design built on it is wrong — say so and
    stop; nothing else in the review matters more.
