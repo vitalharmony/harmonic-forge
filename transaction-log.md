@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane): lane3 resolves the declared lane3_env_task from the main checkout against the gate worktree, telling an undefined task from a failed one; the lookup reads stdout alone and only the launcher's own forge projects.toml (harmonic-forge#875 preclose pass 1)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- tools/onboard/lane3_env_task.py    |  17 ++-
+- tools/onboard/manifest_protocol.py |  14 ++-
+- tools/rules/registry.toml          |   4 +-
+- 9 files changed, 391 insertions(+), 89 deletions(-)
+
 ## fix(lane): lane3 runs a project's declared lane3_env_task instead of relinking backend/.env over its own Lane 3 env; refuses on a failed task or lookup; env status logged (harmonic-forge#875)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -244,26 +244,96 @@ _lane_refresh_write() {
 # declares none) and returns 0, or sets LANE3_ENV_LOOKUP_ERROR and returns 1 on
 # ANY lookup failure, python3 itself failing included. Only a clean "declared
 # nothing" may fall through to the relink.
+#
+# WHICH manifest answers is fixed, not configurable (preclose survivor 4): the
+# projects.toml of the forge checkout this very file lives in, resolved from
+# its own path. FORGE_PROJECTS_MANIFEST is a supported override for every other
+# manifest consumer, but here a valid-yet-outdated manifest reached through it
+# would answer "declares nothing" and relink production credentials over the
+# gate worktree's disposable env -- so it is unset for the accessor, which
+# itself reads only its own forge root's manifest too. Tests point the
+# launcher at a fixture forge root (a copy of tools/lane + tools/onboard next
+# to a fixture projects.toml); there is no test-only override to export.
+#
+# The value channel is stdout ALONE (preclose survivor 2): stderr goes into
+# LANE3_ENV_LOOKUP_ERROR, never into the task name, and a zero-exit answer
+# that is not one line matching a mise task-name grammar is a lookup failure,
+# not a task to run.
 lane3_env_lookup() {
-  local main_root="$1" accessor out="" rc=0
-  accessor="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../onboard/lane3_env_task.py"
+  local main_root="$1" forge_root accessor out="" err="" errf rc=0
+  forge_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+  accessor="$forge_root/tools/onboard/lane3_env_task.py"
   LANE3_ENV_TASK=""
   LANE3_ENV_LOOKUP_ERROR=""
-  out="$(python3 "$accessor" "$(readlink -f "$main_root")" 2>&1)" || rc=$?
+  if ! errf="$(mktemp)"; then
+    LANE3_ENV_LOOKUP_ERROR="cannot create a temporary file for the lookup's diagnostics"
+    return 1
+  fi
+  out="$(env -u FORGE_PROJECTS_MANIFEST python3 "$accessor" "$(readlink -f "$main_root")" 2>"$errf")" || rc=$?
+  err="$(cat "$errf" 2>/dev/null || true)"
+  rm -f "$errf"
   if [ "$rc" -ne 0 ]; then
-    LANE3_ENV_LOOKUP_ERROR="${out:-python3 exited $rc with no message}"
+    LANE3_ENV_LOOKUP_ERROR="${err:-python3 exited $rc with no message}"
+    return 1
+  fi
+  if [ -n "$out" ] && ! [[ "$out" =~ ^[A-Za-z0-9_][A-Za-z0-9_.:-]*$ ]]; then
+    LANE3_ENV_LOOKUP_ERROR="the lookup exited 0 but its answer is not a single task name: $(printf '%q' "$out")"
     return 1
   fi
   LANE3_ENV_TASK="$out"
   return 0
 }
 
-# lane3_env_run_task <target> <task> -- runs the declared task in the gate
-# worktree with LANE unset (as the busy check above does), so the project's
-# own lane write guards do not read it as a Lane 3 session's write. Its output
-# goes to stderr; returns the task's exit status.
+# lane3_env_run_task <main_root> <target> <task> -- runs the declared task and
+# sets LANE3_ENV_OUTCOME to one of:
+#   provisioned  the task ran and exited 0               (returns 0)
+#   undefined    the main checkout's mise config does not define the task
+#   list-failed  mise could not list the main checkout's tasks (e.g. untrusted)
+#   task-failed  the task ran and exited non-zero
+# returning 1 for every outcome but the first.
+#
+# The task is resolved and run from the MAIN CHECKOUT, with the gate worktree
+# passed as `-- --root <target>` (preclose survivor 1). The declaration comes
+# from the always-current forge manifest; resolving the task body in the gate
+# worktree instead tied it to whatever ref that worktree holds, so a worktree
+# not updated at launch (`--ack-stale`, `skipped-busy`) or a forge merge that
+# landed before the project's companion hit "no such task" -- and the printed
+# remedy, `lane3-provision`, hit it again. The main checkout is the project's
+# current definition, and the task still writes only the gate worktree's own
+# disposable-graph files: production credentials never enter that worktree.
+# "Not defined" is told apart from "ran and failed" so each refusal names a
+# remedy that actually clears it. LANE is unset (as the busy check above does)
+# so the project's own lane write guards do not read this as a Lane 3 write.
 lane3_env_run_task() {
-  local target="$1" task="$2" rc=0
-  ( cd "$target" && env -u LANE mise run "$task" ) >&2 || rc=$?
-  return "$rc"
+  local main_root="$1" target="$2" task="$3" names="" rc=0
+  LANE3_ENV_OUTCOME=""
+  if ! names="$(cd "$main_root" && env -u LANE timeout 30 mise tasks ls --name-only 2>/dev/null)"; then
+    LANE3_ENV_OUTCOME="list-failed"
+    return 1
+  fi
+  if ! printf '%s\n' "$names" | grep -qxF -- "$task"; then
+    LANE3_ENV_OUTCOME="undefined"
+    return 1
+  fi
+  ( cd "$main_root" && env -u LANE mise run "$task" -- --root "$target" ) >&2 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    LANE3_ENV_OUTCOME="task-failed"
+    return 1
+  fi
+  LANE3_ENV_OUTCOME="provisioned"
+  return 0
+}
+
+# lane3_env_remedy <main_root> <target> <task> <rerun> -- one line naming the
+# repair for LANE3_ENV_OUTCOME; <rerun> is the command to run once repaired.
+lane3_env_remedy() {
+  local main_root="$1" target="$2" task="$3" rerun="$4"
+  case "$LANE3_ENV_OUTCOME" in
+    undefined)
+      echo "the main checkout ($main_root) does not define mise task '$task' -- merge the project's change that adds it and fast-forward the main checkout (git -C $main_root pull --ff-only), then $rerun" ;;
+    list-failed)
+      echo "mise could not list the main checkout's tasks -- if it refused an untrusted config: (cd $main_root && mise trust), then $rerun" ;;
+    *)
+      echo "read the task's output above, fix its cause, then $rerun (it re-runs 'mise run $task -- --root $target' from $main_root)" ;;
+  esac
 }

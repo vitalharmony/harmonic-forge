@@ -70,7 +70,9 @@ export LANE=3
 # `--ack-stale "<reason>"` still exists, for a gate deliberately run against a
 # target other than current origin/main (e.g. gating an older commit on
 # purpose). It skips the checkout update only; backend/.env is still relinked
-# (or, for a project declaring `lane3_env_task`, still provisioned).
+# (or, for a project declaring `lane3_env_task`, still provisioned -- from the
+# main checkout's definition of that task, so an older target's tree need not
+# carry it).
 #
 # The undetermined-remote-state refusal survives unchanged in spirit: an
 # unreachable or ambiguous origin is drift, not its absence, and lane3 still
@@ -175,16 +177,23 @@ if [ -f "$main_root/backend/.env" ]; then
     _lane3_env_refuse \
       "cannot determine whether this project declares a Lane 3 env task" \
       "$LANE3_ENV_LOOKUP_ERROR" \
-      "fix projects.toml (or FORGE_PROJECTS_MANIFEST) so this checkout resolves, then run lane3-provision"
+      "fix the launcher's own forge checkout's projects.toml so this checkout resolves, then relaunch lane3"
   elif [ -n "$LANE3_ENV_TASK" ]; then
-    echo "lane3: running this project's declared Lane 3 env task 'mise run $LANE3_ENV_TASK' instead of relinking backend/.env" >&2
-    if lane3_env_run_task "$target" "$LANE3_ENV_TASK"; then
+    # Resolved and run from the main checkout, targeting this worktree -- see
+    # lane3_env_run_task for why the gate worktree's own ref is not used.
+    echo "lane3: running this project's declared Lane 3 env task 'mise run $LANE3_ENV_TASK -- --root $target' from $main_root instead of relinking backend/.env" >&2
+    if lane3_env_run_task "$main_root" "$target" "$LANE3_ENV_TASK"; then
       LANE_REFRESH_ENV="provisioned"
     else
+      case "$LANE3_ENV_OUTCOME" in
+        undefined)   _lane3_env_why="the declared Lane 3 env task '$LANE3_ENV_TASK' is not defined in the main checkout" ;;
+        list-failed) _lane3_env_why="mise could not list the main checkout's tasks to find '$LANE3_ENV_TASK'" ;;
+        *)           _lane3_env_why="the declared Lane 3 env task 'mise run $LANE3_ENV_TASK' failed" ;;
+      esac
       _lane3_env_refuse \
-        "the declared Lane 3 env task 'mise run $LANE3_ENV_TASK' failed" \
-        "backend/.env was NOT relinked to the main checkout's -- this project's gate worktree owns its own. If mise refused an untrusted config, trust it first." \
-        "(cd $target && mise trust), then lane3-provision"
+        "$_lane3_env_why" \
+        "backend/.env was NOT relinked to the main checkout's -- this project's gate worktree owns its own." \
+        "$(lane3_env_remedy "$main_root" "$target" "$LANE3_ENV_TASK" "relaunch lane3")"
     fi
   else
     main_env_real="$(readlink -f "$main_root/backend/.env")"

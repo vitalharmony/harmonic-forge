@@ -18,8 +18,12 @@ Usage (either form):
     python3 tools/onboard/lane3_env_task.py <checkout>
     python3 -m lane3_env_task <checkout>      # with tools/onboard on sys.path
 
-Never reads any project's env files -- only `projects.toml`
-(`FORGE_PROJECTS_MANIFEST` overrides its location, as for every consumer).
+Never reads any project's env files -- only `projects.toml`, and only the one
+in the forge checkout this file lives in. `FORGE_PROJECTS_MANIFEST` is
+deliberately NOT honored here (preclose survivor 4): a valid-but-outdated
+manifest reached through it answers "declares nothing", and the launcher would
+relink production credentials over the gate worktree's disposable env. The
+launcher also unsets it before calling this; tests use a fixture forge root.
 """
 from __future__ import annotations
 
@@ -28,10 +32,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from manifest import load, manifest_path  # noqa: E402
+from manifest import load  # noqa: E402
 from manifest_protocol import ManifestError  # noqa: E402
 
 LOOKUP_FAILED = 2
+
+#: This forge checkout's own manifest -- never the environment override.
+FORGE_MANIFEST = Path(__file__).resolve().parents[2] / "projects.toml"
 
 
 def lane3_env_task(checkout: Path) -> str | None:
@@ -43,10 +50,10 @@ def lane3_env_task(checkout: Path) -> str | None:
     checkout such as `~/harmonic-forge` matches.
     """
     wanted = Path(checkout).expanduser().resolve()
-    for project in load():
+    for project in load(FORGE_MANIFEST):
         if project.checkout == wanted:
             return project.protocol.lane3_env_task if project.protocol else None
-    raise ManifestError(f"no project in {manifest_path()} has checkout {wanted}")
+    raise ManifestError(f"no project in {FORGE_MANIFEST} has checkout {wanted}")
 
 
 def main(argv: list[str] | None = None) -> int:

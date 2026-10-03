@@ -635,12 +635,19 @@ whose gate worktree legitimately owns its env declares a narrow
 `lane3_env_task` in its `[project.protocol]` — hrse's gate worktree holds a
 `backend/.env` naming a disposable graph (harmonic-forge#861), which the
 relink used to undo. The launcher (and `lane3-provision`) runs that task
-with `LANE` unset instead of relinking; the task must re-derive the file
-from the main checkout on every run, so hrse#792's anti-drift property
-holds. Only a clean "the project declares nothing" relinks: a failed task,
-or any failure to look the declaration up (an unreadable `projects.toml`, a
-checkout matching no project), refuses the launch, since reading a failure
-as "declared nothing" would relink production credentials back in.
+with `LANE` unset instead of relinking — resolved from the **main
+checkout's** mise config and pointed at the gate worktree with `-- --root
+<worktree>`, because the gate worktree's own ref may predate the task
+(`--ack-stale`, `skipped-busy`). The task must re-derive the file from the
+main checkout on every run, so hrse#792's anti-drift property holds, and
+exit non-zero unless the files are verifiably provisioned. The declaration
+is read only from the launcher's own forge checkout's `projects.toml`
+(`FORGE_PROJECTS_MANIFEST` is not honored there). Only a clean "the project
+declares nothing" relinks: a failed or undefined task, or any failure to
+look the declaration up (an unreadable `projects.toml`, a checkout matching
+no project, an answer that is not one task name), refuses the launch with a
+remedy naming which, since reading a failure as "declared nothing" would
+relink production credentials back in.
 <!-- /R-0188 -->
 
 <!-- R-0189 -->

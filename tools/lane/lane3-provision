@@ -96,12 +96,15 @@ main_root="$parent/$base"
 if [ -f "$main_root/backend/.env" ]; then
   if ! lane3_env_lookup "$main_root"; then
     echo "lane3-provision: cannot determine whether this project declares a Lane 3 env task -- backend/.env NOT touched: $LANE3_ENV_LOOKUP_ERROR" >&2
-    echo "lane3-provision: fix projects.toml (or FORGE_PROJECTS_MANIFEST) so this checkout resolves, then re-run lane3-provision" >&2
+    echo "lane3-provision: fix the launcher's own forge checkout's projects.toml so this checkout resolves, then re-run lane3-provision" >&2
     exit 1
   elif [ -n "$LANE3_ENV_TASK" ]; then
-    echo "lane3-provision: running this project's declared Lane 3 env task 'mise run $LANE3_ENV_TASK' instead of relinking backend/.env" >&2
-    if ! lane3_env_run_task "$target" "$LANE3_ENV_TASK"; then
-      echo "lane3-provision: the declared Lane 3 env task 'mise run $LANE3_ENV_TASK' failed -- backend/.env NOT relinked. If mise refused an untrusted config: (cd $target && mise trust), then re-run lane3-provision" >&2
+    # Resolved and run from the main checkout, targeting the gate worktree,
+    # exactly as `lane3` does -- so this repair works on a gate worktree whose
+    # own ref predates the task (see lane3_env_run_task in _lane_refresh.sh).
+    echo "lane3-provision: running this project's declared Lane 3 env task 'mise run $LANE3_ENV_TASK -- --root $target' from $main_root instead of relinking backend/.env" >&2
+    if ! lane3_env_run_task "$main_root" "$target" "$LANE3_ENV_TASK"; then
+      echo "lane3-provision: Lane 3 env task '$LANE3_ENV_TASK' $LANE3_ENV_OUTCOME -- backend/.env NOT relinked. $(lane3_env_remedy "$main_root" "$target" "$LANE3_ENV_TASK" "re-run lane3-provision")" >&2
       exit 1
     fi
     echo "lane3-provision: backend/.env provisioned by 'mise run $LANE3_ENV_TASK'" >&2

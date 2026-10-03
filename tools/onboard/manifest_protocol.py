@@ -41,11 +41,15 @@ class Protocol:
     #: `None` means the repo follows the default `ci-check` convention.
     ci_parity_task: str | None = None
     #: harmonic-forge#875. The mise task the `lane3` launcher (and
-    #: `lane3-provision`) runs in the gate worktree INSTEAD of relinking
-    #: `backend/.env` to the main checkout's (R-0188). Declared only by a
-    #: project whose gate worktree legitimately owns its own env -- hrse, whose
-    #: harmonic-forge#861 file names a disposable graph. It must write the Lane
-    #: 3 env files and nothing else. `None` keeps today's relink exactly.
+    #: `lane3-provision`) runs INSTEAD of relinking the gate worktree's
+    #: `backend/.env` to the main checkout's (R-0188). It is resolved and run
+    #: from the MAIN checkout as `mise run <task> -- --root <gate worktree>`,
+    #: so it must accept `--root`; the gate worktree's own ref may predate the
+    #: task. Declared only by a project whose gate worktree legitimately owns
+    #: its own env -- hrse, whose harmonic-forge#861 file names a disposable
+    #: graph. It must write the Lane 3 env files and nothing else, and exit
+    #: non-zero unless they are verifiably provisioned. `None` keeps today's
+    #: relink exactly.
     lane3_env_task: str | None = None
 
     def worktree_names(self, checkout: str) -> list[str]:
