@@ -3,6 +3,14 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(belt): a worktree whose issue is confirmed missing is dropped before the comment watch, so its 404 no longer keeps the belt from going quiet (harmonic-forge#866 preclose pass 1)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GpUCNCybKFPnyavPjQv1yG
+- tools/gh/test_watch_lane_posts.py | 38 ++++++++++++++++++++++++++++++++++++++
+- tools/gh/watch_lane_posts.py      | 26 +++++++++++++++++++++++---
+- 2 files changed, 61 insertions(+), 3 deletions(-)
+
 ## fix(belt): sticky-wicket PATCH (epoch 2, both passes with survivors) -- one shared _is_gate_report recognizer for both Lane 2 channels (a gate report footered kind=discussion now reaches Lane 2 on the watch and the queue), and the FAIL path applies the same label exclusion as discover_queue (a Lane-1-only Tooling Exception or epic issue never wakes Lane 2); an agreement-matrix test binds the two channels across poster x footer x heading x verdict x labels (harmonic-forge#851)
 - tools/gh/test_watch_lane_posts.py | 84 +++++++++++++++++++++++++++++++++++++++
 - tools/gh/watch_lane_posts.py      | 30 ++++++++++++--
