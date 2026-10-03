@@ -1,5 +1,6 @@
 """harmonic-forge#874 step 1 -- the probe-only `/auto-ae` UserPromptSubmit hook,
 driven as a real hook process against a temporary HOME."""
+import calendar
 import json
 import os
 import subprocess
@@ -37,6 +38,52 @@ def _run(stdin, home, lane="1", entrypoint="cli"):
     return result
 
 
+PROBE = Path(".local") / "state" / "auto-ae" / "probe.jsonl"
+
+#: Runs the hook under a PEP 578 audit hook that records every write-intent
+#: open and every filesystem mutation, then writes the targets as JSON to the
+#: trace file, opened BEFORE the hook is installed so it is never traced itself.
+_TRACER = r"""
+import json, os, runpy, sys
+sys.dont_write_bytecode = True
+TRACE_FD = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+MUTATIONS = {"os.mkdir", "os.rename", "os.remove", "os.rmdir", "os.link",
+             "os.symlink", "os.truncate", "os.chmod", "os.utime",
+             "shutil.copyfile", "shutil.move", "shutil.rmtree"}
+seen = []
+def audit(event, args):
+    if event == "open":
+        path, mode, flags = (list(args) + [None, None])[:3]
+        writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or \
+                 (isinstance(flags, int) and flags & WRITE_FLAGS)
+        if writes and isinstance(path, (str, bytes, os.PathLike)):
+            seen.append(os.path.abspath(os.fsdecode(path)))
+    elif event in MUTATIONS and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        seen.append(os.path.abspath(os.fsdecode(args[0])))
+sys.addaudithook(audit)
+try:
+    sys.argv = sys.argv[1:2]
+    runpy.run_path(sys.argv[0], run_name="__main__")
+except SystemExit:
+    pass
+os.write(TRACE_FD, json.dumps(seen).encode())
+"""
+
+
+def _traced_writes(home, tmpdir, cwd):
+    env = {k: v for k, v in os.environ.items() if k != "LANE"}
+    env.update(HOME=home, TMPDIR=tmpdir, LANE="1", PYTHONDONTWRITEBYTECODE="1")
+    with tempfile.TemporaryDirectory() as trace_dir:
+        trace = Path(trace_dir) / "trace.json"
+        result = subprocess.run([sys.executable, "-c", _TRACER, str(HOOK), str(trace)],
+                                input=json.dumps(_payload("/auto-ae on")), env=env,
+                                cwd=cwd, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert "recorded" in result.stdout, result.stdout  # the hook really ran
+        return set(json.loads(trace.read_text()))
+
+
 def _probe(home):
     return Path(home) / ".local" / "state" / "auto-ae" / "probe.jsonl"
 
@@ -45,7 +92,9 @@ class RecordsOneLine(unittest.TestCase):
     def test_lane1_auto_ae_prompt_appends_one_redacted_line(self):
         with tempfile.TemporaryDirectory() as home:
             prompt = "<command-name>/auto-ae</command-name>\n<command-args>status</command-args>"
+            before = time.time()
             result = _run(json.dumps(_payload(prompt)), home)
+            after = time.time()
             self.assertEqual(result.returncode, 0)
             out = json.loads(result.stdout)
             self.assertEqual(out, {"systemMessage": auto_ae_toggle.RECORDED})
@@ -58,8 +107,11 @@ class RecordsOneLine(unittest.TestCase):
             self.assertEqual(entry["payload_keys"],
                              ["cwd", "hook_event_name", "prompt", "session_id",
                               "transcript_path"])
-            # A real UTC instant, not merely a present key (#880 pass 1).
-            time.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+            # The run's own instant, not merely a well-formed one: a frozen
+            # clock lands outside this window (#880 sticky-wicket, survivor 4).
+            stamp = calendar.timegm(time.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ"))
+            self.assertGreaterEqual(stamp, int(before) - 2)
+            self.assertLessEqual(stamp, int(after) + 2)
             raw = _probe(home).read_text()
             self.assertNotIn(SECRET_SESSION, raw)
             self.assertNotIn(SECRET_TRANSCRIPT, raw)
@@ -84,14 +136,15 @@ class TimestampIsTheInjectedInstant(unittest.TestCase):
             os.environ["HOME"] = home
             try:
                 self.assertTrue(auto_ae_toggle.record(
-                    _payload("/auto-ae"), "1", "cli", now=0))
+                    _payload("/auto-ae"), "1", "cli", now=1_700_000_000))
             finally:
                 if old is None:
                     os.environ.pop("HOME")
                 else:
                     os.environ["HOME"] = old
             entry = json.loads(_probe(home).read_text())
-            self.assertEqual(entry["timestamp"], "1970-01-01T00:00:00Z")
+            # now=0 would collide with any frozen-clock mutant's own output.
+            self.assertEqual(entry["timestamp"], "2023-11-14T22:13:20Z")
 
 
 class DecidesAndGrantsNothing(unittest.TestCase):
@@ -102,27 +155,33 @@ class DecidesAndGrantsNothing(unittest.TestCase):
             self.assertIn("nothing toggled", out["systemMessage"])
 
     def test_writes_nothing_but_the_probe_log(self):
-        """AC4 beyond $HOME: the hook's TMPDIR, its cwd and the system temp
-        root are watched too, since toggle state written to any of them is
-        exactly what AC4 forbids (#880 pass 1)."""
-        sys_tmp = Path("/tmp")
-        before = set(sys_tmp.iterdir())
+        """AC4, proven by what the hook ATTEMPTS to write, not by observing
+        directories: every write-intent open and every filesystem mutation is
+        traced with a PEP 578 audit hook, so a write anywhere -- /var/tmp, the
+        repo root, any name -- fails, and no shared directory is read (#880
+        sticky-wicket PATCH, survivors 2 and 3)."""
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as tmpdir, \
                 tempfile.TemporaryDirectory() as cwd:
-            env = {k: v for k, v in os.environ.items() if k != "LANE"}
-            env.update(HOME=home, TMPDIR=tmpdir, LANE="1")
-            subprocess.run([sys.executable, str(HOOK)],
-                           input=json.dumps(_payload("/auto-ae on")), env=env,
-                           cwd=cwd, capture_output=True, text=True, check=True)
-            written = sorted(str(p.relative_to(home)) for p in Path(home).rglob("*")
-                             if p.is_file())
-            self.assertEqual(written, [".local/state/auto-ae/probe.jsonl"])
+            targets = _traced_writes(home, tmpdir, cwd)
+            allowed = {str(Path(home) / rel) for rel in (
+                ".local", ".local/state", ".local/state/auto-ae",
+                ".local/state/auto-ae/probe.jsonl")}
+            self.assertIn(str(Path(home) / PROBE), targets)
+            self.assertEqual(targets - allowed, set())
+            # Cheap cross-check on the hook's own TMPDIR and cwd.
             self.assertEqual(list(Path(tmpdir).rglob("*")), [])
             self.assertEqual(list(Path(cwd).rglob("*")), [])
-            # Our own three temp dirs are the only new /tmp entries allowed.
-            new = set(sys_tmp.iterdir()) - before - {Path(home), Path(tmpdir), Path(cwd)}
-            self.assertEqual([p for p in new if "auto" in p.name.lower()], [])
+
+    def test_the_write_trace_ignores_foreign_files(self):
+        """Hermetic by construction: a decoy another process leaves in the
+        system temp root cannot affect the trace (survivor 3)."""
+        with tempfile.NamedTemporaryFile(prefix="zz-auto-decoy-"), \
+                tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as tmpdir, \
+                tempfile.TemporaryDirectory() as cwd:
+            targets = _traced_writes(home, tmpdir, cwd)
+            self.assertEqual({t for t in targets if not t.startswith(home)}, set())
 
 
 class SilentWhenNotApplicable(unittest.TestCase):
@@ -150,17 +209,25 @@ class SilentWhenNotApplicable(unittest.TestCase):
 
 class NeverRaises(unittest.TestCase):
     def test_malformed_stdin_exits_zero_and_records_nothing(self):
+        """An unparseable payload is an unidentifiable prompt: silent, even
+        when its bytes contain the token. There is exactly one gate, and it
+        reads the parsed prompt (#880 sticky-wicket PATCH, survivor 1)."""
         with tempfile.TemporaryDirectory() as home:
             result = _run("not json auto-ae", home)
             self.assertEqual(result.returncode, 0)
-            out = json.loads(result.stdout)
-            self.assertEqual(set(out), {"systemMessage"})  # AC3: never a decision
-            self.assertIn("NOT recorded", out["systemMessage"])
+            self.assertEqual(result.stdout.strip(), "")
+            self.assertFalse(_probe(home).exists())
+
+    def test_truncated_payload_with_the_token_only_outside_the_prompt_is_silent(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = _run('{"cwd":"/w/forge-874-auto-ae","prompt":"deploy the', home)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "")
             self.assertFalse(_probe(home).exists())
 
     def test_unparseable_lane1_prompt_without_the_token_is_silent(self):
-        """AC2. The failure message is gated like the success path: LANE=1
-        AND the token. Empty, truncated and undecodable stdin all stay silent
+        """AC2. Every output sits behind the one gate: LANE=1 AND the token
+        in the parsed prompt. Empty, truncated and undecodable stdin all stay silent
         when nothing mentions auto-ae (#880 pass 1, reproduced cross-family)."""
         for stdin in (b"", b'{"prompt": "deploy the', b"\xff\xfe not json"):
             with self.subTest(stdin=stdin), tempfile.TemporaryDirectory() as home:
