@@ -33,6 +33,13 @@ class RealStoreFixture(unittest.TestCase):
             patcher = mock.patch.object(bc, name, self.real)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Sticky-wicket PATCH: run_tests.main() exports the env marker into its
+        # own process, so without this every in-process test would pass on the
+        # env half and none would exercise the `unittest`-loaded half.
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(bc.TESTING_ENV, None)
 
     def entries(self):
         return sorted(p.name for p in self.real.glob("*.json"))
@@ -99,6 +106,31 @@ class InProcessGuardTests(RealStoreFixture):
                 P.main()
         self.assertEqual(self.entries(), [])
         self.assertIn("not writing the real candidate store", err.getvalue())
+
+
+class EachMarkerAloneRefusesTests(RealStoreFixture):
+    """Each marker is pinned by a test that is red when that marker alone is
+    removed, and the no-marker case keeps the guard from always refusing."""
+
+    @staticmethod
+    def _without_unittest():
+        return {k: v for k, v in sys.modules.items() if k.split(".")[0] != "unittest"}
+
+    def test_the_sys_modules_marker_alone_refuses(self):
+        self.assertNotIn(bc.TESTING_ENV, os.environ)
+        self.assertIn("unittest", sys.modules)
+        self.assertTrue(bc._refuses_real_store(self.real))
+
+    def test_the_env_marker_alone_refuses(self):
+        with mock.patch.dict(os.environ, {bc.TESTING_ENV: "1"}), \
+             mock.patch.dict(sys.modules, self._without_unittest(), clear=True):
+            self.assertNotIn("unittest", sys.modules)
+            self.assertTrue(bc._refuses_real_store(self.real))
+
+    def test_neither_marker_permits_the_write(self):
+        with mock.patch.dict(sys.modules, self._without_unittest(), clear=True):
+            self.assertNotIn(bc.TESTING_ENV, os.environ)
+            self.assertFalse(bc._refuses_real_store(self.real))
 
 
 class SubprocessGuardTests(unittest.TestCase):
