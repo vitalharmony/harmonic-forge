@@ -26,8 +26,17 @@
 #                         branch that was detached); empty otherwise
 #   LANE_REFRESH_FROM     HEAD SHA before this call
 #   LANE_REFRESH_TO       HEAD SHA after this call (== FROM unless updated)
-#   LANE_REFRESH_ENV      relinked | ok | n/a (backend/.env; lane3 only, set by
-#                         the caller, not this file)
+#   LANE_REFRESH_ENV      relinked | ok | provisioned | provision-failed | n/a
+#                         (backend/.env; lane3 only, set by the caller, not
+#                         this file). `provisioned`/`provision-failed`: the
+#                         project declares `lane3_env_task` (harmonic-forge#875)
+#                         and that task ran instead of the relink, or it -- or
+#                         the lookup of it -- failed and the launch refused.
+#
+# The env status is part of the refresh.log record (its 8th field). A caller
+# that decides it after `lane_refresh` (lane3) sets `_lane_refresh_defer_log=1`
+# first, then calls `lane_refresh_log_flush` once the status is known --
+# including on every refusal path, so a refused launch is still recorded.
 #
 # NC2 (this codebase's own precedent, harmonic-forge#322): never trust the
 # local `origin/main` ref. The update target always comes from a fresh
@@ -187,16 +196,74 @@ lane_refresh() {
 }
 
 # _lane_refresh_log <mode> <status> <from> <to> -- appends one line to the
-# durable record. Best-effort: a logging failure (e.g. a read-only home in a
-# test fixture) must never fail the launch.
+# durable record, or, under `_lane_refresh_defer_log`, holds it for
+# `lane_refresh_log_flush`. Best-effort: a logging failure (e.g. a read-only
+# home in a test fixture) must never fail the launch.
 _lane_refresh_log() {
-  local mode="$1" status="$2" from="$3" to="$4"
+  if [ -n "${_lane_refresh_defer_log:-}" ]; then
+    _lane_refresh_pending=("$@")
+    return 0
+  fi
+  _lane_refresh_write "$1" "$2" "$3" "$4" "n/a"
+}
+
+# lane_refresh_log_flush -- writes the held record with the caller's
+# LANE_REFRESH_ENV as its env field (R-0187: the env status is logged). Writes
+# at most once per launch; a no-op when nothing is held.
+lane_refresh_log_flush() {
+  [ "${#_lane_refresh_pending[@]}" -eq 4 ] || return 0
+  _lane_refresh_write "${_lane_refresh_pending[@]}" "${LANE_REFRESH_ENV:-n/a}"
+  _lane_refresh_pending=()
+}
+
+_lane_refresh_pending=()
+
+_lane_refresh_write() {
+  local mode="$1" status="$2" from="$3" to="$4" env_status="$5"
   local logdir="${LANE_REFRESH_LOG_DIR:-$HOME/.local/state/lanes}"
   local logfile="$logdir/refresh.log"
   {
     mkdir -p "$logdir" 2>/dev/null \
-      && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_lane_name:-unknown}" \
-           "${base:-unknown}" "$mode" "$status" "$from" "$to" >> "$logfile"
+           "${base:-unknown}" "$mode" "$status" "$from" "$to" \
+           "$env_status" >> "$logfile"
   } 2>/dev/null || true
+}
+
+## Declared Lane 3 env provisioner (harmonic-forge#875)
+#
+# R-0188 relinks the gate worktree's backend/.env to the main checkout's on the
+# premise that it has no legitimate per-worktree divergence. hrse's
+# harmonic-forge#861 made that false: its gate worktree owns a backend/.env
+# naming a disposable graph, and every relink put production credentials back.
+# A project may therefore declare `lane3_env_task` in projects.toml; both
+# `lane3` and `lane3-provision` run it instead of relinking.
+
+# lane3_env_lookup <main_root> -- sets LANE3_ENV_TASK (empty when the project
+# declares none) and returns 0, or sets LANE3_ENV_LOOKUP_ERROR and returns 1 on
+# ANY lookup failure, python3 itself failing included. Only a clean "declared
+# nothing" may fall through to the relink.
+lane3_env_lookup() {
+  local main_root="$1" accessor out="" rc=0
+  accessor="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../onboard/lane3_env_task.py"
+  LANE3_ENV_TASK=""
+  LANE3_ENV_LOOKUP_ERROR=""
+  out="$(python3 "$accessor" "$(readlink -f "$main_root")" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    LANE3_ENV_LOOKUP_ERROR="${out:-python3 exited $rc with no message}"
+    return 1
+  fi
+  LANE3_ENV_TASK="$out"
+  return 0
+}
+
+# lane3_env_run_task <target> <task> -- runs the declared task in the gate
+# worktree with LANE unset (as the busy check above does), so the project's
+# own lane write guards do not read it as a Lane 3 session's write. Its output
+# goes to stderr; returns the task's exit status.
+lane3_env_run_task() {
+  local target="$1" task="$2" rc=0
+  ( cd "$target" && env -u LANE mise run "$task" ) >&2 || rc=$?
+  return "$rc"
 }

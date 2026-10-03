@@ -122,6 +122,10 @@ runs_lane3 = true
 # drift-detection tool rather than declaring a `ci-check` task; this is the
 # declared exception `check_ci` treats as equivalent, not a missing task.
 ci_parity_task = "ci-parity-check-command-sets"
+# harmonic-forge#875: HRSE2's gate worktree owns its backend/.env (the
+# disposable-graph file harmonic-forge#861 introduced), so `lane3` runs this
+# narrow task at launch instead of relinking it to the main checkout's.
+lane3_env_task = "lane3-env-provision"
 
 [[project]]
 name = "harmonic-forge"

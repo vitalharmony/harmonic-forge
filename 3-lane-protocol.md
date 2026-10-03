@@ -609,9 +609,10 @@ It previously refused instead (harmonic-forge#322 AC5), on the reasoning
 that a gate that repairs its own preconditions cannot report on them. That
 goal is kept by a different means: **the repair is recorded, never silent.**
 `LANE_REFRESH_STATUS`, `_FROM`, `_TO` and `_ENV` are exported into the
-session, appended to `~/.local/state/lanes/refresh.log`, and surfaced by
-the SessionStart launch notice, and the gate report states whether the
-worktree was updated. The refuse-and-repair-by-hand design had already
+session, appended to `~/.local/state/lanes/refresh.log` (one record per
+launch, the `backend/.env` status included — a refused launch is recorded
+too), and surfaced by the SessionStart launch notice, and the gate report
+states whether the worktree was updated. The refuse-and-repair-by-hand design had already
 failed twice as a control (lane worktrees found 46 and 63 commits behind).
 
 Both protections survive — neither was dropped:
@@ -621,15 +622,25 @@ Both protections survive — neither was dropped:
 | drift | detected how | at launch |
 |---|---|---|
 | worktree behind `origin/main` (harmonic-forge#255) | `git ls-remote origin refs/heads/main`, never the stale local `origin/main` ref; then a fetch and an ancestry comparison against that SHA | **update and record**; refuse on tracked changes or an undeterminable remote; `--ack-stale "<reason>"` skips the update |
-| `backend/.env` not linked to the main checkout's (harmonic-forge#264) | symlink target comparison; never reads the file's contents | **relink and record**, including under `--ack-stale` |
+| `backend/.env` not linked to the main checkout's (harmonic-forge#264) | symlink target comparison; never reads the file's contents | **relink and record**, including under `--ack-stale` — **unless** the project declares `lane3_env_task` in `projects.toml` (harmonic-forge#875): then **run that task and record** (`provisioned`) instead, and refuse (`provision-failed`) if the task or the lookup of the declaration fails |
 
 The asymmetry is deliberate. A Lane 3 session gating a deliberately-older
 target is not behind by mistake, so staleness has a legitimate form and the
 operator states it once, in writing (an empty reason is rejected, following
 `l1_post.py`'s `--ack-overlap` precedent). `backend/.env` has no legitimate
-per-worktree divergence at all, so it is always relinked — a gate run
+per-worktree divergence by default, so it is always relinked — a gate run
 against a stale env silently loses its live HTTP/auth test surface
-(hrse#792).
+(hrse#792). **One declared exception** (harmonic-forge#875): a project
+whose gate worktree legitimately owns its env declares a narrow
+`lane3_env_task` in its `[project.protocol]` — hrse's gate worktree holds a
+`backend/.env` naming a disposable graph (harmonic-forge#861), which the
+relink used to undo. The launcher (and `lane3-provision`) runs that task
+with `LANE` unset instead of relinking; the task must re-derive the file
+from the main checkout on every run, so hrse#792's anti-drift property
+holds. Only a clean "the project declares nothing" relinks: a failed task,
+or any failure to look the declaration up (an unreadable `projects.toml`, a
+checkout matching no project), refuses the launch, since reading a failure
+as "declared nothing" would relink production credentials back in.
 <!-- /R-0188 -->
 
 <!-- R-0189 -->

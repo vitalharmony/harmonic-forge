@@ -414,6 +414,9 @@ class LiveManifestTests(unittest.TestCase):
         # harmonic-forge#802: hrse's CI mirrors `check`'s commands against its
         # own parity tool rather than declaring a `ci-check` task.
         parity_task = {"hrse": "ci-parity-check-command-sets"}
+        # harmonic-forge#875: hrse's gate worktree owns its backend/.env, so
+        # `lane3` runs this task instead of relinking it.
+        env_task = {"hrse": "lane3-env-provision"}
         # harmonic-forge#806: kenekted-docs' checkout basename is `docs`; the lane launchers
         # derive worktrees from that basename, so it keeps the default template.
         worktree: dict[str, dict[str, str]] = {}
@@ -426,7 +429,8 @@ class LiveManifestTests(unittest.TestCase):
             {name: mf.Protocol(**{**common, **worktree.get(name, {})},
                                runs_lane3=True,
                                needs_gate_adapter=False if name in no_adapter else None,
-                               ci_parity_task=parity_task.get(name))
+                               ci_parity_task=parity_task.get(name),
+                               lane3_env_task=env_task.get(name))
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
                           "openclaw-projects", "kenekted", "kenekted-ai",
                           "kenekted-docs", "leasepal")})

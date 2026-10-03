@@ -40,6 +40,13 @@ class Protocol:
     #: equivalent of `ci-check`, rather than flagging a missing `ci-check`.
     #: `None` means the repo follows the default `ci-check` convention.
     ci_parity_task: str | None = None
+    #: harmonic-forge#875. The mise task the `lane3` launcher (and
+    #: `lane3-provision`) runs in the gate worktree INSTEAD of relinking
+    #: `backend/.env` to the main checkout's (R-0188). Declared only by a
+    #: project whose gate worktree legitimately owns its own env -- hrse, whose
+    #: harmonic-forge#861 file names a disposable graph. It must write the Lane
+    #: 3 env files and nothing else. `None` keeps today's relink exactly.
+    lane3_env_task: str | None = None
 
     def worktree_names(self, checkout: str) -> list[str]:
         lanes = (2, 3) if self.runs_lane3 else (2,)
@@ -97,6 +104,14 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
         if not isinstance(value, str) or not value.strip():
             raise ManifestError(
                 f"{target}: {project} protocol.{field} must be non-empty")
+    # Optional, but never empty when present: an empty name would make the
+    # launcher run `mise run ""` -- or, read as "declared nothing", silently
+    # bring back the relink this key exists to stop (harmonic-forge#875).
+    if protocol.lane3_env_task is not None and (
+            not isinstance(protocol.lane3_env_task, str)
+            or not protocol.lane3_env_task.strip()):
+        raise ManifestError(
+            f"{target}: {project} protocol.lane3_env_task must be non-empty when present")
     if not isinstance(protocol.runs_lane3, bool):
         raise ManifestError(
             f"{target}: {project} protocol.runs_lane3 must be boolean")

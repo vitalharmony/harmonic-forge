@@ -332,5 +332,235 @@ class LaunchNotice(unittest.TestCase):
         self.assertEqual(out, "")
 
 
+# ---------------------------------------------------------------------------
+# harmonic-forge#875 -- a declared Lane 3 env provisioner replaces the relink
+# ---------------------------------------------------------------------------
+ENV_KEYS = KEYS + ",LANE_REFRESH_ENV"
+DECLARED = "lane3-env-provision"
+ACCESSOR = Path(__file__).resolve().parent.parent / "onboard" / "lane3_env_task.py"
+
+
+def _run3(tree, args=()):
+    return tree.run("3", list(args), LANE_CLI="claude",
+                    LANE_CAPTURE_EXTRA_ENV=ENV_KEYS,
+                    LANE_REFRESH_LOG_DIR=str(tree.root / "refresh-log"))
+
+
+def _env_record(tree) -> list[str]:
+    """The env field (8th) of every refresh.log record."""
+    log = tree.root / "refresh-log" / "refresh.log"
+    return [line.split("\t")[7] for line in log.read_text().splitlines()]
+
+
+class Lane3DeclaredEnvProvisioner(unittest.TestCase):
+    """AC1/AC2/AC4. Every case uses a fixture projects.toml naming the fixture
+    checkout and a stub `mise` first on PATH; without both, a case would only
+    ever exercise the relink path and pass vacuously."""
+
+    def _lane3_real_env(self, tree, text="KEY=own-copy\n"):
+        (tree.lane3 / "backend").mkdir(exist_ok=True)
+        (tree.lane3 / "backend" / ".env").write_text(text)
+
+    def test_a_declared_provisioner_runs_instead_of_relinking(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(lane3_env_task=DECLARED)
+            tree.write_stub_mise(0)
+            self._lane3_real_env(tree)
+            cell = _run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            env_file = tree.lane3 / "backend" / ".env"
+            self.assertFalse(env_file.is_symlink())
+            self.assertEqual(env_file.read_text(), "SYNTHETIC=provisioned\n")
+            self.assertEqual(list((tree.lane3 / "backend").glob(".env.pre-relink-*")), [])
+            calls = tree.mise_calls()
+            self.assertEqual(len(calls), 1)
+            cwd, lane, argv = calls[0].split("|")
+            self.assertEqual(Path(cwd).resolve(), tree.lane3.resolve())
+            self.assertEqual(lane, "unset")  # run with LANE unset
+            self.assertEqual(argv, f"run {DECLARED}")
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "provisioned")
+            self.assertEqual(_env_record(tree), ["provisioned"])
+
+    def test_ack_stale_still_provisions(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(lane3_env_task=DECLARED)
+            tree.write_stub_mise(0)
+            cell = _run3(tree, ["--ack-stale", "deliberate"])
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "provisioned")
+            self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
+
+    def test_a_manifest_lookup_failure_refuses_the_launch(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(raw="this is [ not valid toml\n")
+            tree.write_stub_mise(0)
+            self._lane3_real_env(tree)
+            cell = _run3(tree)
+            self.assertFalse(cell["launched"])
+            self.assertIn("cannot determine whether this project declares", cell["stderr"])
+            self.assertIn("lane3-provision", cell["stderr"])
+            env_file = tree.lane3 / "backend" / ".env"
+            self.assertFalse(env_file.is_symlink())
+            self.assertEqual(env_file.read_text(), "KEY=own-copy\n")
+            self.assertEqual(tree.mise_calls(), [])
+            self.assertEqual(_env_record(tree), ["provision-failed"])
+
+    def test_a_checkout_matching_no_project_refuses_the_launch(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(raw=tree.manifest.read_text().replace(
+                str(tree.main), str(tree.root / "elsewhere")))
+            self._lane3_real_env(tree)
+            cell = _run3(tree)
+            self.assertFalse(cell["launched"])
+            self.assertIn("no project in", cell["stderr"])
+            self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
+
+    def test_a_failed_provisioner_refuses_the_launch_with_remediation(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(lane3_env_task=DECLARED)
+            tree.write_stub_mise(1)
+            self._lane3_real_env(tree)
+            cell = _run3(tree)
+            self.assertFalse(cell["launched"])
+            self.assertIn("mise trust", cell["stderr"])
+            self.assertIn("lane3-provision", cell["stderr"])
+            self.assertIn(f"mise run {DECLARED}", cell["stderr"])
+            self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
+            self.assertEqual(len(tree.mise_calls()), 1)
+            self.assertEqual(_env_record(tree), ["provision-failed"])
+
+    def test_a_project_without_the_key_is_still_relinked(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            self._lane3_real_env(tree, "KEY=stale\n")
+            cell = _run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            link = tree.lane3 / "backend" / ".env"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), (tree.main / "backend" / ".env").resolve())
+            self.assertEqual(tree.mise_calls(), [])
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
+            self.assertEqual(_env_record(tree), ["relinked"])
+
+    def test_a_project_with_no_backend_env_is_untouched_and_logged_na(self):
+        with _FixtureTree() as tree:
+            cell = _run3(tree)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "n/a")
+            self.assertEqual(_env_record(tree), ["n/a"])
+
+    def test_a_stale_refusal_is_still_logged_exactly_once(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            subprocess.run(["git", "remote", "set-url", "origin",
+                            str(tree.root / "does-not-exist.git")],
+                           cwd=tree.main, check=True, capture_output=True)
+            cell = _run3(tree)
+            self.assertFalse(cell["launched"])
+            log = (tree.root / "refresh-log" / "refresh.log").read_text().splitlines()
+            self.assertEqual(len(log), 1)
+            self.assertIn("\tfetch-failed\t", log[0])
+
+    def test_lane1_and_lane2_records_carry_an_na_env_field(self):
+        with _FixtureTree() as tree:
+            _run(tree, "2")
+            self.assertEqual(_env_record(tree), ["n/a"])
+
+
+class Lane3ProvisionDeclaredEnv(unittest.TestCase):
+    """`lane3-provision` (R-0189) takes the same three-way branch."""
+
+    def test_provision_runs_the_declared_task(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(lane3_env_task=DECLARED)
+            tree.write_stub_mise(0)
+            proc = tree.run_script("lane3-provision")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
+            self.assertEqual(len(tree.mise_calls()), 1)
+
+    def test_provision_refuses_a_failed_task(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(lane3_env_task=DECLARED)
+            tree.write_stub_mise(1)
+            proc = tree.run_script("lane3-provision")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("mise trust", proc.stderr)
+            self.assertFalse((tree.lane3 / "backend" / ".env").exists())
+
+    def test_provision_refuses_a_failed_lookup(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(raw="not [ toml\n")
+            proc = tree.run_script("lane3-provision")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("cannot determine", proc.stderr)
+            self.assertFalse((tree.lane3 / "backend" / ".env").exists())
+
+    def test_provision_still_relinks_without_the_key(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            proc = tree.run_script("lane3-provision")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
+            self.assertEqual(tree.mise_calls(), [])
+
+
+class Lane3EnvTaskAccessor(unittest.TestCase):
+    """The three outcomes the launchers branch on."""
+
+    def _call(self, tree, checkout):
+        import os
+        env = dict(os.environ, FORGE_PROJECTS_MANIFEST=str(tree.manifest))
+        return subprocess.run([sys.executable, str(ACCESSOR), str(checkout)],
+                              env=env, capture_output=True, text=True)
+
+    def test_declared_prints_the_task(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            tree.write_manifest(lane3_env_task=DECLARED)
+            proc = self._call(tree, tree.main)
+            self.assertEqual((proc.returncode, proc.stdout.strip()), (0, DECLARED))
+
+    def test_undeclared_prints_nothing(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            proc = self._call(tree, tree.main)
+            self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+
+    def test_every_lookup_failure_exits_2(self):
+        with _FixtureTree(with_backend_env=True) as tree:
+            for label, raw, checkout in (
+                    ("unparseable", "not [ toml\n", tree.main),
+                    ("no match", None, tree.root / "elsewhere"),
+                    ("empty task", "EMPTY", tree.main)):
+                with self.subTest(label):
+                    if raw == "EMPTY":
+                        tree.write_manifest(lane3_env_task="")
+                    elif raw is not None:
+                        tree.write_manifest(raw=raw)
+                    else:
+                        tree.write_manifest()
+                    proc = self._call(tree, checkout)
+                    self.assertEqual(proc.returncode, 2, proc.stderr)
+                    self.assertEqual(proc.stdout, "")
+                    self.assertIn("lookup failed", proc.stderr)
+
+    def test_the_real_manifest_declares_hrse_and_nothing_else(self):
+        sys.path.insert(0, str(ACCESSOR.parent))
+        import manifest
+        declared = {p.name: p.protocol.lane3_env_task for p in manifest.load(
+            Path(__file__).resolve().parents[2] / "projects.toml")
+            if p.protocol and p.protocol.lane3_env_task}
+        self.assertEqual(declared, {"hrse": DECLARED})
+
+
+class Lane3EnvNotice(unittest.TestCase):
+    def test_provisioned_is_rendered(self):
+        text = notice.build_notice({"LANE": "3", "LANE_REFRESH_STATUS": "current",
+                                    "LANE_REFRESH_ENV": "provisioned"})
+        self.assertIn("provisioned by this project's declared Lane 3 env task", text)
+        self.assertNotIn("was relinked", text)
+
+    def test_provision_failed_is_rendered(self):
+        text = notice.build_notice({"LANE": "3", "LANE_REFRESH_STATUS": "current",
+                                    "LANE_REFRESH_ENV": "provision-failed"})
+        self.assertIn("provisioning FAILED", text)
+
+
 if __name__ == "__main__":
     unittest.main()

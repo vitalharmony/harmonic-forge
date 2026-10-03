@@ -67,7 +67,58 @@ class _FixtureTree:
         if self._with_backend_env:
             (self.main / "backend").mkdir()
             (self.main / "backend" / ".env").write_text("KEY=value\n")
+            # harmonic-forge#875: the backend/.env step now looks the project
+            # up in projects.toml first. Every such fixture gets its OWN
+            # manifest (never the real one) declaring no `lane3_env_task`, and
+            # a stub `mise` that exits non-zero, so a test that reaches the
+            # relink path cannot silently run a real task.
+            self.manifest = self.root / "projects.toml"
+            self.write_manifest()
+            self.write_stub_mise(97, writes_env=False)
         return self
+
+    MISE_CALLS = "mise-calls.log"
+
+    def write_manifest(self, lane3_env_task: str | None = None,
+                       raw: str | None = None) -> None:
+        """A fixture `projects.toml` whose one project's `path` is this
+        tree's main checkout (harmonic-forge#875)."""
+        if raw is None:
+            task_line = (f'lane3_env_task = "{lane3_env_task}"\n'
+                         if lane3_env_task is not None else "")
+            raw = (
+                "[[project]]\n"
+                'name = "fixture"\nprefix = "X"\nrepo = "example/fixture"\n'
+                f'account = "vitalharmony"\npath = "{self.main}"\nonboarded = true\n'
+                "[project.protocol]\n"
+                'worktree_name = "{checkout}-lane{lane}"\n'
+                'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'
+                'gate_checkout_task = "gate-checkout"\nlane3_begin_task = "lane3-begin"\n'
+                'lane3_end_task = "lane3-end"\nruns_lane3 = true\n' + task_line)
+        self.manifest.write_text(raw)
+
+    def write_stub_mise(self, exit_code: int, *, writes_env: bool = True) -> None:
+        """A stub `mise` first on PATH: records its cwd, whether LANE was set,
+        and its arguments, then -- when it succeeds and `writes_env` -- stands
+        in for a provisioner by writing a real (synthetic) backend/.env."""
+        calls = self.root / self.MISE_CALLS
+        body = ("#!/usr/bin/env bash\n"
+                f'printf "%s|%s|%s\\n" "$PWD" "${{LANE-unset}}" "$*" >> "{calls}"\n')
+        if writes_env and exit_code == 0:
+            body += ('mkdir -p backend && rm -f backend/.env && '
+                     'printf "SYNTHETIC=provisioned\\n" > backend/.env\n')
+        body += f"exit {exit_code}\n"
+        stub = self.stub_bin / "mise"
+        stub.write_text(body)
+        stub.chmod(0o755)
+
+    def mise_calls(self) -> list[str]:
+        """Every `mise run ...` the stub saw. Other subcommands are dropped:
+        `_lane_cleanup.sh` probes `mise tasks ls` on its own, unrelated to
+        the env step."""
+        path = self.root / self.MISE_CALLS
+        lines = path.read_text().splitlines() if path.exists() else []
+        return [line for line in lines if line.split("|", 2)[2].startswith("run ")]
 
     def __exit__(self, *exc):
         self._tmp.cleanup()
@@ -75,6 +126,8 @@ class _FixtureTree:
 
     def run(self, lane: str, args: list[str], **env_overrides) -> dict:
         env_overrides.setdefault("HOME", str(self.home))
+        if self._with_backend_env:
+            env_overrides.setdefault("FORGE_PROJECTS_MANIFEST", str(self.manifest))
         return bc.capture_cell(LANE_DIR, self.main, self.stub_bin, lane, args,
                                env_overrides=env_overrides)
 
@@ -90,6 +143,8 @@ class _FixtureTree:
             env.pop(key, None)
         env["PATH"] = f"{self.stub_bin}{os.pathsep}{env['PATH']}"
         env["HOME"] = str(self.home)
+        if self._with_backend_env:
+            env["FORGE_PROJECTS_MANIFEST"] = str(self.manifest)
         env.update(env_overrides)
         return subprocess.run(
             ["bash", str(LANE_DIR / script), *(args or [])],

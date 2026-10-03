@@ -73,6 +73,13 @@ def build_notice(env: dict) -> str | None:
     env_status = env.get("LANE_REFRESH_ENV", "")
     if env_status == "relinked":
         lines.append("backend/.env was relinked to the main checkout's file (it had drifted or was missing).")
+    elif env_status == "provisioned":
+        # harmonic-forge#875: the project's declared lane3_env_task ran instead.
+        lines.append("backend/.env was provisioned by this project's declared Lane 3 env task, not relinked to the main checkout's file.")
+    elif env_status == "provision-failed":
+        # The launcher refuses on this status, so a session should never see
+        # it -- rendered anyway so a session that somehow does is told.
+        lines.append("backend/.env provisioning FAILED at launch -- this gate worktree's env is unverified; do not run a gate until `lane3-provision` succeeds.")
 
     if lane == "1":
         lines.append("Open your first reply with: Run `mise run restart --no-bump --no-git`.")

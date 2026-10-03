@@ -69,8 +69,8 @@ export LANE=3
 #
 # `--ack-stale "<reason>"` still exists, for a gate deliberately run against a
 # target other than current origin/main (e.g. gating an older commit on
-# purpose). It skips the checkout update only; backend/.env is still relinked,
-# because backend/.env has no legitimate per-worktree divergence at all.
+# purpose). It skips the checkout update only; backend/.env is still relinked
+# (or, for a project declaring `lane3_env_task`, still provisioned).
 #
 # The undetermined-remote-state refusal survives unchanged in spirit: an
 # unreachable or ambiguous origin is drift, not its absence, and lane3 still
@@ -80,6 +80,7 @@ export LANE=3
 # `lane3-provision` remains, unchanged, as the manual repair command --
 # something to run without starting a session.
 _lane3_stale_refuse() {
+  lane_refresh_log_flush
   cat >&2 <<EOF
 lane3: REFUSING TO START -- $1
 
@@ -95,6 +96,9 @@ EOF
 
 # shellcheck source=_lane_refresh.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"
+# The refresh.log record carries the env status too (R-0187), which is only
+# known after the backend/.env step below -- hold the record until then.
+_lane_refresh_defer_log=1
 lane_refresh detached
 export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO LANE_REFRESH_DETAIL
 
@@ -141,28 +145,69 @@ esac
 # this never touches secret values. Silently skipped for a project with no
 # backend/.env at all (harmonic-forge itself, or any non-HRSE2-shaped
 # project).
+#
+# harmonic-forge#875: the relink is now the "declared nothing" case of a
+# three-way branch. A project declaring `lane3_env_task` in projects.toml has
+# that task run here INSTEAD (hrse: its gate worktree owns a disposable-graph
+# backend/.env, harmonic-forge#861, which the relink used to undo). A failed
+# task, or ANY failure to look the declaration up, refuses the launch: reading
+# a failed lookup as "declared nothing" would relink production credentials
+# back in, the exact bug this branch exists to stop.
+_lane3_env_refuse() {
+  LANE_REFRESH_ENV="provision-failed"
+  export LANE_REFRESH_ENV
+  lane_refresh_log_flush
+  cat >&2 <<EOF
+lane3: REFUSING TO START -- $1
+
+  This worktree: $target
+  $2
+
+  To repair:   $3
+EOF
+  exit 1
+}
+
 main_root="$parent/$base"
 LANE_REFRESH_ENV="n/a"
 if [ -f "$main_root/backend/.env" ]; then
-  main_env_real="$(readlink -f "$main_root/backend/.env")"
-  target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
-  if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
-    mkdir -p "$target/backend"
-    # Preclose finding: `ln -sfn` over a real file deletes it. Keep the only
-    # copy aside (never read or printed) before replacing it with the link.
-    if [ -f "$target/backend/.env" ] && [ ! -L "$target/backend/.env" ]; then
-      _lane3_env_backup="$target/backend/.env.pre-relink-$(date -u +%Y%m%dT%H%M%SZ)"
-      mv "$target/backend/.env" "$_lane3_env_backup"
-      echo "lane3: kept the previous backend/.env file as $_lane3_env_backup" >&2
+  if ! lane3_env_lookup "$main_root"; then
+    _lane3_env_refuse \
+      "cannot determine whether this project declares a Lane 3 env task" \
+      "$LANE3_ENV_LOOKUP_ERROR" \
+      "fix projects.toml (or FORGE_PROJECTS_MANIFEST) so this checkout resolves, then run lane3-provision"
+  elif [ -n "$LANE3_ENV_TASK" ]; then
+    echo "lane3: running this project's declared Lane 3 env task 'mise run $LANE3_ENV_TASK' instead of relinking backend/.env" >&2
+    if lane3_env_run_task "$target" "$LANE3_ENV_TASK"; then
+      LANE_REFRESH_ENV="provisioned"
+    else
+      _lane3_env_refuse \
+        "the declared Lane 3 env task 'mise run $LANE3_ENV_TASK' failed" \
+        "backend/.env was NOT relinked to the main checkout's -- this project's gate worktree owns its own. If mise refused an untrusted config, trust it first." \
+        "(cd $target && mise trust), then lane3-provision"
     fi
-    ln -sfn "$main_env_real" "$target/backend/.env"
-    LANE_REFRESH_ENV="relinked"
-    echo "lane3: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2
   else
-    LANE_REFRESH_ENV="ok"
+    main_env_real="$(readlink -f "$main_root/backend/.env")"
+    target_env_real="$(readlink -f "$target/backend/.env" 2>/dev/null || true)"
+    if [[ ! -L "$target/backend/.env" || "$target_env_real" != "$main_env_real" ]]; then
+      mkdir -p "$target/backend"
+      # Preclose finding: `ln -sfn` over a real file deletes it. Keep the only
+      # copy aside (never read or printed) before replacing it with the link.
+      if [ -f "$target/backend/.env" ] && [ ! -L "$target/backend/.env" ]; then
+        _lane3_env_backup="$target/backend/.env.pre-relink-$(date -u +%Y%m%dT%H%M%SZ)"
+        mv "$target/backend/.env" "$_lane3_env_backup"
+        echo "lane3: kept the previous backend/.env file as $_lane3_env_backup" >&2
+      fi
+      ln -sfn "$main_env_real" "$target/backend/.env"
+      LANE_REFRESH_ENV="relinked"
+      echo "lane3: relinked backend/.env -> $main_env_real (was drifting or missing)" >&2
+    else
+      LANE_REFRESH_ENV="ok"
+    fi
   fi
 fi
 export LANE_REFRESH_ENV
+lane_refresh_log_flush
 
 
 # shellcheck source=_cli_launch.sh

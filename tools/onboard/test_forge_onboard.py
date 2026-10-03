@@ -1005,6 +1005,17 @@ class CheckTaskRequiredForLane3Tests(Base):
             runs_lane3=False))
         self.assertEqual(fo.check_lane_tasks(not_lane3).status, fo.OK)
 
+    def test_a_declared_lane3_env_task_must_exist(self) -> None:
+        """harmonic-forge#875: a declared-but-absent task refuses every lane3
+        launch, so it is checked like the required names."""
+        import dataclasses
+        base = self.project(self.make_repo())
+        declared = dataclasses.replace(base, protocol=dataclasses.replace(
+            base.protocol, lane3_env_task="lane3-env-provision"))
+        check = fo.check_lane_tasks(declared)
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("lane3_env_task", check.detail)
+
 
 class GateAdapterDeclarationTests(Base):
     """DJC 2: a Lane 3 repo has a manifest or says it needs none. Silence fails."""

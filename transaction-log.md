@@ -3,6 +3,15 @@
 Auto-maintained by `mise run commit` (`scripts/git_commit.py` + `tools/transaction-log/`) — appends a delta summary in the same commit as the code change it describes (headline = verbatim commit message). Cleared on **push to main**, not a version bump — this repo has no running artifact to stamp, so push is its genuine "publish" event (see `mise.toml`'s header comment). Full history: `git log -p transaction-log.md`. Read this file at session start for recent context. Do not edit by hand.
 
 <!-- TRANSACTION_LOG_START -->
+## fix(lane): lane3 runs a project's declared lane3_env_task instead of relinking backend/.env over its own Lane 3 env; refuses on a failed task or lookup; env status logged (harmonic-forge#875)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- tools/onboard/test_forge_onboard.py |  11 ++
+- tools/onboard/test_manifest.py      |   6 +-
+- tools/rules/registry.toml           |   8 +-
+- 14 files changed, 585 insertions(+), 41 deletions(-)
+
 ## test(gate): the F871 materialize test reads the scratch repo's own config with --local, so ambient host git config cannot pass the unfixed code (harmonic-forge#871 preclose pass 1)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
