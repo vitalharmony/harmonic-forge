@@ -26,8 +26,21 @@
 #                         branch that was detached); empty otherwise
 #   LANE_REFRESH_FROM     HEAD SHA before this call
 #   LANE_REFRESH_TO       HEAD SHA after this call (== FROM unless updated)
-#   LANE_REFRESH_ENV      relinked | ok | n/a (backend/.env; lane3 only, set by
-#                         the caller, not this file)
+#   LANE_REFRESH_ENV      relinked | ok | provisioned | provision-failed
+#                         | owned-unexpected | n/a
+#                         (backend/.env; lane3 only, set by the caller, not
+#                         this file). `provisioned`/`provision-failed`: the
+#                         project declares `lane3_env_task` (harmonic-forge#875)
+#                         and that task ran instead of the relink, or it -- or
+#                         the lookup of it -- failed and the launch refused.
+#                         `owned-unexpected`: nothing declared, but the gate
+#                         worktree's backend/.env is a real file, not a
+#                         symlink; it is left untouched and the launch refused.
+#
+# The env status is part of the refresh.log record (its 8th field). A caller
+# that decides it after `lane_refresh` (lane3) sets `_lane_refresh_defer_log=1`
+# first, then calls `lane_refresh_log_flush` once the status is known --
+# including on every refusal path, so a refused launch is still recorded.
 #
 # NC2 (this codebase's own precedent, harmonic-forge#322): never trust the
 # local `origin/main` ref. The update target always comes from a fresh
@@ -187,16 +200,144 @@ lane_refresh() {
 }
 
 # _lane_refresh_log <mode> <status> <from> <to> -- appends one line to the
-# durable record. Best-effort: a logging failure (e.g. a read-only home in a
-# test fixture) must never fail the launch.
+# durable record, or, under `_lane_refresh_defer_log`, holds it for
+# `lane_refresh_log_flush`. Best-effort: a logging failure (e.g. a read-only
+# home in a test fixture) must never fail the launch.
 _lane_refresh_log() {
-  local mode="$1" status="$2" from="$3" to="$4"
+  if [ -n "${_lane_refresh_defer_log:-}" ]; then
+    _lane_refresh_pending=("$@")
+    return 0
+  fi
+  _lane_refresh_write "$1" "$2" "$3" "$4" "n/a"
+}
+
+# lane_refresh_log_flush -- writes the held record with the caller's
+# LANE_REFRESH_ENV as its env field (R-0187: the env status is logged). Writes
+# at most once per launch; a no-op when nothing is held.
+lane_refresh_log_flush() {
+  [ "${#_lane_refresh_pending[@]}" -eq 4 ] || return 0
+  _lane_refresh_write "${_lane_refresh_pending[@]}" "${LANE_REFRESH_ENV:-n/a}"
+  _lane_refresh_pending=()
+}
+
+_lane_refresh_pending=()
+
+_lane_refresh_write() {
+  local mode="$1" status="$2" from="$3" to="$4" env_status="$5"
   local logdir="${LANE_REFRESH_LOG_DIR:-$HOME/.local/state/lanes}"
   local logfile="$logdir/refresh.log"
   {
     mkdir -p "$logdir" 2>/dev/null \
-      && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_lane_name:-unknown}" \
-           "${base:-unknown}" "$mode" "$status" "$from" "$to" >> "$logfile"
+           "${base:-unknown}" "$mode" "$status" "$from" "$to" \
+           "$env_status" >> "$logfile"
   } 2>/dev/null || true
+}
+
+## Declared Lane 3 env provisioner (harmonic-forge#875)
+#
+# R-0188 relinks the gate worktree's backend/.env to the main checkout's on the
+# premise that it has no legitimate per-worktree divergence. hrse's
+# harmonic-forge#861 made that false: its gate worktree owns a backend/.env
+# naming a disposable graph, and every relink put production credentials back.
+# A project may therefore declare `lane3_env_task` in projects.toml; both
+# `lane3` and `lane3-provision` run it instead of relinking.
+
+# lane3_env_lookup <main_root> -- sets LANE3_ENV_TASK (empty when the project
+# declares none) and returns 0, or sets LANE3_ENV_LOOKUP_ERROR and returns 1 on
+# ANY lookup failure, python3 itself failing included. Only a clean "declared
+# nothing" may fall through to the relink.
+#
+# WHICH manifest answers is fixed, not configurable (preclose survivor 4): the
+# projects.toml of the forge checkout this very file lives in, resolved from
+# its own path. FORGE_PROJECTS_MANIFEST is a supported override for every other
+# manifest consumer, but here a valid-yet-outdated manifest reached through it
+# would answer "declares nothing" and relink production credentials over the
+# gate worktree's disposable env -- so it is unset for the accessor, which
+# itself reads only its own forge root's manifest too. Tests point the
+# launcher at a fixture forge root (a copy of tools/lane + tools/onboard next
+# to a fixture projects.toml); there is no test-only override to export.
+#
+# The value channel is stdout ALONE (preclose survivor 2): stderr goes into
+# LANE3_ENV_LOOKUP_ERROR, never into the task name, and a zero-exit answer
+# that is not one line matching a mise task-name grammar is a lookup failure,
+# not a task to run.
+lane3_env_lookup() {
+  local main_root="$1" forge_root accessor out="" err="" errf rc=0
+  forge_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+  accessor="$forge_root/tools/onboard/lane3_env_task.py"
+  LANE3_ENV_TASK=""
+  LANE3_ENV_LOOKUP_ERROR=""
+  if ! errf="$(mktemp)"; then
+    LANE3_ENV_LOOKUP_ERROR="cannot create a temporary file for the lookup's diagnostics"
+    return 1
+  fi
+  out="$(env -u FORGE_PROJECTS_MANIFEST python3 "$accessor" "$(readlink -f "$main_root")" 2>"$errf")" || rc=$?
+  err="$(cat "$errf" 2>/dev/null || true)"
+  rm -f "$errf"
+  if [ "$rc" -ne 0 ]; then
+    LANE3_ENV_LOOKUP_ERROR="${err:-python3 exited $rc with no message}"
+    return 1
+  fi
+  if [ -n "$out" ] && ! [[ "$out" =~ ^[A-Za-z0-9_][A-Za-z0-9_.:-]*$ ]]; then
+    LANE3_ENV_LOOKUP_ERROR="the lookup exited 0 but its answer is not a single task name: $(printf '%q' "$out")"
+    return 1
+  fi
+  LANE3_ENV_TASK="$out"
+  return 0
+}
+
+# lane3_env_run_task <main_root> <target> <task> -- runs the declared task and
+# sets LANE3_ENV_OUTCOME to one of:
+#   provisioned  the task ran and exited 0               (returns 0)
+#   undefined    the main checkout's mise config does not define the task
+#   list-failed  mise could not list the main checkout's tasks (e.g. untrusted)
+#   task-failed  the task ran and exited non-zero
+# returning 1 for every outcome but the first.
+#
+# The task is resolved and run from the MAIN CHECKOUT, with the gate worktree
+# passed as `-- --root <target>` (preclose survivor 1). The declaration comes
+# from the always-current forge manifest; resolving the task body in the gate
+# worktree instead tied it to whatever ref that worktree holds, so a worktree
+# not updated at launch (`--ack-stale`, `skipped-busy`) or a forge merge that
+# landed before the project's companion hit "no such task" -- and the printed
+# remedy, `lane3-provision`, hit it again. The main checkout is the project's
+# current definition, and the task still writes only the gate worktree's own
+# disposable-graph files: production credentials never enter that worktree.
+# "Not defined" is told apart from "ran and failed" so each refusal names a
+# remedy that actually clears it. LANE is unset (as the busy check above does)
+# so the project's own lane write guards do not read this as a Lane 3 write.
+lane3_env_run_task() {
+  local main_root="$1" target="$2" task="$3" names="" rc=0
+  LANE3_ENV_OUTCOME=""
+  if ! names="$(cd "$main_root" && env -u LANE timeout 30 mise tasks ls --name-only 2>/dev/null)"; then
+    LANE3_ENV_OUTCOME="list-failed"
+    return 1
+  fi
+  if ! printf '%s\n' "$names" | grep -qxF -- "$task"; then
+    LANE3_ENV_OUTCOME="undefined"
+    return 1
+  fi
+  ( cd "$main_root" && env -u LANE mise run "$task" -- --root "$target" ) >&2 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    LANE3_ENV_OUTCOME="task-failed"
+    return 1
+  fi
+  LANE3_ENV_OUTCOME="provisioned"
+  return 0
+}
+
+# lane3_env_remedy <main_root> <target> <task> <rerun> -- one line naming the
+# repair for LANE3_ENV_OUTCOME; <rerun> is the command to run once repaired.
+lane3_env_remedy() {
+  local main_root="$1" target="$2" task="$3" rerun="$4"
+  case "$LANE3_ENV_OUTCOME" in
+    undefined)
+      echo "the main checkout ($main_root) does not define mise task '$task' -- merge the project's change that adds it and fast-forward the main checkout (git -C $main_root pull --ff-only), then $rerun" ;;
+    list-failed)
+      echo "mise could not list the main checkout's tasks -- if it refused an untrusted config: (cd $main_root && mise trust), then $rerun" ;;
+    *)
+      echo "read the task's output above, fix its cause, then $rerun (it re-runs 'mise run $task -- --root $target' from $main_root)" ;;
+  esac
 }

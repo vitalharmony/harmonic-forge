@@ -318,6 +318,10 @@ def check_lane_tasks(project: Project) -> Check:
         "lane3_begin_task": project.protocol.lane3_begin_task,
         "lane3_end_task": project.protocol.lane3_end_task,
     }
+    if project.protocol.lane3_env_task:
+        # harmonic-forge#875: a declared-but-absent task refuses every `lane3`
+        # launch, so it is checked like the five required names.
+        declared["lane3_env_task"] = project.protocol.lane3_env_task
     if project.protocol.runs_lane3:
         # harmonic-forge#800: `l1-post --kind ready-for-l3` runs `mise run check`
         # unconditionally (tools/gh/l1_post.py:1549), with no fallback -- a

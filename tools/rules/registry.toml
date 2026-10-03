@@ -1584,16 +1584,16 @@ hooks = []
 id = "R-0187"
 file = "3-lane-protocol.md"
 anchor = "lane3 repairs and records — and lane3-provision"
-statement = "The gate launcher repairs its worktree and backend/.env at launch and records every outcome, so a repaired precondition is never silent."
-text_sha = "42eb8614c211188c"
+statement = "The gate launcher repairs its worktree and backend/.env at launch and records every outcome -- the backend/.env status included, in the refresh.log record too -- so a repaired precondition is never silent."
+text_sha = "9e57ddeb103bf3d2"
 hooks = []
 
 [[rule]]
 id = "R-0188"
 file = "3-lane-protocol.md"
 anchor = "lane3 repairs and records — and lane3-provision"
-statement = "At launch, worktree staleness is updated and recorded (refusing on tracked changes or an undeterminable remote; --ack-stale skips the update), and an unlinked backend/.env is always relinked and recorded."
-text_sha = "af7a9a2518573492"
+statement = "At launch, worktree staleness is updated and recorded (refusing on tracked changes or an undeterminable remote; --ack-stale skips the update), and an unlinked backend/.env is relinked and recorded -- unless the project declares lane3_env_task in projects.toml, which is run instead (provisioned) from the main checkout's definition against the gate worktree, with a failed or undefined task or a failed lookup refusing the launch (provision-failed); the declaration is read only from the launcher's own forge checkout's projects.toml; the relink only replaces an absent or symlinked target, and a real backend/.env in a project declaring nothing refuses the launch untouched (owned-unexpected)."
+text_sha = "3cc98204525c84ae"
 hooks = []
 
 [[rule]]

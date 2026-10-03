@@ -41,6 +41,16 @@ BASELINE = LANE_DIR / "baseline_launch_tuples.json"
 ADDITIONS = LANE_DIR / "lane3_safety_additions.txt"
 
 
+def _drift_lane3_env(tree) -> None:
+    """A gate-worktree backend/.env that has drifted: a symlink to some other
+    file. A real, non-symlink file there is refused, never relinked
+    (harmonic-forge#875 sticky-wicket), so drift is modeled as a symlink."""
+    stale = tree.root / "stale.env"
+    stale.write_text("KEY=stale\n")
+    (tree.lane3 / "backend").mkdir(exist_ok=True)
+    (tree.lane3 / "backend" / ".env").symlink_to(stale)
+
+
 class _FixtureTree:
     """A disposable project tree with stubbed CLIs, as a context manager."""
 
@@ -64,10 +74,107 @@ class _FixtureTree:
         extension_record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
         self.lane2 = self.root / "proj-lane2"
         self.lane3 = self.root / "proj-lane3"
+        self.lane_dir = LANE_DIR
         if self._with_backend_env:
             (self.main / "backend").mkdir()
             (self.main / "backend" / ".env").write_text("KEY=value\n")
+            # harmonic-forge#875: the backend/.env step now looks the project
+            # up in projects.toml first -- and only in the projects.toml of
+            # the forge checkout the launcher itself lives in (preclose
+            # survivor 4: FORGE_PROJECTS_MANIFEST is not honored there). So
+            # every such fixture runs the launcher from its OWN fixture forge
+            # root: real copies of tools/lane and tools/onboard (copies, since
+            # both resolve their forge root through `readlink -f` /
+            # `Path.resolve()`), the other tools/ siblings symlinked, and a
+            # fixture projects.toml declaring no `lane3_env_task`. Never the
+            # real manifest. A stub `mise` that knows only the tasks a test
+            # defines means a test reaching the relink path cannot silently
+            # run a real task.
+            self.forge = self.root / "forge"
+            tools = LANE_DIR.parent
+            (self.forge / "tools").mkdir(parents=True)
+            ignore = shutil.ignore_patterns("__pycache__", ".pytest_cache")
+            for entry in tools.iterdir():
+                dest = self.forge / "tools" / entry.name
+                if entry.name in ("lane", "onboard"):
+                    shutil.copytree(entry, dest, ignore=ignore)
+                else:
+                    dest.symlink_to(entry)
+            self.lane_dir = self.forge / "tools" / "lane"
+            self.manifest = self.forge / "projects.toml"
+            self.write_manifest()
+            self.write_stub_mise(97, writes_env=False)
         return self
+
+    MISE_CALLS = "mise-calls.log"
+
+    def write_manifest(self, lane3_env_task: str | None = None,
+                       raw: str | None = None, *, at: Path | None = None) -> None:
+        """A fixture `projects.toml` whose one project's `path` is this
+        tree's main checkout (harmonic-forge#875). Written to the fixture
+        forge root's own manifest unless `at` names another file."""
+        if raw is None:
+            task_line = (f'lane3_env_task = "{lane3_env_task}"\n'
+                         if lane3_env_task is not None else "")
+            raw = (
+                "[[project]]\n"
+                'name = "fixture"\nprefix = "X"\nrepo = "example/fixture"\n'
+                f'account = "vitalharmony"\npath = "{self.main}"\nonboarded = true\n'
+                "[project.protocol]\n"
+                'worktree_name = "{checkout}-lane{lane}"\n'
+                'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'
+                'gate_checkout_task = "gate-checkout"\nlane3_begin_task = "lane3-begin"\n'
+                'lane3_end_task = "lane3-end"\nruns_lane3 = true\n' + task_line)
+        (at or self.manifest).write_text(raw)
+
+    @staticmethod
+    def define_tasks(checkout: Path, *names: str) -> None:
+        """Write `checkout`'s mise.toml defining exactly `names` -- what the
+        stub `mise` below reads to decide whether a task exists."""
+        (checkout / "mise.toml").write_text(
+            "".join(f'[tasks.{name}]\nrun = "true"\n' for name in names))
+
+    def write_stub_mise(self, exit_code: int, *, writes_env: bool = True) -> None:
+        """A stub `mise` first on PATH. It records its cwd, whether LANE was
+        set, and its arguments, and -- like real mise -- knows only the tasks
+        its cwd's mise.toml defines: `tasks ls --name-only` lists them, and
+        `run <unknown>` fails with "no task found" (preclose survivor 1: a
+        stub that accepts any task name cannot represent a task missing at a
+        ref). `run <defined> -- --root <dir>` exits `exit_code`, and -- when
+        that is 0 and `writes_env` -- stands in for a provisioner by writing a
+        real (synthetic) <dir>/backend/.env."""
+        calls = self.root / self.MISE_CALLS
+        write = ('mkdir -p "$root/backend" && rm -f "$root/backend/.env" && '
+                 'printf "SYNTHETIC=provisioned\\n" > "$root/backend/.env"\n'
+                 if writes_env and exit_code == 0 else "")
+        body = f"""#!/usr/bin/env bash
+printf "%s|%s|%s\\n" "$PWD" "${{LANE-unset}}" "$*" >> "{calls}"
+names() {{ [ -f mise.toml ] && sed -n 's/^\\[tasks\\.\\(.*\\)\\]$/\\1/p' mise.toml; return 0; }}
+case "$1" in
+  tasks) names; exit 0 ;;
+  run)
+    task="$2"; shift 2
+    if ! names | grep -qxF -- "$task"; then
+      echo "mise ERROR no task $task found" >&2; exit 1
+    fi
+    [ "${{1:-}}" = "--" ] && shift
+    root=""; [ "${{1:-}}" = "--root" ] && root="$2"
+    [ -n "$root" ] || {{ echo "stub mise: run without --root <dir>" >&2; exit 64; }}
+    {write}    exit {exit_code} ;;
+esac
+exit 0
+"""
+        stub = self.stub_bin / "mise"
+        stub.write_text(body)
+        stub.chmod(0o755)
+
+    def mise_calls(self) -> list[str]:
+        """Every `mise run ...` the stub saw. Other subcommands are dropped:
+        `tasks ls` is a lookup (the env step's and `_lane_cleanup.sh`'s own
+        `pc-down` probe), not a task run."""
+        path = self.root / self.MISE_CALLS
+        lines = path.read_text().splitlines() if path.exists() else []
+        return [line for line in lines if line.split("|", 2)[2].startswith("run ")]
 
     def __exit__(self, *exc):
         self._tmp.cleanup()
@@ -75,7 +182,7 @@ class _FixtureTree:
 
     def run(self, lane: str, args: list[str], **env_overrides) -> dict:
         env_overrides.setdefault("HOME", str(self.home))
-        return bc.capture_cell(LANE_DIR, self.main, self.stub_bin, lane, args,
+        return bc.capture_cell(self.lane_dir, self.main, self.stub_bin, lane, args,
                                env_overrides=env_overrides)
 
     def run_script(self, script: str, args: list[str] | None = None,
@@ -92,7 +199,7 @@ class _FixtureTree:
         env["HOME"] = str(self.home)
         env.update(env_overrides)
         return subprocess.run(
-            ["bash", str(LANE_DIR / script), *(args or [])],
+            ["bash", str(self.lane_dir / script), *(args or [])],
             cwd=self.main, env=env, capture_output=True, text=True)
 
 
@@ -943,8 +1050,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
     def test_an_untracked_backend_env_alone_never_blocks(self):
         with _FixtureTree(with_backend_env=True) as tree:
             self._advance_origin(tree)
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
 
@@ -1031,8 +1137,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
     def test_lane3_relinks_a_drifted_env_and_records_it(self):
         """TC12, AC6."""
         with _FixtureTree(with_backend_env=True) as tree:
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             link = tree.lane3 / "backend" / ".env"
@@ -1044,8 +1149,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
         """--ack-stale skips only the checkout; backend/.env has no
         legitimate per-worktree divergence."""
         with _FixtureTree(with_backend_env=True) as tree:
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             cell = self._run3(tree, ["--ack-stale", "deliberate"])
             self.assertTrue(cell["launched"], cell.get("stderr"))
             self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
@@ -1066,8 +1170,7 @@ class Lane3Provision(unittest.TestCase):
 
     def test_provision_repairs_staleness_and_the_env_symlink(self):
         with _FixtureTree(with_backend_env=True) as tree:
-            (tree.lane3 / "backend").mkdir()
-            (tree.lane3 / "backend" / ".env").write_text("KEY=stale\n")
+            _drift_lane3_env(tree)
             Lane3RefreshesAtLaunch._advance_origin(tree)
 
             proc = tree.run_script("lane3-provision")
