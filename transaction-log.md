@@ -36,6 +36,21 @@ Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
 - tools/onboard/test_manifest.py      |   6 +-
 - tools/rules/registry.toml           |   8 +-
 - 14 files changed, 585 insertions(+), 41 deletions(-)
+## feat(auto-ae): /auto-ae skill surface and a probe-only UserPromptSubmit hook that records the payload and toggles nothing (harmonic-forge#874, step 1)
+
+The skill toggles nothing and says so; auto-AE is not implemented beyond the
+probe. auto_ae_toggle.py, on LANE=1 and a prompt containing auto-ae, appends
+one line to ~/.local/state/auto-ae/probe.jsonl (timestamp, prompt,
+CLAUDE_CODE_ENTRYPOINT, LANE, payload key names only), prints one
+systemMessage, never raises. Registered on UserPromptSubmit; auto-ae declared
+in .claude/platform-skills.toml.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TuYH9bK72J7iiid9bhhrQL
+- skills/auto-ae/SKILL.md            |  40 +++++++++++
+- tools/hooks/auto_ae_toggle.py      |  85 ++++++++++++++++++++++
+- tools/hooks/test_auto_ae_toggle.py | 141 +++++++++++++++++++++++++++++++++++++
+- 5 files changed, 272 insertions(+), 1 deletion(-)
 
 ## test(gate): the F871 materialize test reads the scratch repo's own config with --local, so ambient host git config cannot pass the unfixed code (harmonic-forge#871 preclose pass 1)
 

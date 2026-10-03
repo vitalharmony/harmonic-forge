@@ -42,4 +42,4 @@
 # not. If this repo ever consumes no platform skills, set `skills = []` rather
 # than deleting this file.
 
-skills = ["belt-and-suspenders"]
+skills = ["auto-ae", "belt-and-suspenders"]
