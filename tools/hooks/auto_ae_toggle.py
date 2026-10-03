@@ -20,7 +20,8 @@ WHAT IT DOES NOT DO
 It decides nothing. It writes no state file, grants nothing, emits no
 permission decision and no `additionalContext`: its only output is a one-line
 `systemMessage`. Any internal failure is swallowed (fail closed = do nothing
-beyond saying the probe was not recorded); it never raises and always exits 0.
+beyond saying the probe was not recorded, and saying that only for a Lane 1
+prompt that mentions `auto-ae`); it never raises and always exits 0.
 The toggle itself, its provenance rules and the PreToolUse guard are later
 steps of #874 and do not exist yet.
 """
@@ -67,14 +68,21 @@ def record(payload: dict, lane: str | None, entrypoint: str | None,
 
 def main() -> int:
     message = None
+    raw = b""
     try:
-        payload = json.load(sys.stdin)
+        raw = sys.stdin.buffer.read()
+        payload = json.loads(raw.decode("utf-8"))
         if isinstance(payload, dict) and record(
                 payload, os.environ.get("LANE"),
                 os.environ.get("CLAUDE_CODE_ENTRYPOINT")):
             message = RECORDED
     except Exception as exc:  # noqa: BLE001 - a probe never costs a prompt
-        if os.environ.get("LANE") == "1":
+        # The failure message is gated exactly like the success path -- LANE=1
+        # AND the token -- so an unparseable, unrelated prompt stays silent
+        # (AC2). The raw bytes are the only place the token can be looked for
+        # when the payload itself would not parse (harmonic-forge#880 pass 1).
+        if (os.environ.get("LANE") == "1"
+                and _TRIGGER_RE.search(raw.decode("utf-8", "replace"))):
             message = f"auto-ae probe NOT recorded ({type(exc).__name__}); nothing toggled"
     if message:
         print(json.dumps({"systemMessage": message}))
