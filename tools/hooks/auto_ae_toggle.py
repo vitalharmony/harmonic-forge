@@ -20,8 +20,9 @@ WHAT IT DOES NOT DO
 It decides nothing. It writes no state file, grants nothing, emits no
 permission decision and no `additionalContext`: its only output is a one-line
 `systemMessage`. Any internal failure is swallowed (fail closed = do nothing
-beyond saying the probe was not recorded, and saying that only for a Lane 1
-prompt that mentions `auto-ae`); it never raises and always exits 0.
+beyond saying the probe was not recorded, and saying that only when the WRITE
+failed for a prompt that passed the one gate); an unparseable payload is
+silent. It never raises and always exits 0.
 The toggle itself, its provenance rules and the PreToolUse guard are later
 steps of #874 and do not exist yet.
 """
@@ -43,14 +44,22 @@ def probe_path() -> Path:
     return Path.home() / PROBE_RELPATH
 
 
-def record(payload: dict, lane: str | None, entrypoint: str | None,
-           now: float | None = None) -> bool:
-    """Append one probe line. True when written; False when not applicable."""
-    if lane != "1":
+def applies(payload: object, lane: str | None) -> bool:
+    """THE applicability gate, and the only one: LANE=1 and a prompt that
+    mentions auto-ae. Every output the hook can produce is behind it."""
+    if lane != "1" or not isinstance(payload, dict):
         return False
     prompt = payload.get("prompt")
-    if not isinstance(prompt, str) or not _TRIGGER_RE.search(prompt):
+    return isinstance(prompt, str) and bool(_TRIGGER_RE.search(prompt))
+
+
+def record(payload: dict, lane: str | None, entrypoint: str | None,
+           now: float | None = None) -> bool:
+    """Append one probe line. True when written; False when not applicable.
+    A write failure raises; `main()` is the one place that reports it."""
+    if not applies(payload, lane):
         return False
+    prompt = payload["prompt"]
     now = time.time() if now is None else now
     entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
@@ -67,25 +76,21 @@ def record(payload: dict, lane: str | None, entrypoint: str | None,
 
 
 def main() -> int:
-    message = None
-    raw = b""
+    # An unparseable payload is an unidentifiable prompt, so it is silent:
+    # there is no second, looser gate over the raw bytes (harmonic-forge#880
+    # sticky-wicket PATCH, survivor 1).
     try:
-        raw = sys.stdin.buffer.read()
-        payload = json.loads(raw.decode("utf-8"))
-        if isinstance(payload, dict) and record(
-                payload, os.environ.get("LANE"),
-                os.environ.get("CLAUDE_CODE_ENTRYPOINT")):
-            message = RECORDED
-    except Exception as exc:  # noqa: BLE001 - a probe never costs a prompt
-        # The failure message is gated exactly like the success path -- LANE=1
-        # AND the token -- so an unparseable, unrelated prompt stays silent
-        # (AC2). The raw bytes are the only place the token can be looked for
-        # when the payload itself would not parse (harmonic-forge#880 pass 1).
-        if (os.environ.get("LANE") == "1"
-                and _TRIGGER_RE.search(raw.decode("utf-8", "replace"))):
-            message = f"auto-ae probe NOT recorded ({type(exc).__name__}); nothing toggled"
-    if message:
-        print(json.dumps({"systemMessage": message}))
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - a probe never costs a prompt
+        return 0
+    if not applies(payload, os.environ.get("LANE")):
+        return 0
+    try:
+        record(payload, "1", os.environ.get("CLAUDE_CODE_ENTRYPOINT"))
+        message = RECORDED
+    except Exception as exc:  # noqa: BLE001 - the one real, attributable failure
+        message = f"auto-ae probe NOT recorded ({type(exc).__name__}); nothing toggled"
+    print(json.dumps({"systemMessage": message}))
     return 0
 
 
