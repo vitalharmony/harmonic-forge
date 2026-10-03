@@ -1279,11 +1279,12 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
     lookups), where a single local `git log -p`/`--name-only` pair is two
     subprocess calls total, regardless of history size.
 
-    Gated on the file actually existing in this checkout: cymagraph-infra
-    and openclaw-projects carry no transaction-log.md at all (confirmed
-    live, 404 on both), so this silently does nothing there rather than
-    flagging every merge permanently -- exactly the "check nobody can turn
-    green" anti-pattern `Report.actionable`'s design note warns against.
+    Gated on `origin/main` itself tracking the file -- the same ref the
+    audit walks (harmonic-forge#883 preclose). Repos that carry no
+    transaction-log.md (cymagraph-infra, openclaw-projects, and harmonic-forge
+    since #883 rendered it at read time) silently skip rather than flag every
+    merge permanently -- exactly the "check nobody can turn green"
+    anti-pattern `Report.actionable`'s design note warns against.
 
     Walks the file's **full history** (`git log -p`), not its current
     content, because the header states the file is cleared (on a version
@@ -1294,13 +1295,26 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
     older than the last clear -- its entry is gone from the live file by
     design, not because it was skipped.
     """
-    if not (Path(checkout) / "transaction-log.md").is_file():
-        return
-
     try:
         _run(["git", "fetch", "origin", "main"], cwd=checkout)
     except GhError:
         pass  # best-effort freshness; proceed against whatever origin/main we have
+
+    # The gate reads the ref the audit walks (harmonic-forge#883 preclose).
+    # Neither the working tree (an untracked `--out` copy) nor the local index
+    # (a checkout not yet pulled past the untrack) may arm it. Fail direction:
+    # skip. A lookback window straddling an untrack therefore stops flagging
+    # pre-untrack merges -- under-reporting, the same direction as every other
+    # guard in this report-only audit. Do not add a cheaper local pre-gate;
+    # two local proxies in a row were the bug.
+    try:
+        tracked_upstream = _run(
+            ["git", "ls-tree", "--name-only", "origin/main", "--", "transaction-log.md"],
+            cwd=checkout).strip()
+    except GhError:
+        return
+    if not tracked_upstream:
+        return
 
     since = (datetime.now(timezone.utc)
              - timedelta(days=TRANSACTION_LOG_LOOKBACK_DAYS)).strftime("%Y-%m-%d")

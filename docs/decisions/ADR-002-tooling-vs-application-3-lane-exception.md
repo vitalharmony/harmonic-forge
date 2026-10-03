@@ -57,8 +57,8 @@ radius.
    fresh resumable instance) with two questions: is the just-applied fix
    actually correct, and is the *process itself* the problem. Verdict on
    both: **the fix was wrong** (it reverted two commits that were
-   correctly solving a real constraint — `hrse_manager.py` only commits,
-   and only appends a transaction-log entry, when the tree is dirty; a
+   correctly solving a real constraint — `hrse_manager.py` only commits
+   when the tree is dirty; a
    gitignored/out-of-repo marker file can never trigger that path — and
    the constraint had never been written down, so it kept getting
    "cleaned up" by well-intentioned agents who didn't know it existed).

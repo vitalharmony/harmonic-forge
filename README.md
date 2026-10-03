@@ -108,9 +108,10 @@ that kept getting violated became executable hooks in `tools/hooks/`:
   placement), `post_comment.py` (self-checking `--body-file` posts), a call
   cache, and a closing-keyword guard. `--repo` is mandatory with no default,
   because a default once caused a mis-post.
-- **`tools/transaction-log/`** — project-agnostic per-commit delta log and
-  diffstat glue, so a session can see what other sessions did since the last
-  version bump.
+- **`tools/transaction-log/`** — a project-agnostic renderer that derives the
+  transaction-log view from git when it is read (a SessionStart hook and a
+  `mise run transaction-log` task), so a session can see what other sessions
+  did since a boundary. Nothing is committed (harmonic-forge#883).
 - **`tools/lane/`** — the `lane1`/`lane2`/`lane3` launchers that put a session in
   the right worktree with the right role signal.
 - **`gh-as`** — per-process GitHub account scoping, so credential isolation
@@ -218,7 +219,8 @@ Then read [`3-lane-protocol.md`](3-lane-protocol.md) before pulling a first tick
 ```bash
 git config core.hooksPath .githooks   # required — direct commits to main are rejected
 mise run check                        # verification gate
-mise run commit                       # stage + transaction-log entry + commit, in that order
+mise run commit                       # stage + commit
+mise run transaction-log              # recent commits, rendered from git
 ```
 
 macOS and Linux. Symlinks work natively on both; Windows needs WSL.

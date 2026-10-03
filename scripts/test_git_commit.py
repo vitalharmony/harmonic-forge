@@ -43,7 +43,10 @@ class ExecuteGitTests(unittest.TestCase):
         pushes = [call for call in calls if call[:2] == ["git", "push"]]
         self.assertEqual(pushes, [["git", "push", "-u", "origin", "HEAD"]] * 2)
 
-    def test_main_still_enters_main_only_log_rotation_path(self):
+    def test_pushing_main_does_no_log_rotation(self):
+        """harmonic-forge#883: the transaction log is rendered at read time, so
+        a push to main has nothing to clear -- no clear subprocess, no
+        clear branch, no second commit."""
         calls: list[list[str]] = []
 
         def fake_execute(cmd, check=True):
@@ -54,13 +57,13 @@ class ExecuteGitTests(unittest.TestCase):
                 return "main"
             return ""
 
-        clear = subprocess.CompletedProcess(["clear"], 0, stdout="not-cleared\n", stderr="")
         with patch.object(MODULE, "execute_git", side_effect=fake_execute), patch.object(
-            MODULE.subprocess, "run", return_value=clear
+            MODULE.subprocess, "run"
         ) as mocked_run, patch.object(MODULE.sys, "argv", ["git_commit.py", "--push"]):
             MODULE.main()
-        self.assertIn(["git", "push", "-u", "origin", "HEAD"], calls)
-        mocked_run.assert_called_once()
+        self.assertEqual(calls, [["git", "status", "--porcelain"],
+                                 ["git", "push", "-u", "origin", "HEAD"]])
+        mocked_run.assert_not_called()
 
 
 if __name__ == "__main__":

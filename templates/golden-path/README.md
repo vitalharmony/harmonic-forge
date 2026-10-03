@@ -63,15 +63,16 @@ reading why is how the incident recurs.
   startup can still leave a stale "Ready" status from a prior successful
   probe cycle — the default restart policy doesn't force a fresh
   readiness evaluation on its own.
-- **The `commit` task's ordering: stage → compute a transaction-log
-  summary from the *staged* diff → append the entry → re-stage → commit,
-  all as one commit, never two.** The original custom-script version
-  computed and wrote the log entry *after* committing, as a second,
-  unstaged file write — which meant the working tree was always left
-  dirty by exactly one pending entry, and could never converge to clean
-  through the tool's own normal operation. See `tools/transaction-log/`
-  in this repo for the reusable implementation and the full incident
-  record (hrse#242).
+- **The `commit` task only stages and commits; it writes no log.** The
+  transaction-log view is rendered from git when it is read — a
+  SessionStart hook (`tools/hooks/transaction_log_context.py`) and a
+  `transaction-log` mise task — so nothing is committed that could go
+  stale or collide between branches. Every committed variant failed:
+  a post-commit append left the tree dirty (hrse#242), an anchored append
+  conflicted across branches (harmonic-forge#376), and a committed
+  regeneration missed squash merges and needed its own commits
+  (hrse#1511, hrse#1764). See `tools/transaction-log/README.md`
+  (harmonic-forge#883).
 - **`gh-new-issue`'s two-step create-then-add-to-board**, not a single
   call. GitHub's own automation for auto-adding new issues to a project
   board has proven unreliable in practice — the explicit second step is a
@@ -102,9 +103,10 @@ project-specific anymore, see `tools/gh/README.md` in this repo:
 
 - `scripts/bump_version.py` — reads/writes your project's version file.
 - `scripts/git_commit.py` — the three-tier commit-message hierarchy
-  (explicit override > auto-bump message > default), plus the
-  transaction-log wiring — call into `tools/transaction-log/` from this
-  repo rather than reimplementing it.
+  (explicit override > auto-bump message > default). For the
+  transaction-log view, register `tools/hooks/transaction_log_context.py`
+  as a SessionStart hook and call `tools/transaction-log/transaction_log.py`
+  from a `transaction-log` task, rather than reimplementing either.
 - `[env]`'s `GH_REPO` (and, if this project has a board,
   `GH_PROJECT_OWNER`/`GH_PROJECT_NUMBER`) — the only project-specific input
   `tools/gh/gh_issue.py`/`post_comment.py` need; see `mise.toml` above.
@@ -124,8 +126,7 @@ deferred: `check` + `commit` + `gh-new-issue` + `post-comment` only, no
 — consumers pull this repo via `sync_rules.py --pull`, so the git SHA
 already **is** the version, and `harmonic-forge.md`'s own "Draft v0.2" header
 is a hand-maintained spec-status marker deliberately bumped at real
-milestones, not automated per-commit. Without a bump to hang transaction-
-log rotation on, `commit --push` clears the log instead — push is this
-kind of repo's genuine "publish" event. Use this subset (not the full
+milestones, not automated per-commit. Without a bump to anchor a
+`version-minor` boundary, its transaction-log view uses `recent:<N>`. Use this subset (not the full
 pattern above) for any future docs/tooling-only project; don't invent a
 fake `bump`/`restart` ceremony just to match the shape.

@@ -35,9 +35,10 @@ that session had no directive entrypoint at all.
 | `rules/testing-gate.md` | What a verification claim has to be backed by. |
 | `rules/lane-shorthand.md` | Lane shorthand (`L2S`/`L3F`/`H<N>`/`F<N>`), `BATCH`, and EOQ for chat and belt events. |
 
-`transaction-log.md` holds per-commit deltas since the last version bump —
-read it for what other sessions have done that is not yet reflected
-elsewhere.
+The transaction-log view — recent commits on HEAD, rendered from git — is
+injected at session start; `mise run transaction-log` prints it on demand.
+Read it for what other sessions have done that is not yet reflected
+elsewhere. There is no `transaction-log.md` (harmonic-forge#883).
 
 ## Conventions specific to this repo
 

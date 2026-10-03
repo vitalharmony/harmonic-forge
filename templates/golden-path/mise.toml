@@ -5,9 +5,8 @@
 # drop-in — replace every <PLACEHOLDER>, adjust service names/ports, and
 # supply your own scripts/bump_version.py, scripts/git_commit.py (see
 # README.md in this directory for what each one needs to do;
-# tools/transaction-log/ in this repo is the one piece that's actually
-# published as reusable code — scripts/git_commit.py should call into it,
-# not reimplement it). gh_issue.py/post_comment.py are NOT project-specific
+# tools/transaction-log/ in this repo is published as reusable code — the
+# transaction-log task below calls into it rather than reimplementing it). gh_issue.py/post_comment.py are NOT project-specific
 # anymore (harmonic-forge#53) — call tools/gh/ directly, supplying only the
 # repo/board slug via [env] below.
 #
@@ -73,8 +72,18 @@ arg "<level>" help="Version level (a/b/c)" default="c" {
 '''
 run = "python3 scripts/bump_version.py ${usage_level?}"
 
+[tasks.transaction-log]
+description = "Print the transaction-log view, rendered from git now (harmonic-forge#883)"
+usage = '''
+flag "--all" help="No caps"
+flag "--out <path>" help="Write to this file instead of stdout"
+'''
+run = """
+python3 <HARMONIC_FORGE>/tools/transaction-log/transaction_log.py --project-root . --boundary version-minor:<VERSION_FILE> ${usage_all:+--all} ${usage_out:+--out "$usage_out"}
+"""
+
 [tasks.commit]
-description = "Stage, append a transaction-log entry, and commit — in that order, one commit total"
+description = "Stage and commit"
 usage = '''
 flag "--message <message>" help="Override the auto-generated commit message"
 flag "--bumped <version>" help="Version that was just bumped"

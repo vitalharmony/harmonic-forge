@@ -7,3 +7,6 @@ __pycache__/
 # shows as untracked, a `git add -A` commits it, and the tool's own dirty-tree
 # guard then refuses on an artifact it created itself.
 .claude/cache/
+# harmonic-forge#883: the transaction log is rendered from git at read time
+# (`mise run transaction-log`); a stray local copy must never be committed.
+transaction-log.md

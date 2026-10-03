@@ -93,10 +93,7 @@ harmonic-forge/
 │                                    # templates/golden-path/README.md's "docs/tooling-repo
 │                                    # subset" section for the full reasoning)
 ├── scripts/
-│   └── git_commit.py               # this repo's own commit task — calls into
-│                                    # tools/transaction-log/ directly, doesn't reimplement it
-├── transaction-log.md              # this repo's own transaction log — cleared on push to
-│                                    # main (no version bump exists to hang rotation on)
+│   └── git_commit.py               # this repo's own commit task — stage + commit
 ├── .githooks/
 │   └── pre-commit                  # rejects direct commits to main (harmonic-forge#52); every
 │                                    # clone must run `git config core.hooksPath .githooks`
@@ -116,8 +113,8 @@ harmonic-forge/
 │   └── golden-path/                # reference mise.toml + process-compose.yaml +
 │                                    # workflow doc for a project's service-lifecycle path
 ├── tools/
-│   ├── transaction-log/            # published, project-agnostic transaction-log +
-│   │                                # diffstat glue (library + CLI)
+│   ├── transaction-log/            # published, project-agnostic renderer: the
+│   │                                # transaction-log view, from git at read time
 │   ├── gh-as                       # per-process GitHub account scoping — the sanctioned
 │   │                                # alternative to `gh auth switch`, which is global
 │   │                                # mutable state and breaks concurrent sessions
