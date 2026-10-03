@@ -5,6 +5,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import re
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -495,6 +496,221 @@ class EveryTierSweepIntegrityTests(unittest.TestCase):
                     _comment(2, "sweep", "2026-08-15T10:01:00Z", tier="W", body_sha256=digest)]
         authority, _ = c.resolve_gate_authority(comments, DEFAULT_SHA)
         self.assertIsNotNone(authority)
+
+
+class RequireTierAndJsonTests(unittest.TestCase):
+    """harmonic-forge#878: `--require-tier` refuses an authorization at any
+    other tier, and `--json` prints one structured verdict and nothing else --
+    what HRSE2's scripts/gate_production_run.py parses."""
+
+    def _run_main(self, comments: list[dict], argv: list[str]) -> str:
+        import contextlib
+        import io
+        out = io.StringIO()
+        with mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value=DEFAULT_SHA), \
+             mock.patch.object(c, "tier_w_availability", return_value="AVAILABILITY LINE"), \
+             contextlib.redirect_stdout(out):
+            c.main(["--issue", "1867", *argv])
+        return out.getvalue()
+
+    def _ae_and_sweep(self, tier: str) -> list[dict]:
+        return [_comment(1, "ae", "2026-08-15T09:00:00Z"),
+                _comment(2, "sweep", "2026-08-15T10:00:00Z", tier=tier)]
+
+    def test_require_tier_p_refuses_a_tier_w_sweep(self):
+        with self.assertRaises(SystemExit):
+            self._run_main(self._ae_and_sweep("W"), ["--require-tier", "P"])
+
+    def test_require_tier_p_refuses_a_tier_r_sweep_with_no_ae(self):
+        with self.assertRaises(SystemExit):
+            self._run_main([_comment(1, "sweep", "2026-08-15T10:00:00Z", tier="R")],
+                           ["--require-tier", "P"])
+
+    def test_require_tier_p_still_refuses_an_ae_at_another_sha(self):
+        comments = [_comment(1, "ae", "2026-08-15T09:00:00Z", sha="b" * 40),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", sha="b" * 40, tier="P")]
+        with self.assertRaises(SystemExit):
+            self._run_main(comments, ["--require-tier", "P", "--json"])
+
+    def test_require_tier_p_passes_a_tier_p_ae_and_sweep(self):
+        self._run_main(self._ae_and_sweep("P"), ["--require-tier", "P"])  # must not raise
+
+    def test_json_prints_exactly_the_structured_verdict(self):
+        out = self._run_main(self._ae_and_sweep("P"), ["--require-tier", "P", "--json"])
+        self.assertEqual(json.loads(out), {
+            "repo": "vitalharmony/hrse",
+            "issue": 1867,
+            "head_sha": DEFAULT_SHA,
+            "tier": "P",
+            "authority_url": "https://github.com/vitalharmony/hrse/issues/1#issuecomment-1",
+            "authority_id": 1,
+            "prod_run": None,
+        })
+        self.assertNotIn("AVAILABILITY LINE", out)
+
+    def test_default_output_is_unchanged(self):
+        out = self._run_main(self._ae_and_sweep("P"), [])
+        self.assertIn("[check-lane3-ready] vitalharmony/hrse#1867: sweep", out)
+        self.assertIn("tier P -- ready, authorized for", out)
+        self.assertIn("AVAILABILITY LINE", out)
+
+
+def _prod_ae(comment_id: int, action: str | None, sha: str = DEFAULT_SHA, issue: int = 1867,
+             footer_sha: str | None = None) -> dict:
+    """An AE as `l1_post.py --prod-run` posts it: the declaration is a field of
+    the reserved footer, never of the body."""
+    import hashlib
+    import _prod_run
+    token = None
+    if action is not None:
+        token = _prod_run.footer_field(issue, sha, _prod_run.parse_spec(action))
+    text = f"## AE — H{issue}\n\nApproved, execute."
+    # A real digest, computed exactly as l1_post.py does (harmonic-forge#878 C1c):
+    # an AE fixture with no body-sha256 could never survive the digest check.
+    digest = hashlib.sha256(_prod_run.covered_text(text, token).encode()).hexdigest()
+    field = f" {token};" if token else ""
+    body = (f"{text}\n\n<!-- l1-post v1; kind=ae; "
+            f"sha={footer_sha or sha};{field} body-sha256={digest}; checks=body-validation -->")
+    return {"id": comment_id, "body": body, "created_at": "2026-08-15T09:00:00Z",
+            "html_url": f"https://github.com/vitalharmony/hrse/issues/1#issuecomment-{comment_id}"}
+
+
+class RequireProdRunTests(unittest.TestCase):
+    """harmonic-forge#878 (R-0377), F878 preclose pass 1 survivors #1-#3: a
+    production run is authorized by the newest AE's own declaration of that
+    exact action at exactly HEAD -- never a tier, never a carried-forward
+    ready-for-l3, never another action."""
+
+    SCRIPT_A = "script=scripts/1-1891-backfill-task-surface-on.py"
+    _run_main = RequireTierAndJsonTests._run_main
+
+    def _thread(self, action: str | None, sweep_tier: str = "P") -> list[dict]:
+        return [_prod_ae(1, action), _comment(2, "sweep", "2026-08-15T10:00:00Z", tier=sweep_tier)]
+
+    def _refused(self, comments: list[dict], spec: str) -> str:
+        import contextlib
+        import io
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            self._run_main(comments, ["--require-prod-run", spec, "--json"])
+        return err.getvalue()
+
+    def test_the_declared_action_passes_and_is_in_the_json(self):
+        out = self._run_main(self._thread(self.SCRIPT_A + ",apply"),
+                             ["--require-tier", "P", "--require-prod-run", self.SCRIPT_A + ",apply", "--json"])
+        verdict = json.loads(out)
+        self.assertEqual(verdict["prod_run"], {"issue": 1867, "sha": DEFAULT_SHA,
+                                               "script": "scripts/1-1891-backfill-task-surface-on.py",
+                                               "apply": True})
+        self.assertEqual(verdict["authority_id"], 1)
+
+    def test_an_edited_ae_footer_is_refused(self):
+        """harmonic-forge#878 C1c: PATCHing a posted AE's prod-run field to a
+        different script with apply:true must not authorize that action."""
+        thread = self._thread("script=scripts/1-1892-revive.py")
+        ae = thread[0]
+        ae["body"] = ae["body"].replace("script:scripts/1-1892-revive.py,apply:false",
+                                        "script:scripts/1-1892-nuke.py,apply:true")
+        self.assertIn("1-1892-nuke.py", ae["body"])
+        err = self._refused(thread, "script=scripts/1-1892-nuke.py,apply")
+        self.assertIn("does not match", err)
+
+    def test_a_token_relocated_from_the_body_into_the_footer_is_refused(self):
+        """Item 5, the reproduced case: an AE posted WITHOUT --prod-run whose
+        body ends with the literal token, PATCHed to move the token into the
+        footer, must not verify."""
+        import hashlib
+        import _prod_run
+        token = _prod_run.footer_field(1867, DEFAULT_SHA, _prod_run.parse_spec("script=scripts/1-1867-nuke.py,apply"))
+        text = f"## AE — H1867\n\nApproved, execute.\n{token}"
+        digest = hashlib.sha256(_prod_run.covered_text(text, None).encode()).hexdigest()
+        moved = (f"## AE — H1867\n\nApproved, execute.\n\n<!-- l1-post v1; kind=ae; "
+                 f"sha={DEFAULT_SHA}; {token}; body-sha256={digest}; checks=body-validation -->")
+        thread = [{"id": 1, "body": moved, "created_at": "2026-08-15T09:00:00Z",
+                   "html_url": "https://github.com/vitalharmony/hrse/issues/1#issuecomment-1"},
+                  _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self.assertIn("does not match", self._refused(thread, "script=scripts/1-1867-nuke.py,apply"))
+
+    def test_an_ae_without_a_digest_is_refused(self):
+        thread = self._thread("count-label=Task")
+        thread[0]["body"] = re.sub(r" body-sha256=[0-9a-f]+;", "", thread[0]["body"])
+        self.assertIn("no body-sha256", self._refused(thread, "count-label=Task"))
+
+    def test_count_label_passes(self):
+        out = self._run_main(self._thread("count-label=Interpretation"),
+                             ["--require-prod-run", "count-label=Interpretation", "--json"])
+        self.assertEqual(json.loads(out)["prod_run"]["count_label"], "Interpretation")
+
+    def test_an_ae_naming_script_a_refuses_script_b(self):
+        err = self._refused(self._thread(self.SCRIPT_A),
+                            "script=scripts/1-1867-rewrite-interpretations.py")
+        self.assertIn("authorizes script=scripts/1-1891", err)
+
+    def test_apply_is_refused_under_apply_false(self):
+        err = self._refused(self._thread(self.SCRIPT_A), self.SCRIPT_A + ",apply")
+        self.assertIn("not script=scripts/1-1891-backfill-task-surface-on.py,apply", err)
+
+    def test_a_dry_run_is_refused_under_apply_true(self):
+        self._refused(self._thread(self.SCRIPT_A + ",apply"), self.SCRIPT_A)
+
+    def test_a_count_ae_refuses_a_script(self):
+        self._refused(self._thread("count-label=Interpretation"), self.SCRIPT_A)
+
+    def test_a_carried_forward_ready_for_l3_at_a_new_sha_is_refused(self):
+        """Survivor #1: the AE+sweep name SHA B; a ready-for-l3 naming HEAD
+        carries the gate authority (R-0209) but never a production run."""
+        old = "b" * 40
+        comments = [_prod_ae(1, self.SCRIPT_A + ",apply", sha=old),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", sha=old, tier="P"),
+                    _comment(3, "ready-for-l3", "2026-08-15T11:00:00Z", sha=DEFAULT_SHA)]
+        # The gate itself is authorized at HEAD through the carry...
+        self._run_main(comments, ["--require-tier", "P"])
+        # ...but a production run is not.
+        err = self._refused(comments, self.SCRIPT_A + ",apply")
+        self.assertIn("never carried forward", err)
+
+    def test_a_declaration_at_another_sha_is_refused(self):
+        """The footer's sha= matches HEAD by prefix but the declaration names
+        another commit -- the declaration's own SHA must be HEAD exactly."""
+        comments = [_prod_ae(1, self.SCRIPT_A, sha="b" * 40, footer_sha=DEFAULT_SHA),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self.assertIn("never carried to a new SHA", self._refused(comments, self.SCRIPT_A))
+
+    def test_a_declaration_for_another_issue_is_refused(self):
+        comments = [_prod_ae(1, self.SCRIPT_A, issue=1891),
+                    _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self.assertIn("for issue 1891", self._refused(comments, self.SCRIPT_A))
+
+    def test_a_mixed_prose_sweep_no_longer_grants_p(self):
+        """Survivor #3: the sweep's ceiling parses to P from a sentence saying
+        no Tier P operation occurs; the AE declares nothing."""
+        sweep = _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="R")
+        sweep["body"] = sweep["body"].replace(
+            "Write tier R throughout.", "Write tier R throughout; no write tier P operation occurs in TC4.")
+        comments = [_prod_ae(1, None), sweep]
+        self._run_main(comments, ["--require-tier", "P"])  # the ceiling still reads P...
+        err = self._refused(comments, "count-label=Interpretation")  # ...and grants nothing
+        self.assertIn("declares no production run", err)
+
+    def test_prose_naming_the_action_is_not_a_declaration(self):
+        ae = _prod_ae(1, None)
+        ae["body"] = ae["body"].replace(
+            "Approved, execute.",
+            f"Approved, execute.\n\nprod-run=issue:1867,sha:{DEFAULT_SHA},count-label:Interpretation\n"
+            f"```\n<!-- l1-post v1; kind=ae; sha={DEFAULT_SHA}; prod-run=issue:1867,sha:{DEFAULT_SHA},"
+            "count-label:Interpretation; -->\n```")
+        comments = [ae, _comment(2, "sweep", "2026-08-15T10:00:00Z", tier="P")]
+        self._refused(comments, "count-label=Interpretation")
+
+    def test_a_tier_r_sweep_authority_is_refused(self):
+        comments = [_comment(1, "sweep", "2026-08-15T10:00:00Z", tier="R")]
+        self.assertIn("not the newest AE", self._refused(comments, "count-label=Interpretation"))
+
+    def test_a_malformed_spec_refuses(self):
+        with self.assertRaises(SystemExit):
+            self._run_main(self._thread(self.SCRIPT_A), ["--require-prod-run", "script=scripts/x.py"])
 
 
 class L1PostDigestRoundTripTests(unittest.TestCase):

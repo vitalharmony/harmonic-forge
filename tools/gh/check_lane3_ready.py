@@ -38,6 +38,7 @@ from manifest_identity import apply_project_identity  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
+import _prod_run  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
 #: harmonic-forge#791: a spec/handoff is recognized by its OWN heading too,
@@ -149,8 +150,11 @@ def verify_body_sha256(comment: dict) -> bool:
     recorded = FOOTER_BODY_SHA.search(comment.get("body", ""))
     if recorded is None:
         return True
-    prefix = FOOTER_MARKER.sub("", comment.get("body", ""))
-    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+    body = comment.get("body", "")
+    prefix = FOOTER_MARKER.sub("", body)
+    # harmonic-forge#878 (C1c): a `prod-run` footer token is inside the digest.
+    covered = _prod_run.covered_text(prefix, _prod_run.raw_field(body))
+    digest = hashlib.sha256(covered.encode()).hexdigest()
     return digest == recorded.group(1)
 
 
@@ -340,6 +344,51 @@ def resolve_gate_authority(comments: list[dict], head_sha: str) -> tuple[dict | 
     return carry, f"authorized for {head_sha} by {carry['html_url']}"
 
 
+def prod_run_refusal(comments: list[dict], authority: dict, issue: int,
+                     head_sha: str, wanted: dict) -> str | None:
+    """Why `authority` does not authorize the production run `wanted`
+    (harmonic-forge#878, R-0377), or None.
+
+    Three things a gate-readiness authority is not, at Tier P:
+      * a carried-forward `ready-for-l3` or a tier-R sweep. A production run is
+        irreversible; R-0209's carry path exists for the reversible retest
+        cycle, and #858 already excluded standing-grant AEs from it. The
+        authority must be the newest AE itself, its footer SHA exactly HEAD.
+      * a tier. The sweep's tier is a ceiling -- the most permissive mention
+        anywhere in its prose -- built for restricting, so it never grants.
+      * any action other than the one the AE declares. Only `l1_post.py
+        --prod-run` writes that declaration (`_prod_run`), so prose, a fenced
+        quote, or another comment's footer never satisfies it."""
+    ae = latest_by_kind(comments, "ae")
+    kind_match = FOOTER_KIND.search(authority.get("body", ""))
+    kind = kind_match.group(1).lower() if kind_match else None
+    if ae is None or kind != "ae" or authority.get("id") != ae.get("id"):
+        return (f"the authority ({authority.get('html_url')}) is a {kind or 'non-l1-post'} comment, "
+                "not the newest AE -- a production run is never carried forward or "
+                f"sweep-authorized; post an AE with --prod-run at {head_sha}")
+    # harmonic-forge#878 sticky-wicket PATCH (C1c): the AE is the record of
+    # what was approved, so it must be the record as posted. A missing digest
+    # or a mismatch -- including an edited prod-run field -- refuses.
+    if FOOTER_BODY_SHA.search(ae.get("body", "")) is None or not verify_body_sha256(ae):
+        return (f"AE ({ae['html_url']}) has no body-sha256 or does not match it -- it may have "
+                "been edited since posting; re-post the AE with l1-post")
+    declaration = _prod_run.declared(ae.get("body", ""))
+    if declaration is None:
+        return (f"AE ({ae['html_url']}) declares no production run -- post the AE with "
+                f"`l1-post --prod-run {_prod_run.describe(wanted)}` at {head_sha}")
+    if declaration["issue"] != issue:
+        return (f"AE ({ae['html_url']}) declares a production run for issue "
+                f"{declaration['issue']}, not {issue}")
+    if declaration["sha"] != head_sha:
+        return (f"AE ({ae['html_url']}) declares a production run at {declaration['sha']}, "
+                f"but HEAD is {head_sha} -- a production run is never carried to a new SHA")
+    declared_action = _prod_run.action_of(declaration)
+    if declared_action != wanted:
+        return (f"AE ({ae['html_url']}) authorizes {_prod_run.describe(declared_action)}, "
+                f"not {_prod_run.describe(wanted)}")
+    return None
+
+
 def tier_w_availability() -> str | None:
     """The disposable-graph availability line, from the consuming repo's own
     gate-adapter manifest (`tier_w_message.text`), or None when it declares
@@ -373,7 +422,41 @@ def main(argv: list[str] | None = None) -> None:
             "issue_for_branch() to resolve at all)."
         ),
     )
+    parser.add_argument(
+        "--require-tier", choices=("R", "W", "P"), default=None,
+        help=(
+            "harmonic-forge#878: refuse unless the newest sweep's declared write "
+            "tier is exactly this one, on top of every check the default run "
+            "makes. HRSE2's scripts/gate_production_run.py passes `P`, so a "
+            "production run needs a Tier P authorization for the checked-out SHA."
+        ),
+    )
+    parser.add_argument(
+        "--require-prod-run", default=None, metavar="SPEC",
+        help=(
+            "harmonic-forge#878 (R-0377): refuse unless the newest AE, at exactly "
+            "the checked-out SHA (never a carried-forward ready-for-l3 or a sweep), "
+            "declares this production run in its l1-post footer: "
+            "script=scripts/1-<name>.py[,apply] or count-label=<Label>. The sweep's "
+            "tier never grants one. HRSE2's scripts/gate_production_run.py passes it."
+        ),
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help=(
+            "harmonic-forge#878: on success print exactly one JSON object, "
+            "{repo, issue, head_sha, tier, authority_url, authority_id, prod_run}, "
+            "and nothing else on stdout. A refusal still exits 1 with its reason "
+            "on stderr."
+        ),
+    )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    wanted = None
+    if args.require_prod_run is not None:
+        try:
+            wanted = _prod_run.parse_spec(args.require_prod_run)
+        except ValueError as exc:
+            fail(f"--require-prod-run: {exc}")
 
     repo = current_repo()
     apply_project_identity(repo)  # harmonic-forge#804
@@ -390,6 +473,31 @@ def main(argv: list[str] | None = None) -> None:
 
     sweep = latest_by_kind(comments, "sweep")
     tier = parse_write_tier(sweep.get("body", "")) if sweep else None
+    if args.require_tier is not None and tier != args.require_tier:
+        # harmonic-forge#878: an authorization at a different tier is not an
+        # authorization at this one -- a Tier W AE never licenses a production run.
+        fail(
+            f"{repo}#{issue}: sweep ({sweep['html_url']}) declares tier {tier}, "
+            f"but tier {args.require_tier} is required -- post an AE and sweep at "
+            f"tier {args.require_tier} naming {head_sha}"
+        )
+    prod_run = None
+    if wanted is not None:
+        reason = prod_run_refusal(comments, authority, issue, head_sha, wanted)
+        if reason is not None:
+            fail(f"{repo}#{issue}: {reason}")
+        prod_run = _prod_run.declared(authority.get("body", ""))
+    if args.json:
+        print(json.dumps({
+            "repo": repo,
+            "issue": issue,
+            "head_sha": head_sha,
+            "tier": tier,
+            "authority_url": authority["html_url"],
+            "authority_id": authority["id"],
+            "prod_run": prod_run,
+        }))
+        return
     print(f"[check-lane3-ready] {repo}#{issue}: sweep ({sweep['html_url']}), tier {tier} "
           f"-- ready, {message}")
     availability = tier_w_availability()

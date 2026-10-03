@@ -360,7 +360,10 @@ if [ -n "$_lane_policy_file" ]; then
   _lane_policy_flag="$(registry_lookup AGENT_POLICY_FLAG "$_lane_agent")"
   [ -n "$_lane_policy_flag" ] \
     || _lane_launch_die "agent registry: $_lane_agent declares a lane-$LANE policy but no AGENT_POLICY_FLAG -- refusing to launch a policy that cannot be passed."
-  _lane_policy_path="$_lane_dir/policies/$_lane_policy_file"
+  case "$_lane_policy_file" in
+    /*) _lane_policy_path="$_lane_policy_file" ;;
+    *)  _lane_policy_path="$_lane_dir/policies/$_lane_policy_file" ;;
+  esac
   case "$(registry_lookup AGENT_POLICY_CHECK "$_lane_agent")" in
     toml)
       [ -f "$_lane_policy_path" ] \
@@ -371,6 +374,50 @@ if [ -n "$_lane_policy_file" ]; then
       python3 -c "import sys,tomllib; tomllib.load(open(sys.argv[1],'rb'))" "$_lane_policy_path" 2>/dev/null \
         || _lane_launch_die "policy file is not valid TOML: $_lane_policy_path -- refusing to launch an unprotected $lane_agent_display session (harmonic-forge#362)"
       ;;
+    json-immutable)
+      # harmonic-forge#878 sticky-wicket PATCH: a WIDENING policy. Absent means
+      # not installed yet -- launch without it (the classifier keeps prompting,
+      # the safe direction). Present means it must be immutable to this uid.
+      if [ ! -e "$_lane_policy_path" ]; then
+        printf '%s\n' "lane3: Lane 3 policy not installed at $_lane_policy_path -- launching without it; production runs will prompt (harmonic-forge#878)." >&2
+        _lane_policy_file=""
+      else
+        _lane_policy_owner="$(registry_lookup AGENT_POLICY_REQUIRED_OWNER "$_lane_agent")"
+        # Explicit exits, never `assert` (PYTHONOPTIMIZE would delete them), and
+        # -I -E so no environment variable can change what this check runs
+        # (sticky-wicket PATCH 2, item 6). The installed policy's digest must
+        # also equal the root-owned manifest's policy_sha256 (item 8).
+        python3 -I -E - "$_lane_policy_path" "$_lane_policy_owner" <<'PYCHECK' 2>/dev/null \
+          || _lane_launch_die "policy file is not an immutable JSON object: $_lane_policy_path must be owned by uid ${_lane_policy_owner:-?}, not group/other-writable, in a directory with the same property, parse as a JSON object, and match the policy_sha256 of manifest.json beside it -- refusing to launch $lane_agent_display with a policy the agent could have widened (harmonic-forge#878)"
+import hashlib, json, os, stat, sys
+path, owner = sys.argv[1], int(sys.argv[2])
+manifest = os.path.join(os.path.dirname(path), "manifest.json")
+for p in (path, os.path.dirname(path), manifest):
+    st = os.lstat(p)
+    if stat.S_ISLNK(st.st_mode) or st.st_uid != owner or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        sys.exit(1)
+try:
+    policy_ok = isinstance(json.load(open(path)), dict)
+    expected = json.load(open(manifest)).get("policy_sha256")
+except Exception:
+    sys.exit(1)
+digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+if not policy_ok or not expected or digest != expected:
+    sys.exit(1)
+sys.exit(0)
+PYCHECK
+        unset _lane_policy_owner
+      fi
+      ;;
+    json)
+      # harmonic-forge#878: same fail-closed shape as `toml`. A Claude
+      # `--settings` path that is missing or unparseable must refuse the launch
+      # rather than start a session whose policy silently did not load.
+      [ -f "$_lane_policy_path" ] \
+        || _lane_launch_die "policy file missing: $_lane_policy_path -- refusing to launch $lane_agent_display without its lane-$LANE policy (harmonic-forge#878)"
+      python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d, dict)" "$_lane_policy_path" 2>/dev/null \
+        || _lane_launch_die "policy file is not a valid JSON object: $_lane_policy_path -- refusing to launch $lane_agent_display without its lane-$LANE policy (harmonic-forge#878)"
+      ;;
     none)
       : # declared: this agent's policy needs no precondition check
       ;;
@@ -378,7 +425,9 @@ if [ -n "$_lane_policy_file" ]; then
       _lane_launch_die "agent registry: unknown AGENT_POLICY_CHECK '$(registry_lookup AGENT_POLICY_CHECK "$_lane_agent")' for $_lane_agent"
       ;;
   esac
-  cli_args+=("$_lane_policy_flag" "$_lane_policy_path")
+  # json-immutable clears _lane_policy_file when the widening policy is not
+  # installed: launch without it rather than inject a path that does not exist.
+  [ -n "$_lane_policy_file" ] && cli_args+=("$_lane_policy_flag" "$_lane_policy_path")
   unset _lane_policy_flag _lane_policy_path
 fi
 

@@ -41,7 +41,8 @@
 #   AGENT_EFFORT_LEVELS      accepted effort values, space-separated
 #   AGENT_LAUNCH_REFUSED_ENV env vars whose presence refuses the launch
 #   AGENT_POLICY_FLAG       the flag a per-lane policy file is passed with
-#   AGENT_POLICY_CHECK       precondition check on that file: `toml` or `none`
+#   AGENT_POLICY_CHECK       precondition check on that file: `toml`, `json`
+#                            or `none`
 #
 # Per agent x lane, keyed "<agent>:<lane>":
 #   AGENT_LANE_POLICY        policy filename under tools/lane/policies/, or ""
@@ -248,28 +249,54 @@ declare -A AGENT_SESSION_FLAGS=(
   [codex]="--no-daemon -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true"
   [gemini]=""
 )
+# harmonic-forge#878: `--settings` is denied at EVERY Claude lane, not only at
+# Lane 3 where the policy slot already derives it. It is single-valued, so a
+# Lane 3 caller's own `--settings` would replace the launcher's policy file,
+# and at Lanes 1 and 2 it is the one passthrough that could hand a session the
+# Lane-3-only allow rule (or any other) from an untracked file.
 declare -A AGENT_SESSION_DENIED=(
-  [claude]=""
+  [claude]="--settings"
   [codex]="--no-daemon --remote -c --config -p --profile --full-auto --approve-for-me -s"
   [gemini]=""
 )
 
 declare -A AGENT_POLICY_FLAG=(
-  [claude]=""
+  [claude]="--settings"
   [codex]=""
   [gemini]="--admin-policy"
 )
 declare -A AGENT_POLICY_CHECK=(
-  [claude]="none"
+  [claude]="json-immutable"
   [codex]="none"
   [gemini]="toml"
+)
+# harmonic-forge#878 sticky-wicket PATCH: a policy that WIDENS (an allow rule)
+# must be unwritable by the agent's own uid, or any session can widen it before
+# the next launch. json-immutable reads an absolute, installed path and refuses
+# unless it is owned by this uid and not group/other-writable, in a directory
+# with the same property. A MISSING installed policy launches without it: for a
+# widening policy, absence only means the classifier keeps prompting -- the
+# opposite of a restricting policy, where absence is the unsafe direction.
+declare -A AGENT_POLICY_REQUIRED_OWNER=(
+  [claude]="0"
+  [codex]=""
+  [gemini]=""
 )
 
 # Every agent x lane slot is declared, including the empty ones. An absent key
 # is a registry integrity failure (see registry_assert_integrity), never a
 # silently-unprotected lane.
 declare -A AGENT_LANE_POLICY=(
-  [claude:1]="" [claude:2]="" [claude:3]=""
+  # harmonic-forge#878: the first Claude lane policy. A `--settings` file whose
+  # only content is one `permissions.allow` rule for the root-owned
+  # /usr/local/libexec/hrse-gate-run wrapper, so a Lane 3 session's sanctioned
+  # Tier P run is not denied by the auto-mode classifier. `--settings` merges
+  # `permissions.allow` with the user's file (probed live on #878), so the file
+  # carries only its own rule. An ABSOLUTE value is the installed, root-owned
+  # copy (tools/gate/install-hrse-gate.md); the repo's
+  # policies/claude-lane3.json is only its reviewed source. Lanes 1 and 2 stay
+  # empty: they gain nothing.
+  [claude:1]="" [claude:2]="" [claude:3]="/usr/local/share/hrse-gate/claude-lane3.json"
   [codex:1]=""  [codex:2]=""  [codex:3]=""
   [gemini:1]="gemini-lane1.toml"
   [gemini:2]="gemini-lane2.toml"
