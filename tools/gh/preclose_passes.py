@@ -29,8 +29,6 @@ approach before Lane 1 fixes either symptom.
 """
 from __future__ import annotations
 
-import hashlib
-
 import subprocess
 
 MAX_PASSES = 2
@@ -235,44 +233,13 @@ def last_tier(receipt: dict | None) -> str | None:
     return None
 
 
-# harmonic-forge#890: the A/B arms. `pre-experiment` is a real, persisted
-# assignment, written at plan time while the workflow arm has no panel to run
-# (harmonic-forge#891); it is never synthesized at completion.
-ARMS = ("manual", "workflow")
-PRE_EXPERIMENT = "pre-experiment"
-
-
-def hashed_arm(repo: str, issue: int) -> str:
-    """The arm an issue is assigned by: a pure function of `repo#issue`, so
-    Lane 1 cannot steer a riskier diff to the arm it trusts."""
-    digest = hashlib.sha256(f"{repo}#{issue}".encode()).hexdigest()
-    return ARMS[int(digest[:8], 16) % 2]
-
-
-def last_arm(receipt: dict | None) -> dict | None:
-    """The newest pass entry carrying an arm (its `arm`, `arm_overridden`,
-    `arm_assigned`, `arm_reason`). Entries survive every receipt rewrite, so
-    this holds where a top-level field can be dropped (#890 pitch-inspection:
-    --complete bypasses carried())."""
-    for entry in reversed(history(receipt)):
-        if entry.get("arm"):
-            return entry
-    return None
-
-
-def arm_fields(receipt: dict | None) -> dict:
-    """The receipt's top-level arm fields, for a human reading the receipt."""
-    return {key: receipt[key] for key in ("panel_arm", "panel_arm_override")
-            if receipt and receipt.get(key)}
-
-
 def carried(receipt: dict | None) -> dict:
     """The fields a non-completing write (``plan``) must preserve."""
     passes = history(receipt)
     fields = {"pass_history": passes, "pass_count": len(current(passes))} if passes else {}
     epoch = max((int(p.get("epoch") or 0) for p in passes), default=0)
     cluster = _mechanism_cluster(receipt, epoch)
-    return {**fields, **_post_verdict(receipt), **arm_fields(receipt),
+    return {**fields, **_post_verdict(receipt),
             **({"mechanism_cluster": cluster} if cluster else {})}
 
 

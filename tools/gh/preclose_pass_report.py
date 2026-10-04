@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import preclose_enrollment  # noqa: E402
 import preclose_passes  # noqa: E402
 
 
@@ -85,11 +86,16 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
     history = archived_passes(archive, skipped) if archive else {}
     out = []
     for path in sorted(directory.glob("*.json")):
+        # Only pass receipts: a kill-check receipt (`*.kill.json`) and the
+        # experiment flag share the store and are not passes (#890 preclose
+        # pass 2, duplicate rows).
+        if path.name.endswith(".kill.json") or path.name == preclose_enrollment.EXPERIMENT_FILE:
+            continue
         try:
             receipt = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(receipt, dict):
+        if not isinstance(receipt, dict) or receipt.get("issue") is None:
             continue
         modified = datetime.fromtimestamp(os.stat(path).st_mtime, tz=timezone.utc)
         if since and modified < since:
@@ -187,7 +193,7 @@ def render(table: list[dict]) -> str:
     return "\n".join(lines)
 
 
-ARM_ROWS = ("manual", "workflow", preclose_passes.PRE_EXPERIMENT, "overridden", "mixed", "unarmed", "other")
+ARM_ROWS = ("manual", "workflow", preclose_enrollment.PRE_EXPERIMENT, "overridden", "mixed", "unarmed", "other")
 
 
 def issue_arm(entries: list[dict]) -> str:
@@ -202,7 +208,7 @@ def issue_arm(entries: list[dict]) -> str:
     if entries[-1].get("arm_overridden"):
         return "overridden"
     # An arm this report does not know is shown, never a crash (#890 pass 1).
-    return entries[-1]["arm"] if entries[-1]["arm"] in preclose_passes.ARMS + (preclose_passes.PRE_EXPERIMENT,) else "other"
+    return entries[-1]["arm"] if entries[-1]["arm"] in preclose_enrollment.ARMS + (preclose_enrollment.PRE_EXPERIMENT,) else "other"
 
 
 def _median(values: list[int]) -> str:
@@ -213,11 +219,18 @@ def render_by_arm(table: list[dict]) -> str:
     """The A/B comparison (harmonic-forge#890): one row per arm, computed over
     each issue's full entry list. The arm is read off the entry; cost figures
     go through `pass_cost_view`, unwidened."""
-    buckets: dict[str, list[dict]] = {name: [] for name in ARM_ROWS}
+    # One row per issue, whatever files fed it (#890 reforge): entries merged
+    # by head SHA, so the per-issue contract holds by construction.
+    issues_by_key: dict[str, dict] = {}
     for r in table:
-        buckets[issue_arm(r.get("entries") or [])].append(r)
+        held = issues_by_key.setdefault(r["issue"], {**r, "entries": []})
+        shas = {e.get("sha") for e in held["entries"]}
+        held["entries"] += [e for e in r.get("entries") or [] if not e.get("sha") or e.get("sha") not in shas]
+    buckets: dict[str, list[dict]] = {name: [] for name in ARM_ROWS}
+    for r in issues_by_key.values():
+        buckets[issue_arm(r["entries"])].append(r)
     lines = ["| Arm | Issues | Passes (current / all epochs) | Passes per issue (current / all) | "
-             "Panel tokens per pass (median / total) | Panel ms (median) | Raised per pass | "
+             "Panel tokens per measured pass (median / total; measured of passes) | Panel ms (median) | Raised per pass (of counted) | "
              "Survivors per pass | Dismissal rate | Needed pass 2 | Post-verdict survivors | "
              "Codex check triggered | Codex ms (median) | Total cost |",
              "|" + "---|" * 14]
@@ -247,12 +260,14 @@ def render_by_arm(table: list[dict]) -> str:
         post = [r["post_verdict_surviving"] for r in issues if r.get("post_verdict_surviving") is not None]
         lines.append(
             f"| {name} | {n} | {len(current)} / {len(entries)} | {per(len(current))} / {per(len(entries))} | "
-            f"{_median(tokens)} / {sum(tokens):,} | {_median(panel_ms)} | "
-            f"{f'{raised / len(counted):.2f}' if counted else 'n/a'} | "
+            f"{_median(tokens)} / {sum(tokens):,} ({len(tokens)} of {len(entries)}) | {_median(panel_ms)} | "
+            f"{f'{raised / len(counted):.2f} ({len(counted)})' if counted else 'n/a'} | "
             f"{f'{surviving / len(counted):.2f}' if counted else 'n/a'} | {rate} | "
             f"{sum(1 for r in issues if len(preclose_passes.current(r.get('entries') or [])) >= 2)} | "
             f"{sum(post) if post else 'n/a'} | {codex} | {_median(codex_ms)} | "
-            f"{sum(tokens):,} panel tokens; {sum(panel_ms) + sum(codex_ms):,} ms |")
+            f"{sum(tokens):,} panel tokens; {sum(panel_ms) + sum(codex_ms):,} ms"
+            # An unmeasured pass is never free (#890 preclose pass 2, undercount).
+            f"{f'; {len(entries) - len(tokens)} pass(es) not measured' if len(entries) > len(tokens) else ''} |")
     split = f"{len(buckets['manual'])} manual / {len(buckets['workflow'])} workflow"
     lines += ["", f"n per arm: {split}. The comparison is not yet meaningful below 8 issues per arm. "
                   "Codex tokens are not measured: the envelope records no usage. Overridden, mixed, "

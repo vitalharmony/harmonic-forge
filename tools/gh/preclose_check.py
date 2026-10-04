@@ -65,6 +65,7 @@ from manifest import (  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_passes  # noqa: E402  (harmonic-forge#834)
+import preclose_enrollment  # noqa: E402  (harmonic-forge#890)
 
 # A change under any of these runs on every session, every commit, or every
 # gate -- so its failure mode is silent and total rather than local.
@@ -100,16 +101,6 @@ LENSES: tuple[str, ...] = (
 
 TIER_PANEL = {"fast": 1, "standard": 3, "deep": 5}
 
-# harmonic-forge#890: the platform's saved workflow the workflow arm runs,
-# which harmonic-forge#891 creates (`sync_rules.py` links it into each
-# consumer's `.claude/workflows/`). Until it exists, `--arm auto` records
-# `pre-experiment`, so the override row never fills with issues that were
-# assigned an arm nothing could run.
-# Resolved against the deployed platform checkout, never the checkout that
-# invoked the script (#890 preclose pass 1): an impl worktree branched before
-# or after #891 must not decide whether the experiment is on.
-PRECLOSE_PANEL_WORKFLOW = (Path(os.environ.get("HARMONIC_FORGE_ROOT") or Path.home() / "harmonic-forge")
-                           / "workflows" / "preclose-panel.js")
 
 # harmonic-forge#701. The file:line anchor a finding must carry to survive the
 # filter. `path:line` or `path:line-line`, the shape the plan output demands.
@@ -534,6 +525,11 @@ def receipt_path(repo: str, issue: int) -> Path:
     return receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
 
 
+def enrollment_path(repo: str, issue: int) -> Path:
+    """harmonic-forge#890: the issue's append-only panel-arm decisions."""
+    return receipt_dir() / f"{_repo_key(repo)}_{issue}.enrollment.jsonl"
+
+
 @contextmanager
 def receipt_lock(repo: str, issue: int):
     """Serialize an issue's full receipt read-check-write transaction."""
@@ -772,7 +768,10 @@ def plan(args: argparse.Namespace) -> int:
     prior = find_receipt(repo, args.issue)
     tier = args.tier or preclose_passes.last_tier(prior)
     size, why = panel_size(reasons, tier)
-    assigned, override = choose_arm(args, prior, repo)
+    enrollment_file = enrollment_path(repo, args.issue)
+    enrollment, new_event = preclose_enrollment.decide(
+        enrollment_file, receipt_dir(), repo, args.issue, getattr(args, "arm", None) or "auto",
+        getattr(args, "re_enroll", None), str(getattr(args, "arm_reason", None) or "").strip(), head_sha)
 
     print(f"preclose-check plan for {repo}#{args.issue}")
     print(f"  diff:     {args.base}...{args.head} @ {head_sha[:12]} ({len(files)} files)")
@@ -784,11 +783,8 @@ def plan(args: argparse.Namespace) -> int:
     print("  lenses:")
     for lens in list(LENSES)[:size]:
         print(f"    - {lens}")
-    arm = override["arm"] if override else assigned
-    note = (f"overridden: {override['reason']}" if override
-            else "pre-experiment: harmonic-forge#891 not landed" if arm == preclose_passes.PRE_EXPERIMENT
-            else "assigned")
-    print(f"  arm:      {arm} ({note})")
+    arm = enrollment["arm"]
+    print(f"  arm:      {arm} ({preclose_enrollment.note(enrollment)})")
     if arm == "workflow":
         # Resolved SHAs, never ref names (#890 preclose pass 1): the workflow
         # may run in another checkout, where `origin/main...HEAD` is empty.
@@ -818,10 +814,9 @@ def plan(args: argparse.Namespace) -> int:
     # The tier the panel was sized at, so --complete (which is not given
     # --tier in the documented flow) labels its event with it (#889).
     write_receipt(repo, args.issue, head_sha, size, status="planned",
-                  extra={**{k: v for k, v in preclose_passes.carried(prior).items()
-                            if k != "panel_arm_override"},
-                         "tier": tier or "unset", "panel_arm": assigned,
-                         **({"panel_arm_override": override} if override else {})})
+                  extra={**preclose_passes.carried(prior), "tier": tier or "unset"})
+    if new_event:
+        preclose_enrollment.append(enrollment_file, new_event)
     return 0
 
 
@@ -833,52 +828,6 @@ def _merge_base(base: str, head: str) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout.strip() or None if done.returncode == 0 else None
-
-
-def choose_arm(args: argparse.Namespace, prior: dict | None, repo: str) -> tuple[str, dict | None]:
-    """harmonic-forge#890: the issue's assigned arm and any override.
-
-    Assigned, in order: the receipt's `panel_arm`; else the newest pass
-    entry's arm (`last_arm`, which survives every rewrite); else
-    `pre-experiment` while the workflow arm cannot run; else the hash. An
-    override of the assigned arm needs `--arm-reason`, and an override
-    already recorded is kept."""
-    present = PRECLOSE_PANEL_WORKFLOW.exists()
-    last = preclose_passes.last_arm(prior)
-    existing = (prior or {}).get("panel_arm_override") or None
-    if not existing and last and last.get("arm_overridden"):
-        # Top-level fields lost: the override is recovered from the entry,
-        # never dropped (#890 preclose pass 1, override-recovery).
-        existing = {"arm": last["arm"], "reason": last.get("arm_reason") or "recovered from pass history",
-                    "assigned": last.get("arm_assigned")}
-    assigned = ((prior or {}).get("panel_arm")
-                or (existing or {}).get("assigned")
-                or (last["arm"] if last and not last.get("arm_overridden") else None)
-                or (preclose_passes.hashed_arm(repo, args.issue) if present
-                    else preclose_passes.PRE_EXPERIMENT))
-    requested = getattr(args, "arm", None) or "auto"
-    reason = str(getattr(args, "arm_reason", None) or "").strip()
-    if reason and ("\n" in reason or len(reason) > 200):
-        raise SystemExit("preclose-check: --arm-reason is one line of at most 200 characters.")
-    if requested == "auto":
-        chosen, override = (existing or {}).get("arm") or assigned, existing
-    elif requested == assigned or (assigned == preclose_passes.PRE_EXPERIMENT and requested == "manual"):
-        # Explicitly asking for the assigned arm clears an earlier override
-        # (#890 preclose pass 1, override-clearing).
-        chosen, override = assigned, None
-    elif not reason:
-        raise SystemExit(f"preclose-check: {repo}#{args.issue} is assigned the {assigned} arm. "
-                         f"--arm {requested} overrides it and needs --arm-reason \"<why>\"; an "
-                         "overridden issue is excluded from the comparison (harmonic-forge#890).")
-    else:
-        chosen, override = requested, {"arm": requested, "reason": reason, "assigned": assigned}
-    if chosen == "workflow" and not present:
-        # Whatever the arm's source (#890 preclose pass 1, presence-guard).
-        raise SystemExit(f"preclose-check: the workflow arm needs the preclose-panel workflow "
-                         f"({PRECLOSE_PANEL_WORKFLOW}), which harmonic-forge#891 creates and "
-                         "this platform checkout does not have. Run the manual panel with "
-                         "--arm manual --arm-reason \"<why>\".")
-    return assigned, override
 
 
 @serialized_receipt
@@ -935,20 +884,16 @@ def complete(args: argparse.Namespace) -> int:
         cost["tier"] = prior["tier"]
     else:
         cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
-    # harmonic-forge#890: the arm rides on the pass entry. Nothing resolves
-    # it -> no key at all, never a synthesized value a report would trust.
-    override = (prior or {}).get("panel_arm_override")
-    last = preclose_passes.last_arm(prior) or {}
-    if not override and not (prior or {}).get("panel_arm") and last.get("arm_overridden"):
-        override = {"arm": last["arm"], "reason": last.get("arm_reason"), "assigned": last.get("arm_assigned")}
-    assigned = (prior or {}).get("panel_arm") or (override or {}).get("assigned") or last.get("arm_assigned") or last.get("arm")
-    arm = (override or {}).get("arm") or assigned
-    if arm:
-        cost.update({"arm": arm, "arm_overridden": bool(override), "arm_assigned": assigned})
-        if override:
-            cost["arm_reason"] = override.get("reason")
+    # harmonic-forge#890: the arm rides on the pass entry, read from the
+    # issue's newest enrollment event and nowhere else. No enrollment -> no
+    # arm key, never a synthesized value a report would trust.
+    enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+    if enrolled:
+        cost.update({"arm": enrolled["arm"], "arm_assigned": enrolled.get("assigned"),
+                     "arm_overridden": preclose_enrollment.overridden(enrolled)})
+        if enrolled.get("reason"):
+            cost["arm_reason"] = enrolled["reason"]
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-        **preclose_passes.arm_fields(prior),
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
                                  current_branch(), reforge, cost),
         "cross_family_required": required,
@@ -1110,6 +1055,9 @@ def main() -> None:
     parser.add_argument("--arm", choices=("auto", "manual", "workflow"), default="auto",
                         help="With a plan: the panel arm (harmonic-forge#890). auto = the issue's "
                              "assigned arm; another arm is an override and needs --arm-reason.")
+    parser.add_argument("--re-enroll", choices=preclose_enrollment.ARMS,
+                        help="With a plan: change an enrolled issue's arm, recorded as a new "
+                             "enrollment event; needs --arm-reason.")
     parser.add_argument("--arm-reason",
                         help="Why the assigned arm is overridden; the issue leaves the comparison.")
     parser.add_argument("--complete", action="store_true",
@@ -1161,7 +1109,7 @@ def main() -> None:
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
     if (args.complete or args.gate or args.post_verdict or args.cluster_verdict) and (
-            args.arm != "auto" or args.arm_reason):
+            args.arm != "auto" or args.arm_reason or args.re_enroll):
         parser.error("--arm/--arm-reason belong to the plan: the pass records the arm the plan "
                      "chose. Re-plan with --arm <arm> --arm-reason \"<why>\" (harmonic-forge#890).")
     if (args.complete or args.post_verdict) and not args.own_model:

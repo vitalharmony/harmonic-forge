@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""harmonic-forge#890: each issue's preclose panel arm is assigned
-deterministically, persists through every receipt rewrite, rides on the pass
-entry and its event, and the by-arm report buckets issues, never entries."""
+"""harmonic-forge#890 (reforged): each issue's preclose panel arm is decided
+once and recorded as an enrollment event, read by plan and complete alike; the
+experiment is on only by a declared flag; the by-arm report counts issues."""
 from __future__ import annotations
 
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,23 +20,23 @@ import test_preclose_cost as cost_base
 
 preclose = base.preclose
 passes = preclose.preclose_passes
+enrollment = preclose.preclose_enrollment
 report = cost_base.report
 REPO = "vitalharmony/hrse"
 
 
 def issue_with(arm: str) -> int:
-    return next(n for n in range(1, 500) if passes.hashed_arm(REPO, n) == arm)
+    return next(n for n in range(1, 500) if enrollment.hashed_arm(REPO, n) == arm)
 
 
 class ArmCase(cost_base.CostCase):
     def setUp(self) -> None:
         super().setUp()
-        self.workflow = Path(tempfile.mkdtemp()) / "preclose-panel.js"
-        self.workflow.write_text("// stand-in for harmonic-forge#891's workflow\n")
-        patcher = patch.object(preclose, "PRECLOSE_PANEL_WORKFLOW", self.workflow)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.issue = issue_with("workflow")
+        self.enroll(True)
+
+    def enroll(self, on: bool) -> None:
+        enrollment.set_experiment(preclose.receipt_dir(), on, "test")
 
     def plan_arm(self, issue: int | None = None, **overrides) -> str:
         return self.plan(issue=issue or self.issue, **overrides)
@@ -53,53 +56,65 @@ class ArmCase(cost_base.CostCase):
     def entry(self, issue: int | None = None) -> dict:
         return passes.history(self.receipt(issue))[-1]
 
+    def decisions(self, issue: int | None = None) -> list[dict]:
+        return enrollment.events(preclose.enrollment_path(REPO, issue or self.issue))
 
-class TC1DeterministicAndPersisted(ArmCase):
+    def overridden_pass(self) -> None:
+        self.plan_arm(arm="manual", arm_reason="no Workflow tool")
+        self.complete_arm()
+        self.commit("tools/y.py")
+
+
+class TC1DecidedOnceAndRecorded(ArmCase):
     def test_the_same_issue_gets_the_same_arm_and_parities_differ(self) -> None:
-        self.assertEqual(passes.hashed_arm(REPO, self.issue), passes.hashed_arm(REPO, self.issue))
+        self.assertEqual(enrollment.hashed_arm(REPO, self.issue), "workflow")
         self.assertIn("arm:      workflow (assigned)", self.plan_arm())
-        manual = issue_with("manual")
-        self.assertIn("arm:      manual (assigned)", self.plan_arm(manual))
+        self.assertIn("arm:      manual (assigned)", self.plan_arm(issue_with("manual")))
 
-    def test_plan_complete_plan_keeps_the_arm_even_if_the_hash_moves(self) -> None:
+    def test_plan_complete_plan_keeps_the_arm_and_records_one_decision(self) -> None:
         self.plan_arm()
         self.complete_arm()
         self.assertEqual(self.entry()["arm"], "workflow")
         self.commit("tools/y.py")
-        with patch.object(passes, "hashed_arm", lambda repo, issue: "manual"):
+        with patch.object(enrollment, "hashed_arm", lambda repo, issue: "manual"):
             self.assertIn("arm:      workflow (assigned)", self.plan_arm())
-        self.assertEqual(self.receipt()["panel_arm"], "workflow")
+        self.assertEqual(len(self.decisions()), 1)
 
-    def test_the_arm_survives_from_the_entry_alone(self) -> None:
-        # A receipt whose top-level fields were lost keeps the entry's arm.
+    def test_a_receipt_rewrite_cannot_lose_the_decision(self) -> None:
         self.plan_arm()
         self.complete_arm()
-        path = Path(preclose.receipt_dir()) / f"{REPO.replace('/', '_')}_{self.issue}.json"
-        receipt = json.loads(path.read_text())
-        receipt.pop("panel_arm")
-        path.write_text(json.dumps(receipt))
+        preclose.receipt_path(REPO, self.issue).write_text(json.dumps({"repo": REPO, "issue": self.issue}))
         self.commit("tools/y.py")
-        with patch.object(passes, "hashed_arm", lambda repo, issue: "manual"):
+        with patch.object(enrollment, "hashed_arm", lambda repo, issue: "manual"):
             self.assertIn("arm:      workflow (assigned)", self.plan_arm())
 
 
-class TC2OverrideNeedsAReason(ArmCase):
-    def test_no_reason_refuses_naming_the_assigned_arm(self) -> None:
+class TC2ChangingTheArmIsAnEvent(ArmCase):
+    def test_a_first_choice_off_the_assignment_needs_a_reason(self) -> None:
         with self.assertRaises(SystemExit) as refused:
             self.plan_arm(arm="manual")
         self.assertIn("assigned the workflow arm", str(refused.exception))
-        self.assertIsNone(preclose.find_receipt(REPO, self.issue))
+        self.assertEqual(self.decisions(), [])
 
-    def test_a_reason_is_recorded_and_survives_a_completion(self) -> None:
-        out = self.plan_arm(arm="manual", arm_reason="no Workflow tool in this runtime")
-        self.assertIn("arm:      manual (overridden: no Workflow tool in this runtime)", out)
-        self.assertNotIn("Workflow name:", out)
-        self.complete_arm()
-        self.assertEqual(self.entry()["arm"], "manual")
+    def test_an_override_survives_a_completion_and_auto_keeps_it(self) -> None:
+        self.overridden_pass()
         self.assertTrue(self.entry()["arm_overridden"])
-        self.assertEqual(self.receipt()["panel_arm_override"]["reason"], "no Workflow tool in this runtime")
-        self.commit("tools/y.py")
-        self.assertIn("arm:      manual (overridden:", self.plan_arm())
+        self.assertEqual(self.entry()["arm_reason"], "no Workflow tool")
+        self.assertIn("arm:      manual (overridden: no Workflow tool)", self.plan_arm())
+
+    def test_a_plain_arm_flag_cannot_change_an_enrolled_issue(self) -> None:
+        self.overridden_pass()
+        with self.assertRaises(SystemExit) as refused:
+            self.plan_arm(arm="workflow")
+        self.assertIn("--re-enroll workflow", str(refused.exception))
+
+    def test_rejoining_is_recorded_and_never_resurrected(self) -> None:
+        self.overridden_pass()
+        out = self.plan_arm(re_enroll="workflow", arm_reason="tool is back")
+        self.assertIn("arm:      workflow (assigned)", out)
+        # Pass 2's resurrection: a later default re-plan must keep the rejoin.
+        self.assertIn("arm:      workflow (assigned)", self.plan_arm())
+        self.assertEqual([d["arm"] for d in self.decisions()], ["manual", "workflow"])
 
     def test_a_multi_line_or_long_reason_is_refused(self) -> None:
         for reason in ("two\nlines", "x" * 201):
@@ -108,13 +123,15 @@ class TC2OverrideNeedsAReason(ArmCase):
 
 
 class TC3WorkflowInvocation(ArmCase):
-    def test_the_plan_prints_the_invocation_with_its_lenses(self) -> None:
+    def test_the_plan_prints_the_invocation_with_lenses_and_resolved_shas(self) -> None:
         out = self.plan_arm(tier="standard")
         line = next(l for l in out.splitlines() if "Workflow name:" in l)
         args = json.loads(line.split("args: ", 1)[1])
         self.assertIn('name: "preclose-panel"', line)
         self.assertEqual(args["issue"], self.issue)
         self.assertEqual(args["lenses"], list(preclose.LENSES)[:3])
+        for key in ("base", "head"):
+            self.assertRegex(args[key], r"^[0-9a-f]{40}$")
 
 
 class TC4ArmOnTheEntryAndEvent(ArmCase):
@@ -135,6 +152,13 @@ class TC4ArmOnTheEntryAndEvent(ArmCase):
         self.complete_arm()
         self.assertNotIn("arm", self.entry())
         self.assertNotIn("arm", self.events()[0]["attrs"])
+
+    def test_arm_flags_outside_a_plan_are_refused(self) -> None:
+        for flags in (["--arm", "manual", "--arm-reason", "x"], ["--re-enroll", "manual"]):
+            done = subprocess.run([sys.executable, str(Path(preclose.__file__)), "--repo", REPO, "--issue", "1",
+                                   "--complete", "--own-model", "m", *flags], capture_output=True, text=True)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("belong to the plan", done.stderr)
 
 
 def _write(receipts: Path, issue: int, entries: list[dict], **extra) -> None:
@@ -193,85 +217,58 @@ class TC6CodexAndTotalCost(unittest.TestCase):
         self.assertIn("Codex tokens are not measured", text)
 
 
-class TC7PreExperiment(ArmCase):
-    def test_without_the_workflow_auto_records_pre_experiment_and_it_persists(self) -> None:
-        self.workflow.unlink()
+class TC7EnrollmentIsDeclared(ArmCase):
+    def test_not_enrolling_records_pre_experiment_for_life(self) -> None:
+        self.enroll(False)
         out = self.plan_arm()
-        self.assertIn("arm:      pre-experiment (pre-experiment: harmonic-forge#891 not landed)", out)
-        self.assertNotIn("panel_arm_override", self.receipt())
+        self.assertIn("arm:      pre-experiment (pre-experiment: the experiment is not enrolling)", out)
         with self.assertRaises(SystemExit) as refused:
-            self.plan_arm(arm="workflow", arm_reason="try it")
-        self.assertIn("harmonic-forge#891", str(refused.exception))
-        self.plan_arm(arm="manual")  # the manual panel IS the pre-experiment panel: no override
+            self.plan_arm(re_enroll="workflow", arm_reason="try it")
+        self.assertIn("only while the experiment is enrolling", str(refused.exception))
         self.complete_arm()
-        self.workflow.write_text("// landed\n")
+        self.enroll(True)
         self.commit("tools/y.py")
         self.assertIn("arm:      pre-experiment", self.plan_arm())
-        self.assertEqual(self.entry()["arm"], passes.PRE_EXPERIMENT)
+        self.assertEqual(self.entry()["arm"], enrollment.PRE_EXPERIMENT)
 
+    def test_a_missing_or_corrupt_flag_is_not_enrolling(self) -> None:
+        flag = preclose.receipt_dir() / enrollment.EXPERIMENT_FILE
+        flag.write_text("{not json")
+        self.assertFalse(enrollment.enrolling(preclose.receipt_dir()))
+        flag.unlink()
+        self.assertFalse(enrollment.enrolling(preclose.receipt_dir()))
 
-class PreclosePass1Fixes(ArmCase):
-    """harmonic-forge#890 preclose pass 1: one test per finding."""
-
-    def overridden_pass(self) -> None:
-        self.plan_arm(arm="manual", arm_reason="no Workflow tool")
-        self.complete_arm()
-        self.commit("tools/y.py")
-
-    def test_asking_for_the_assigned_arm_clears_an_override(self) -> None:
-        self.overridden_pass()
-        out = self.plan_arm(arm="workflow")
-        self.assertIn("arm:      workflow (assigned)", out)
-        self.assertIn("Workflow name:", out)
-        self.assertNotIn("panel_arm_override", self.receipt())
-
-    def test_auto_keeps_an_override(self) -> None:
-        self.overridden_pass()
-        self.assertIn("arm:      manual (overridden: no Workflow tool)", self.plan_arm())
-
-    def test_an_override_is_recovered_from_the_entry(self) -> None:
-        self.overridden_pass()
-        path = Path(preclose.receipt_dir()) / f"{REPO.replace('/', '_')}_{self.issue}.json"
-        receipt = json.loads(path.read_text())
-        receipt.pop("panel_arm")
-        receipt.pop("panel_arm_override")
-        path.write_text(json.dumps(receipt))
-        out = self.plan_arm()
-        self.assertIn("arm:      manual (overridden: no Workflow tool)", out)
-        self.assertNotIn("Workflow name:", out)
-
-    def test_an_assigned_workflow_arm_refuses_when_the_workflow_is_absent(self) -> None:
+    def test_a_workflow_issue_refuses_once_the_experiment_stops(self) -> None:
         self.plan_arm()
-        self.workflow.unlink()
+        self.enroll(False)
         with self.assertRaises(SystemExit) as refused:
             self.plan_arm()
-        self.assertIn("--arm manual --arm-reason", str(refused.exception))
+        self.assertIn("--re-enroll manual", str(refused.exception))
 
-    def test_the_invocation_carries_resolved_shas(self) -> None:
-        out = self.plan_arm()
-        args = json.loads(next(l for l in out.splitlines() if "Workflow name:" in l).split("args: ", 1)[1])
-        for key in ("base", "head"):
-            self.assertRegex(args[key], r"^[0-9a-f]{40}$")
 
-    def test_the_workflow_probe_follows_the_platform_root(self) -> None:
-        import os
-        import subprocess
-        import sys as _sys
-        with tempfile.TemporaryDirectory() as root:
-            done = subprocess.run(
-                [_sys.executable, "-c", "import preclose_check; print(preclose_check.PRECLOSE_PANEL_WORKFLOW)"],
-                capture_output=True, text=True, cwd=str(Path(preclose.__file__).parent),
-                env={**os.environ, "HARMONIC_FORGE_ROOT": root})
-            self.assertEqual(done.stdout.strip(), str(Path(root) / "workflows" / "preclose-panel.js"))
+class ReportUnit(unittest.TestCase):
+    def test_kill_receipts_and_the_flag_are_not_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            _write(receipts, 1, [_pass("a", "manual")])
+            (receipts / "o_r_1.kill.json").write_text(json.dumps({"repo": "o/r", "issue": 1, "status": "pass"}))
+            (receipts / enrollment.EXPERIMENT_FILE).write_text(json.dumps({"enrolling": True}))
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        self.assertEqual(_row(text, "manual")[1], "1")
+        self.assertEqual(_row(text, "unarmed")[1], "0")
 
-    def test_arm_flags_outside_a_plan_are_refused(self) -> None:
-        import subprocess
-        import sys as _sys
-        done = subprocess.run([_sys.executable, str(Path(preclose.__file__)), "--repo", REPO, "--issue", "1",
-                               "--complete", "--own-model", "m", "--arm", "manual", "--arm-reason", "x"],
-                              capture_output=True, text=True)
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIn("belong to the plan", done.stderr)
+    def test_an_unmeasured_pass_is_never_free(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            entry = _pass("a", "workflow")
+            for key in ("panel_tokens", "panel_ms"):
+                entry.pop(key)
+            entry["cost_unavailable"] = "no usage"
+            _write(receipts, 1, [entry])
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        workflow = _row(text, "workflow")
+        self.assertIn("(0 of 1)", workflow[4])
+        self.assertIn("1 pass(es) not measured", workflow[13])
 
 
 class UnknownArmIsShown(unittest.TestCase):
