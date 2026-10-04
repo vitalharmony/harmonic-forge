@@ -75,8 +75,9 @@ def _normalize(event: dict) -> dict:
     """One shape for every event. `pre-experiment` is not an arm: it is an
     issue that was never enrolled, which runs the manual panel (#890
     sticky-wicket PATCH). Events written before that change said
-    `arm: pre-experiment`, and still read."""
-    if event.get("arm") == PRE_EXPERIMENT:
+    `arm: pre-experiment` (or, after a re-enrollment, `assigned:
+    pre-experiment`), and still read as never enrolled (#890 post-verdict)."""
+    if PRE_EXPERIMENT in (event.get("arm"), event.get("assigned")):
         return {**event, "arm": "manual", "enrolled": False, "assigned": None}
     return {**event, "enrolled": event.get("enrolled", True)}
 
@@ -155,14 +156,16 @@ def decide(path: Path, directory: Path, repo: str, issue: int, requested: str,
             # An enrolled issue keeps its arm whatever the flag says now:
             # stopping the experiment stops NEW enrollment only.
             return existing, None
+        if not existing["enrolled"]:
+            # Checked first, so no refusal recommends a retry that is refused
+            # in turn (#890 post-verdict, misdirection).
+            raise SystemExit(
+                f"preclose-check: {repo}#{issue} was never enrolled (pre-experiment), so it stays "
+                "outside the comparison and runs the manual panel; plan with no --arm.")
         if not re_enroll:
             raise SystemExit(
                 f"preclose-check: {repo}#{issue} is enrolled as {label(existing)}. Change it with "
                 f"--re-enroll {target} --arm-reason \"<why>\" (harmonic-forge#890).")
-        if not existing["enrolled"]:
-            raise SystemExit(
-                f"preclose-check: {repo}#{issue} was never enrolled (pre-experiment), so it stays "
-                "outside the comparison and runs the manual panel; plan with no --arm.")
         if target == "workflow" and not on:
             raise SystemExit(
                 "preclose-check: re-enrolling onto the workflow arm needs the experiment to be "

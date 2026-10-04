@@ -352,6 +352,22 @@ class StickyWicketPatch(ArmCase):
             self.complete_arm()  # the panel ran: the pass is recorded, without an arm
         self.assertNotIn("arm", self.entry())
 
+    def test_a_legacy_re_enrolled_pre_experiment_event_is_still_never_enrolled(self) -> None:
+        path = preclose.enrollment_path(REPO, self.issue)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"arm": "manual", "assigned": "pre-experiment", "reason": "x"}) + "\n")
+        event = enrollment.current(path)
+        self.assertFalse(event["enrolled"])
+        self.assertFalse(enrollment.overridden(event))
+
+    def test_workflow_on_a_pre_experiment_issue_names_no_retry_that_is_refused(self) -> None:
+        self.enroll(False)
+        self.plan_arm()
+        with self.assertRaises(SystemExit) as refused:
+            self.plan_arm(arm="workflow")
+        self.assertIn("never enrolled", str(refused.exception))
+        self.assertNotIn("--re-enroll", str(refused.exception))
+
     def test_a_legacy_pre_experiment_event_still_reads(self) -> None:
         path = preclose.enrollment_path(REPO, self.issue)
         path.parent.mkdir(parents=True, exist_ok=True)
