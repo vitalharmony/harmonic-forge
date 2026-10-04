@@ -846,9 +846,12 @@ def complete(args: argparse.Namespace) -> int:
     # last pass's.
     # The planned receipt's tier is the one that sized this panel, so it
     # wins over a --tier given only at --complete (#889 post-verdict check).
-    planned = (prior or {}).get("tier") if (prior or {}).get("status") == "planned" else None
-    cost["tier"] = (planned if planned and planned != "unset" else None) or getattr(args, "tier", None) \
-        or preclose_passes.last_tier(prior) or "unset"
+    # Whenever a plan sized this panel, its recorded tier is the label, "unset"
+    # included: --tier given at --complete can never relabel a planned pass.
+    if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
+        cost["tier"] = prior["tier"]
+    else:
+        cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
                                  current_branch(), reforge, cost),

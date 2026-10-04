@@ -258,6 +258,12 @@ class StickyWicketPatch(CostCase):
         self.assertEqual(self.last_pass()["tier"], "deep")
         self.assertEqual(self.events()[0]["attrs"]["tier"], "deep")
 
+    def test_an_unset_plan_is_not_relabelled_at_complete(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier=None)
+        self.run_complete(tier="fast")
+        self.assertEqual(self.last_pass()["tier"], "unset")
+
     def test_zero_is_not_a_measured_cost(self) -> None:
         for flags in ({"panel_tokens": "0"}, {"panel_ms": "0"}):
             with self.subTest(flags), self.assertRaises(SystemExit) as refused:
