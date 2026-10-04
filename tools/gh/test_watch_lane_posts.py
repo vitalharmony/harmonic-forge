@@ -2814,9 +2814,12 @@ class ReadQueueCandidatesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             self._record(base, "vitalharmony/hrse", 1, "handoff", "l1")
+            # Relative to the record's real timestamp: a fixed date here went
+            # red once the wall clock came within max-age of it.
             got = watch_lane_posts.read_queue_candidates(
                 ["vitalharmony/hrse"], "l2",
-                now=dt.datetime(2026, 10, 18, tzinfo=dt.timezone.utc), base_dir=base)
+                now=dt.datetime.now(dt.timezone.utc)
+                + dt.timedelta(days=belt_candidates.DEFAULT_MAX_AGE_DAYS + 1), base_dir=base)
         self.assertEqual(got, set())
 
     def test_a_kind_ineligible_for_the_requesting_lane_is_excluded(self):
