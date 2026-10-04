@@ -375,6 +375,24 @@ class StickyWicketPatch(ArmCase):
         self.assertIn("arm:      pre-experiment", self.plan_arm())
 
 
+class ReportPostVerdict2(unittest.TestCase):
+    def test_a_never_enrolled_pass_beside_an_armed_one_is_mixed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            _write(receipts, 1, [_pass("a", arm="manual", arm_enrolled=False), _pass("b", "workflow")])
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        self.assertEqual(_row(text, "mixed")[1], "1")
+        self.assertEqual(_row(text, "workflow")[1], "0")
+
+    def test_a_legacy_re_enrolled_pre_experiment_entry_is_not_an_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            _write(receipts, 1, [_pass("a", "manual", overridden=True, arm_assigned="pre-experiment")])
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        self.assertEqual(_row(text, "pre-experiment")[1], "1")
+        self.assertEqual(_row(text, "overridden")[1], "0")
+
+
 class ReportPatch(unittest.TestCase):
     def test_a_rejoined_issue_is_not_discarded_and_overrides_show_their_direction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

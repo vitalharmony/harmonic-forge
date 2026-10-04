@@ -203,7 +203,8 @@ def _entry_label(entry: dict) -> str | None:
     arm = entry.get("arm")
     if not arm:
         return None
-    if arm == preclose_enrollment.PRE_EXPERIMENT or entry.get("arm_enrolled") is False:
+    if preclose_enrollment.PRE_EXPERIMENT in (arm, entry.get("arm_assigned")) \
+            or entry.get("arm_enrolled") is False:
         return preclose_enrollment.PRE_EXPERIMENT
     return arm
 
@@ -217,9 +218,11 @@ def issue_arm(entries: list[dict]) -> str:
     labels = [_entry_label(entry) for entry in entries]
     if not entries or set(labels) == {None}:
         return "unarmed"
-    if None in labels:
+    # A never-enrolled pass beside an armed one mixes them too (#890
+    # post-verdict 2): neither the baseline nor an arm may claim the issue.
+    if None in labels or (preclose_enrollment.PRE_EXPERIMENT in labels and len(set(labels)) > 1):
         return "mixed"
-    if entries[-1].get("arm_overridden"):
+    if entries[-1].get("arm_overridden") and labels[-1] != preclose_enrollment.PRE_EXPERIMENT:
         return "overridden"
     # An arm this report does not know is shown, never a crash (#890 pass 1).
     known = preclose_enrollment.ARMS + (preclose_enrollment.PRE_EXPERIMENT,)
