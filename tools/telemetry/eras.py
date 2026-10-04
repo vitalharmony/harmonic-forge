@@ -175,16 +175,17 @@ def map_agrees(counts: dict[str, Any], verdict: Optional[str], body: str) -> boo
 _PROSE_TC = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
 
 
-_FIRST_HEADING = re.compile(r"(?m)^[ \t]*#{1,4}[ \t]+.*$")
-_GATE_HEADING = re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.I)
-#: A Lane 1 or Lane 2 discussion that recaps a gate is not a gate.
+#: A Lane 1 or Lane 2 post that relays or recaps a gate is not a gate.
 _POSTED_BY_L1_L2 = re.compile(r"posted-by=LANE[12]\b", re.I)
+_POSTED_BY_ANY = re.compile(r"posted-by=(LANE[\w-]+)", re.I)
 
 
-def _leads_with_gate(body: str) -> bool:
-    """The body's first heading is a gate report's (#893 reforge, R3)."""
-    first = _FIRST_HEADING.search(body)
-    return bool(first and _GATE_HEADING.match(first.group(0).strip()))
+def lane3_artifact_of(body: str, own_kind: Optional[str], footer: Optional[str]) -> Optional[str]:
+    """`gate_ci.lane3_artifact` over a stored comment: its footer kind (when
+    it names an artifact) and its poster."""
+    poster = _POSTED_BY_ANY.search(footer or "")
+    return gate_ci.lane3_artifact(body, own_kind if own_kind in ("gate-result", "spec") else None,
+                                  poster.group(1) if poster else None)
 
 
 def _actor(provenance: str, footer: Optional[str]) -> str:
@@ -230,17 +231,19 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
 
     timeline = lane_state.parse_timeline([{**comment, "body": body}])
     lane_gates = [t for t in timeline if t.key in _GATE_KEYS]
-    # Keyed on the body (#893 reforge, R3): a gate report posted as
-    # `discussion` -- 74 of 98 real ones -- is a gate, not a discussion.
+    # The shared recognizer (#893 reforge pass 1), the same test the posting
+    # side applies, so the two can never disagree on what a post is.
+    artifact = lane3_artifact_of(body, own_kind, footer)
+    relay = bool(_POSTED_BY_L1_L2.search(footer or ""))
     is_gate = gate_ci.looks_like_a_gate_report(body) and (
-        own_kind == "gate-result" or (own_kind is None and bool(lane_gates))
-        or (own_kind == "discussion" and _leads_with_gate(body)
-            and not _POSTED_BY_L1_L2.search(footer or "")))
+        artifact == "gate" or (own_kind is None and footer is None and bool(lane_gates)))
     for t in timeline:
-        if is_gate and t.key in _GATE_KEYS:
-            continue  # one gate event per comment, scored below
-        extra = (case_counts(footer, own_kind)
-                 if own_kind == "spec" and t.key == lane_state.KEY_SPEC_POSTED else {})
+        if (is_gate or relay) and t.key in _GATE_KEYS:
+            # One gate event per comment, scored below; a Lane 1/2 relay of a
+            # gate is never a gate reading at all.
+            continue
+        extra = (case_counts(footer, "spec")
+                 if artifact == "spec" and t.key == lane_state.KEY_SPEC_POSTED else {})
         add(t.key, t.provenance, t.validated, t.at, t.comment_id, extra)
     # Gate verdicts come from gate_ci.verdict_of(): heading or lead block only
     # (never a per-TC line), any heading level, and CONFLICT when the two

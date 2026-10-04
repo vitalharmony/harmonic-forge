@@ -45,7 +45,7 @@ class Case(unittest.TestCase):
         return path
 
     def post(self, kind: str, body: str, classes: dict | None = None,
-             results: dict | None = None) -> str:
+             results: dict | None = None, lane: str = "3") -> str:
         """Run main(); return the posted text (body plus footer)."""
         path = self.dir / "body.md"
         path.write_text(body)
@@ -60,7 +60,7 @@ class Case(unittest.TestCase):
             posted["text"] = text
             return "https://example/1", 1
         with unittest.mock.patch.object(sys, "argv", argv), \
-             unittest.mock.patch.dict(os.environ, {"LANE": "3"}), \
+             unittest.mock.patch.dict(os.environ, {"LANE": lane}), \
              unittest.mock.patch.object(P, "comment_body", side_effect=comment_body), \
              unittest.mock.patch.object(P, "require_green_ci", return_value=False), \
              unittest.mock.patch.object(P, "require_round_approval", return_value=None), \
@@ -69,7 +69,7 @@ class Case(unittest.TestCase):
             P.main()
         return posted["text"]
 
-    def post_with_stderr(self, kind: str, body: str, **kw) -> tuple[str, str]:
+    def post_with_stderr(self, kind: str, body: str, **kw) -> tuple[str, str]:  # noqa: D401
         err = io.StringIO()
         with unittest.mock.patch.object(sys, "stderr", new=err):
             text = self.post(kind, body, **kw)
@@ -115,7 +115,8 @@ class TelemetryNeverRefuses(Case):
     def test_a_gate_with_no_map_posts_with_results_absent(self):
         text, err = self.post_with_stderr("gate-result", GATE_FAIL)
         self.assertIn("results=absent; gate-ms=", last_line(text))
-        self.assertEqual(err, "")
+        # Amended TC1: a post with no map names the reason, as an unusable one does.
+        self.assertIn("no --tc-results was given", err)
 
     def test_a_spec_with_no_map_posts_with_classes_absent(self):
         self.assertIn("classes=absent", last_line(self.post("spec", SPEC_TC)))
@@ -180,6 +181,32 @@ class KeyedOnTheBody(Case):
     def test_a_plain_discussion_footer_is_byte_identical(self):
         self.assertEqual(last_line(self.post("discussion", "## A note\n\nhello\n")),
                          "<!-- l1-post v1; kind=discussion; posted-by=LANE3 -->")
+
+
+class OneRecognizer(Case):
+    """Epoch-1 finding 4: the posting side and the extractor share one test,
+    so they agree on a fenced or top-level `#` line before the artifact."""
+
+    def test_an_explicit_kind_is_the_artifact_whatever_comes_first(self):
+        # The posting side's validate_lead already refuses such a body; the
+        # extractor still meets it in history, and must agree on the kind.
+        import gate_ci  # noqa: PLC0415
+        body = "# H1 — Lane 3 verification\n\n" + GATE_FAIL
+        self.assertEqual(gate_ci.lane3_artifact(body, "gate-result", "LANE3"), "gate")
+        self.assertIsNone(gate_ci.lane3_artifact(body, None, "LANE3"))
+
+    def test_a_fenced_hash_line_is_not_a_heading_on_either_side(self):
+        import eras  # noqa: PLC0415
+        body = "```\n# all green\n```\n" + GATE_FAIL
+        footer = last_line(self.post("discussion", body, results={"1": "pass", "2": "fail"}))
+        self.assertIn("results=1:pass,2:fail;", footer)
+        self.assertEqual(eras.lane3_artifact_of(eras.clean(body), "discussion", footer), "gate")
+
+    def test_a_lane_1_relay_records_no_map(self):
+        text, err = self.post_with_stderr("gate-result", GATE_FAIL, results={"1": "pass", "2": "fail"},
+                                          lane="1")
+        self.assertNotIn("results=", last_line(text))
+        self.assertIn("not a Lane 3 spec or gate report", err)
 
 
 class FooterFieldOrder(unittest.TestCase):
@@ -296,6 +323,17 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
         recap = "## Lane 1 — closing\n### Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n"
         events = self.events([self.gate("", body=recap, kind="discussion", by="LANE1")])
         self.assertEqual([e["event_type"] for e in events], ["l1.discussion"])
+
+    def test_a_spec_posted_as_discussion_pairs_and_resets(self):
+        # Epoch-1 finding 1.
+        spec_discussion = {"id": 10, "created_at": "2026-10-04T10:00:00Z",
+                           "body": _footered(SPEC_TC, "discussion", "classes=1:ac,2:live")}
+        gate = self.gate("results=1:pass,2:fail; gate-ms=1", cid=12)
+        attrs = self.the_gate(self.events([spec_discussion, gate]))["attrs"]
+        self.assertEqual((attrs["measurement"], attrs["case_ac"], attrs["fail_live"]), ("measured", 1, 1))
+        older = self.spec("classes=1:existing,2:existing", cid=9)
+        attrs = self.the_gate(self.events([older, spec_discussion, gate]))["attrs"]
+        self.assertEqual((attrs["case_existing"], attrs["case_ac"]), (0, 1))
 
     def test_a_lane_1_post_leading_with_a_gate_heading_is_not_a_gate(self):
         # Lane 1 relaying a gate verbatim is not a measured gate: no event
@@ -417,10 +455,44 @@ class ReportReadsTheStamp(unittest.TestCase):
         buckets = VR.build([blocked])["buckets"]
         self.assertEqual((buckets["blocked-no-cases"], buckets["bypass-route"], buckets["pre-893"]), (1, 0, 0))
 
-    def test_a_reading_with_no_stamp_is_pre_893_never_dropped(self):
-        # pass-2 finding 8: no `verdict`/`measurement` attr is still a gate.
-        old = {**self.GATE, "extractor_version": "threads-2", "attrs": {"comment_id": "7"}}
-        self.assertEqual(VR.build([old])["buckets"]["pre-893"], 1)
+    def test_an_older_gate_reading_is_pre_893_and_a_non_gate_is_not_a_gate(self):
+        # Epoch-1 finding 6: an unstamped reading is a gate only when its
+        # marker says so; L2B/L3B extract as blocked.lane and are never gates.
+        old = {**self.GATE, "extractor_version": "threads-3",
+               "attrs": {"comment_id": "7", "marker": "gate-result"}}
+        l2b = {**self.GATE, "event_type": "blocked.lane", "issue": 9,
+               "attrs": {"comment_id": "8", "marker": "L2B"}}
+        report = VR.build([old, l2b])
+        self.assertEqual(report["buckets"]["pre-893"], 1)
+        self.assertNotIn(("o/r", 9), report["issues"])
+
+    def test_a_lane_1_relay_never_reaches_the_report(self):
+        # Epoch-1 finding 2: a relay by any --kind adds no gate.
+        import extract_threads  # noqa: PLC0415
+        gate = _footered(GATE_PASS, "gate-result", "results=1:pass,2:pass; gate-ms=1000")
+        relays = [_footered(GATE_PASS, kind, "results=1:pass,2:pass; gate-ms=5").replace(
+            "posted-by=LANE3", "posted-by=LANE1") for kind in ("gate-result", "discussion")]
+        comments = [{"id": i, "created_at": f"2026-10-04T1{i}:00:00Z", "body": b}
+                    for i, b in enumerate([gate, *relays], 1)]
+        get = lambda path: [comments] if "comments" in path else [[]]
+        events = extract_threads.issue_events("o/r", 2, get, account="a", org="o")
+        self.assertEqual(VR.build(events)["aggregate"]["gates"] + VR.build(events)["buckets"]["unpaired"], 1)
+        self.assertEqual(len(VR.build(events)["issues"][("o/r", 2)]["gates"]), 1)
+
+    def test_an_unreadable_subdirectory_is_reported_not_read_as_empty(self):
+        # Epoch-1 finding 5.
+        with tempfile.TemporaryDirectory() as store:
+            part = Path(store) / "events" / "acct" / "o" / "gh-thread" / "2026-10.jsonl"
+            part.parent.mkdir(parents=True)
+            part.write_text(json.dumps(self.GATE) + "\n")
+            locked = Path(store) / "events" / "acct"
+            locked.chmod(0)
+            try:
+                skipped = []
+                VR.load_events(Path(store), None, None, skipped)
+            finally:
+                locked.chmod(0o755)
+        self.assertTrue(any("unreadable directory" in s for s in skipped), skipped)
 
     def test_the_newest_extractor_version_wins_numerically(self):
         # pass-2 finding 3: threads-10 is newer than threads-9.

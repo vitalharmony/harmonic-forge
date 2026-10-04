@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import statistics
 import sys
 from collections import defaultdict
@@ -71,7 +72,13 @@ def load_events(store: Path, since: Optional[str], until: Optional[str],
     except OSError as exc:
         raise StoreUnreadable(f"no readable telemetry store at {events_dir} ({exc})") from exc
     out = []
-    for part in sorted(events_dir.glob("**/*.jsonl")):
+    parts = []
+    # os.walk names every directory it cannot list; Path.glob skips it
+    # silently, which read an unreadable partition as an empty window.
+    for here, _, files in os.walk(events_dir, onerror=lambda exc: skipped is not None
+                                  and skipped.append(f"{exc.filename} (unreadable directory)")):
+        parts += [Path(here) / name for name in files if name.endswith(".jsonl")]
+    for part in sorted(parts):
         try:
             lines = part.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -94,9 +101,24 @@ def load_events(store: Path, since: Optional[str], until: Optional[str],
     return out
 
 
+#: The markers of an older (threads-3 and before) reading that IS a gate:
+#: footer- or heading-era gate results and the token-era L3P/L3F verdicts. An
+#: L2B or L3B is a lane reporting it could not run, never a gate.
+PRE_893_GATE_MARKERS = {"gate-result", "L3P", "L3F"}
+
+
+def is_gate_reading(event: dict[str, Any]) -> bool:
+    """A gate the report counts (#893 reforge pass 1): one the extractor
+    stamped, or an older unstamped reading whose marker says it is a gate.
+    Event type alone never decides: L2B/L3B extract as blocked.lane too."""
+    attrs = event.get("attrs") or {}
+    if attrs.get("measurement") in BUCKETS:
+        return True
+    return "measurement" not in attrs and attrs.get("marker") in PRE_893_GATE_MARKERS
+
+
 def bucket(gate: dict[str, Any]) -> str:
-    """The stamped measurement. A reading from before the stamp existed
-    (extractor threads-3 or older) is pre-893 by construction."""
+    """The stamped measurement; an older gate reading is pre-893."""
     value = (gate.get("attrs") or {}).get("measurement")
     return value if value in BUCKETS else "pre-893"
 
@@ -140,7 +162,7 @@ def build(events: list[dict[str, Any]]) -> dict[str, Any]:
     # `"verdict" in attrs` filter is what made a bypassing gate vanish).
     gates = latest_readings([e for e in events if e.get("source") == "gh-thread"
                              and e.get("event_type") in GATE_TYPES
-                             and (e.get("attrs") or {}).get("comment_id")])
+                             and (e.get("attrs") or {}).get("comment_id") and is_gate_reading(e)])
     attempts = defaultdict(list)
     for e in events:
         if e.get("event_type") == ATTEMPT_TYPE:

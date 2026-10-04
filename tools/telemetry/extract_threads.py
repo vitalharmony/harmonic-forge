@@ -186,7 +186,10 @@ def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str,
     latest_spec: Optional[dict[str, str]] = None
     for comment in comments:
         footer, kind = _own(comment)
-        if kind == "spec":
+        # The shared recognizer (#893 reforge pass 1): a spec posted as
+        # `discussion` carries, and resets, the classes exactly as a
+        # `--kind spec` post does.
+        if eras.lane3_artifact_of(eras.clean(comment.get("body") or ""), kind, footer) == "spec":
             # Every spec resets what is carried, classified or not: a newer
             # unclassified spec must never pair a gate with an older round's
             # classes (#893 preclose pass 2).

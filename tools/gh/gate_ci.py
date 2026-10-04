@@ -98,6 +98,40 @@ _HEADING_VERDICT = re.compile(r"\b(PASS|FAIL|BLOCKED)\b")
 _LEAD_END = re.compile(r"(?im)^(?:#{3,6}[ \t]|<details)")
 
 
+_ARTIFACT_FENCE = re.compile(r"```.*?```", re.S)
+_ARTIFACT_QUOTE = re.compile(r"^[ \t]*>.*$", re.M)
+_ARTIFACT_FIRST_HEADING = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]+\S.*$")
+_ARTIFACT_LEADS = {"gate": re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.I),
+                   "spec": re.compile(r"^#{1,4}[ \t]*Lane 3 Test Spec\b", re.I)}
+_RELAY_POSTER = re.compile(r"^LANE[12]$", re.I)
+
+
+def lane3_artifact(body: str, kind: str | None = None, posted_by: str | None = None) -> str | None:
+    """`gate`, `spec` or None: whether a post is one of Lane 3's two artifacts.
+
+    The ONE test the posting side and the telemetry extractor share
+    (harmonic-forge#893 reforge pass 1): when each side had its own, they
+    disagreed on discussion-route specs, Lane 1 relays and fenced headings.
+    - A post by Lane 1 or Lane 2 is a relay, never an artifact.
+    - An explicit kind (`gate-result`, `spec`) is the artifact it names; the
+      posting side has already validated its heading.
+    - Otherwise the body's FIRST heading decides, read after fenced blocks and
+      blockquotes are removed, so a quoted or fenced `#` line is never a
+      heading and a nested gate recap is not a gate."""
+    if posted_by and _RELAY_POSTER.match(posted_by.strip()):
+        return None
+    if kind == "gate-result":
+        return "gate"
+    if kind == "spec":
+        return "spec"
+    text = _ARTIFACT_QUOTE.sub("", _ARTIFACT_FENCE.sub("", body or ""))
+    first = _ARTIFACT_FIRST_HEADING.search(text)
+    if not first:
+        return None
+    line = first.group(0).strip()
+    return next((name for name, lead in _ARTIFACT_LEADS.items() if lead.match(line)), None)
+
+
 def looks_like_a_gate_report(body: str) -> bool:
     """Is this body a Lane 3 gate report, whatever it was stamped?"""
     return GATE_HEADING.search(body) is not None

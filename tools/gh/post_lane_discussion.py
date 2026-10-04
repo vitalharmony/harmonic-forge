@@ -41,7 +41,7 @@ _FORGE = _FORGE_ROOT / "tools" / "gh"
 if _FORGE.is_dir():
     sys.path.insert(0, str(_FORGE))
 
-from gate_ci import check_gate_result, gated_sha, looks_like_a_gate_report, verdict_of
+from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_gate_report, verdict_of
 
 # harmonic-forge#791: the one definition of "this round is approved", shared
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
@@ -263,19 +263,6 @@ LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 _CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
 
 
-_FIRST_HEADING = re.compile(r"(?m)^[ \t]*#{1,4}[ \t]+.*$")
-
-
-def leads_with(body: str, kind: str) -> bool:
-    """Whether the body's FIRST heading is `kind`'s (a spec or a gate report).
-
-    Keyed on the body, never on --kind (#893 reforge, R3), but on its leading
-    heading: a Lane 1 closing note that recaps a gate under a nested
-    `### Lane 3 Gate Results` is a discussion, not a gate."""
-    first = _FIRST_HEADING.search(body or "")
-    return bool(first and KIND_HEADING[kind].match(first.group(0).strip()))
-
-
 def warn(message: str) -> None:
     """harmonic-forge#893 reforge (R2): a case map is telemetry, and telemetry
     never refuses a post. A map that cannot be used is reported here and the
@@ -294,6 +281,7 @@ def load_case_map(path: Path | None, allowed: tuple[str, ...], flag: str) -> dic
     the prose is a data-quality question the verification report flags, never a
     reason to refuse a post (R2)."""
     if path is None:
+        warn(f"no {flag} was given")
         return None
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -538,13 +526,18 @@ def main() -> None:
     # field and gate time; a spec carries its classes field. Neither ever
     # refuses the post: a missing or unusable map is stamped `absent`.
     case_fields = ""
-    if leads_with(body, "gate-result"):
+    lane = os.environ.get("LANE")
+    artifact = lane3_artifact(body, args.kind if args.kind in ("gate-result", "spec") else None,
+                              f"LANE{lane}" if lane else None)
+    if artifact == "gate":
         case_fields = (f"{case_field('results', load_case_map(args.tc_results, CASE_RESULTS, '--tc-results'))}; "
                        f"gate-ms={gate_ms()}")
-    elif leads_with(body, "spec"):
+    elif artifact == "spec":
         case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
     elif args.tc_results is not None or args.tc_classes is not None:
-        warn("--tc-results/--tc-classes given, but the body is neither a gate report nor a Lane 3 spec")
+        print("[post-comment] WARNING: --tc-results/--tc-classes given, but this post is not a "
+              "Lane 3 spec or gate report (a Lane 1/2 relay never is); the map was not recorded",
+              file=sys.stderr)
     override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
     require_round_approval(args.repo, args.issue, body)
     lane = os.environ.get("LANE")
