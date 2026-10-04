@@ -190,7 +190,9 @@ class AutoAeRefusalTests(AutoAeCase):
     def test_slash_list_and_table_tier_p_forms_are_refused(self):
         for extra in ("Write tier: W/P", "Write tier R, W and P",
                       "| TC | Tier |\n|---|---|\n| TC1 | W |\n| TC7 | P |",
-                      "| TC | Tier |\n|---|---|\n| TC1 | W |\n| TC7 | P"):
+                      "| TC | Tier |\n|---|---|\n| TC1 | W |\n| TC7 | P",
+                      "| Tier | TC |\n|---|---|\n| P | TC7 |",
+                      "TC | Tier\n---|---\nTC7 | P"):
             with self.subTest(extra=extra):
                 self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=extra)]))
 

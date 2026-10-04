@@ -59,14 +59,13 @@ _SPEC_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Test Spec\b")
 # letter on the same line. Every declaration must agree, and be R or W; none,
 # or two that differ, refuses. A fenced example can never supply the tier.
 _DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*:?[^\S\n]*\**`?([RWP])`?\**(?![\w-])")
-# Gate 2, the veto: deliberately over-broad, on the raw body, fences included.
-# Any standalone capital P on a line after "tier" or "ceiling" (catches "W/P",
-# "R, W and P", "(Tier P, ...)", "tier `P`"), a `--tier p` flag in either case,
-# or any table cell that is just P (a per-case Tier column). Tier letters are
-# capitals, so a Cypher `SET p.x` on the same line is not a P. It can only cause a false refusal, which
-# costs one operator AE, so widening it is always the safe move.
-_P_AFTER_TIER = re.compile(r"(?i:tier|ceiling)[^\n]*?(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)[= ]+[`*]*[pP]\b")
-_P_CELL = re.compile(r"(?im)^[^\S\n]*\|.*\|[^\S\n]*[`*]*P[`*]*[^\S\n]*(?:\||$)")
+# Gate 2, the veto: ANY standalone capital P token anywhere in the raw body,
+# fences and tables included, in whatever layout (a first column, no leading
+# pipe, a slash or comma list), plus a `--tier p` flag in either case. Two
+# rounds of naming P's spellings each missed a layout, so it names none: no
+# real Lane 3 spec carries a bare P, and a false refusal costs one operator AE,
+# so the broadest form is the safe one (sticky-wicket ruling, post-verdict).
+_P_TOKEN = re.compile(r"(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)[= ]+[`*]*[pP]\b")
 
 
 def declared_tier(body: str) -> str | None:
@@ -78,7 +77,7 @@ def declared_tier(body: str) -> str | None:
 def p_vetoed(body: str) -> bool:
     """Whether anything in the raw body, fences included, could mean Tier P."""
     text = body or ""
-    return bool(_P_AFTER_TIER.search(text) or _P_CELL.search(text))
+    return bool(_P_TOKEN.search(text))
 
 
 def tier_refusal(label: str, body: str) -> str | None:
