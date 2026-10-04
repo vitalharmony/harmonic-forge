@@ -1441,7 +1441,7 @@ def require_open_pr(
 
 def pr_issue_marker(
     repo: str, issue: int, branch: str, sha: str,
-    *, local_check: tuple[str, str] | None = None,
+    *, local_check: tuple[str, str] | None = None, snapshot_out: dict | None = None,
 ) -> str:
     """Versioned, pre-merge PR↔issue provenance for every onboarded repo.
 
@@ -1454,9 +1454,11 @@ def pr_issue_marker(
     Also takes a single, non-waiting `gate_ci.ci_conclusion()` snapshot of
     the PR's `verify` check-run (harmonic-forge#745 AC1) -- taken here,
     after `source_repo`/the PR are already resolved below, rather than
-    re-resolved by the caller. One API call; whatever state comes back
+    re-resolved by the caller. One call site; whatever state comes back
     (`pending`/`green`/`red`/`absent`/`unknown`) is recorded as-is, never
-    waited on or retried."""
+    waited on or retried. `snapshot_out`, when given, receives that same
+    state as `ci_state` (harmonic-forge#892), so the attempt record and the
+    footer can never disagree."""
     source_repo = _cwd_repo_from_git(None)
     if source_repo is None:
         fail("cannot resolve source repo for PR provenance")
@@ -1484,9 +1486,12 @@ def pr_issue_marker(
     if local_check is not None:
         started_at, finished_at = local_check
         timing_fields += f" local-check-start={started_at}; local-check-end={finished_at};"
-    # harmonic-forge#745 AC1: one snapshot, no wait. `ci_conclusion` itself
-    # makes exactly one `gh api` call and has no internal retry/poll loop.
+    # harmonic-forge#745 AC1: one snapshot, no wait -- one call site, with no
+    # retry/poll loop. (`ci_conclusion` itself makes 2+N `gh api` calls: a SHA
+    # resolve for a short SHA, the runs list, and one jobs call per run.)
     ci_state, _ci_detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
+    if snapshot_out is not None:
+        snapshot_out["ci_state"] = ci_state
     timing_fields += (f" ci-check-name=verify; ci-snapshot-state={ci_state}; "
                       f"ci-snapshot-at={datetime.now(UTC).isoformat()};")
     # F745 Lane 3 gate FAIL: `head-sha={sha}{timing_fields}` omitted the `;`
@@ -1559,13 +1564,18 @@ def refresh_main() -> str:
     return resolved.stdout.strip()
 
 
-def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str]]:
-    """Returns (check names, (local_check_started_at, local_check_finished_at))
-    -- the second element brackets the `mise run check` call below in UTC
-    ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing. Callers
-    that don't need the timing (there are none today -- only the
-    `kind == "ready-for-l3"` path calls this at all) still get it; the cost
-    is two `datetime.now(UTC)` calls around work already happening."""
+def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], dict]:
+    """Returns (check names, (local_check_started_at, local_check_finished_at),
+    check) -- the second element brackets the `mise run check` call below in
+    UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
+
+    harmonic-forge#892: a failed `mise run check` no longer fails here. It
+    returns at once with `check = {"result": "fail", "output": ...}` so the
+    caller can record the attempt (with a CI snapshot taken after the check)
+    before refusing with the same message as before. The dirty-worktree check
+    is skipped on that path, as the old `fail()` never reached it either, so a
+    failed check that also wrote files keeps its own output. A passing check
+    returns `{"result": "pass"}`. Every other refusal in here is unchanged."""
     branch_sha = resolve_sha(branch)
     if branch_sha != sha:
         fail(f"branch {branch!r} no longer resolves to the attested SHA")
@@ -1634,7 +1644,8 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str]]:
         checked = run("mise", "run", "check", cwd=scratch, env=check_env)
         local_check_finished_at = datetime.now(UTC).isoformat()
         if checked.returncode:
-            fail("static verification failed:\n" + checked.stdout + checked.stderr)
+            return ([], (local_check_started_at, local_check_finished_at),
+                    {"result": "fail", "output": checked.stdout + checked.stderr})
         clean = run("git", "status", "--porcelain", cwd=scratch)
         if clean.returncode or clean.stdout.strip():
             fail("verification left the detached worktree dirty")
@@ -1644,7 +1655,7 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str]]:
         if check_tmp is not None:
             shutil.rmtree(check_tmp, ignore_errors=True)
     return (["mise-check", "origin-main-ancestor", "branch-sha-match", "clean-worktree"],
-            (local_check_started_at, local_check_finished_at))
+            (local_check_started_at, local_check_finished_at), {"result": "pass"})
 
 
 def comment_body(repo: str, issue: int, body: str) -> tuple[str, int]:
@@ -1671,11 +1682,80 @@ def comment_body(repo: str, issue: int, body: str) -> tuple[str, int]:
     return url, comment_id
 
 
+def _ms_between(started: str, finished: str) -> int | None:
+    try:
+        delta = datetime.fromisoformat(finished) - datetime.fromisoformat(started)
+    except (TypeError, ValueError):
+        return None
+    return int(delta.total_seconds() * 1000)
+
+
+_FAILING_STEP = re.compile(r"(?m)^.*\b(?:FAIL|ERROR)\b.*$")
+
+
+def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict,
+                  failing_step: str = "") -> None:
+    """harmonic-forge#892: one `ready-for-l3.attempt` event. Counts and labels
+    only. Any failure, raised or returned as `rejected`, goes to stderr and
+    never changes this script's outcome."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        import emit as telemetry_emit  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        result_state = attempt.get("local_check_result", "not-run")
+        ci_state = attempt.get("ci_state", "not-taken")
+        event = {
+            "ts": datetime.now(UTC).isoformat(), "source": "manual", "repo": repo,
+            "issue": issue, "sha": sha, "account": origin.account, "org": origin.org,
+            "actor": "lane1", "event_type": "ready-for-l3.attempt", "subject_kind": "ready-for-l3",
+            "subject_id": f"{repo}#{issue}@{sha[:12]}", "provenance": "manual",
+            "attrs": {
+                "outcome": outcome, "local_check_ms": attempt.get("local_check_ms"),
+                "local_check_result": result_state, "ci_state": ci_state,
+                "ci_green_local_red": ci_state == "green" and result_state == "fail",
+                "failing_step": (failing_step or "")[:200],
+            },
+        }
+        counts = telemetry_emit.emit([event])
+        if counts.get("rejected"):
+            print(f"[l1-post] ready-for-l3 telemetry rejected: {counts['rejected']}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - telemetry never changes the outcome
+        print(f"[l1-post] ready-for-l3 telemetry not written: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+
+
 def post_kind(
+    repo: str, issue: int, kind: str, body: str, sha: str, branch: str, **kwargs,
+) -> tuple[str, int]:
+    """Run world_checks, build the footer, post, and write the receipt for
+    ONE already-validated claim (see `_post_kind`).
+
+    harmonic-forge#892: a `ready-for-l3` that reaches here is recorded as one
+    telemetry event, posted or refused. A refusal the attempt has not already
+    recorded (anything but the failed local check) is recorded here as
+    `refused-other` before it propagates. `KeyboardInterrupt` is deliberately
+    not caught: an operator abort is not a refusal. No other kind ever emits."""
+    if kind != "ready-for-l3":
+        return _post_kind(repo, issue, kind, body, sha, branch, attempt=None, **kwargs)
+    attempt = {"emitted": False, "local_check_result": "not-run", "local_check_ms": None,
+               "ci_state": "not-taken"}
+    try:
+        return _post_kind(repo, issue, kind, body, sha, branch, attempt=attempt, **kwargs)
+    except SystemExit:
+        if not attempt["emitted"]:
+            attempt["emitted"] = True
+            _emit_attempt(repo, issue, sha, "refused-other", attempt)
+        raise
+
+
+def _post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
-    grant_on_main: bool = False, prod_run: dict | None = None,
+    grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -1684,7 +1764,26 @@ def post_kind(
     recorded."""
     local_check_timing: tuple[str, str] | None = None
     if kind == "ready-for-l3":
-        checks, local_check_timing = static_checks(sha, branch)
+        checks, local_check_timing, check = static_checks(sha, branch)
+        if attempt is not None:
+            attempt["local_check_result"] = check["result"]
+            attempt["local_check_ms"] = _ms_between(*local_check_timing)
+        if check["result"] == "fail":
+            if attempt is not None:
+                # The snapshot is taken AFTER the check, from the repo the PR
+                # lives in, exactly as `pr_issue_marker()` resolves it.
+                try:
+                    source_repo = _cwd_repo_from_git(None)
+                    ci_state = (gate_ci.ci_conclusion(source_repo, sha, required={"verify"})[0]
+                                if source_repo else "unknown")
+                except Exception:  # noqa: BLE001
+                    ci_state = "unknown"
+                attempt["ci_state"] = ci_state
+                step = _FAILING_STEP.search(check.get("output", ""))
+                attempt["emitted"] = True
+                _emit_attempt(repo, issue, sha, "refused-check", attempt,
+                              failing_step=step.group(0).strip() if step else "")
+            fail("static verification failed:\n" + check.get("output", ""))
     else:
         checks = ["body-validation"]
     if is_handoff_extra_checks:
@@ -1715,7 +1814,8 @@ def post_kind(
     if pr_warnings:
         body = body.rstrip("\n") + "\n\n### No-open-PR override (operator-acknowledged)\n" + "\n".join(pr_warnings) + "\n"
     if kind == "ready-for-l3":
-        marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing)
+        marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing,
+                                 snapshot_out=attempt)
         body = body.rstrip("\n") + "\n\n" + marker + "\n"
     # a private-repo incident: hash the rstripped body, not the raw one -- `comment_body()`
     # below posts `body.rstrip("\n") + footer`, so hashing `body` unstripped
@@ -1767,6 +1867,9 @@ def post_kind(
         # so consuming it here keeps that, and a later redesigned handoff on
         # the same issue needs a fresh review.
         pitch_receipt.consume(repo, issue, url)
+    if attempt is not None:
+        attempt["emitted"] = True
+        _emit_attempt(repo, issue, sha, "posted", attempt)
     return url, comment_id
 
 
