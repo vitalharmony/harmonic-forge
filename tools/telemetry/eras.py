@@ -55,7 +55,7 @@ if str(_GH) not in sys.path:
 
 import gate_ci  # noqa: E402
 
-EXTRACTOR_VERSION = "threads-3"
+EXTRACTOR_VERSION = "threads-4"
 #: `post_lane_discussion.py` stamps `posted-by=LANE-unset` when LANE is unset.
 _POSTED_BY = re.compile(r"posted-by=LANE(\d|-unset)\b", re.I)
 #: A comment's own footer stands on a line of its own; the last one is l1_post's.
@@ -85,12 +85,31 @@ _CASE_FIELD = r"\b{key}=([\w:,-]*)"
 _GATE_MS = re.compile(r"\bgate-ms=(\d+|unknown)\b")
 
 
+#: harmonic-forge#893 reforge (R4): every gate event carries exactly one of these,
+#: stamped here and by the pairing step, never inferred later from which attrs
+#: happen to be present.
+MEASUREMENTS = ("measured", "unpaired", "no-map", "blocked-no-cases", "pre-893", "bypass-route")
+
+
+def case_field_state(footer: Optional[str], key: str) -> str:
+    """`missing` (no such field: an older post or another route), `absent`
+    (the post went out without a usable map), `empty` (a map with no cases) or
+    `present`."""
+    found = re.findall(_CASE_FIELD.format(key=re.escape(key)), footer or "")
+    if not found:
+        return "missing"
+    value = found[-1]
+    return "absent" if value == "absent" else "empty" if not value else "present"
+
+
 def parse_case_map(footer: Optional[str], key: str) -> dict[str, str]:
     """`{case id: value}` from a footer's `key=` field, or `{}` when absent."""
     # The LAST match: the case fields are appended after every other key, and
     # an earlier free-text value (an ack reason) must not shadow them.
     found = re.findall(_CASE_FIELD.format(key=re.escape(key)), footer or "")
     if not found:
+        return {}
+    if found[-1] == "absent":
         return {}
     pairs = (item.partition(":") for item in found[-1].split(",") if item)
     return {k: v for k, _, v in pairs if k and v}
@@ -121,6 +140,51 @@ def case_counts(footer: Optional[str], kind: Optional[str]) -> dict[str, Any]:
             out["gate_ms_known"] = False
         return out
     return {}
+
+
+def gate_measurement(footer: Optional[str], verdict: Optional[str]) -> str:
+    """One stamped state per gate (R4). `unpaired` is set later, by pairing."""
+    if footer is None:
+        return "bypass-route"
+    state = case_field_state(footer, "results")
+    if state == "missing":
+        return "pre-893"
+    if state == "absent":
+        return "no-map"
+    if state == "empty":
+        return "blocked-no-cases" if verdict == "BLOCKED" else "no-map"
+    return "measured"
+
+
+def map_agrees(counts: dict[str, Any], verdict: Optional[str], body: str) -> bool:
+    """A soft data-quality check, never a refusal (R1): does the stamped map
+    agree with the report's own verdict and, where the prose names `TC<n>`
+    cases, with how many it names? A disagreement marks the row low-confidence
+    in the report; it is a heuristic, and mislabelling a row is tolerable."""
+    tc, fails, blocked = counts.get("tc_count", 0), counts.get("fail_count", 0), counts.get("blocked_count", 0)
+    if verdict == "PASS" and (fails or blocked):
+        return False
+    if verdict == "FAIL" and not fails:
+        return False
+    if verdict == "BLOCKED" and not blocked:
+        return False
+    named = set(_PROSE_TC.findall(body))
+    return not named or len(named) == tc
+
+
+_PROSE_TC = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
+
+
+_FIRST_HEADING = re.compile(r"(?m)^[ \t]*#{1,4}[ \t]+.*$")
+_GATE_HEADING = re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.I)
+#: A Lane 1 or Lane 2 discussion that recaps a gate is not a gate.
+_POSTED_BY_L1_L2 = re.compile(r"posted-by=LANE[12]\b", re.I)
+
+
+def _leads_with_gate(body: str) -> bool:
+    """The body's first heading is a gate report's (#893 reforge, R3)."""
+    first = _FIRST_HEADING.search(body)
+    return bool(first and _GATE_HEADING.match(first.group(0).strip()))
 
 
 def _actor(provenance: str, footer: Optional[str]) -> str:
@@ -166,8 +230,12 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
 
     timeline = lane_state.parse_timeline([{**comment, "body": body}])
     lane_gates = [t for t in timeline if t.key in _GATE_KEYS]
+    # Keyed on the body (#893 reforge, R3): a gate report posted as
+    # `discussion` -- 74 of 98 real ones -- is a gate, not a discussion.
     is_gate = gate_ci.looks_like_a_gate_report(body) and (
-        own_kind == "gate-result" or (own_kind is None and bool(lane_gates)))
+        own_kind == "gate-result" or (own_kind is None and bool(lane_gates))
+        or (own_kind == "discussion" and _leads_with_gate(body)
+            and not _POSTED_BY_L1_L2.search(footer or "")))
     for t in timeline:
         if is_gate and t.key in _GATE_KEYS:
             continue  # one gate event per comment, scored below
@@ -187,11 +255,14 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
         definite = [t for t in lane_gates if t.key != lane_state.KEY_UNKNOWN]
         if key is None and verdict != "CONFLICT" and definite:
             key, provenance, validated = definite[0].key, definite[0].provenance, definite[0].validated
+        counts = case_counts(footer, "gate-result")
+        extra: dict[str, Any] = {"verdict": verdict or "none",
+                                 "measurement": gate_measurement(footer, verdict), **counts}
+        if counts:
+            extra["map_agrees"] = map_agrees(counts, verdict, body)
         add(key or lane_state.KEY_UNKNOWN, provenance, validated,
             str(comment.get("created_at") or comment.get("createdAt") or ""),
-            str(comment.get("id") or ""),
-            {"verdict": verdict or "none",
-             **(case_counts(footer, "gate-result") if attested else {})})
+            str(comment.get("id") or ""), extra)
     return events
 
 

@@ -293,14 +293,21 @@ own lane-comment task (the adapter half names it):
 ```
 
 **Classify every case when you write the spec, and record every verdict when
-you post the result** (harmonic-forge#893). Both flags are required for their
-kind, and their keys must be exactly the body's case ids (`TC3` or `3`):
+you post the result** (harmonic-forge#893). The map is the record of what you
+ran: its keys are the case ids, and nothing checks them against your prose.
 - `--tc-classes`: each case is `ac` (written from an acceptance criterion),
   `existing` (re-runs the repo's existing suite) or `live` (a check against the
   running system or real data). Fixed at approval time, never chosen after the
   run. Example: `{"TC1": "ac", "TC2": "live", "TC3": "existing"}`.
-- `--tc-results`: each case is `pass`, `fail` or `blocked`, and the map must
-  agree with the report's verdict (a PASS with a `fail` is refused).
+- `--tc-results`: each case is `pass`, `fail` or `blocked`. A BLOCKED gate that
+  ran nothing passes `{}`.
+
+Neither flag ever blocks a post. A gate result or spec posted without its map,
+or with one that cannot be used, goes out stamped `absent`, and the reason is
+printed. That keeps a FAIL or BLOCKED always publishable, but an absent map is
+an unmeasured gate in the verification report, so always pass it. The fields
+are stamped for any post whose first heading is the spec or gate heading,
+whatever its `--kind`.
 Keep both files under the testplan root. The gate time is derived from the
 `LANE3_ACTIVE` marker `lane3-begin` writes, so there is nothing to report; it
 reads `unknown` when that marker is missing. Lane 3 writes no telemetry: the

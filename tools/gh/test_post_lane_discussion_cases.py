@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""harmonic-forge#893 -- per-case classes on a Lane 3 spec, per-case verdicts
-and a derived gate time on a gate result, written into the one-line footer;
-the extractor turns them into scalar counts and pairs gates with specs; the
-verification report never reads absence as zero."""
+"""harmonic-forge#893, as reforged after its sticky-wicket ruling: the case map
+is the record of what Lane 3 ran, written into the one-line footer; the prose
+body is never parsed to validate it, and telemetry never refuses or fails a
+post. The extractor stamps one `measurement` per gate, pairs gates with
+specs, and the verification report reads that stamp verbatim, never reading
+absence as zero."""
 import ast
 import hashlib
 import io
@@ -67,89 +69,84 @@ class Case(unittest.TestCase):
             P.main()
         return posted["text"]
 
-    def refuses(self, kind: str, body: str, **kw) -> str:
-        with self.assertRaises(SystemExit) as ctx:
-            self.post(kind, body, **kw)
-        return str(ctx.exception.code)
+    def post_with_stderr(self, kind: str, body: str, **kw) -> tuple[str, str]:
+        err = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", new=err):
+            text = self.post(kind, body, **kw)
+        return text, err.getvalue()
 
 
-class ClassesAndResultsMatchTheBody(Case):
-    """TC1, for both spec shapes."""
+def last_line(text: str) -> str:
+    return text.rstrip().splitlines()[-1]
 
-    def test_the_flags_are_required_for_their_kind(self):
-        self.assertIn("--tc-classes", self.refuses("spec", SPEC_TC))
-        self.assertIn("--tc-results", self.refuses("gate-result", GATE_PASS))
 
-    def test_the_flags_are_refused_on_another_kind(self):
-        self.assertIn("only with --kind spec",
-                      self.refuses("gate-result", GATE_PASS, classes={"1": "ac"}, results={"1": "pass", "2": "pass"}))
+class TheMapIsTheRecord(Case):
+    """TC1/TC2 under the reforge (R1): the map's keys ARE the case ids; the
+    body is never parsed to check them, and only the map's shape is checked."""
 
-    def test_a_missing_id_is_refused_and_named(self):
-        for body in (SPEC_TC, SPEC_NUMBERED):
-            with self.subTest(shape=body.splitlines()[-1]):
-                self.assertIn("no entry for case(s) 2", self.refuses("spec", body, classes={"TC1": "ac"}))
-
-    def test_an_extra_id_is_refused_and_named(self):
-        for body in (SPEC_TC, SPEC_NUMBERED):
-            with self.subTest(shape=body.splitlines()[-1]):
-                self.assertIn("3 are not in the body", self.refuses(
-                    "spec", body, classes={"1": "ac", "2": "live", "3": "ac"}))
-
-    def test_an_unknown_class_is_refused(self):
-        self.assertIn("case 2 is 'smoke'", self.refuses("spec", SPEC_TC, classes={"1": "ac", "2": "smoke"}))
-
-    def test_a_matching_map_is_written_on_the_footer_line(self):
-        text = self.post("spec", SPEC_NUMBERED, classes={"TC2": "existing", "1": "ac"})
-        footer = text.rstrip().splitlines()[-1]
+    def test_a_spec_map_is_written_on_the_footer_line(self):
+        footer = last_line(self.post("spec", SPEC_NUMBERED, classes={"TC2": "existing", "1": "ac"}))
         self.assertTrue(footer.startswith("<!-- l1-post v1; kind=spec;"))
         self.assertIn("; classes=1:ac,2:existing -->", footer)
 
+    def test_ids_the_prose_does_not_name_are_still_recorded(self):
+        # The body names TC1 and TC2; the map is the record, so its ids stand.
+        footer = last_line(self.post("spec", SPEC_TC, classes={"1": "ac", "2": "live", "3": "existing"}))
+        self.assertIn("classes=1:ac,2:live,3:existing", footer)
 
-class ResultsAgreeWithTheVerdict(Case):
-    """TC2."""
-
-    def test_a_pass_with_a_fail_is_refused(self):
-        self.assertIn("says PASS but case(s) 2 did not pass",
-                      self.refuses("gate-result", GATE_PASS, results={"1": "pass", "2": "fail"}))
-
-    def test_a_fail_with_no_fail_is_refused(self):
-        self.assertIn("says FAIL but no case is fail",
-                      self.refuses("gate-result", GATE_FAIL, results={"1": "pass", "2": "blocked"}))
-
-    def test_an_agreeing_map_posts(self):
-        footer = self.post("gate-result", GATE_FAIL, results={"1": "pass", "2": "fail"}).rstrip().splitlines()[-1]
+    def test_a_gate_map_and_its_time_are_written(self):
+        footer = last_line(self.post("gate-result", GATE_FAIL, results={"1": "pass", "2": "fail"}))
         self.assertIn("results=1:pass,2:fail; gate-ms=", footer)
 
+    def test_a_table_shaped_report_is_recorded_from_its_map(self):
+        # pass-2 finding 1: a report whose cases are in a table, or in prose no
+        # reader recognises, posts and records exactly the map it was given.
+        body = ("## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — the second case failed.\n"
+                "**Finding:** y\n**Next:** z\n\n| Case | Verdict |\n|---|---|\n| 1 | PASS |\n| 2 | FAIL |\n"
+                "```\n| 42 | not a case |\n```\n")
+        self.assertIn("results=1:pass,2:fail;", last_line(self.post("gate-result", body,
+                                                                    results={"1": "pass", "2": "fail"})))
 
-class PanelPass1Fixes(Case):
-    """F893 preclose pass 1."""
 
-    # Bare numbers in the first column and no TC marker anywhere: only the
-    # table reader can find these ids (a TC mention elsewhere would let
-    # l1_post.case_ids find them and make the test vacuous).
-    TABLE_FAIL = ("## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — the second case failed.\n"
-                  "**Finding:** y\n**Next:** z\n\n| Case | Verdict | Evidence |\n|---|---|---|\n"
-                  "| 1 | PASS | a |\n| **2** | FAIL | b |\n")
-    CASELESS_FAIL = "## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — x.\n**Finding:** y\n**Next:** z\n"
-    CASELESS_BLOCKED = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n"
-                        "**Finding:** no fixture.\n**Next:** provision it.\n")
+class TelemetryNeverRefuses(Case):
+    """R2: a missing or unusable map never stops a post; it is stamped absent
+    and named on stderr. FAIL and BLOCKED must always be publishable."""
 
-    def test_a_table_shaped_gate_report_yields_its_case_ids(self):
-        footer = self.post("gate-result", self.TABLE_FAIL, results={"1": "pass", "TC2": "fail"})
-        self.assertIn("results=1:pass,2:fail;", footer)
-        self.assertIn("no entry for case(s) 2", self.refuses("gate-result", self.TABLE_FAIL, results={"1": "pass"}))
+    def test_a_gate_with_no_map_posts_with_results_absent(self):
+        text, err = self.post_with_stderr("gate-result", GATE_FAIL)
+        self.assertIn("results=absent; gate-ms=", last_line(text))
+        self.assertEqual(err, "")
 
-    def test_only_a_blocked_gate_may_list_no_cases(self):
-        self.assertIn("lists no case ids", self.refuses("gate-result", self.CASELESS_FAIL, results={}))
-        self.assertIn("results=;", self.post("gate-result", self.CASELESS_BLOCKED, results={}))
+    def test_a_spec_with_no_map_posts_with_classes_absent(self):
+        self.assertIn("classes=absent", last_line(self.post("spec", SPEC_TC)))
 
-    def test_blocked_cases_disagree_with_pass_and_blocked_needs_a_blocked_case(self):
-        self.assertIn("did not pass", self.refuses("gate-result", GATE_PASS, results={"1": "pass", "2": "blocked"}))
-        blocked = GATE_PASS.replace("**Verdict:** PASS — both ran", "**Verdict:** BLOCKED — fixture missing")
-        self.assertIn("no case is blocked", self.refuses("gate-result", blocked, results={"1": "pass", "2": "pass"}))
+    def test_an_unusable_map_posts_absent_and_says_why(self):
+        for name, mapping, why in (
+                ("unknown value", {"1": "pass", "2": "smoke"}, "case 2 is 'smoke'"),
+                ("duplicate", {"TC1": "pass", "1": "fail"}, "a second time"),
+                ("bad key", {"one!": "pass"}, "is not a case id"),
+                ("too many", {str(i): "pass" for i in range(P.MAX_CASES + 1)}, "at most")):
+            with self.subTest(name):
+                text, err = self.post_with_stderr("gate-result", GATE_FAIL, results=mapping)
+                self.assertIn("results=absent;", last_line(text))
+                self.assertIn(why, err)
 
-    def test_a_case_named_twice_is_refused(self):
-        self.assertIn("a second time", self.refuses("spec", SPEC_TC, classes={"TC1": "ac", "1": "live", "2": "ac"}))
+    def test_a_map_contradicting_the_verdict_still_posts(self):
+        # Agreement is a report-side confidence flag, never a refusal.
+        self.assertIn("results=1:pass,2:pass;",
+                      last_line(self.post("gate-result", GATE_FAIL, results={"1": "pass", "2": "pass"})))
+
+    def test_a_blocked_gate_that_ran_nothing_records_an_empty_map(self):
+        body = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n"
+                "**Finding:** no fixture.\n**Next:** provision it.\n")
+        self.assertIn("results=; gate-ms=", last_line(self.post("gate-result", body, results={})))
+
+    def test_gate_time_never_raises(self):
+        # pass-2 finding 5: a pruned caller directory, or no git at all.
+        with unittest.mock.patch.dict(os.environ, {"MISE_ORIGINAL_CWD": str(self.dir / "gone")}):
+            self.assertEqual(P.gate_ms(), "unknown")
+        with unittest.mock.patch.object(P.subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertEqual(P.gate_ms(), "unknown")
 
     def test_gate_time_reads_the_callers_directory_not_the_tools_worktree(self):
         git_dir = self.dir / "gate-git"
@@ -164,6 +161,37 @@ class PanelPass1Fixes(Case):
              unittest.mock.patch.object(P.subprocess, "run", side_effect=fake_run):
             self.assertNotEqual(P.gate_ms(), "unknown")
         self.assertEqual(seen["cwd"], "/the/gate/worktree")
+
+
+class KeyedOnTheBody(Case):
+    """R3: a gate report posted as `discussion` carries the same fields; a Lane
+    1 note that recaps a gate under a nested heading does not."""
+
+    def test_a_gate_report_posted_as_discussion_carries_its_fields(self):
+        footer = last_line(self.post("discussion", GATE_FAIL, results={"1": "pass", "2": "fail"}))
+        self.assertTrue(footer.startswith("<!-- l1-post v1; kind=discussion; posted-by=LANE3; results="), footer)
+        self.assertIn("results=1:pass,2:fail; gate-ms=", footer)
+
+    def test_a_recap_under_another_heading_is_untouched(self):
+        recap = "## Lane 1 — closing\n\n### Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n"
+        self.assertEqual(last_line(self.post("discussion", recap)),
+                         "<!-- l1-post v1; kind=discussion; posted-by=LANE3 -->")
+
+    def test_a_plain_discussion_footer_is_byte_identical(self):
+        self.assertEqual(last_line(self.post("discussion", "## A note\n\nhello\n")),
+                         "<!-- l1-post v1; kind=discussion; posted-by=LANE3 -->")
+
+
+class FooterFieldOrder(unittest.TestCase):
+    """pass-2 finding 4: the producer appends the case fields LAST, after the
+    free-text ack field, so the reader's last-match rule finds the real map."""
+
+    def test_case_fields_follow_the_ack_reason(self):
+        import eras  # noqa: PLC0415
+        footer = P.footer("gate-result", GATE_PASS, "LANE3", ack_no_pr_required="see results=1:fail",
+                          case_fields="results=1:pass,2:pass; gate-ms=unknown")
+        self.assertLess(footer.index("ack-no-pr-required="), footer.index("results=1:pass"))
+        self.assertEqual(eras.parse_case_map(footer, "results"), {"1": "pass", "2": "pass"})
 
     def test_a_free_text_field_cannot_shadow_the_case_map(self):
         import eras  # noqa: PLC0415
@@ -205,47 +233,86 @@ def _footered(body: str, kind: str, extra: str) -> str:
     return f"{body.rstrip()}\n\n<!-- l1-post v1; kind={kind}; posted-by=LANE3; body-sha256={digest}; {extra} -->"
 
 
-class ExtractorCarriesScalarCounts(unittest.TestCase):
-    """TC4 (replaced by the 2026-10-04 correction): scalars only, so emit()
-    accepts them; the pairing adds per-class fails; Lane 3 writes no telemetry."""
+class ExtractorStampsOneMeasurement(unittest.TestCase):
+    """TC4 and R4: scalars only, so emit() accepts them; every gate carries one
+    stamped `measurement`; pairing adds per-class fails; Lane 3 writes none."""
 
-    def events(self, spec_extra: str, gate_extra: str) -> list[dict]:
+    def events(self, comments: list[dict]) -> list[dict]:
         import extract_threads  # noqa: PLC0415
-        spec = {"id": 10, "created_at": "2026-10-04T10:00:00Z", "body": _footered(SPEC_TC, "spec", spec_extra)}
-        gate = {"id": 11, "created_at": "2026-10-04T11:00:00Z",
-                "body": _footered(GATE_FAIL, "gate-result", gate_extra)}
-        get = lambda path: [[spec, gate]] if "comments" in path else [[]]
+        get = lambda path: [comments] if "comments" in path else [[]]
         return extract_threads.issue_events("vitalharmony/harmonic-forge", 1, get,
                                             account="vitalharmony", org="vitalharmony")
 
+    def spec(self, extra: str, cid: int = 10) -> dict:
+        return {"id": cid, "created_at": f"2026-10-04T{cid:02d}:00:00Z", "body": _footered(SPEC_TC, "spec", extra)}
+
+    def gate(self, extra: str, cid: int = 11, body: str = GATE_FAIL, kind: str = "gate-result",
+             by: str = "LANE3") -> dict:
+        footered = _footered(body, kind, extra).replace("posted-by=LANE3", f"posted-by={by}")
+        return {"id": cid, "created_at": f"2026-10-04T{cid:02d}:00:00Z", "body": footered}
+
+    def the_gate(self, events: list[dict]) -> dict:
+        return next(e for e in events if e["event_type"] in ("gate.pass", "gate.fail", "blocked.lane", "unknown"))
+
     def test_a_new_format_spec_and_gate_are_accepted_by_emit(self):
         import emit  # noqa: PLC0415
-        events = self.events("classes=1:ac,2:existing", "results=1:pass,2:fail; gate-ms=4000")
-        gate = next(e for e in events if e["event_type"] == "gate.fail")
-        self.assertEqual((gate["attrs"]["paired"], gate["attrs"]["fail_existing"], gate["attrs"]["fail_ac"]),
-                         (True, 1, 0))
-        spec = next(e for e in events if e["event_type"] == "spec.posted")
-        self.assertEqual((spec["attrs"]["tc_ac"], spec["attrs"]["tc_existing"]), (1, 1))
+        events = self.events([self.spec("classes=1:ac,2:existing"), self.gate("results=1:pass,2:fail; gate-ms=4000")])
+        gate = self.the_gate(events)
+        self.assertEqual((gate["attrs"]["measurement"], gate["attrs"]["fail_existing"], gate["attrs"]["fail_ac"]),
+                         ("measured", 1, 0))
+        self.assertIs(gate["attrs"]["map_agrees"], True)
         with tempfile.TemporaryDirectory() as store, \
              unittest.mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": store}):
-            counts = emit.emit([e for e in events if e["event_type"] in ("gate.fail", "spec.posted")])
+            counts = emit.emit([gate, next(e for e in events if e["event_type"] == "spec.posted")])
         self.assertEqual((counts["written"], counts["rejected"]), (2, []))
 
-    def test_a_gate_whose_spec_has_other_ids_is_unpaired(self):
-        events = self.events("classes=1:ac,2:existing,3:live", "results=1:pass,2:fail; gate-ms=unknown")
-        gate = next(e for e in events if e["event_type"] == "gate.fail")
-        self.assertIs(gate["attrs"]["paired"], False)
-        self.assertNotIn("fail_ac", gate["attrs"])
-        self.assertIs(gate["attrs"]["gate_ms_known"], False)
-        self.assertNotIn("gate_ms", gate["attrs"])
+    def test_every_state_is_stamped(self):
+        blocked = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n**Finding:** x\n**Next:** y\n")
+        cases = {
+            "unpaired": [self.spec("classes=1:ac,2:existing,3:live"), self.gate("results=1:pass,2:fail; gate-ms=1")],
+            "no-map": [self.gate("results=absent; gate-ms=unknown")],
+            "blocked-no-cases": [self.gate("results=; gate-ms=unknown", body=blocked)],
+            "pre-893": [self.gate("ack-no-pr-required=x")],
+            "bypass-route": [{"id": 11, "created_at": "2026-10-04T11:00:00Z", "body": GATE_FAIL}],
+        }
+        for expected, comments in cases.items():
+            with self.subTest(expected):
+                self.assertEqual(self.the_gate(self.events(comments))["attrs"]["measurement"], expected)
+
+    def test_an_unclassified_newer_spec_resets_the_pairing(self):
+        # pass-2 finding 10: round 2's spec carries no classes; round 1's must not pair.
+        events = self.events([self.spec("classes=1:existing,2:existing", cid=10), self.spec("classes=absent", cid=11),
+                              self.gate("results=1:pass,2:fail; gate-ms=1", cid=12)])
+        gate = self.the_gate(events)
+        self.assertEqual((gate["attrs"]["measurement"], gate["attrs"]["paired"]), ("unpaired", False))
+        self.assertNotIn("fail_existing", gate["attrs"])
+
+    def test_a_gate_posted_as_discussion_by_lane_3_is_a_measured_gate(self):
+        events = self.events([self.spec("classes=1:ac,2:live"),
+                              self.gate("results=1:pass,2:fail; gate-ms=1", kind="discussion")])
+        self.assertEqual(self.the_gate(events)["attrs"]["measurement"], "measured")
+
+    def test_a_lane_1_recap_is_not_a_gate(self):
+        recap = "## Lane 1 — closing\n### Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n"
+        events = self.events([self.gate("", body=recap, kind="discussion", by="LANE1")])
+        self.assertEqual([e["event_type"] for e in events], ["l1.discussion"])
+
+    def test_a_lane_1_post_leading_with_a_gate_heading_is_not_a_gate(self):
+        # Lane 1 relaying a gate verbatim is not a measured gate: no event
+        # carries a measurement (lane_state's own reading of the heading stands).
+        events = self.events([self.gate("results=1:pass,2:fail; gate-ms=1", kind="discussion", by="LANE1")])
+        self.assertIn("l1.discussion", [e["event_type"] for e in events])
+        self.assertFalse([e for e in events if "measurement" in e["attrs"]], events)
+
+    def test_a_map_contradicting_the_verdict_is_low_confidence(self):
+        events = self.events([self.spec("classes=1:ac,2:live"), self.gate("results=1:pass,2:pass; gate-ms=1")])
+        self.assertIs(self.the_gate(events)["attrs"]["map_agrees"], False)
 
     def test_lane3_s_posting_tool_imports_nothing_from_telemetry(self):
         tree = ast.parse((HERE / "post_lane_discussion.py").read_text(encoding="utf-8"))
         names = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         names |= {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(names & {"emit", "eras", "extract_threads", "archive"}, names)
-        self.assertNotIn("telemetry", (HERE / "post_lane_discussion.py").read_text(encoding="utf-8").split(
-            "_FORGE = ")[1].split("\n")[0])
 
 
 class ExistingConsumersStillParse(unittest.TestCase):
@@ -318,42 +385,56 @@ class ProducerOutputStillParses(unittest.TestCase):
             self.assertTrue(any(pattern.search(gate) for pattern in patterns), module.__name__)
 
 
-class ReportNeverReadsAbsenceAsZero(unittest.TestCase):
-    """TC6."""
-
-    def test_a_footer_less_gate_is_unmeasured_and_no_attempts_is_missing_input(self):
-        gates = [
-            {"source": "gh-thread", "event_type": "gate.pass", "repo": "o/r", "issue": 1,
-             "ts": "2026-10-04T10:00:00Z", "attrs": {"verdict": "PASS"}},
-            {"source": "gh-thread", "event_type": "gate.fail", "repo": "o/r", "issue": 2,
-             "ts": "2026-10-04T11:00:00Z", "attrs": {"verdict": "FAIL", "tc_count": 2, "fail_count": 1,
-                                                       "paired": True, "case_ac": 1, "case_existing": 1,
-                                                       "case_live": 0, "fail_ac": 0, "fail_existing": 1,
-                                                       "fail_live": 0, "gate_ms": 5000, "gate_ms_known": True}},
-            {"source": "gh-thread", "event_type": "gate.pass", "repo": "o/r", "issue": 3,
-             "ts": "2026-10-04T12:00:00Z", "attrs": {"verdict": "PASS", "tc_count": 1, "paired": False}},
-        ]
-        report = VR.build(gates)
-        self.assertEqual(report["buckets"], {"measured": 1, "unmeasured": 1, "unpaired": 1, "missing input": 3})
-        text = VR.render(report)
-        self.assertIn("- unmeasured: 1", text)
-        self.assertIn("missing input", text)
-        self.assertIn("token", text)
-        self.assertEqual(report["aggregate"]["gates"], 1)
+class ReportReadsTheStamp(unittest.TestCase):
+    """TC6 and R4: every gate lands in the bucket it was stamped with; absence
+    is never read as zero."""
 
     GATE = {"source": "gh-thread", "event_type": "gate.fail", "repo": "o/r", "issue": 2,
-            "ts": "2026-10-04T11:00:00Z", "extractor_version": "threads-3",
-            "attrs": {"verdict": "FAIL", "comment_id": "9", "edited_at": "x", "tc_count": 1,
-                      "paired": True, "case_ac": 1, "fail_ac": 1}}
+            "ts": "2026-10-04T11:00:00Z", "extractor_version": "threads-4",
+            "attrs": {"verdict": "FAIL", "comment_id": "9", "edited_at": "x", "measurement": "measured",
+                      "tc_count": 1, "paired": True, "case_ac": 1, "fail_ac": 1, "map_agrees": True}}
 
-    def test_a_blocked_gate_is_counted(self):
-        blocked = {**self.GATE, "event_type": "blocked.lane", "attrs": {"verdict": "BLOCKED"}}
-        self.assertEqual(VR.build([blocked])["buckets"]["unmeasured"], 1)
+    def gate(self, cid: str, measurement: str | None, issue: int = 2, **attrs) -> dict:
+        base = {"verdict": "FAIL", "comment_id": cid, "edited_at": "x", **attrs}
+        if measurement is not None:
+            base["measurement"] = measurement
+        return {**self.GATE, "issue": issue, "attrs": base}
 
-    def test_one_reading_per_comment_across_extractor_versions(self):
-        old = {**self.GATE, "extractor_version": "threads-2", "attrs": {"verdict": "FAIL", "comment_id": "9"}}
-        report = VR.build([old, self.GATE])
-        self.assertEqual((report["buckets"]["measured"], report["buckets"]["unmeasured"]), (1, 0))
+    def test_every_bucket_is_the_stamp_and_each_is_printed(self):
+        gates = [self.GATE] + [self.gate(str(i), m, issue=10 + i) for i, m in enumerate(
+            ("unpaired", "no-map", "blocked-no-cases", "pre-893", "bypass-route"))]
+        report = VR.build(gates)
+        self.assertEqual({k: v for k, v in report["buckets"].items() if k != "missing input"},
+                         dict.fromkeys(VR.BUCKETS, 1))
+        text = VR.render(report)
+        for name in VR.BUCKETS:
+            self.assertIn(f"- {name}: 1", text)
+        self.assertEqual(report["aggregate"]["gates"], 1)
+
+    def test_a_blocked_gate_with_no_cases_is_not_a_bypass(self):
+        # pass-2 finding 9, inverted: BLOCKED-with-no-cases has its own bucket.
+        blocked = {**self.gate("5", "blocked-no-cases"), "event_type": "blocked.lane"}
+        buckets = VR.build([blocked])["buckets"]
+        self.assertEqual((buckets["blocked-no-cases"], buckets["bypass-route"], buckets["pre-893"]), (1, 0, 0))
+
+    def test_a_reading_with_no_stamp_is_pre_893_never_dropped(self):
+        # pass-2 finding 8: no `verdict`/`measurement` attr is still a gate.
+        old = {**self.GATE, "extractor_version": "threads-2", "attrs": {"comment_id": "7"}}
+        self.assertEqual(VR.build([old])["buckets"]["pre-893"], 1)
+
+    def test_the_newest_extractor_version_wins_numerically(self):
+        # pass-2 finding 3: threads-10 is newer than threads-9.
+        nine = {**self.gate("9", "pre-893"), "extractor_version": "threads-9"}
+        ten = {**self.GATE, "extractor_version": "threads-10"}
+        for order in ((nine, ten), (ten, nine)):
+            report = VR.build(list(order))
+            self.assertEqual((report["buckets"]["measured"], report["buckets"]["pre-893"]), (1, 0))
+
+    def test_low_confidence_gates_are_counted(self):
+        shaky = self.gate("8", "measured", issue=3, tc_count=1, paired=True, case_ac=1, map_agrees=False)
+        report = VR.build([self.GATE, shaky])
+        self.assertEqual(report["aggregate"]["low_confidence"], 1)
+        self.assertIn("1 low-confidence", VR.render(report))
 
     def test_ready_for_l3_attempts_join_by_repo_and_issue(self):
         attempts = [{"event_type": "ready-for-l3.attempt", "repo": "O/R", "issue": 2,
@@ -364,6 +445,7 @@ class ReportNeverReadsAbsenceAsZero(unittest.TestCase):
         self.assertEqual(report["buckets"]["missing input"], 0)
         row = [line for line in VR.render(report).splitlines() if line.startswith("| o/r#2")][0]
         self.assertIn("| 2 | 2,000 | 1 |", row)
+        self.assertEqual(VR.build([self.GATE])["buckets"]["missing input"], 1)
 
     def test_unreadable_store_lines_are_reported(self):
         with tempfile.TemporaryDirectory() as store:
@@ -372,9 +454,22 @@ class ReportNeverReadsAbsenceAsZero(unittest.TestCase):
             part.write_text(json.dumps(self.GATE) + "\n{torn line\n")
             skipped = []
             events = VR.load_events(Path(store), None, None, skipped)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(len(skipped), 1)
+        self.assertEqual((len(events), len(skipped)), (1, 1))
         self.assertIn("could not be read", VR.render(VR.build(events), skipped))
+
+    def test_a_missing_store_is_refused_not_read_as_empty(self):
+        # pass-2 finding 6.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(VR.StoreUnreadable):
+                VR.load_events(Path(tmp) / "no-such-store", None, None, [])
+            argv = ["verification_report.py", "--store", str(Path(tmp) / "no-such-store")]
+            err = io.StringIO()
+            with unittest.mock.patch.object(sys, "argv", argv), unittest.mock.patch.object(sys, "stderr", err), \
+                 unittest.mock.patch.object(sys, "stdout", io.StringIO()) as out, self.assertRaises(SystemExit) as done:
+                VR.main()
+        self.assertEqual(done.exception.code, 2)
+        self.assertIn("nothing was read", err.getvalue())
+        self.assertNotIn("nothing is reported as zero", out.getvalue())
 
 
 if __name__ == "__main__":

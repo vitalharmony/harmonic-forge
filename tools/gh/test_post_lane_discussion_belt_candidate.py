@@ -29,10 +29,6 @@ class PostLaneDiscussionBeltCandidateIntegrationTests(unittest.TestCase):
             path.write_text(body)
             argv = ["post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge",
                     "--issue", "618", "--file", str(path), "--kind", kind]
-            if kind == "spec":  # harmonic-forge#893: a spec carries its case classes
-                classes = Path(tmp) / "classes.json"
-                classes.write_text('{"1": "ac"}')
-                argv += ["--tc-classes", str(classes)]
             env = {"LANE": lane} if lane else {}
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.dict("os.environ", env, clear=not lane), \

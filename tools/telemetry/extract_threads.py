@@ -175,28 +175,31 @@ def _own(comment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
 def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str, Any]]) -> None:
     """harmonic-forge#893: give each classified gate event its per-class fails.
 
-    For each gate-result comment carrying `results=`, the newest EARLIER comment
-    whose own footer is `kind=spec` with `classes=` is its spec. When their case
-    ids match, the gate's event gains `paired: true`, the spec's class counts
-    (`case_ac`, `case_existing`, `case_live`) and `fail_*`/`blocked_*` per class;
-    otherwise `paired: false` and nothing else. Scalars only (schema v1)."""
+    For each measured gate (whatever its kind), the newest EARLIER `kind=spec`
+    comment is its spec, and a spec without `classes=` carries nothing. When
+    their case ids match, the gate's event gains `paired: true`, the spec's
+    class counts (`case_ac`, `case_existing`, `case_live`) and
+    `fail_*`/`blocked_*` per class; otherwise `paired: false` and the gate's
+    measurement becomes `unpaired`. Scalars only (schema v1)."""
     by_id = {str(e.get("attrs", {}).get("comment_id")): e for e in events
-             if "tc_count" in (e.get("attrs") or {})}
+             if (e.get("attrs") or {}).get("measurement") == "measured"}
     latest_spec: Optional[dict[str, str]] = None
     for comment in comments:
         footer, kind = _own(comment)
         if kind == "spec":
-            classes = eras.parse_case_map(footer, "classes")
-            if classes:
-                latest_spec = classes
+            # Every spec resets what is carried, classified or not: a newer
+            # unclassified spec must never pair a gate with an older round's
+            # classes (#893 preclose pass 2).
+            latest_spec = eras.parse_case_map(footer, "classes") or None
             continue
         event = by_id.get(str(comment.get("id") or ""))
-        if kind != "gate-result" or event is None:
+        if event is None:
             continue
         results = eras.parse_case_map(footer, "results")
         attrs = event["attrs"]
         if latest_spec is None or set(latest_spec) != set(results):
             attrs["paired"] = False
+            attrs["measurement"] = "unpaired"
             continue
         attrs["paired"] = True
         for cls in ("ac", "existing", "live"):

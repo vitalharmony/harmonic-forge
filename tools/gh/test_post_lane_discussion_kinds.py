@@ -31,30 +31,11 @@ SPEC = ("## Lane 3 Test Spec — H1\n\n"
 GATE_PASS = ("## Lane 3 Gate Results — H1 — PASS\n\n"
              "**Verdict:** PASS\n**Head-SHA:** `0359854`\n"
              "**Finding:** none.\n**Next:** merge.\n\n"
-             "| TC | Verdict |\n|---|---|\n| TC1 | PASS |\n\n"  # harmonic-forge#893: a case table
              "<details><summary>Evidence</summary>\n\nAll nine cases ran.\n\n</details>\n")
 GATE_BLOCKED = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n"
                 "**Verdict:** BLOCKED\n**Finding:** no fixture available.\n"
                 "**Next:** provision the fixture, then retest.\n\n"
                 "Could not run: no fixture.\n")
-
-
-def _case_flags(kind, body_path):
-    """harmonic-forge#893: the per-case map a spec or gate result now requires,
-    built from the body's own case ids, so these older tests keep exercising
-    what they were written for."""
-    import json as _json
-    import tempfile as _tempfile
-    if kind not in ("spec", "gate-result"):
-        return []
-    body = Path(body_path).read_text()
-    ids = sorted(P.case_ids(body))
-    verdict = P.verdict_of(body) if kind == "gate-result" else None
-    value = "ac" if kind == "spec" else ("fail" if verdict == "FAIL" else "pass")
-    handle = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-    _json.dump({i: value for i in ids}, handle)
-    handle.close()
-    return ["--tc-classes" if kind == "spec" else "--tc-results", handle.name]
 
 
 class DefaultPathUnchanged(unittest.TestCase):
@@ -134,7 +115,7 @@ class LeadBlockRequired(unittest.TestCase):
             path = Path(tmp) / "body.md"
             path.write_text(body)
             argv = ["post_lane_discussion.py", "--issue", "1",
-                    "--file", str(path), "--kind", kind] + _case_flags(kind, path)
+                    "--file", str(path), "--kind", kind]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.object(P, "comment_body",
                                    side_effect=AssertionError("must not post")):
@@ -228,7 +209,7 @@ class EndToEnd(unittest.TestCase):
             path = Path(tmp) / "body.md"
             path.write_text(body)
             argv = ["post_lane_discussion.py", "--issue", "1",
-                    "--file", str(path), "--kind", kind] + _case_flags(kind, path)
+                    "--file", str(path), "--kind", kind]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "3"}), \
                  mock.patch.object(P, "check_gate_result",
@@ -248,7 +229,7 @@ class EndToEnd(unittest.TestCase):
             path = Path(tmp) / "body.md"
             path.write_text(GATE_PASS.replace("All nine cases ran.", "## L3S — spec"))
             argv = ["post_lane_discussion.py", "--issue", "1",
-                    "--file", str(path), "--kind", "gate-result"] + _case_flags("gate-result", path)
+                    "--file", str(path), "--kind", "gate-result"]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.object(P, "comment_body",
                                    side_effect=lambda *a: posted.append(a) or ("u", 1)):
@@ -328,7 +309,7 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
             path = Path(tmp) / "report.md"
             path.write_text(body, encoding="utf-8")
             argv = ["post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
-                    "--file", str(path), "--kind", kind] + _case_flags(kind, path)
+                    "--file", str(path), "--kind", kind]
             with mock.patch.object(sys, "argv", argv), \
                     mock.patch.object(P, "comment_body",
                                       return_value=("https://example/1", "")):
@@ -402,8 +383,7 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
 
     PASS_BODY = ("## Lane 3 Gate Results — H2095 — PASS\n\n"
                  "**Verdict:** PASS\n**Head-SHA:** af35ca95\n"
-                 "**Finding:** none.\n**Next:** merge.\n"
-                 "\n| TC | Verdict |\n|---|---|\n| TC1 | PASS |\n")  # harmonic-forge#893
+                 "**Finding:** none.\n**Next:** merge.\n")
 
     def test_ack_no_pr_required_rejects_an_empty_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -467,7 +447,7 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
             path.write_text(self.PASS_BODY)
             argv = ["post_lane_discussion.py", "--issue", "2095", "--file", str(path),
                     "--kind", "gate-result", "--ack-no-pr-required",
-                    "data-migration on main, no PR"] + _case_flags("gate-result", path)
+                    "data-migration on main, no PR"]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "1"}), \
                  mock.patch.object(P, "check_gate_result",
@@ -491,7 +471,7 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
             path = Path(tmp) / "body.md"
             path.write_text(self.PASS_BODY)
             argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path),
-                    "--kind", "gate-result", "--ack-no-pr-required", "irrelevant"] + _case_flags("gate-result", path)
+                    "--kind", "gate-result", "--ack-no-pr-required", "irrelevant"]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.object(P, "check_gate_result",
                                    return_value=(True, "[GATE] CI green for af35ca95 (verify:success)")), \
@@ -618,7 +598,7 @@ class RoundApprovalTests(unittest.TestCase):
             path = Path(tmp) / "report.md"
             path.write_text(GATE_PASS, encoding="utf-8")
             argv = ["post_lane_discussion.py", "--repo", "vitalharmony/hrse", "--issue", "2101",
-                    "--file", str(path), "--kind", "gate-result"] + _case_flags("gate-result", path)
+                    "--file", str(path), "--kind", "gate-result"]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.object(P, "check_gate_result", return_value=(True, "[GATE] CI green")), \
                  mock.patch.object(P, "require_round_approval",

@@ -90,17 +90,13 @@ class InProcessGuardTests(RealStoreFixture):
             return f"https://github.com/{repo}/issues/{issue}#issuecomment-1", 1
 
         body = ("## Lane 3 Gate Results — H2095 — PASS\n\n**Verdict:** PASS\n"
-                "**Head-SHA:** af35ca95\n**Finding:** none.\n**Next:** merge.\n"
-                "\n| TC | Verdict |\n|---|---|\n| TC1 | PASS |\n")
+                "**Head-SHA:** af35ca95\n**Finding:** none.\n**Next:** merge.\n")
         err = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "body.md"
             file.write_text(body)
-            results = Path(tmp) / "results.json"  # harmonic-forge#893
-            results.write_text('{"1": "pass"}')
             argv = ["post_lane_discussion.py", "--issue", "2095", "--file", str(file),
-                    "--kind", "gate-result", "--ack-no-pr-required", "replay",
-                    "--tc-results", str(results)]
+                    "--kind", "gate-result", "--ack-no-pr-required", "replay"]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "1"}), \
                  mock.patch.object(P, "check_gate_result", return_value=(True, "[GATE] ok")), \

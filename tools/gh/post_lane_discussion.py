@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - platform checkout absent
     belt_candidates = None
 
 from l1_post import (
-    case_ids, comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
+    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
     apply_project_identity, validate_lead,
 )
 
@@ -261,53 +261,65 @@ MAX_CASE_ID = 12
 #: The same freshness bound the Lane 3 write guard applies to this marker.
 LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 _CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
-#: A markdown table row whose first cell names a case ("| TC3 |", "| 3 |"):
-#: the shape real Lane 3 gate reports use, which `l1_post.case_ids` does not
-#: read (F893 preclose finding).
-_TABLE_CASE = re.compile(r"(?m)^[ \t]*\|[ \t]*[`*]*(?:TC[- ]?)?(\d+)[`*]*[ \t]*\|", re.I)
 
 
-def body_case_ids(body: str) -> set[str]:
-    """Case ids in a spec or gate report: `l1_post.case_ids` (TC markers or a
-    numbered list) plus the first cell of every markdown table row."""
-    return set(case_ids(body)) | set(_TABLE_CASE.findall(body or ""))
+_FIRST_HEADING = re.compile(r"(?m)^[ \t]*#{1,4}[ \t]+.*$")
 
 
-def load_case_map(path: Path, body: str, allowed: tuple[str, ...], flag: str) -> dict[str, str]:
-    """`{case id: value}` from `path`, whose ids must equal the body's case ids
-    exactly (`l1_post.case_ids`, both the `TC<n>` and plain-numbered shapes).
-    Refuses, naming the id, on any missing, extra or unknown entry."""
+def leads_with(body: str, kind: str) -> bool:
+    """Whether the body's FIRST heading is `kind`'s (a spec or a gate report).
+
+    Keyed on the body, never on --kind (#893 reforge, R3), but on its leading
+    heading: a Lane 1 closing note that recaps a gate under a nested
+    `### Lane 3 Gate Results` is a discussion, not a gate."""
+    first = _FIRST_HEADING.search(body or "")
+    return bool(first and KIND_HEADING[kind].match(first.group(0).strip()))
+
+
+def warn(message: str) -> None:
+    """harmonic-forge#893 reforge (R2): a case map is telemetry, and telemetry
+    never refuses a post. A map that cannot be used is reported here and the
+    post goes out with the field stamped `absent`."""
+    print(f"[post-comment] WARNING: {message}; posting with the case map recorded as absent",
+          file=sys.stderr)
+
+
+def load_case_map(path: Path | None, allowed: tuple[str, ...], flag: str) -> dict[str, str] | None:
+    """`{case id: value}` from `path`, or None when there is no usable map.
+
+    The map is the record of what Lane 3 ran (harmonic-forge#893 reforge, R1):
+    its keys ARE the case ids. The prose body is never parsed to check them;
+    two passes showed no reader of free-form reports both finds every real case
+    and nothing else. Only the map's own shape is checked. Whether it agrees with
+    the prose is a data-quality question the verification report flags, never a
+    reason to refuse a post (R2)."""
+    if path is None:
+        return None
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        fail(f"{flag}: cannot read a JSON object from {path} ({exc})")
+        warn(f"{flag}: cannot read a JSON object from {path} ({exc})")
+        return None
     if not isinstance(raw, dict):
-        fail(f"{flag}: {path} must hold a JSON object of case id to value")
+        warn(f"{flag}: {path} must hold a JSON object of case id to value")
+        return None
+    if len(raw) > MAX_CASES:
+        warn(f"{flag}: {len(raw)} cases; at most {MAX_CASES} are recorded")
+        return None
     found: dict[str, str] = {}
     for key, value in raw.items():
         match = _CASE_KEY.match(str(key).strip())
         if not match or len(match.group(1)) > MAX_CASE_ID:
-            fail(f"{flag}: {key!r} is not a case id")
+            warn(f"{flag}: {key!r} is not a case id")
+            return None
         if match.group(1) in found:
-            fail(f"{flag}: {key!r} names case {match.group(1)} a second time")
-        found[match.group(1)] = str(value).strip().lower()
-    expected = body_case_ids(body)
-    # Only a BLOCKED gate that ran nothing may have no cases; it then records
-    # no per-case results. Anything else must list its cases.
-    if not expected and not (flag == "--tc-results" and verdict_of(body) == "BLOCKED"):
-        fail(f"{flag}: the body lists no case ids (TC<n>, a numbered list, or a table whose "
-             "first column is the case)")
-    if len(expected) > MAX_CASES:
-        fail(f"{flag}: the body has {len(expected)} cases; at most {MAX_CASES} are recorded")
-    missing = sorted(expected - set(found), key=_case_order)
-    extra = sorted(set(found) - expected, key=_case_order)
-    if missing:
-        fail(f"{flag}: no entry for case(s) {', '.join(missing)} in the body")
-    if extra:
-        fail(f"{flag}: case(s) {', '.join(extra)} are not in the body")
-    for key in sorted(found, key=_case_order):
-        if found[key] not in allowed:
-            fail(f"{flag}: case {key} is {found[key]!r}; allowed: {', '.join(allowed)}")
+            warn(f"{flag}: {key!r} names case {match.group(1)} a second time")
+            return None
+        value = str(value).strip().lower()
+        if value not in allowed:
+            warn(f"{flag}: case {match.group(1)} is {value!r}; allowed: {', '.join(allowed)}")
+            return None
+        found[match.group(1)] = value
     return found
 
 
@@ -315,24 +327,12 @@ def _case_order(key: str) -> tuple[int, str]:
     return (int(key), "") if key.isdigit() else (10 ** 9, key)
 
 
-def case_field(name: str, mapping: dict[str, str]) -> str:
+def case_field(name: str, mapping: dict[str, str] | None) -> str:
+    """`name=1:pass,2:fail`; `name=` for an empty map (a BLOCKED gate that ran
+    no case); `name=absent` when no usable map was given (R2)."""
+    if mapping is None:
+        return f"{name}=absent"
     return f"{name}=" + ",".join(f"{k}:{mapping[k]}" for k in sorted(mapping, key=_case_order))
-
-
-def check_results_agree(results: dict[str, str], body: str) -> None:
-    """The per-case verdicts must agree with the report's own verdict, read the
-    way `gate_ci.verdict_of` reads it."""
-    verdict = verdict_of(body)
-    fails = [k for k, v in results.items() if v == "fail"]
-    blocked = [k for k, v in results.items() if v == "blocked"]
-    not_passed = sorted(fails + blocked, key=_case_order)
-    if verdict == "PASS" and not_passed:
-        fail(f"--tc-results: the report says PASS but case(s) {', '.join(not_passed)} "
-             "did not pass")
-    if verdict == "FAIL" and not fails:
-        fail("--tc-results: the report says FAIL but no case is fail")
-    if verdict == "BLOCKED" and results and not blocked:
-        fail("--tc-results: the report says BLOCKED but no case is blocked")
 
 
 def gate_ms(now: float | None = None) -> str:
@@ -341,13 +341,15 @@ def gate_ms(now: float | None = None) -> str:
     # The caller's own directory: a lane-comment task may cd elsewhere (HRSE2's
     # runs from Lane 1's tools worktree), and mise records where it was invoked.
     cwd = os.environ.get("MISE_ORIGINAL_CWD") or None
-    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd,
-                             text=True, capture_output=True, check=False)
-    if git_dir.returncode:
-        return "unknown"
+    # A telemetry derivation is never in a post's raise path (#893 reforge,
+    # R2): a pruned caller directory or a missing git reads as unknown.
     try:
+        git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd,
+                                 text=True, capture_output=True, check=False)
+        if git_dir.returncode:
+            return "unknown"
         started = (Path(git_dir.stdout.strip()) / "LANE3_ACTIVE").stat().st_mtime
-    except OSError:
+    except Exception:  # noqa: BLE001 - telemetry never fails the post
         return "unknown"
     elapsed = (time.time() if now is None else now) - started
     if elapsed <= 0 or elapsed > LANE3_MARKER_MAX_AGE_SECONDS:
@@ -365,7 +367,10 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
     one of them look like an attested artifact.
     """
     if kind == "discussion":
-        return f"\n\n<!-- l1-post v1; kind=discussion; posted-by={posted_by} -->\n"
+        # Byte-identical unless the body is a gate report, which carries its
+        # case fields whatever its kind (#893 reforge, R3).
+        extra = f"; {case_fields}" if case_fields else ""
+        return f"\n\n<!-- l1-post v1; kind=discussion; posted-by={posted_by}{extra} -->\n"
     # Same digest contract as `l1_post.post_kind`: hash the RSTRIPPED body,
     # because that is what gets posted (a private-repo incident — hashing the raw body
     # recorded a digest a verifier could never reconstruct). This is what
@@ -492,17 +497,13 @@ def main() -> None:
              "this flag.")
     parser.add_argument(
         "--tc-classes", type=Path, default=None, metavar="JSON",
-        help="harmonic-forge#893, --kind spec only (required there): a JSON object "
-             "mapping each case id in the spec to ac, existing or live.")
+        help="harmonic-forge#893: a JSON object mapping each case id in a Lane 3 spec to "
+             "ac, existing or live. The map is the record; the body is not parsed for ids.")
     parser.add_argument(
         "--tc-results", type=Path, default=None, metavar="JSON",
-        help="harmonic-forge#893, --kind gate-result only (required there): a JSON "
-             "object mapping each case id in the report to pass, fail or blocked.")
+        help="harmonic-forge#893: a JSON object mapping each case id a gate report ran to "
+             "pass, fail or blocked. Without it a gate report posts with results=absent.")
     args = parser.parse_args()
-    if args.kind != "spec" and args.tc_classes is not None:
-        fail("--tc-classes is valid only with --kind spec")
-    if args.kind != "gate-result" and args.tc_results is not None:
-        fail("--tc-results is valid only with --kind gate-result")
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
     # Preclose finding: the reason is written INSIDE the HTML-comment footer,
@@ -531,22 +532,19 @@ def main() -> None:
     # no LEAD_FIELDS entry, so this is a no-op on the pre-existing default
     # path; only `spec`/`gate-result` are newly checked.
     validate_lead(args.kind, body)
-    # harmonic-forge#893: required for their kind, checked after the body's own
-    # heading and lead checks so those refusals keep their order.
-    if args.kind == "spec" and args.tc_classes is None:
-        fail("--kind spec requires --tc-classes <json>: each case's class (ac, existing, "
-             "live), fixed at approval time (harmonic-forge#893)")
-    if args.kind == "gate-result" and args.tc_results is None:
-        fail("--kind gate-result requires --tc-results <json>: each case's verdict "
-             "(pass, fail, blocked) (harmonic-forge#893)")
+    # harmonic-forge#893 reforge (R2, R3): keyed on the BODY, never on --kind,
+    # for the reason require_green_ci gives below -- 74 of 98 real gate reports
+    # were posted as `discussion`. A gate report always carries its results
+    # field and gate time; a spec carries its classes field. Neither ever
+    # refuses the post: a missing or unusable map is stamped `absent`.
     case_fields = ""
-    if args.kind == "spec":
-        case_fields = case_field("classes", load_case_map(args.tc_classes, body, CASE_CLASSES,
-                                                          "--tc-classes"))
-    elif args.kind == "gate-result":
-        results = load_case_map(args.tc_results, body, CASE_RESULTS, "--tc-results")
-        check_results_agree(results, body)
-        case_fields = f"{case_field('results', results)}; gate-ms={gate_ms()}"
+    if leads_with(body, "gate-result"):
+        case_fields = (f"{case_field('results', load_case_map(args.tc_results, CASE_RESULTS, '--tc-results'))}; "
+                       f"gate-ms={gate_ms()}")
+    elif leads_with(body, "spec"):
+        case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
+    elif args.tc_results is not None or args.tc_classes is not None:
+        warn("--tc-results/--tc-classes given, but the body is neither a gate report nor a Lane 3 spec")
     override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
     require_round_approval(args.repo, args.issue, body)
     lane = os.environ.get("LANE")

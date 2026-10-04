@@ -14,13 +14,18 @@ a gate event's `tc_count/fail_count/blocked_count/gate_ms` and, after pairing in
 `extract_threads.pair_gates_with_specs`, its `paired` flag and per-class
 `case_*/fail_*/blocked_*` counts.
 
-Four buckets are always printed, and absence is never read as zero:
-- measured: a gate with per-case results, paired with its classified spec;
-- unmeasured: a gate with no per-case results (a route that bypasses
-  `post_lane_discussion.py`, or a gate posted before #893);
+Every gate is in exactly one bucket, and absence is never read as zero. The
+bucket is the `measurement` the extractor stamped (harmonic-forge#893 reforge,
+R4), never inferred here from which attrs are present:
+- measured: per-case results, paired with its classified spec;
 - unpaired: per-case results with no matching classified spec;
-- missing input: an issue with no ready-for-l3 attempt events (#892).
-Aggregates cover `measured` only.
+- no-map: posted through post_lane_discussion.py without a usable map;
+- blocked-no-cases: a BLOCKED gate that ran no case;
+- pre-893: posted by the tool before #893 recorded case maps;
+- bypass-route: posted without the tool's footer at all.
+Plus missing input: an issue with no ready-for-l3 attempt events (#892).
+Aggregates cover `measured` only. A measured gate whose map disagrees with its
+own verdict or prose is counted as low-confidence, never refused or dropped.
 
     verification_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--store PATH]
 """
@@ -47,13 +52,26 @@ TOKEN_NOTE = ("Lane token cost is not measured: a lane session cannot read its o
               "usage (only subagent completion notices carry usage), so time is wall-clock.")
 
 
+BUCKETS = ("measured", "unpaired", "no-map", "blocked-no-cases", "pre-893", "bypass-route")
+
+
+class StoreUnreadable(Exception):
+    """The store's event directory is missing or cannot be listed."""
+
+
 def load_events(store: Path, since: Optional[str], until: Optional[str],
                 skipped: Optional[list[str]] = None) -> list[dict[str, Any]]:
     """Every event under `store/events`, inside [since, until] by date. A file
     or line that cannot be read is named in `skipped`, never silently dropped:
-    a damaged store must not read as fewer gates."""
+    a damaged store must not read as fewer gates. A missing or unlistable
+    `events/` raises StoreUnreadable: it is not an empty window."""
+    events_dir = store / "events"
+    try:
+        next(iter(events_dir.iterdir()), None)
+    except OSError as exc:
+        raise StoreUnreadable(f"no readable telemetry store at {events_dir} ({exc})") from exc
     out = []
-    for part in sorted(store.glob("events/**/*.jsonl")):
+    for part in sorted(events_dir.glob("**/*.jsonl")):
         try:
             lines = part.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -77,10 +95,10 @@ def load_events(store: Path, since: Optional[str], until: Optional[str],
 
 
 def bucket(gate: dict[str, Any]) -> str:
-    attrs = gate.get("attrs") or {}
-    if "tc_count" not in attrs:
-        return "unmeasured"
-    return "measured" if attrs.get("paired") is True else "unpaired"
+    """The stamped measurement. A reading from before the stamp existed
+    (extractor threads-3 or older) is pre-893 by construction."""
+    value = (gate.get("attrs") or {}).get("measurement")
+    return value if value in BUCKETS else "pre-893"
 
 
 def _median(values: Iterable[float]) -> Optional[float]:
@@ -101,23 +119,34 @@ def latest_readings(gates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         attrs = gate.get("attrs") or {}
         cid = attrs.get("comment_id")
         key = (str(gate.get("repo", "")).lower(), gate.get("issue"), cid) if cid else (id(gate),)
-        rank = (str(gate.get("extractor_version") or ""), str(attrs.get("edited_at") or ""))
+        rank = (_version(gate.get("extractor_version")), str(attrs.get("edited_at") or ""))
         held = best.get(key)
         if held is None or rank > held[0]:
             best[key] = (rank, gate)
     return [gate for _, gate in best.values()]
 
 
+def _version(value: object) -> tuple[int, str]:
+    """`threads-10` above `threads-9`: the numeric suffix, compared as a number
+    (#893 preclose pass 2). A suffix that is not a number sorts below any that
+    is, so it can never displace a real reading."""
+    text = str(value or "")
+    _, _, suffix = text.rpartition("-")
+    return (int(suffix), text) if suffix.isdigit() else (-1, text)
+
+
 def build(events: list[dict[str, Any]]) -> dict[str, Any]:
+    # Every gate-typed reading, verdict attr or not (#893 preclose pass 2: the
+    # `"verdict" in attrs` filter is what made a bypassing gate vanish).
     gates = latest_readings([e for e in events if e.get("source") == "gh-thread"
                              and e.get("event_type") in GATE_TYPES
-                             and "verdict" in (e.get("attrs") or {})])
+                             and (e.get("attrs") or {}).get("comment_id")])
     attempts = defaultdict(list)
     for e in events:
         if e.get("event_type") == ATTEMPT_TYPE:
             attempts[(str(e.get("repo", "")).lower(), e.get("issue"))].append(e.get("attrs") or {})
     issues: dict[tuple[str, Any], dict[str, Any]] = {}
-    buckets = {"measured": 0, "unmeasured": 0, "unpaired": 0, "missing input": 0}
+    buckets = {**{name: 0 for name in BUCKETS}, "missing input": 0}
     for gate in gates:
         key = (str(gate.get("repo", "")).lower(), gate.get("issue"))
         row = issues.setdefault(key, {"gates": [], "attempts": attempts.get(key, [])})
@@ -132,6 +161,7 @@ def build(events: list[dict[str, Any]]) -> dict[str, Any]:
         **{f"fails_{c}": sum(int(a.get(f"fail_{c}") or 0) for a in measured) for c in CLASSES},
         "existing_dominant": sum(1 for a in measured if int(a.get("case_existing") or 0)
                                  > int(a.get("case_ac") or 0) + int(a.get("case_live") or 0)),
+        "low_confidence": sum(1 for a in measured if a.get("map_agrees") is False),
     }
     return {"issues": issues, "buckets": buckets, "aggregate": aggregate}
 
@@ -157,15 +187,17 @@ def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
                      f"{_fmt(gate_ms)} | {attempts} | {local} | {red} |")
     b, agg = report["buckets"], report["aggregate"]
     lines += ["", "Buckets (gates, except missing input, which counts issues):",
-              f"- measured: {b['measured']}", f"- unmeasured: {b['unmeasured']}",
-              f"- unpaired: {b['unpaired']}", f"- missing input: {b['missing input']}", ""]
+              *(f"- {name}: {b[name]}" for name in BUCKETS),
+              f"- missing input: {b['missing input']}", ""]
     if agg["gates"]:
         share = agg["existing_dominant"] / agg["gates"]
         lines += [f"Aggregate over {agg['gates']} measured gate(s): median gate {_fmt(agg['median_gate_ms'])} ms; "
                   f"cases ac/existing/live {agg['cases_ac']}/{agg['cases_existing']}/{agg['cases_live']}; "
                   f"fails ac/existing/live {agg['fails_ac']}/{agg['fails_existing']}/{agg['fails_live']}; "
                   f"{agg['existing_dominant']} of {agg['gates']} ({share:.0%}) gates have more existing "
-                  "cases than ac and live combined."]
+                  "cases than ac and live combined; "
+                  f"{agg['low_confidence']} low-confidence (the map disagrees with the report's own "
+                  "verdict or the TC ids its prose names)."]
     else:
         lines.append("Aggregate: no measured gates in this window; nothing is reported as zero.")
     lines.append(TOKEN_NOTE)
@@ -183,7 +215,14 @@ def main() -> None:
     args = parser.parse_args()
     store = args.store or emit.store_root()
     skipped: list[str] = []
-    print(render(build(load_events(store, args.since, args.until, skipped)), skipped))
+    try:
+        events = load_events(store, args.since, args.until, skipped)
+    except StoreUnreadable as exc:
+        # An unread store is not a window with no gates (#893 preclose pass 2).
+        print(f"verification-report: {exc}; nothing was read, so nothing is reported.",
+              file=sys.stderr)
+        sys.exit(2)
+    print(render(build(events), skipped))
 
 
 def _day(value: str) -> str:

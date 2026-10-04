@@ -311,8 +311,8 @@ flag "--issue <issue>" help="Issue number" required=#true
 flag "--file <file>" help="Path to the comment body" required=#true
 flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
 flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
-flag "--tc-classes <json>" help="harmonic-forge#893: --kind spec only (required there): case id to ac|existing|live"
-flag "--tc-results <json>" help="harmonic-forge#893: --kind gate-result only (required there): case id to pass|fail|blocked"
+flag "--tc-classes <json>" help="harmonic-forge#893: a Lane 3 spec's case id to ac|existing|live (never blocks the post)"
+flag "--tc-results <json>" help="harmonic-forge#893: a gate report's case id to pass|fail|blocked (never blocks the post)"
 '''
 run = '''
 set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
