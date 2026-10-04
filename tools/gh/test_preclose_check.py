@@ -154,6 +154,10 @@ class ScratchRepo(unittest.TestCase):
 class _Args:
     def __init__(self, **kwargs):
         self.allow_repo_mismatch = False  # harmonic-forge#704: complete() now shares plan()'s guard
+        # harmonic-forge#889: every pass records its cost; tests that are not
+        # about cost get a measured pass, and a cross-family time with an envelope.
+        self.panel_tokens, self.panel_ms, self.cost_unavailable = "1000", "2000", None
+        self.cross_family_ms = "300" if kwargs.get("envelope") else None
         self.__dict__.update(kwargs)
 
 
@@ -796,7 +800,8 @@ class OwnModelCallSiteTests(unittest.TestCase):
         fake = self._capture()
         args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, findings="f.json",
                                   base="origin/main", head="HEAD", force=False, envelope=None,
-                                  not_triggered=True, own_model="gpt-6-sol")
+                                  not_triggered=True, own_model="gpt-6-sol",
+                                  panel_tokens="1", panel_ms="1")
         # receipt_lock is stubbed: the real one flocks the shared per-issue
         # lock, which a concurrent kill-check run on this issue holds.
         with patch.object(preclose, "require_writable"), \
