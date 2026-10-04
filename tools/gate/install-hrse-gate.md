@@ -49,6 +49,7 @@ These are all the inputs an authorization decision reads, and who can write each
 | Gate script | `HRSE2-lane3/scripts/gate_production_run.py` | Yes | Drift-detected: the runner refuses unless its sha256 equals the manifest's. |
 | Migration script | `HRSE2-lane3/scripts/1-*.py` | Yes | Drift-detected: the runner refuses unless it matches HEAD's committed blob. |
 | `sudo`, `git` | `/usr/bin/sudo`, `/usr/bin/git` | No: root | Run by absolute path, root-ownership checked, with `PATH=/usr/bin:/bin`. A planted `~/.local/bin/sudo` is never called. |
+| `HRSE_GATE_GRANT` | the gate script's environment | Yes | **Mistake guard only.** `hrse-gate-run` sets it to the spent grant's nonce before it execs the gate script, which refuses without it. That stops a retyped, direct invocation, which spends no grant. A lane can set the variable itself, so it is no boundary against a determined agent (hrse#2188). |
 | AE footer (`prod-run=`) | the GitHub comment | Yes (via the API) | **Record only.** It is inside the AE's `body-sha256` and verified, but the grant is the authorization. An edited AE refuses; a forged one still needs a grant. |
 | Repo policy copy | `tools/lane/policies/claude-lane3.json` | Yes | None at runtime. It is the reviewed source the install step copies from. |
 | Launcher | `tools/lane/_cli_launch.sh`, `_agent_registry.sh` | Yes | None that buys capability. A tampered launcher can at most widen auto-approval over commands the classifier never hard-blocks. That is the residual below, not a grant. |

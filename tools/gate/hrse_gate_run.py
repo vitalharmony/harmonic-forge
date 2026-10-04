@@ -28,7 +28,11 @@ In order, it refuses unless:
      consume-only one (survivor S5: the host, not the install doc).
   6. The broker consumes one operator-minted grant for this exact issue, the
      worktree's HEAD and the action.
-Only then does it exec the verified script with the manifest's interpreter.
+Only then does it exec the verified script with the manifest's interpreter,
+setting HRSE_GATE_GRANT to the spent grant's nonce. The gate script refuses
+without it, so a direct, retyped invocation -- which spends no grant -- refuses
+too. It is a MISTAKE GUARD, not a boundary: the lane can set the variable
+itself (a determined agent is hrse#2188's scope).
 Steps 4 and the interpreter/payload checks are DRIFT DETECTORS, not a
 boundary: the lane venv's site-packages and __pycache__ stay writable by the
 lane's uid, which already holds the production credential. What this runner
@@ -64,6 +68,9 @@ SCRIPT = re.compile(r"^scripts/1-[A-Za-z0-9._-]+\.py$")
 LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 CONSUME_RULE = re.compile(
     r"^\(hrse-gate\)\s+NOPASSWD:\s+/usr/local/libexec/hrse-gate consume \*$")
+
+#: The broker's success line; its nonce is handed to the gate script.
+CONSUMED = re.compile(r"^consumed ([0-9a-f]{32})$")
 
 EXIT_REFUSED = 7
 
@@ -216,6 +223,10 @@ def main(argv: list[str] | None = None) -> int:
                         args.issue, head.stdout.strip(), broker_action])
         if consume.returncode:
             raise Refused(f"no grant was spent: {consume.stderr.strip() or consume.stdout.strip()}")
+        spent = CONSUMED.match(consume.stdout.strip())
+        if not spent:
+            raise Refused(f"the broker printed no grant id ({consume.stdout.strip()!r}); "
+                          "the grant may be spent -- check `hrse-gate status`")
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         # Item 7: an absent manifest, broker or script is a refusal with its
         # cause, never a traceback.
@@ -226,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REFUSED
     print(f"hrse-gate-run: {consume.stdout.strip()}", file=sys.stderr)
     os.chdir(manifest["worktree"])
-    os.execv(python, [python, str(script), "--issue", args.issue, *script_args])
+    os.execve(python, [python, str(script), "--issue", args.issue, *script_args],
+              {**os.environ, "HRSE_GATE_GRANT": spent.group(1)})
     return EXIT_REFUSED  # unreachable
 
 

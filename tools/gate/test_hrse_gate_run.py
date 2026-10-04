@@ -29,6 +29,7 @@ SHA = "c" * 40
 RULE = "(hrse-gate) NOPASSWD: /usr/local/libexec/hrse-gate consume *"
 BASE_RULE = "(neo4j) NOPASSWD: /usr/bin/neo4j-admin database dump neo4j --to-stdout"
 SUDO, GIT = str(w.SUDO), str(w.GIT)
+NONCE = "c" * 32
 
 
 class _Case(unittest.TestCase):
@@ -50,6 +51,7 @@ class _Case(unittest.TestCase):
         self.envs: list[dict] = []
         self.sudo_rules = [BASE_RULE, RULE]
         self.consume_rc = 0
+        self.consume_out = "consumed " + NONCE
         self.payload_blob, self.payload_here = "1" * 40, "1" * 40
 
     def tearDown(self):
@@ -70,7 +72,7 @@ class _Case(unittest.TestCase):
         elif argv[:2] == [GIT, "-C"] and argv[3] == "hash-object":
             out = self.payload_here
         elif argv[:4] == [SUDO, "-n", "-u", "hrse-gate"]:
-            rc, out = self.consume_rc, "consumed abc"
+            rc, out = self.consume_rc, self.consume_out
         return mock.Mock(returncode=rc, stdout=out, stderr="refused" if rc else "")
 
     def run_wrapper(self, *argv, lane="3"):
@@ -78,7 +80,7 @@ class _Case(unittest.TestCase):
                 mock.patch.object(w, "load_manifest", return_value=self.manifest), \
                 mock.patch.object(w, "_run", side_effect=self._fake_run), \
                 mock.patch.object(w, "_root_tool", side_effect=str), \
-                mock.patch.object(w.os, "execv") as execv, \
+                mock.patch.object(w.os, "execve") as execv, \
                 mock.patch.object(w.os, "chdir"), \
                 mock.patch("sys.stderr"):
             rc = w.main(list(argv))
@@ -97,6 +99,14 @@ class HappyPathTests(_Case):
         self.assertEqual(argv[1], str(self.script))
         self.assertEqual(argv[-3:], ["--script", "scripts/1-1892-revive.py", "--apply"])
 
+    def test_the_gate_script_is_handed_the_spent_grant_id(self):
+        """Ruling item 3 (F): the gate script refuses without HRSE_GATE_GRANT,
+        so the runner -- the only grant-spending caller -- must set it, and
+        must overwrite any value the lane's environment already carries."""
+        with mock.patch.dict(os.environ, {"HRSE_GATE_GRANT": "f" * 32}):
+            rc, execv = self.run_wrapper("--issue", "1892", "--script", "scripts/1-1892-revive.py")
+        self.assertEqual(execv.call_args.args[2]["HRSE_GATE_GRANT"], NONCE)
+
     def test_a_dry_run_and_a_count_name_their_own_actions(self):
         self.run_wrapper("--issue", "1892", "--script", "scripts/1-1892-revive.py")
         self.run_wrapper("--issue", "1867", "--count-label", "Task")
@@ -109,6 +119,12 @@ class RefusalTests(_Case):
         rc, execv = self.run_wrapper(*argv, lane=lane)
         self.assertEqual(rc, w.EXIT_REFUSED)
         self.assertEqual(self.consumed(), [], "a grant was spent on a refused run")
+        execv.assert_not_called()
+
+    def test_a_consume_that_prints_no_grant_id_never_execs(self):
+        self.consume_out = "consumed"
+        rc, execv = self.run_wrapper("--issue", "1", "--count-label", "Task")
+        self.assertEqual(rc, w.EXIT_REFUSED)
         execv.assert_not_called()
 
     def test_outside_lane3(self):
@@ -127,7 +143,7 @@ class RefusalTests(_Case):
                     mock.patch.object(w, "load_manifest", return_value=self.manifest), \
                     mock.patch.object(w, "_run", side_effect=self._fake_run), \
                     mock.patch.object(w, "_root_tool", side_effect=str), \
-                    mock.patch.object(w.os, "execv") as execv:
+                    mock.patch.object(w.os, "execve") as execv:
                 rc = w.main(["--issue", "1", "--count-label", "Task"])
         self.assertEqual(rc, w.EXIT_REFUSED)
         self.assertIn("broker_sha256", err.getvalue())
