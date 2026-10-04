@@ -249,13 +249,14 @@ def hashed_arm(repo: str, issue: int) -> str:
     return ARMS[int(digest[:8], 16) % 2]
 
 
-def last_arm(receipt: dict | None) -> tuple[str, bool] | None:
-    """`(arm, overridden)` of the newest pass entry carrying an arm. Entries
-    survive every receipt rewrite, so this holds where a top-level field can
-    be dropped (#890 pitch-inspection: --complete bypasses carried())."""
+def last_arm(receipt: dict | None) -> dict | None:
+    """The newest pass entry carrying an arm (its `arm`, `arm_overridden`,
+    `arm_assigned`, `arm_reason`). Entries survive every receipt rewrite, so
+    this holds where a top-level field can be dropped (#890 pitch-inspection:
+    --complete bypasses carried())."""
     for entry in reversed(history(receipt)):
         if entry.get("arm"):
-            return entry["arm"], bool(entry.get("arm_overridden"))
+            return entry
     return None
 
 

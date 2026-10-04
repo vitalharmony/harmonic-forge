@@ -186,7 +186,8 @@ class TC6CodexAndTotalCost(unittest.TestCase):
                                        cross_family_fallback=True)])
             text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
         manual = _row(text, "manual")
-        self.assertEqual(manual[11], "1/2, 1 fell back")
+        # A fallback triggered the check: it counts in the rate (#890 pass 1).
+        self.assertEqual(manual[11], "2/3, 1 fell back")
         self.assertEqual(manual[12], "800")
         self.assertEqual(manual[13], "300 panel tokens; 1,630 ms")
         self.assertIn("Codex tokens are not measured", text)
@@ -207,6 +208,79 @@ class TC7PreExperiment(ArmCase):
         self.commit("tools/y.py")
         self.assertIn("arm:      pre-experiment", self.plan_arm())
         self.assertEqual(self.entry()["arm"], passes.PRE_EXPERIMENT)
+
+
+class PreclosePass1Fixes(ArmCase):
+    """harmonic-forge#890 preclose pass 1: one test per finding."""
+
+    def overridden_pass(self) -> None:
+        self.plan_arm(arm="manual", arm_reason="no Workflow tool")
+        self.complete_arm()
+        self.commit("tools/y.py")
+
+    def test_asking_for_the_assigned_arm_clears_an_override(self) -> None:
+        self.overridden_pass()
+        out = self.plan_arm(arm="workflow")
+        self.assertIn("arm:      workflow (assigned)", out)
+        self.assertIn("Workflow name:", out)
+        self.assertNotIn("panel_arm_override", self.receipt())
+
+    def test_auto_keeps_an_override(self) -> None:
+        self.overridden_pass()
+        self.assertIn("arm:      manual (overridden: no Workflow tool)", self.plan_arm())
+
+    def test_an_override_is_recovered_from_the_entry(self) -> None:
+        self.overridden_pass()
+        path = Path(preclose.receipt_dir()) / f"{REPO.replace('/', '_')}_{self.issue}.json"
+        receipt = json.loads(path.read_text())
+        receipt.pop("panel_arm")
+        receipt.pop("panel_arm_override")
+        path.write_text(json.dumps(receipt))
+        out = self.plan_arm()
+        self.assertIn("arm:      manual (overridden: no Workflow tool)", out)
+        self.assertNotIn("Workflow name:", out)
+
+    def test_an_assigned_workflow_arm_refuses_when_the_workflow_is_absent(self) -> None:
+        self.plan_arm()
+        self.workflow.unlink()
+        with self.assertRaises(SystemExit) as refused:
+            self.plan_arm()
+        self.assertIn("--arm manual --arm-reason", str(refused.exception))
+
+    def test_the_invocation_carries_resolved_shas(self) -> None:
+        out = self.plan_arm()
+        args = json.loads(next(l for l in out.splitlines() if "Workflow name:" in l).split("args: ", 1)[1])
+        for key in ("base", "head"):
+            self.assertRegex(args[key], r"^[0-9a-f]{40}$")
+
+    def test_the_workflow_probe_follows_the_platform_root(self) -> None:
+        import os
+        import subprocess
+        import sys as _sys
+        with tempfile.TemporaryDirectory() as root:
+            done = subprocess.run(
+                [_sys.executable, "-c", "import preclose_check; print(preclose_check.PRECLOSE_PANEL_WORKFLOW)"],
+                capture_output=True, text=True, cwd=str(Path(preclose.__file__).parent),
+                env={**os.environ, "HARMONIC_FORGE_ROOT": root})
+            self.assertEqual(done.stdout.strip(), str(Path(root) / "workflows" / "preclose-panel.js"))
+
+    def test_arm_flags_outside_a_plan_are_refused(self) -> None:
+        import subprocess
+        import sys as _sys
+        done = subprocess.run([_sys.executable, str(Path(preclose.__file__)), "--repo", REPO, "--issue", "1",
+                               "--complete", "--own-model", "m", "--arm", "manual", "--arm-reason", "x"],
+                              capture_output=True, text=True)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("belong to the plan", done.stderr)
+
+
+class UnknownArmIsShown(unittest.TestCase):
+    def test_an_unknown_arm_lands_in_other_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            _write(receipts, 1, [_pass("a", "Workflow")])
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        self.assertEqual(_row(text, "other")[1], "1")
 
 
 if __name__ == "__main__":

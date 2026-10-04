@@ -187,7 +187,7 @@ def render(table: list[dict]) -> str:
     return "\n".join(lines)
 
 
-ARM_ROWS = ("manual", "workflow", preclose_passes.PRE_EXPERIMENT, "overridden", "mixed", "unarmed")
+ARM_ROWS = ("manual", "workflow", preclose_passes.PRE_EXPERIMENT, "overridden", "mixed", "unarmed", "other")
 
 
 def issue_arm(entries: list[dict]) -> str:
@@ -199,7 +199,10 @@ def issue_arm(entries: list[dict]) -> str:
         return "unarmed"
     if len(values) > 1:
         return "mixed"
-    return "overridden" if entries[-1].get("arm_overridden") else str(entries[-1]["arm"])
+    if entries[-1].get("arm_overridden"):
+        return "overridden"
+    # An arm this report does not know is shown, never a crash (#890 pass 1).
+    return entries[-1]["arm"] if entries[-1]["arm"] in preclose_passes.ARMS + (preclose_passes.PRE_EXPERIMENT,) else "other"
 
 
 def _median(values: list[int]) -> str:
@@ -216,7 +219,7 @@ def render_by_arm(table: list[dict]) -> str:
     lines = ["| Arm | Issues | Passes (current / all epochs) | Passes per issue (current / all) | "
              "Panel tokens per pass (median / total) | Panel ms (median) | Raised per pass | "
              "Survivors per pass | Dismissal rate | Needed pass 2 | Post-verdict survivors | "
-             "Codex check ran | Codex ms (median) | Total cost |",
+             "Codex check triggered | Codex ms (median) | Total cost |",
              "|" + "---|" * 14]
     for name in ARM_ROWS:
         issues = buckets[name]
@@ -227,7 +230,9 @@ def render_by_arm(table: list[dict]) -> str:
         panel_ms = [v["ms"] for v in views if v["panel"] == "measured"]
         codex_ms = [v["codex_ms"] for v in views if v["codex"] in ("ran", "fallback")
                     and isinstance(v["codex_ms"], int)]
-        known = [v for v in views if v["codex"] in ("ran", "not-run")]
+        # A fallback triggered the check too: it is in the trigger rate's
+        # denominator and numerator (#890 preclose pass 1, denominator).
+        known = [v for v in views if v["codex"] in ("ran", "not-run", "fallback")]
         fallbacks = sum(1 for v in views if v["codex"] == "fallback")
         # Finding counts only over passes that recorded them (#889 onward), so
         # raised and survivors per pass share one denominator.
@@ -237,7 +242,7 @@ def render_by_arm(table: list[dict]) -> str:
         surviving = sum(int(e.get("surviving") or 0) for e in counted)
         n, per = len(issues), (lambda count: f"{count / len(issues):.2f}" if issues else "n/a")
         rate = f"{dismissed / raised:.0%}" if raised else "n/a"
-        codex = (f"{sum(1 for v in known if v['codex'] == 'ran')}/{len(known)}"
+        codex = (f"{sum(1 for v in known if v['codex'] in ('ran', 'fallback'))}/{len(known)}"
                  + (f", {fallbacks} fell back" if fallbacks else ""))
         post = [r["post_verdict_surviving"] for r in issues if r.get("post_verdict_surviving") is not None]
         lines.append(
@@ -251,7 +256,7 @@ def render_by_arm(table: list[dict]) -> str:
     split = f"{len(buckets['manual'])} manual / {len(buckets['workflow'])} workflow"
     lines += ["", f"n per arm: {split}. The comparison is not yet meaningful below 8 issues per arm. "
                   "Codex tokens are not measured: the envelope records no usage. Overridden, mixed, "
-                  "pre-experiment and unarmed issues are never counted in an arm. Passes are shown "
+                  "pre-experiment, unarmed and other issues are never counted in an arm. Passes are shown "
                   "for the current epoch and for all epochs, so a reforge is not read as an arm "
                   "failing to converge."]
     return "\n".join(lines)
