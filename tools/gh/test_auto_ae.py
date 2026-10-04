@@ -270,17 +270,17 @@ class CarryForwardTests(unittest.TestCase):
 
 class ValidateAutoAeTests(unittest.TestCase):
     def test_an_operator_ae_reads_nothing(self):
-        with patch.object(clr, "fetch_comments", side_effect=AssertionError("no fetch")):
+        with patch("check_lane3_ready.fetch_comments", side_effect=AssertionError("no fetch")):
             l1_post.validate_auto_ae(ae_body(cite=""), sweep_body(), REPO, ISSUE, SHA, SPEC_ID, False, None)
 
     def test_a_refused_auto_ae_posts_nothing(self):
-        with patch.object(clr, "fetch_comments", return_value=[ready(), spec()]), \
+        with patch("check_lane3_ready.fetch_comments", return_value=[ready(), spec()]), \
              patch.object(auto, "auto_ae_refusal", return_value="auto-AE is off"), \
              self.assertRaises(SystemExit):
             l1_post.validate_auto_ae(ae_body(), sweep_body(), REPO, ISSUE, SHA, SPEC_ID, False, None)
 
     def test_an_accepted_auto_ae_passes(self):
-        with patch.object(clr, "fetch_comments", return_value=[ready(), spec()]), \
+        with patch("check_lane3_ready.fetch_comments", return_value=[ready(), spec()]), \
              patch.object(auto, "auto_ae_refusal", return_value=None):
             l1_post.validate_auto_ae(ae_body(), sweep_body(), REPO, ISSUE, SHA, SPEC_ID, False, None)
 
