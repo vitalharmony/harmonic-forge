@@ -1717,7 +1717,12 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) 
         counts = telemetry_emit.emit([event])
         if counts.get("rejected"):
             print(f"[l1-post] ready-for-l3 telemetry rejected: {counts['rejected']}", file=sys.stderr)
-    except Exception as exc:  # noqa: BLE001 - telemetry never changes the outcome
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - telemetry never changes the outcome
+        # BaseException, not Exception: a SystemExit raised inside the telemetry
+        # path must not replace the error l1_post is already propagating
+        # (post-verdict cross-family finding).
         print(f"[l1-post] ready-for-l3 telemetry not written: {type(exc).__name__}: {exc}",
               file=sys.stderr)
 

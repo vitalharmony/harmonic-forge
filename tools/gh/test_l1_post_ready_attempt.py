@@ -249,6 +249,17 @@ class EmitNeverChangesTheOutcomeTests(StoreCase):
         self.assertIn("static verification failed", refusal)
         self.assertIn("telemetry not written", err)
 
+    def test_a_system_exit_inside_telemetry_never_replaces_the_original_error(self):
+        sys.path.insert(0, str(HERE.parent / "telemetry"))
+        import emit as telemetry_emit  # noqa: PLC0415
+        with mock.patch.object(telemetry_emit, "emit", side_effect=SystemExit("telemetry exit")), \
+             mock.patch.object(L, "static_checks", side_effect=_failed_check()), \
+             mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "x")):
+            refusal, err = self.refuse()
+        self.assertIn("static verification failed", refusal)
+        self.assertIn("telemetry not written", err)
+
     def test_tc5_the_test_runner_forces_a_throwaway_store(self):
         source = (HERE.parent / "run_tests.py").read_text(encoding="utf-8")
         self.assertRegex(source, r'os\.environ\["HARMONIC_FORGE_TELEMETRY_STORE"\]\s*=')
