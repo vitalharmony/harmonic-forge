@@ -109,6 +109,8 @@ def _root_tool(path: Path) -> str:
         if st.st_uid != 0 or parent.st_uid != 0 or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise Refused(f"{path} is a symlink that is not root-owned in a root-owned directory")
         real = Path(os.path.realpath(path))
+        if not stat.S_ISREG(os.lstat(real).st_mode):
+            raise Refused(f"{path} resolves to {real}, which is not a regular file")
         _immutable(real)
         return str(real)
     _immutable(path)

@@ -311,6 +311,10 @@ class RootToolTests(unittest.TestCase):
         with self.assertRaises(w.Refused):
             self._check(self.root_tree(**{"/usr/libexec/git": self._dir(mode=0o775)}))
 
+    def test_a_symlink_to_a_directory_is_refused(self):
+        with self.assertRaises(w.Refused):
+            self._check(self.root_tree(**{"/usr/libexec/git/git": self._dir()}))
+
     def test_this_hosts_git_passes_when_it_is_root_owned(self):
         git = Path("/usr/bin/git")
         if not git.exists() or os.lstat(git).st_uid != 0:
