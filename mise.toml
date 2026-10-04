@@ -311,10 +311,14 @@ flag "--issue <issue>" help="Issue number" required=#true
 flag "--file <file>" help="Path to the comment body" required=#true
 flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
 flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
+flag "--tc-classes <json>" help="harmonic-forge#893: --kind spec only (required there): case id to ac|existing|live"
+flag "--tc-results <json>" help="harmonic-forge#893: --kind gate-result only (required there): case id to pass|fail|blocked"
 '''
 run = '''
 set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
 [ -n "${usage_repo:-}" ] && set -- "$@" --repo "$usage_repo"
+[ -n "${usage_tc_classes:-}" ] && set -- "$@" --tc-classes "$usage_tc_classes"
+[ -n "${usage_tc_results:-}" ] && set -- "$@" --tc-results "$usage_tc_results"
 python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane_discussion.py" "$@"
 '''
 

@@ -288,9 +288,23 @@ itself is ready.
 own lane-comment task (the adapter half names it):
 
 ```
-<lane-comment task> --issue <N> --file <path> --kind spec
-<lane-comment task> --issue <N> --file <path> --kind gate-result
+<lane-comment task> --issue <N> --file <path> --kind spec --tc-classes <classes.json>
+<lane-comment task> --issue <N> --file <path> --kind gate-result --tc-results <results.json>
 ```
+
+**Classify every case when you write the spec, and record every verdict when
+you post the result** (harmonic-forge#893). Both flags are required for their
+kind, and their keys must be exactly the body's case ids (`TC3` or `3`):
+- `--tc-classes`: each case is `ac` (written from an acceptance criterion),
+  `existing` (re-runs the repo's existing suite) or `live` (a check against the
+  running system or real data). Fixed at approval time, never chosen after the
+  run. Example: `{"TC1": "ac", "TC2": "live", "TC3": "existing"}`.
+- `--tc-results`: each case is `pass`, `fail` or `blocked`, and the map must
+  agree with the report's verdict (a PASS with a `fail` is refused).
+Keep both files under the testplan root. The gate time is derived from the
+`LANE3_ACTIVE` marker `lane3-begin` writes, so there is nothing to report; it
+reads `unknown` when that marker is missing. Lane 3 writes no telemetry: the
+footer is the record, and the extractor reads it later.
 
 Without `--kind`, the comment is stamped `kind=discussion` — which is what
 every Lane 3 spec and gate result carried before this, and why `lane_state.py`

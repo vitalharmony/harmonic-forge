@@ -55,7 +55,7 @@ if str(_GH) not in sys.path:
 
 import gate_ci  # noqa: E402
 
-EXTRACTOR_VERSION = "threads-2"
+EXTRACTOR_VERSION = "threads-3"
 #: `post_lane_discussion.py` stamps `posted-by=LANE-unset` when LANE is unset.
 _POSTED_BY = re.compile(r"posted-by=LANE(\d|-unset)\b", re.I)
 #: A comment's own footer stands on a line of its own; the last one is l1_post's.
@@ -77,6 +77,48 @@ def clean(raw: str) -> str:
 def own_footer(body: str) -> Optional[str]:
     found = _OWN_FOOTER.findall(body)
     return found[-1] if found else None
+
+
+#: harmonic-forge#893: `classes=1:ac,2:live` on a spec footer, `results=1:pass,…`
+#: and `gate-ms=<int>|unknown` on a gate-result footer.
+_CASE_FIELD = r"\b{key}=([\w:,-]*)"
+_GATE_MS = re.compile(r"\bgate-ms=(\d+|unknown)\b")
+
+
+def parse_case_map(footer: Optional[str], key: str) -> dict[str, str]:
+    """`{case id: value}` from a footer's `key=` field, or `{}` when absent."""
+    match = re.search(_CASE_FIELD.format(key=re.escape(key)), footer or "")
+    if not match:
+        return {}
+    pairs = (item.partition(":") for item in match.group(1).split(",") if item)
+    return {k: v for k, _, v in pairs if k and v}
+
+
+def case_counts(footer: Optional[str], kind: Optional[str]) -> dict[str, Any]:
+    """Scalar attrs only (schema v1 forbids nesting): class counts for a spec,
+    verdict counts and gate time for a gate result. `{}` for a footer without
+    the fields, so an old-format post is unchanged."""
+    if kind == "spec":
+        classes = parse_case_map(footer, "classes")
+        if not classes:
+            return {}
+        values = list(classes.values())
+        return {f"tc_{c}": values.count(c) for c in ("ac", "existing", "live")}
+    if kind == "gate-result":
+        results = parse_case_map(footer, "results")
+        if not results:
+            return {}
+        values = list(results.values())
+        out: dict[str, Any] = {"tc_count": len(values), "fail_count": values.count("fail"),
+                               "blocked_count": values.count("blocked")}
+        gate = _GATE_MS.search(footer or "")
+        if gate and gate.group(1).isdigit():
+            out["gate_ms"] = int(gate.group(1))
+            out["gate_ms_known"] = True
+        else:
+            out["gate_ms_known"] = False
+        return out
+    return {}
 
 
 def _actor(provenance: str, footer: Optional[str]) -> str:
@@ -127,7 +169,9 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
     for t in timeline:
         if is_gate and t.key in _GATE_KEYS:
             continue  # one gate event per comment, scored below
-        add(t.key, t.provenance, t.validated, t.at, t.comment_id, {})
+        extra = (case_counts(footer, own_kind)
+                 if own_kind == "spec" and t.key == lane_state.KEY_SPEC_POSTED else {})
+        add(t.key, t.provenance, t.validated, t.at, t.comment_id, extra)
     # Gate verdicts come from gate_ci.verdict_of(): heading or lead block only
     # (never a per-TC line), any heading level, and CONFLICT when the two
     # disagree -- recorded as unknown, never resolved to either side. With no
@@ -143,7 +187,9 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
             key, provenance, validated = definite[0].key, definite[0].provenance, definite[0].validated
         add(key or lane_state.KEY_UNKNOWN, provenance, validated,
             str(comment.get("created_at") or comment.get("createdAt") or ""),
-            str(comment.get("id") or ""), {"verdict": verdict or "none"})
+            str(comment.get("id") or ""),
+            {"verdict": verdict or "none",
+             **(case_counts(footer, "gate-result") if attested else {})})
     return events
 
 

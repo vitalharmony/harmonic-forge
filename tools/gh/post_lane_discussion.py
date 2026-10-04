@@ -25,9 +25,12 @@ protocol concept with two implementations.
 
 import argparse
 import hashlib
+import json
 import os
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 # harmonic-forge#504's check is PLATFORM work — every repo's Lane 3 posts
@@ -56,8 +59,8 @@ except ImportError:  # pragma: no cover - platform checkout absent
     belt_candidates = None
 
 from l1_post import (
-    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run, apply_project_identity,
-    validate_lead,
+    case_ids, comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
+    apply_project_identity, validate_lead,
 )
 
 #: The kinds this script may stamp. `discussion` is the default and the
@@ -248,7 +251,90 @@ def validate_kind(kind: str, body: str) -> None:
     reject_plan_as_discussion(kind, body)
 
 
-def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None = None) -> str:
+#: harmonic-forge#893: each spec case's class, fixed at approval time, and each
+#: gate case's verdict. Bounded so the footer stays one short physical line
+#: (`eras._OWN_FOOTER` is line-anchored).
+CASE_CLASSES = ("ac", "existing", "live")
+CASE_RESULTS = ("pass", "fail", "blocked")
+MAX_CASES = 64
+MAX_CASE_ID = 12
+#: The same freshness bound the Lane 3 write guard applies to this marker.
+LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
+_CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
+
+
+def load_case_map(path: Path, body: str, allowed: tuple[str, ...], flag: str) -> dict[str, str]:
+    """`{case id: value}` from `path`, whose ids must equal the body's case ids
+    exactly (`l1_post.case_ids`, both the `TC<n>` and plain-numbered shapes).
+    Refuses, naming the id, on any missing, extra or unknown entry."""
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        fail(f"{flag}: cannot read a JSON object from {path} ({exc})")
+    if not isinstance(raw, dict):
+        fail(f"{flag}: {path} must hold a JSON object of case id to value")
+    found: dict[str, str] = {}
+    for key, value in raw.items():
+        match = _CASE_KEY.match(str(key).strip())
+        if not match or len(match.group(1)) > MAX_CASE_ID:
+            fail(f"{flag}: {key!r} is not a case id")
+        found[match.group(1)] = str(value).strip().lower()
+    expected = case_ids(body)
+    # A body with no identifiable cases (a BLOCKED gate that ran nothing, say)
+    # takes an empty map: it is then recorded as having no per-case results.
+    if len(expected) > MAX_CASES:
+        fail(f"{flag}: the body has {len(expected)} cases; at most {MAX_CASES} are recorded")
+    missing = sorted(expected - set(found), key=_case_order)
+    extra = sorted(set(found) - expected, key=_case_order)
+    if missing:
+        fail(f"{flag}: no entry for case(s) {', '.join(missing)} in the body")
+    if extra:
+        fail(f"{flag}: case(s) {', '.join(extra)} are not in the body")
+    for key in sorted(found, key=_case_order):
+        if found[key] not in allowed:
+            fail(f"{flag}: case {key} is {found[key]!r}; allowed: {', '.join(allowed)}")
+    return found
+
+
+def _case_order(key: str) -> tuple[int, str]:
+    return (int(key), "") if key.isdigit() else (10 ** 9, key)
+
+
+def case_field(name: str, mapping: dict[str, str]) -> str:
+    return f"{name}=" + ",".join(f"{k}:{mapping[k]}" for k in sorted(mapping, key=_case_order))
+
+
+def check_results_agree(results: dict[str, str], body: str) -> None:
+    """The per-case verdicts must agree with the report's own verdict, read the
+    way `gate_ci.verdict_of` reads it."""
+    verdict = verdict_of(body)
+    fails = [k for k, v in results.items() if v == "fail"]
+    if verdict == "PASS" and fails:
+        fail(f"--tc-results: the report says PASS but case(s) "
+             f"{', '.join(sorted(fails, key=_case_order))} are fail")
+    if verdict == "FAIL" and not fails:
+        fail("--tc-results: the report says FAIL but no case is fail")
+
+
+def gate_ms(now: float | None = None) -> str:
+    """Milliseconds since `lane3-begin` touched `<git-dir>/LANE3_ACTIVE`, or
+    `unknown`. Derived, never self-reported, and never written as zero."""
+    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                             text=True, capture_output=True, check=False)
+    if git_dir.returncode:
+        return "unknown"
+    try:
+        started = (Path(git_dir.stdout.strip()) / "LANE3_ACTIVE").stat().st_mtime
+    except OSError:
+        return "unknown"
+    elapsed = (time.time() if now is None else now) - started
+    if elapsed <= 0 or elapsed > LANE3_MARKER_MAX_AGE_SECONDS:
+        return "unknown"
+    return str(int(elapsed * 1000))
+
+
+def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None = None,
+           case_fields: str = "") -> str:
     """`kind=discussion` keeps its exact pre-harmonic-forge#473 footer.
 
     Byte-identical on that path on purpose: `lane_state.py`, a private-repo incident's
@@ -266,8 +352,12 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
     digest = hashlib.sha256(body.rstrip("\n").encode()).hexdigest()
     override = (f"; ack-no-pr-required={ack_no_pr_required}"
                 if ack_no_pr_required is not None else "")
+    # harmonic-forge#893: the case fields go INSIDE the one-line footer, after
+    # every existing key, so every footer reader keeps parsing it. They are not
+    # inside the digest: the digest covers the body, as every verifier expects.
+    extra = f"; {case_fields}" if case_fields else ""
     return (f"\n\n<!-- l1-post v1; kind={kind}; posted-by={posted_by}; "
-            f"body-sha256={digest}{override} -->\n")
+            f"body-sha256={digest}{override}{extra} -->\n")
 
 
 def require_green_ci(
@@ -378,7 +468,19 @@ def main() -> None:
              "no-PR-possible point; a SHA that belongs to a real PR (open, "
              "pending, or red) is refused exactly as before, regardless of "
              "this flag.")
+    parser.add_argument(
+        "--tc-classes", type=Path, default=None, metavar="JSON",
+        help="harmonic-forge#893, --kind spec only (required there): a JSON object "
+             "mapping each case id in the spec to ac, existing or live.")
+    parser.add_argument(
+        "--tc-results", type=Path, default=None, metavar="JSON",
+        help="harmonic-forge#893, --kind gate-result only (required there): a JSON "
+             "object mapping each case id in the report to pass, fail or blocked.")
     args = parser.parse_args()
+    if args.kind != "spec" and args.tc_classes is not None:
+        fail("--tc-classes is valid only with --kind spec")
+    if args.kind != "gate-result" and args.tc_results is not None:
+        fail("--tc-results is valid only with --kind gate-result")
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
     # Preclose finding: the reason is written INSIDE the HTML-comment footer,
@@ -407,6 +509,22 @@ def main() -> None:
     # no LEAD_FIELDS entry, so this is a no-op on the pre-existing default
     # path; only `spec`/`gate-result` are newly checked.
     validate_lead(args.kind, body)
+    # harmonic-forge#893: required for their kind, checked after the body's own
+    # heading and lead checks so those refusals keep their order.
+    if args.kind == "spec" and args.tc_classes is None:
+        fail("--kind spec requires --tc-classes <json>: each case's class (ac, existing, "
+             "live), fixed at approval time (harmonic-forge#893)")
+    if args.kind == "gate-result" and args.tc_results is None:
+        fail("--kind gate-result requires --tc-results <json>: each case's verdict "
+             "(pass, fail, blocked) (harmonic-forge#893)")
+    case_fields = ""
+    if args.kind == "spec":
+        case_fields = case_field("classes", load_case_map(args.tc_classes, body, CASE_CLASSES,
+                                                          "--tc-classes"))
+    elif args.kind == "gate-result":
+        results = load_case_map(args.tc_results, body, CASE_RESULTS, "--tc-results")
+        check_results_agree(results, body)
+        case_fields = f"{case_field('results', results)}; gate-ms={gate_ms()}"
     override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
     require_round_approval(args.repo, args.issue, body)
     lane = os.environ.get("LANE")
@@ -417,6 +535,7 @@ def main() -> None:
         body.rstrip("\n") + footer(
             args.kind, body, posted_by,
             ack_no_pr_required=args.ack_no_pr_required if override_used else None,
+            case_fields=case_fields,
         ),
     )
     print(f"[post-comment] posted and refetched {url}")

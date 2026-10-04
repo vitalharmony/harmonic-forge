@@ -165,13 +165,57 @@ def issues_with_comments(repo: str, get: RestGet, since: Optional[str]) -> list[
             if "pull_request" not in item and item.get("comments", 0) > 0]
 
 
+def _own(comment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """`(footer, kind)` of a comment's own l1-post footer."""
+    footer = eras.own_footer(eras.clean(comment.get("body") or ""))
+    kind = eras.lane_state._FOOTER_KIND.search(footer or "")
+    return footer, (kind.group("kind").lower() if kind else None)
+
+
+def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str, Any]]) -> None:
+    """harmonic-forge#893: give each classified gate event its per-class fails.
+
+    For each gate-result comment carrying `results=`, the newest EARLIER comment
+    whose own footer is `kind=spec` with `classes=` is its spec. When their case
+    ids match, the gate's event gains `paired: true`, the spec's class counts
+    (`case_ac`, `case_existing`, `case_live`) and `fail_*`/`blocked_*` per class;
+    otherwise `paired: false` and nothing else. Scalars only (schema v1)."""
+    by_id = {str(e.get("attrs", {}).get("comment_id")): e for e in events
+             if "tc_count" in (e.get("attrs") or {})}
+    latest_spec: Optional[dict[str, str]] = None
+    for comment in comments:
+        footer, kind = _own(comment)
+        if kind == "spec":
+            classes = eras.parse_case_map(footer, "classes")
+            if classes:
+                latest_spec = classes
+            continue
+        event = by_id.get(str(comment.get("id") or ""))
+        if kind != "gate-result" or event is None:
+            continue
+        results = eras.parse_case_map(footer, "results")
+        attrs = event["attrs"]
+        if latest_spec is None or set(latest_spec) != set(results):
+            attrs["paired"] = False
+            continue
+        attrs["paired"] = True
+        for cls in ("ac", "existing", "live"):
+            ids = [k for k, v in latest_spec.items() if v == cls]
+            attrs[f"case_{cls}"] = len(ids)
+            attrs[f"fail_{cls}"] = sum(1 for k in ids if results.get(k) == "fail")
+            attrs[f"blocked_{cls}"] = sum(1 for k in ids if results.get(k) == "blocked")
+
+
 def issue_events(repo: str, number: int, get: RestGet, *, account: Optional[str],
                  org: Optional[str]) -> list[dict[str, Any]]:
     where = {"account": account, "org": org, "repo": repo, "issue": number}
     events: list[dict[str, Any]] = []
+    comments: list[dict[str, Any]] = []
     for page in get(f"repos/{repo}/issues/{number}/comments?per_page=100"):
         for comment in page:
+            comments.append(comment)
             events.extend(eras.comment_events(comment, **where))
+    pair_gates_with_specs(comments, events)
     for page in get(f"repos/{repo}/issues/{number}/timeline?per_page=100"):
         for item in page:
             events.extend(eras.timeline_events(item, **where))
