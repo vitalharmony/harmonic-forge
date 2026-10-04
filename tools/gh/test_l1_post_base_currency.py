@@ -146,7 +146,8 @@ class TheKindIsUnchanged(unittest.TestCase):
         used to pin literally -- an if/else with the same gating condition,
         asserted by structure rather than by exact source text, which is
         what this test actually cares about."""
-        body = ast.unparse(_fn("post_kind"))
+        # harmonic-forge#892: post_kind() now wraps _post_kind(), which holds the body.
+        body = ast.unparse(_fn("_post_kind"))
         self.assertIn("if kind == 'ready-for-l3':", body)
         self.assertIn("static_checks(sha, branch)", body)
         self.assertIn("checks = ['body-validation']", body)

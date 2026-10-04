@@ -181,6 +181,10 @@ def main() -> int:
     # ... and failures go to a throwaway state dir, never the real failure log.
     # Forced, not setdefault: XDG_STATE_HOME is commonly already exported.
     os.environ["XDG_STATE_HOME"] = str(Path(archive_tmp.name) / "state")
+    # harmonic-forge#892: and every emitted event to a throwaway store. Forced,
+    # not setdefault: before this, any test reaching `telemetry/emit.py` wrote
+    # the operator's real store.
+    os.environ["HARMONIC_FORGE_TELEMETRY_STORE"] = str(Path(archive_tmp.name) / "store")
     files = _test_files()
     if not files:
         print("[test] no test files found — refusing to report success", file=sys.stderr)

@@ -230,7 +230,7 @@ class PostKindGatesOnlyReadyForL3AndAe(unittest.TestCase):
     """
 
     def test_post_kind_calls_require_open_pr_only_for_ready_for_l3_and_ae(self) -> None:
-        body = ast.unparse(_fn("post_kind"))
+        body = ast.unparse(_fn("_post_kind"))  # harmonic-forge#892: the body moved
         self.assertIn("kind in ('ready-for-l3', 'ae')", body)
         self.assertIn("require_open_pr(", body)
 
@@ -238,7 +238,7 @@ class PostKindGatesOnlyReadyForL3AndAe(unittest.TestCase):
         """world_checks already does a live sibling-overlap scan; ordering
         the cheaper/more-established check first matches static_checks'
         own cheap-check-first precedent (test_l1_post_base_currency.py)."""
-        body = ast.unparse(_fn("post_kind"))
+        body = ast.unparse(_fn("_post_kind"))  # harmonic-forge#892: the body moved
 
         def _at(needle: str) -> int:
             self.assertIn(needle, body)
