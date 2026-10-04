@@ -184,6 +184,42 @@ class MainIntegrationTests(unittest.TestCase):
             post.main()
         resolve.assert_called_once_with(None)
 
+    def test_a_refused_auto_ae_posts_nothing_through_main(self) -> None:
+        """harmonic-forge#874: main()'s ae-and-sweep path runs the auto-AE
+        check before either half posts."""
+        sys.path.insert(0, str(ROOT))
+        import _auto_ae  # noqa: PLC0415
+        import check_lane3_ready  # noqa: PLC0415
+        self.ae_file.write_text(AE_BODY.replace("the spec in", "auto-AE (R-0378), the spec in"))
+        self.sweep_file.write_text(SWEEP_BODY)
+        with patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+             patch.object(post, "write_receipt"), \
+             patch.object(check_lane3_ready, "fetch_comments", return_value=[]), \
+             patch.object(_auto_ae, "auto_ae_refusal", return_value="auto-AE is off") as refusal, \
+             patch.object(sys, "argv", self._argv()):
+            with self.assertRaises(SystemExit):
+                post.main()
+        refusal.assert_called_once()
+        self.assertEqual(self.posted_kinds, [], "a refused auto-AE must post neither half")
+
+    def test_a_standalone_auto_ae_is_refused_through_main(self) -> None:
+        """harmonic-forge#874: an auto-AE posts only with its sweep."""
+        sys.path.insert(0, str(ROOT))
+        import check_lane3_ready  # noqa: PLC0415
+        self.ae_file.write_text(AE_BODY.replace("the spec in", "auto-AE (R-0378), the spec in"))
+        argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1", "--kind", "ae",
+                "--sha", FAKE_SHA, "--branch", "x", "--file", str(self.ae_file)]
+        with patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+             patch.object(post, "write_receipt"), \
+             patch.object(check_lane3_ready, "fetch_comments", return_value=[]), \
+             patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as ctx:
+                post.main()
+        self.assertIn("ae-and-sweep", str(ctx.exception))
+        self.assertEqual(self.posted_kinds, [])
+
     def test_malformed_sweep_posts_nothing_through_main(self) -> None:
         """AC3, exercised through main(): a malformed sweep body must reject
         before the AE is posted -- zero comments created."""

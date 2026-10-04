@@ -757,6 +757,22 @@ def validate_grant_ae(body: str, repo: str, issue: int, sha: str,
         fail(reason)
 
 
+def validate_auto_ae(body: str, sweep_body: str | None, repo: str, issue: int, sha: str,
+                     spec_comment: int | None, prod_run: bool,
+                     ack_no_pr_required: str | None) -> None:
+    """harmonic-forge#874: an AE claiming auto-AE (R-0378) is checked against
+    the toggle, the issue's BATCH lease and the thread before it posts."""
+    import _auto_ae  # noqa: PLC0415
+    import check_lane3_ready  # noqa: PLC0415
+    if not _auto_ae.cites_auto_ae(body):
+        return
+    reason = _auto_ae.auto_ae_refusal(
+        body, sweep_body, repo, issue, sha, check_lane3_ready.fetch_comments(repo, issue),
+        spec_comment=spec_comment, prod_run=prod_run, ack_no_pr_required=ack_no_pr_required)
+    if reason:
+        fail(reason)
+
+
 def validate_ae(body: str, repo: str, issue: int) -> None:
     """a private-repo incident: AE previously went out via plain `lane-comment`, with no
     reserved-marker footer and no structural check -- indistinguishable from
@@ -2028,6 +2044,8 @@ def main() -> None:
         reject_reserved_marker(sweep_body)
         validate_ae(ae_body, repo, args.issue)
         validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required)
+        validate_auto_ae(ae_body, sweep_body, repo, args.issue, sha, args.spec_comment,
+                         bool(prod_run), args.ack_no_pr_required)
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
@@ -2111,6 +2129,8 @@ def main() -> None:
     if args.kind == "ae":
         validate_ae(body, repo, args.issue)
         validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required)
+        validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
+                         bool(prod_run), args.ack_no_pr_required)
 
     url, _ = post_kind(
         repo, args.issue, args.kind, body, sha, args.branch,

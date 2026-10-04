@@ -254,9 +254,16 @@ def carry_forward(comments: list[dict], authority: dict, head_sha: str) -> dict 
     when a tier-R sweep is the authority instead of an AE.
 
     harmonic-forge#858: an AE claiming the operator's standing grant (R-0374)
-    never carries forward -- a new SHA needs a fresh Tier R PASS."""
+    never carries forward -- a new SHA needs a fresh Tier R PASS.
+
+    harmonic-forge#874: neither does an auto-AE (R-0378). The toggle or the
+    BATCH lease can lapse between a FAIL and the carry, and a carry posts
+    nothing, so no post-time check would run on it."""
+    import _auto_ae  # noqa: PLC0415 -- imports this module
     import _standing_grant  # noqa: PLC0415 -- imports this module
     if _standing_grant.cites_grant(authority.get("body", "")):
+        return None
+    if _auto_ae.cites_auto_ae(authority.get("body", "")):
         return None
     candidates = [
         comment for comment in comments

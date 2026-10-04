@@ -33,7 +33,7 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_rule_drift import extract_spans  # noqa: E402
+from check_rule_drift import excepters, extract_spans  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
 _DEFAULT_REGISTRY = _HERE / "registry.toml"
@@ -132,19 +132,22 @@ def check(own_registry: Path, own_root: Path,
 
     for rid, phrase in own_hits + sibling_hits:
         rule = all_by_id.get(rid, {})
-        if rule.get("excepted_by"):
-            excepter = all_by_id.get(rule["excepted_by"])
-            if excepter is None:
-                failures.append(
-                    f"{rid} names excepted_by={rule['excepted_by']!r}, which exists in "
-                    f"neither registry."
-                )
-            elif rid not in (excepter.get("exception_to") or []):
-                failures.append(
-                    f"{rid} states the close/merge absolute (matched {phrase!r}) and names "
-                    f"excepted_by={rule['excepted_by']!r}, but that rule's exception_to does "
-                    f"not list {rid!r} back."
-                )
+        named = excepters(rule)
+        if named:
+            # harmonic-forge#874: excepted_by may be a list (R-0208 names both
+            # R-0374 and R-0378); every excepting rule must name this one back.
+            for name in named:
+                excepter = all_by_id.get(name)
+                if excepter is None:
+                    failures.append(
+                        f"{rid} names excepted_by={name!r}, which exists in neither registry."
+                    )
+                elif rid not in (excepter.get("exception_to") or []):
+                    failures.append(
+                        f"{rid} states the close/merge absolute (matched {phrase!r}) and names "
+                        f"excepted_by={name!r}, but that rule's exception_to does "
+                        f"not list {rid!r} back."
+                    )
             continue
         if rid in _ALLOWLIST:
             continue

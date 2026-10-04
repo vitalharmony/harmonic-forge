@@ -1,284 +1,325 @@
-"""harmonic-forge#874 step 1 -- the probe-only `/auto-ae` UserPromptSubmit hook,
-driven as a real hook process against a temporary HOME."""
-import calendar
+"""harmonic-forge#874: the `/auto-ae` toggle (UserPromptSubmit) and its guard
+(PreToolUse), driven as a real hook process against a temporary HOME."""
 import json
 import os
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HOOK = HERE / "auto_ae_toggle.py"
-sys.path.insert(0, str(HERE))
-import auto_ae_toggle  # noqa: E402
-
-SECRET_SESSION = "sess-SECRET-1234"
-SECRET_TRANSCRIPT = "/home/x/.claude/projects/p/SECRET-transcript.jsonl"
 
 
-def _payload(prompt):
-    return {"hook_event_name": "UserPromptSubmit", "prompt": prompt,
-            "session_id": SECRET_SESSION, "transcript_path": SECRET_TRANSCRIPT,
-            "cwd": "/tmp"}
+def _prompt(prompt: str, transcript: Path | None = None) -> dict:
+    payload = {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "s-1", "cwd": "/tmp"}
+    if transcript is not None:
+        payload["transcript_path"] = str(transcript)
+    return payload
 
 
-def _run(stdin, home, lane="1", entrypoint="cli"):
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("LANE", "CLAUDE_CODE_ENTRYPOINT")}
-    env["HOME"] = home
-    if lane is not None:
-        env["LANE"] = lane
-    if entrypoint is not None:
-        env["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
-    result = subprocess.run([sys.executable, str(HOOK)], input=stdin, env=env,
-                            capture_output=True, text=True)
-    return result
+def _envelope(prompt: str) -> str:
+    """How the harness records a typed `/auto-ae ...` in the transcript."""
+    parts = prompt.strip().split(maxsplit=1)
+    args = parts[1] if len(parts) > 1 else ""
+    return (f"<command-message>auto-ae</command-message>\n<command-name>/auto-ae</command-name>\n"
+            f"<command-args>{args}</command-args>")
 
 
-PROBE = Path(".local") / "state" / "auto-ae" / "probe.jsonl"
-
-#: Runs the hook under a PEP 578 audit hook that records every write-intent
-#: open and every filesystem mutation, then writes the targets as JSON to the
-#: trace file, opened BEFORE the hook is installed so it is never traced itself.
-_TRACER = r"""
-import json, os, runpy, sys
-sys.dont_write_bytecode = True
-TRACE_FD = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-MUTATIONS = {"os.mkdir", "os.rename", "os.remove", "os.rmdir", "os.link",
-             "os.symlink", "os.truncate", "os.chmod", "os.utime",
-             "shutil.copyfile", "shutil.move", "shutil.rmtree"}
-seen = []
-def audit(event, args):
-    if event == "open":
-        path, mode, flags = (list(args) + [None, None])[:3]
-        writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or \
-                 (isinstance(flags, int) and flags & WRITE_FLAGS)
-        if writes and isinstance(path, (str, bytes, os.PathLike)):
-            seen.append(os.path.abspath(os.fsdecode(path)))
-    elif event in MUTATIONS and args and isinstance(args[0], (str, bytes, os.PathLike)):
-        seen.append(os.path.abspath(os.fsdecode(args[0])))
-sys.addaudithook(audit)
-try:
-    sys.argv = sys.argv[1:2]
-    runpy.run_path(sys.argv[0], run_name="__main__")
-except SystemExit:
-    pass
-os.write(TRACE_FD, json.dumps(seen).encode())
-"""
+def _tool(tool: str, tool_input: dict, event: str | None = "PreToolUse") -> dict:
+    payload = {"tool_name": tool, "tool_input": tool_input, "session_id": "s-1", "cwd": "/tmp"}
+    if event:
+        payload["hook_event_name"] = event
+    return payload
 
 
-def _traced_writes(home, tmpdir, cwd):
-    env = {k: v for k, v in os.environ.items() if k != "LANE"}
-    env.update(HOME=home, TMPDIR=tmpdir, LANE="1", PYTHONDONTWRITEBYTECODE="1")
-    with tempfile.TemporaryDirectory() as trace_dir:
-        trace = Path(trace_dir) / "trace.json"
-        result = subprocess.run([sys.executable, "-c", _TRACER, str(HOOK), str(trace)],
-                                input=json.dumps(_payload("/auto-ae on")), env=env,
-                                cwd=cwd, capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
-        assert "recorded" in result.stdout, result.stdout  # the hook really ran
-        return set(json.loads(trace.read_text()))
+class HookCase(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        (self.home / ".claude" / "state").mkdir(parents=True)
+        self.state = self.home / ".claude" / "state" / "auto-ae.json"
+        self.transcript = self.home / ".claude" / "projects" / "-p" / "s-1.jsonl"
+        self.transcript.parent.mkdir(parents=True)
+        self.transcript.write_text("")
+
+    def typed(self, text: str) -> None:
+        """Append the operator's typed turn, as the harness does."""
+        row = {"type": "user", "message": {"role": "user", "content": text},
+               "timestamp": datetime.now(timezone.utc).isoformat()}
+        with self.transcript.open("a") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+    def tool_result(self) -> None:
+        row = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}, "toolUseResult": {}}
+        with self.transcript.open("a") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+    def lease(self, key: str = "F874", hours: float = 2, consumed: bool = False) -> None:
+        now = datetime.now(timezone.utc)
+        (self.home / ".claude" / "state" / "batch-authorized.json").write_text(json.dumps({key: {
+            "authorized_at": now.isoformat(), "expires_at": (now + timedelta(hours=hours)).isoformat(),
+            "targets": [{"action": "gh pr merge", "consumed": consumed, "consumed_by": None,
+                         "repo": None, "pr_number": None}]}}))
+
+    def run_hook(self, payload, lane: str | None = "1", entrypoint: str | None = "cli") -> dict | None:
+        env = {k: v for k, v in os.environ.items() if k not in ("LANE", "CLAUDE_CODE_ENTRYPOINT")}
+        env["HOME"] = str(self.home)
+        if lane is not None:
+            env["LANE"] = lane
+        if entrypoint is not None:
+            env["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
+        stdin = payload if isinstance(payload, str) else json.dumps(payload)
+        result = subprocess.run([sys.executable, str(HOOK)], input=stdin, env=env,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def message(self, prompt: str, typed: bool = True, **kw) -> str | None:
+        """Run the toggle as the harness does: the operator's typed turn is in
+        the transcript first. `typed=False` is a payload nobody typed."""
+        if typed:
+            self.typed(_envelope(prompt) if prompt.strip().startswith("/auto-ae") else prompt)
+        out = self.run_hook(_prompt(prompt, self.transcript), **kw)
+        return out["systemMessage"] if out else None
+
+    def denied(self, payload) -> bool:
+        out = self.run_hook(payload)
+        return bool(out) and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def is_on(self) -> bool:
+        return self.state.exists() and json.loads(self.state.read_text()).get("on") is True
 
 
-def _probe(home):
-    return Path(home) / ".local" / "state" / "auto-ae" / "probe.jsonl"
+class ToggleTests(HookCase):
+    def test_on_with_a_live_batch_turns_it_on(self):
+        self.lease()
+        self.assertIn("auto-AE is ON", self.message("/auto-ae on"))
+        self.assertTrue(self.is_on())
+        self.assertEqual(json.loads(self.state.read_text())["lane"], "1")
+
+    def test_on_without_a_live_batch_refuses_loudly_and_writes_nothing(self):
+        self.assertIn("REFUSED", self.message("/auto-ae on"))
+        self.assertFalse(self.state.exists())
+
+    def test_an_expired_or_spent_lease_is_no_lease(self):
+        self.lease(hours=-1)
+        self.assertIn("REFUSED", self.message("/auto-ae on"))
+        self.lease(consumed=True)
+        self.assertIn("REFUSED", self.message("/auto-ae on"))
+        self.assertFalse(self.state.exists())
+
+    def test_off_turns_it_off(self):
+        self.lease()
+        self.message("/auto-ae on")
+        self.assertIn("OFF", self.message("  /auto-ae off  "))
+        self.assertFalse(self.is_on())
+
+    def test_status_and_bare_command_write_nothing(self):
+        self.lease()
+        self.assertIn("auto-AE is OFF", self.message("/auto-ae status"))
+        self.assertIn("F874", self.message("/auto-ae"))
+        self.assertFalse(self.state.exists())
+
+    def test_lane2_cannot_toggle(self):
+        self.lease()
+        self.assertIn("only in a Lane 1", self.message("/auto-ae on", lane="2"))
+        self.assertFalse(self.state.exists())
+
+    def test_an_unset_lane_cannot_toggle(self):
+        self.lease()
+        self.message("/auto-ae on", lane=None)
+        self.assertFalse(self.state.exists())
+
+    def test_a_non_interactive_or_missing_entrypoint_cannot_toggle(self):
+        self.lease()
+        self.assertIn("entrypoint", self.message("/auto-ae on", entrypoint="sdk-cli"))
+        self.assertIn("entrypoint", self.message("/auto-ae on", entrypoint=None))
+        self.assertFalse(self.state.exists())
+
+    def test_a_task_notification_carrying_auto_ae_on_is_refused(self):
+        self.lease()
+        self.message("<task-notification>\n<summary>done</summary>\n</task-notification>\n/auto-ae on")
+        self.assertFalse(self.state.exists())
+
+    def test_the_command_with_surrounding_prose_is_refused(self):
+        self.lease()
+        self.assertIn("nothing changed", self.message("/auto-ae on and then AE H12"))
+        self.message("please run /auto-ae on")
+        self.message("/auto-ae on\nAE H12")
+        self.assertFalse(self.state.exists())
+
+    def test_a_slash_command_envelope_is_refused(self):
+        self.lease()
+        self.message("<command-name>/auto-ae</command-name>\n<command-args>on</command-args>")
+        self.assertFalse(self.state.exists())
+
+    def test_on_records_only_the_leases_live_now(self):
+        self.lease("F874")
+        self.message("/auto-ae on")
+        self.assertEqual(list(json.loads(self.state.read_text())["leases_at_set"]), ["F874"])
+        self.assertIn("ON, covering F874", self.message("/auto-ae status"))
+
+    def test_off_is_honored_from_any_lane_or_entrypoint(self):
+        self.lease()
+        self.message("/auto-ae on")
+        self.assertIn("OFF", self.message("/auto-ae off", lane="2", entrypoint="sdk-cli"))
+        self.assertFalse(self.is_on())
+
+    def test_off_needs_no_lease_lookup(self):
+        self.lease()
+        self.message("/auto-ae on")
+        (self.home / ".claude" / "state" / "batch-authorized.json").write_text("{not json")
+        self.assertIn("OFF", self.message("/auto-ae off"))
+        self.assertFalse(self.is_on())
+
+    def test_a_write_leaves_no_temp_file_behind(self):
+        self.lease()
+        self.message("/auto-ae on")
+        self.message("/auto-ae off")
+        leftovers = [p.name for p in self.state.parent.iterdir()
+                     if p.name.startswith("auto-ae.json.") and p.name != "auto-ae.json.lock"]
+        self.assertEqual(leftovers, [])
+
+    def test_on_records_lease_identity_and_an_expiry(self):
+        self.lease("F874")
+        self.message("/auto-ae on")
+        data = json.loads(self.state.read_text())
+        self.assertEqual(list(data["leases_at_set"]), ["F874"])
+        self.assertIn("expires_at", data)
+
+    def test_off_that_cannot_write_says_still_on(self):
+        self.lease()
+        self.message("/auto-ae on")
+        state_dir = self.state.parent
+        state_dir.chmod(0o500)
+        self.addCleanup(state_dir.chmod, 0o700)
+        self.assertIn("STILL ON", self.message("/auto-ae off"))
+
+    def test_a_prompt_that_does_not_mention_it_is_silent(self):
+        self.assertIsNone(self.message("L3S H1706"))
+
+    def test_an_unparseable_payload_is_silent(self):
+        self.assertIsNone(self.run_hook("{not json"))
 
 
-class RecordsOneLine(unittest.TestCase):
-    def test_lane1_auto_ae_prompt_appends_one_redacted_line(self):
-        with tempfile.TemporaryDirectory() as home:
-            prompt = "<command-name>/auto-ae</command-name>\n<command-args>status</command-args>"
-            before = time.time()
-            result = _run(json.dumps(_payload(prompt)), home)
-            after = time.time()
-            self.assertEqual(result.returncode, 0)
-            out = json.loads(result.stdout)
-            self.assertEqual(out, {"systemMessage": auto_ae_toggle.RECORDED})
-            lines = _probe(home).read_text().splitlines()
-            self.assertEqual(len(lines), 1)
-            entry = json.loads(lines[0])
-            self.assertEqual(entry["prompt"], prompt)
-            self.assertEqual(entry["LANE"], "1")
-            self.assertEqual(entry["CLAUDE_CODE_ENTRYPOINT"], "cli")
-            self.assertEqual(entry["payload_keys"],
-                             ["cwd", "hook_event_name", "prompt", "session_id",
-                              "transcript_path"])
-            # The run's own instant, not merely a well-formed one: a frozen
-            # clock lands outside this window (#880 sticky-wicket, survivor 4).
-            stamp = calendar.timegm(time.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ"))
-            self.assertGreaterEqual(stamp, int(before) - 2)
-            self.assertLessEqual(stamp, int(after) + 2)
-            raw = _probe(home).read_text()
-            self.assertNotIn(SECRET_SESSION, raw)
-            self.assertNotIn(SECRET_TRANSCRIPT, raw)
+class GuardTests(HookCase):
+    def test_schedulewakeup_prompt_with_auto_ae_is_denied(self):
+        self.assertTrue(self.denied(_tool("ScheduleWakeup", {"prompt": "/auto-ae on", "delaySeconds": 60})))
 
-    def test_match_is_case_insensitive_and_appends(self):
-        with tempfile.TemporaryDirectory() as home:
-            _run(json.dumps(_payload("AUTO-AE status")), home)
-            _run(json.dumps(_payload("/Auto-Ae on")), home)
-            self.assertEqual(len(_probe(home).read_text().splitlines()), 2)
+    def test_cron_and_remote_trigger_with_auto_ae_are_denied(self):
+        self.assertTrue(self.denied(_tool("CronCreate", {"cron": "*/5 * * * *", "prompt": "/AUTO_AE on"})))
+        self.assertTrue(self.denied(_tool("RemoteTrigger", {"body": {"prompt": "auto ae on"}})))
 
-    def test_missing_entrypoint_is_recorded_as_null(self):
-        with tempfile.TemporaryDirectory() as home:
-            _run(json.dumps(_payload("/auto-ae")), home, entrypoint=None)
-            entry = json.loads(_probe(home).read_text())
-            self.assertIsNone(entry["CLAUDE_CODE_ENTRYPOINT"])
+    def test_a_schedule_without_auto_ae_is_allowed(self):
+        self.assertFalse(self.denied(_tool("ScheduleWakeup", {"prompt": "<<autonomous-loop-dynamic>>"})))
 
+    def test_bash_touching_the_state_file_is_denied(self):
+        for command in (
+            "python3 -c \"import pathlib; pathlib.Path.home().joinpath('.claude/state/auto-ae.json')"
+            ".write_text('{}')\"",
+            "mkdir -p ~/.claude/state && echo '{\"on\": true}' > ~/.claude/state/auto-ae.json",
+            "env touch $HOME/.claude/state/auto_ae.json",
+            "cat ~/.local/state/auto-ae/probe.jsonl > /tmp/copy",
+            "grep on ~/.claude/state/auto-ae.json | tee ~/.claude/state/auto-ae.json",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(self.denied(_tool("Bash", {"command": command})))
 
-class TimestampIsTheInjectedInstant(unittest.TestCase):
-    def test_now_seam_sets_the_recorded_timestamp(self):
-        with tempfile.TemporaryDirectory() as home:
-            old = os.environ.get("HOME")
-            os.environ["HOME"] = home
-            try:
-                self.assertTrue(auto_ae_toggle.record(
-                    _payload("/auto-ae"), "1", "cli", now=1_700_000_000))
-            finally:
-                if old is None:
-                    os.environ.pop("HOME")
-                else:
-                    os.environ["HOME"] = old
-            entry = json.loads(_probe(home).read_text())
-            # now=0 would collide with any frozen-clock mutant's own output.
-            self.assertEqual(entry["timestamp"], "2023-11-14T22:13:20Z")
+    def test_write_and_edit_of_the_state_file_are_denied(self):
+        path = str(self.state)
+        self.assertTrue(self.denied(_tool("Write", {"file_path": path, "content": "{\"on\": true}"})))
+        self.assertTrue(self.denied(_tool("Edit", {"file_path": path, "old_string": "f", "new_string": "t"})))
 
+    def test_a_monitor_command_touching_the_state_file_is_denied(self):
+        self.assertTrue(self.denied(_tool("Monitor", {"command": "echo on > ~/.claude/state/auto-ae.json"})))
 
-class DecidesAndGrantsNothing(unittest.TestCase):
-    def test_output_carries_no_decision_or_context(self):
-        with tempfile.TemporaryDirectory() as home:
-            out = json.loads(_run(json.dumps(_payload("/auto-ae on")), home).stdout)
-            self.assertEqual(set(out), {"systemMessage"})
-            self.assertIn("nothing toggled", out["systemMessage"])
+    def test_a_file_tool_is_judged_by_its_path_not_its_content(self):
+        content = "STATE = Path.home() / '.claude/state/auto-ae.json'\n"
+        self.assertFalse(self.denied(_tool("Write", {"file_path": "/x/tools/gh/_auto_ae.py", "content": content})))
+        self.assertFalse(self.denied(_tool("MultiEdit", {"file_path": "/x/test_auto_ae.py",
+                                                         "edits": [{"old_string": "a", "new_string": content}]})))
 
-    def test_writes_nothing_but_the_probe_log(self):
-        """AC4, proven by what the hook ATTEMPTS to write, not by observing
-        directories: every write-intent open and every filesystem mutation is
-        traced with a PEP 578 audit hook, so a write anywhere -- /var/tmp, the
-        repo root, any name -- fails, and no shared directory is read (#880
-        sticky-wicket PATCH, survivors 2 and 3)."""
-        with tempfile.TemporaryDirectory() as home, \
-                tempfile.TemporaryDirectory() as tmpdir, \
-                tempfile.TemporaryDirectory() as cwd:
-            targets = _traced_writes(home, tmpdir, cwd)
-            allowed = {str(Path(home) / rel) for rel in (
-                ".local", ".local/state", ".local/state/auto-ae",
-                ".local/state/auto-ae/probe.jsonl")}
-            self.assertIn(str(Path(home) / PROBE), targets)
-            self.assertEqual(targets - allowed, set())
-            # Cheap cross-check on the hook's own TMPDIR and cwd.
-            self.assertEqual(list(Path(tmpdir).rglob("*")), [])
-            self.assertEqual(list(Path(cwd).rglob("*")), [])
+    def test_codex_apply_patch_is_judged_by_its_file_lines(self):
+        to_state = "*** Begin Patch\n*** Add File: /home/u/.claude/state/auto-ae.json\n+{}\n*** End Patch"
+        self.assertTrue(self.denied(_tool("apply_patch", {"command": to_state}, event=None)))
+        own = ("*** Begin Patch\n*** Update File: tools/gh/_auto_ae.py\n"
+               "+STATE = '.claude/state/auto-ae.json'\n*** End Patch")
+        self.assertFalse(self.denied(_tool("apply_patch", {"command": own}, event=None)))
 
-    def test_the_write_trace_ignores_foreign_files(self):
-        """Hermetic by construction: a decoy another process leaves in the
-        system temp root cannot affect the trace (survivor 3)."""
-        with tempfile.NamedTemporaryFile(prefix="zz-auto-decoy-"), \
-                tempfile.TemporaryDirectory() as home, \
-                tempfile.TemporaryDirectory() as tmpdir, \
-                tempfile.TemporaryDirectory() as cwd:
-            targets = _traced_writes(home, tmpdir, cwd)
-            self.assertEqual({t for t in targets if not t.startswith(home)}, set())
+    def test_a_read_only_command_naming_the_state_file_is_allowed(self):
+        for command in ("cat ~/.claude/state/auto-ae.json",
+                        "grep -rn auto-ae.json tools | grep toggle",
+                        "jq .on ~/.claude/state/auto-ae.json"):
+            with self.subTest(command=command):
+                self.assertFalse(self.denied(_tool("Bash", {"command": command})))
+
+    def test_a_read_tool_that_can_execute_is_not_a_read(self):
+        for command in ("rg --pre=rm needle ~/.claude/state/auto-ae.json",
+                        "git grep -O'rm' needle -- ~/.claude/state/auto-ae.json"):
+            with self.subTest(command=command):
+                self.assertTrue(self.denied(_tool("Bash", {"command": command})))
+
+    def test_codex_apply_patch_with_no_file_line_is_judged_whole(self):
+        self.assertTrue(self.denied(_tool("apply_patch", {"path": "/h/.claude/state/auto-ae.json"}, event=None)))
+        escaped = json.dumps("*** Begin Patch\\n*** Add File: /h/.claude/state/auto-ae.json\\n+{}")
+        self.assertTrue(self.denied(_tool("apply_patch", {"command": escaped}, event=None)))
+
+    def test_a_codex_payload_without_an_event_name_is_guarded(self):
+        self.assertTrue(self.denied(_tool("shell", {"command": "rm ~/.claude/state/auto-ae.json"}, event=None)))
+
+    def test_maintaining_the_mechanism_itself_is_allowed(self):
+        for payload in (
+            _tool("Edit", {"file_path": "/x/tools/hooks/auto_ae_toggle.py", "old_string": "a", "new_string": "b"}),
+            _tool("Write", {"file_path": "/x/skills/auto-ae/SKILL.md", "content": "/auto-ae on"}),
+            _tool("Bash", {"command": "python3 -m unittest test_auto_ae_toggle test_auto_ae"}),
+            _tool("Bash", {"command": "git commit -m 'feat(auto-ae): the toggle'"}),
+        ):
+            with self.subTest(payload=payload):
+                self.assertFalse(self.denied(payload))
 
 
-class SilentWhenNotApplicable(unittest.TestCase):
-    def _assert_silent(self, stdin, lane="1"):
-        with tempfile.TemporaryDirectory() as home:
-            result = _run(stdin, home, lane=lane)
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(result.stdout.strip(), "")
-            self.assertFalse(_probe(home).exists())
+class RegistrationTests(unittest.TestCase):
+    """harmonic-forge#880 AC5, kept for #874: this repo's tracked settings wire
+    the hook, once per event, in the guarded form. An absent entry is otherwise
+    undetected (`forge_onboard.check_hooks` flags only an unresolvable script);
+    HRSE2 asserts its own copy in `scripts/test_auto_ae_registration.py`."""
+    SETTINGS = HERE.parent.parent / ".claude" / "settings.json"
+    GUARD_TOOLS = {"Bash", "Monitor", "Write", "Edit", "MultiEdit", "NotebookEdit",
+                   "CronCreate", "ScheduleWakeup", "RemoteTrigger"}
 
-    def test_other_lanes_and_no_lane_record_nothing(self):
-        for lane in ("2", "3", None, ""):
-            with self.subTest(lane=lane):
-                self._assert_silent(json.dumps(_payload("/auto-ae on")), lane=lane)
+    def wired(self, event: str) -> list[tuple[str, str]]:
+        settings = json.loads(self.SETTINGS.read_text(encoding="utf-8"))
+        return [(block.get("matcher", ""), hook.get("command", ""))
+                for block in settings["hooks"].get(event) or []
+                for hook in block.get("hooks") or []
+                if "auto_ae_toggle.py" in hook.get("command", "")]
 
-    def test_prompt_without_auto_ae_records_nothing(self):
-        self._assert_silent(json.dumps(_payload("BATCH F874 auto ae")))
-        self._assert_silent(json.dumps(_payload("autoae")))
+    def assert_guarded(self, command: str) -> None:
+        self.assertIn("${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py", command)
+        self.assertIn('[ -f "$f" ]', command)
 
-    def test_non_string_or_missing_prompt_records_nothing(self):
-        self._assert_silent(json.dumps({"prompt": ["auto-ae"]}))
-        self._assert_silent(json.dumps({"session_id": "x"}))
-        self._assert_silent(json.dumps(["auto-ae"]))
+    def test_the_toggle_is_wired_once_on_user_prompt_submit(self):
+        wired = self.wired("UserPromptSubmit")
+        self.assertEqual(len(wired), 1, wired)
+        self.assert_guarded(wired[0][1])
 
+    def test_the_guard_is_wired_on_both_codex_groups(self):
+        codex = json.loads((HERE.parent.parent / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        groups = (codex.get("hooks") or codex)["PreToolUse"]
+        wired = {g.get("matcher") for g in groups
+                 if any("auto_ae_toggle.py" in h.get("command", "") for h in g.get("hooks") or [])}
+        self.assertEqual(wired, {"^Bash$", "^apply_patch$"})
 
-class NeverRaises(unittest.TestCase):
-    def test_malformed_stdin_exits_zero_and_records_nothing(self):
-        """An unparseable payload is an unidentifiable prompt: silent, even
-        when its bytes contain the token. There is exactly one gate, and it
-        reads the parsed prompt (#880 sticky-wicket PATCH, survivor 1)."""
-        with tempfile.TemporaryDirectory() as home:
-            result = _run("not json auto-ae", home)
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(result.stdout.strip(), "")
-            self.assertFalse(_probe(home).exists())
-
-    def test_truncated_payload_with_the_token_only_outside_the_prompt_is_silent(self):
-        with tempfile.TemporaryDirectory() as home:
-            result = _run('{"cwd":"/w/forge-874-auto-ae","prompt":"deploy the', home)
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(result.stdout.strip(), "")
-            self.assertFalse(_probe(home).exists())
-
-    def test_unparseable_lane1_prompt_without_the_token_is_silent(self):
-        """AC2. Every output sits behind the one gate: LANE=1 AND the token
-        in the parsed prompt. Empty, truncated and undecodable stdin all stay silent
-        when nothing mentions auto-ae (#880 pass 1, reproduced cross-family)."""
-        for stdin in (b"", b'{"prompt": "deploy the', b"\xff\xfe not json"):
-            with self.subTest(stdin=stdin), tempfile.TemporaryDirectory() as home:
-                env = {k: v for k, v in os.environ.items() if k != "LANE"}
-                env.update(HOME=home, LANE="1")
-                result = subprocess.run([sys.executable, str(HOOK)], input=stdin,
-                                        env=env, capture_output=True)
-                self.assertEqual(result.returncode, 0)
-                self.assertEqual(result.stdout.strip(), b"")
-                self.assertFalse(_probe(home).exists())
-
-    def test_unwritable_probe_dir_exits_zero(self):
-        with tempfile.TemporaryDirectory() as home:
-            # A FILE where the state directory must go makes mkdir fail.
-            (Path(home) / ".local").mkdir()
-            (Path(home) / ".local" / "state").write_text("blocker")
-            result = _run(json.dumps(_payload("/auto-ae")), home)
-            self.assertEqual(result.returncode, 0)
-            out = json.loads(result.stdout)
-            self.assertEqual(set(out), {"systemMessage"})  # AC3: never a decision
-            self.assertIn("NOT recorded", out["systemMessage"])
-
-    def test_malformed_stdin_outside_lane1_is_silent(self):
-        with tempfile.TemporaryDirectory() as home:
-            result = _run("not json", home, lane="2")
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(result.stdout.strip(), "")
-
-
-class RegisteredInThisRepo(unittest.TestCase):
-    """AC5. An unregistered probe is indistinguishable from "no prompt matched
-    yet", and #874 would draw its conclusion from an empty log. Scoped to THIS
-    repo's settings file, found relative to this test, for the reason
-    `test_belt_wakeup.py`'s matcher test gives: a repo's CI speaks only for that
-    repo. HRSE2 asserts its own registration in `scripts/test_auto_ae_registration.py`;
-    `forge_onboard.check_hooks` does NOT detect an absent entry."""
-
-    def test_the_probe_is_wired_on_user_prompt_submit(self):
-        path = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
-        # Fail, never skip: a missing file is the unwired state this test
-        # exists to catch (#880 pass 1).
-        self.assertTrue(path.is_file(), f"no settings at {path}")
-        settings = json.loads(path.read_text(encoding="utf-8"))
-        commands = [hook.get("command", "")
-                    for block in (settings.get("hooks") or {}).get("UserPromptSubmit") or []
-                    for hook in block.get("hooks") or []]
-        wired = [c for c in commands if "auto_ae_toggle.py" in c]
-        self.assertEqual(len(wired), 1, "auto_ae_toggle.py is not wired exactly once")
-        # The guarded form: a missing script is a no-op, never a failed prompt.
-        self.assertIn('[ -f "$f" ]', wired[0])
-        self.assertTrue(wired[0].rstrip().endswith("|| true"))
+    def test_the_guard_is_wired_once_on_every_tool_it_guards(self):
+        wired = self.wired("PreToolUse")
+        self.assertEqual(len(wired), 1, wired)
+        self.assertEqual(set(wired[0][0].split("|")), self.GUARD_TOOLS)
+        self.assert_guarded(wired[0][1])
 
 
 if __name__ == "__main__":

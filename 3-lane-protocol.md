@@ -1075,7 +1075,7 @@ categorically not authorized to run — and both refusals were correct.
 <!-- R-0208 -->
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
 TCs in an already-approved test spec (or Lane 1's, citing the operator's
-standing grant, R-0374), distinct from approving the spec's
+standing grant, R-0374, or auto-AE, R-0378), distinct from approving the spec's
 content (that's the `L3S` → HITL-approval step itself). Like every other
 trigger phrase in this section, `AE` must be posted as an actual issue
 comment, not only said to Lane 1 in chat — Lane 3 verifies it
@@ -1149,6 +1149,55 @@ Only the operator can withdraw the grant, and withdrawal takes effect by
 removing this rule and its registry row; the operator-memory note is not the
 authority once this rule exists.
 <!-- /R-0374 -->
+
+<!-- R-0378 -->
+**Auto-AE: the operator's `/auto-ae` toggle** (harmonic-forge#874; operator
+rulings 2026-10-02 and 2026-10-04). While it is on, Lane 1 stands in for the
+operator twice on an issue under a live `BATCH` lease: it approves Lane 3's
+spec (excepting R-0124 and R-0165) and posts the AE with its sweep (excepting
+R-0208 as to who posts; the pair stays one atomic action). It reaches only a
+spec that is Tier R or Tier W throughout. **Never Tier P:** a spec or sweep
+without exactly one unfenced `Write tier: R|W` declaration, or with anything
+that could mean Tier P anywhere in it (fenced text included), keeps the
+operator's AE (and R-0374 for the production step a Tier R gate verified).
+
+- **Only the operator turns it on, only in Lane 1.** The whole prompt must be
+  exactly `/auto-ae on`, `/auto-ae off` or `/auto-ae status`, typed into an
+  interactive Lane 1 session; `tools/hooks/auto_ae_toggle.py` acts on it at
+  `UserPromptSubmit`. The skill of the same name toggles nothing. No agent may
+  toggle it: the hook's `PreToolUse` half denies any non-read tool call naming
+  its state file and any scheduled prompt (`CronCreate`, `ScheduleWakeup`,
+  `RemoteTrigger`) mentioning auto-ae. It is registered wherever Lane 1 runs
+  (harmonic-forge and HRSE2).
+- **On needs a live `BATCH`**, or the toggle refuses out loud and writes
+  nothing. It covers only the leases live when it is turned on, each by its
+  key and expiry, and lapses after 12 hours; a later or renewed `BATCH`, even
+  for the same issue, needs `/auto-ae on` typed again. Each auto-AE also needs
+  that same lease to still be live when it posts. `/auto-ae off` is honored
+  from any session, before any other check, and says "STILL ON" if it could
+  not remove the state.
+- **The AE claims it on its Authorized: line**, citing "auto-AE (R-0378)" and
+  the Lane 3 spec comment it approves. `tools/gh/l1_post.py` refuses one
+  (`tools/gh/_auto_ae.py`) unless the toggle is on, the issue's lease is live,
+  it posts as `ae-and-sweep` at the SHA of the newest `ready-for-l3`, the spec is
+  the newest after that `ready-for-l3` (by its footer or by its heading,
+  whatever its footer kind) and unedited, the spec and the sweep pass the tier
+  rule above, and it carries no `--prod-run` and no `--ack-no-pr-required`.
+- **An auto-AE never carries forward** under R-0209 (`check_lane3_ready`
+  refuses the carry): a new SHA gets a fresh auto-AE, checked when it posts, or
+  the operator's AE.
+
+**The toggle and the post check are a mistake-detector, not a boundary**, as
+for R-0374 (operator decision, 2026-10-02). Every lane runs as one user and
+posts as one GitHub account. Named residuals: a state-file path composed
+indirectly (in `python -c`, or through a shell variable) passes the guard; a
+an agent running the hook by hand with a fabricated `/auto-ae on` payload is
+not detected (operator ruling, 2026-10-04: forgery, outside a mistake-detector);
+and model-written `/auto-ae on` text that the operator
+pastes, or that a loop scheduled before the guard existed delivers, toggles it
+as if typed. A spec that omits the `Write tier` declaration is never
+auto-approved, until Lane 3's spec tool stamps the tier.
+<!-- /R-0378 -->
 
 <!-- R-0377 -->
 **A Lane 3 production run goes through one root-owned runner, spends one

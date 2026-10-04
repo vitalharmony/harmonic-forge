@@ -26,5 +26,5 @@ Every Monitor event and every loop tick ends in exactly one of two ways.
    | l2 | `plan` | Re-read the full issue thread, then post the plan with `l2_post.py --kind plan` (`L2S`) and stop. |
    | l2 | `fix` | A `rework` or a FAIL `gate-result`: re-read the issue thread, then do the work on the branch. |
    | l1 | `plan-review` | Review Lane 2's plan and post the verdict and Implementation Spec. |
-   | l1 | `spec-review` | Review Lane 3's spec. Post the AE and sweep together once the operator's AE arrives. |
+   | l1 | `spec-review` | Review Lane 3's spec. If auto-AE is on (`/auto-ae status`; `_auto_ae.state()`) and the issue is under a live BATCH lease, post the AE (citing "auto-AE (R-0378)" and the spec comment) and the sweep in the same turn, for a spec that is Tier R or W throughout. Otherwise post them once the operator's AE arrives. |
 10. **A belt event that arrives mid-task waits behind it** (R-0375), in every lane: finish the current task to its status post first. Defer only `queued-for-<lane>` lines, which the belt re-offers; a comment-watch line carrying owed work is handled as today, and an event on the issue the lane is working now is read immediately (it amends the task in hand, and the belt will not re-offer it). Say what was queued, in one line: "`queued-for-l2 H1897` — queued behind H1887, finishing to L2D".
