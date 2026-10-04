@@ -292,6 +292,30 @@ own lane-comment task (the adapter half names it):
 <lane-comment task> --issue <N> --file <path> --kind gate-result
 ```
 
+**Classify every case when you write the spec, and record every verdict when
+you post the result** (harmonic-forge#893). Write the map as a JSON file
+**beside the body file**, with the same name and a `.classes.json` or
+`.results.json` suffix: `spec.md` takes `spec.classes.json`, `gate.md` takes
+`gate.results.json`. The script picks it up with no flag, so it works through
+every repo's lane-comment task. A flag would not: a wrapper rejects any flag
+it does not declare. The map is the record of what you ran: its keys are the
+case ids, and nothing checks them against your prose.
+- `<body>.classes.json`: each case is `ac` (written from an acceptance
+  criterion), `existing` (re-runs the repo's existing suite) or `live` (a check
+  against the running system or real data). Fixed at approval time, never
+  chosen after the run. Example: `{"TC1": "ac", "TC2": "live", "TC3": "existing"}`.
+- `<body>.results.json`: each case is `pass`, `fail` or `blocked`. A gate that
+  ran nothing writes `{}`.
+
+A missing or unusable map never blocks a post. It goes out stamped `absent`,
+and the reason is printed. That keeps a FAIL or BLOCKED always publishable,
+but an absent map is an unmeasured gate in the verification report, so always
+write it. The fields are stamped for any Lane 3 post whose first heading is
+the spec or gate heading, whatever its `--kind`; a post by any other lane never
+carries them.
+Keep both files under the testplan root. No gate time is recorded. Lane 3 writes no telemetry: the
+footer is the record, and the extractor reads it later.
+
 Without `--kind`, the comment is stamped `kind=discussion` — which is what
 every Lane 3 spec and gate result carried before this, and why `lane_state.py`
 had to read them from their headings and mark them unattested. The flag

@@ -25,9 +25,12 @@ protocol concept with two implementations.
 
 import argparse
 import hashlib
+import json
 import os
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 # harmonic-forge#504's check is PLATFORM work — every repo's Lane 3 posts
@@ -38,7 +41,7 @@ _FORGE = _FORGE_ROOT / "tools" / "gh"
 if _FORGE.is_dir():
     sys.path.insert(0, str(_FORGE))
 
-from gate_ci import check_gate_result, gated_sha, looks_like_a_gate_report, verdict_of
+from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_gate_report, verdict_of
 
 # harmonic-forge#791: the one definition of "this round is approved", shared
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
@@ -56,8 +59,8 @@ except ImportError:  # pragma: no cover - platform checkout absent
     belt_candidates = None
 
 from l1_post import (
-    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run, apply_project_identity,
-    validate_lead,
+    comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
+    apply_project_identity, validate_lead,
 )
 
 #: The kinds this script may stamp. `discussion` is the default and the
@@ -248,7 +251,86 @@ def validate_kind(kind: str, body: str) -> None:
     reject_plan_as_discussion(kind, body)
 
 
-def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None = None) -> str:
+#: harmonic-forge#893: each spec case's class, fixed at approval time, and each
+#: gate case's verdict. Bounded so the footer stays one short physical line
+#: (`eras._OWN_FOOTER` is line-anchored).
+CASE_CLASSES = ("ac", "existing", "live")
+CASE_RESULTS = ("pass", "fail", "blocked")
+MAX_CASES = 64
+MAX_CASE_ID = 12
+_CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
+
+
+def sidecar(body_path: Path, name: str) -> Path | None:
+    """`<body>.<name>.json` beside the body file (gate.md -> gate.results.json),
+    when it exists. The documented way to pass a case map: it needs no flag,
+    so it survives every repo's lane-comment wrapper."""
+    candidate = Path(body_path).with_suffix(f".{name}.json")
+    return candidate if candidate.is_file() else None
+
+
+def warn(message: str) -> None:
+    """harmonic-forge#893 reforge (R2): a case map is telemetry, and telemetry
+    never refuses a post. A map that cannot be used is reported here and the
+    post goes out with the field stamped `absent`."""
+    print(f"[post-comment] WARNING: {message}; posting with the case map recorded as absent",
+          file=sys.stderr)
+
+
+def load_case_map(path: Path | None, allowed: tuple[str, ...], flag: str) -> dict[str, str] | None:
+    """`{case id: value}` from `path`, or None when there is no usable map.
+
+    The map is the record of what Lane 3 ran (harmonic-forge#893 reforge, R1):
+    its keys ARE the case ids. The prose body is never parsed to check them;
+    two passes showed no reader of free-form reports both finds every real case
+    and nothing else. Only the map's own shape is checked. Whether it agrees with
+    the prose is a data-quality question the verification report flags, never a
+    reason to refuse a post (R2)."""
+    if path is None:
+        warn(f"no {flag} was given")
+        return None
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        warn(f"{flag}: cannot read a JSON object from {path} ({exc})")
+        return None
+    if not isinstance(raw, dict):
+        warn(f"{flag}: {path} must hold a JSON object of case id to value")
+        return None
+    if len(raw) > MAX_CASES:
+        warn(f"{flag}: {len(raw)} cases; at most {MAX_CASES} are recorded")
+        return None
+    found: dict[str, str] = {}
+    for key, value in raw.items():
+        match = _CASE_KEY.match(str(key).strip())
+        if not match or len(match.group(1)) > MAX_CASE_ID:
+            warn(f"{flag}: {key!r} is not a case id")
+            return None
+        if match.group(1) in found:
+            warn(f"{flag}: {key!r} names case {match.group(1)} a second time")
+            return None
+        value = str(value).strip().lower()
+        if value not in allowed:
+            warn(f"{flag}: case {match.group(1)} is {value!r}; allowed: {', '.join(allowed)}")
+            return None
+        found[match.group(1)] = value
+    return found
+
+
+def _case_order(key: str) -> tuple[int, str]:
+    return (int(key), "") if key.isdigit() else (10 ** 9, key)
+
+
+def case_field(name: str, mapping: dict[str, str] | None) -> str:
+    """`name=1:pass,2:fail`; `name=` for an empty map (a BLOCKED gate that ran
+    no case); `name=absent` when no usable map was given (R2)."""
+    if mapping is None:
+        return f"{name}=absent"
+    return f"{name}=" + ",".join(f"{k}:{mapping[k]}" for k in sorted(mapping, key=_case_order))
+
+
+def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None = None,
+           case_fields: str = "") -> str:
     """`kind=discussion` keeps its exact pre-harmonic-forge#473 footer.
 
     Byte-identical on that path on purpose: `lane_state.py`, a private-repo incident's
@@ -257,7 +339,10 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
     one of them look like an attested artifact.
     """
     if kind == "discussion":
-        return f"\n\n<!-- l1-post v1; kind=discussion; posted-by={posted_by} -->\n"
+        # Byte-identical unless the body is a gate report, which carries its
+        # case fields whatever its kind (#893 reforge, R3).
+        extra = f"; {case_fields}" if case_fields else ""
+        return f"\n\n<!-- l1-post v1; kind=discussion; posted-by={posted_by}{extra} -->\n"
     # Same digest contract as `l1_post.post_kind`: hash the RSTRIPPED body,
     # because that is what gets posted (a private-repo incident — hashing the raw body
     # recorded a digest a verifier could never reconstruct). This is what
@@ -266,8 +351,12 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
     digest = hashlib.sha256(body.rstrip("\n").encode()).hexdigest()
     override = (f"; ack-no-pr-required={ack_no_pr_required}"
                 if ack_no_pr_required is not None else "")
+    # harmonic-forge#893: the case fields go INSIDE the one-line footer, after
+    # every existing key, so every footer reader keeps parsing it. They are not
+    # inside the digest: the digest covers the body, as every verifier expects.
+    extra = f"; {case_fields}" if case_fields else ""
     return (f"\n\n<!-- l1-post v1; kind={kind}; posted-by={posted_by}; "
-            f"body-sha256={digest}{override} -->\n")
+            f"body-sha256={digest}{override}{extra} -->\n")
 
 
 def require_green_ci(
@@ -378,6 +467,14 @@ def main() -> None:
              "no-PR-possible point; a SHA that belongs to a real PR (open, "
              "pending, or red) is refused exactly as before, regardless of "
              "this flag.")
+    parser.add_argument(
+        "--tc-classes", type=Path, default=None, metavar="JSON",
+        help="harmonic-forge#893: a JSON object mapping each case id in a Lane 3 spec to "
+             "ac, existing or live. The map is the record; the body is not parsed for ids.")
+    parser.add_argument(
+        "--tc-results", type=Path, default=None, metavar="JSON",
+        help="harmonic-forge#893: a JSON object mapping each case id a gate report ran to "
+             "pass, fail or blocked. Without it a gate report posts with results=absent.")
     args = parser.parse_args()
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
@@ -407,6 +504,34 @@ def main() -> None:
     # no LEAD_FIELDS entry, so this is a no-op on the pre-existing default
     # path; only `spec`/`gate-result` are newly checked.
     validate_lead(args.kind, body)
+    # harmonic-forge#893 reforge (R2, R3): keyed on the BODY, never on --kind,
+    # for the reason require_green_ci gives below -- 74 of 98 real gate reports
+    # were posted as `discussion`. A gate report always carries its results
+    # field; a spec carries its classes field. Neither ever
+    # refuses the post: a missing or unusable map is stamped `absent`.
+    case_fields = ""
+    lane = os.environ.get("LANE")
+    # The same poster identity the footer stamps, LANE-unset included (#893 e1
+    # sticky-wicket #6): only Lane 3 posts an artifact.
+    artifact = lane3_artifact(body, args.kind if args.kind in ("gate-result", "spec") else None,
+                              f"LANE{lane}" if lane else "LANE-unset")
+    # The map rides in a sidecar file next to the body, never only in a flag
+    # (#893 e1 sticky-wicket #4): a consuming repo's lane-comment wrapper
+    # validates argv strictly and rejected an unknown flag before this script
+    # ran, so a FAIL could not be posted. The flags still win when given.
+    args.tc_results = args.tc_results or sidecar(path, "results")
+    args.tc_classes = args.tc_classes or sidecar(path, "classes")
+    if artifact == "gate":
+        # No gate time (#893 post-verdict check): its derivation produced four
+        # distinct defects across five passes, and sticky-wicket's tripwire
+        # said to drop it on the fourth rather than patch it again.
+        case_fields = case_field("results", load_case_map(args.tc_results, CASE_RESULTS, "--tc-results"))
+    elif artifact == "spec":
+        case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
+    elif args.tc_results is not None or args.tc_classes is not None:
+        print("[post-comment] WARNING: --tc-results/--tc-classes given, but this post is not a "
+              "Lane 3 spec or gate report (a Lane 1/2 relay never is); the map was not recorded",
+              file=sys.stderr)
     override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
     require_round_approval(args.repo, args.issue, body)
     lane = os.environ.get("LANE")
@@ -417,6 +542,7 @@ def main() -> None:
         body.rstrip("\n") + footer(
             args.kind, body, posted_by,
             ack_no_pr_required=args.ack_no_pr_required if override_used else None,
+            case_fields=case_fields,
         ),
     )
     print(f"[post-comment] posted and refetched {url}")

@@ -165,13 +165,77 @@ def issues_with_comments(repo: str, get: RestGet, since: Optional[str]) -> list[
             if "pull_request" not in item and item.get("comments", 0) > 0]
 
 
+def _own(comment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """`(footer, kind)` of a comment's own l1-post footer."""
+    footer = eras.own_footer(eras.clean(comment.get("body") or ""))
+    kind = eras.lane_state._FOOTER_KIND.search(footer or "")
+    return footer, (kind.group("kind").lower() if kind else None)
+
+
+def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str, Any]]) -> None:
+    """harmonic-forge#893: give each classified gate event its per-class fails.
+
+    For each measured gate (whatever its kind), the newest EARLIER `kind=spec`
+    comment is its spec, and a spec without `classes=` carries nothing. When
+    their case ids match, the gate's event gains `paired: true`, the spec's
+    class counts (`case_ac`, `case_existing`, `case_live`) and
+    `fail_*`/`blocked_*` per class; otherwise `paired: false` and the gate's
+    measurement becomes `unpaired`. Scalars only (schema v1)."""
+    by_id = {str(e.get("attrs", {}).get("comment_id")): e for e in events
+             if (e.get("attrs") or {}).get("measurement") == "measured"}
+    latest_spec: Optional[dict[str, str]] = None
+    spec_id = "none"
+    for comment in comments:
+        footer, kind = _own(comment)
+        # The shared recognizer (#893 reforge pass 1): a spec posted as
+        # `discussion` carries, and resets, the classes exactly as a
+        # `--kind spec` post does.
+        if eras.lane3_artifact_of(eras.clean(comment.get("body") or ""), kind, footer) == "spec":
+            # Every spec resets what is carried, classified or not: a newer
+            # unclassified spec must never pair a gate with an older round's
+            # classes (#893 preclose pass 2).
+            latest_spec = eras.parse_case_map(footer, "classes") or None
+            # The classes themselves are part of the key: reclassifying a spec
+            # in place keeps its id, and an edit-time key could not tell two
+            # edits within one second apart (#893 post-verdict checks).
+            spec_id = (f"{comment.get('id') or 'none'}#"
+                       + hashlib.sha256(json.dumps(latest_spec, sort_keys=True).encode()).hexdigest()[:12]
+                       if latest_spec else "none")
+            continue
+        event = by_id.get(str(comment.get("id") or ""))
+        if event is None:
+            continue
+        results = eras.parse_case_map(footer, "results")
+        attrs = event["attrs"]
+        # The pairing input is part of the reading's identity (#893 e1
+        # sticky-wicket #8): the attrs depend on a sibling comment, so a
+        # re-run after that spec changes or is deleted must be a new event,
+        # not a duplicate the store drops. latest_readings then keeps the
+        # newer extraction.
+        paired = latest_spec is not None and set(latest_spec) == set(results)
+        event["subject_id"] += f"/pair:{spec_id if paired else 'unpaired'}"
+        if not paired:
+            attrs["paired"] = False
+            attrs["measurement"] = "unpaired"
+            continue
+        attrs["paired"] = True
+        for cls in ("ac", "existing", "live"):
+            ids = [k for k, v in latest_spec.items() if v == cls]
+            attrs[f"case_{cls}"] = len(ids)
+            attrs[f"fail_{cls}"] = sum(1 for k in ids if results.get(k) == "fail")
+            attrs[f"blocked_{cls}"] = sum(1 for k in ids if results.get(k) == "blocked")
+
+
 def issue_events(repo: str, number: int, get: RestGet, *, account: Optional[str],
                  org: Optional[str]) -> list[dict[str, Any]]:
     where = {"account": account, "org": org, "repo": repo, "issue": number}
     events: list[dict[str, Any]] = []
+    comments: list[dict[str, Any]] = []
     for page in get(f"repos/{repo}/issues/{number}/comments?per_page=100"):
         for comment in page:
+            comments.append(comment)
             events.extend(eras.comment_events(comment, **where))
+    pair_gates_with_specs(comments, events)
     for page in get(f"repos/{repo}/issues/{number}/timeline?per_page=100"):
         for item in page:
             events.extend(eras.timeline_events(item, **where))
