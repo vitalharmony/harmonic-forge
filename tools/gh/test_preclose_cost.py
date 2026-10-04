@@ -258,6 +258,14 @@ class StickyWicketPatch(CostCase):
         self.assertEqual(self.last_pass()["tier"], "deep")
         self.assertEqual(self.events()[0]["attrs"]["tier"], "deep")
 
+    def test_a_completion_without_a_new_plan_keeps_the_last_tier(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier="deep")
+        self.run_complete(tier=None)
+        self.commit("tools/w.py")  # a new head, completed without planning it
+        self.run_complete(tier=None, force=True, findings=[{**base.ANCHORED, "anchor": "tools/w.py:1"}])
+        self.assertEqual(self.last_pass()["tier"], "deep")
+
     def test_an_unset_plan_is_not_relabelled_at_complete(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             self.plan(tier=None)
