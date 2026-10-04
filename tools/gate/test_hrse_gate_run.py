@@ -13,6 +13,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -264,3 +265,54 @@ class SanctionedFormTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RootToolTests(unittest.TestCase):
+    """A root tool may be a root-owned symlink (openSUSE's /usr/bin/git); a
+    symlink the lane owns, or one pointing at a lane-writable file, is refused.
+    Ownership is faked through os.lstat, so the tests run on any host."""
+
+    def _stat(self, uid=0, mode=0o755, link=False):
+        kind = stat.S_IFLNK if link else stat.S_IFREG
+        return os.stat_result((kind | mode, 0, 0, 1, uid, 0, 0, 0, 0, 0))
+
+    def _dir(self, uid=0, mode=0o755):
+        return os.stat_result((stat.S_IFDIR | mode, 0, 0, 1, uid, 0, 0, 0, 0, 0))
+
+    def _check(self, stats, real="/usr/libexec/git/git"):
+        def lstat(p):
+            return stats[str(p)]
+        with mock.patch.object(w.os, "lstat", side_effect=lstat), \
+                mock.patch.object(w.os.path, "realpath", return_value=real):
+            return w._root_tool(Path("/usr/bin/git"))
+
+    def root_tree(self, **over):
+        stats = {"/usr/bin/git": self._stat(link=True, mode=0o777), "/usr/bin": self._dir(),
+                 "/usr/libexec/git/git": self._stat(), "/usr/libexec/git": self._dir()}
+        stats.update(over)
+        return stats
+
+    def test_a_root_owned_symlink_execs_its_resolved_target(self):
+        self.assertEqual(self._check(self.root_tree()), "/usr/libexec/git/git")
+
+    def test_a_plain_root_owned_file_is_unchanged(self):
+        stats = {"/usr/bin/git": self._stat(), "/usr/bin": self._dir()}
+        self.assertEqual(self._check(stats), "/usr/bin/git")
+
+    def test_a_lane_owned_symlink_is_refused(self):
+        with self.assertRaises(w.Refused):
+            self._check(self.root_tree(**{"/usr/bin/git": self._stat(uid=1000, link=True, mode=0o777)}))
+
+    def test_a_symlink_to_a_lane_writable_target_is_refused(self):
+        with self.assertRaises(w.Refused):
+            self._check(self.root_tree(**{"/usr/libexec/git/git": self._stat(uid=1000)}))
+
+    def test_a_symlink_into_a_group_writable_directory_is_refused(self):
+        with self.assertRaises(w.Refused):
+            self._check(self.root_tree(**{"/usr/libexec/git": self._dir(mode=0o775)}))
+
+    def test_this_hosts_git_passes_when_it_is_root_owned(self):
+        git = Path("/usr/bin/git")
+        if not git.exists() or os.lstat(git).st_uid != 0:
+            self.skipTest("no root-owned /usr/bin/git on this host")
+        self.assertTrue(os.path.realpath(w._root_tool(git)).endswith("git"))

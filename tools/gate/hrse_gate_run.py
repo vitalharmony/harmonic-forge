@@ -96,7 +96,21 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess:
 
 def _root_tool(path: Path) -> str:
     """A tool the runner executes must be root-owned and not writable by the
-    agent; returns its absolute path for argv[0]."""
+    agent; returns the absolute path to exec.
+
+    A root-owned symlink is followed (openSUSE ships /usr/bin/git as a symlink
+    to /usr/libexec/git/git; a found-live L3B on hrse#1867): the link itself
+    and its directory must be root-owned and not group/other-writable, and so
+    must the resolved target and the target's directory. The resolved target
+    is what gets exec'd, so a link swapped after the check changes nothing."""
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        parent = os.lstat(path.parent)
+        if st.st_uid != 0 or parent.st_uid != 0 or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise Refused(f"{path} is a symlink that is not root-owned in a root-owned directory")
+        real = Path(os.path.realpath(path))
+        _immutable(real)
+        return str(real)
     _immutable(path)
     return str(path)
 
