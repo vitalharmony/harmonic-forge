@@ -402,13 +402,7 @@ if [ -n "$usage_issue" ]; then
 else
   python3 tools/gh/check_lane3_ready.py
 fi
-# The marker names its issue, so a gate's time is measured from its own
-# start, never from an earlier gate's (harmonic-forge#893).
-if [ -n "$usage_issue" ]; then
-  printf 'issue=%s\nstarted_at=%s\n' "$usage_issue" "$(date -Iseconds)" > "$git_dir/LANE3_ACTIVE"
-else
-  touch "$git_dir/LANE3_ACTIVE"
-fi
+touch "$git_dir/LANE3_ACTIVE"
 echo "lane3-begin: $(pwd) marked Lane 3-active"
 '''
 

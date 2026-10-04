@@ -313,11 +313,7 @@ but an absent map is an unmeasured gate in the verification report, so always
 write it. The fields are stamped for any Lane 3 post whose first heading is
 the spec or gate heading, whatever its `--kind`; a post by any other lane never
 carries them.
-Keep both files under the testplan root. The gate time is derived from the
-`LANE3_ACTIVE` marker `lane3-begin` writes; it counts only when the marker names
-the issue being posted (run `lane3-begin --issue <N>`), so there is nothing to
-report; it
-reads `unknown` when that marker is missing. Lane 3 writes no telemetry: the
+Keep both files under the testplan root. No gate time is recorded. Lane 3 writes no telemetry: the
 footer is the record, and the extractor reads it later.
 
 Without `--kind`, the comment is stamped `kind=discussion` — which is what

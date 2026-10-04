@@ -72,7 +72,7 @@ _L1_KINDS = {"handoff", "ae", "sweep", "rework", "ready-for-l3", "discussion"}
 
 def _now() -> str:
     """The extraction instant, second precision (a seam for tests)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def clean(raw: str) -> str:
@@ -86,9 +86,8 @@ def own_footer(body: str) -> Optional[str]:
 
 
 #: harmonic-forge#893: `classes=1:ac,2:live` on a spec footer, `results=1:pass,…`
-#: and `gate-ms=<int>|unknown` on a gate-result footer.
+#: on a gate-result footer.
 _CASE_FIELD = r"\b{key}=([\w:,-]*)"
-_GATE_MS = re.compile(r"\bgate-ms=(\d+|unknown)\b")
 
 
 #: harmonic-forge#893 reforge (R4): every gate event carries exactly one of these,
@@ -136,15 +135,8 @@ def case_counts(footer: Optional[str], kind: Optional[str]) -> dict[str, Any]:
         if not results:
             return {}
         values = list(results.values())
-        out: dict[str, Any] = {"tc_count": len(values), "fail_count": values.count("fail"),
-                               "blocked_count": values.count("blocked")}
-        gates = _GATE_MS.findall(footer or "")
-        if gates and gates[-1].isdigit():
-            out["gate_ms"] = int(gates[-1])
-            out["gate_ms_known"] = True
-        else:
-            out["gate_ms_known"] = False
-        return out
+        return {"tc_count": len(values), "fail_count": values.count("fail"),
+                "blocked_count": values.count("blocked")}
     return {}
 
 

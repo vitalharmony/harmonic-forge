@@ -258,8 +258,6 @@ CASE_CLASSES = ("ac", "existing", "live")
 CASE_RESULTS = ("pass", "fail", "blocked")
 MAX_CASES = 64
 MAX_CASE_ID = 12
-#: The same freshness bound the Lane 3 write guard applies to this marker.
-LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 _CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
 
 
@@ -329,39 +327,6 @@ def case_field(name: str, mapping: dict[str, str] | None) -> str:
     if mapping is None:
         return f"{name}=absent"
     return f"{name}=" + ",".join(f"{k}:{mapping[k]}" for k in sorted(mapping, key=_case_order))
-
-
-def gate_ms(issue: int | None = None, now: float | None = None) -> str:
-    """Milliseconds since `lane3-begin` wrote `<git-dir>/LANE3_ACTIVE` for THIS
-    issue, or `unknown`. Derived, never self-reported, never written as zero.
-
-    The marker must name the issue (`issue=<N>`, which lane3-begin writes with
-    --issue): the 12-hour bound is the write guard's freshness bound, not a
-    gate duration, so a marker left by an earlier gate in the same session
-    would otherwise time the next gate from the first one's start (#893 e1
-    sticky-wicket #7). A marker that names no issue, or another one, reads
-    unknown."""
-    # The caller's own directory: a lane-comment task may cd elsewhere (HRSE2's
-    # runs from Lane 1's tools worktree), and mise records where it was invoked.
-    cwd = os.environ.get("MISE_ORIGINAL_CWD") or None
-    # A telemetry derivation is never in a post's raise path (#893 reforge,
-    # R2): a pruned caller directory or a missing git reads as unknown.
-    try:
-        git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd,
-                                 text=True, capture_output=True, check=False)
-        if git_dir.returncode:
-            return "unknown"
-        marker = Path(git_dir.stdout.strip()) / "LANE3_ACTIVE"
-        named = re.search(r"(?m)^issue=(\d+)\s*$", marker.read_text(encoding="utf-8", errors="replace"))
-        if issue is None or not named or int(named.group(1)) != int(issue):
-            return "unknown"
-        started = marker.stat().st_mtime
-    except Exception:  # noqa: BLE001 - telemetry never fails the post
-        return "unknown"
-    elapsed = (time.time() if now is None else now) - started
-    if elapsed <= 0 or elapsed > LANE3_MARKER_MAX_AGE_SECONDS:
-        return "unknown"
-    return str(int(elapsed * 1000))
 
 
 def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None = None,
@@ -557,8 +522,10 @@ def main() -> None:
     args.tc_results = args.tc_results or sidecar(path, "results")
     args.tc_classes = args.tc_classes or sidecar(path, "classes")
     if artifact == "gate":
-        case_fields = (f"{case_field('results', load_case_map(args.tc_results, CASE_RESULTS, '--tc-results'))}; "
-                       f"gate-ms={gate_ms(args.issue)}")
+        # No gate time (#893 post-verdict check): its derivation produced four
+        # distinct defects across five passes, and sticky-wicket's tripwire
+        # said to drop it on the fourth rather than patch it again.
+        case_fields = case_field("results", load_case_map(args.tc_results, CASE_RESULTS, "--tc-results"))
     elif artifact == "spec":
         case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
     elif args.tc_results is not None or args.tc_classes is not None:

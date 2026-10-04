@@ -94,9 +94,9 @@ class TheMapIsTheRecord(Case):
         footer = last_line(self.post("spec", SPEC_TC, classes={"1": "ac", "2": "live", "3": "existing"}))
         self.assertIn("classes=1:ac,2:live,3:existing", footer)
 
-    def test_a_gate_map_and_its_time_are_written(self):
+    def test_a_gate_map_is_written(self):
         footer = last_line(self.post("gate-result", GATE_FAIL, results={"1": "pass", "2": "fail"}))
-        self.assertIn("results=1:pass,2:fail; gate-ms=", footer)
+        self.assertIn("results=1:pass,2:fail -->", footer)
 
     def test_a_table_shaped_report_is_recorded_from_its_map(self):
         # pass-2 finding 1: a report whose cases are in a table, or in prose no
@@ -104,7 +104,7 @@ class TheMapIsTheRecord(Case):
         body = ("## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — the second case failed.\n"
                 "**Finding:** y\n**Next:** z\n\n| Case | Verdict |\n|---|---|\n| 1 | PASS |\n| 2 | FAIL |\n"
                 "```\n| 42 | not a case |\n```\n")
-        self.assertIn("results=1:pass,2:fail;", last_line(self.post("gate-result", body,
+        self.assertIn("results=1:pass,2:fail -->", last_line(self.post("gate-result", body,
                                                                     results={"1": "pass", "2": "fail"})))
 
 
@@ -114,7 +114,7 @@ class TelemetryNeverRefuses(Case):
 
     def test_a_gate_with_no_map_posts_with_results_absent(self):
         text, err = self.post_with_stderr("gate-result", GATE_FAIL)
-        self.assertIn("results=absent; gate-ms=", last_line(text))
+        self.assertIn("results=absent -->", last_line(text))
         # Amended TC1: a post with no map names the reason, as an unusable one does.
         self.assertIn("no --tc-results was given", err)
 
@@ -129,40 +129,18 @@ class TelemetryNeverRefuses(Case):
                 ("too many", {str(i): "pass" for i in range(P.MAX_CASES + 1)}, "at most")):
             with self.subTest(name):
                 text, err = self.post_with_stderr("gate-result", GATE_FAIL, results=mapping)
-                self.assertIn("results=absent;", last_line(text))
+                self.assertIn("results=absent -->", last_line(text))
                 self.assertIn(why, err)
 
     def test_a_map_contradicting_the_verdict_still_posts(self):
         # Agreement is a report-side confidence flag, never a refusal.
-        self.assertIn("results=1:pass,2:pass;",
+        self.assertIn("results=1:pass,2:pass -->",
                       last_line(self.post("gate-result", GATE_FAIL, results={"1": "pass", "2": "pass"})))
 
     def test_a_blocked_gate_that_ran_nothing_records_an_empty_map(self):
         body = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n"
                 "**Finding:** no fixture.\n**Next:** provision it.\n")
-        self.assertIn("results=; gate-ms=", last_line(self.post("gate-result", body, results={})))
-
-    def test_gate_time_never_raises(self):
-        # pass-2 finding 5: a pruned caller directory, or no git at all.
-        with unittest.mock.patch.dict(os.environ, {"MISE_ORIGINAL_CWD": str(self.dir / "gone")}):
-            self.assertEqual(P.gate_ms(), "unknown")
-        with unittest.mock.patch.object(P.subprocess, "run", side_effect=FileNotFoundError("git")):
-            self.assertEqual(P.gate_ms(), "unknown")
-
-    def test_gate_time_reads_the_callers_directory_not_the_tools_worktree(self):
-        git_dir = self.dir / "gate-git"
-        git_dir.mkdir()
-        (git_dir / "LANE3_ACTIVE").write_text("issue=1\n")
-        seen = {}
-
-        def fake_run(cmd, cwd=None, **kw):
-            seen["cwd"] = cwd
-            return unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
-        with unittest.mock.patch.dict(os.environ, {"MISE_ORIGINAL_CWD": "/the/gate/worktree"}), \
-             unittest.mock.patch.object(P.subprocess, "run", side_effect=fake_run):
-            self.assertNotEqual(P.gate_ms(1), "unknown")
-        self.assertEqual(seen["cwd"], "/the/gate/worktree")
-
+        self.assertIn("results= -->", last_line(self.post("gate-result", body, results={})))
 
 class KeyedOnTheBody(Case):
     """R3: a gate report posted as `discussion` carries the same fields; a Lane
@@ -171,7 +149,7 @@ class KeyedOnTheBody(Case):
     def test_a_gate_report_posted_as_discussion_carries_its_fields(self):
         footer = last_line(self.post("discussion", GATE_FAIL, results={"1": "pass", "2": "fail"}))
         self.assertTrue(footer.startswith("<!-- l1-post v1; kind=discussion; posted-by=LANE3; results="), footer)
-        self.assertIn("results=1:pass,2:fail; gate-ms=", footer)
+        self.assertIn("results=1:pass,2:fail -->", footer)
 
     def test_a_recap_under_another_heading_is_untouched(self):
         recap = "## Lane 1 — closing\n\n### Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n"
@@ -199,7 +177,7 @@ class OneRecognizer(Case):
         import eras  # noqa: PLC0415
         body = "```\n# all green\n```\n" + GATE_FAIL
         footer = last_line(self.post("discussion", body, results={"1": "pass", "2": "fail"}))
-        self.assertIn("results=1:pass,2:fail;", footer)
+        self.assertIn("results=1:pass,2:fail -->", footer)
         self.assertEqual(eras.lane3_artifact_of(eras.clean(body), "discussion", footer), "gate")
 
     def test_a_lane_1_relay_records_no_map(self):
@@ -225,34 +203,6 @@ class FooterFieldOrder(unittest.TestCase):
         footer = ("<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=ab; "
                   "ack-no-pr-required=see results=1:pass; results=1:fail; gate-ms=unknown -->")
         self.assertEqual(eras.parse_case_map(footer, "results"), {"1": "fail"})
-
-
-class GateTimeIsDerived(Case):
-    """TC3."""
-
-    def git_dir(self, marker_age: float | None) -> Path:
-        git_dir = self.dir / "git"
-        git_dir.mkdir(exist_ok=True)
-        marker = git_dir / "LANE3_ACTIVE"
-        if marker_age is not None:
-            marker.write_text("issue=1\n")
-            os.utime(marker, (time.time() - marker_age, time.time() - marker_age))
-        return git_dir
-
-    def gate_ms_with(self, git_dir: Path) -> str:
-        done = unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
-        with unittest.mock.patch.object(P.subprocess, "run", return_value=done):
-            return P.gate_ms(1)
-
-    def test_a_missing_marker_reads_unknown_never_zero(self):
-        self.assertEqual(self.gate_ms_with(self.git_dir(None)), "unknown")
-
-    def test_a_stale_marker_reads_unknown(self):
-        self.assertEqual(self.gate_ms_with(self.git_dir(P.LANE3_MARKER_MAX_AGE_SECONDS + 60)), "unknown")
-
-    def test_a_fresh_marker_gives_elapsed_milliseconds(self):
-        value = self.gate_ms_with(self.git_dir(90))
-        self.assertTrue(value.isdigit() and 89_000 <= int(value) <= 120_000, value)
 
 
 def _footered(body: str, kind: str, extra: str) -> str:
@@ -579,7 +529,7 @@ class StickyWicketE1Patch(Case):
     def test_4_a_sidecar_map_needs_no_flag(self):
         (self.dir / "body.results.json").write_text(json.dumps({"1": "pass", "2": "fail"}))
         (self.dir / "body.md").write_text(GATE_FAIL)
-        self.assertIn("results=1:pass,2:fail;", last_line(self.post("gate-result", GATE_FAIL)))
+        self.assertIn("results=1:pass,2:fail -->", last_line(self.post("gate-result", GATE_FAIL)))
 
     def test_5_an_indented_or_fenced_only_heading_is_one_stamped_gate(self):
         indented = "  " + GATE_FAIL
@@ -597,18 +547,6 @@ class StickyWicketE1Patch(Case):
         self.assertEqual(self.gates(self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
                                                    "body": relay}])), [])
 
-    def test_7_a_marker_for_another_issue_reads_unknown(self):
-        git_dir = self.dir / "g"
-        git_dir.mkdir()
-        (git_dir / "LANE3_ACTIVE").write_text("issue=1\n")
-        done = unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
-        with unittest.mock.patch.object(P.subprocess, "run", return_value=done):
-            self.assertEqual(P.gate_ms(2), "unknown")
-            self.assertNotEqual(P.gate_ms(1), "unknown")
-        (git_dir / "LANE3_ACTIVE").write_text("")
-        with unittest.mock.patch.object(P.subprocess, "run", return_value=done):
-            self.assertEqual(P.gate_ms(1), "unknown")
-
     def test_8_a_deleted_spec_unpairs_its_gate_on_re_extraction(self):
         import emit  # noqa: PLC0415
         spec = {"id": 10, "created_at": "2026-10-04T10:00:00Z", "body": _footered(SPEC_TC, "spec", "classes=1:ac,2:ac")}
@@ -622,6 +560,20 @@ class StickyWicketE1Patch(Case):
             self.assertGreaterEqual(counts["written"], 1)
             report = VR.build(VR.load_events(Path(store), None, None, []))
         self.assertEqual((report["buckets"]["measured"], report["buckets"]["unpaired"]), (0, 1))
+
+    def test_post_verdict_an_edited_spec_and_a_same_second_re_extraction_both_take(self):
+        import eras  # noqa: PLC0415
+        self.assertRegex(eras._now(), r"\.\d{6}Z$")
+        gate = {"id": 11, "created_at": "2026-10-04T11:00:00Z",
+                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail")}
+        spec = {"id": 10, "created_at": "2026-10-04T10:00:00Z", "updated_at": "2026-10-04T10:00:00Z",
+                "body": _footered(SPEC_TC, "spec", "classes=1:ac,2:ac")}
+        edited = {**spec, "updated_at": "2026-10-04T10:30:00Z",
+                  "body": _footered(SPEC_TC, "spec", "classes=1:existing,2:existing")}
+        first = self.gates(self.extract([spec, gate]))[0]
+        second = self.gates(self.extract([edited, gate]))[0]
+        self.assertNotEqual(first["subject_id"], second["subject_id"])
+        self.assertEqual(second["attrs"]["case_existing"], 2)
 
     def test_9_an_unstamped_reading_from_the_current_extractor_is_not_history(self):
         reading = {"source": "gh-thread", "event_type": "gate.pass", "repo": "o/r", "issue": 6,

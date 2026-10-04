@@ -10,7 +10,7 @@ the planned lean-verification change:
   `ready-for-l3` add (harmonic-forge#892's `ready-for-l3.attempt` events)?
 
 Inputs are scalar event attrs only: a spec event's `tc_ac/tc_existing/tc_live`,
-a gate event's `tc_count/fail_count/blocked_count/gate_ms` and, after pairing in
+a gate event's `tc_count/fail_count/blocked_count` and, after pairing in
 `extract_threads.pair_gates_with_specs`, its `paired` flag and per-class
 `case_*/fail_*/blocked_*` counts.
 
@@ -190,7 +190,6 @@ def build(events: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [g["attrs"] for g in gates if bucket(g) == "measured"]
     aggregate = {
         "gates": len(measured),
-        "median_gate_ms": _median(a["gate_ms"] for a in measured if a.get("gate_ms_known")),
         **{f"cases_{c}": sum(int(a.get(f"case_{c}") or 0) for a in measured) for c in CLASSES},
         **{f"fails_{c}": sum(int(a.get(f"fail_{c}") or 0) for a in measured) for c in CLASSES},
         "existing_dominant": sum(1 for a in measured if int(a.get("case_existing") or 0)
@@ -202,13 +201,12 @@ def build(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
     lines = ["| Issue | Gates | Measured | Cases ac/existing/live | Fails ac/existing/live | "
-             "Median gate ms | ready-for-l3 attempts | Median local check ms | CI green, local red |",
-             "|---|---|---|---|---|---|---|---|---|"]
+             "ready-for-l3 attempts | Median local check ms | CI green, local red |",
+             "|---|---|---|---|---|---|---|---|"]
     for (repo, issue), row in sorted(report["issues"].items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         measured = [g["attrs"] for g in row["gates"] if bucket(g) == "measured"]
         cases = "/".join(str(sum(int(a.get(f"case_{c}") or 0) for a in measured)) for c in CLASSES)
         fails = "/".join(str(sum(int(a.get(f"fail_{c}") or 0) for a in measured)) for c in CLASSES)
-        gate_ms = _median(a["gate_ms"] for a in measured if a.get("gate_ms_known"))
         att = row["attempts"]
         if att:
             attempts = str(len(att))
@@ -218,14 +216,14 @@ def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
             attempts = local = red = "missing input"
         lines.append(f"| {repo}#{issue} | {len(row['gates'])} | {len(measured)} | "
                      f"{cases if measured else 'n/a'} | {fails if measured else 'n/a'} | "
-                     f"{_fmt(gate_ms)} | {attempts} | {local} | {red} |")
+                     f"{attempts} | {local} | {red} |")
     b, agg = report["buckets"], report["aggregate"]
     lines += ["", "Buckets (gates, except missing input, which counts issues):",
               *(f"- {name}: {b[name]}" for name in BUCKETS),
               f"- missing input: {b['missing input']}", ""]
     if agg["gates"]:
         share = agg["existing_dominant"] / agg["gates"]
-        lines += [f"Aggregate over {agg['gates']} measured gate(s): median gate {_fmt(agg['median_gate_ms'])} ms; "
+        lines += [f"Aggregate over {agg['gates']} measured gate(s): "
                   f"cases ac/existing/live {agg['cases_ac']}/{agg['cases_existing']}/{agg['cases_live']}; "
                   f"fails ac/existing/live {agg['fails_ac']}/{agg['fails_existing']}/{agg['fails_live']}; "
                   f"{agg['existing_dominant']} of {agg['gates']} ({share:.0%}) gates have more existing "
