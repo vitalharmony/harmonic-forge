@@ -16,8 +16,8 @@ The whole prompt, nothing else on the line, in an interactive Lane 1 session:
 
 | Prompt | Effect |
 |---|---|
-| `/auto-ae on` | Turns auto-AE on, **only** if at least one `BATCH` lease is live; otherwise it refuses out loud and writes nothing. |
-| `/auto-ae off` | Turns it off. |
+| `/auto-ae on` | Turns auto-AE on, **only** if at least one `BATCH` lease is live; otherwise it refuses out loud and writes nothing. It covers exactly the leases live at that moment and lapses after 12 hours; a later or renewed `BATCH` needs `/auto-ae on` again. |
+| `/auto-ae off` | Turns it off, from any session. If the state cannot be removed it says **STILL ON**. |
 | `/auto-ae status` or `/auto-ae` | Reports the state and the live leases; writes nothing. |
 
 The hook's one-line message is the result. Anything else (prose around the

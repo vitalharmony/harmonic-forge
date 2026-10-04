@@ -13,8 +13,19 @@ HERE = Path(__file__).resolve().parent
 HOOK = HERE / "auto_ae_toggle.py"
 
 
-def _prompt(prompt: str) -> dict:
-    return {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "s-1", "cwd": "/tmp"}
+def _prompt(prompt: str, transcript: Path | None = None) -> dict:
+    payload = {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "s-1", "cwd": "/tmp"}
+    if transcript is not None:
+        payload["transcript_path"] = str(transcript)
+    return payload
+
+
+def _envelope(prompt: str) -> str:
+    """How the harness records a typed `/auto-ae ...` in the transcript."""
+    parts = prompt.strip().split(maxsplit=1)
+    args = parts[1] if len(parts) > 1 else ""
+    return (f"<command-message>auto-ae</command-message>\n<command-name>/auto-ae</command-name>\n"
+            f"<command-args>{args}</command-args>")
 
 
 def _tool(tool: str, tool_input: dict, event: str | None = "PreToolUse") -> dict:
@@ -31,6 +42,22 @@ class HookCase(unittest.TestCase):
         self.home = Path(tmp.name)
         (self.home / ".claude" / "state").mkdir(parents=True)
         self.state = self.home / ".claude" / "state" / "auto-ae.json"
+        self.transcript = self.home / ".claude" / "projects" / "-p" / "s-1.jsonl"
+        self.transcript.parent.mkdir(parents=True)
+        self.transcript.write_text("")
+
+    def typed(self, text: str) -> None:
+        """Append the operator's typed turn, as the harness does."""
+        row = {"type": "user", "message": {"role": "user", "content": text},
+               "timestamp": datetime.now(timezone.utc).isoformat()}
+        with self.transcript.open("a") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+    def tool_result(self) -> None:
+        row = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}, "toolUseResult": {}}
+        with self.transcript.open("a") as handle:
+            handle.write(json.dumps(row) + "\n")
 
     def lease(self, key: str = "F874", hours: float = 2, consumed: bool = False) -> None:
         now = datetime.now(timezone.utc)
@@ -52,8 +79,12 @@ class HookCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
-    def message(self, prompt: str, **kw) -> str | None:
-        out = self.run_hook(_prompt(prompt), **kw)
+    def message(self, prompt: str, typed: bool = True, **kw) -> str | None:
+        """Run the toggle as the harness does: the operator's typed turn is in
+        the transcript first. `typed=False` is a payload nobody typed."""
+        if typed:
+            self.typed(_envelope(prompt) if prompt.strip().startswith("/auto-ae") else prompt)
+        out = self.run_hook(_prompt(prompt, self.transcript), **kw)
         return out["systemMessage"] if out else None
 
     def denied(self, payload) -> bool:
@@ -130,7 +161,7 @@ class ToggleTests(HookCase):
     def test_on_records_only_the_leases_live_now(self):
         self.lease("F874")
         self.message("/auto-ae on")
-        self.assertEqual(json.loads(self.state.read_text())["leases_at_set"], ["F874"])
+        self.assertEqual(list(json.loads(self.state.read_text())["leases_at_set"]), ["F874"])
         self.assertIn("ON, covering F874", self.message("/auto-ae status"))
 
     def test_off_is_honored_from_any_lane_or_entrypoint(self):
@@ -153,6 +184,50 @@ class ToggleTests(HookCase):
         leftovers = [p.name for p in self.state.parent.iterdir()
                      if p.name.startswith("auto-ae.json.") and p.name != "auto-ae.json.lock"]
         self.assertEqual(leftovers, [])
+
+    def test_a_fake_payload_nobody_typed_is_refused(self):
+        # An agent piping a payload into the hook: the operator's newest typed
+        # turn is something else, so nothing is written.
+        self.lease()
+        self.typed("proactively find work to do")
+        self.tool_result()
+        self.assertIn("REFUSED", self.message("/auto-ae on", typed=False))
+        self.assertFalse(self.state.exists())
+
+    def test_a_typed_turn_followed_by_tool_results_still_confirms(self):
+        self.lease()
+        self.typed(_envelope("/auto-ae on"))
+        self.tool_result()
+        self.assertIn("auto-AE is ON", self.message("/auto-ae on", typed=False))
+
+    def test_a_typed_off_does_not_confirm_a_later_fake_on(self):
+        self.lease()
+        self.message("/auto-ae on")
+        self.message("/auto-ae off")
+        self.assertIn("REFUSED", self.message("/auto-ae on", typed=False))
+        self.assertFalse(self.is_on())
+
+    def test_a_transcript_outside_the_projects_tree_is_refused(self):
+        self.lease()
+        fake = self.home / "fake.jsonl"
+        fake.write_text(json.dumps({"type": "user", "message": {"content": _envelope("/auto-ae on")}}) + "\n")
+        out = self.run_hook(_prompt("/auto-ae on", fake))
+        self.assertIn("REFUSED", out["systemMessage"])
+
+    def test_on_records_lease_identity_and_an_expiry(self):
+        self.lease("F874")
+        self.message("/auto-ae on")
+        data = json.loads(self.state.read_text())
+        self.assertEqual(list(data["leases_at_set"]), ["F874"])
+        self.assertIn("expires_at", data)
+
+    def test_off_that_cannot_write_says_still_on(self):
+        self.lease()
+        self.message("/auto-ae on")
+        state_dir = self.state.parent
+        state_dir.chmod(0o500)
+        self.addCleanup(state_dir.chmod, 0o700)
+        self.assertIn("STILL ON", self.message("/auto-ae off"))
 
     def test_a_prompt_that_does_not_mention_it_is_silent(self):
         self.assertIsNone(self.message("L3S H1706"))
@@ -178,7 +253,8 @@ class GuardTests(HookCase):
             ".write_text('{}')\"",
             "mkdir -p ~/.claude/state && echo '{\"on\": true}' > ~/.claude/state/auto-ae.json",
             "env touch $HOME/.claude/state/auto_ae.json",
-            "cat ~/.local/state/auto-ae/probe.jsonl",
+            "cat ~/.local/state/auto-ae/probe.jsonl > /tmp/copy",
+            "grep on ~/.claude/state/auto-ae.json | tee ~/.claude/state/auto-ae.json",
         ):
             with self.subTest(command=command):
                 self.assertTrue(self.denied(_tool("Bash", {"command": command})))
@@ -204,26 +280,18 @@ class GuardTests(HookCase):
                "+STATE = '.claude/state/auto-ae.json'\n*** End Patch")
         self.assertFalse(self.denied(_tool("apply_patch", {"command": own}, event=None)))
 
-    def test_running_the_toggle_hook_itself_is_denied(self):
-        for command in (
-            "echo '{\"prompt\": \"/auto-ae on\"}' | python3 tools/hooks/auto_ae_toggle.py",
-            "LANE=1 env CLAUDE_CODE_ENTRYPOINT=cli python3 ~/harmonic-forge/tools/hooks/auto_ae_toggle.py < p.json",
-            "./tools/hooks/auto_ae_toggle.py < payload.json",
-            "cd tools/hooks && python3 -c 'import auto_ae_toggle; auto_ae_toggle.main()'",
-            "python3 -c 'from auto_ae_toggle import toggle'",
-        ):
-            with self.subTest(command=command):
-                self.assertTrue(self.denied(_tool("Bash", {"command": command})))
-
-    def test_naming_the_hook_file_without_running_it_is_allowed(self):
-        for command in (
-            "git diff origin/main -- tools/hooks/auto_ae_toggle.py",
-            "sed -n 1,40p tools/hooks/auto_ae_toggle.py",
-            "python3 -m unittest discover -s tools/hooks -p test_auto_ae_toggle.py",
-            "git add backend/.env.example tools/hooks/auto_ae_toggle.py",
-        ):
+    def test_a_read_only_command_naming_the_state_file_is_allowed(self):
+        for command in ("cat ~/.claude/state/auto-ae.json",
+                        "git grep -n 'auto-ae.json' -- tools",
+                        "grep -rn auto-ae.json tools | rg toggle",
+                        "jq .on ~/.claude/state/auto-ae.json"):
             with self.subTest(command=command):
                 self.assertFalse(self.denied(_tool("Bash", {"command": command})))
+
+    def test_codex_apply_patch_with_no_file_line_is_judged_whole(self):
+        self.assertTrue(self.denied(_tool("apply_patch", {"path": "/h/.claude/state/auto-ae.json"}, event=None)))
+        escaped = json.dumps("*** Begin Patch\\n*** Add File: /h/.claude/state/auto-ae.json\\n+{}")
+        self.assertTrue(self.denied(_tool("apply_patch", {"command": escaped}, event=None)))
 
     def test_a_codex_payload_without_an_event_name_is_guarded(self):
         self.assertTrue(self.denied(_tool("shell", {"command": "rm ~/.claude/state/auto-ae.json"}, event=None)))
@@ -263,6 +331,13 @@ class RegistrationTests(unittest.TestCase):
         wired = self.wired("UserPromptSubmit")
         self.assertEqual(len(wired), 1, wired)
         self.assert_guarded(wired[0][1])
+
+    def test_the_guard_is_wired_on_both_codex_groups(self):
+        codex = json.loads((HERE.parent.parent / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        groups = (codex.get("hooks") or codex)["PreToolUse"]
+        wired = {g.get("matcher") for g in groups
+                 if any("auto_ae_toggle.py" in h.get("command", "") for h in g.get("hooks") or [])}
+        self.assertEqual(wired, {"^Bash$", "^apply_patch$"})
 
     def test_the_guard_is_wired_once_on_every_tool_it_guards(self):
         wired = self.wired("PreToolUse")

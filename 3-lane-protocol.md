@@ -1156,30 +1156,35 @@ rulings 2026-10-02 and 2026-10-04). While it is on, Lane 1 stands in for the
 operator twice on an issue under a live `BATCH` lease: it approves Lane 3's
 spec (excepting R-0124 and R-0165) and posts the AE with its sweep (excepting
 R-0208 as to who posts; the pair stays one atomic action). It reaches only a
-spec that is Tier R or Tier W throughout. **Never Tier P:** a spec whose write
-tier ceiling is P, or that states none, keeps the operator's AE (and R-0374 for
-the production step a Tier R gate verified).
+spec that is Tier R or Tier W throughout. **Never Tier P:** a spec or sweep
+without exactly one unfenced `Write tier: R|W` declaration, or with anything
+that could mean Tier P anywhere in it (fenced text included), keeps the
+operator's AE (and R-0374 for the production step a Tier R gate verified).
 
 - **Only the operator turns it on, only in Lane 1.** The whole prompt must be
   exactly `/auto-ae on`, `/auto-ae off` or `/auto-ae status`, typed into an
   interactive Lane 1 session; `tools/hooks/auto_ae_toggle.py` acts on it at
   `UserPromptSubmit`. The skill of the same name toggles nothing. No agent may
-  toggle it: the hook's `PreToolUse` half denies any tool call writing its
-  state file, any command running the hook itself, and any scheduled prompt
-  (`CronCreate`, `ScheduleWakeup`, `RemoteTrigger`) mentioning auto-ae. It is
-  registered wherever Lane 1 runs (harmonic-forge and HRSE2).
+  toggle it: `on` also requires the session transcript's newest typed turn to
+  be that command, so a payload an agent pipes into the hook is refused; and
+  the hook's `PreToolUse` half denies any non-read tool call naming its state
+  file and any scheduled prompt (`CronCreate`, `ScheduleWakeup`,
+  `RemoteTrigger`) mentioning auto-ae. It is registered wherever Lane 1 runs
+  (harmonic-forge and HRSE2).
 - **On needs a live `BATCH`**, or the toggle refuses out loud and writes
-  nothing. It covers only the issues whose leases are live when it is turned
-  on; a later `BATCH` needs `/auto-ae on` typed again. Each auto-AE also needs
-  the issue's own lease to still be live when it posts. `/auto-ae off` is
-  honored from any session, before any other check.
+  nothing. It covers only the leases live when it is turned on, each by its
+  key and expiry, and lapses after 12 hours; a later or renewed `BATCH`, even
+  for the same issue, needs `/auto-ae on` typed again. Each auto-AE also needs
+  that same lease to still be live when it posts. `/auto-ae off` is honored
+  from any session, before any other check, and says "STILL ON" if it could
+  not remove the state.
 - **The AE claims it on its Authorized: line**, citing "auto-AE (R-0378)" and
   the Lane 3 spec comment it approves. `tools/gh/l1_post.py` refuses one
   (`tools/gh/_auto_ae.py`) unless the toggle is on, the issue's lease is live,
   it posts as `ae-and-sweep` at the SHA of the newest `ready-for-l3`, the spec is
-  the newest after that `ready-for-l3` (by footer or by heading) and unedited,
-  no tier above W is mentioned anywhere in the spec or the sweep (fenced text
-  included), and it carries no `--prod-run` and no `--ack-no-pr-required`.
+  the newest after that `ready-for-l3` (by its footer or by its heading,
+  whatever its footer kind) and unedited, the spec and the sweep pass the tier
+  rule above, and it carries no `--prod-run` and no `--ack-no-pr-required`.
 - **An auto-AE never carries forward** under R-0209 (`check_lane3_ready`
   refuses the carry): a new SHA gets a fresh auto-AE, checked when it posts, or
   the operator's AE.
@@ -1187,9 +1192,12 @@ the production step a Tier R gate verified).
 **The toggle and the post check are a mistake-detector, not a boundary**, as
 for R-0374 (operator decision, 2026-10-02). Every lane runs as one user and
 posts as one GitHub account. Named residuals: a state-file path composed
-indirectly (in `python -c`, or through a shell variable) passes the guard, and
-model-written `/auto-ae on` text that the operator pastes, or that a loop
-scheduled before the guard existed delivers, toggles it as if typed.
+indirectly (in `python -c`, or through a shell variable) passes the guard; a
+crafted transcript under `~/.claude/projects` handed to a faked payload passes
+the typed-turn check; and model-written `/auto-ae on` text that the operator
+pastes, or that a loop scheduled before the guard existed delivers, toggles it
+as if typed. A spec that omits the `Write tier` declaration is never
+auto-approved, until Lane 3's spec tool stamps the tier.
 <!-- /R-0378 -->
 
 <!-- R-0377 -->

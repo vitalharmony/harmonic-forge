@@ -70,17 +70,19 @@ class AutoAeCase(unittest.TestCase):
         self.dir = Path(tmp.name)
         self.toggle = self.dir / "auto-ae.json"
         self.batch = self.dir / "batch-authorized.json"
-        self.set_toggle(True)
         self.set_lease(KEY)
+        self.set_toggle(True)
 
     def set_toggle(self, on: bool | None) -> None:
         if on is None:
             self.toggle.write_text("{not json")
         else:
-            self.toggle.write_text(json.dumps({"on": on, "lane": "1", "leases_at_set": [KEY]}))
+            self.toggle.write_text(json.dumps({"on": on, "lane": "1", "leases_at_set": {KEY: self.lease_expiry},
+                                               "expires_at": (NOW + timedelta(hours=12)).isoformat()}))
 
     def set_lease(self, key: str, expires: datetime | None = None, consumed: bool = False) -> None:
         expires = expires or NOW + timedelta(hours=2)
+        self.lease_expiry = expires.isoformat()
         self.batch.write_text(json.dumps({key: {
             "authorized_at": NOW.isoformat(), "expires_at": expires.isoformat(),
             "targets": [{"action": "gh pr merge", "consumed": consumed, "consumed_by": None,
@@ -138,11 +140,11 @@ class AutoAeRefusalTests(AutoAeCase):
         self.assertIn("not under a live BATCH lease", self.refusal())
 
     def test_auto_ae_with_a_tier_p_sweep_is_refused(self):
-        self.assertIn("sweep's write tier is P", self.refusal(sweep=sweep_body("P")))
+        self.assertIn("sweep mentions Tier P", self.refusal(sweep=sweep_body("P")))
 
     def test_a_tier_p_spec_is_refused_whole(self):
         reason = self.refusal(comments=[ready(), spec(tier="P")])
-        self.assertIn("ceiling is P", reason)
+        self.assertIn("Tier P", reason)
 
     def test_the_plain_colon_tier_form_also_posts(self):
         self.assertIsNone(self.refusal(comments=[ready(), spec(tier_line="Write tier: R")]))
@@ -150,16 +152,16 @@ class AutoAeRefusalTests(AutoAeCase):
     def test_a_bolded_or_backticked_tier_p_is_refused(self):
         for line in ("Write tier **P** for TC3.", "TC3 runs at Tier `P`.", "Ceiling: **P**"):
             with self.subTest(line=line):
-                self.assertIn("ceiling is P", self.refusal(comments=[ready(), spec(extra=line)]))
+                self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=line)]))
 
     def test_a_tier_p_case_heading_is_refused(self):
         # The form a real data-migration spec uses (cross-family finding).
         line = "### TC7 — the migration itself (Tier P, HITL-approved)"
-        self.assertIn("ceiling is P", self.refusal(comments=[ready(), spec(extra=line)]))
+        self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=line)]))
 
     def test_a_fenced_tier_p_is_not_hidden(self):
         fenced = "```\nTC3: Write tier: P\n```"
-        self.assertIn("ceiling is P", self.refusal(comments=[ready(), spec(extra=fenced)]))
+        self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=fenced)]))
 
     def test_a_newer_spec_without_a_footer_supersedes_the_footered_one(self):
         heading_only = {"id": SPEC_ID + 5, "body": "## Lane 3 Test Spec — H42\n\nRevised. Write tier **W**."}
@@ -167,11 +169,50 @@ class AutoAeRefusalTests(AutoAeCase):
         self.assertIn(str(SPEC_ID + 5), reason)
 
     def test_an_issue_leased_after_auto_ae_was_turned_on_is_refused(self):
-        self.toggle.write_text(json.dumps({"on": True, "lane": "1", "leases_at_set": ["H43"]}))
+        self.toggle.write_text(json.dumps({"on": True, "lane": "1", "leases_at_set": {"H43": self.lease_expiry},
+                                           "expires_at": (NOW + timedelta(hours=12)).isoformat()}))
         self.assertIn("was not under a lease when auto-AE was turned on", self.refusal())
 
+    def test_a_renewed_lease_for_the_same_key_is_refused(self):
+        self.set_lease(KEY, expires=NOW + timedelta(hours=5))  # a new grant, new identity
+        self.assertIn("renewed after auto-AE was turned on", self.refusal())
+
+    def test_an_expired_toggle_is_off(self):
+        self.toggle.write_text(json.dumps({"on": True, "lane": "1", "leases_at_set": {KEY: self.lease_expiry},
+                                           "expires_at": (NOW - timedelta(minutes=1)).isoformat()}))
+        self.assertIn("auto-AE is off", self.refusal())
+
+    def test_an_old_list_shaped_state_is_off(self):
+        self.toggle.write_text(json.dumps({"on": True, "leases_at_set": [KEY],
+                                           "expires_at": (NOW + timedelta(hours=1)).isoformat()}))
+        self.assertIn("auto-AE is off", self.refusal())
+
+    def test_slash_list_and_table_tier_p_forms_are_refused(self):
+        for extra in ("Write tier: W/P", "Write tier R, W and P",
+                      "| TC | Tier |\n|---|---|\n| TC1 | W |\n| TC7 | P |"):
+            with self.subTest(extra=extra):
+                self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=extra)]))
+
+    def test_a_fenced_declaration_cannot_supply_the_tier(self):
+        fenced = "```\nWrite tier: W\n```"
+        self.assertIn("no single unfenced", self.refusal(comments=[ready(), spec(tier=None, extra=fenced)]))
+
+    def test_two_disagreeing_declarations_are_refused(self):
+        self.assertIn("no single unfenced", self.refusal(
+            comments=[ready(), spec(tier_line="Write tier: R", extra="Write tier: W")]))
+
+    def test_a_cypher_lowercase_p_is_not_a_tier(self):
+        line = "Proposed ceiling **W**: raw Cypher `SET p.promoted_at = datetime()` on its own node."
+        self.assertIsNone(self.refusal(comments=[ready(), spec(tier_line=line + " Write tier **W**.")]))
+
+    def test_a_spec_revision_posted_as_a_discussion_supersedes(self):
+        revision = {"id": SPEC_ID + 7, "body": _footered("## Lane 3 Test Spec — H42\n\nRevised. Write tier **W**.",
+                                                          "discussion", " posted-by=LANE3;")}
+        reason = self.refusal(comments=[ready(), spec(), revision], spec_comment=SPEC_ID)
+        self.assertIn(str(SPEC_ID + 7), reason)
+
     def test_a_spec_stating_no_tier_is_refused(self):
-        self.assertIn("ceiling is unstated", self.refusal(comments=[ready(), spec(tier=None)]))
+        self.assertIn("no single unfenced", self.refusal(comments=[ready(), spec(tier=None)]))
 
     def test_a_standalone_ae_is_refused(self):
         self.assertIn("ae-and-sweep", self.refusal(no_sweep=True))

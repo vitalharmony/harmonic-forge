@@ -41,7 +41,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import check_lane3_ready as clr
-from _sweep_tier import parse_write_tier
 
 RULE = "R-0378"
 STATE_RELPATH = Path(".claude") / "state" / "auto-ae.json"
@@ -51,36 +50,75 @@ _AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized\**:?\**[^\n]
 _CLAIM = re.compile(r"\bauto[- ]?AE\b|\bR-0378\b", re.I)
 #: The only tiers auto-AE covers (operator ruling 1, 2026-10-02).
 COVERED_TIERS = frozenset({"R", "W"})
-_TIER_RANK = {"R": 0, "W": 1, "P": 2}
-#: Every tier mention a spec or sweep carries, in the forms real Lane 3 specs
-#: use: "Write tier: W", "Write tier **W**", "Proposed ceiling **W**",
-#: "Tier `P`". `_sweep_tier.parse_write_tier` reads only the plain colon form,
-#: so a bolded P passed it and a real spec read as unstated (preclose finding).
-_TIER_MENTION = re.compile(r"(?i)\b(?:write[ \t]*tier|tier|ceiling)[^A-Za-z0-9\n]{0,8}([RWP])\b")
-#: A Lane 3 spec recognized by its heading, for one posted without a footer.
+MERGE_ACTION = "gh pr merge"
+#: A Lane 3 spec recognized by its heading, whatever its footer says.
 _SPEC_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Test Spec\b")
 
+# --- the tier rule: two gates (sticky-wicket PATCH, fix 2) -------------------
+# Gate 1, the declaration: unfenced "Write tier: X" / "Write tier **X**", one
+# letter on the same line. Every declaration must agree, and be R or W; none,
+# or two that differ, refuses. A fenced example can never supply the tier.
+_DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*:?[^\S\n]*\**`?([RWP])`?\**(?![\w-])")
+# Gate 2, the veto: deliberately over-broad, on the raw body, fences included.
+# Any standalone capital P on a line after "tier" or "ceiling" (catches "W/P",
+# "R, W and P", "(Tier P, ...)", "tier `P`"), a `--tier p` flag in either case,
+# or any table cell that is just P (a per-case Tier column). Tier letters are
+# capitals, so a Cypher `SET p.x` on the same line is not a P. It can only cause a false refusal, which
+# costs one operator AE, so widening it is always the safe move.
+_P_AFTER_TIER = re.compile(r"(?i:tier|ceiling)[^\n]*?(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)[= ]+[`*]*[pP]\b")
+_P_CELL = re.compile(r"(?im)^[^\S\n]*\|.*\|[^\S\n]*[`*]*P[`*]*[^\S\n]*\|")
 
-def tier_ceiling(body: str) -> str | None:
-    """The most permissive tier mentioned anywhere in `body`, fenced text
-    included (a fenced Tier P must not hide), or None when none is stated."""
-    found = [m.group(1).upper() for m in _TIER_MENTION.finditer(body or "")]
-    return max(found, key=_TIER_RANK.__getitem__) if found else None
-MERGE_ACTION = "gh pr merge"
+
+def declared_tier(body: str) -> str | None:
+    """The one tier the unfenced declarations agree on, or None."""
+    found = {m.group(1).upper() for m in _DECLARATION.finditer(_unquoted(body))}
+    return found.pop() if len(found) == 1 else None
+
+
+def p_vetoed(body: str) -> bool:
+    """Whether anything in the raw body, fences included, could mean Tier P."""
+    text = body or ""
+    return bool(_P_AFTER_TIER.search(text) or _P_CELL.search(text))
+
+
+def tier_refusal(label: str, body: str) -> str | None:
+    """Why a spec or sweep body is outside auto-AE's tiers, or None."""
+    if p_vetoed(body):
+        return f"the {label} mentions Tier P (in any form, fenced text included)"
+    tier = declared_tier(body)
+    if tier is None:
+        return (f"the {label} has no single unfenced `Write tier: R|W` declaration "
+                "(none, or two that disagree)")
+    if tier not in COVERED_TIERS:
+        return f"the {label} declares Write tier {tier}"
+    return None
 
 
 def state_path() -> Path:
     return Path.home() / STATE_RELPATH
 
 
-def state(path: Path | None = None) -> dict:
-    """The toggle state. Anything unreadable, or not exactly `on: true`, is
-    off: a broken state file never turns auto-AE on."""
+def _parse_ts(value: object) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else None
+
+
+def state(path: Path | None = None, now: datetime | None = None) -> dict:
+    """The toggle state. Anything unreadable, not exactly `on: true`, without a
+    lease map, or past its `expires_at` is off: a broken or stale state file
+    never turns auto-AE on (sticky-wicket PATCH, fix 5)."""
     try:
         data = json.loads((path or state_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"on": False}
-    if not isinstance(data, dict) or data.get("on") is not True:
+    if not isinstance(data, dict) or data.get("on") is not True \
+            or not isinstance(data.get("leases_at_set"), dict):
+        return {"on": False}
+    expires = _parse_ts(data.get("expires_at"))
+    if expires is None or not (now or datetime.now(timezone.utc)) < expires:
         return {"on": False}
     return data
 
@@ -92,18 +130,20 @@ def _batch_auth():
     return batch_auth
 
 
-def live_lease_keys(now: datetime | None = None, batch_state: Path | None = None) -> set[str]:
-    """Issue keys under a live BATCH lease: unexpired, with an unconsumed
-    `gh pr merge` target. Empty on any failure (fails closed)."""
+def live_leases(now: datetime | None = None, batch_state: Path | None = None) -> dict[str, str]:
+    """`{issue key: expires_at}` for every live BATCH lease: unexpired, with an
+    unconsumed `gh pr merge` target. The `expires_at` is the lease's identity:
+    a renewed grant for the same key carries a new one. Empty on any failure
+    (fails closed)."""
     try:
         batch_auth = _batch_auth()
         data = batch_auth._load(batch_state or batch_auth.STATE_PATH)
     except Exception:  # noqa: BLE001
-        return set()
+        return {}
     if not isinstance(data, dict):
-        return set()
+        return {}
     now = now or datetime.now(timezone.utc)
-    keys = set()
+    leases = {}
     for key, entry in data.items():
         if not isinstance(entry, dict):
             continue
@@ -115,8 +155,12 @@ def live_lease_keys(now: datetime | None = None, batch_state: Path | None = None
         targets = entry.get("targets") or []
         if any(isinstance(t, dict) and t.get("action") == MERGE_ACTION and not t.get("consumed")
                for t in targets):
-            keys.add(str(key).upper())
-    return keys
+            leases[str(key).upper()] = str(entry["expires_at"])
+    return leases
+
+
+def live_lease_keys(now: datetime | None = None, batch_state: Path | None = None) -> set[str]:
+    return set(live_leases(now, batch_state))
 
 
 def issue_key(repo: str, issue: int) -> str | None:
@@ -145,11 +189,11 @@ def _kind(comment: dict) -> str | None:
 
 
 def _is_spec(comment: dict) -> bool:
-    """A spec by footer, or by heading when it carries no footer kind: a
-    revised spec posted through another route must still supersede the
-    footered one (preclose finding)."""
-    kind = _kind(comment)
-    return kind == "spec" or (kind is None and bool(_SPEC_HEADING.search(comment.get("body", ""))))
+    """A spec by its `kind=spec` footer or by its heading, whatever other footer
+    kind it carries: a revised spec posted through another route (as a
+    `discussion`, say) must still supersede the footered one, and then fail the
+    digest check (sticky-wicket PATCH, fix 4)."""
+    return _kind(comment) == "spec" or bool(_SPEC_HEADING.search(comment.get("body", "")))
 
 
 def approved_spec(comments: list[dict]) -> tuple[dict | None, dict | None]:
@@ -180,20 +224,25 @@ def auto_ae_refusal(ae_body: str, sweep_body: str | None, repo: str, issue: int,
                 "operator gave." + fallback)
     if len(_authorized_lines(ae_body)) != 1:
         return f"{prefix} it has more than one Authorized: line." + fallback
-    toggle = state(toggle_state)
+    toggle = state(toggle_state, now)
     if not toggle.get("on"):
         return f"{prefix} auto-AE is off (the operator turns it on with `/auto-ae on`)." + fallback
     key = issue_key(repo, issue)
     if key is None:
         return f"{prefix} {repo}#{issue} has no issue key, so no BATCH lease can cover it." + fallback
-    # Auto-AE covers the leases live when the operator turned it on; a later
-    # BATCH needs `/auto-ae on` again (preclose finding: a stale ON re-armed).
-    covered = {str(k).upper() for k in toggle.get("leases_at_set") or []}
+    # Auto-AE covers the exact leases live when the operator turned it on, by
+    # identity (key and expiry): a later or renewed BATCH, even for the same
+    # key, needs `/auto-ae on` again (sticky-wicket PATCH, fix 5).
+    covered = {str(k).upper(): str(v) for k, v in (toggle.get("leases_at_set") or {}).items()}
+    live = live_leases(now, batch_state)
     if key.upper() not in covered:
         return (f"{prefix} {key} was not under a lease when auto-AE was turned on; "
                 "the operator types `/auto-ae on` again to cover a later BATCH." + fallback)
-    if key.upper() not in live_lease_keys(now, batch_state):
+    if key.upper() not in live:
         return f"{prefix} {key} is not under a live BATCH lease." + fallback
+    if live[key.upper()] != covered[key.upper()]:
+        return (f"{prefix} {key}'s BATCH lease was renewed after auto-AE was turned on; "
+                "the operator types `/auto-ae on` again to cover it." + fallback)
     ready, spec = approved_spec(comments)
     if ready is None:
         return f"{prefix} the thread has no Lane 1 ready-for-l3." + fallback
@@ -213,12 +262,8 @@ def auto_ae_refusal(ae_body: str, sweep_body: str | None, repo: str, issue: int,
         return f"{prefix} the Lane 3 spec {spec['id']} was edited after it was posted." + fallback
     if not re.search(rf"\b{int(spec['id'])}\b", _authorized_lines(ae_body)[0]):
         return f"{prefix} its Authorized: line does not name the spec comment {spec['id']}." + fallback
-    spec_tier = tier_ceiling(spec.get("body", ""))
-    if spec_tier not in COVERED_TIERS:
-        return (f"{prefix} the spec's write tier ceiling is {spec_tier or 'unstated'}; auto-AE "
-                "covers only a spec that is Tier R or W throughout." + fallback)
-    sweep_tier = max((t for t in (parse_write_tier(sweep_body), tier_ceiling(sweep_body)) if t),
-                     key=_TIER_RANK.__getitem__, default=None)
-    if sweep_tier not in COVERED_TIERS:
-        return f"{prefix} the sweep's write tier is {sweep_tier or 'unstated'}, not R or W." + fallback
+    for label, body in (("spec", spec.get("body", "")), ("sweep", sweep_body)):
+        why = tier_refusal(label, body)
+        if why:
+            return f"{prefix} {why}; auto-AE covers only Tier R or W throughout." + fallback
     return None
