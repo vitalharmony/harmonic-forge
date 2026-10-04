@@ -784,7 +784,7 @@ def plan(args: argparse.Namespace) -> int:
     for lens in list(LENSES)[:size]:
         print(f"    - {lens}")
     arm = enrollment["arm"]
-    print(f"  arm:      {arm} ({preclose_enrollment.note(enrollment)})")
+    print(f"  arm:      {preclose_enrollment.label(enrollment)} ({preclose_enrollment.note(enrollment)})")
     if arm == "workflow":
         # Resolved SHAs, never ref names (#890 preclose pass 1): the workflow
         # may run in another checkout, where `origin/main...HEAD` is empty.
@@ -887,9 +887,17 @@ def complete(args: argparse.Namespace) -> int:
     # harmonic-forge#890: the arm rides on the pass entry, read from the
     # issue's newest enrollment event and nowhere else. No enrollment -> no
     # arm key, never a synthesized value a report would trust.
-    enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+    try:
+        enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+    except preclose_enrollment.EnrollmentUnreadable as exc:
+        # The panel has already run: record the pass, without an arm, and say
+        # why. Never crash here (#890 reforged pass 2, fail-crashed).
+        print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
+              file=sys.stderr)
+        enrolled = None
     if enrolled:
-        cost.update({"arm": enrolled["arm"], "arm_assigned": enrolled.get("assigned"),
+        cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
+                     "arm_assigned": enrolled.get("assigned"),
                      "arm_overridden": preclose_enrollment.overridden(enrolled)})
         if enrolled.get("reason"):
             cost["arm_reason"] = enrolled["reason"]

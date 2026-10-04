@@ -224,12 +224,14 @@ class TC7EnrollmentIsDeclared(ArmCase):
         self.assertIn("arm:      pre-experiment (pre-experiment: the experiment is not enrolling)", out)
         with self.assertRaises(SystemExit) as refused:
             self.plan_arm(re_enroll="workflow", arm_reason="try it")
-        self.assertIn("needs the experiment to be enrolling", str(refused.exception))
+        self.assertIn("never enrolled", str(refused.exception))
         self.complete_arm()
         self.enroll(True)
         self.commit("tools/y.py")
         self.assertIn("arm:      pre-experiment", self.plan_arm())
-        self.assertEqual(self.entry()["arm"], enrollment.PRE_EXPERIMENT)
+        # Not an arm value (#890 sticky-wicket PATCH): the manual panel, never enrolled.
+        self.assertEqual((self.entry()["arm"], self.entry()["arm_enrolled"]), ("manual", False))
+        self.assertFalse(self.entry()["arm_overridden"])
 
     def test_a_missing_or_corrupt_flag_is_not_enrolling(self) -> None:
         flag = preclose.receipt_dir() / enrollment.EXPERIMENT_FILE
@@ -317,6 +319,58 @@ class UnknownArmIsShown(unittest.TestCase):
             _write(receipts, 1, [_pass("a", "Workflow")])
             text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
         self.assertEqual(_row(text, "other")[1], "1")
+
+
+class StickyWicketPatch(ArmCase):
+    """harmonic-forge#890 sticky-wicket PATCH, one test per category."""
+
+    def test_pre_experiment_is_not_an_arm_so_no_retry_records_a_false_override(self) -> None:
+        self.enroll(False)
+        self.plan_arm()
+        for flags in ({"arm": "workflow"}, {"re_enroll": "manual", "arm_reason": "x"},
+                      {"re_enroll": "workflow", "arm_reason": "x"}):
+            try:
+                self.plan_arm(**flags)
+            except SystemExit:
+                pass
+        self.assertEqual(len(self.decisions()), 1)
+        self.assertFalse(enrollment.overridden(self.decisions()[-1]))
+
+    def test_a_first_workflow_request_while_not_enrolling_is_refused_before_the_reason_gate(self) -> None:
+        self.enroll(False)
+        with self.assertRaises(SystemExit) as refused:
+            self.plan_arm(arm="workflow")
+        self.assertIn("not enrolling", str(refused.exception))
+        self.assertNotIn("--arm-reason", str(refused.exception))
+
+    def test_a_record_that_cannot_be_read_is_refused_not_a_crash(self) -> None:
+        self.plan_arm()
+        with patch.object(enrollment, "events", side_effect=enrollment.EnrollmentUnreadable("denied")):
+            with self.assertRaises(SystemExit) as refused:
+                self.plan_arm()
+            self.assertIn("never re-derived", str(refused.exception))
+            self.complete_arm()  # the panel ran: the pass is recorded, without an arm
+        self.assertNotIn("arm", self.entry())
+
+    def test_a_legacy_pre_experiment_event_still_reads(self) -> None:
+        path = preclose.enrollment_path(REPO, self.issue)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"arm": "pre-experiment", "assigned": "pre-experiment"}) + "\n")
+        self.assertIn("arm:      pre-experiment", self.plan_arm())
+
+
+class ReportPatch(unittest.TestCase):
+    def test_a_rejoined_issue_is_not_discarded_and_overrides_show_their_direction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            _write(receipts, 1, [_pass("a", "manual", overridden=True), _pass("b", "workflow")])
+            _write(receipts, 2, [_pass("c", "manual", overridden=True, arm_assigned="workflow")])
+            _write(receipts, 3, [_pass("d", arm="manual", arm_enrolled=False)])
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        self.assertEqual(_row(text, "workflow")[1], "1")
+        self.assertEqual(_row(text, "mixed")[1], "0")
+        self.assertEqual(_row(text, "pre-experiment")[1], "1")
+        self.assertIn("overrides: 1 assigned workflow, ran manual", text)
 
 
 if __name__ == "__main__":

@@ -67,13 +67,30 @@ def set_experiment(directory: Path, on: bool, note: str) -> Path:
     return path
 
 
+class EnrollmentUnreadable(Exception):
+    """The record exists but cannot be read (permissions, I/O)."""
+
+
+def _normalize(event: dict) -> dict:
+    """One shape for every event. `pre-experiment` is not an arm: it is an
+    issue that was never enrolled, which runs the manual panel (#890
+    sticky-wicket PATCH). Events written before that change said
+    `arm: pre-experiment`, and still read."""
+    if event.get("arm") == PRE_EXPERIMENT:
+        return {**event, "arm": "manual", "enrolled": False, "assigned": None}
+    return {**event, "enrolled": event.get("enrolled", True)}
+
+
 def events(path: Path) -> list[dict]:
     """Every recorded decision, oldest first. A line that will not decode is
-    skipped and said aloud on stderr, never silently."""
+    skipped and said aloud on stderr, never silently. A record that exists but
+    cannot be read raises EnrollmentUnreadable, never a bare OSError."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return []
+    except (OSError, UnicodeDecodeError) as exc:
+        raise EnrollmentUnreadable(f"{path}: {exc}") from exc
     out = []
     for number, line in enumerate(lines, 1):
         try:
@@ -83,7 +100,7 @@ def events(path: Path) -> list[dict]:
                   file=sys.stderr)
             continue
         if isinstance(event, dict) and event.get("arm"):
-            out.append(event)
+            out.append(_normalize(event))
     return out
 
 
@@ -99,7 +116,19 @@ def append(path: Path, event: dict) -> None:
 
 
 def overridden(event: dict) -> bool:
-    return event.get("arm") != event.get("assigned")
+    """Only an enrolled issue can be overridden: its arm differs from the arm
+    the hash assigned it."""
+    return bool(event.get("enrolled", True)) and event.get("assigned") not in (None, event.get("arm"))
+
+
+def label(event: dict) -> str:
+    return event["arm"] if event.get("enrolled", True) else PRE_EXPERIMENT
+
+
+def _unreadable(path: Path) -> SystemExit:
+    return SystemExit(
+        f"preclose-check: {path} holds no readable enrollment event. Repair or remove it "
+        "deliberately; the arm is never re-derived over an unreadable record (harmonic-forge#890).")
 
 
 def decide(path: Path, directory: Path, repo: str, issue: int, requested: str,
@@ -111,41 +140,55 @@ def decide(path: Path, directory: Path, repo: str, issue: int, requested: str,
     if reason and ("\n" in reason or len(reason) > 200):
         raise SystemExit("preclose-check: --arm-reason is one line of at most 200 characters.")
     on = enrolling(directory)
-    existing = current(path)
+    try:
+        existing = current(path)
+    except EnrollmentUnreadable:
+        raise _unreadable(path) from None
     if existing is None and _has_content(path):
-        # A record that exists but will not read is never "not enrolled":
-        # re-deriving would silently re-assign the issue (#890 reforge pass 1).
-        raise SystemExit(
-            f"preclose-check: {path} holds no readable enrollment event. Repair or remove it "
-            "deliberately; the arm is never re-derived over an unreadable record (harmonic-forge#890).")
-    if existing and not re_enroll:
-        same = requested in ("auto", existing["arm"]) or (
-            existing["arm"] == PRE_EXPERIMENT and requested == "manual")
-        if not same:
+        raise _unreadable(path)
+    record = lambda arm, enrolled, assigned, source: {  # noqa: E731
+        "arm": arm, "enrolled": enrolled, "assigned": assigned, "source": source,
+        "reason": reason or None, "decided_at": _now(), "decided_sha": head_sha}
+    if existing:
+        target = re_enroll or (None if requested == "auto" else requested)
+        if target in (None, existing["arm"]):
+            # An enrolled issue keeps its arm whatever the flag says now:
+            # stopping the experiment stops NEW enrollment only.
+            return existing, None
+        if not re_enroll:
             raise SystemExit(
-                f"preclose-check: {repo}#{issue} is enrolled as {existing['arm']}. Change it with "
-                f"--re-enroll {requested} --arm-reason \"<why>\" (harmonic-forge#890).")
-        # An enrolled issue keeps its arm whatever the flag says now: stopping
-        # the experiment stops NEW enrollment only (#890 reforge pass 1).
-        return existing, None
-    assigned = (existing or {}).get("assigned") or (hashed_arm(repo, issue) if on else PRE_EXPERIMENT)
-    arm = re_enroll or (assigned if requested == "auto" else requested)
-    if assigned == PRE_EXPERIMENT and arm == "manual" and not re_enroll:
-        arm = PRE_EXPERIMENT  # the manual panel IS the pre-experiment panel
-    if (re_enroll or arm != assigned) and not reason:
+                f"preclose-check: {repo}#{issue} is enrolled as {label(existing)}. Change it with "
+                f"--re-enroll {target} --arm-reason \"<why>\" (harmonic-forge#890).")
+        if not existing["enrolled"]:
+            raise SystemExit(
+                f"preclose-check: {repo}#{issue} was never enrolled (pre-experiment), so it stays "
+                "outside the comparison and runs the manual panel; plan with no --arm.")
+        if target == "workflow" and not on:
+            raise SystemExit(
+                "preclose-check: re-enrolling onto the workflow arm needs the experiment to be "
+                "enrolling, and it is not (preclose_enrollment.py --status).")
+        if not reason:
+            raise SystemExit(f"preclose-check: --re-enroll {target} needs --arm-reason \"<why>\".")
+        event = record(target, True, existing["assigned"], "operator")
+        return event, event
+    requested = re_enroll or requested
+    if not on:
+        # Checked before the reason gate, so the first refusal is the true one
+        # (#890 reforged pass 2, misdirection).
+        if requested == "workflow":
+            raise SystemExit(
+                "preclose-check: the experiment is not enrolling (preclose_enrollment.py --status), "
+                "so a new issue runs the manual panel and is recorded pre-experiment. Plan with no --arm.")
+        event = record("manual", False, None, "not-enrolling")
+        return event, event
+    assigned = hashed_arm(repo, issue)
+    arm = assigned if requested == "auto" else requested
+    if arm != assigned and not reason:
         raise SystemExit(
             f"preclose-check: {repo}#{issue} is assigned the {assigned} arm. Choosing {arm} needs "
             "--arm-reason \"<why>\"; an issue on another arm is excluded from the comparison "
             "(harmonic-forge#890).")
-    event = {"arm": arm, "assigned": assigned,
-             "source": "operator" if (re_enroll or arm != assigned) else ("hash" if on else "not-enrolling"),
-             "reason": reason or None, "decided_at": _now(), "decided_sha": head_sha}
-    if event["arm"] == "workflow" and not on:
-        retry = ("--re-enroll manual --arm-reason \"<why>\"" if existing
-                 else "no --arm (it records pre-experiment)")
-        raise SystemExit(
-            "preclose-check: a new workflow enrollment needs the experiment to be enrolling, and it "
-            f"is not (preclose_enrollment.py --status). Plan again with {retry}.")
+    event = record(arm, True, assigned, "hash" if arm == assigned else "operator")
     return event, event
 
 
@@ -161,7 +204,7 @@ def _has_content(path: Path) -> bool:
 def note(event: dict) -> str:
     if overridden(event):
         return f"overridden: {event.get('reason')}"
-    if event["arm"] == PRE_EXPERIMENT:
+    if not event.get("enrolled", True):
         return "pre-experiment: the experiment is not enrolling"
     return "assigned"
 

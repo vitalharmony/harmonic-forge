@@ -196,19 +196,45 @@ def render(table: list[dict]) -> str:
 ARM_ROWS = ("manual", "workflow", preclose_enrollment.PRE_EXPERIMENT, "overridden", "mixed", "unarmed", "other")
 
 
+def _entry_label(entry: dict) -> str | None:
+    """An entry's row label: None (no arm), `pre-experiment` (never enrolled,
+    including entries written before #890's PATCH, whose arm said so), or the
+    arm it ran."""
+    arm = entry.get("arm")
+    if not arm:
+        return None
+    if arm == preclose_enrollment.PRE_EXPERIMENT or entry.get("arm_enrolled") is False:
+        return preclose_enrollment.PRE_EXPERIMENT
+    return arm
+
+
 def issue_arm(entries: list[dict]) -> str:
     """harmonic-forge#890: one bucket per ISSUE, never per entry, so a
-    two-pass issue is never split into two one-pass issues. Entries that
-    disagree (a pre-#890 pass and an armed one included) are `mixed`."""
-    values = {entry.get("arm") for entry in entries}
-    if not entries or values == {None}:
+    two-pass issue is never split into two one-pass issues. `mixed` is only an
+    issue whose entries mix armed and unarmed passes (a pre-#890 pass and an
+    armed one); an issue that changed arm is bucketed by its newest pass, with
+    an override shown as `overridden` (#890 sticky-wicket PATCH)."""
+    labels = [_entry_label(entry) for entry in entries]
+    if not entries or set(labels) == {None}:
         return "unarmed"
-    if len(values) > 1:
+    if None in labels:
         return "mixed"
     if entries[-1].get("arm_overridden"):
         return "overridden"
     # An arm this report does not know is shown, never a crash (#890 pass 1).
-    return entries[-1]["arm"] if entries[-1]["arm"] in preclose_enrollment.ARMS + (preclose_enrollment.PRE_EXPERIMENT,) else "other"
+    known = preclose_enrollment.ARMS + (preclose_enrollment.PRE_EXPERIMENT,)
+    return labels[-1] if labels[-1] in known else "other"
+
+
+def override_directions(issues: list[dict]) -> str:
+    """Which arm each overridden issue left, from the `arm_assigned` its
+    newest pass carries: the hash's assignment, which the override undid."""
+    moves: dict[str, int] = {}
+    for r in issues:
+        newest = (r.get("entries") or [{}])[-1]
+        key = f"assigned {newest.get('arm_assigned') or '?'}, ran {newest.get('arm') or '?'}"
+        moves[key] = moves.get(key, 0) + 1
+    return "; ".join(f"{count} {key}" for key, count in sorted(moves.items())) or "none"
 
 
 def _median(values: list[int]) -> str:
@@ -269,7 +295,8 @@ def render_by_arm(table: list[dict]) -> str:
             # An unmeasured pass is never free (#890 preclose pass 2, undercount).
             f"{f'; {len(entries) - len(tokens)} pass(es) not measured' if len(entries) > len(tokens) else ''} |")
     split = (f"{len(buckets['manual'])} manual / {len(buckets['workflow'])} workflow; outside the "
-             "comparison: " + ", ".join(f"{len(buckets[name])} {name}" for name in ARM_ROWS[2:]))
+             "comparison: " + ", ".join(f"{len(buckets[name])} {name}" for name in ARM_ROWS[2:])
+             + f"; overrides: {override_directions(buckets['overridden'])}")
     lines += ["", f"n per arm: {split}. The comparison is not yet meaningful below 8 issues per arm. "
                   "Codex tokens are not measured: the envelope records no usage. Overridden, mixed, "
                   "pre-experiment, unarmed and other issues are never counted in an arm. Passes are shown "
