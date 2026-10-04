@@ -224,7 +224,7 @@ class TC7EnrollmentIsDeclared(ArmCase):
         self.assertIn("arm:      pre-experiment (pre-experiment: the experiment is not enrolling)", out)
         with self.assertRaises(SystemExit) as refused:
             self.plan_arm(re_enroll="workflow", arm_reason="try it")
-        self.assertIn("only while the experiment is enrolling", str(refused.exception))
+        self.assertIn("needs the experiment to be enrolling", str(refused.exception))
         self.complete_arm()
         self.enroll(True)
         self.commit("tools/y.py")
@@ -238,12 +238,47 @@ class TC7EnrollmentIsDeclared(ArmCase):
         flag.unlink()
         self.assertFalse(enrollment.enrolling(preclose.receipt_dir()))
 
-    def test_a_workflow_issue_refuses_once_the_experiment_stops(self) -> None:
+    def test_an_enrolled_workflow_issue_keeps_its_arm_after_the_experiment_stops(self) -> None:
         self.plan_arm()
         self.enroll(False)
+        (preclose.receipt_dir() / enrollment.EXPERIMENT_FILE).unlink()
+        self.assertIn("arm:      workflow (assigned)", self.plan_arm())
+        self.assertEqual(len(self.decisions()), 1)
+
+
+class ReforgePass1Fixes(ArmCase):
+    """harmonic-forge#890 reforged pass 1: one test per finding."""
+
+    def test_manual_on_a_pre_experiment_issue_is_the_same_panel(self) -> None:
+        self.enroll(False)
+        self.plan_arm()
+        self.assertIn("arm:      pre-experiment", self.plan_arm(arm="manual"))
+        self.assertEqual(len(self.decisions()), 1)
+
+    def test_an_unreadable_record_is_never_re_derived(self) -> None:
+        path = preclose.enrollment_path(REPO, self.issue)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"arm": "workfl')
         with self.assertRaises(SystemExit) as refused:
             self.plan_arm()
-        self.assertIn("--re-enroll manual", str(refused.exception))
+        self.assertIn("never re-derived", str(refused.exception))
+        self.assertEqual(path.read_text(), '{"arm": "workfl')
+
+    def test_a_first_workflow_request_while_not_enrolling_says_plan_without_arm(self) -> None:
+        self.enroll(False)
+        with self.assertRaises(SystemExit) as refused:
+            self.plan_arm(arm="workflow", arm_reason="try it")
+        self.assertIn("no --arm", str(refused.exception))
+        self.assertNotIn("--re-enroll", str(refused.exception))
+        self.assertEqual(self.decisions(), [])
+
+    def test_the_footer_counts_every_row_outside_the_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            _write(receipts, 1, [_pass("a", "manual", overridden=True)])
+            _write(receipts, 2, [_pass("b", "manual")])
+            text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+        self.assertIn("1 manual / 0 workflow; outside the comparison: 0 pre-experiment, 1 overridden", text)
 
 
 class ReportUnit(unittest.TestCase):

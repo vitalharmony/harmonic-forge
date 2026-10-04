@@ -112,12 +112,22 @@ def decide(path: Path, directory: Path, repo: str, issue: int, requested: str,
         raise SystemExit("preclose-check: --arm-reason is one line of at most 200 characters.")
     on = enrolling(directory)
     existing = current(path)
+    if existing is None and _has_content(path):
+        # A record that exists but will not read is never "not enrolled":
+        # re-deriving would silently re-assign the issue (#890 reforge pass 1).
+        raise SystemExit(
+            f"preclose-check: {path} holds no readable enrollment event. Repair or remove it "
+            "deliberately; the arm is never re-derived over an unreadable record (harmonic-forge#890).")
     if existing and not re_enroll:
-        if requested not in ("auto", existing["arm"]):
+        same = requested in ("auto", existing["arm"]) or (
+            existing["arm"] == PRE_EXPERIMENT and requested == "manual")
+        if not same:
             raise SystemExit(
                 f"preclose-check: {repo}#{issue} is enrolled as {existing['arm']}. Change it with "
                 f"--re-enroll {requested} --arm-reason \"<why>\" (harmonic-forge#890).")
-        return _require_runnable(existing, on), None
+        # An enrolled issue keeps its arm whatever the flag says now: stopping
+        # the experiment stops NEW enrollment only (#890 reforge pass 1).
+        return existing, None
     assigned = (existing or {}).get("assigned") or (hashed_arm(repo, issue) if on else PRE_EXPERIMENT)
     arm = re_enroll or (assigned if requested == "auto" else requested)
     if assigned == PRE_EXPERIMENT and arm == "manual" and not re_enroll:
@@ -130,16 +140,22 @@ def decide(path: Path, directory: Path, repo: str, issue: int, requested: str,
     event = {"arm": arm, "assigned": assigned,
              "source": "operator" if (re_enroll or arm != assigned) else ("hash" if on else "not-enrolling"),
              "reason": reason or None, "decided_at": _now(), "decided_sha": head_sha}
-    return _require_runnable(event, on), event
-
-
-def _require_runnable(event: dict, on: bool) -> dict:
     if event["arm"] == "workflow" and not on:
+        retry = ("--re-enroll manual --arm-reason \"<why>\"" if existing
+                 else "no --arm (it records pre-experiment)")
         raise SystemExit(
-            "preclose-check: the workflow arm runs only while the experiment is enrolling, and it "
-            "is not (preclose_enrollment.py --status). Run the manual panel with --re-enroll "
-            "manual --arm-reason \"<why>\".")
-    return event
+            "preclose-check: a new workflow enrollment needs the experiment to be enrolling, and it "
+            f"is not (preclose_enrollment.py --status). Plan again with {retry}.")
+    return event, event
+
+
+def _has_content(path: Path) -> bool:
+    try:
+        return bool(path.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
 def note(event: dict) -> str:

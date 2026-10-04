@@ -268,7 +268,8 @@ def render_by_arm(table: list[dict]) -> str:
             f"{sum(tokens):,} panel tokens; {sum(panel_ms) + sum(codex_ms):,} ms"
             # An unmeasured pass is never free (#890 preclose pass 2, undercount).
             f"{f'; {len(entries) - len(tokens)} pass(es) not measured' if len(entries) > len(tokens) else ''} |")
-    split = f"{len(buckets['manual'])} manual / {len(buckets['workflow'])} workflow"
+    split = (f"{len(buckets['manual'])} manual / {len(buckets['workflow'])} workflow; outside the "
+             "comparison: " + ", ".join(f"{len(buckets[name])} {name}" for name in ARM_ROWS[2:]))
     lines += ["", f"n per arm: {split}. The comparison is not yet meaningful below 8 issues per arm. "
                   "Codex tokens are not measured: the envelope records no usage. Overridden, mixed, "
                   "pre-experiment, unarmed and other issues are never counted in an arm. Passes are shown "
