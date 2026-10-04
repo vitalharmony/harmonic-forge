@@ -104,7 +104,7 @@
         ]
       },
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|CronCreate|ScheduleWakeup|RemoteTrigger",
+        "matcher": "Bash|Monitor|Write|Edit|MultiEdit|NotebookEdit|CronCreate|ScheduleWakeup|RemoteTrigger",
         "hooks": [
           {
             "type": "command",

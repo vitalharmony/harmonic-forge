@@ -51,6 +51,21 @@ _AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized\**:?\**[^\n]
 _CLAIM = re.compile(r"\bauto[- ]?AE\b|\bR-0378\b", re.I)
 #: The only tiers auto-AE covers (operator ruling 1, 2026-10-02).
 COVERED_TIERS = frozenset({"R", "W"})
+_TIER_RANK = {"R": 0, "W": 1, "P": 2}
+#: Every tier mention a spec or sweep carries, in the forms real Lane 3 specs
+#: use: "Write tier: W", "Write tier **W**", "Proposed ceiling **W**",
+#: "Tier `P`". `_sweep_tier.parse_write_tier` reads only the plain colon form,
+#: so a bolded P passed it and a real spec read as unstated (preclose finding).
+_TIER_MENTION = re.compile(r"(?i)\b(?:write[ \t]*tier|tier|ceiling)[^A-Za-z0-9\n]{0,8}([RWP])\b")
+#: A Lane 3 spec recognized by its heading, for one posted without a footer.
+_SPEC_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Test Spec\b")
+
+
+def tier_ceiling(body: str) -> str | None:
+    """The most permissive tier mentioned anywhere in `body`, fenced text
+    included (a fenced Tier P must not hide), or None when none is stated."""
+    found = [m.group(1).upper() for m in _TIER_MENTION.finditer(body or "")]
+    return max(found, key=_TIER_RANK.__getitem__) if found else None
 MERGE_ACTION = "gh pr merge"
 
 
@@ -129,14 +144,22 @@ def _kind(comment: dict) -> str | None:
     return match.group(1).lower() if match else None
 
 
+def _is_spec(comment: dict) -> bool:
+    """A spec by footer, or by heading when it carries no footer kind: a
+    revised spec posted through another route must still supersede the
+    footered one (preclose finding)."""
+    kind = _kind(comment)
+    return kind == "spec" or (kind is None and bool(_SPEC_HEADING.search(comment.get("body", ""))))
+
+
 def approved_spec(comments: list[dict]) -> tuple[dict | None, dict | None]:
     """`(ready, spec)`: the newest Lane 1 `ready-for-l3`, and the newest Lane 3
-    spec posted after it. Either may be None."""
+    spec posted after it (which may lack a footer). Either may be None."""
     readies = [c for c in comments if _kind(c) == "ready-for-l3"]
     if not readies:
         return None, None
     ready = max(readies, key=lambda c: int(c["id"]))
-    specs = [c for c in comments if _kind(c) == "spec" and int(c["id"]) > int(ready["id"])]
+    specs = [c for c in comments if _is_spec(c) and int(c["id"]) > int(ready["id"])]
     return ready, (max(specs, key=lambda c: int(c["id"])) if specs else None)
 
 
@@ -157,11 +180,18 @@ def auto_ae_refusal(ae_body: str, sweep_body: str | None, repo: str, issue: int,
                 "operator gave." + fallback)
     if len(_authorized_lines(ae_body)) != 1:
         return f"{prefix} it has more than one Authorized: line." + fallback
-    if not state(toggle_state).get("on"):
+    toggle = state(toggle_state)
+    if not toggle.get("on"):
         return f"{prefix} auto-AE is off (the operator turns it on with `/auto-ae on`)." + fallback
     key = issue_key(repo, issue)
     if key is None:
         return f"{prefix} {repo}#{issue} has no issue key, so no BATCH lease can cover it." + fallback
+    # Auto-AE covers the leases live when the operator turned it on; a later
+    # BATCH needs `/auto-ae on` again (preclose finding: a stale ON re-armed).
+    covered = {str(k).upper() for k in toggle.get("leases_at_set") or []}
+    if key.upper() not in covered:
+        return (f"{prefix} {key} was not under a lease when auto-AE was turned on; "
+                "the operator types `/auto-ae on` again to cover a later BATCH." + fallback)
     if key.upper() not in live_lease_keys(now, batch_state):
         return f"{prefix} {key} is not under a live BATCH lease." + fallback
     ready, spec = approved_spec(comments)
@@ -183,11 +213,12 @@ def auto_ae_refusal(ae_body: str, sweep_body: str | None, repo: str, issue: int,
         return f"{prefix} the Lane 3 spec {spec['id']} was edited after it was posted." + fallback
     if not re.search(rf"\b{int(spec['id'])}\b", _authorized_lines(ae_body)[0]):
         return f"{prefix} its Authorized: line does not name the spec comment {spec['id']}." + fallback
-    spec_tier = parse_write_tier(_unquoted(spec.get("body", "")))
+    spec_tier = tier_ceiling(spec.get("body", ""))
     if spec_tier not in COVERED_TIERS:
         return (f"{prefix} the spec's write tier ceiling is {spec_tier or 'unstated'}; auto-AE "
                 "covers only a spec that is Tier R or W throughout." + fallback)
-    sweep_tier = parse_write_tier(sweep_body)
+    sweep_tier = max((t for t in (parse_write_tier(sweep_body), tier_ceiling(sweep_body)) if t),
+                     key=_TIER_RANK.__getitem__, default=None)
     if sweep_tier not in COVERED_TIERS:
         return f"{prefix} the sweep's write tier is {sweep_tier or 'unstated'}, not R or W." + fallback
     return None

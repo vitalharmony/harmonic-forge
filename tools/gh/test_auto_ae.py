@@ -33,10 +33,15 @@ def ready(comment_id: int = READY_ID, sha: str = SHA) -> dict:
 
 
 def spec(comment_id: int = SPEC_ID, tier: str | None = "W", edited: bool = False,
-         marker: bool = True) -> dict:
+         marker: bool = True, tier_line: str | None = None, extra: str = "") -> dict:
+    # The default tier line is the form real Lane 3 specs use (bold, no colon).
     lines = ["## Lane 3 Test Spec — H42", "", "**Cases:** 2 cases.", ""]
-    if tier:
-        lines.append(f"Write tier: {tier}")
+    if tier_line is not None:
+        lines.append(tier_line)
+    elif tier:
+        lines.append(f"Proposed ceiling **{tier}**: write tier **{tier}** throughout.")
+    if extra:
+        lines.append(extra)
     lines += ["", "### Test cases", "1. TC1 — read the list.", "2. TC2 — dismiss and undo."]
     body = _footered("\n".join(lines), "spec", " posted-by=LANE3;")
     if not marker:  # a footer naming the kind, with no digest
@@ -72,7 +77,7 @@ class AutoAeCase(unittest.TestCase):
         if on is None:
             self.toggle.write_text("{not json")
         else:
-            self.toggle.write_text(json.dumps({"on": on, "lane": "1"}))
+            self.toggle.write_text(json.dumps({"on": on, "lane": "1", "leases_at_set": [KEY]}))
 
     def set_lease(self, key: str, expires: datetime | None = None, consumed: bool = False) -> None:
         expires = expires or NOW + timedelta(hours=2)
@@ -138,6 +143,32 @@ class AutoAeRefusalTests(AutoAeCase):
     def test_a_tier_p_spec_is_refused_whole(self):
         reason = self.refusal(comments=[ready(), spec(tier="P")])
         self.assertIn("ceiling is P", reason)
+
+    def test_the_plain_colon_tier_form_also_posts(self):
+        self.assertIsNone(self.refusal(comments=[ready(), spec(tier_line="Write tier: R")]))
+
+    def test_a_bolded_or_backticked_tier_p_is_refused(self):
+        for line in ("Write tier **P** for TC3.", "TC3 runs at Tier `P`.", "Ceiling: **P**"):
+            with self.subTest(line=line):
+                self.assertIn("ceiling is P", self.refusal(comments=[ready(), spec(extra=line)]))
+
+    def test_a_tier_p_case_heading_is_refused(self):
+        # The form a real data-migration spec uses (cross-family finding).
+        line = "### TC7 — the migration itself (Tier P, HITL-approved)"
+        self.assertIn("ceiling is P", self.refusal(comments=[ready(), spec(extra=line)]))
+
+    def test_a_fenced_tier_p_is_not_hidden(self):
+        fenced = "```\nTC3: Write tier: P\n```"
+        self.assertIn("ceiling is P", self.refusal(comments=[ready(), spec(extra=fenced)]))
+
+    def test_a_newer_spec_without_a_footer_supersedes_the_footered_one(self):
+        heading_only = {"id": SPEC_ID + 5, "body": "## Lane 3 Test Spec — H42\n\nRevised. Write tier **W**."}
+        reason = self.refusal(comments=[ready(), spec(), heading_only])
+        self.assertIn(str(SPEC_ID + 5), reason)
+
+    def test_an_issue_leased_after_auto_ae_was_turned_on_is_refused(self):
+        self.toggle.write_text(json.dumps({"on": True, "lane": "1", "leases_at_set": ["H43"]}))
+        self.assertIn("was not under a lease when auto-AE was turned on", self.refusal())
 
     def test_a_spec_stating_no_tier_is_refused(self):
         self.assertIn("ceiling is unstated", self.refusal(comments=[ready(), spec(tier=None)]))

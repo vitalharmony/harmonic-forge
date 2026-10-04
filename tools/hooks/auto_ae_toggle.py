@@ -14,11 +14,17 @@ Provenance rests on the same basis as `BATCH`: only operator-typed text fires
 
 - `on` needs at least one live `BATCH` lease (unexpired, with an unspent
   `gh pr merge` target), or it refuses loudly and writes nothing (ruling 3).
-- `on`/`off` write `~/.claude/state/auto-ae.json`; `status` writes nothing.
+  It records the leases live at that moment; only those issues are covered,
+  and a later `BATCH` needs `/auto-ae on` typed again.
+- `on`/`off` write `~/.claude/state/auto-ae.json` (atomic, under a lock);
+  `status` writes nothing.
+- `on` and `status` refuse out loud outside LANE=1 or from a non-interactive
+  entrypoint (or none). `off` is honored from anywhere and before any other
+  check: revocation is always safe, and a failure that left auto-AE on would
+  fail open.
 - Every outcome prints one `systemMessage` line, also given to the session as
-  `additionalContext` so Lane 1 knows the state it is working under.
-- Outside LANE=1, or from a non-interactive entrypoint (or none), the toggle
-  refuses out loud. Any internal error writes nothing (fail closed).
+  `additionalContext` so Lane 1 knows the state it is working under. Any
+  internal error writes nothing.
 
 PreToolUse -- THE GUARD
 -----------------------
@@ -31,8 +37,10 @@ No agent may toggle auto-AE (ruling 2). This half denies, in every lane:
 - any other tool call whose input names the toggle's state file or the probe
   log: the state is written only by this hook. Default-deny on the path, not
   an allowlist of write shapes (the `guard_gh_rest_budget.py` lesson,
-  harmonic-forge#650). The match is on the path, never on the word "auto-ae",
-  so editing this file, its tests or the skill stays possible.
+  harmonic-forge#650). A command (`Bash`, `Monitor`) is judged on its whole
+  text; a file tool (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, Codex
+  `apply_patch`) only on the path it writes, never on its content, so editing
+  this file, its tests or the skill stays possible.
 
 THIS IS A MISTAKE-DETECTOR, NOT A BOUNDARY (R-0378)
 ---------------------------------------------------
@@ -44,10 +52,12 @@ into an interactive Lane 1 session. Every lane runs as the same user.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -90,11 +100,21 @@ def _interactive(entrypoint: str | None) -> bool:
 
 
 def _write_state(data: dict) -> None:
+    """Atomic and serialized: a unique temp file renamed into place, under an
+    exclusive lock, so two Lane 1 sessions toggling at once never interleave
+    (preclose second-run finding; `batch_auth._save`'s shape)."""
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    with path.with_name(path.name + ".lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(data, sort_keys=True) + "\n")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
 
 def toggle(payload: dict, lane: str | None, entrypoint: str | None,
@@ -107,28 +127,33 @@ def toggle(payload: dict, lane: str | None, entrypoint: str | None,
             return ("auto-AE: nothing changed. The whole prompt must be exactly `/auto-ae on`, "
                     "`/auto-ae off` or `/auto-ae status`.")
         return None
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if now is None else now))
+    record = {"set_at": stamp, "lane": lane, "session_id": payload.get("session_id")}
+    if action == "off":
+        # Revocation never waits on the arming path's gates or imports: turning
+        # auto-AE off is safe from anywhere, and a failure that left it on would
+        # fail open (preclose fail-direction finding).
+        _write_state({"on": False, **record})
+        return "auto-AE is OFF. Every Lane 3 spec needs the operator's approval and AE again."
     if lane != "1":
-        return f"auto-AE: nothing changed. It is toggled only in a Lane 1 session (LANE={lane or 'unset'})."
+        return f"auto-AE: nothing changed. It is turned on only in a Lane 1 session (LANE={lane or 'unset'})."
     if not _interactive(entrypoint):
         return (f"auto-AE: nothing changed. The session's entrypoint ({entrypoint or 'unset'}) "
                 "is not one an operator types into.")
     import _auto_ae  # noqa: PLC0415
     leases = sorted(_auto_ae.live_lease_keys())
-    current = _auto_ae.state(state_path()).get("on") is True
+    current = _auto_ae.state(state_path())
     if action == "status":
-        return (f"auto-AE is {'ON' if current else 'OFF'}. Live BATCH leases: "
-                f"{', '.join(leases) or 'none'}.")
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if now is None else now))
-    record = {"set_at": stamp, "lane": "1", "session_id": payload.get("session_id")}
-    if action == "off":
-        _write_state({"on": False, **record})
-        return "auto-AE is OFF. Every Lane 3 spec needs the operator's approval and AE again."
+        covered = ", ".join(current.get("leases_at_set") or []) or "none"
+        return (f"auto-AE is {'ON, covering ' + covered if current.get('on') else 'OFF'}. "
+                f"Live BATCH leases: {', '.join(leases) or 'none'}.")
     if not leases:
         return ("auto-AE REFUSED: there is no live BATCH lease. Type a BATCH line naming the "
                 "issues first; auto-AE covers only issues under a live lease. Nothing was written.")
     _write_state({"on": True, "leases_at_set": leases, **record})
-    return (f"auto-AE is ON for issues under a live BATCH lease ({', '.join(leases)}): Lane 1 "
-            "approves their Tier R/W specs and posts AE+sweep itself. Never Tier P. "
+    return (f"auto-AE is ON for the issues under a live BATCH lease now ({', '.join(leases)}): "
+            "Lane 1 approves their Tier R/W specs and posts AE+sweep itself. Never Tier P. "
+            "A later BATCH is not covered until `/auto-ae on` is typed again; "
             "`/auto-ae off` ends it.")
 
 
@@ -145,14 +170,44 @@ def _strings(value: object):
             yield from _strings(item)
 
 
+#: File tools are judged by the path they write, never by the content they
+#: carry: this hook's own source and tests contain the protected path, and a
+#: content match would deny every edit to them (preclose finding).
+_FILE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+_PATH_KEYS = ("file_path", "notebook_path", "path")
+_PATCH_PATH = re.compile(r"(?m)^\*\*\* (?:(?:Add|Update|Delete) File|Move to):[ \t]*(.+)$")
+#: A command that RUNS this hook, rather than naming its file: an agent piping
+#: a fake `UserPromptSubmit` payload into it inherits the session's LANE and
+#: entrypoint and would toggle auto-AE (preclose cross-family finding). An
+#: interpreter (or `exec`/`env`) with the script as an argument, the script at
+#: command position, or an import of the module. `git`, `cat`, `sed` and
+#: `test_auto_ae_toggle` runs only name the file, so they stay allowed.
+_HOOK_EXEC = re.compile(
+    r"(?<![\w./-])(?:python[\d.]*|exec|env|sh|bash|zsh)\b[^\n;&|]*(?<![\w])auto_ae_toggle\.py"
+    r"|(?:^|[;&|(]\s*)[^\s;&|]*(?<![\w])auto_ae_toggle\.py"
+    r"|\bimport\s+auto_ae_toggle\b|\bfrom\s+auto_ae_toggle\s+import\b"
+    r"|\brunpy\b[^\n]*auto_ae_toggle", re.M)
+
+
 def guard(payload: dict) -> str | None:
     """The deny reason, or None to let the call through."""
     tool = str(payload.get("tool_name") or "")
-    text = "\n".join(_strings(payload.get("tool_input")))
+    tool_input = payload.get("tool_input")
+    if tool in _FILE_TOOLS and isinstance(tool_input, dict):
+        text = "\n".join(str(tool_input.get(k) or "") for k in _PATH_KEYS)
+    elif tool == "apply_patch":
+        # Codex: the patch carries its paths on `*** Add/Update/Delete File:`
+        # and `*** Move to:` lines; its content is judged as Write's is.
+        text = "\n".join(m.group(1) for m in _PATCH_PATH.finditer("\n".join(_strings(tool_input))))
+    else:
+        text = "\n".join(_strings(tool_input))
     if tool in _SCHEDULE_TOOLS and _SCHEDULE_MENTION.search(text):
         return (f"auto-AE guard (R-0378): {tool} may not carry auto-ae. A scheduled prompt is "
                 "delivered into an interactive session and would toggle auto-AE as if the "
                 "operator typed it. Only the operator types `/auto-ae`.")
+    if tool not in _FILE_TOOLS and tool != "apply_patch" and _HOOK_EXEC.search(text):
+        return ("auto-AE guard (R-0378): this command runs the /auto-ae hook itself. Only the "
+                "harness runs it, on a prompt the operator typed.")
     if _PROTECTED_PATH.search(text):
         return ("auto-AE guard (R-0378): this call names the auto-AE state file or probe log. "
                 "Only the /auto-ae hook writes them; read the state with `/auto-ae status`.")

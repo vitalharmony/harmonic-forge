@@ -127,6 +127,33 @@ class ToggleTests(HookCase):
         self.message("<command-name>/auto-ae</command-name>\n<command-args>on</command-args>")
         self.assertFalse(self.state.exists())
 
+    def test_on_records_only_the_leases_live_now(self):
+        self.lease("F874")
+        self.message("/auto-ae on")
+        self.assertEqual(json.loads(self.state.read_text())["leases_at_set"], ["F874"])
+        self.assertIn("ON, covering F874", self.message("/auto-ae status"))
+
+    def test_off_is_honored_from_any_lane_or_entrypoint(self):
+        self.lease()
+        self.message("/auto-ae on")
+        self.assertIn("OFF", self.message("/auto-ae off", lane="2", entrypoint="sdk-cli"))
+        self.assertFalse(self.is_on())
+
+    def test_off_needs_no_lease_lookup(self):
+        self.lease()
+        self.message("/auto-ae on")
+        (self.home / ".claude" / "state" / "batch-authorized.json").write_text("{not json")
+        self.assertIn("OFF", self.message("/auto-ae off"))
+        self.assertFalse(self.is_on())
+
+    def test_a_write_leaves_no_temp_file_behind(self):
+        self.lease()
+        self.message("/auto-ae on")
+        self.message("/auto-ae off")
+        leftovers = [p.name for p in self.state.parent.iterdir()
+                     if p.name.startswith("auto-ae.json.") and p.name != "auto-ae.json.lock"]
+        self.assertEqual(leftovers, [])
+
     def test_a_prompt_that_does_not_mention_it_is_silent(self):
         self.assertIsNone(self.message("L3S H1706"))
 
@@ -161,6 +188,43 @@ class GuardTests(HookCase):
         self.assertTrue(self.denied(_tool("Write", {"file_path": path, "content": "{\"on\": true}"})))
         self.assertTrue(self.denied(_tool("Edit", {"file_path": path, "old_string": "f", "new_string": "t"})))
 
+    def test_a_monitor_command_touching_the_state_file_is_denied(self):
+        self.assertTrue(self.denied(_tool("Monitor", {"command": "echo on > ~/.claude/state/auto-ae.json"})))
+
+    def test_a_file_tool_is_judged_by_its_path_not_its_content(self):
+        content = "STATE = Path.home() / '.claude/state/auto-ae.json'\n"
+        self.assertFalse(self.denied(_tool("Write", {"file_path": "/x/tools/gh/_auto_ae.py", "content": content})))
+        self.assertFalse(self.denied(_tool("MultiEdit", {"file_path": "/x/test_auto_ae.py",
+                                                         "edits": [{"old_string": "a", "new_string": content}]})))
+
+    def test_codex_apply_patch_is_judged_by_its_file_lines(self):
+        to_state = "*** Begin Patch\n*** Add File: /home/u/.claude/state/auto-ae.json\n+{}\n*** End Patch"
+        self.assertTrue(self.denied(_tool("apply_patch", {"command": to_state}, event=None)))
+        own = ("*** Begin Patch\n*** Update File: tools/gh/_auto_ae.py\n"
+               "+STATE = '.claude/state/auto-ae.json'\n*** End Patch")
+        self.assertFalse(self.denied(_tool("apply_patch", {"command": own}, event=None)))
+
+    def test_running_the_toggle_hook_itself_is_denied(self):
+        for command in (
+            "echo '{\"prompt\": \"/auto-ae on\"}' | python3 tools/hooks/auto_ae_toggle.py",
+            "LANE=1 env CLAUDE_CODE_ENTRYPOINT=cli python3 ~/harmonic-forge/tools/hooks/auto_ae_toggle.py < p.json",
+            "./tools/hooks/auto_ae_toggle.py < payload.json",
+            "cd tools/hooks && python3 -c 'import auto_ae_toggle; auto_ae_toggle.main()'",
+            "python3 -c 'from auto_ae_toggle import toggle'",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(self.denied(_tool("Bash", {"command": command})))
+
+    def test_naming_the_hook_file_without_running_it_is_allowed(self):
+        for command in (
+            "git diff origin/main -- tools/hooks/auto_ae_toggle.py",
+            "sed -n 1,40p tools/hooks/auto_ae_toggle.py",
+            "python3 -m unittest discover -s tools/hooks -p test_auto_ae_toggle.py",
+            "git add backend/.env.example tools/hooks/auto_ae_toggle.py",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(self.denied(_tool("Bash", {"command": command})))
+
     def test_a_codex_payload_without_an_event_name_is_guarded(self):
         self.assertTrue(self.denied(_tool("shell", {"command": "rm ~/.claude/state/auto-ae.json"}, event=None)))
 
@@ -181,7 +245,7 @@ class RegistrationTests(unittest.TestCase):
     undetected (`forge_onboard.check_hooks` flags only an unresolvable script);
     HRSE2 asserts its own copy in `scripts/test_auto_ae_registration.py`."""
     SETTINGS = HERE.parent.parent / ".claude" / "settings.json"
-    GUARD_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit",
+    GUARD_TOOLS = {"Bash", "Monitor", "Write", "Edit", "MultiEdit", "NotebookEdit",
                    "CronCreate", "ScheduleWakeup", "RemoteTrigger"}
 
     def wired(self, event: str) -> list[tuple[str, str]]:

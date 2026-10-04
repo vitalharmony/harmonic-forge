@@ -1164,18 +1164,22 @@ the production step a Tier R gate verified).
   exactly `/auto-ae on`, `/auto-ae off` or `/auto-ae status`, typed into an
   interactive Lane 1 session; `tools/hooks/auto_ae_toggle.py` acts on it at
   `UserPromptSubmit`. The skill of the same name toggles nothing. No agent may
-  toggle it: the hook's `PreToolUse` half denies any tool call naming its state
-  file and any scheduled prompt (`CronCreate`, `ScheduleWakeup`,
-  `RemoteTrigger`) mentioning auto-ae.
+  toggle it: the hook's `PreToolUse` half denies any tool call writing its
+  state file, any command running the hook itself, and any scheduled prompt
+  (`CronCreate`, `ScheduleWakeup`, `RemoteTrigger`) mentioning auto-ae. It is
+  registered wherever Lane 1 runs (harmonic-forge and HRSE2).
 - **On needs a live `BATCH`**, or the toggle refuses out loud and writes
-  nothing. Each auto-AE also needs the issue's own lease to be live when it
-  posts.
+  nothing. It covers only the issues whose leases are live when it is turned
+  on; a later `BATCH` needs `/auto-ae on` typed again. Each auto-AE also needs
+  the issue's own lease to still be live when it posts. `/auto-ae off` is
+  honored from any session, before any other check.
 - **The AE claims it on its Authorized: line**, citing "auto-AE (R-0378)" and
   the Lane 3 spec comment it approves. `tools/gh/l1_post.py` refuses one
   (`tools/gh/_auto_ae.py`) unless the toggle is on, the issue's lease is live,
   it posts as `ae-and-sweep` at the SHA of the newest `ready-for-l3`, the spec is
-  the newest after that `ready-for-l3` and unedited, both spec and sweep are
-  Tier R or W, and it carries no `--prod-run` and no `--ack-no-pr-required`.
+  the newest after that `ready-for-l3` (by footer or by heading) and unedited,
+  no tier above W is mentioned anywhere in the spec or the sweep (fenced text
+  included), and it carries no `--prod-run` and no `--ack-no-pr-required`.
 - **An auto-AE never carries forward** under R-0209 (`check_lane3_ready`
   refuses the carry): a new SHA gets a fresh auto-AE, checked when it posts, or
   the operator's AE.
