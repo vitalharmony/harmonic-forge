@@ -66,7 +66,7 @@ _DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*:?[^\S\n]*\**`?([RWP])`
 # capitals, so a Cypher `SET p.x` on the same line is not a P. It can only cause a false refusal, which
 # costs one operator AE, so widening it is always the safe move.
 _P_AFTER_TIER = re.compile(r"(?i:tier|ceiling)[^\n]*?(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)[= ]+[`*]*[pP]\b")
-_P_CELL = re.compile(r"(?im)^[^\S\n]*\|.*\|[^\S\n]*[`*]*P[`*]*[^\S\n]*\|")
+_P_CELL = re.compile(r"(?im)^[^\S\n]*\|.*\|[^\S\n]*[`*]*P[`*]*[^\S\n]*(?:\||$)")
 
 
 def declared_tier(body: str) -> str | None:

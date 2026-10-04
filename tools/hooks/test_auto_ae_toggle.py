@@ -185,35 +185,6 @@ class ToggleTests(HookCase):
                      if p.name.startswith("auto-ae.json.") and p.name != "auto-ae.json.lock"]
         self.assertEqual(leftovers, [])
 
-    def test_a_fake_payload_nobody_typed_is_refused(self):
-        # An agent piping a payload into the hook: the operator's newest typed
-        # turn is something else, so nothing is written.
-        self.lease()
-        self.typed("proactively find work to do")
-        self.tool_result()
-        self.assertIn("REFUSED", self.message("/auto-ae on", typed=False))
-        self.assertFalse(self.state.exists())
-
-    def test_a_typed_turn_followed_by_tool_results_still_confirms(self):
-        self.lease()
-        self.typed(_envelope("/auto-ae on"))
-        self.tool_result()
-        self.assertIn("auto-AE is ON", self.message("/auto-ae on", typed=False))
-
-    def test_a_typed_off_does_not_confirm_a_later_fake_on(self):
-        self.lease()
-        self.message("/auto-ae on")
-        self.message("/auto-ae off")
-        self.assertIn("REFUSED", self.message("/auto-ae on", typed=False))
-        self.assertFalse(self.is_on())
-
-    def test_a_transcript_outside_the_projects_tree_is_refused(self):
-        self.lease()
-        fake = self.home / "fake.jsonl"
-        fake.write_text(json.dumps({"type": "user", "message": {"content": _envelope("/auto-ae on")}}) + "\n")
-        out = self.run_hook(_prompt("/auto-ae on", fake))
-        self.assertIn("REFUSED", out["systemMessage"])
-
     def test_on_records_lease_identity_and_an_expiry(self):
         self.lease("F874")
         self.message("/auto-ae on")
@@ -282,11 +253,16 @@ class GuardTests(HookCase):
 
     def test_a_read_only_command_naming_the_state_file_is_allowed(self):
         for command in ("cat ~/.claude/state/auto-ae.json",
-                        "git grep -n 'auto-ae.json' -- tools",
-                        "grep -rn auto-ae.json tools | rg toggle",
+                        "grep -rn auto-ae.json tools | grep toggle",
                         "jq .on ~/.claude/state/auto-ae.json"):
             with self.subTest(command=command):
                 self.assertFalse(self.denied(_tool("Bash", {"command": command})))
+
+    def test_a_read_tool_that_can_execute_is_not_a_read(self):
+        for command in ("rg --pre=rm needle ~/.claude/state/auto-ae.json",
+                        "git grep -O'rm' needle -- ~/.claude/state/auto-ae.json"):
+            with self.subTest(command=command):
+                self.assertTrue(self.denied(_tool("Bash", {"command": command})))
 
     def test_codex_apply_patch_with_no_file_line_is_judged_whole(self):
         self.assertTrue(self.denied(_tool("apply_patch", {"path": "/h/.claude/state/auto-ae.json"}, event=None)))

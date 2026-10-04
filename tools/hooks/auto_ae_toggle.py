@@ -10,11 +10,11 @@ The step 1 probe showed the harness delivers that raw text, with no
 `<command-name>` envelope (probe ruling, 2026-10-04), so the match is exact:
 surrounding whitespace stripped, nothing else on the line, bounded length.
 Provenance rests on the same basis as `BATCH`: only operator-typed text fires
-`UserPromptSubmit`, and a model-invoked Skill call does not. And because an
-agent could pipe a fake payload into this file, `on` also requires the session
-transcript's newest typed user turn to be this command (the harness records a
-typed `/auto-ae on` as its `<command-name>` envelope); a faked payload appends
-no such turn (sticky-wicket PATCH, fix 1).
+`UserPromptSubmit`, and a model-invoked Skill call does not. An agent piping a
+fabricated payload into this file by hand is forgery, a named residual under
+the operator's mistake-detector ruling (2026-10-04): no hook-visible signal
+tells the harness apart from such a caller (the current prompt is not yet in
+the transcript when the hook runs; `batch_provenance.py`).
 
 - `on` needs at least one live `BATCH` lease (unexpired, with an unspent
   `gh pr merge` target), or it refuses loudly and writes nothing (ruling 3).
@@ -54,8 +54,8 @@ THIS IS A MISTAKE-DETECTOR, NOT A BOUNDARY (R-0378)
 ---------------------------------------------------
 It stops an agent turning auto-AE on through its own tools by an ordinary
 path. It does not stop: a path composed indirectly (`'auto-' + 'ae.json'` in
-`python -c`, a shell variable); a crafted transcript file under
-`~/.claude/projects` handed to a faked payload; or model-written `/auto-ae on`
+`python -c`, a shell variable); an agent running this hook by hand with a
+fabricated `/auto-ae on` payload; or model-written `/auto-ae on`
 text that the operator pastes, or that a `/loop` scheduled before this guard
 existed echoes into an interactive Lane 1 session. Every lane runs as the same
 user.
@@ -111,10 +111,6 @@ def _interactive(entrypoint: str | None) -> bool:
 
 #: ON lapses on its own, like a BATCH grant (sticky-wicket PATCH, fix 5).
 TTL_SECONDS = 12 * 60 * 60
-#: How much of the transcript's tail is read for the operator's newest turn.
-_TRANSCRIPT_TAIL = 512 * 1024
-_ENVELOPE_NAME = re.compile(r"<command-name>\s*/auto-ae\s*</command-name>")
-_ENVELOPE_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 
 
 class _Locked:
@@ -169,56 +165,6 @@ def _revoke(record: dict) -> str:
                     f"({type(exc).__name__}). Remove ~/.claude/state/auto-ae.json by hand.")
 
 
-def _turn_text(row: dict) -> str | None:
-    """A typed user turn's text, or None for a tool result or a meta row."""
-    if row.get("type") != "user" or row.get("isMeta") or row.get("toolUseResult") is not None:
-        return None
-    content = (row.get("message") or {}).get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
-            return None
-        return "".join(b.get("text", "") for b in content if isinstance(b, dict))
-    return None
-
-
-def typed_turn_confirms(payload: dict, action: str) -> bool:
-    """True when the newest typed user turn in the session's own transcript is
-    this command (sticky-wicket PATCH, fix 1). The harness records a typed
-    `/auto-ae on` as its `<command-name>` envelope with `<command-args>`; the
-    raw text is accepted too. An agent piping a fake payload into this hook
-    appends no user turn, so the newest typed turn is whatever the operator
-    last typed, and the check refuses without naming any interpreter."""
-    raw = payload.get("transcript_path")
-    if not isinstance(raw, str) or not raw:
-        return False
-    path = Path(raw).expanduser()
-    try:
-        path.resolve().relative_to((Path.home() / ".claude" / "projects").resolve())
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, handle.tell() - _TRANSCRIPT_TAIL))
-            lines = handle.read().decode("utf-8", errors="replace").splitlines()
-    except (OSError, ValueError):
-        return False
-    for line in reversed(lines):
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        text = _turn_text(row) if isinstance(row, dict) else None
-        if text is None:
-            continue
-        if text.strip() == str(payload.get("prompt") or "").strip():
-            return True
-        if _ENVELOPE_NAME.search(text):
-            args = _ENVELOPE_ARGS.search(text)
-            return ((args.group(1).strip() if args else "") or "status") == action
-        return False
-    return False
-
-
 def toggle(payload: dict, lane: str | None, entrypoint: str | None,
            now: float | None = None) -> str | None:
     """The message to show, or None when the prompt is not an `/auto-ae` line."""
@@ -248,9 +194,6 @@ def toggle(payload: dict, lane: str | None, entrypoint: str | None,
         covered = ", ".join(sorted(current.get("leases_at_set") or {})) or "none"
         return (f"auto-AE is {'ON, covering ' + covered if current.get('on') else 'OFF'}. "
                 f"Live BATCH leases: {', '.join(sorted(_auto_ae.live_leases())) or 'none'}.")
-    if not typed_turn_confirms(payload, action):
-        return ("auto-AE REFUSED: the session transcript's newest typed turn is not `/auto-ae on`, "
-                "so this did not come from the operator's keyboard. Nothing was written.")
     with _Locked():
         leases = _auto_ae.live_leases()
         if not leases:
@@ -288,7 +231,9 @@ _PATCH_PATH = re.compile(r"(?m)^\*\*\* (?:(?:Add|Update|Delete) File|Move to):[ 
 #: direction from #650's allowlist of writes). Any redirection, `tee`, command
 #: chaining or substitution disqualifies the whole command (sticky-wicket
 #: PATCH, fix 8).
-_READ_COMMANDS = ("cat", "grep", "egrep", "fgrep", "rg", "ls", "jq", "git grep")
+#: Not `rg` (`--pre` runs a command per file) and not `git grep` (`-O` opens a
+#: pager command): each can execute, so neither is a pure read (post-verdict).
+_READ_COMMANDS = ("cat", "grep", "egrep", "fgrep", "ls", "jq")
 _NOT_A_READ = re.compile(r"[;&`>]|\$\(|<\(|\btee\b|\n")
 
 
@@ -302,10 +247,10 @@ def _read_only(command: str) -> bool:
 def guard(payload: dict) -> str | None:
     """The deny reason, or None to let the call through.
 
-    There is no check for an agent running this hook itself: a fake payload is
-    refused at the toggle, which requires the session transcript's newest typed
-    turn to be the command (`typed_turn_confirms`), not by enumerating
-    interpreter spellings here (sticky-wicket PATCH, fix 1)."""
+    There is no check for an agent running this hook itself with a fabricated
+    payload: that is forgery, a named residual by the operator's 2026-10-04
+    ruling. Two attempts to detect it (an interpreter denylist, then a
+    transcript check) each failed review."""
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if tool in _FILE_TOOLS and isinstance(tool_input, dict):

@@ -2506,7 +2506,7 @@ id = "R-0378"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
 statement = "Auto-AE: while the operator's /auto-ae toggle is on (typed as the whole prompt in an interactive Lane 1 session, and only with a live BATCH), Lane 1 approves Lane 3's spec and posts AE+sweep itself for an issue under a live BATCH lease whose spec and sweep are Tier R or W throughout, never Tier P; the AE cites auto-AE (R-0378) and the spec comment on its Authorized: line, l1_post refuses it unless every precondition holds, and it never carries forward under R-0209. No agent may toggle it (PreToolUse guard on the state file and scheduled prompts). A mistake-detector, not a boundary (harmonic-forge#874)."
-text_sha = "95e83f257d6c223f"
+text_sha = "7b200b610fc595e4"
 exception_to = ["R-0124", "R-0165", "R-0208"]
 hooks = [
   { script = "auto_ae_toggle.py", events = ["UserPromptSubmit", "PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "harmonic-forge/.codex/hooks.json", "HRSE2/.claude/settings.json"] },

@@ -1165,10 +1165,8 @@ operator's AE (and R-0374 for the production step a Tier R gate verified).
   exactly `/auto-ae on`, `/auto-ae off` or `/auto-ae status`, typed into an
   interactive Lane 1 session; `tools/hooks/auto_ae_toggle.py` acts on it at
   `UserPromptSubmit`. The skill of the same name toggles nothing. No agent may
-  toggle it: `on` also requires the session transcript's newest typed turn to
-  be that command, so a payload an agent pipes into the hook is refused; and
-  the hook's `PreToolUse` half denies any non-read tool call naming its state
-  file and any scheduled prompt (`CronCreate`, `ScheduleWakeup`,
+  toggle it: the hook's `PreToolUse` half denies any non-read tool call naming
+  its state file and any scheduled prompt (`CronCreate`, `ScheduleWakeup`,
   `RemoteTrigger`) mentioning auto-ae. It is registered wherever Lane 1 runs
   (harmonic-forge and HRSE2).
 - **On needs a live `BATCH`**, or the toggle refuses out loud and writes
@@ -1193,8 +1191,9 @@ operator's AE (and R-0374 for the production step a Tier R gate verified).
 for R-0374 (operator decision, 2026-10-02). Every lane runs as one user and
 posts as one GitHub account. Named residuals: a state-file path composed
 indirectly (in `python -c`, or through a shell variable) passes the guard; a
-crafted transcript under `~/.claude/projects` handed to a faked payload passes
-the typed-turn check; and model-written `/auto-ae on` text that the operator
+an agent running the hook by hand with a fabricated `/auto-ae on` payload is
+not detected (operator ruling, 2026-10-04: forgery, outside a mistake-detector);
+and model-written `/auto-ae on` text that the operator
 pastes, or that a loop scheduled before the guard existed delivers, toggles it
 as if typed. A spec that omits the `Write tier` declaration is never
 auto-approved, until Lane 3's spec tool stamps the tier.
