@@ -289,8 +289,12 @@ class ReportUnit(unittest.TestCase):
             (receipts / "o_r_1.kill.json").write_text(json.dumps({"repo": "o/r", "issue": 1, "status": "pass"}))
             (receipts / enrollment.EXPERIMENT_FILE).write_text(json.dumps({"enrolling": True}))
             text = report.report(receipts, None, receipts / "no-archive", by_arm=True)
+            plain = report.report(receipts, None, receipts / "no-archive")
         self.assertEqual(_row(text, "manual")[1], "1")
         self.assertEqual(_row(text, "unarmed")[1], "0")
+        # The default report has no issue keying of its own: a kill receipt
+        # read as a receipt would be a second row for the same issue.
+        self.assertIn("1 issue(s)", plain)
 
     def test_an_unmeasured_pass_is_never_free(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
