@@ -60,7 +60,12 @@ def archived_passes(root: Path, skipped: list[str] | None = None) -> dict[str, d
             entries = found.setdefault(key, {})
             for entry in preclose_passes.history(record):
                 if entry.get("sha"):
-                    entries.setdefault(entry["sha"], entry)
+                    held = entries.get(entry["sha"])
+                    # The richer copy wins whatever the archive's order (#889
+                    # post-verdict check): a costed entry over a bare one.
+                    if held is None or (preclose_passes.pass_cost_view(held)["panel"] == "unknown"
+                                        and preclose_passes.pass_cost_view(entry)["panel"] != "unknown"):
+                        entries[entry["sha"]] = entry
             head = preclose_passes.reviewed_head(record)
             if record.get("status") == "complete" and head:
                 entries.setdefault(head, {"sha": head})

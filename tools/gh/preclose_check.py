@@ -754,7 +754,13 @@ def plan(args: argparse.Namespace) -> int:
         raise SystemExit(f"preclose-check: {args.base}...{args.head} changes nothing -- nothing to review.")
 
     reasons = blast_radius(files)
-    size, why = panel_size(reasons, args.tier)
+    # One tier for the size and the label (#889 post-verdict check): a re-plan
+    # without --tier sizes the panel at the tier the last pass was sized at,
+    # and records that same tier, so the event never names a tier the panel
+    # was not sized at.
+    prior = find_receipt(repo, args.issue)
+    tier = args.tier or preclose_passes.last_tier(prior)
+    size, why = panel_size(reasons, tier)
 
     print(f"preclose-check plan for {repo}#{args.issue}")
     print(f"  diff:     {args.base}...{args.head} @ {head_sha[:12]} ({len(files)} files)")
@@ -787,10 +793,8 @@ def plan(args: argparse.Namespace) -> int:
     # it must carry the pass history forward or the count would reset.
     # The tier the panel was sized at, so --complete (which is not given
     # --tier in the documented flow) labels its event with it (#889).
-    prior = find_receipt(repo, args.issue)
     write_receipt(repo, args.issue, head_sha, size, status="planned",
-                  extra={**preclose_passes.carried(prior),
-                         "tier": args.tier or preclose_passes.last_tier(prior) or "unset"})
+                  extra={**preclose_passes.carried(prior), "tier": tier or "unset"})
     return 0
 
 

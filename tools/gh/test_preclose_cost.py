@@ -242,6 +242,15 @@ class StickyWicketPatch(CostCase):
         self.assertEqual([e["attrs"]["tier"] for e in events], ["deep", "deep"])
         self.assertEqual(self.last_pass()["tier"], "deep")
 
+    def test_a_re_plan_sizes_and_labels_at_the_same_tier(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier="deep")
+        self.run_complete(tier=None)
+        self.commit("tools/z.py")
+        self.assertIn("Tier deep", self.plan(tier=None))
+        receipt = preclose.find_receipt("vitalharmony/hrse", 1208)
+        self.assertEqual(receipt["tier"], "deep")
+
     def test_zero_is_not_a_measured_cost(self) -> None:
         for flags in ({"panel_tokens": "0"}, {"panel_ms": "0"}):
             with self.subTest(flags), self.assertRaises(SystemExit) as refused:
@@ -284,6 +293,20 @@ class ReportReadsOneMergedPassList(unittest.TestCase):
         self.assertIn("| aaaaaaaaaaaa | 500 | 9 |", text)  # recovered, not n/a
         self.assertIn("| cccccccccccc | n/a | n/a |", text)
         self.assertIn("3 pass(es); panel tokens median 300, total 600 over 2 measured", text)
+
+    def test_a_costed_archived_copy_wins_over_a_bare_one_in_either_order(self) -> None:
+        bare = {"repo": "o/r", "issue": 4, "status": "complete", "reviewed_sha": "f" * 40,
+                "pass_history": [{"sha": "f" * 40, "epoch": 0}]}
+        costed = {**bare, "pass_history": [{"sha": "f" * 40, "epoch": 0, "panel_tokens": 70, "panel_ms": 7,
+                                            "cross_family_ran": False}]}
+        for order in ((bare, costed), (costed, bare)):
+            with self.subTest(first=order[0] is bare), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "r").mkdir()
+                self.archive(root / "a", list(order))
+                (root / "r" / "o_r_4.json").write_text(json.dumps({"repo": "o/r", "issue": 4, "pass_history": []}))
+                text = report.report(root / "r", None, root / "a")
+                self.assertIn("| ffffffffffff | 70 | 7 |", text)
 
     def test_a_fallback_is_shown_but_not_counted_as_a_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
