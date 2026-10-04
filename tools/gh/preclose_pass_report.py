@@ -86,8 +86,7 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
             "surviving_last": int(current[-1].get("surviving") or 0) if current else 0,
             "post_verdict_check": "post_verdict_check" in receipt,
             "modified": modified.date().isoformat(),
-            "costs": [_cost_row(issue, number, p) for number, p in enumerate(current, 1)
-                      if "panel_tokens" in p or "cost_unavailable" in p],
+            "costs": [_cost_row(issue, number, p) for number, p in enumerate(current, 1)],
         })
     return out
 
@@ -110,13 +109,15 @@ def render_costs(table: list[dict]) -> str:
     lines = ["| Issue | Pass | Head | Panel tokens | Panel ms | Codex check ms |",
              "|---|---|---|---|---|---|"]
     for c in passes:
-        tokens = _number(c["tokens"]) if c["unavailable"] is None else "unavailable"
-        lines.append(f"| {c['issue']} | {c['pass']} | {c['sha']} | {tokens} | {_number(c['ms'])} | "
-                     f"{_number(c['codex_ms'])} |")
+        # n/a: cost unavailable, or a pass recorded before harmonic-forge#889.
+        measured = isinstance(c["tokens"], int)
+        lines.append(f"| {c['issue']} | {c['pass']} | {c['sha']} | "
+                     f"{_number(c['tokens']) if measured else 'n/a'} | "
+                     f"{_number(c['ms']) if measured else 'n/a'} | {_number(c['codex_ms'])} |")
     counted = [c["tokens"] for c in passes if isinstance(c["tokens"], int)]
     median = f"{statistics.median(counted):,.0f}" if counted else "n/a"
     share = f"{sum(c['codex_ran'] for c in passes)}/{len(passes)}" if passes else "0/0"
-    lines += ["", f"{len(passes)} pass(es) with recorded cost; panel tokens median {median}, "
+    lines += ["", f"{len(passes)} pass(es); panel tokens median {median}, "
                   f"total {sum(counted):,} over {len(counted)} measured; Codex check ran on {share}. "
                   "Excludes the Lane 1 session's own orchestration cost, which it cannot read."]
     return "\n".join(lines)

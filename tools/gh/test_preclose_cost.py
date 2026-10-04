@@ -79,6 +79,9 @@ class TC1CostIsRequired(CostCase):
         with self.assertRaises(SystemExit) as refused:
             self.run_complete(panel_tokens=None, panel_ms=None, cost_unavailable="  ")
         self.assertIn("reason", str(refused.exception))
+        with self.assertRaises(SystemExit) as refused:
+            self.run_complete(panel_tokens=None, panel_ms=None, cost_unavailable="x" * 201)
+        self.assertIn("200 characters", str(refused.exception))
 
 
 class TC2CostIsRecordedPerPass(CostCase):
@@ -108,6 +111,8 @@ class TC3OneEventPerPass(CostCase):
         attrs = event["attrs"]
         self.assertTrue(all(isinstance(v, (int, float, bool, str)) for v in attrs.values()), attrs)
         self.assertEqual((attrs["panel_tokens"], attrs["panel_ms"], attrs["pass"]), (1000, 2000, 1))
+        self.assertNotIn("cost_unavailable", attrs)
+        self.assertTrue(event["subject_id"].endswith("#p1e0"), event["subject_id"])
         # No free text: the only strings are the tier label.
         self.assertEqual({k for k, v in attrs.items() if isinstance(v, str)}, {"tier"})
         sha = preclose.find_receipt("vitalharmony/hrse", 1208)["reviewed_sha"]
@@ -120,7 +125,7 @@ class TC3OneEventPerPass(CostCase):
     def test_an_unavailable_cost_emits_no_invented_numbers(self) -> None:
         self.run_complete(panel_tokens=None, panel_ms=None, cost_unavailable="no usage")
         attrs = self.events()[0]["attrs"]
-        self.assertIs(attrs["cost_available"], False)
+        self.assertIs(attrs["cost_unavailable"], True)
         self.assertNotIn("panel_tokens", attrs)
 
 
@@ -150,10 +155,10 @@ class TC5Report(unittest.TestCase):
             text = report.report(receipts, None, receipts / "no-archive")
         self.assertIn("| o/r#1 | 1 | aaaaaaaaaaaa | 100 | 10 |  |", text)
         self.assertIn("| o/r#1 | 2 | bbbbbbbbbbbb | 300 | 30 | 700 |", text)
-        self.assertIn("| o/r#2 | 1 | cccccccccccc | unavailable |  |  |", text)
-        self.assertNotIn("dddddddddddd", text)
-        self.assertIn("3 pass(es) with recorded cost; panel tokens median 200, total 400 over 2 measured; "
-                      "Codex check ran on 1/3.", text)
+        self.assertIn("| o/r#2 | 1 | cccccccccccc | n/a | n/a |  |", text)
+        self.assertIn("| o/r#2 | 2 | dddddddddddd | n/a | n/a |  |", text)
+        self.assertIn("4 pass(es); panel tokens median 200, total 400 over 2 measured; "
+                      "Codex check ran on 1/4.", text)
         self.assertIn("orchestration cost", text)
 
 

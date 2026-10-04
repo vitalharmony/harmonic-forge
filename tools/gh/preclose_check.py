@@ -823,7 +823,7 @@ def complete(args: argparse.Namespace) -> int:
     provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
     check_provenance(required, provenance)
     ran = bool(args.envelope) and provenance.startswith(PROVENANCE_TRIGGERED[0])
-    cost.update({"raised": len(findings), "dismissed": dismissed_count(findings),
+    cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
                  "cross_family_ran": ran,
                  "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
     if ran:
@@ -889,6 +889,8 @@ def pass_cost(args: argparse.Namespace) -> dict:
     if getattr(args, "cost_unavailable", None) is not None and not reason:
         raise SystemExit("preclose-check: --cost-unavailable needs the reason the runtime "
                          "reported no usage.")
+    if len(reason) > 200:
+        raise SystemExit("preclose-check: --cost-unavailable is a reason, at most 200 characters.")
     if reason and (tokens is not None or ms is not None):
         raise SystemExit("preclose-check: --cost-unavailable stands in for --panel-tokens and "
                          "--panel-ms; pass it or them, not both.")
@@ -914,11 +916,6 @@ def pass_cost(args: argparse.Namespace) -> dict:
     return cost
 
 
-def dismissed_count(findings: list) -> int:
-    return sum(1 for finding in findings
-               if isinstance(finding, dict) and str(finding.get("dismissed") or "").strip())
-
-
 def cost_line(cost: dict) -> str:
     panel = (f"cost unavailable ({cost['cost_unavailable']})" if "cost_unavailable" in cost
              else f"{cost['panel_tokens']:,} panel tokens, {cost['panel_ms']:,} ms")
@@ -942,8 +939,9 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
         origin = archive.origin_for_repo(repo)
         attrs = {**labels, "raised": entry.get("raised"), "surviving": entry.get("surviving"),
                  "dismissed": entry.get("dismissed"),
-                 "cost_available": "cost_unavailable" not in entry,
                  "cross_family_ran": bool(entry.get("cross_family_ran"))}
+        if "cost_unavailable" in entry:
+            attrs["cost_unavailable"] = True
         for key in ("panel_tokens", "panel_ms"):
             if key in entry:
                 attrs[key] = entry[key]
@@ -953,7 +951,10 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
             "ts": entry["completed_at"], "source": "advisory", "repo": repo, "issue": issue,
             "sha": head_sha, "account": origin.account, "org": origin.org,
             "actor": "advisory:preclose-inspection", "event_type": "preclose.pass.completed",
-            "subject_kind": "preclose-pass", "subject_id": f"{repo}#{issue}@{head_sha[:12]}",
+            "subject_kind": "preclose-pass",
+            # Pass and epoch in the id: a --reforge pass at the same SHA is a
+            # distinct event, never a duplicate of the pass it replaced.
+            "subject_id": f"{repo}#{issue}@{head_sha[:12]}#p{labels.get('pass')}e{entry.get('epoch', 0)}",
             "provenance": "manual", "attrs": attrs,
         }
         counts = telemetry_emit.emit([event])
