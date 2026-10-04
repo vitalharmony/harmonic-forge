@@ -53,6 +53,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
@@ -493,8 +494,9 @@ def gate(args: argparse.Namespace) -> int:
     print()
     print("Then record the pass with the same --findings. The label is computed from the")
     print("envelope, never typed:")
-    tail = ("--envelope <envelope path>" if required else "--not-triggered") + \
-        " --own-model <your session's model>"
+    tail = ("--envelope <envelope path> --cross-family-ms <ms>" if required
+            else "--not-triggered") + \
+        " --own-model <your session's model> --panel-tokens <sum> --panel-ms <ms>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
           f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} {tail}"
           + (" --cross-family" if args.cross_family else ""))
@@ -804,6 +806,7 @@ def complete(args: argparse.Namespace) -> int:
             "preclose-check: --complete needs --findings (the panel's findings, JSON) and one of "
             "--envelope/--not-triggered -- a pass is not complete until the cross-family gate "
             "has been evaluated (harmonic-forge#701).")
+    cost = pass_cost(args)
     # harmonic-forge#701 preclose finding (two refuters): without this, a
     # second --complete on the same SHA overwrote the receipt and could
     # relabel a required two-family pass as in-family only.
@@ -814,16 +817,25 @@ def complete(args: argparse.Namespace) -> int:
     require_mechanisms(findings)
     mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
                   for finding in surviving_findings(findings)]
-    required, why, surviving, _ = gate_decision(args)
+    required, why, surviving, reasons = gate_decision(args)
     if required and args.envelope:
         require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
     check_provenance(required, provenance)
+    ran = bool(args.envelope) and provenance.startswith(PROVENANCE_TRIGGERED[0])
+    cost.update({"raised": len(findings), "dismissed": dismissed_count(findings),
+                 "cross_family_ran": ran,
+                 "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    if ran:
+        cost["cross_family_tokens"] = "unavailable"
+    else:
+        # The envelope was a fallback: nothing ran, so there is no Codex time.
+        cost.pop("cross_family_ms", None)
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
-                                 current_branch(), reforge),
+                                 current_branch(), reforge, cost),
         "cross_family_required": required,
         "cross_family_reason": why,
         "provenance": provenance,
@@ -835,12 +847,123 @@ def complete(args: argparse.Namespace) -> int:
     print(f"  cross-family: {'required' if required else 'not triggered'} — {why}")
     print(f"  {provenance}")
     print(f"  mechanisms: {', '.join(sorted(set(mechanisms))) or '(none)'}")
+    print(f"  cost: {cost_line(cost)}")
     route = preclose_passes.cluster_message(read_receipt(path), repo, args.issue)
     if route:
         print(f"  {route}")
+    receipt = read_receipt(path) or {}
+    passes = preclose_passes.current(preclose_passes.history(receipt))
+    emit_pass(repo, args.issue, head_sha, passes[-1] if passes else {}, {
+        "pass": len(passes), "refuters": int(size), "tier": getattr(args, "tier", None) or "unset",
+        "high_blast": bool(reasons), "cross_family_required": bool(required)})
     print()
     print(NOT_A_GATE)
     return 0
+
+
+def _count(flag: str, value: object) -> int | None:
+    """A non-negative integer flag value, or None when the flag was not given.
+    Validated here rather than by argparse, so a printed command whose
+    placeholder is not yet filled still parses (test_preclose_check)."""
+    if value is None:
+        return None
+    try:
+        number = int(str(value), 10)
+    except ValueError:
+        raise SystemExit(f"preclose-check: {flag} must be a whole number, got {value!r}") from None
+    if number < 0:
+        raise SystemExit(f"preclose-check: {flag} cannot be negative, got {number}")
+    return number
+
+
+def pass_cost(args: argparse.Namespace) -> dict:
+    """harmonic-forge#889: what this pass cost. Never silent and never zero:
+    the panel's tokens and wall-clock are required, unless the runtime reported
+    no usage, which --cost-unavailable records with its reason instead of
+    numbers. The cross-family call's wall-clock is required whenever an
+    envelope is recorded; Codex reports no tokens, so they are "unavailable"."""
+    tokens = _count("--panel-tokens", getattr(args, "panel_tokens", None))
+    ms = _count("--panel-ms", getattr(args, "panel_ms", None))
+    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None))
+    reason = str(getattr(args, "cost_unavailable", None) or "").strip()
+    if getattr(args, "cost_unavailable", None) is not None and not reason:
+        raise SystemExit("preclose-check: --cost-unavailable needs the reason the runtime "
+                         "reported no usage.")
+    if reason and (tokens is not None or ms is not None):
+        raise SystemExit("preclose-check: --cost-unavailable stands in for --panel-tokens and "
+                         "--panel-ms; pass it or them, not both.")
+    if not reason:
+        missing = [flag for flag, value in (("--panel-tokens", tokens), ("--panel-ms", ms))
+                   if value is None]
+        if missing:
+            raise SystemExit(
+                f"preclose-check: --complete needs {' and '.join(missing)}: the sum of every "
+                "refuter's subagent_tokens, and first-spawn-to-last-result wall-clock. When the "
+                "runtime reported no usage, pass --cost-unavailable \"<reason>\" instead. A pass's "
+                "cost is never silent and never zero (harmonic-forge#889).")
+    if getattr(args, "envelope", None) and cross_ms is None:
+        raise SystemExit("preclose-check: --envelope needs --cross-family-ms <ms>: the wall-clock "
+                         "of the cross_family_call.sh run, measured around the call "
+                         "(harmonic-forge#889).")
+    if cross_ms is not None and not getattr(args, "envelope", None):
+        raise SystemExit("preclose-check: --cross-family-ms without --envelope: no cross-family "
+                         "call is recorded for this pass.")
+    cost: dict = {"cost_unavailable": reason} if reason else {"panel_tokens": tokens, "panel_ms": ms}
+    if cross_ms is not None:
+        cost["cross_family_ms"] = cross_ms
+    return cost
+
+
+def dismissed_count(findings: list) -> int:
+    return sum(1 for finding in findings
+               if isinstance(finding, dict) and str(finding.get("dismissed") or "").strip())
+
+
+def cost_line(cost: dict) -> str:
+    panel = (f"cost unavailable ({cost['cost_unavailable']})" if "cost_unavailable" in cost
+             else f"{cost['panel_tokens']:,} panel tokens, {cost['panel_ms']:,} ms")
+    codex = (f"; cross-family {cost['cross_family_ms']:,} ms, tokens unavailable"
+             if cost.get("cross_family_ran") else "")
+    return f"{panel}{codex}; {cost['raised']} raised, {cost['dismissed']} dismissed"
+
+
+def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -> None:
+    """harmonic-forge#889: one ``preclose.pass.completed`` event per completed
+    pass. Counts and labels only. Its timestamp is the pass's stored
+    ``completed_at``, so emitting the same pass again yields the same event id
+    and the store drops it as a duplicate. A store that cannot be written is
+    reported on stderr and never fails the pass: the receipt is the record."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        import emit as telemetry_emit  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        attrs = {**labels, "raised": entry.get("raised"), "surviving": entry.get("surviving"),
+                 "dismissed": entry.get("dismissed"),
+                 "cost_available": "cost_unavailable" not in entry,
+                 "cross_family_ran": bool(entry.get("cross_family_ran"))}
+        for key in ("panel_tokens", "panel_ms"):
+            if key in entry:
+                attrs[key] = entry[key]
+        if entry.get("cross_family_ran"):
+            attrs["cross_family_ms"] = entry.get("cross_family_ms")
+        event = {
+            "ts": entry["completed_at"], "source": "advisory", "repo": repo, "issue": issue,
+            "sha": head_sha, "account": origin.account, "org": origin.org,
+            "actor": "advisory:preclose-inspection", "event_type": "preclose.pass.completed",
+            "subject_kind": "preclose-pass", "subject_id": f"{repo}#{issue}@{head_sha[:12]}",
+            "provenance": "manual", "attrs": attrs,
+        }
+        counts = telemetry_emit.emit([event])
+        if counts.get("rejected"):
+            print(f"preclose-check: pass telemetry rejected: {counts['rejected']}", file=sys.stderr)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - telemetry never changes the outcome
+        print(f"preclose-check: pass telemetry not written: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
 
 
 def main() -> None:
@@ -887,6 +1010,18 @@ def main() -> None:
                         help="Record sticky-wicket's verdict for a pass 1 mechanism cluster; not a pass.")
     parser.add_argument("--comment-url",
                         help="With --cluster-verdict: the sticky-wicket comment URL. --force corrects it.")
+    parser.add_argument("--panel-tokens",
+                        help="With --complete (required): the sum of every panel agent's "
+                             "subagent_tokens this pass, cross-family call excluded (harmonic-forge#889).")
+    parser.add_argument("--panel-ms",
+                        help="With --complete (required): wall-clock from the first panel spawn to "
+                             "the last result.")
+    parser.add_argument("--cost-unavailable",
+                        help="With --complete: the reason the runtime reported no usage; stands in "
+                             "for --panel-tokens and --panel-ms, recorded, never zero.")
+    parser.add_argument("--cross-family-ms",
+                        help="With --envelope (required) or --post-verdict (required): wall-clock of "
+                             "the cross_family_call.sh run.")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="Plan against the committed diff even with uncommitted changes present.")
     parser.add_argument("--allow-repo-mismatch", action="store_true",
@@ -902,6 +1037,12 @@ def main() -> None:
     if args.post_verdict:
         if not (args.findings and args.envelope):
             parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
+        if args.cross_family_ms is None:
+            parser.error("--post-verdict needs --cross-family-ms <ms>: the cross-family call's "
+                         "wall-clock (harmonic-forge#889)")
+        if args.panel_tokens is not None or args.panel_ms is not None or args.cost_unavailable:
+            parser.error("--post-verdict is one cross-family refuter, not a panel: it takes "
+                         "--cross-family-ms only")
         sys.exit(post_verdict(args))
     if args.cluster_verdict:
         if not args.comment_url:
@@ -995,13 +1136,14 @@ def post_verdict(args: argparse.Namespace) -> int:
         raise SystemExit("preclose-check: the post-verdict check needs a cross-family call that ran; "
                          f"got {provenance!r}. Retry the call; a fallback is not a check.")
     surviving = len(surviving_findings(load_findings(args.findings)))
+    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None))
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
     # head (harmonic-forge#838 plan review).
     path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
                          prior.get("refuters", 0), status=prior.get("status", "complete"),
                          extra=preclose_passes.post_verdict_fields(
-                             prior, base_sha, head_sha, patch, provenance, surviving))
+                             prior, base_sha, head_sha, patch, provenance, surviving, cross_ms))
     print(f"preclose-check: post-verdict check recorded for {repo}#{args.issue}, "
           f"{base_sha[:12]}..{head_sha[:12]} ({surviving} surviving finding(s)); not a pass.")
     print(f"  receipt: {path}")

@@ -164,15 +164,18 @@ def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
 
 def record(receipt: dict | None, sha: str, current_patch_id: str | None, surviving: int,
            mechanisms: list[str] | None = None, branch: str | None = None,
-           reforge: bool = False) -> dict:
-    """The receipt fields for a newly completed pass (AC1)."""
+           reforge: bool = False, cost: dict | None = None) -> dict:
+    """The receipt fields for a newly completed pass (AC1). ``cost`` is the
+    pass's measured cost and counts (harmonic-forge#889), merged into its
+    ``pass_history`` entry."""
     everything = history(receipt)
     passes = current(everything)
     epoch = max((int(p.get("epoch") or 0) for p in everything), default=0) + (1 if reforge else 0)
     prior_surviving = int(passes[-1].get("surviving") or 0) if passes and not reforge else None
     distinct = sorted(set(mechanisms or []))
     everything = everything + [{"sha": sha, "patch_id": current_patch_id, "surviving": int(surviving),
-                                "mechanisms": distinct, "branch": branch, "epoch": epoch}]
+                                "mechanisms": distinct, "branch": branch, "epoch": epoch,
+                                **(cost or {})}]
     extra = _post_verdict(receipt)
     existing = _mechanism_cluster(receipt, epoch)
     if existing:
@@ -234,7 +237,7 @@ POST_VERDICT_REQUIRED = (
     "operator's --force covers this head, one cross-family refuter must read the patch "
     "since pass 2: preclose_check.py --repo {repo} --issue {issue} --post-verdict "
     "--base <pass-2 head> --envelope <path> --findings <file> "
-    "--own-model <your session's model>. It never counts as a pass "
+    "--own-model <your session's model> --cross-family-ms <ms>. It never counts as a pass "
     "(harmonic-forge#838)."
 )
 
@@ -280,9 +283,14 @@ def reviewed_patch_id(receipt: dict | None) -> str | None:
 
 
 def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
-                        current_patch_id: str | None, provenance: str, surviving: int) -> dict:
-    """The receipt with the check added and every pass left exactly as it was."""
-    return {**carried(receipt),
-            "post_verdict_check": {"base_sha": base_sha, "head_sha": head_sha,
-                                   "patch_id": current_patch_id, "provenance": provenance,
-                                   "surviving": int(surviving)}}
+                        current_patch_id: str | None, provenance: str, surviving: int,
+                        cross_family_ms: int | None = None) -> dict:
+    """The receipt with the check added and every pass left exactly as it was.
+    The check is one cross-family refuter, so its only cost figure is that
+    call's wall-clock (harmonic-forge#889); Codex reports no tokens."""
+    check = {"base_sha": base_sha, "head_sha": head_sha, "patch_id": current_patch_id,
+             "provenance": provenance, "surviving": int(surviving)}
+    if cross_family_ms is not None:
+        check.update({"cross_family_ms": int(cross_family_ms),
+                      "cross_family_tokens": "unavailable"})
+    return {**carried(receipt), "post_verdict_check": check}

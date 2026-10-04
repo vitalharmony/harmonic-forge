@@ -7,6 +7,11 @@ findings survived the last pass, and whether a post-verdict check ran. Run it
 once before #838's review-the-handoff change lands and again after ten more
 Tooling Exception closes, and compare the passes per issue.
 
+A second table lists every pass that recorded its cost (harmonic-forge#889):
+panel tokens, panel wall-clock, and the Codex cross-family check's wall-clock.
+Neither figure includes the Lane 1 session's own orchestration cost, which a
+lane session cannot read.
+
     preclose_pass_report.py [--dir PATH] [--since YYYY-MM-DD]
 """
 from __future__ import annotations
@@ -15,6 +20,7 @@ import argparse
 import gzip
 import json
 import os
+import statistics
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,8 +86,40 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
             "surviving_last": int(current[-1].get("surviving") or 0) if current else 0,
             "post_verdict_check": "post_verdict_check" in receipt,
             "modified": modified.date().isoformat(),
+            "costs": [_cost_row(issue, number, p) for number, p in enumerate(current, 1)
+                      if "panel_tokens" in p or "cost_unavailable" in p],
         })
     return out
+
+
+def _cost_row(issue: str, number: int, entry: dict) -> dict:
+    return {"issue": issue, "pass": number, "sha": str(entry.get("sha") or "")[:12],
+            "tokens": entry.get("panel_tokens"), "ms": entry.get("panel_ms"),
+            "unavailable": entry.get("cost_unavailable"),
+            "codex_ms": entry.get("cross_family_ms") if entry.get("cross_family_ran") else None,
+            "codex_ran": bool(entry.get("cross_family_ran"))}
+
+
+def _number(value: object) -> str:
+    return f"{value:,}" if isinstance(value, int) else ""
+
+
+def render_costs(table: list[dict]) -> str:
+    """Per-pass cost (harmonic-forge#889), with a median/total footer."""
+    passes = [cost for r in table for cost in r.get("costs", [])]
+    lines = ["| Issue | Pass | Head | Panel tokens | Panel ms | Codex check ms |",
+             "|---|---|---|---|---|---|"]
+    for c in passes:
+        tokens = _number(c["tokens"]) if c["unavailable"] is None else "unavailable"
+        lines.append(f"| {c['issue']} | {c['pass']} | {c['sha']} | {tokens} | {_number(c['ms'])} | "
+                     f"{_number(c['codex_ms'])} |")
+    counted = [c["tokens"] for c in passes if isinstance(c["tokens"], int)]
+    median = f"{statistics.median(counted):,.0f}" if counted else "n/a"
+    share = f"{sum(c['codex_ran'] for c in passes)}/{len(passes)}" if passes else "0/0"
+    lines += ["", f"{len(passes)} pass(es) with recorded cost; panel tokens median {median}, "
+                  f"total {sum(counted):,} over {len(counted)} measured; Codex check ran on {share}. "
+                  "Excludes the Lane 1 session's own orchestration cost, which it cannot read."]
+    return "\n".join(lines)
 
 
 def render(table: list[dict]) -> str:
@@ -113,7 +151,8 @@ def report(directory: Path, since: datetime | None, archive: Path) -> str:
     """The table plus any undercount warning, all on stdout, so a report
     redirected to a file carries its own caveat (F838 sticky-wicket PATCH)."""
     skipped: list[str] = []
-    table = render(rows(directory, since, archive, skipped))
+    found = rows(directory, since, archive, skipped)
+    table = render(found) + "\n\n" + render_costs(found)
     warnings = []
     if not any(archive.glob("**/preclose-receipts/*.jsonl.gz")):
         warnings.append(f"WARNING: no receipt archive under {archive}; issues closed before "

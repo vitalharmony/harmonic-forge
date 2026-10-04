@@ -107,9 +107,29 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    ```
    python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \
        --repo <owner/repo> --issue <N> --complete \
-       --findings <file> (--envelope <envelope path> | --not-triggered) \
-       --own-model <your session's model>
+       --findings <file> (--envelope <envelope path> --cross-family-ms <ms> | --not-triggered) \
+       --own-model <your session's model> \
+       (--panel-tokens <sum> --panel-ms <ms> | --cost-unavailable "<reason>")
    ```
+
+   **Record what the pass cost (harmonic-forge#889).** Every `--complete` is
+   measured, and the pass is refused without it:
+   - `--panel-tokens` is the sum of each refuter's completion-notice
+     `subagent_tokens`. It excludes the cross-family call.
+   - `--panel-ms` is first-spawn-to-last-result wall-clock: the longest
+     refuter's `duration_ms` when they run concurrently, or the sum when they
+     run one after another.
+   - `--cross-family-ms` is required with `--envelope`. It is the wall-clock
+     of the `cross_family_call.sh` run, which you measure around the call.
+     Codex reports no tokens, so they are recorded as unavailable, never as
+     zero. `--post-verdict` takes `--cross-family-ms` only.
+   - `--cost-unavailable "<reason>"` stands in for the two panel flags only
+     when the runtime reported no usage. It is recorded, never silent.
+
+   Neither figure includes this session's own orchestration cost, which a
+   lane session cannot read. Each completed pass also writes one
+   `preclose.pass.completed` telemetry event, and
+   `tools/gh/preclose_pass_report.py` reports tokens and wall-clock per pass.
 
 6. **Post to the issue, verbatim** — via whichever wrapper this repo declares
    for Lane 1 comment posting (HRSE2/cymagraph-infra's `mise run lane-comment`;
