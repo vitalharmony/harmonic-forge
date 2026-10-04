@@ -65,7 +65,7 @@ _DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*:?[^\S\n]*\**`?([RWP])`
 # rounds of naming P's spellings each missed a layout, so it names none: no
 # real Lane 3 spec carries a bare P, and a false refusal costs one operator AE,
 # so the broadest form is the safe one (sticky-wicket ruling, post-verdict).
-_P_TOKEN = re.compile(r"(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)[= ]+[`*]*[pP]\b")
+_P_TOKEN = re.compile(r"(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)\W*[pP]\b")
 
 
 def declared_tier(body: str) -> str | None:
