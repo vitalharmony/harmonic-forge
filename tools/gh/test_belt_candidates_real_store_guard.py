@@ -95,8 +95,11 @@ class InProcessGuardTests(RealStoreFixture):
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "body.md"
             file.write_text(body)
+            results = Path(tmp) / "results.json"  # harmonic-forge#893: caseless body, empty map
+            results.write_text("{}")
             argv = ["post_lane_discussion.py", "--issue", "2095", "--file", str(file),
-                    "--kind", "gate-result", "--ack-no-pr-required", "replay"]
+                    "--kind", "gate-result", "--ack-no-pr-required", "replay",
+                    "--tc-results", str(results)]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "1"}), \
                  mock.patch.object(P, "check_gate_result", return_value=(True, "[GATE] ok")), \
