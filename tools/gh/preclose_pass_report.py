@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import preclose_enrollment  # noqa: E402
 import preclose_passes  # noqa: E402
 
 
@@ -85,11 +86,16 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
     history = archived_passes(archive, skipped) if archive else {}
     out = []
     for path in sorted(directory.glob("*.json")):
+        # Only pass receipts: a kill-check receipt (`*.kill.json`) and the
+        # experiment flag share the store and are not passes (#890 preclose
+        # pass 2, duplicate rows).
+        if path.name.endswith(".kill.json") or path.name == preclose_enrollment.EXPERIMENT_FILE:
+            continue
         try:
             receipt = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(receipt, dict):
+        if not isinstance(receipt, dict) or receipt.get("issue") is None:
             continue
         modified = datetime.fromtimestamp(os.stat(path).st_mtime, tz=timezone.utc)
         if since and modified < since:
@@ -112,6 +118,11 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
             "surviving_last": int(current[-1].get("surviving") or 0) if current else 0,
             "post_verdict_check": "post_verdict_check" in receipt,
             "modified": modified.date().isoformat(),
+            # harmonic-forge#890: every entry, for the by-arm report's
+            # issue-level bucketing, and the post-verdict check's survivors.
+            "entries": passes,
+            "post_verdict_surviving": (receipt.get("post_verdict_check") or {}).get("surviving")
+            if isinstance(receipt.get("post_verdict_check"), dict) else None,
             # Every pass of every epoch: a reforged issue's earlier epoch was
             # spent too (#889 preclose pass 1), unlike the cap's current().
             "costs": [_cost_row(issue, f"{number}" if not int(p.get("epoch") or 0)
@@ -182,23 +193,140 @@ def render(table: list[dict]) -> str:
     return "\n".join(lines)
 
 
+ARM_ROWS = ("manual", "workflow", preclose_enrollment.PRE_EXPERIMENT, "overridden", "mixed", "unarmed", "other")
+
+
+def _entry_label(entry: dict) -> str | None:
+    """An entry's row label: None (no arm), `pre-experiment` (never enrolled,
+    including entries written before #890's PATCH, whose arm said so), or the
+    arm it ran."""
+    arm = entry.get("arm")
+    if not arm:
+        return None
+    if preclose_enrollment.PRE_EXPERIMENT in (arm, entry.get("arm_assigned")) \
+            or entry.get("arm_enrolled") is False:
+        return preclose_enrollment.PRE_EXPERIMENT
+    return arm
+
+
+def issue_arm(entries: list[dict]) -> str:
+    """harmonic-forge#890: one bucket per ISSUE, never per entry, so a
+    two-pass issue is never split into two one-pass issues. `mixed` is only an
+    issue whose entries mix armed and unarmed passes (a pre-#890 pass and an
+    armed one); an issue that changed arm is bucketed by its newest pass, with
+    an override shown as `overridden` (#890 sticky-wicket PATCH)."""
+    labels = [_entry_label(entry) for entry in entries]
+    if not entries or set(labels) == {None}:
+        return "unarmed"
+    # A never-enrolled pass beside an armed one mixes them too (#890
+    # post-verdict 2): neither the baseline nor an arm may claim the issue.
+    if None in labels or (preclose_enrollment.PRE_EXPERIMENT in labels and len(set(labels)) > 1):
+        return "mixed"
+    if entries[-1].get("arm_overridden") and labels[-1] != preclose_enrollment.PRE_EXPERIMENT:
+        return "overridden"
+    # An arm this report does not know is shown, never a crash (#890 pass 1).
+    known = preclose_enrollment.ARMS + (preclose_enrollment.PRE_EXPERIMENT,)
+    return labels[-1] if labels[-1] in known else "other"
+
+
+def override_directions(issues: list[dict]) -> str:
+    """Which arm each overridden issue left, from the `arm_assigned` its
+    newest pass carries: the hash's assignment, which the override undid."""
+    moves: dict[str, int] = {}
+    for r in issues:
+        newest = (r.get("entries") or [{}])[-1]
+        key = f"assigned {newest.get('arm_assigned') or '?'}, ran {newest.get('arm') or '?'}"
+        moves[key] = moves.get(key, 0) + 1
+    return "; ".join(f"{count} {key}" for key, count in sorted(moves.items())) or "none"
+
+
+def _median(values: list[int]) -> str:
+    return f"{statistics.median(values):,.0f}" if values else "n/a"
+
+
+def render_by_arm(table: list[dict]) -> str:
+    """The A/B comparison (harmonic-forge#890): one row per arm, computed over
+    each issue's full entry list. The arm is read off the entry; cost figures
+    go through `pass_cost_view`, unwidened."""
+    # One row per issue, whatever files fed it (#890 reforge): entries merged
+    # by head SHA, so the per-issue contract holds by construction.
+    issues_by_key: dict[str, dict] = {}
+    for r in table:
+        held = issues_by_key.setdefault(r["issue"], {**r, "entries": []})
+        shas = {e.get("sha") for e in held["entries"]}
+        held["entries"] += [e for e in r.get("entries") or [] if not e.get("sha") or e.get("sha") not in shas]
+    buckets: dict[str, list[dict]] = {name: [] for name in ARM_ROWS}
+    for r in issues_by_key.values():
+        buckets[issue_arm(r["entries"])].append(r)
+    lines = ["| Arm | Issues | Passes (current / all epochs) | Passes per issue (current / all) | "
+             "Panel tokens per measured pass (median / total; measured of passes) | Panel ms (median) | Raised per pass (of counted) | "
+             "Survivors per pass | Dismissal rate | Needed pass 2 | Post-verdict survivors | "
+             "Codex check triggered | Codex ms (median) | Total cost |",
+             "|" + "---|" * 14]
+    for name in ARM_ROWS:
+        issues = buckets[name]
+        entries = [e for r in issues for e in r.get("entries") or []]
+        current = [e for r in issues for e in preclose_passes.current(r.get("entries") or [])]
+        views = [preclose_passes.pass_cost_view(e) for e in entries]
+        tokens = [v["tokens"] for v in views if v["panel"] == "measured"]
+        panel_ms = [v["ms"] for v in views if v["panel"] == "measured"]
+        codex_ms = [v["codex_ms"] for v in views if v["codex"] in ("ran", "fallback")
+                    and isinstance(v["codex_ms"], int)]
+        # A fallback triggered the check too: it is in the trigger rate's
+        # denominator and numerator (#890 preclose pass 1, denominator).
+        known = [v for v in views if v["codex"] in ("ran", "not-run", "fallback")]
+        fallbacks = sum(1 for v in views if v["codex"] == "fallback")
+        # Finding counts only over passes that recorded them (#889 onward), so
+        # raised and survivors per pass share one denominator.
+        counted = [e for e in entries if e.get("raised") is not None]
+        raised = sum(int(e.get("raised") or 0) for e in counted)
+        dismissed = sum(int(e.get("dismissed") or 0) for e in counted)
+        surviving = sum(int(e.get("surviving") or 0) for e in counted)
+        n, per = len(issues), (lambda count: f"{count / len(issues):.2f}" if issues else "n/a")
+        rate = f"{dismissed / raised:.0%}" if raised else "n/a"
+        codex = (f"{sum(1 for v in known if v['codex'] in ('ran', 'fallback'))}/{len(known)}"
+                 + (f", {fallbacks} fell back" if fallbacks else ""))
+        post = [r["post_verdict_surviving"] for r in issues if r.get("post_verdict_surviving") is not None]
+        lines.append(
+            f"| {name} | {n} | {len(current)} / {len(entries)} | {per(len(current))} / {per(len(entries))} | "
+            f"{_median(tokens)} / {sum(tokens):,} ({len(tokens)} of {len(entries)}) | {_median(panel_ms)} | "
+            f"{f'{raised / len(counted):.2f} ({len(counted)})' if counted else 'n/a'} | "
+            f"{f'{surviving / len(counted):.2f}' if counted else 'n/a'} | {rate} | "
+            f"{sum(1 for r in issues if len(preclose_passes.current(r.get('entries') or [])) >= 2)} | "
+            f"{sum(post) if post else 'n/a'} | {codex} | {_median(codex_ms)} | "
+            f"{sum(tokens):,} panel tokens; {sum(panel_ms) + sum(codex_ms):,} ms"
+            # An unmeasured pass is never free (#890 preclose pass 2, undercount).
+            f"{f'; {len(entries) - len(tokens)} pass(es) not measured' if len(entries) > len(tokens) else ''} |")
+    split = (f"{len(buckets['manual'])} manual / {len(buckets['workflow'])} workflow; outside the "
+             "comparison: " + ", ".join(f"{len(buckets[name])} {name}" for name in ARM_ROWS[2:])
+             + f"; overrides: {override_directions(buckets['overridden'])}")
+    lines += ["", f"n per arm: {split}. The comparison is not yet meaningful below 8 issues per arm. "
+                  "Codex tokens are not measured: the envelope records no usage. Overridden, mixed, "
+                  "pre-experiment, unarmed and other issues are never counted in an arm. Passes are shown "
+                  "for the current epoch and for all epochs, so a reforge is not read as an arm "
+                  "failing to converge."]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dir", type=Path, default=Path.home() / ".claude" / "state" / "preclose")
     parser.add_argument("--archive", type=Path, default=ARCHIVE,
                         help="The #826 receipt archive, for pass counts before #834's history.")
     parser.add_argument("--since", help="Only receipts written on or after this date (YYYY-MM-DD).")
+    parser.add_argument("--by-arm", action="store_true",
+                        help="The A/B comparison by panel arm (harmonic-forge#890).")
     args = parser.parse_args()
     since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None
-    print(report(args.dir, since, args.archive))
+    print(report(args.dir, since, args.archive, by_arm=args.by_arm))
 
 
-def report(directory: Path, since: datetime | None, archive: Path) -> str:
+def report(directory: Path, since: datetime | None, archive: Path, by_arm: bool = False) -> str:
     """The table plus any undercount warning, all on stdout, so a report
     redirected to a file carries its own caveat (F838 sticky-wicket PATCH)."""
     skipped: list[str] = []
     found = rows(directory, since, archive, skipped)
-    table = render(found) + "\n\n" + render_costs(found)
+    table = render_by_arm(found) if by_arm else render(found) + "\n\n" + render_costs(found)
     warnings = []
     if not any(archive.glob("**/preclose-receipts/*.jsonl.gz")):
         warnings.append(f"WARNING: no receipt archive under {archive}; issues closed before "

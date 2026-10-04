@@ -65,6 +65,7 @@ from manifest import (  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_passes  # noqa: E402  (harmonic-forge#834)
+import preclose_enrollment  # noqa: E402  (harmonic-forge#890)
 
 # A change under any of these runs on every session, every commit, or every
 # gate -- so its failure mode is silent and total rather than local.
@@ -99,6 +100,7 @@ LENSES: tuple[str, ...] = (
 )
 
 TIER_PANEL = {"fast": 1, "standard": 3, "deep": 5}
+
 
 # harmonic-forge#701. The file:line anchor a finding must carry to survive the
 # filter. `path:line` or `path:line-line`, the shape the plan output demands.
@@ -523,6 +525,11 @@ def receipt_path(repo: str, issue: int) -> Path:
     return receipt_dir() / f"{_repo_key(repo)}_{issue}.json"
 
 
+def enrollment_path(repo: str, issue: int) -> Path:
+    """harmonic-forge#890: the issue's append-only panel-arm decisions."""
+    return receipt_dir() / f"{_repo_key(repo)}_{issue}.enrollment.jsonl"
+
+
 @contextmanager
 def receipt_lock(repo: str, issue: int):
     """Serialize an issue's full receipt read-check-write transaction."""
@@ -761,6 +768,10 @@ def plan(args: argparse.Namespace) -> int:
     prior = find_receipt(repo, args.issue)
     tier = args.tier or preclose_passes.last_tier(prior)
     size, why = panel_size(reasons, tier)
+    enrollment_file = enrollment_path(repo, args.issue)
+    enrollment, new_event = preclose_enrollment.decide(
+        enrollment_file, receipt_dir(), repo, args.issue, getattr(args, "arm", None) or "auto",
+        getattr(args, "re_enroll", None), str(getattr(args, "arm_reason", None) or "").strip(), head_sha)
 
     print(f"preclose-check plan for {repo}#{args.issue}")
     print(f"  diff:     {args.base}...{args.head} @ {head_sha[:12]} ({len(files)} files)")
@@ -772,6 +783,15 @@ def plan(args: argparse.Namespace) -> int:
     print("  lenses:")
     for lens in list(LENSES)[:size]:
         print(f"    - {lens}")
+    arm = enrollment["arm"]
+    print(f"  arm:      {preclose_enrollment.label(enrollment)} ({preclose_enrollment.note(enrollment)})")
+    if arm == "workflow":
+        # Resolved SHAs, never ref names (#890 preclose pass 1): the workflow
+        # may run in another checkout, where `origin/main...HEAD` is empty.
+        invocation = {"repo": repo, "issue": args.issue,
+                      "base": _merge_base(args.base, args.head) or args.base, "head": head_sha,
+                      "lenses": list(LENSES)[:size]}
+        print(f'  Workflow name: "preclose-panel" args: {json.dumps(invocation)}')
     print()
     print("Spawn one FRESH-CONTEXT preclose-inspection agent per lens. Never a fork:")
     print("a fork inherits the reasoning that produced the defect. Give each only the")
@@ -795,7 +815,19 @@ def plan(args: argparse.Namespace) -> int:
     # --tier in the documented flow) labels its event with it (#889).
     write_receipt(repo, args.issue, head_sha, size, status="planned",
                   extra={**preclose_passes.carried(prior), "tier": tier or "unset"})
+    if new_event:
+        preclose_enrollment.append(enrollment_file, new_event)
     return 0
+
+
+def _merge_base(base: str, head: str) -> str | None:
+    """The commit the three-dot diff `base...head` is taken from."""
+    try:
+        done = subprocess.run(["git", "merge-base", base, head], capture_output=True, text=True,
+                              timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
 
 
 @serialized_receipt
@@ -852,6 +884,23 @@ def complete(args: argparse.Namespace) -> int:
         cost["tier"] = prior["tier"]
     else:
         cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
+    # harmonic-forge#890: the arm rides on the pass entry, read from the
+    # issue's newest enrollment event and nowhere else. No enrollment -> no
+    # arm key, never a synthesized value a report would trust.
+    try:
+        enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+    except preclose_enrollment.EnrollmentUnreadable as exc:
+        # The panel has already run: record the pass, without an arm, and say
+        # why. Never crash here (#890 reforged pass 2, fail-crashed).
+        print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
+              file=sys.stderr)
+        enrolled = None
+    if enrolled:
+        cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
+                     "arm_assigned": enrolled.get("assigned"),
+                     "arm_overridden": preclose_enrollment.overridden(enrolled)})
+        if enrolled.get("reason"):
+            cost["arm_reason"] = enrolled["reason"]
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
                                  current_branch(), reforge, cost),
@@ -969,6 +1018,8 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
         attrs = {**labels, "tier": entry.get("tier") or "unset", "raised": entry.get("raised"),
                  "surviving": entry.get("surviving"), "dismissed": entry.get("dismissed"),
                  "cross_family_ran": view["codex"] in ("ran", "fallback")}
+        if entry.get("arm"):
+            attrs["arm"], attrs["arm_overridden"] = entry["arm"], bool(entry.get("arm_overridden"))
         if view["panel"] == "unavailable":
             attrs["cost_unavailable"] = True
         if view["panel"] == "measured":
@@ -1009,6 +1060,14 @@ def main() -> None:
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--tier", choices=sorted(TIER_PANEL), help="Board Tier; omit to default to standard.")
+    parser.add_argument("--arm", choices=("auto", "manual", "workflow"), default="auto",
+                        help="With a plan: the panel arm (harmonic-forge#890). auto = the issue's "
+                             "assigned arm; another arm is an override and needs --arm-reason.")
+    parser.add_argument("--re-enroll", choices=preclose_enrollment.ARMS,
+                        help="With a plan: change an enrolled issue's arm, recorded as a new "
+                             "enrollment event; needs --arm-reason.")
+    parser.add_argument("--arm-reason",
+                        help="Why the assigned arm is overridden; the issue leaves the comparison.")
     parser.add_argument("--complete", action="store_true",
                         help="Record that the panel actually ran. Planning alone does not.")
     parser.add_argument("--gate", action="store_true",
@@ -1057,6 +1116,10 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    if (args.complete or args.gate or args.post_verdict or args.cluster_verdict) and (
+            args.arm != "auto" or args.arm_reason or args.re_enroll):
+        parser.error("--arm/--arm-reason belong to the plan: the pass records the arm the plan "
+                     "chose. Re-plan with --arm <arm> --arm-reason \"<why>\" (harmonic-forge#890).")
     if (args.complete or args.post_verdict) and not args.own_model:
         parser.error("--complete/--post-verdict need --own-model <the calling session's model>: "
                      "the receipt's label names the family that did the work (harmonic-forge#848)")
