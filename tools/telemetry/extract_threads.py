@@ -184,6 +184,7 @@ def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str,
     by_id = {str(e.get("attrs", {}).get("comment_id")): e for e in events
              if (e.get("attrs") or {}).get("measurement") == "measured"}
     latest_spec: Optional[dict[str, str]] = None
+    spec_id = "none"
     for comment in comments:
         footer, kind = _own(comment)
         # The shared recognizer (#893 reforge pass 1): a spec posted as
@@ -194,13 +195,21 @@ def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str,
             # unclassified spec must never pair a gate with an older round's
             # classes (#893 preclose pass 2).
             latest_spec = eras.parse_case_map(footer, "classes") or None
+            spec_id = str(comment.get("id") or "none") if latest_spec else "none"
             continue
         event = by_id.get(str(comment.get("id") or ""))
         if event is None:
             continue
         results = eras.parse_case_map(footer, "results")
         attrs = event["attrs"]
-        if latest_spec is None or set(latest_spec) != set(results):
+        # The pairing input is part of the reading's identity (#893 e1
+        # sticky-wicket #8): the attrs depend on a sibling comment, so a
+        # re-run after that spec changes or is deleted must be a new event,
+        # not a duplicate the store drops. latest_readings then keeps the
+        # newer extraction.
+        paired = latest_spec is not None and set(latest_spec) == set(results)
+        event["subject_id"] += f"/pair:{spec_id if paired else 'unpaired'}"
+        if not paired:
             attrs["paired"] = False
             attrs["measurement"] = "unpaired"
             continue

@@ -39,6 +39,7 @@ markers and is never copied into an event.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -69,6 +70,11 @@ _TOKEN_LANE = re.compile(r"^token:L(\d)")
 _L1_KINDS = {"handoff", "ae", "sweep", "rework", "ready-for-l3", "discussion"}
 
 
+def _now() -> str:
+    """The extraction instant, second precision (a seam for tests)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def clean(raw: str) -> str:
     """The body with fenced blocks and blockquoted lines removed."""
     return _QUOTED.sub("", lane_state._FENCE.sub("", raw))
@@ -88,7 +94,7 @@ _GATE_MS = re.compile(r"\bgate-ms=(\d+|unknown)\b")
 #: harmonic-forge#893 reforge (R4): every gate event carries exactly one of these,
 #: stamped here and by the pairing step, never inferred later from which attrs
 #: happen to be present.
-MEASUREMENTS = ("measured", "unpaired", "no-map", "blocked-no-cases", "pre-893", "bypass-route")
+MEASUREMENTS = ("measured", "unpaired", "no-map", "no-cases", "pre-893", "bypass-route")
 
 
 def case_field_state(footer: Optional[str], key: str) -> str:
@@ -152,15 +158,18 @@ def gate_measurement(footer: Optional[str], verdict: Optional[str]) -> str:
     if state == "absent":
         return "no-map"
     if state == "empty":
-        return "blocked-no-cases" if verdict == "BLOCKED" else "no-map"
+        # An explicitly supplied empty map, whatever the verdict line reads
+        # (#893 e1 sticky-wicket #3): a CONFLICT verdict must not turn it into
+        # "no map". The report's verdict column carries the verdict.
+        return "no-cases"
     return "measured"
 
 
 def map_agrees(counts: dict[str, Any], verdict: Optional[str], body: str) -> bool:
     """A soft data-quality check, never a refusal (R1): does the stamped map
-    agree with the report's own verdict and, where the prose names `TC<n>`
-    cases, with how many it names? A disagreement marks the row low-confidence
-    in the report; it is a heuristic, and mislabelling a row is tolerable."""
+    agree with the report's own verdict? Stamped data only. The prose is never
+    read for case ids (#893 e1 sticky-wicket #2: a prose count re-admitted the
+    epoch-0 root category and flagged correct FAIL reports)."""
     tc, fails, blocked = counts.get("tc_count", 0), counts.get("fail_count", 0), counts.get("blocked_count", 0)
     if verdict == "PASS" and (fails or blocked):
         return False
@@ -168,15 +177,12 @@ def map_agrees(counts: dict[str, Any], verdict: Optional[str], body: str) -> boo
         return False
     if verdict == "BLOCKED" and not blocked:
         return False
-    named = set(_PROSE_TC.findall(body))
-    return not named or len(named) == tc
+    return True
 
 
-_PROSE_TC = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
-
-
-#: A Lane 1 or Lane 2 post that relays or recaps a gate is not a gate.
-_POSTED_BY_L1_L2 = re.compile(r"posted-by=LANE[12]\b", re.I)
+#: A post by any known poster other than Lane 3 relays or recaps a gate (#893
+#: e1 sticky-wicket #6): Lane 1, Lane 2 and LANE-unset.
+_POSTED_BY_L1_L2 = re.compile(r"posted-by=LANE(?!3\b)[\w-]+", re.I)
 _POSTED_BY_ANY = re.compile(r"posted-by=(LANE[\w-]+)", re.I)
 
 
@@ -212,6 +218,9 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
     own_kind = kind.group("kind").lower() if kind else None
     events: list[dict[str, Any]] = []
     updated = str(comment.get("updated_at") or comment.get("created_at") or "")
+    # When this reading was taken: the tiebreak that lets a re-extraction
+    # displace an older reading of the same comment and version (#893 e1 #8).
+    extracted_at = _now()
 
     def add(key: str, provenance: str, validated: bool, at: str, cid: str, extra: dict) -> None:
         era, _, detail = provenance.partition(":")
@@ -225,7 +234,8 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
             "issue": issue, "actor": _actor(provenance, footer), "event_type": key,
             "subject_kind": "comment",
             "subject_id": f"comment:{cid}@{updated}/{EXTRACTOR_VERSION}",
-            "attrs": {"marker": detail, "comment_id": cid, "edited_at": updated, **extra},
+            "attrs": {"marker": detail, "comment_id": cid, "edited_at": updated,
+                      "extracted_at": extracted_at, **extra},
             "provenance": era, "validated": validated, "extractor_version": EXTRACTOR_VERSION,
         })
 
@@ -235,8 +245,10 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
     # side applies, so the two can never disagree on what a post is.
     artifact = lane3_artifact_of(body, own_kind, footer)
     relay = bool(_POSTED_BY_L1_L2.search(footer or ""))
-    is_gate = gate_ci.looks_like_a_gate_report(body) and (
-        artifact == "gate" or (own_kind is None and footer is None and bool(lane_gates)))
+    # The shared recognizer is the sole authority (#893 e1 sticky-wicket #5):
+    # a second, stricter heading test here let an indented or fenced heading
+    # be stamped by the poster and then dropped by the extractor.
+    is_gate = artifact == "gate" or (own_kind is None and footer is None and bool(lane_gates))
     for t in timeline:
         if (is_gate or relay) and t.key in _GATE_KEYS:
             # One gate event per comment, scored below; a Lane 1/2 relay of a

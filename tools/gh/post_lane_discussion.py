@@ -263,6 +263,14 @@ LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 _CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
 
 
+def sidecar(body_path: Path, name: str) -> Path | None:
+    """`<body>.<name>.json` beside the body file (gate.md -> gate.results.json),
+    when it exists. The documented way to pass a case map: it needs no flag,
+    so it survives every repo's lane-comment wrapper."""
+    candidate = Path(body_path).with_suffix(f".{name}.json")
+    return candidate if candidate.is_file() else None
+
+
 def warn(message: str) -> None:
     """harmonic-forge#893 reforge (R2): a case map is telemetry, and telemetry
     never refuses a post. A map that cannot be used is reported here and the
@@ -323,9 +331,16 @@ def case_field(name: str, mapping: dict[str, str] | None) -> str:
     return f"{name}=" + ",".join(f"{k}:{mapping[k]}" for k in sorted(mapping, key=_case_order))
 
 
-def gate_ms(now: float | None = None) -> str:
-    """Milliseconds since `lane3-begin` touched `<git-dir>/LANE3_ACTIVE`, or
-    `unknown`. Derived, never self-reported, and never written as zero."""
+def gate_ms(issue: int | None = None, now: float | None = None) -> str:
+    """Milliseconds since `lane3-begin` wrote `<git-dir>/LANE3_ACTIVE` for THIS
+    issue, or `unknown`. Derived, never self-reported, never written as zero.
+
+    The marker must name the issue (`issue=<N>`, which lane3-begin writes with
+    --issue): the 12-hour bound is the write guard's freshness bound, not a
+    gate duration, so a marker left by an earlier gate in the same session
+    would otherwise time the next gate from the first one's start (#893 e1
+    sticky-wicket #7). A marker that names no issue, or another one, reads
+    unknown."""
     # The caller's own directory: a lane-comment task may cd elsewhere (HRSE2's
     # runs from Lane 1's tools worktree), and mise records where it was invoked.
     cwd = os.environ.get("MISE_ORIGINAL_CWD") or None
@@ -336,7 +351,11 @@ def gate_ms(now: float | None = None) -> str:
                                  text=True, capture_output=True, check=False)
         if git_dir.returncode:
             return "unknown"
-        started = (Path(git_dir.stdout.strip()) / "LANE3_ACTIVE").stat().st_mtime
+        marker = Path(git_dir.stdout.strip()) / "LANE3_ACTIVE"
+        named = re.search(r"(?m)^issue=(\d+)\s*$", marker.read_text(encoding="utf-8", errors="replace"))
+        if issue is None or not named or int(named.group(1)) != int(issue):
+            return "unknown"
+        started = marker.stat().st_mtime
     except Exception:  # noqa: BLE001 - telemetry never fails the post
         return "unknown"
     elapsed = (time.time() if now is None else now) - started
@@ -527,11 +546,19 @@ def main() -> None:
     # refuses the post: a missing or unusable map is stamped `absent`.
     case_fields = ""
     lane = os.environ.get("LANE")
+    # The same poster identity the footer stamps, LANE-unset included (#893 e1
+    # sticky-wicket #6): only Lane 3 posts an artifact.
     artifact = lane3_artifact(body, args.kind if args.kind in ("gate-result", "spec") else None,
-                              f"LANE{lane}" if lane else None)
+                              f"LANE{lane}" if lane else "LANE-unset")
+    # The map rides in a sidecar file next to the body, never only in a flag
+    # (#893 e1 sticky-wicket #4): a consuming repo's lane-comment wrapper
+    # validates argv strictly and rejected an unknown flag before this script
+    # ran, so a FAIL could not be posted. The flags still win when given.
+    args.tc_results = args.tc_results or sidecar(path, "results")
+    args.tc_classes = args.tc_classes or sidecar(path, "classes")
     if artifact == "gate":
         case_fields = (f"{case_field('results', load_case_map(args.tc_results, CASE_RESULTS, '--tc-results'))}; "
-                       f"gate-ms={gate_ms()}")
+                       f"gate-ms={gate_ms(args.issue)}")
     elif artifact == "spec":
         case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
     elif args.tc_results is not None or args.tc_classes is not None:

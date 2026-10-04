@@ -152,7 +152,7 @@ class TelemetryNeverRefuses(Case):
     def test_gate_time_reads_the_callers_directory_not_the_tools_worktree(self):
         git_dir = self.dir / "gate-git"
         git_dir.mkdir()
-        (git_dir / "LANE3_ACTIVE").touch()
+        (git_dir / "LANE3_ACTIVE").write_text("issue=1\n")
         seen = {}
 
         def fake_run(cmd, cwd=None, **kw):
@@ -160,7 +160,7 @@ class TelemetryNeverRefuses(Case):
             return unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
         with unittest.mock.patch.dict(os.environ, {"MISE_ORIGINAL_CWD": "/the/gate/worktree"}), \
              unittest.mock.patch.object(P.subprocess, "run", side_effect=fake_run):
-            self.assertNotEqual(P.gate_ms(), "unknown")
+            self.assertNotEqual(P.gate_ms(1), "unknown")
         self.assertEqual(seen["cwd"], "/the/gate/worktree")
 
 
@@ -235,14 +235,14 @@ class GateTimeIsDerived(Case):
         git_dir.mkdir(exist_ok=True)
         marker = git_dir / "LANE3_ACTIVE"
         if marker_age is not None:
-            marker.touch()
+            marker.write_text("issue=1\n")
             os.utime(marker, (time.time() - marker_age, time.time() - marker_age))
         return git_dir
 
     def gate_ms_with(self, git_dir: Path) -> str:
         done = unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
         with unittest.mock.patch.object(P.subprocess, "run", return_value=done):
-            return P.gate_ms()
+            return P.gate_ms(1)
 
     def test_a_missing_marker_reads_unknown_never_zero(self):
         self.assertEqual(self.gate_ms_with(self.git_dir(None)), "unknown")
@@ -298,7 +298,7 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
         cases = {
             "unpaired": [self.spec("classes=1:ac,2:existing,3:live"), self.gate("results=1:pass,2:fail; gate-ms=1")],
             "no-map": [self.gate("results=absent; gate-ms=unknown")],
-            "blocked-no-cases": [self.gate("results=; gate-ms=unknown", body=blocked)],
+            "no-cases": [self.gate("results=; gate-ms=unknown", body=blocked)],
             "pre-893": [self.gate("ack-no-pr-required=x")],
             "bypass-route": [{"id": 11, "created_at": "2026-10-04T11:00:00Z", "body": GATE_FAIL}],
         }
@@ -440,20 +440,20 @@ class ReportReadsTheStamp(unittest.TestCase):
 
     def test_every_bucket_is_the_stamp_and_each_is_printed(self):
         gates = [self.GATE] + [self.gate(str(i), m, issue=10 + i) for i, m in enumerate(
-            ("unpaired", "no-map", "blocked-no-cases", "pre-893", "bypass-route"))]
+            [b for b in VR.BUCKETS if b not in ("measured", "unstamped")])]
         report = VR.build(gates)
         self.assertEqual({k: v for k, v in report["buckets"].items() if k != "missing input"},
-                         dict.fromkeys(VR.BUCKETS, 1))
+                         {**dict.fromkeys(VR.BUCKETS, 1), "unstamped": 0})
         text = VR.render(report)
         for name in VR.BUCKETS:
-            self.assertIn(f"- {name}: 1", text)
+            self.assertIn(f"- {name}: {0 if name == 'unstamped' else 1}", text)
         self.assertEqual(report["aggregate"]["gates"], 1)
 
     def test_a_blocked_gate_with_no_cases_is_not_a_bypass(self):
         # pass-2 finding 9, inverted: BLOCKED-with-no-cases has its own bucket.
-        blocked = {**self.gate("5", "blocked-no-cases"), "event_type": "blocked.lane"}
+        blocked = {**self.gate("5", "no-cases"), "event_type": "blocked.lane"}
         buckets = VR.build([blocked])["buckets"]
-        self.assertEqual((buckets["blocked-no-cases"], buckets["bypass-route"], buckets["pre-893"]), (1, 0, 0))
+        self.assertEqual((buckets["no-cases"], buckets["bypass-route"], buckets["pre-893"]), (1, 0, 0))
 
     def test_an_older_gate_reading_is_pre_893_and_a_non_gate_is_not_a_gate(self):
         # Epoch-1 finding 6: an unstamped reading is a gate only when its
@@ -542,6 +542,94 @@ class ReportReadsTheStamp(unittest.TestCase):
         self.assertEqual(done.exception.code, 2)
         self.assertIn("nothing was read", err.getvalue())
         self.assertNotIn("nothing is reported as zero", out.getvalue())
+
+
+class StickyWicketE1Patch(Case):
+    """harmonic-forge#893 reforge epoch 1, sticky-wicket PATCH: one test per
+    survivor, each at mechanism width."""
+
+    def extract(self, comments):
+        import extract_threads  # noqa: PLC0415
+        get = lambda path: [comments] if "comments" in path else [[]]
+        return extract_threads.issue_events("o/r", 5, get, account="a", org="o")
+
+    @staticmethod
+    def gates(events):
+        return [e for e in events if e["event_type"] in VR.GATE_TYPES and "measurement" in e["attrs"]]
+
+    def test_1_a_conflict_verdict_gate_reaches_the_report(self):
+        body = GATE_FAIL.replace("## Lane 3 Gate Results — H1", "## Lane 3 Gate Results — H1 — PASS")
+        events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
+                                "body": _footered(body, "gate-result", "results=1:pass,2:fail; gate-ms=1")}])
+        [gate] = self.gates(events)
+        self.assertEqual(gate["event_type"], "unknown")
+        self.assertEqual(len(VR.build(events)["issues"][("o/r", 5)]["gates"]), 1)
+
+    def test_2_a_correct_fail_is_not_low_confidence(self):
+        events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
+                                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail; gate-ms=1")}])
+        self.assertIs(self.gates(events)[0]["attrs"]["map_agrees"], True)
+
+    def test_3_an_empty_map_is_no_cases_whatever_the_verdict(self):
+        body = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** PASS\n**Finding:** x\n**Next:** y\n")
+        events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
+                                "body": _footered(body, "gate-result", "results=; gate-ms=unknown")}])
+        self.assertEqual(self.gates(events)[0]["attrs"]["measurement"], "no-cases")
+
+    def test_4_a_sidecar_map_needs_no_flag(self):
+        (self.dir / "body.results.json").write_text(json.dumps({"1": "pass", "2": "fail"}))
+        (self.dir / "body.md").write_text(GATE_FAIL)
+        self.assertIn("results=1:pass,2:fail;", last_line(self.post("gate-result", GATE_FAIL)))
+
+    def test_5_an_indented_or_fenced_only_heading_is_one_stamped_gate(self):
+        indented = "  " + GATE_FAIL
+        events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
+                                "body": _footered(indented, "discussion", "results=1:pass,2:fail; gate-ms=1")}])
+        self.assertEqual(len(self.gates(events)), 1)
+
+    def test_6_only_lane_3_posts_an_artifact(self):
+        import gate_ci  # noqa: PLC0415
+        for poster, expected in (("LANE1", None), ("LANE-unset", None), ("LANE3", "gate")):
+            with self.subTest(poster):
+                self.assertEqual(gate_ci.lane3_artifact(GATE_FAIL, None, poster), expected)
+        relay = _footered(GATE_FAIL, "discussion", "results=1:pass,2:fail; gate-ms=1").replace(
+            "posted-by=LANE3", "posted-by=LANE-unset")
+        self.assertEqual(self.gates(self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
+                                                   "body": relay}])), [])
+
+    def test_7_a_marker_for_another_issue_reads_unknown(self):
+        git_dir = self.dir / "g"
+        git_dir.mkdir()
+        (git_dir / "LANE3_ACTIVE").write_text("issue=1\n")
+        done = unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
+        with unittest.mock.patch.object(P.subprocess, "run", return_value=done):
+            self.assertEqual(P.gate_ms(2), "unknown")
+            self.assertNotEqual(P.gate_ms(1), "unknown")
+        (git_dir / "LANE3_ACTIVE").write_text("")
+        with unittest.mock.patch.object(P.subprocess, "run", return_value=done):
+            self.assertEqual(P.gate_ms(1), "unknown")
+
+    def test_8_a_deleted_spec_unpairs_its_gate_on_re_extraction(self):
+        import emit  # noqa: PLC0415
+        spec = {"id": 10, "created_at": "2026-10-04T10:00:00Z", "body": _footered(SPEC_TC, "spec", "classes=1:ac,2:ac")}
+        gate = {"id": 11, "created_at": "2026-10-04T11:00:00Z",
+                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail; gate-ms=1")}
+        with tempfile.TemporaryDirectory() as store, \
+             unittest.mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": store}):
+            emit.emit(self.extract([spec, gate]))
+            with unittest.mock.patch.object(__import__("eras"), "_now", return_value="2099-01-01T00:00:00Z"):
+                counts = emit.emit(self.extract([gate]))
+            self.assertGreaterEqual(counts["written"], 1)
+            report = VR.build(VR.load_events(Path(store), None, None, []))
+        self.assertEqual((report["buckets"]["measured"], report["buckets"]["unpaired"]), (0, 1))
+
+    def test_9_an_unstamped_reading_from_the_current_extractor_is_not_history(self):
+        reading = {"source": "gh-thread", "event_type": "gate.pass", "repo": "o/r", "issue": 6,
+                   "ts": "2026-10-04T10:00:00Z", "extractor_version": "threads-4",
+                   "attrs": {"comment_id": "1", "marker": "gate-result"}}
+        old = {**reading, "issue": 7, "extractor_version": "threads-3", "attrs": {"comment_id": "2", "marker": "gate-result"}}
+        buckets = VR.build([reading, old])["buckets"]
+        self.assertEqual((buckets["unstamped"], buckets["pre-893"]), (1, 1))
 
 
 if __name__ == "__main__":

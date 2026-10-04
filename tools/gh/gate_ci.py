@@ -103,7 +103,7 @@ _ARTIFACT_QUOTE = re.compile(r"^[ \t]*>.*$", re.M)
 _ARTIFACT_FIRST_HEADING = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]+\S.*$")
 _ARTIFACT_LEADS = {"gate": re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.I),
                    "spec": re.compile(r"^#{1,4}[ \t]*Lane 3 Test Spec\b", re.I)}
-_RELAY_POSTER = re.compile(r"^LANE[12]$", re.I)
+_LANE3_POSTER = re.compile(r"^LANE3$", re.I)
 
 
 def lane3_artifact(body: str, kind: str | None = None, posted_by: str | None = None) -> str | None:
@@ -112,13 +112,17 @@ def lane3_artifact(body: str, kind: str | None = None, posted_by: str | None = N
     The ONE test the posting side and the telemetry extractor share
     (harmonic-forge#893 reforge pass 1): when each side had its own, they
     disagreed on discussion-route specs, Lane 1 relays and fenced headings.
-    - A post by Lane 1 or Lane 2 is a relay, never an artifact.
+    - A post by any known poster that is not Lane 3 is a relay, never an
+      artifact: Lane 1, Lane 2, and `LANE-unset` (a session with no LANE, 495 of
+      9011 live hrse comments). Failing closed here drops a row rather than
+      double-counting a gate (#893 e1 sticky-wicket #6). An unknown poster
+      (None: an older post with no footer) is judged by its headings.
     - An explicit kind (`gate-result`, `spec`) is the artifact it names; the
       posting side has already validated its heading.
     - Otherwise the body's FIRST heading decides, read after fenced blocks and
       blockquotes are removed, so a quoted or fenced `#` line is never a
       heading and a nested gate recap is not a gate."""
-    if posted_by and _RELAY_POSTER.match(posted_by.strip()):
+    if posted_by and not _LANE3_POSTER.match(posted_by.strip()):
         return None
     if kind == "gate-result":
         return "gate"

@@ -311,14 +311,10 @@ flag "--issue <issue>" help="Issue number" required=#true
 flag "--file <file>" help="Path to the comment body" required=#true
 flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
 flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
-flag "--tc-classes <json>" help="harmonic-forge#893: a Lane 3 spec's case id to ac|existing|live (never blocks the post)"
-flag "--tc-results <json>" help="harmonic-forge#893: a gate report's case id to pass|fail|blocked (never blocks the post)"
 '''
 run = '''
 set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
 [ -n "${usage_repo:-}" ] && set -- "$@" --repo "$usage_repo"
-[ -n "${usage_tc_classes:-}" ] && set -- "$@" --tc-classes "$usage_tc_classes"
-[ -n "${usage_tc_results:-}" ] && set -- "$@" --tc-results "$usage_tc_results"
 python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane_discussion.py" "$@"
 '''
 
@@ -406,7 +402,13 @@ if [ -n "$usage_issue" ]; then
 else
   python3 tools/gh/check_lane3_ready.py
 fi
-touch "$git_dir/LANE3_ACTIVE"
+# The marker names its issue, so a gate's time is measured from its own
+# start, never from an earlier gate's (harmonic-forge#893).
+if [ -n "$usage_issue" ]; then
+  printf 'issue=%s\nstarted_at=%s\n' "$usage_issue" "$(date -Iseconds)" > "$git_dir/LANE3_ACTIVE"
+else
+  touch "$git_dir/LANE3_ACTIVE"
+fi
 echo "lane3-begin: $(pwd) marked Lane 3-active"
 '''
 

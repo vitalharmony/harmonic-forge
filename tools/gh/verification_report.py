@@ -20,12 +20,14 @@ R4), never inferred here from which attrs are present:
 - measured: per-case results, paired with its classified spec;
 - unpaired: per-case results with no matching classified spec;
 - no-map: posted through post_lane_discussion.py without a usable map;
-- blocked-no-cases: a BLOCKED gate that ran no case;
+- no-cases: posted with an explicitly empty map (a gate that ran no case);
 - pre-893: posted by the tool before #893 recorded case maps;
-- bypass-route: posted without the tool's footer at all.
+- bypass-route: posted without the tool's footer at all;
+- unstamped: a gate reading the current extractor took but did not stamp,
+  which is a defect to look at, never history.
 Plus missing input: an issue with no ready-for-l3 attempt events (#892).
 Aggregates cover `measured` only. A measured gate whose map disagrees with its
-own verdict or prose is counted as low-confidence, never refused or dropped.
+own verdict is counted as low-confidence, never refused or dropped.
 
     verification_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--store PATH]
 """
@@ -45,7 +47,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "telemetry"))
 import emit  # noqa: E402
 
 #: Every event type a gate comment extracts as, BLOCKED included: a BLOCKED
-#: gate that vanished from the report would read as one fewer gate.
+#: gate that vanished from the report would read as one fewer gate. "unknown"
+#: is load-bearing: it is how a gate whose heading and lead verdict disagree
+#: (CONFLICT) extracts, and removing it drops every such gate (#893 e1 #1).
 GATE_TYPES = {"gate.pass", "gate.fail", "blocked.lane", "unknown"}
 ATTEMPT_TYPE = "ready-for-l3.attempt"
 CLASSES = ("ac", "existing", "live")
@@ -53,7 +57,9 @@ TOKEN_NOTE = ("Lane token cost is not measured: a lane session cannot read its o
               "usage (only subagent completion notices carry usage), so time is wall-clock.")
 
 
-BUCKETS = ("measured", "unpaired", "no-map", "blocked-no-cases", "pre-893", "bypass-route")
+BUCKETS = ("measured", "unpaired", "no-map", "no-cases", "pre-893", "bypass-route", "unstamped")
+#: The first extractor that stamps a measurement on every gate it recognises.
+STAMPING_EXTRACTOR = 4
 
 
 class StoreUnreadable(Exception):
@@ -108,9 +114,9 @@ PRE_893_GATE_MARKERS = {"gate-result", "L3P", "L3F"}
 
 
 def is_gate_reading(event: dict[str, Any]) -> bool:
-    """A gate the report counts (#893 reforge pass 1): one the extractor
-    stamped, or an older unstamped reading whose marker says it is a gate.
-    Event type alone never decides: L2B/L3B extract as blocked.lane too."""
+    """A gate the report counts: one the extractor stamped, or an unstamped
+    reading whose marker says it is a gate. Event type alone never decides:
+    L2B/L3B extract as blocked.lane too."""
     attrs = event.get("attrs") or {}
     if attrs.get("measurement") in BUCKETS:
         return True
@@ -118,9 +124,14 @@ def is_gate_reading(event: dict[str, Any]) -> bool:
 
 
 def bucket(gate: dict[str, Any]) -> str:
-    """The stamped measurement; an older gate reading is pre-893."""
+    """The stamped measurement. An unstamped gate reading is pre-893 only when
+    an older extractor took it: from a stamping extractor it is history the
+    stamping path missed, so it is `unstamped`, loudly, never pre-893 (#893
+    e1 sticky-wicket #9)."""
     value = (gate.get("attrs") or {}).get("measurement")
-    return value if value in BUCKETS else "pre-893"
+    if value in BUCKETS:
+        return value
+    return "unstamped" if _version(gate.get("extractor_version"))[0] >= STAMPING_EXTRACTOR else "pre-893"
 
 
 def _median(values: Iterable[float]) -> Optional[float]:
@@ -141,7 +152,8 @@ def latest_readings(gates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         attrs = gate.get("attrs") or {}
         cid = attrs.get("comment_id")
         key = (str(gate.get("repo", "")).lower(), gate.get("issue"), cid) if cid else (id(gate),)
-        rank = (_version(gate.get("extractor_version")), str(attrs.get("edited_at") or ""))
+        rank = (_version(gate.get("extractor_version")), str(attrs.get("edited_at") or ""),
+                str(attrs.get("extracted_at") or ""))
         held = best.get(key)
         if held is None or rank > held[0]:
             best[key] = (rank, gate)
@@ -219,7 +231,7 @@ def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
                   f"{agg['existing_dominant']} of {agg['gates']} ({share:.0%}) gates have more existing "
                   "cases than ac and live combined; "
                   f"{agg['low_confidence']} low-confidence (the map disagrees with the report's own "
-                  "verdict or the TC ids its prose names)."]
+                  "verdict)."]
     else:
         lines.append("Aggregate: no measured gates in this window; nothing is reported as zero.")
     lines.append(TOKEN_NOTE)
