@@ -86,17 +86,32 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
             "surviving_last": int(current[-1].get("surviving") or 0) if current else 0,
             "post_verdict_check": "post_verdict_check" in receipt,
             "modified": modified.date().isoformat(),
-            "costs": [_cost_row(issue, number, p) for number, p in enumerate(current, 1)],
+            # Every pass of every epoch: a reforged issue's earlier epoch was
+            # spent too (#889 preclose pass 1), unlike the cap's current().
+            "costs": [_cost_row(issue, f"{number}" if not int(p.get("epoch") or 0)
+                                else f"{number} (epoch {int(p.get('epoch') or 0)})", p)
+                      for number, p in _numbered(passes)],
         })
     return out
 
 
-def _cost_row(issue: str, number: int, entry: dict) -> dict:
+def _numbered(passes: list[dict]) -> list[tuple[int, dict]]:
+    """Each pass with its number within its own epoch."""
+    seen: dict[int, int] = {}
+    out = []
+    for p in passes:
+        epoch = int(p.get("epoch") or 0)
+        seen[epoch] = seen.get(epoch, 0) + 1
+        out.append((seen[epoch], p))
+    return out
+
+
+def _cost_row(issue: str, number: object, entry: dict) -> dict:
     return {"issue": issue, "pass": number, "sha": str(entry.get("sha") or "")[:12],
             "tokens": entry.get("panel_tokens"), "ms": entry.get("panel_ms"),
             "unavailable": entry.get("cost_unavailable"),
             "codex_ms": entry.get("cross_family_ms") if entry.get("cross_family_ran") else None,
-            "codex_ran": bool(entry.get("cross_family_ran"))}
+            "codex_ran": entry.get("cross_family_ran")}
 
 
 def _number(value: object) -> str:
@@ -116,7 +131,10 @@ def render_costs(table: list[dict]) -> str:
                      f"{_number(c['ms']) if measured else 'n/a'} | {_number(c['codex_ms'])} |")
     counted = [c["tokens"] for c in passes if isinstance(c["tokens"], int)]
     median = f"{statistics.median(counted):,.0f}" if counted else "n/a"
-    share = f"{sum(c['codex_ran'] for c in passes)}/{len(passes)}" if passes else "0/0"
+    # A pass recorded before #889 has no cross_family_ran at all: unknown,
+    # never "did not run", so it is outside the share like an n/a token row.
+    known = [c["codex_ran"] for c in passes if isinstance(c["codex_ran"], bool)]
+    share = f"{sum(known)}/{len(known)} measured"
     lines += ["", f"{len(passes)} pass(es); panel tokens median {median}, "
                   f"total {sum(counted):,} over {len(counted)} measured; Codex check ran on {share}. "
                   "Excludes the Lane 1 session's own orchestration cost, which it cannot read."]

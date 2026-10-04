@@ -785,8 +785,11 @@ def plan(args: argparse.Namespace) -> int:
     print(NOT_A_GATE)
     # harmonic-forge#834: a planned receipt overwrites the complete one, so
     # it must carry the pass history forward or the count would reset.
+    # The tier the panel was sized at, so --complete (which is not given
+    # --tier in the documented flow) labels its event with it (#889).
     write_receipt(repo, args.issue, head_sha, size, status="planned",
-                  extra=preclose_passes.carried(find_receipt(repo, args.issue)))
+                  extra={**preclose_passes.carried(find_receipt(repo, args.issue)),
+                         "tier": args.tier or "unset"})
     return 0
 
 
@@ -822,15 +825,15 @@ def complete(args: argparse.Namespace) -> int:
         require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
     check_provenance(required, provenance)
-    ran = bool(args.envelope) and provenance.startswith(PROVENANCE_TRIGGERED[0])
+    # The call ran whenever an envelope is recorded, a fallback included: a
+    # call that timed out still spent its wall-clock (#889 preclose pass 1).
+    ran = bool(args.envelope)
     cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
                  "cross_family_ran": ran,
                  "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
     if ran:
         cost["cross_family_tokens"] = "unavailable"
-    else:
-        # The envelope was a fallback: nothing ran, so there is no Codex time.
-        cost.pop("cross_family_ms", None)
+        cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
@@ -854,7 +857,8 @@ def complete(args: argparse.Namespace) -> int:
     receipt = read_receipt(path) or {}
     passes = preclose_passes.current(preclose_passes.history(receipt))
     emit_pass(repo, args.issue, head_sha, passes[-1] if passes else {}, {
-        "pass": len(passes), "refuters": int(size), "tier": getattr(args, "tier", None) or "unset",
+        "pass": len(passes), "refuters": int(size),
+        "tier": getattr(args, "tier", None) or (prior or {}).get("tier") or "unset",
         "high_blast": bool(reasons), "cross_family_required": bool(required)})
     print()
     print(NOT_A_GATE)
@@ -947,6 +951,7 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
                 attrs[key] = entry[key]
         if entry.get("cross_family_ran"):
             attrs["cross_family_ms"] = entry.get("cross_family_ms")
+            attrs["cross_family_fallback"] = bool(entry.get("cross_family_fallback"))
         event = {
             "ts": entry["completed_at"], "source": "advisory", "repo": repo, "issue": issue,
             "sha": head_sha, "account": origin.account, "org": origin.org,

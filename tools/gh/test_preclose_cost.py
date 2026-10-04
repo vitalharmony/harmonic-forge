@@ -30,8 +30,11 @@ class CostCase(base.ScratchRepo):
         self.addCleanup(patcher.stop)
         self.commit("tools/x.py")
 
-    def envelope(self) -> str:
+    def envelope(self, fallback: bool = False) -> str:
         path = Path(self.findings_file([])).with_name("envelope.json")
+        if fallback:
+            path.write_text(json.dumps({"status": "process-error", "exit_code": 1, "label": base.FALLBACK}))
+            return str(path)
         path.write_text(json.dumps({
             "status": "ok", "label": base.CROSS, "report": {"assumptions": [{"verdict": "confirmed"}]},
             "family": "codex", "posture": "verify", "exit_code": 0, "caller_family": "claude",
@@ -39,12 +42,13 @@ class CostCase(base.ScratchRepo):
             "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
         return str(path)
 
-    def run_complete(self, findings: list | None = None, cross: bool = False, **cost) -> tuple[str, str]:
+    def run_complete(self, findings: list | None = None, cross: bool = False, fallback: bool = False,
+                     **cost) -> tuple[str, str]:
         """A pass with one surviving finding (not triggered) or a silent panel (cross-family)."""
         findings = [base.ANCHORED] if findings is None and not cross else (findings or [])
         args = base._Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
                           findings=self.findings_file(findings),
-                          envelope=self.envelope() if cross else None, not_triggered=not cross,
+                          envelope=self.envelope(fallback) if cross else None, not_triggered=not cross,
                           cross_family=False, force=False, own_model="claude-opus-5-5", tier="standard")
         args.__dict__.update(cost)
         out, err = io.StringIO(), io.StringIO()
@@ -115,12 +119,32 @@ class TC3OneEventPerPass(CostCase):
         self.assertTrue(event["subject_id"].endswith("#p1e0"), event["subject_id"])
         # No free text: the only strings are the tier label.
         self.assertEqual({k for k, v in attrs.items() if isinstance(v, str)}, {"tier"})
+        # Partitioned under the repo's real account and org, where #890's query looks.
+        self.assertEqual((event["account"], event["org"]), ("vitalharmony", "vitalharmony"))
+        self.assertFalse(any("unresolved" in p.parts for p in self.store.rglob("*.jsonl")))
+        self.assertEqual(event["ts"], self.last_pass()["completed_at"])
         sha = preclose.find_receipt("vitalharmony/hrse", 1208)["reviewed_sha"]
+        labels = {"pass": 1, "refuters": 0, "tier": "standard", "high_blast": False,
+                  "cross_family_required": False}
         with contextlib.redirect_stderr(io.StringIO()):
-            preclose.emit_pass("vitalharmony/hrse", 1208, sha, self.last_pass(),
+            preclose.emit_pass("vitalharmony/hrse", 1208, sha, self.last_pass(), labels)
+        self.assertEqual(len([e for e in self.events() if e["event_type"] == "preclose.pass.completed"]), 1)
+
+    def test_the_event_is_stamped_with_the_pass_time_not_the_emit_time(self) -> None:
+        self.run_complete()
+        entry = {**self.last_pass(), "completed_at": "2026-01-02T03:04:05Z"}
+        with contextlib.redirect_stderr(io.StringIO()):
+            preclose.emit_pass("vitalharmony/hrse", 1208, "a" * 40, entry,
                                {"pass": 1, "refuters": 0, "tier": "standard", "high_blast": False,
                                 "cross_family_required": False})
-        self.assertEqual(len([e for e in self.events() if e["event_type"] == "preclose.pass.completed"]), 1)
+        self.assertIn("2026-01-02T03:04:05Z", {e["ts"] for e in self.events()})
+
+    def test_the_event_carries_the_tier_the_pass_was_planned_at(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier="deep")
+        args = {"tier": None}
+        self.run_complete(**args)
+        self.assertEqual(self.events()[0]["attrs"]["tier"], "deep")
 
     def test_an_unavailable_cost_emits_no_invented_numbers(self) -> None:
         self.run_complete(panel_tokens=None, panel_ms=None, cost_unavailable="no usage")
@@ -158,7 +182,19 @@ class TC5Report(unittest.TestCase):
         self.assertIn("| o/r#2 | 1 | cccccccccccc | n/a | n/a |  |", text)
         self.assertIn("| o/r#2 | 2 | dddddddddddd | n/a | n/a |  |", text)
         self.assertIn("4 pass(es); panel tokens median 200, total 400 over 2 measured; "
-                      "Codex check ran on 1/4.", text)
+                      "Codex check ran on 1/2 measured.", text)
+
+    def test_a_reforged_issue_reports_every_epoch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            (receipts / "o_r_3.json").write_text(json.dumps({"repo": "o/r", "issue": 3, "pass_history": [
+                {"sha": "e" * 40, "epoch": 0, "panel_tokens": 500, "panel_ms": 5, "cross_family_ran": True,
+                 "cross_family_ms": 900},
+                {"sha": "f" * 40, "epoch": 1, "panel_tokens": 100, "panel_ms": 1, "cross_family_ran": False}]}))
+            text = report.report(receipts, None, receipts / "no-archive")
+        self.assertIn("| o/r#3 | 1 | eeeeeeeeeeee | 500 | 5 | 900 |", text)
+        self.assertIn("| o/r#3 | 1 (epoch 1) | ffffffffffff | 100 | 1 |  |", text)
+        self.assertIn("total 600 over 2 measured; Codex check ran on 1/2 measured.", text)
         self.assertIn("orchestration cost", text)
 
 
@@ -172,6 +208,14 @@ class TC6CrossFamilyTime(CostCase):
         with self.assertRaises(SystemExit) as refused:
             self.run_complete(cross_family_ms="5")
         self.assertIn("without --envelope", str(refused.exception))
+
+    def test_a_fallback_call_still_records_its_time(self) -> None:
+        self.run_complete(cross=True, fallback=True)
+        entry = self.last_pass()
+        self.assertEqual((entry["cross_family_ran"], entry["cross_family_ms"], entry["cross_family_fallback"]),
+                         (True, 300, True))
+        attrs = self.events()[0]["attrs"]
+        self.assertEqual((attrs["cross_family_ms"], attrs["cross_family_fallback"]), (300, True))
 
     def test_the_entry_and_event_carry_the_codex_time(self) -> None:
         self.run_complete(cross=True)
