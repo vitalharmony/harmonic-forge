@@ -1075,7 +1075,7 @@ categorically not authorized to run — and both refusals were correct.
 <!-- R-0208 -->
 `AE` (approved, execute) — the operator's go-ahead for Lane 3 to run the
 TCs in an already-approved test spec (or Lane 1's, citing the operator's
-standing grant, R-0374), distinct from approving the spec's
+standing grant, R-0374, or auto-AE, R-0378), distinct from approving the spec's
 content (that's the `L3S` → HITL-approval step itself). Like every other
 trigger phrase in this section, `AE` must be posted as an actual issue
 comment, not only said to Lane 1 in chat — Lane 3 verifies it
@@ -1149,6 +1149,44 @@ Only the operator can withdraw the grant, and withdrawal takes effect by
 removing this rule and its registry row; the operator-memory note is not the
 authority once this rule exists.
 <!-- /R-0374 -->
+
+<!-- R-0378 -->
+**Auto-AE: the operator's `/auto-ae` toggle** (harmonic-forge#874; operator
+rulings 2026-10-02 and 2026-10-04). While it is on, Lane 1 stands in for the
+operator twice on an issue under a live `BATCH` lease: it approves Lane 3's
+spec (excepting R-0124 and R-0165) and posts the AE with its sweep (excepting
+R-0208 as to who posts; the pair stays one atomic action). It reaches only a
+spec that is Tier R or Tier W throughout. **Never Tier P:** a spec whose write
+tier ceiling is P, or that states none, keeps the operator's AE (and R-0374 for
+the production step a Tier R gate verified).
+
+- **Only the operator turns it on, only in Lane 1.** The whole prompt must be
+  exactly `/auto-ae on`, `/auto-ae off` or `/auto-ae status`, typed into an
+  interactive Lane 1 session; `tools/hooks/auto_ae_toggle.py` acts on it at
+  `UserPromptSubmit`. The skill of the same name toggles nothing. No agent may
+  toggle it: the hook's `PreToolUse` half denies any tool call naming its state
+  file and any scheduled prompt (`CronCreate`, `ScheduleWakeup`,
+  `RemoteTrigger`) mentioning auto-ae.
+- **On needs a live `BATCH`**, or the toggle refuses out loud and writes
+  nothing. Each auto-AE also needs the issue's own lease to be live when it
+  posts.
+- **The AE claims it on its Authorized: line**, citing "auto-AE (R-0378)" and
+  the Lane 3 spec comment it approves. `tools/gh/l1_post.py` refuses one
+  (`tools/gh/_auto_ae.py`) unless the toggle is on, the issue's lease is live,
+  it posts as `ae-and-sweep` at the SHA of the newest `ready-for-l3`, the spec is
+  the newest after that `ready-for-l3` and unedited, both spec and sweep are
+  Tier R or W, and it carries no `--prod-run` and no `--ack-no-pr-required`.
+- **An auto-AE never carries forward** under R-0209 (`check_lane3_ready`
+  refuses the carry): a new SHA gets a fresh auto-AE, checked when it posts, or
+  the operator's AE.
+
+**The toggle and the post check are a mistake-detector, not a boundary**, as
+for R-0374 (operator decision, 2026-10-02). Every lane runs as one user and
+posts as one GitHub account. Named residuals: a state-file path composed
+indirectly (in `python -c`, or through a shell variable) passes the guard, and
+model-written `/auto-ae on` text that the operator pastes, or that a loop
+scheduled before the guard existed delivers, toggles it as if typed.
+<!-- /R-0378 -->
 
 <!-- R-0377 -->
 **A Lane 3 production run goes through one root-owned runner, spends one

@@ -1,0 +1,212 @@
+"""harmonic-forge#874: the post-time check behind R-0378 (the operator's
+`/auto-ae` toggle) -- what an AE claiming auto-AE must show before it posts,
+and that an auto-AE never carries forward to a new SHA."""
+import hashlib
+import json
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import _auto_ae as auto  # noqa: E402
+import check_lane3_ready as clr  # noqa: E402
+import l1_post  # noqa: E402
+
+REPO, ISSUE, KEY = "vitalharmony/hrse", 42, "H42"
+SHA = "a" * 40
+OTHER = "b" * 40
+NOW = datetime(2026, 10, 4, 18, 0, tzinfo=timezone.utc)
+READY_ID, SPEC_ID = 200, 210
+
+
+def _footered(prefix: str, kind: str, extra: str = "") -> str:
+    digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+    return f"{prefix}\n\n<!-- l1-post v1; kind={kind};{extra} body-sha256={digest} -->"
+
+
+def ready(comment_id: int = READY_ID, sha: str = SHA) -> dict:
+    return {"id": comment_id, "body": _footered("## ready-for-l3 — H42", "ready-for-l3", f" sha={sha};")}
+
+
+def spec(comment_id: int = SPEC_ID, tier: str | None = "W", edited: bool = False,
+         marker: bool = True) -> dict:
+    lines = ["## Lane 3 Test Spec — H42", "", "**Cases:** 2 cases.", ""]
+    if tier:
+        lines.append(f"Write tier: {tier}")
+    lines += ["", "### Test cases", "1. TC1 — read the list.", "2. TC2 — dismiss and undo."]
+    body = _footered("\n".join(lines), "spec", " posted-by=LANE3;")
+    if not marker:  # a footer naming the kind, with no digest
+        body = body.split("\n\n<!--")[0] + "\n\n<!-- l1-post v1; kind=spec; posted-by=LANE3 -->"
+    if edited:
+        body = body.replace("2 cases.", "3 cases.")
+    return {"id": comment_id, "body": body}
+
+
+def ae_body(spec_id: int = SPEC_ID, cite: str = "auto-AE (R-0378)") -> str:
+    authorized = (f"**Authorized:** {cite}: Lane 1 approved Lane 3's spec "
+                  f"issuecomment-{spec_id} under the operator's /auto-ae toggle." if cite
+                  else "**Authorized:** the operator, in chat.")
+    return f"## AE — H42\n\n{authorized}\n**Next:** Lane 3 executes TC1–TC2."
+
+
+def sweep_body(tier: str = "W") -> str:
+    return (f"## Gate-readiness sweep — H42\n\n**Readiness:** ready.\n\nWrite tier: {tier}\n\n"
+            "### Test cases\n1. TC1 — ready.\n2. TC2 — ready.\n")
+
+
+class AutoAeCase(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.toggle = self.dir / "auto-ae.json"
+        self.batch = self.dir / "batch-authorized.json"
+        self.set_toggle(True)
+        self.set_lease(KEY)
+
+    def set_toggle(self, on: bool | None) -> None:
+        if on is None:
+            self.toggle.write_text("{not json")
+        else:
+            self.toggle.write_text(json.dumps({"on": on, "lane": "1"}))
+
+    def set_lease(self, key: str, expires: datetime | None = None, consumed: bool = False) -> None:
+        expires = expires or NOW + timedelta(hours=2)
+        self.batch.write_text(json.dumps({key: {
+            "authorized_at": NOW.isoformat(), "expires_at": expires.isoformat(),
+            "targets": [{"action": "gh pr merge", "consumed": consumed, "consumed_by": None,
+                         "repo": None, "pr_number": None}]}}))
+
+    def refusal(self, ae: str | None = None, sweep: str | None = None, comments=None, *,
+                sha: str = SHA, spec_comment: int | None = SPEC_ID, prod_run: bool = False,
+                ack: str | None = None, no_sweep: bool = False) -> str | None:
+        return auto.auto_ae_refusal(
+            ae if ae is not None else ae_body(), None if no_sweep else (sweep or sweep_body()),
+            REPO, ISSUE, sha, comments if comments is not None else [ready(), spec()],
+            spec_comment=spec_comment, prod_run=prod_run, ack_no_pr_required=ack, now=NOW,
+            toggle_state=self.toggle, batch_state=self.batch)
+
+
+class CitesAutoAeTests(unittest.TestCase):
+    def test_the_authorized_line_naming_auto_ae_is_a_claim(self):
+        self.assertTrue(auto.cites_auto_ae(ae_body()))
+
+    def test_the_rule_id_alone_or_the_name_alone_is_still_a_claim(self):
+        self.assertTrue(auto.cites_auto_ae(ae_body(cite="R-0378")))
+        self.assertTrue(auto.cites_auto_ae(ae_body(cite="auto-AE")))
+
+    def test_a_mention_off_the_authorized_line_is_not_a_claim(self):
+        body = ae_body(cite="") + "\n\nThis is not an auto-AE (R-0378)."
+        self.assertFalse(auto.cites_auto_ae(body))
+
+    def test_a_fenced_authorized_line_is_quoted_evidence(self):
+        body = "## AE — H42\n\n```\n**Authorized:** auto-AE (R-0378)\n```\n**Authorized:** the operator."
+        self.assertFalse(auto.cites_auto_ae(body))
+
+
+class AutoAeRefusalTests(AutoAeCase):
+    def test_everything_in_place_posts(self):
+        self.assertIsNone(self.refusal())
+
+    def test_auto_ae_with_the_toggle_off_is_refused(self):
+        self.set_toggle(False)
+        self.assertIn("auto-AE is off", self.refusal())
+
+    def test_an_unreadable_toggle_state_is_off(self):
+        self.set_toggle(None)
+        self.assertIn("auto-AE is off", self.refusal())
+
+    def test_auto_ae_for_an_issue_outside_any_lease_is_refused(self):
+        self.set_lease("H43")
+        self.assertIn("not under a live BATCH lease", self.refusal())
+
+    def test_an_expired_lease_is_refused(self):
+        self.set_lease(KEY, expires=NOW - timedelta(minutes=1))
+        self.assertIn("not under a live BATCH lease", self.refusal())
+
+    def test_a_lease_whose_merge_is_spent_is_refused(self):
+        self.set_lease(KEY, consumed=True)
+        self.assertIn("not under a live BATCH lease", self.refusal())
+
+    def test_auto_ae_with_a_tier_p_sweep_is_refused(self):
+        self.assertIn("sweep's write tier is P", self.refusal(sweep=sweep_body("P")))
+
+    def test_a_tier_p_spec_is_refused_whole(self):
+        reason = self.refusal(comments=[ready(), spec(tier="P")])
+        self.assertIn("ceiling is P", reason)
+
+    def test_a_spec_stating_no_tier_is_refused(self):
+        self.assertIn("ceiling is unstated", self.refusal(comments=[ready(), spec(tier=None)]))
+
+    def test_a_standalone_ae_is_refused(self):
+        self.assertIn("ae-and-sweep", self.refusal(no_sweep=True))
+
+    def test_a_production_run_is_refused(self):
+        self.assertIn("--prod-run", self.refusal(prod_run=True))
+
+    def test_an_operator_acknowledgment_is_refused(self):
+        self.assertIn("--ack-no-pr-required", self.refusal(ack="merged"))
+
+    def test_no_spec_after_the_newest_ready_for_l3_is_refused(self):
+        # A spec for an older round, before the newest ready-for-l3, is stale.
+        comments = [ready(100), spec(150), ready(READY_ID)]
+        self.assertIn("no Lane 3 spec", self.refusal(comments=comments, spec_comment=150))
+
+    def test_no_ready_for_l3_is_refused(self):
+        self.assertIn("no Lane 1 ready-for-l3", self.refusal(comments=[spec()]))
+
+    def test_an_ae_at_another_sha_is_refused(self):
+        self.assertIn("not the AE's", self.refusal(sha=OTHER))
+
+    def test_the_wrong_spec_comment_is_refused(self):
+        self.assertIn("not the newest Lane 3 spec", self.refusal(spec_comment=999))
+
+    def test_an_edited_spec_is_refused(self):
+        self.assertIn("edited", self.refusal(comments=[ready(), spec(edited=True)]))
+
+    def test_a_spec_without_a_digest_is_refused(self):
+        self.assertIn("no body-sha256", self.refusal(comments=[ready(), spec(marker=False)]))
+
+    def test_an_authorized_line_not_naming_the_spec_is_refused(self):
+        self.assertIn("does not name the spec", self.refusal(ae=ae_body(spec_id=999)))
+
+    def test_two_authorized_lines_refuse(self):
+        body = ae_body() + "\n**Authorized:** the operator, in chat."
+        self.assertIn("more than one Authorized", self.refusal(ae=body))
+
+
+class CarryForwardTests(unittest.TestCase):
+    def test_an_auto_ae_never_carries_forward(self):
+        authority = {"id": 10, "body": _footered(ae_body(), "ae", f" sha={SHA};")}
+        comments = [authority, ready(11, OTHER)]
+        self.assertIsNone(clr.carry_forward(comments, authority, OTHER))
+
+    def test_an_operator_ae_still_carries_forward(self):
+        authority = {"id": 10, "body": _footered(ae_body(cite=""), "ae", f" sha={SHA};")}
+        comments = [authority, ready(11, OTHER)]
+        self.assertEqual(clr.carry_forward(comments, authority, OTHER)["id"], 11)
+
+
+class ValidateAutoAeTests(unittest.TestCase):
+    def test_an_operator_ae_reads_nothing(self):
+        with patch.object(clr, "fetch_comments", side_effect=AssertionError("no fetch")):
+            l1_post.validate_auto_ae(ae_body(cite=""), sweep_body(), REPO, ISSUE, SHA, SPEC_ID, False, None)
+
+    def test_a_refused_auto_ae_posts_nothing(self):
+        with patch.object(clr, "fetch_comments", return_value=[ready(), spec()]), \
+             patch.object(auto, "auto_ae_refusal", return_value="auto-AE is off"), \
+             self.assertRaises(SystemExit):
+            l1_post.validate_auto_ae(ae_body(), sweep_body(), REPO, ISSUE, SHA, SPEC_ID, False, None)
+
+    def test_an_accepted_auto_ae_passes(self):
+        with patch.object(clr, "fetch_comments", return_value=[ready(), spec()]), \
+             patch.object(auto, "auto_ae_refusal", return_value=None):
+            l1_post.validate_auto_ae(ae_body(), sweep_body(), REPO, ISSUE, SHA, SPEC_ID, False, None)
+
+
+if __name__ == "__main__":
+    unittest.main()

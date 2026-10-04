@@ -489,5 +489,80 @@ class FoldedObligations(unittest.TestCase):
                 self.assertIn(rule["id"], ids)
 
 
+class ListExceptedByTests(unittest.TestCase):
+    """harmonic-forge#874: R-0208 is excepted by both R-0374 and R-0378, so
+    `excepted_by` may be a list; every name in it must be reciprocated."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        _write(self.root, "rules/x.md", """
+            <!-- R-0001 -->
+            - No lane closes or merges an issue on its own.
+            <!-- /R-0001 -->
+            <!-- R-0002 -->
+            - First exception.
+            <!-- /R-0002 -->
+            <!-- R-0003 -->
+            - Second exception.
+            <!-- /R-0003 -->
+        """)
+        self.shas = {rid: drift.span_sha(text) for rid, text in (
+            ("R-0001", "- No lane closes or merges an issue on its own."),
+            ("R-0002", "- First exception."), ("R-0003", "- Second exception."))}
+
+    def _reg(self, excepted_by: str, third_back: bool = True) -> Path:
+        third = 'exception_to = ["R-0001"]\n' if third_back else ""
+        return _registry(self.root, f"""
+[[rule]]
+id = "R-0001"
+file = "rules/x.md"
+anchor = "a"
+statement = "s"
+text_sha = "{self.shas['R-0001']}"
+excepted_by = {excepted_by}
+hooks = []
+
+[[rule]]
+id = "R-0002"
+file = "rules/x.md"
+anchor = "a"
+statement = "s"
+text_sha = "{self.shas['R-0002']}"
+exception_to = ["R-0001"]
+hooks = []
+
+[[rule]]
+id = "R-0003"
+file = "rules/x.md"
+anchor = "a"
+statement = "s"
+text_sha = "{self.shas['R-0003']}"
+{third}hooks = []
+""")
+
+    def test_a_reciprocated_list_passes_both_checkers(self):
+        import check_absolutes  # noqa: PLC0415
+        reg = self._reg('["R-0002", "R-0003"]')
+        self.assertEqual(drift.check(self.root, reg, ("rules/*.md",)), [])
+        self.assertEqual(check_absolutes.check(reg, self.root, reg, self.root), [])
+
+    def test_a_list_entry_not_named_back_fails_both_checkers(self):
+        import check_absolutes  # noqa: PLC0415
+        reg = self._reg('["R-0002", "R-0003"]', third_back=False)
+        self.assertTrue(any("R-0003" in f for f in drift.check(self.root, reg, ("rules/*.md",))))
+        self.assertTrue(any("R-0003" in f for f in check_absolutes.check(reg, self.root, reg, self.root)))
+
+    def test_a_scalar_still_works(self):
+        reg = self._reg('"R-0002"', third_back=False)
+        self.assertEqual(drift.check(self.root, reg, ("rules/*.md",)), [])
+
+    def test_excepters_normalizes_every_shape(self):
+        self.assertEqual(drift.excepters({}), [])
+        self.assertEqual(drift.excepters({"excepted_by": "R-0374"}), ["R-0374"])
+        self.assertEqual(drift.excepters({"excepted_by": ["R-0374", "R-0378"]}), ["R-0374", "R-0378"])
+
+
 if __name__ == "__main__":
     unittest.main()

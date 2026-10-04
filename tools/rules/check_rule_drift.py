@@ -79,6 +79,16 @@ _KNOWN_FIELDS = {
     "exception_to", "excepted_by",
 }
 
+def excepters(rule: dict) -> list[str]:
+    """A row's `excepted_by` as a list: a scalar for one excepting rule, a list
+    once a second one exists (R-0208 is excepted by R-0374 and R-0378,
+    harmonic-forge#874)."""
+    value = rule.get("excepted_by")
+    if not value:
+        return []
+    return [value] if isinstance(value, str) else [str(v) for v in value]
+
+
 _OPEN = re.compile(r"^\s*<!--\s*(R-\d{4})\s*-->\s*$")
 _CLOSE = re.compile(r"^\s*<!--\s*/(R-\d{4})\s*-->\s*$")
 
@@ -263,14 +273,15 @@ def check(root: Path, registry_path: Path,
         for target in rule.get("exception_to", []) or []:
             if target not in by_id:
                 continue
-            back = by_id[target].get("excepted_by")
-            if back != rule_id:
+            back = excepters(by_id[target])
+            if rule_id not in back:
                 failures.append(
                     f"{rule_id} declares exception_to {target!r}, but {target}'s "
-                    f"excepted_by is {back!r}, not {rule_id!r}. Reciprocity broken."
+                    f"excepted_by is {back!r}, which does not name {rule_id!r}. Reciprocity broken."
                 )
-        excepted_by = rule.get("excepted_by")
-        if excepted_by and excepted_by in by_id:
+        for excepted_by in excepters(rule):
+            if excepted_by not in by_id:
+                continue
             forward = by_id[excepted_by].get("exception_to") or []
             if rule_id not in forward:
                 failures.append(
