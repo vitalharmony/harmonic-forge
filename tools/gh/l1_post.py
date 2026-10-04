@@ -1690,7 +1690,21 @@ def _ms_between(started: str, finished: str) -> int | None:
     return int(delta.total_seconds() * 1000)
 
 
-_FAILING_STEP = re.compile(r"(?m)^.*\b(?:FAIL|ERROR)\b.*$")
+#: What failed, without the noise: a unittest failure header ("FAIL: test_x
+#: (module.Case)", no path), else the mise task that failed ("[ci-check] ERROR
+#: task failed" -> "ci-check"). A passing run of this repo's own check prints a
+#: dozen other lines containing FAIL or ERROR, some with host paths, so a bare
+#: word match named a benign line (F892 preclose finding).
+_FAILING_TEST = re.compile(r"(?m)^(?:FAIL|ERROR): (test\w*(?: \([\w.]+\))?)")
+_FAILING_TASK = re.compile(r"(?m)^\[([\w:-]+)\] ERROR task failed")
+
+
+def _failing_step(output: str) -> str:
+    test = _FAILING_TEST.search(output or "")
+    if test:
+        return test.group(1)
+    task = _FAILING_TASK.search(output or "")
+    return f"task {task.group(1)}" if task else ""
 
 
 def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict,
@@ -1747,7 +1761,10 @@ def post_kind(
     except SystemExit:
         if not attempt["emitted"]:
             attempt["emitted"] = True
-            _emit_attempt(repo, issue, sha, "refused-other", attempt)
+            # A failure after the comment landed (the receipt write, say) is
+            # still a post, not a refusal (F892 preclose finding).
+            outcome = "posted" if attempt.get("posted") else "refused-other"
+            _emit_attempt(repo, issue, sha, outcome, attempt)
         raise
 
 
@@ -1779,10 +1796,9 @@ def _post_kind(
                 except Exception:  # noqa: BLE001
                     ci_state = "unknown"
                 attempt["ci_state"] = ci_state
-                step = _FAILING_STEP.search(check.get("output", ""))
                 attempt["emitted"] = True
                 _emit_attempt(repo, issue, sha, "refused-check", attempt,
-                              failing_step=step.group(0).strip() if step else "")
+                              failing_step=_failing_step(check.get("output", "")))
             fail("static verification failed:\n" + check.get("output", ""))
     else:
         checks = ["body-validation"]
@@ -1855,6 +1871,8 @@ def _post_kind(
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
+    if attempt is not None:
+        attempt["posted"] = True
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
                    **({"prod_run": _prod_run.footer_field(issue, sha, prod_run)} if prod_run else {}),
