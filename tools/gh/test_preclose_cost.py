@@ -251,6 +251,13 @@ class StickyWicketPatch(CostCase):
         receipt = preclose.find_receipt("vitalharmony/hrse", 1208)
         self.assertEqual(receipt["tier"], "deep")
 
+    def test_complete_cannot_relabel_the_tier_the_plan_sized(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier="deep")
+        self.run_complete(tier="fast")
+        self.assertEqual(self.last_pass()["tier"], "deep")
+        self.assertEqual(self.events()[0]["attrs"]["tier"], "deep")
+
     def test_zero_is_not_a_measured_cost(self) -> None:
         for flags in ({"panel_tokens": "0"}, {"panel_ms": "0"}):
             with self.subTest(flags), self.assertRaises(SystemExit) as refused:

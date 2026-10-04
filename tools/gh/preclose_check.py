@@ -844,8 +844,11 @@ def complete(args: argparse.Namespace) -> int:
     # The tier rides on the pass entry, the single carrier every reader uses
     # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
     # last pass's.
-    cost["tier"] = (getattr(args, "tier", None) or (prior or {}).get("tier")
-                    or preclose_passes.last_tier(prior) or "unset")
+    # The planned receipt's tier is the one that sized this panel, so it
+    # wins over a --tier given only at --complete (#889 post-verdict check).
+    planned = (prior or {}).get("tier") if (prior or {}).get("status") == "planned" else None
+    cost["tier"] = (planned if planned and planned != "unset" else None) or getattr(args, "tier", None) \
+        or preclose_passes.last_tier(prior) or "unset"
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
                                  current_branch(), reforge, cost),
