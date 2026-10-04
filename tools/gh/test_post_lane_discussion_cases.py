@@ -194,14 +194,14 @@ class FooterFieldOrder(unittest.TestCase):
     def test_case_fields_follow_the_ack_reason(self):
         import eras  # noqa: PLC0415
         footer = P.footer("gate-result", GATE_PASS, "LANE3", ack_no_pr_required="see results=1:fail",
-                          case_fields="results=1:pass,2:pass; gate-ms=unknown")
+                          case_fields="results=1:pass,2:pass")
         self.assertLess(footer.index("ack-no-pr-required="), footer.index("results=1:pass"))
         self.assertEqual(eras.parse_case_map(footer, "results"), {"1": "pass", "2": "pass"})
 
     def test_a_free_text_field_cannot_shadow_the_case_map(self):
         import eras  # noqa: PLC0415
         footer = ("<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=ab; "
-                  "ack-no-pr-required=see results=1:pass; results=1:fail; gate-ms=unknown -->")
+                  "ack-no-pr-required=see results=1:pass; results=1:fail -->")
         self.assertEqual(eras.parse_case_map(footer, "results"), {"1": "fail"})
 
 
@@ -233,7 +233,7 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
 
     def test_a_new_format_spec_and_gate_are_accepted_by_emit(self):
         import emit  # noqa: PLC0415
-        events = self.events([self.spec("classes=1:ac,2:existing"), self.gate("results=1:pass,2:fail; gate-ms=4000")])
+        events = self.events([self.spec("classes=1:ac,2:existing"), self.gate("results=1:pass,2:fail")])
         gate = self.the_gate(events)
         self.assertEqual((gate["attrs"]["measurement"], gate["attrs"]["fail_existing"], gate["attrs"]["fail_ac"]),
                          ("measured", 1, 0))
@@ -246,9 +246,9 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
     def test_every_state_is_stamped(self):
         blocked = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n**Finding:** x\n**Next:** y\n")
         cases = {
-            "unpaired": [self.spec("classes=1:ac,2:existing,3:live"), self.gate("results=1:pass,2:fail; gate-ms=1")],
-            "no-map": [self.gate("results=absent; gate-ms=unknown")],
-            "no-cases": [self.gate("results=; gate-ms=unknown", body=blocked)],
+            "unpaired": [self.spec("classes=1:ac,2:existing,3:live"), self.gate("results=1:pass,2:fail")],
+            "no-map": [self.gate("results=absent")],
+            "no-cases": [self.gate("results=", body=blocked)],
             "pre-893": [self.gate("ack-no-pr-required=x")],
             "bypass-route": [{"id": 11, "created_at": "2026-10-04T11:00:00Z", "body": GATE_FAIL}],
         }
@@ -259,14 +259,14 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
     def test_an_unclassified_newer_spec_resets_the_pairing(self):
         # pass-2 finding 10: round 2's spec carries no classes; round 1's must not pair.
         events = self.events([self.spec("classes=1:existing,2:existing", cid=10), self.spec("classes=absent", cid=11),
-                              self.gate("results=1:pass,2:fail; gate-ms=1", cid=12)])
+                              self.gate("results=1:pass,2:fail", cid=12)])
         gate = self.the_gate(events)
         self.assertEqual((gate["attrs"]["measurement"], gate["attrs"]["paired"]), ("unpaired", False))
         self.assertNotIn("fail_existing", gate["attrs"])
 
     def test_a_gate_posted_as_discussion_by_lane_3_is_a_measured_gate(self):
         events = self.events([self.spec("classes=1:ac,2:live"),
-                              self.gate("results=1:pass,2:fail; gate-ms=1", kind="discussion")])
+                              self.gate("results=1:pass,2:fail", kind="discussion")])
         self.assertEqual(self.the_gate(events)["attrs"]["measurement"], "measured")
 
     def test_a_lane_1_recap_is_not_a_gate(self):
@@ -278,7 +278,7 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
         # Epoch-1 finding 1.
         spec_discussion = {"id": 10, "created_at": "2026-10-04T10:00:00Z",
                            "body": _footered(SPEC_TC, "discussion", "classes=1:ac,2:live")}
-        gate = self.gate("results=1:pass,2:fail; gate-ms=1", cid=12)
+        gate = self.gate("results=1:pass,2:fail", cid=12)
         attrs = self.the_gate(self.events([spec_discussion, gate]))["attrs"]
         self.assertEqual((attrs["measurement"], attrs["case_ac"], attrs["fail_live"]), ("measured", 1, 1))
         older = self.spec("classes=1:existing,2:existing", cid=9)
@@ -288,12 +288,12 @@ class ExtractorStampsOneMeasurement(unittest.TestCase):
     def test_a_lane_1_post_leading_with_a_gate_heading_is_not_a_gate(self):
         # Lane 1 relaying a gate verbatim is not a measured gate: no event
         # carries a measurement (lane_state's own reading of the heading stands).
-        events = self.events([self.gate("results=1:pass,2:fail; gate-ms=1", kind="discussion", by="LANE1")])
+        events = self.events([self.gate("results=1:pass,2:fail", kind="discussion", by="LANE1")])
         self.assertIn("l1.discussion", [e["event_type"] for e in events])
         self.assertFalse([e for e in events if "measurement" in e["attrs"]], events)
 
     def test_a_map_contradicting_the_verdict_is_low_confidence(self):
-        events = self.events([self.spec("classes=1:ac,2:live"), self.gate("results=1:pass,2:pass; gate-ms=1")])
+        events = self.events([self.spec("classes=1:ac,2:live"), self.gate("results=1:pass,2:pass")])
         self.assertIs(self.the_gate(events)["attrs"]["map_agrees"], False)
 
     def test_lane3_s_posting_tool_imports_nothing_from_telemetry(self):
@@ -307,7 +307,7 @@ class ExistingConsumersStillParse(unittest.TestCase):
     """TC5: the new fields sit on the footer's one physical line, so every
     footer reader still reads kind, sha and digest from a new-format post."""
 
-    NEW = _footered(GATE_PASS, "gate-result", "results=1:pass,2:pass; gate-ms=1000")
+    NEW = _footered(GATE_PASS, "gate-result", "results=1:pass,2:pass")
     SPEC_NEW = _footered(SPEC_TC, "spec", "classes=1:ac,2:live")
 
     def test_eras_finds_the_footer(self):
@@ -355,7 +355,7 @@ class ProducerOutputStillParses(unittest.TestCase):
         import gate_ci  # noqa: PLC0415
         import watch_lane_posts  # noqa: PLC0415
         import _standing_grant  # noqa: PLC0415
-        gate = self.posted("gate-result", GATE_PASS, "results=1:pass,2:pass; gate-ms=1000")
+        gate = self.posted("gate-result", GATE_PASS, "results=1:pass,2:pass")
         spec = self.posted("spec", SPEC_TC, "classes=1:ac,2:live")
         self.assertEqual(gate.rstrip().count("\n<!--"), 1, "the footer stays one physical line")
         last = gate.rstrip().splitlines()[-1]
@@ -419,8 +419,8 @@ class ReportReadsTheStamp(unittest.TestCase):
     def test_a_lane_1_relay_never_reaches_the_report(self):
         # Epoch-1 finding 2: a relay by any --kind adds no gate.
         import extract_threads  # noqa: PLC0415
-        gate = _footered(GATE_PASS, "gate-result", "results=1:pass,2:pass; gate-ms=1000")
-        relays = [_footered(GATE_PASS, kind, "results=1:pass,2:pass; gate-ms=5").replace(
+        gate = _footered(GATE_PASS, "gate-result", "results=1:pass,2:pass")
+        relays = [_footered(GATE_PASS, kind, "results=1:pass,2:pass").replace(
             "posted-by=LANE3", "posted-by=LANE1") for kind in ("gate-result", "discussion")]
         comments = [{"id": i, "created_at": f"2026-10-04T1{i}:00:00Z", "body": b}
                     for i, b in enumerate([gate, *relays], 1)]
@@ -510,20 +510,20 @@ class StickyWicketE1Patch(Case):
     def test_1_a_conflict_verdict_gate_reaches_the_report(self):
         body = GATE_FAIL.replace("## Lane 3 Gate Results — H1", "## Lane 3 Gate Results — H1 — PASS")
         events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
-                                "body": _footered(body, "gate-result", "results=1:pass,2:fail; gate-ms=1")}])
+                                "body": _footered(body, "gate-result", "results=1:pass,2:fail")}])
         [gate] = self.gates(events)
         self.assertEqual(gate["event_type"], "unknown")
         self.assertEqual(len(VR.build(events)["issues"][("o/r", 5)]["gates"]), 1)
 
     def test_2_a_correct_fail_is_not_low_confidence(self):
         events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
-                                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail; gate-ms=1")}])
+                                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail")}])
         self.assertIs(self.gates(events)[0]["attrs"]["map_agrees"], True)
 
     def test_3_an_empty_map_is_no_cases_whatever_the_verdict(self):
         body = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** PASS\n**Finding:** x\n**Next:** y\n")
         events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
-                                "body": _footered(body, "gate-result", "results=; gate-ms=unknown")}])
+                                "body": _footered(body, "gate-result", "results=")}])
         self.assertEqual(self.gates(events)[0]["attrs"]["measurement"], "no-cases")
 
     def test_4_a_sidecar_map_needs_no_flag(self):
@@ -534,7 +534,7 @@ class StickyWicketE1Patch(Case):
     def test_5_an_indented_or_fenced_only_heading_is_one_stamped_gate(self):
         indented = "  " + GATE_FAIL
         events = self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
-                                "body": _footered(indented, "discussion", "results=1:pass,2:fail; gate-ms=1")}])
+                                "body": _footered(indented, "discussion", "results=1:pass,2:fail")}])
         self.assertEqual(len(self.gates(events)), 1)
 
     def test_6_only_lane_3_posts_an_artifact(self):
@@ -542,7 +542,7 @@ class StickyWicketE1Patch(Case):
         for poster, expected in (("LANE1", None), ("LANE-unset", None), ("LANE3", "gate")):
             with self.subTest(poster):
                 self.assertEqual(gate_ci.lane3_artifact(GATE_FAIL, None, poster), expected)
-        relay = _footered(GATE_FAIL, "discussion", "results=1:pass,2:fail; gate-ms=1").replace(
+        relay = _footered(GATE_FAIL, "discussion", "results=1:pass,2:fail").replace(
             "posted-by=LANE3", "posted-by=LANE-unset")
         self.assertEqual(self.gates(self.extract([{"id": 1, "created_at": "2026-10-04T10:00:00Z",
                                                    "body": relay}])), [])
@@ -551,7 +551,7 @@ class StickyWicketE1Patch(Case):
         import emit  # noqa: PLC0415
         spec = {"id": 10, "created_at": "2026-10-04T10:00:00Z", "body": _footered(SPEC_TC, "spec", "classes=1:ac,2:ac")}
         gate = {"id": 11, "created_at": "2026-10-04T11:00:00Z",
-                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail; gate-ms=1")}
+                "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail")}
         with tempfile.TemporaryDirectory() as store, \
              unittest.mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": store}):
             emit.emit(self.extract([spec, gate]))
@@ -568,7 +568,7 @@ class StickyWicketE1Patch(Case):
                 "body": _footered(GATE_FAIL, "gate-result", "results=1:pass,2:fail")}
         spec = {"id": 10, "created_at": "2026-10-04T10:00:00Z", "updated_at": "2026-10-04T10:00:00Z",
                 "body": _footered(SPEC_TC, "spec", "classes=1:ac,2:ac")}
-        edited = {**spec, "updated_at": "2026-10-04T10:30:00Z",
+        edited = {**spec,
                   "body": _footered(SPEC_TC, "spec", "classes=1:existing,2:existing")}
         first = self.gates(self.extract([spec, gate]))[0]
         second = self.gates(self.extract([edited, gate]))[0]

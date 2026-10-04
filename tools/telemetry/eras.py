@@ -122,7 +122,7 @@ def parse_case_map(footer: Optional[str], key: str) -> dict[str, str]:
 
 def case_counts(footer: Optional[str], kind: Optional[str]) -> dict[str, Any]:
     """Scalar attrs only (schema v1 forbids nesting): class counts for a spec,
-    verdict counts and gate time for a gate result. `{}` for a footer without
+    verdict counts for a gate result. `{}` for a footer without
     the fields, so an old-format post is unchanged."""
     if kind == "spec":
         classes = parse_case_map(footer, "classes")

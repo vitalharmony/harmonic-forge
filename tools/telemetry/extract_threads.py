@@ -195,9 +195,11 @@ def pair_gates_with_specs(comments: list[dict[str, Any]], events: list[dict[str,
             # unclassified spec must never pair a gate with an older round's
             # classes (#893 preclose pass 2).
             latest_spec = eras.parse_case_map(footer, "classes") or None
-            # The spec's edit instant is part of the key too: reclassifying a
-            # spec in place keeps its id (#893 post-verdict check).
-            spec_id = (f"{comment.get('id') or 'none'}@{comment.get('updated_at') or comment.get('created_at') or ''}"
+            # The classes themselves are part of the key: reclassifying a spec
+            # in place keeps its id, and an edit-time key could not tell two
+            # edits within one second apart (#893 post-verdict checks).
+            spec_id = (f"{comment.get('id') or 'none'}#"
+                       + hashlib.sha256(json.dumps(latest_spec, sort_keys=True).encode()).hexdigest()[:12]
                        if latest_spec else "none")
             continue
         event = by_id.get(str(comment.get("id") or ""))

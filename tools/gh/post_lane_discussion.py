@@ -507,7 +507,7 @@ def main() -> None:
     # harmonic-forge#893 reforge (R2, R3): keyed on the BODY, never on --kind,
     # for the reason require_green_ci gives below -- 74 of 98 real gate reports
     # were posted as `discussion`. A gate report always carries its results
-    # field and gate time; a spec carries its classes field. Neither ever
+    # field; a spec carries its classes field. Neither ever
     # refuses the post: a missing or unusable map is stamped `absent`.
     case_fields = ""
     lane = os.environ.get("LANE")
