@@ -68,6 +68,9 @@ _DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*:?[^\S\n]*\**`?([RWP])`
 _P_TOKEN = re.compile(r"(?<![\w-])[`*]*P[`*]*(?![\w-])|(?i:--tier)[^A-Za-z0-9]*[pP](?![A-Za-z0-9])")
 
 
+_UNQUOTE = re.compile(r"[\"'`\\]")
+
+
 def declared_tier(body: str) -> str | None:
     """The one tier the unfenced declarations agree on, or None."""
     found = {m.group(1).upper() for m in _DECLARATION.finditer(_unquoted(body))}
@@ -77,7 +80,11 @@ def declared_tier(body: str) -> str | None:
 def p_vetoed(body: str) -> bool:
     """Whether anything in the raw body, fences included, could mean Tier P."""
     text = body or ""
-    return bool(_P_TOKEN.search(text))
+    # The flag is also matched with every quote, backtick and backslash
+    # removed, so a shell-quoted spelling (`--'tier'=p`, `--ti"er"=p`) reads
+    # as the flag it expands to: three post-verdict checks each found one more
+    # separator or quoting form, so the class is closed rather than listed.
+    return bool(_P_TOKEN.search(text) or _P_TOKEN.search(_UNQUOTE.sub("", text)))
 
 
 def tier_refusal(label: str, body: str) -> str | None:

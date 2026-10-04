@@ -193,7 +193,8 @@ class AutoAeRefusalTests(AutoAeCase):
                       "| TC | Tier |\n|---|---|\n| TC1 | W |\n| TC7 | P",
                       "| Tier | TC |\n|---|---|\n| P | TC7 |",
                       "TC | Tier\n---|---\nTC7 | P",
-                      "run --tier\tp", "run --tier='p'", "run --tier_p", "run --TIER__P_"):
+                      "run --tier\tp", "run --tier='p'", "run --tier_p", "run --TIER__P_",
+                      "run --'tier'=p", 'run --ti"er"=p', "run --t\\ier=p"):
             with self.subTest(extra=extra):
                 self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=extra)]))
 
