@@ -100,6 +100,13 @@ LENSES: tuple[str, ...] = (
 
 TIER_PANEL = {"fast": 1, "standard": 3, "deep": 5}
 
+# harmonic-forge#890: the platform's saved workflow the workflow arm runs,
+# which harmonic-forge#891 creates (`sync_rules.py` links it into each
+# consumer's `.claude/workflows/`). Until it exists, `--arm auto` records
+# `pre-experiment`, so the override row never fills with issues that were
+# assigned an arm nothing could run.
+PRECLOSE_PANEL_WORKFLOW = Path(__file__).resolve().parent.parent.parent / "workflows" / "preclose-panel.js"
+
 # harmonic-forge#701. The file:line anchor a finding must carry to survive the
 # filter. `path:line` or `path:line-line`, the shape the plan output demands.
 _ANCHOR = re.compile(r"\S+:\d+(-\d+)?")
@@ -761,6 +768,7 @@ def plan(args: argparse.Namespace) -> int:
     prior = find_receipt(repo, args.issue)
     tier = args.tier or preclose_passes.last_tier(prior)
     size, why = panel_size(reasons, tier)
+    assigned, override = choose_arm(args, prior, repo)
 
     print(f"preclose-check plan for {repo}#{args.issue}")
     print(f"  diff:     {args.base}...{args.head} @ {head_sha[:12]} ({len(files)} files)")
@@ -772,6 +780,15 @@ def plan(args: argparse.Namespace) -> int:
     print("  lenses:")
     for lens in list(LENSES)[:size]:
         print(f"    - {lens}")
+    arm = override["arm"] if override else assigned
+    note = (f"overridden: {override['reason']}" if override
+            else "pre-experiment: harmonic-forge#891 not landed" if arm == preclose_passes.PRE_EXPERIMENT
+            else "assigned")
+    print(f"  arm:      {arm} ({note})")
+    if arm == "workflow":
+        invocation = {"repo": repo, "issue": args.issue, "base": args.base, "head": args.head,
+                      "lenses": list(LENSES)[:size]}
+        print(f'  Workflow name: "preclose-panel" args: {json.dumps(invocation)}')
     print()
     print("Spawn one FRESH-CONTEXT preclose-inspection agent per lens. Never a fork:")
     print("a fork inherits the reasoning that produced the defect. Give each only the")
@@ -794,8 +811,43 @@ def plan(args: argparse.Namespace) -> int:
     # The tier the panel was sized at, so --complete (which is not given
     # --tier in the documented flow) labels its event with it (#889).
     write_receipt(repo, args.issue, head_sha, size, status="planned",
-                  extra={**preclose_passes.carried(prior), "tier": tier or "unset"})
+                  extra={**preclose_passes.carried(prior), "tier": tier or "unset",
+                         "panel_arm": assigned,
+                         **({"panel_arm_override": override} if override else {})})
     return 0
+
+
+def choose_arm(args: argparse.Namespace, prior: dict | None, repo: str) -> tuple[str, dict | None]:
+    """harmonic-forge#890: the issue's assigned arm and any override.
+
+    Assigned, in order: the receipt's `panel_arm`; else the newest pass
+    entry's arm (`last_arm`, which survives every rewrite); else
+    `pre-experiment` while the workflow arm cannot run; else the hash. An
+    override of the assigned arm needs `--arm-reason`, and an override
+    already recorded is kept."""
+    present = PRECLOSE_PANEL_WORKFLOW.exists()
+    last = preclose_passes.last_arm(prior)
+    existing = (prior or {}).get("panel_arm_override") or None
+    assigned = ((prior or {}).get("panel_arm")
+                or (last[0] if last and not last[1] else None)
+                or (existing or {}).get("assigned")
+                or (preclose_passes.hashed_arm(repo, args.issue) if present
+                    else preclose_passes.PRE_EXPERIMENT))
+    requested = getattr(args, "arm", None) or "auto"
+    reason = str(getattr(args, "arm_reason", None) or "").strip()
+    if reason and ("\n" in reason or len(reason) > 200):
+        raise SystemExit("preclose-check: --arm-reason is one line of at most 200 characters.")
+    if requested == "workflow" and not present:
+        raise SystemExit(f"preclose-check: --arm workflow needs the preclose-panel workflow "
+                         f"({PRECLOSE_PANEL_WORKFLOW}), which harmonic-forge#891 creates.")
+    if requested == "auto" or requested == assigned or (
+            assigned == preclose_passes.PRE_EXPERIMENT and requested == "manual"):
+        return assigned, existing
+    if not reason:
+        raise SystemExit(f"preclose-check: {repo}#{args.issue} is assigned the {assigned} arm. "
+                         f"--arm {requested} overrides it and needs --arm-reason \"<why>\"; an "
+                         "overridden issue is excluded from the comparison (harmonic-forge#890).")
+    return assigned, {"arm": requested, "reason": reason, "assigned": assigned}
 
 
 @serialized_receipt
@@ -852,7 +904,16 @@ def complete(args: argparse.Namespace) -> int:
         cost["tier"] = prior["tier"]
     else:
         cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
+    # harmonic-forge#890: the arm rides on the pass entry. Nothing resolves
+    # it -> no key at all, never a synthesized value a report would trust.
+    override = (prior or {}).get("panel_arm_override")
+    last = preclose_passes.last_arm(prior)
+    arm = (override or {}).get("arm") or (prior or {}).get("panel_arm") or (last[0] if last else None)
+    if arm:
+        cost["arm"] = arm
+        cost["arm_overridden"] = bool(override) or bool(not (prior or {}).get("panel_arm") and last and last[1])
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
+        **preclose_passes.arm_fields(prior),
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
                                  current_branch(), reforge, cost),
         "cross_family_required": required,
@@ -969,6 +1030,8 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
         attrs = {**labels, "tier": entry.get("tier") or "unset", "raised": entry.get("raised"),
                  "surviving": entry.get("surviving"), "dismissed": entry.get("dismissed"),
                  "cross_family_ran": view["codex"] in ("ran", "fallback")}
+        if entry.get("arm"):
+            attrs["arm"], attrs["arm_overridden"] = entry["arm"], bool(entry.get("arm_overridden"))
         if view["panel"] == "unavailable":
             attrs["cost_unavailable"] = True
         if view["panel"] == "measured":
@@ -1009,6 +1072,11 @@ def main() -> None:
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--tier", choices=sorted(TIER_PANEL), help="Board Tier; omit to default to standard.")
+    parser.add_argument("--arm", choices=("auto", "manual", "workflow"), default="auto",
+                        help="With a plan: the panel arm (harmonic-forge#890). auto = the issue's "
+                             "assigned arm; another arm is an override and needs --arm-reason.")
+    parser.add_argument("--arm-reason",
+                        help="Why the assigned arm is overridden; the issue leaves the comparison.")
     parser.add_argument("--complete", action="store_true",
                         help="Record that the panel actually ran. Planning alone does not.")
     parser.add_argument("--gate", action="store_true",

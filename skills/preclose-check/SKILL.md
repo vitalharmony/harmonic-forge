@@ -44,6 +44,20 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    `--repo` is required and never defaulted — a missing value is an argument
    error, not a silent fallback to any one consuming repo (ADR-008 decision 2).
 
+   **The panel arm (harmonic-forge#890).** The plan prints `arm:`, the panel
+   this issue runs. It is assigned from `repo#issue` by hash, never chosen, so
+   riskier diffs cannot drift to the arm you trust. The assignment is recorded
+   at the issue's first plan and kept for every later pass. Run the arm
+   printed: `manual` is the hand-spawned panel below, and `workflow` runs
+   harmonic-forge#891's saved workflow with the printed `Workflow name:
+   "preclose-panel" args: {...}` invocation.
+   - Until #891's workflow exists, the arm is `pre-experiment`: run the manual
+     panel. That issue stays `pre-experiment` for its whole life.
+   - To run a different arm (no Workflow tool in this runtime, say), pass
+     `--arm manual|workflow --arm-reason "<why>"`. The override is recorded and
+     the issue leaves the comparison. Without a reason the plan refuses.
+   - `preclose_pass_report.py --by-arm` compares the arms, by issue.
+
    It computes the panel from blast radius (primary) and `Tier` (secondary),
    prints one lens per refuter, and writes a receipt that counts passes per issue
    (at most two; see "Two passes, then sticky-wicket or the operator" below).
