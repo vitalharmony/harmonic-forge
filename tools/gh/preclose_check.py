@@ -787,9 +787,10 @@ def plan(args: argparse.Namespace) -> int:
     # it must carry the pass history forward or the count would reset.
     # The tier the panel was sized at, so --complete (which is not given
     # --tier in the documented flow) labels its event with it (#889).
+    prior = find_receipt(repo, args.issue)
     write_receipt(repo, args.issue, head_sha, size, status="planned",
-                  extra={**preclose_passes.carried(find_receipt(repo, args.issue)),
-                         "tier": args.tier or "unset"})
+                  extra={**preclose_passes.carried(prior),
+                         "tier": args.tier or preclose_passes.last_tier(prior) or "unset"})
     return 0
 
 
@@ -836,6 +837,11 @@ def complete(args: argparse.Namespace) -> int:
         cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
     prior = find_receipt(repo, args.issue)
     size = prior.get("refuters", 0) if prior else 0
+    # The tier rides on the pass entry, the single carrier every reader uses
+    # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
+    # last pass's.
+    cost["tier"] = (getattr(args, "tier", None) or (prior or {}).get("tier")
+                    or preclose_passes.last_tier(prior) or "unset")
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
         **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
                                  current_branch(), reforge, cost),
@@ -858,24 +864,28 @@ def complete(args: argparse.Namespace) -> int:
     passes = preclose_passes.current(preclose_passes.history(receipt))
     emit_pass(repo, args.issue, head_sha, passes[-1] if passes else {}, {
         "pass": len(passes), "refuters": int(size),
-        "tier": getattr(args, "tier", None) or (prior or {}).get("tier") or "unset",
         "high_blast": bool(reasons), "cross_family_required": bool(required)})
     print()
     print(NOT_A_GATE)
     return 0
 
 
-def _count(flag: str, value: object) -> int | None:
-    """A non-negative integer flag value, or None when the flag was not given.
-    Validated here rather than by argparse, so a printed command whose
-    placeholder is not yet filled still parses (test_preclose_check)."""
+def _count(flag: str, value: object, minimum: int = 0) -> int | None:
+    """An integer flag value of at least `minimum`, or None when the flag was
+    not given. Validated here rather than by argparse, so a printed command
+    whose placeholder is not yet filled still parses (test_preclose_check)."""
     if value is None:
         return None
     try:
         number = int(str(value), 10)
     except ValueError:
         raise SystemExit(f"preclose-check: {flag} must be a whole number, got {value!r}") from None
-    if number < 0:
+    if number < minimum:
+        if minimum > 0:
+            # A measured cost is never zero (#889): an unmeasured pass says so.
+            raise SystemExit(f"preclose-check: {flag} must be at least {minimum}, got {number}. "
+                             "A pass whose cost was not measured records --cost-unavailable "
+                             "\"<reason>\" instead; a cost is never silent and never zero.")
         raise SystemExit(f"preclose-check: {flag} cannot be negative, got {number}")
     return number
 
@@ -886,9 +896,9 @@ def pass_cost(args: argparse.Namespace) -> dict:
     no usage, which --cost-unavailable records with its reason instead of
     numbers. The cross-family call's wall-clock is required whenever an
     envelope is recorded; Codex reports no tokens, so they are "unavailable"."""
-    tokens = _count("--panel-tokens", getattr(args, "panel_tokens", None))
-    ms = _count("--panel-ms", getattr(args, "panel_ms", None))
-    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None))
+    tokens = _count("--panel-tokens", getattr(args, "panel_tokens", None), minimum=1)
+    ms = _count("--panel-ms", getattr(args, "panel_ms", None), minimum=1)
+    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
     reason = str(getattr(args, "cost_unavailable", None) or "").strip()
     if getattr(args, "cost_unavailable", None) is not None and not reason:
         raise SystemExit("preclose-check: --cost-unavailable needs the reason the runtime "
@@ -921,10 +931,14 @@ def pass_cost(args: argparse.Namespace) -> dict:
 
 
 def cost_line(cost: dict) -> str:
-    panel = (f"cost unavailable ({cost['cost_unavailable']})" if "cost_unavailable" in cost
-             else f"{cost['panel_tokens']:,} panel tokens, {cost['panel_ms']:,} ms")
-    codex = (f"; cross-family {cost['cross_family_ms']:,} ms, tokens unavailable"
-             if cost.get("cross_family_ran") else "")
+    view = preclose_passes.pass_cost_view(cost)
+    panel = (f"cost unavailable ({view['unavailable']})" if view["panel"] == "unavailable"
+             else f"{view['tokens']:,} panel tokens, {view['ms']:,} ms")
+    codex = ""
+    if view["codex"] == "ran":
+        codex = f"; cross-family {view['codex_ms']:,} ms, tokens unavailable"
+    elif view["codex"] == "fallback":
+        codex = f"; cross-family call {view['codex_ms']:,} ms, fell back (no verdict)"
     return f"{panel}{codex}; {cost['raised']} raised, {cost['dismissed']} dismissed"
 
 
@@ -941,17 +955,17 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
         import archive  # noqa: PLC0415
         import emit as telemetry_emit  # noqa: PLC0415
         origin = archive.origin_for_repo(repo)
-        attrs = {**labels, "raised": entry.get("raised"), "surviving": entry.get("surviving"),
-                 "dismissed": entry.get("dismissed"),
-                 "cross_family_ran": bool(entry.get("cross_family_ran"))}
-        if "cost_unavailable" in entry:
+        view = preclose_passes.pass_cost_view(entry)
+        attrs = {**labels, "tier": entry.get("tier") or "unset", "raised": entry.get("raised"),
+                 "surviving": entry.get("surviving"), "dismissed": entry.get("dismissed"),
+                 "cross_family_ran": view["codex"] in ("ran", "fallback")}
+        if view["panel"] == "unavailable":
             attrs["cost_unavailable"] = True
-        for key in ("panel_tokens", "panel_ms"):
-            if key in entry:
-                attrs[key] = entry[key]
-        if entry.get("cross_family_ran"):
-            attrs["cross_family_ms"] = entry.get("cross_family_ms")
-            attrs["cross_family_fallback"] = bool(entry.get("cross_family_fallback"))
+        if view["panel"] == "measured":
+            attrs["panel_tokens"], attrs["panel_ms"] = view["tokens"], view["ms"]
+        if view["codex"] in ("ran", "fallback"):
+            attrs["cross_family_ms"] = view["codex_ms"]
+            attrs["cross_family_fallback"] = view["codex"] == "fallback"
         event = {
             "ts": entry["completed_at"], "source": "advisory", "repo": repo, "issue": issue,
             "sha": head_sha, "account": origin.account, "org": origin.org,
@@ -1142,7 +1156,7 @@ def post_verdict(args: argparse.Namespace) -> int:
         raise SystemExit("preclose-check: the post-verdict check needs a cross-family call that ran; "
                          f"got {provenance!r}. Retry the call; a fallback is not a check.")
     surviving = len(surviving_findings(load_findings(args.findings)))
-    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None))
+    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
     # head (harmonic-forge#838 plan review).

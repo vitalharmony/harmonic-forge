@@ -192,6 +192,47 @@ def record(receipt: dict | None, sha: str, current_patch_id: str | None, survivi
             "reviewed_patch_id": current_patch_id, **extra}
 
 
+def pass_cost_view(entry: dict) -> dict:
+    """The one reading of a pass entry's cost (harmonic-forge#889 sticky-wicket
+    PATCH). Every reader -- the stdout line, the telemetry event, the report --
+    goes through here, so no reader re-invents the tri-state.
+
+    `panel` is `measured` (both figures recorded), `unavailable` (the runtime
+    reported no usage; `--cost-unavailable` recorded why) or `unknown` (a pass
+    recorded before #889). `codex` is `ran`, `fallback` (the call ran and spent
+    its time but returned no verdict), `not-run` or `unknown`. A figure is set
+    only when its state says it was measured."""
+    tokens, ms = entry.get("panel_tokens"), entry.get("panel_ms")
+    if isinstance(tokens, int) and isinstance(ms, int):
+        panel = "measured"
+    elif entry.get("cost_unavailable"):
+        panel = "unavailable"
+    else:
+        panel = "unknown"
+    ran = entry.get("cross_family_ran")
+    if ran is True:
+        codex = "fallback" if entry.get("cross_family_fallback") else "ran"
+    elif ran is False:
+        codex = "not-run"
+    else:
+        codex = "unknown"
+    return {"panel": panel,
+            "tokens": tokens if panel == "measured" else None,
+            "ms": ms if panel == "measured" else None,
+            "unavailable": entry.get("cost_unavailable") if panel == "unavailable" else None,
+            "codex": codex,
+            "codex_ms": entry.get("cross_family_ms") if codex in ("ran", "fallback") else None}
+
+
+def last_tier(receipt: dict | None) -> str | None:
+    """The tier the newest recorded pass was sized at, carried on the pass
+    entry itself, so a later re-plan without --tier cannot lose it."""
+    for entry in reversed(history(receipt)):
+        if entry.get("tier") and entry.get("tier") != "unset":
+            return entry["tier"]
+    return None
+
+
 def carried(receipt: dict | None) -> dict:
     """The fields a non-completing write (``plan``) must preserve."""
     passes = history(receipt)

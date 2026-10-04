@@ -226,5 +226,77 @@ class TC6CrossFamilyTime(CostCase):
         self.assertEqual((attrs["cross_family_ran"], attrs["cross_family_ms"]), (True, 300))
 
 
+class StickyWicketPatch(CostCase):
+    """harmonic-forge#889 sticky-wicket PATCH: the pass entry is the single
+    carrier, and every reader reads it through one accessor."""
+
+    def test_the_tier_survives_a_re_plan_without_tier(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier="deep")
+        self.run_complete(tier=None)
+        self.commit("tools/y.py")  # pass 2 reviews a new head
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.plan(tier=None)
+        self.run_complete(tier=None, findings=[{**base.ANCHORED, "anchor": "tools/y.py:1"}])
+        events = sorted(self.events(), key=lambda e: e["attrs"]["pass"])
+        self.assertEqual([e["attrs"]["tier"] for e in events], ["deep", "deep"])
+        self.assertEqual(self.last_pass()["tier"], "deep")
+
+    def test_zero_is_not_a_measured_cost(self) -> None:
+        for flags in ({"panel_tokens": "0"}, {"panel_ms": "0"}):
+            with self.subTest(flags), self.assertRaises(SystemExit) as refused:
+                self.run_complete(**flags)
+            self.assertIn("--cost-unavailable", str(refused.exception))
+        with self.assertRaises(SystemExit) as refused:
+            self.run_complete(cross=True, cross_family_ms="0")
+        self.assertIn("at least 1", str(refused.exception))
+
+    def test_a_fallback_line_says_it_fell_back(self) -> None:
+        out, _ = self.run_complete(cross=True, fallback=True)
+        self.assertIn("fell back (no verdict)", out)
+
+
+class ReportReadsOneMergedPassList(unittest.TestCase):
+    def archive(self, root: Path, records: list[dict]) -> None:
+        import gzip  # noqa: PLC0415
+        folder = root / "o" / "preclose-receipts"
+        folder.mkdir(parents=True)
+        with gzip.open(folder / "2026-10.jsonl.gz", "wt", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps({"record": record}) + "\n")
+
+    def test_archived_passes_keep_their_cost_and_the_counts_agree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts, archive = root / "r", root / "a"
+            receipts.mkdir()
+            # An archived receipt whose pass 1 carried cost; the live receipt
+            # holds only pass 2. Plus a pre-#834 archived head with no history.
+            self.archive(archive, [
+                {"repo": "o/r", "issue": 1, "status": "complete", "reviewed_sha": "a" * 40,
+                 "pass_history": [{"sha": "a" * 40, "epoch": 0, "panel_tokens": 500, "panel_ms": 9,
+                                   "cross_family_ran": False}]},
+                {"repo": "o/r", "issue": 1, "status": "complete", "reviewed_sha": "c" * 40}])
+            (receipts / "o_r_1.json").write_text(json.dumps({"repo": "o/r", "issue": 1, "pass_history": [
+                {"sha": "b" * 40, "epoch": 0, "panel_tokens": 100, "panel_ms": 1, "cross_family_ran": False}]}))
+            text = report.report(receipts, None, archive)
+        self.assertIn("| o/r#1 | 3 |", text)  # the main table's pass count
+        self.assertIn("| aaaaaaaaaaaa | 500 | 9 |", text)  # recovered, not n/a
+        self.assertIn("| cccccccccccc | n/a | n/a |", text)
+        self.assertIn("3 pass(es); panel tokens median 300, total 600 over 2 measured", text)
+
+    def test_a_fallback_is_shown_but_not_counted_as_a_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp)
+            (receipts / "o_r_2.json").write_text(json.dumps({"repo": "o/r", "issue": 2, "pass_history": [
+                {"sha": "d" * 40, "epoch": 0, "panel_tokens": 10, "panel_ms": 1, "cross_family_ran": True,
+                 "cross_family_ms": 180000, "cross_family_fallback": True},
+                {"sha": "e" * 40, "epoch": 0, "panel_tokens": 10, "panel_ms": 1, "cross_family_ran": True,
+                 "cross_family_ms": 900}]}))
+            text = report.report(receipts, None, receipts / "none")
+        self.assertIn("| 180,000 (fell back) |", text)
+        self.assertIn("Codex check ran on 1/1 measured, 1 fell back without a verdict.", text)
+
+
 if __name__ == "__main__":
     unittest.main()

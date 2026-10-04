@@ -32,11 +32,14 @@ import preclose_passes  # noqa: E402
 ARCHIVE = Path.home() / ".local/share/harmonic-forge/telemetry/archive"
 
 
-def archived_heads(root: Path, skipped: list[str] | None = None) -> dict[str, set[str]]:
-    """Completed heads per issue from the #826 archive of overwritten receipts.
-    Receipts written before #834 carry no pass history, so without this every
-    such issue reads as one pass. Best-effort: an unreadable file is skipped."""
-    heads: dict[str, set[str]] = {}
+def archived_passes(root: Path, skipped: list[str] | None = None) -> dict[str, dict[str, dict]]:
+    """Every completed pass per issue from the #826 archive of overwritten
+    receipts, as `{issue: {head sha: pass entry}}`. The archive stores whole
+    receipts, so an archived pass keeps its cost fields (#889 sticky-wicket
+    PATCH); a receipt from before #834 has no pass history and contributes its
+    reviewed head as a bare entry. Best-effort: an unreadable file is skipped,
+    and named in `skipped`."""
+    found: dict[str, dict[str, dict]] = {}
     for path in root.glob("**/preclose-receipts/*.jsonl.gz"):
         try:
             lines = gzip.open(path, "rt", encoding="utf-8").read().splitlines()
@@ -53,16 +56,28 @@ def archived_heads(root: Path, skipped: list[str] | None = None) -> dict[str, se
                 if skipped is not None:
                     skipped.append(f"{path}: undecodable line")
                 continue
+            key = f"{record.get('repo', '?')}#{record.get('issue', '?')}"
+            entries = found.setdefault(key, {})
+            for entry in preclose_passes.history(record):
+                if entry.get("sha"):
+                    entries.setdefault(entry["sha"], entry)
             head = preclose_passes.reviewed_head(record)
             if record.get("status") == "complete" and head:
-                key = f"{record.get('repo', '?')}#{record.get('issue', '?')}"
-                heads.setdefault(key, set()).add(head)
-    return heads
+                entries.setdefault(head, {"sha": head})
+            if not entries:
+                found.pop(key)
+    return found
+
+
+def archived_heads(root: Path, skipped: list[str] | None = None) -> dict[str, set[str]]:
+    """Completed heads per issue (kept for its callers): the keys of
+    `archived_passes`."""
+    return {issue: set(entries) for issue, entries in archived_passes(root, skipped).items()}
 
 
 def rows(directory: Path, since: datetime | None = None, archive: Path | None = None,
          skipped: list[str] | None = None) -> list[dict]:
-    history_heads = archived_heads(archive, skipped) if archive else {}
+    history = archived_passes(archive, skipped) if archive else {}
     out = []
     for path in sorted(directory.glob("*.json")):
         try:
@@ -74,10 +89,16 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
         modified = datetime.fromtimestamp(os.stat(path).st_mtime, tz=timezone.utc)
         if since and modified < since:
             continue
-        passes = preclose_passes.history(receipt)
-        current = preclose_passes.current(passes)
+        live = preclose_passes.history(receipt)
+        current = preclose_passes.current(live)
         issue = f"{receipt.get('repo', '?')}#{receipt.get('issue', '?')}"
-        seen = history_heads.get(issue, set()) | {p.get("sha") for p in passes if p.get("sha")}
+        # One merged, SHA-deduplicated pass list feeds both the pass count and
+        # the cost rows (#889 sticky-wicket PATCH): the live receipt's entry
+        # wins over an archived copy of the same pass.
+        live_shas = {p.get("sha") for p in live if p.get("sha")}
+        passes = [entry for sha, entry in history.get(issue, {}).items()
+                  if sha not in live_shas] + live
+        seen = {p.get("sha") for p in passes if p.get("sha")}
         out.append({
             "issue": issue,
             "passes": max(len(current), len(seen)),
@@ -108,10 +129,7 @@ def _numbered(passes: list[dict]) -> list[tuple[int, dict]]:
 
 def _cost_row(issue: str, number: object, entry: dict) -> dict:
     return {"issue": issue, "pass": number, "sha": str(entry.get("sha") or "")[:12],
-            "tokens": entry.get("panel_tokens"), "ms": entry.get("panel_ms"),
-            "unavailable": entry.get("cost_unavailable"),
-            "codex_ms": entry.get("cross_family_ms") if entry.get("cross_family_ran") else None,
-            "codex_ran": entry.get("cross_family_ran")}
+            **preclose_passes.pass_cost_view(entry)}
 
 
 def _number(value: object) -> str:
@@ -125,16 +143,20 @@ def render_costs(table: list[dict]) -> str:
              "|---|---|---|---|---|---|"]
     for c in passes:
         # n/a: cost unavailable, or a pass recorded before harmonic-forge#889.
-        measured = isinstance(c["tokens"], int)
+        measured = c["panel"] == "measured"
+        codex = _number(c["codex_ms"]) + (" (fell back)" if c["codex"] == "fallback" else "")
         lines.append(f"| {c['issue']} | {c['pass']} | {c['sha']} | "
                      f"{_number(c['tokens']) if measured else 'n/a'} | "
-                     f"{_number(c['ms']) if measured else 'n/a'} | {_number(c['codex_ms'])} |")
-    counted = [c["tokens"] for c in passes if isinstance(c["tokens"], int)]
+                     f"{_number(c['ms']) if measured else 'n/a'} | {codex} |")
+    counted = [c["tokens"] for c in passes if c["panel"] == "measured"]
     median = f"{statistics.median(counted):,.0f}" if counted else "n/a"
-    # A pass recorded before #889 has no cross_family_ran at all: unknown,
-    # never "did not run", so it is outside the share like an n/a token row.
-    known = [c["codex_ran"] for c in passes if isinstance(c["codex_ran"], bool)]
-    share = f"{sum(known)}/{len(known)} measured"
+    # The Codex share counts a check that returned a verdict. A fallback spent
+    # its time (shown above) but checked nothing, and a pass from before #889
+    # is unknown: both are outside the share, and both are counted aloud.
+    known = [c for c in passes if c["codex"] in ("ran", "not-run")]
+    fallbacks = sum(1 for c in passes if c["codex"] == "fallback")
+    share = (f"{sum(1 for c in known if c['codex'] == 'ran')}/{len(known)} measured"
+             + (f", {fallbacks} fell back without a verdict" if fallbacks else ""))
     lines += ["", f"{len(passes)} pass(es); panel tokens median {median}, "
                   f"total {sum(counted):,} over {len(counted)} measured; Codex check ran on {share}. "
                   "Excludes the Lane 1 session's own orchestration cost, which it cannot read."]
