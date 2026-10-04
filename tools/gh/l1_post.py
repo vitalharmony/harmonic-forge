@@ -1690,25 +1690,7 @@ def _ms_between(started: str, finished: str) -> int | None:
     return int(delta.total_seconds() * 1000)
 
 
-#: What failed, without the noise: a unittest failure header ("FAIL: test_x
-#: (module.Case)", no path), else the mise task that failed ("[ci-check] ERROR
-#: task failed" -> "ci-check"). A passing run of this repo's own check prints a
-#: dozen other lines containing FAIL or ERROR, some with host paths, so a bare
-#: word match named a benign line (F892 preclose finding).
-_FAILING_TEST = re.compile(r"(?m)^(?:FAIL|ERROR): (test\w*(?: \([\w.]+\))?)")
-_FAILING_TASK = re.compile(r"(?m)^\[([\w:-]+)\] ERROR task failed")
-
-
-def _failing_step(output: str) -> str:
-    test = _FAILING_TEST.search(output or "")
-    if test:
-        return test.group(1)
-    task = _FAILING_TASK.search(output or "")
-    return f"task {task.group(1)}" if task else ""
-
-
-def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict,
-                  failing_step: str = "") -> None:
+def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) -> None:
     """harmonic-forge#892: one `ready-for-l3.attempt` event. Counts and labels
     only. Any failure, raised or returned as `rejected`, goes to stderr and
     never changes this script's outcome."""
@@ -1730,7 +1712,6 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict,
                 "outcome": outcome, "local_check_ms": attempt.get("local_check_ms"),
                 "local_check_result": result_state, "ci_state": ci_state,
                 "ci_green_local_red": ci_state == "green" and result_state == "fail",
-                "failing_step": (failing_step or "")[:200],
             },
         }
         counts = telemetry_emit.emit([event])
@@ -1758,7 +1739,11 @@ def post_kind(
                "ci_state": "not-taken"}
     try:
         return _post_kind(repo, issue, kind, body, sha, branch, attempt=attempt, **kwargs)
-    except SystemExit:
+    except KeyboardInterrupt:
+        raise  # an operator abort is not a refusal, and records nothing
+    except BaseException:  # noqa: BLE001 - re-raised below, so no outcome changes
+        # SystemExit (every `fail()`) and any other error, such as an OSError
+        # from the receipt write after the comment landed (sticky-wicket PATCH).
         if not attempt["emitted"]:
             attempt["emitted"] = True
             # A failure after the comment landed (the receipt write, say) is
@@ -1797,8 +1782,7 @@ def _post_kind(
                     ci_state = "unknown"
                 attempt["ci_state"] = ci_state
                 attempt["emitted"] = True
-                _emit_attempt(repo, issue, sha, "refused-check", attempt,
-                              failing_step=_failing_step(check.get("output", "")))
+                _emit_attempt(repo, issue, sha, "refused-check", attempt)
             fail("static verification failed:\n" + check.get("output", ""))
     else:
         checks = ["body-validation"]

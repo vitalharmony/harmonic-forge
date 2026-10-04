@@ -81,28 +81,10 @@ class RefusedCheckTests(StoreCase):
         self.assertEqual((attrs["outcome"], attrs["local_check_result"], attrs["ci_state"]),
                          ("refused-check", "fail", "pending"))
         self.assertEqual(attrs["local_check_ms"], 150000)
-        self.assertEqual(attrs["failing_step"], "test_thing (suite.Case)")
+        self.assertNotIn("failing_step", attrs)  # dropped by the sticky-wicket PATCH
         self.assertFalse(attrs["ci_green_local_red"])
         self.assertEqual(len(calls), 1, "one CI snapshot, taken after the check")
         self.assertNotIn("rejected", err)
-
-    def test_tc1_a_500_character_fail_line_is_still_written(self):
-        self._run_failed(output="FAIL: test_" + "x" * 500 + "\n")
-        events = self.events()
-        self.assertEqual(len(events), 1)
-        self.assertEqual(len(events[0]["attrs"]["failing_step"]), 200)
-
-    def test_failing_step_skips_the_check_s_own_noise_lines(self):
-        noise = ("[hygiene] 2 ERROR lines expected in this fixture\n"
-                 "/home/u/x.py: ERROR is not a failure here\n"
-                 "FAIL Check 8 — lesson aging (fixture)\n"
-                 "FAIL: test_real_one (pkg.Case)\n")
-        self._run_failed(output=noise)
-        self.assertEqual(self.events()[0]["attrs"]["failing_step"], "test_real_one (pkg.Case)")
-
-    def test_failing_step_falls_back_to_the_failed_task(self):
-        self._run_failed(output="lots\n[ci-check] ERROR task failed\n")
-        self.assertEqual(self.events()[0]["attrs"]["failing_step"], "task ci-check")
 
     def test_tc2_green_ci_with_a_failed_check_is_flagged(self):
         self._run_failed(ci_state="green")
@@ -194,6 +176,25 @@ class PostedTests(StoreCase):
                  self.assertRaises(SystemExit):
                 L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br")
         self.assertEqual([e["attrs"]["outcome"] for e in self.events()], ["posted"])
+
+    def test_a_real_os_error_after_the_post_is_recorded_as_posted(self):
+        with mock.patch.object(L, "write_receipt", side_effect=PermissionError("state dir")), \
+             mock.patch.object(L, "static_checks",
+                               return_value=(["mise-check"], (T0, T1), {"result": "pass"})), \
+             mock.patch.object(L, "world_checks", return_value=([], [])), \
+             mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [])), \
+             mock.patch.object(L, "run", side_effect=self._fake_run), \
+             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "ok")), \
+             mock.patch.object(L, "comment_body", return_value=("https://x/9", 9)), \
+             self.assertRaises(PermissionError):
+            L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br")
+        self.assertEqual([e["attrs"]["outcome"] for e in self.events()], ["posted"])
+
+    def test_an_operator_abort_records_nothing(self):
+        with mock.patch.object(L, "static_checks", side_effect=KeyboardInterrupt), \
+             self.assertRaises(KeyboardInterrupt):
+            L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br")
+        self.assertEqual(self.events(), [])
 
     def test_tc5_a_held_partition_lock_delays_but_never_fails_the_post(self):
         self._post()  # creates the partition and its lock file
