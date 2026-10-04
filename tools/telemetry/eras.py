@@ -87,10 +87,12 @@ _GATE_MS = re.compile(r"\bgate-ms=(\d+|unknown)\b")
 
 def parse_case_map(footer: Optional[str], key: str) -> dict[str, str]:
     """`{case id: value}` from a footer's `key=` field, or `{}` when absent."""
-    match = re.search(_CASE_FIELD.format(key=re.escape(key)), footer or "")
-    if not match:
+    # The LAST match: the case fields are appended after every other key, and
+    # an earlier free-text value (an ack reason) must not shadow them.
+    found = re.findall(_CASE_FIELD.format(key=re.escape(key)), footer or "")
+    if not found:
         return {}
-    pairs = (item.partition(":") for item in match.group(1).split(",") if item)
+    pairs = (item.partition(":") for item in found[-1].split(",") if item)
     return {k: v for k, _, v in pairs if k and v}
 
 
@@ -111,9 +113,9 @@ def case_counts(footer: Optional[str], kind: Optional[str]) -> dict[str, Any]:
         values = list(results.values())
         out: dict[str, Any] = {"tc_count": len(values), "fail_count": values.count("fail"),
                                "blocked_count": values.count("blocked")}
-        gate = _GATE_MS.search(footer or "")
-        if gate and gate.group(1).isdigit():
-            out["gate_ms"] = int(gate.group(1))
+        gates = _GATE_MS.findall(footer or "")
+        if gates and gates[-1].isdigit():
+            out["gate_ms"] = int(gates[-1])
             out["gate_ms_known"] = True
         else:
             out["gate_ms_known"] = False

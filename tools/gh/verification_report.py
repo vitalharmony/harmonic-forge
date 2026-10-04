@@ -27,6 +27,7 @@ Aggregates cover `measured` only.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import statistics
 import sys
@@ -37,25 +38,36 @@ from typing import Any, Iterable, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "telemetry"))
 import emit  # noqa: E402
 
-GATE_TYPES = {"gate.pass", "gate.fail", "unknown"}
+#: Every event type a gate comment extracts as, BLOCKED included: a BLOCKED
+#: gate that vanished from the report would read as one fewer gate.
+GATE_TYPES = {"gate.pass", "gate.fail", "blocked.lane", "unknown"}
 ATTEMPT_TYPE = "ready-for-l3.attempt"
 CLASSES = ("ac", "existing", "live")
 TOKEN_NOTE = ("Lane token cost is not measured: a lane session cannot read its own token "
               "usage (only subagent completion notices carry usage), so time is wall-clock.")
 
 
-def load_events(store: Path, since: Optional[str], until: Optional[str]) -> list[dict[str, Any]]:
-    """Every event under `store/events`, inside [since, until] by date."""
+def load_events(store: Path, since: Optional[str], until: Optional[str],
+                skipped: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    """Every event under `store/events`, inside [since, until] by date. A file
+    or line that cannot be read is named in `skipped`, never silently dropped:
+    a damaged store must not read as fewer gates."""
     out = []
     for part in sorted(store.glob("events/**/*.jsonl")):
         try:
             lines = part.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
+            if skipped is not None:
+                skipped.append(str(part))
             continue
-        for line in lines:
+        for number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
             try:
                 event = json.loads(line)
             except ValueError:
+                if skipped is not None:
+                    skipped.append(f"{part}:{number}")
                 continue
             day = str(event.get("ts", ""))[:10]
             if (since and day < since) or (until and day > until):
@@ -80,9 +92,26 @@ def _fmt(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:,.0f}"
 
 
+def latest_readings(gates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One reading per gate comment: re-extraction after an EXTRACTOR_VERSION
+    bump (or an edit) emits the same comment again, and counting both would
+    double every gate. The highest extractor version wins, then the latest edit."""
+    best: dict[tuple, dict[str, Any]] = {}
+    for gate in gates:
+        attrs = gate.get("attrs") or {}
+        cid = attrs.get("comment_id")
+        key = (str(gate.get("repo", "")).lower(), gate.get("issue"), cid) if cid else (id(gate),)
+        rank = (str(gate.get("extractor_version") or ""), str(attrs.get("edited_at") or ""))
+        held = best.get(key)
+        if held is None or rank > held[0]:
+            best[key] = (rank, gate)
+    return [gate for _, gate in best.values()]
+
+
 def build(events: list[dict[str, Any]]) -> dict[str, Any]:
-    gates = [e for e in events if e.get("source") == "gh-thread"
-             and e.get("event_type") in GATE_TYPES and "verdict" in (e.get("attrs") or {})]
+    gates = latest_readings([e for e in events if e.get("source") == "gh-thread"
+                             and e.get("event_type") in GATE_TYPES
+                             and "verdict" in (e.get("attrs") or {})])
     attempts = defaultdict(list)
     for e in events:
         if e.get("event_type") == ATTEMPT_TYPE:
@@ -107,7 +136,7 @@ def build(events: list[dict[str, Any]]) -> dict[str, Any]:
     return {"issues": issues, "buckets": buckets, "aggregate": aggregate}
 
 
-def render(report: dict[str, Any]) -> str:
+def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
     lines = ["| Issue | Gates | Measured | Cases ac/existing/live | Fails ac/existing/live | "
              "Median gate ms | ready-for-l3 attempts | Median local check ms | CI green, local red |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -140,17 +169,30 @@ def render(report: dict[str, Any]) -> str:
     else:
         lines.append("Aggregate: no measured gates in this window; nothing is reported as zero.")
     lines.append(TOKEN_NOTE)
+    if skipped:
+        lines.insert(0, f"WARNING: {len(skipped)} store file(s) or line(s) could not be read; "
+                        "every count below may be low.\n")
     return "\n".join(lines)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--since", help="Only events on or after this date (YYYY-MM-DD).")
-    parser.add_argument("--until", help="Only events on or before this date (YYYY-MM-DD).")
+    parser.add_argument("--since", type=_day, help="Only events on or after this date (YYYY-MM-DD).")
+    parser.add_argument("--until", type=_day, help="Only events on or before this date (YYYY-MM-DD).")
     parser.add_argument("--store", type=Path, default=None, help="Telemetry store root.")
     args = parser.parse_args()
     store = args.store or emit.store_root()
-    print(render(build(load_events(store, args.since, args.until))))
+    skipped: list[str] = []
+    print(render(build(load_events(store, args.since, args.until, skipped)), skipped))
+
+
+def _day(value: str) -> str:
+    """A real YYYY-MM-DD date, refused otherwise: an unpadded date compares as
+    a string and would silently empty the window."""
+    try:
+        return datetime.date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
 
 
 if __name__ == "__main__":

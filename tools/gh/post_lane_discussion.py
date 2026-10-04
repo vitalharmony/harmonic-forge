@@ -261,6 +261,16 @@ MAX_CASE_ID = 12
 #: The same freshness bound the Lane 3 write guard applies to this marker.
 LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 _CASE_KEY = re.compile(r"^(?:TC[- ]?)?(\w+)$", re.I)
+#: A markdown table row whose first cell names a case ("| TC3 |", "| 3 |"):
+#: the shape real Lane 3 gate reports use, which `l1_post.case_ids` does not
+#: read (F893 preclose finding).
+_TABLE_CASE = re.compile(r"(?m)^[ \t]*\|[ \t]*[`*]*(?:TC[- ]?)?(\d+)[`*]*[ \t]*\|", re.I)
+
+
+def body_case_ids(body: str) -> set[str]:
+    """Case ids in a spec or gate report: `l1_post.case_ids` (TC markers or a
+    numbered list) plus the first cell of every markdown table row."""
+    return set(case_ids(body)) | set(_TABLE_CASE.findall(body or ""))
 
 
 def load_case_map(path: Path, body: str, allowed: tuple[str, ...], flag: str) -> dict[str, str]:
@@ -278,10 +288,15 @@ def load_case_map(path: Path, body: str, allowed: tuple[str, ...], flag: str) ->
         match = _CASE_KEY.match(str(key).strip())
         if not match or len(match.group(1)) > MAX_CASE_ID:
             fail(f"{flag}: {key!r} is not a case id")
+        if match.group(1) in found:
+            fail(f"{flag}: {key!r} names case {match.group(1)} a second time")
         found[match.group(1)] = str(value).strip().lower()
-    expected = case_ids(body)
-    # A body with no identifiable cases (a BLOCKED gate that ran nothing, say)
-    # takes an empty map: it is then recorded as having no per-case results.
+    expected = body_case_ids(body)
+    # Only a BLOCKED gate that ran nothing may have no cases; it then records
+    # no per-case results. Anything else must list its cases.
+    if not expected and not (flag == "--tc-results" and verdict_of(body) == "BLOCKED"):
+        fail(f"{flag}: the body lists no case ids (TC<n>, a numbered list, or a table whose "
+             "first column is the case)")
     if len(expected) > MAX_CASES:
         fail(f"{flag}: the body has {len(expected)} cases; at most {MAX_CASES} are recorded")
     missing = sorted(expected - set(found), key=_case_order)
@@ -309,17 +324,24 @@ def check_results_agree(results: dict[str, str], body: str) -> None:
     way `gate_ci.verdict_of` reads it."""
     verdict = verdict_of(body)
     fails = [k for k, v in results.items() if v == "fail"]
-    if verdict == "PASS" and fails:
-        fail(f"--tc-results: the report says PASS but case(s) "
-             f"{', '.join(sorted(fails, key=_case_order))} are fail")
+    blocked = [k for k, v in results.items() if v == "blocked"]
+    not_passed = sorted(fails + blocked, key=_case_order)
+    if verdict == "PASS" and not_passed:
+        fail(f"--tc-results: the report says PASS but case(s) {', '.join(not_passed)} "
+             "did not pass")
     if verdict == "FAIL" and not fails:
         fail("--tc-results: the report says FAIL but no case is fail")
+    if verdict == "BLOCKED" and results and not blocked:
+        fail("--tc-results: the report says BLOCKED but no case is blocked")
 
 
 def gate_ms(now: float | None = None) -> str:
     """Milliseconds since `lane3-begin` touched `<git-dir>/LANE3_ACTIVE`, or
     `unknown`. Derived, never self-reported, and never written as zero."""
-    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+    # The caller's own directory: a lane-comment task may cd elsewhere (HRSE2's
+    # runs from Lane 1's tools worktree), and mise records where it was invoked.
+    cwd = os.environ.get("MISE_ORIGINAL_CWD") or None
+    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd,
                              text=True, capture_output=True, check=False)
     if git_dir.returncode:
         return "unknown"

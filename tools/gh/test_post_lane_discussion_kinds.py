@@ -31,6 +31,7 @@ SPEC = ("## Lane 3 Test Spec — H1\n\n"
 GATE_PASS = ("## Lane 3 Gate Results — H1 — PASS\n\n"
              "**Verdict:** PASS\n**Head-SHA:** `0359854`\n"
              "**Finding:** none.\n**Next:** merge.\n\n"
+             "| TC | Verdict |\n|---|---|\n| TC1 | PASS |\n\n"  # harmonic-forge#893: a case table
              "<details><summary>Evidence</summary>\n\nAll nine cases ran.\n\n</details>\n")
 GATE_BLOCKED = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n"
                 "**Verdict:** BLOCKED\n**Finding:** no fixture available.\n"
@@ -401,7 +402,8 @@ class NoPrRequiredOverrideTests(unittest.TestCase):
 
     PASS_BODY = ("## Lane 3 Gate Results — H2095 — PASS\n\n"
                  "**Verdict:** PASS\n**Head-SHA:** af35ca95\n"
-                 "**Finding:** none.\n**Next:** merge.\n")
+                 "**Finding:** none.\n**Next:** merge.\n"
+                 "\n| TC | Verdict |\n|---|---|\n| TC1 | PASS |\n")  # harmonic-forge#893
 
     def test_ack_no_pr_required_rejects_an_empty_reason(self):
         with tempfile.TemporaryDirectory() as tmp:

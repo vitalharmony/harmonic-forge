@@ -109,7 +109,7 @@ class ResultsAgreeWithTheVerdict(Case):
     """TC2."""
 
     def test_a_pass_with_a_fail_is_refused(self):
-        self.assertIn("says PASS but case(s) 2 are fail",
+        self.assertIn("says PASS but case(s) 2 did not pass",
                       self.refuses("gate-result", GATE_PASS, results={"1": "pass", "2": "fail"}))
 
     def test_a_fail_with_no_fail_is_refused(self):
@@ -119,6 +119,54 @@ class ResultsAgreeWithTheVerdict(Case):
     def test_an_agreeing_map_posts(self):
         footer = self.post("gate-result", GATE_FAIL, results={"1": "pass", "2": "fail"}).rstrip().splitlines()[-1]
         self.assertIn("results=1:pass,2:fail; gate-ms=", footer)
+
+
+class PanelPass1Fixes(Case):
+    """F893 preclose pass 1."""
+
+    TABLE_FAIL = ("## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — TC2 failed.\n**Finding:** y\n"
+                  "**Next:** z\n\n| TC | Verdict | Evidence |\n|---|---|---|\n| TC1 | PASS | a |\n"
+                  "| **TC2** | FAIL | b |\n")
+    CASELESS_FAIL = "## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — x.\n**Finding:** y\n**Next:** z\n"
+    CASELESS_BLOCKED = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n"
+                        "**Finding:** no fixture.\n**Next:** provision it.\n")
+
+    def test_a_table_shaped_gate_report_yields_its_case_ids(self):
+        footer = self.post("gate-result", self.TABLE_FAIL, results={"1": "pass", "TC2": "fail"})
+        self.assertIn("results=1:pass,2:fail;", footer)
+        self.assertIn("no entry for case(s) 2", self.refuses("gate-result", self.TABLE_FAIL, results={"1": "pass"}))
+
+    def test_only_a_blocked_gate_may_list_no_cases(self):
+        self.assertIn("lists no case ids", self.refuses("gate-result", self.CASELESS_FAIL, results={}))
+        self.assertIn("results=;", self.post("gate-result", self.CASELESS_BLOCKED, results={}))
+
+    def test_blocked_cases_disagree_with_pass_and_blocked_needs_a_blocked_case(self):
+        self.assertIn("did not pass", self.refuses("gate-result", GATE_PASS, results={"1": "pass", "2": "blocked"}))
+        blocked = GATE_PASS.replace("**Verdict:** PASS — both ran", "**Verdict:** BLOCKED — fixture missing")
+        self.assertIn("no case is blocked", self.refuses("gate-result", blocked, results={"1": "pass", "2": "pass"}))
+
+    def test_a_case_named_twice_is_refused(self):
+        self.assertIn("a second time", self.refuses("spec", SPEC_TC, classes={"TC1": "ac", "1": "live", "2": "ac"}))
+
+    def test_gate_time_reads_the_callers_directory_not_the_tools_worktree(self):
+        git_dir = self.dir / "gate-git"
+        git_dir.mkdir()
+        (git_dir / "LANE3_ACTIVE").touch()
+        seen = {}
+
+        def fake_run(cmd, cwd=None, **kw):
+            seen["cwd"] = cwd
+            return unittest.mock.Mock(returncode=0, stdout=str(git_dir) + "\n")
+        with unittest.mock.patch.dict(os.environ, {"MISE_ORIGINAL_CWD": "/the/gate/worktree"}), \
+             unittest.mock.patch.object(P.subprocess, "run", side_effect=fake_run):
+            self.assertNotEqual(P.gate_ms(), "unknown")
+        self.assertEqual(seen["cwd"], "/the/gate/worktree")
+
+    def test_a_free_text_field_cannot_shadow_the_case_map(self):
+        import eras  # noqa: PLC0415
+        footer = ("<!-- l1-post v1; kind=gate-result; posted-by=LANE3; body-sha256=ab; "
+                  "ack-no-pr-required=see results=1:pass; results=1:fail; gate-ms=unknown -->")
+        self.assertEqual(eras.parse_case_map(footer, "results"), {"1": "fail"})
 
 
 class GateTimeIsDerived(Case):
@@ -234,6 +282,36 @@ class ExistingConsumersStillParse(unittest.TestCase):
             self.assertTrue(any(p.search(self.NEW) for p in patterns), module.__name__)
 
 
+class ProducerOutputStillParses(unittest.TestCase):
+    """TC5, driven by the real producer: footer() with case fields, read back by
+    every footer consumer (a change that broke the one-line shape fails here)."""
+
+    def posted(self, kind: str, body: str, fields: str) -> str:
+        return body.rstrip("\n") + P.footer(kind, body, "LANE3", case_fields=fields)
+
+    def test_every_consumer_reads_a_real_new_format_post(self):
+        import re  # noqa: PLC0415
+        import check_lane3_ready as clr  # noqa: PLC0415
+        import eras  # noqa: PLC0415
+        import fetch_lane1_context  # noqa: PLC0415
+        import gate_ci  # noqa: PLC0415
+        import watch_lane_posts  # noqa: PLC0415
+        import _standing_grant  # noqa: PLC0415
+        gate = self.posted("gate-result", GATE_PASS, "results=1:pass,2:pass; gate-ms=1000")
+        spec = self.posted("spec", SPEC_TC, "classes=1:ac,2:live")
+        self.assertEqual(gate.rstrip().count("\n<!--"), 1, "the footer stays one physical line")
+        self.assertEqual(clr.FOOTER_KIND.search(gate).group(1), "gate-result")
+        self.assertTrue(clr.verify_body_sha256({"body": gate}) and clr.verify_body_sha256({"body": spec}))
+        self.assertEqual(gate_ci.verdict_of(gate), "PASS")
+        self.assertIn("results=1:pass,2:pass", eras.own_footer(eras.clean(gate)))
+        self.assertTrue(_standing_grant._BODY_SHA_MARKER.search(gate))
+        timeline = eras.lane_state.parse_timeline([{"id": 1, "created_at": "2026-10-04T10:00:00Z", "body": spec}])
+        self.assertTrue(any(t.key == eras.lane_state.KEY_SPEC_POSTED and t.validated for t in timeline))
+        for module in (fetch_lane1_context, watch_lane_posts):
+            patterns = [v for v in vars(module).values() if isinstance(v, re.Pattern) and "l1-post" in v.pattern]
+            self.assertTrue(any(pattern.search(gate) for pattern in patterns), module.__name__)
+
+
 class ReportNeverReadsAbsenceAsZero(unittest.TestCase):
     """TC6."""
 
@@ -256,6 +334,41 @@ class ReportNeverReadsAbsenceAsZero(unittest.TestCase):
         self.assertIn("missing input", text)
         self.assertIn("token", text)
         self.assertEqual(report["aggregate"]["gates"], 1)
+
+    GATE = {"source": "gh-thread", "event_type": "gate.fail", "repo": "o/r", "issue": 2,
+            "ts": "2026-10-04T11:00:00Z", "extractor_version": "threads-3",
+            "attrs": {"verdict": "FAIL", "comment_id": "9", "edited_at": "x", "tc_count": 1,
+                      "paired": True, "case_ac": 1, "fail_ac": 1}}
+
+    def test_a_blocked_gate_is_counted(self):
+        blocked = {**self.GATE, "event_type": "blocked.lane", "attrs": {"verdict": "BLOCKED"}}
+        self.assertEqual(VR.build([blocked])["buckets"]["unmeasured"], 1)
+
+    def test_one_reading_per_comment_across_extractor_versions(self):
+        old = {**self.GATE, "extractor_version": "threads-2", "attrs": {"verdict": "FAIL", "comment_id": "9"}}
+        report = VR.build([old, self.GATE])
+        self.assertEqual((report["buckets"]["measured"], report["buckets"]["unmeasured"]), (1, 0))
+
+    def test_ready_for_l3_attempts_join_by_repo_and_issue(self):
+        attempts = [{"event_type": "ready-for-l3.attempt", "repo": "O/R", "issue": 2,
+                     "attrs": {"local_check_ms": 1000, "ci_green_local_red": True}},
+                    {"event_type": "ready-for-l3.attempt", "repo": "o/r", "issue": 2,
+                     "attrs": {"local_check_ms": 3000, "ci_green_local_red": False}}]
+        report = VR.build([self.GATE, *attempts])
+        self.assertEqual(report["buckets"]["missing input"], 0)
+        row = [line for line in VR.render(report).splitlines() if line.startswith("| o/r#2")][0]
+        self.assertIn("| 2 | 2,000 | 1 |", row)
+
+    def test_unreadable_store_lines_are_reported(self):
+        with tempfile.TemporaryDirectory() as store:
+            part = Path(store) / "events" / "a" / "o" / "gh-thread" / "2026-10.jsonl"
+            part.parent.mkdir(parents=True)
+            part.write_text(json.dumps(self.GATE) + "\n{torn line\n")
+            skipped = []
+            events = VR.load_events(Path(store), None, None, skipped)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("could not be read", VR.render(VR.build(events), skipped))
 
 
 if __name__ == "__main__":
