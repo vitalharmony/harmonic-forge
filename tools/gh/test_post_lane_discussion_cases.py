@@ -124,9 +124,12 @@ class ResultsAgreeWithTheVerdict(Case):
 class PanelPass1Fixes(Case):
     """F893 preclose pass 1."""
 
-    TABLE_FAIL = ("## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — TC2 failed.\n**Finding:** y\n"
-                  "**Next:** z\n\n| TC | Verdict | Evidence |\n|---|---|---|\n| TC1 | PASS | a |\n"
-                  "| **TC2** | FAIL | b |\n")
+    # Bare numbers in the first column and no TC marker anywhere: only the
+    # table reader can find these ids (a TC mention elsewhere would let
+    # l1_post.case_ids find them and make the test vacuous).
+    TABLE_FAIL = ("## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — the second case failed.\n"
+                  "**Finding:** y\n**Next:** z\n\n| Case | Verdict | Evidence |\n|---|---|---|\n"
+                  "| 1 | PASS | a |\n| **2** | FAIL | b |\n")
     CASELESS_FAIL = "## Lane 3 Gate Results — H1\n\n**Verdict:** FAIL — x.\n**Finding:** y\n**Next:** z\n"
     CASELESS_BLOCKED = ("## Lane 3 Gate Results — H1 — BLOCKED\n\n**Verdict:** BLOCKED\n"
                         "**Finding:** no fixture.\n**Next:** provision it.\n")
@@ -300,6 +303,9 @@ class ProducerOutputStillParses(unittest.TestCase):
         gate = self.posted("gate-result", GATE_PASS, "results=1:pass,2:pass; gate-ms=1000")
         spec = self.posted("spec", SPEC_TC, "classes=1:ac,2:live")
         self.assertEqual(gate.rstrip().count("\n<!--"), 1, "the footer stays one physical line")
+        last = gate.rstrip().splitlines()[-1]
+        self.assertTrue(last.startswith("<!-- l1-post") and "results=1:pass,2:pass" in last, last)
+        self.assertIn("classes=1:ac,2:live", spec.rstrip().splitlines()[-1])
         self.assertEqual(clr.FOOTER_KIND.search(gate).group(1), "gate-result")
         self.assertTrue(clr.verify_body_sha256({"body": gate}) and clr.verify_body_sha256({"body": spec}))
         self.assertEqual(gate_ci.verdict_of(gate), "PASS")
