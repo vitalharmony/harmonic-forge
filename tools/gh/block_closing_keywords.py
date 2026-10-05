@@ -12,8 +12,9 @@ mechanism).
 
 Only fires on `gh pr create`/`edit`/`merge`/`comment`, `gh issue
 comment`/`edit`, and a `gh api` call whose command text shows write intent
-anywhere after `api` (an explicit POST/PATCH/PUT method or a ` -f`/` -F`
-field, which makes `gh api` POST). That is a text match, not a parse: a
+anywhere after `api` (an explicit POST/PATCH/PUT method, or a ` -f`/` -F`
+field, which makes `gh api` POST unless `--method` says otherwise; an
+explicit GET with fields is still inspected). That is a text match, not a parse: a
 read-only call whose `--jq` filter happens to contain one of those tokens is
 also inspected, which errs toward deny. It reads only the text of the command
 itself. Within that text it denies the `#N`
@@ -24,8 +25,9 @@ Non-closing references (Implements/Part of/Refs #N) are unaffected.
 **Best-effort, fail-open on everything outside that text**
 (harmonic-forge#911 preclose). It reads no file, so a body supplied by
 `--body-file`, `-F body=@file` or `--input` passes. A heredoc or a
-`gh api graphql` body is inspected only when written inline in the same
-command text. It sees no commit message, web-UI edit, or anything run outside
+`gh api graphql` body written inline is inspected only when the command
+itself is one the matcher fires on (for `gh api`, one showing write intent
+as above); otherwise it passes. It sees no commit message, web-UI edit, or anything run outside
 a Bash tool call. Those routes are covered, if at all, by review and by the
 close-time hooks, not here.
 
