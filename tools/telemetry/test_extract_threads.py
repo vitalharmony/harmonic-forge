@@ -128,6 +128,17 @@ class ExtractTests(unittest.TestCase):
         self.assertIn("no repo", out[0]["error"])
         self.assertIn("FileNotFoundError", out[1]["error"])
 
+    def test_repo_filter_ignores_an_unrelated_repo_less_entry(self):
+        # harmonic-forge#907 post-verdict: the scheduled job runs one --repo per
+        # repo, so a pending entry must not fail every one of those runs.
+        projects = [SimpleNamespace(name="x", repo=None, account="a"),
+                    SimpleNamespace(name="h", repo="o/h", account="acct")]
+        with mock.patch.object(xt, "extract_repo", return_value={"repo": "o/h", "issues": 0}):
+            out = xt.run(projects, fake_get((), self.calls), mock.Mock(), mock.Mock(return_value=1),
+                         repo="o/h")
+        self.assertEqual([s["repo"] for s in out], ["o/h"])
+        self.assertFalse(any("error" in s for s in out))
+
 
 def _gate(body, **extra):
     return {"id": 1, "created_at": "2026-09-30T00:00:00Z", "body": body, **extra}

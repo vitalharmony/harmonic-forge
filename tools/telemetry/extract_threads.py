@@ -272,7 +272,9 @@ def run(projects: Iterable[Any], get: RestGet, identity: Callable[[str], Any],
         return [{"repo": only_repo, "error": "not in the registry (projects.toml)"}]
     for project in projects:
         if not project.repo or (only_repo and project.repo != only_repo):
-            if not project.repo:
+            # Under --repo, a repo-less entry is unrelated to the filter: reporting
+            # it would fail every per-repo run (harmonic-forge#907 post-verdict).
+            if not project.repo and not only_repo:
                 summaries.append({"repo": f"unresolved ({project.name})", "error": "no repo in registry"})
             continue
         try:
