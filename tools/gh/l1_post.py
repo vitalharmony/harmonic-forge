@@ -1575,6 +1575,16 @@ def _provision_scratch_frontend_env(repo_root: Path, scratch: Path) -> str | Non
     return None
 
 
+def _announce_scratch_frontend_env(repo_root: Path, scratch: Path) -> None:
+    """Provision, and say so on stderr when skipped, so a false block is never
+    mistaken for the branch's own failure (harmonic-forge#795 preclose pass 1)."""
+    skipped = _provision_scratch_frontend_env(repo_root, scratch)
+    if skipped:
+        print(f"[l1-post] scratch {HRSE_FRONTEND_ENV} not provisioned: {skipped}; a test that "
+              "imports the real api client will fail on missing env, not on the branch "
+              "(run `mise run worktree-provision` here)", file=sys.stderr)
+
+
 def _source_repo_is_hrse(repo_root: Path) -> bool:
     """Whether repo_root's own git remote is vitalharmony/hrse -- independent
     of --repo, which names the GitHub issue's repo, not the repo the
@@ -1673,11 +1683,7 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
                 if not source.is_dir():
                     fail(f"source worktree dependency directory is missing: {dependency_dir}")
                 (scratch / dependency_dir).symlink_to(source, target_is_directory=True)
-            skipped = _provision_scratch_frontend_env(repo_root, scratch)
-            if skipped:
-                print(f"[l1-post] scratch {HRSE_FRONTEND_ENV} not provisioned: {skipped}; a test that "
-                      "imports the real api client will fail on missing env, not on the branch "
-                      "(run `mise run worktree-provision` here)", file=sys.stderr)
+            _announce_scratch_frontend_env(repo_root, scratch)
         # a private-repo incident: `git worktree add --detach` never provisions `.claude/`
         # (an untracked, locally-linked directory in every repo this tool
         # runs against) -- a repo whose own `mise run check` self-verifies

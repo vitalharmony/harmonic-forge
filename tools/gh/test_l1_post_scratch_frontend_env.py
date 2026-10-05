@@ -4,6 +4,8 @@ copied into its own `frontend/.env`, so a test importing the real
 apiClient/authManager chain does not fail on missing env alone."""
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import stat
 import sys
@@ -74,8 +76,19 @@ class ScratchFrontendEnv(unittest.TestCase):
         src = Path(L.__file__).read_text()
         block = src[src.index("for dependency_dir in HRSE_DEPENDENCY_DIRS:"):]
         block = block[:block.index("hooks-install")]
-        self.assertIn("skipped = _provision_scratch_frontend_env(repo_root, scratch)", block)
-        self.assertIn("not provisioned: {skipped}", block)
+        self.assertIn("_announce_scratch_frontend_env(repo_root, scratch)", block)
+
+    def test_a_skip_is_announced_on_stderr_and_a_write_is_quiet(self) -> None:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            L._announce_scratch_frontend_env(self.repo, self.scratch)
+        self.assertIn("scratch frontend/.env not provisioned: the source frontend/.env has no value for", err.getvalue())
+        self.source(SOURCE)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            L._announce_scratch_frontend_env(self.repo, self.scratch)
+        self.assertEqual(err.getvalue(), "")
+        self.assertTrue(self.target().is_file())
 
 
 if __name__ == "__main__":
