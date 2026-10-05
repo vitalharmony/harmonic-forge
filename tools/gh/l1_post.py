@@ -1524,6 +1524,49 @@ def pr_issue_marker(
 
 
 HRSE_DEPENDENCY_DIRS = ("frontend/node_modules", "backend/.venv")
+# harmonic-forge#795: `frontend/src/runtimeConfig.ts` reads these at module
+# load, so any test whose imports reach the real apiClient/authManager chain
+# throws in a scratch worktree that has no `frontend/.env`. The same three
+# keys HRSE2's `scripts/provision_worktree.py` (FRONTEND_ENV_KEYS) seeds.
+HRSE_FRONTEND_ENV_KEYS = ("VITE_KEYCLOAK_URL", "VITE_KEYCLOAK_REALM", "VITE_KEYCLOAK_WEB_CLIENT_ID")
+HRSE_FRONTEND_ENV = "frontend/.env"
+
+
+def _read_env_keys(path: Path) -> dict[str, str]:
+    """`KEY=value` pairs of a dotenv file, comments and blanks skipped."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    values = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _provision_scratch_frontend_env(repo_root: Path, scratch: Path) -> bool:
+    """COPY the three Keycloak keys from the source worktree's `frontend/.env`
+    into the scratch worktree's own, never a symlink: a build writes
+    `VITE_APP_VERSION` through `writeFileSync`, which follows a symlink back
+    into the source repo (hrse#1356). Best-effort (harmonic-forge#795): a
+    missing source file or key, or an existing scratch file, is skipped and
+    never fails the check. Returns whether the file was written."""
+    target = scratch / HRSE_FRONTEND_ENV
+    values = _read_env_keys(repo_root / HRSE_FRONTEND_ENV)
+    if target.exists() or any(key not in values for key in HRSE_FRONTEND_ENV_KEYS):
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("".join(f"{key}={values[key]}\n" for key in HRSE_FRONTEND_ENV_KEYS))
+    except OSError:
+        return False
+    return True
 
 
 def _source_repo_is_hrse(repo_root: Path) -> bool:
@@ -1624,6 +1667,7 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
                 if not source.is_dir():
                     fail(f"source worktree dependency directory is missing: {dependency_dir}")
                 (scratch / dependency_dir).symlink_to(source, target_is_directory=True)
+            _provision_scratch_frontend_env(repo_root, scratch)
         # a private-repo incident: `git worktree add --detach` never provisions `.claude/`
         # (an untracked, locally-linked directory in every repo this tool
         # runs against) -- a repo whose own `mise run check` self-verifies
