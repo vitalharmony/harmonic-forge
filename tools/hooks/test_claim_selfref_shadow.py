@@ -98,26 +98,41 @@ class Heartbeat(StateDir):
         self.decide("Tests pass.", None)
         self.decide(INCIDENT)
         self.decide(None, RUNNING)
-        self.assertEqual(self.counts(), {"stops_seen": 4, "message_present": 3, "background_tasks_present": 3,
-                                         "background_tasks_nonempty": 2, "tests_pass_matched": 2, "fired": 1})
+        self.decide("Working on it.", [], prompt_id="")
+        self.assertEqual(self.counts(), {"stops_seen": 5, "message_present": 4, "prompt_id_present": 4,
+                                         "background_tasks_present": 4, "background_tasks_nonempty": 2,
+                                         "tests_pass_matched": 2, "fired": 1})
 
 
-class OneObservationPerTurn(StateDir):
-    """Preclose pass 1: a re-Stop after another hook blocked is the same turn."""
+class PerStopWriteReadTimeGrouping(StateDir):
+    """Sticky-wicket PATCH (issuecomment-5988105150): AC1 is per Stop, so the
+    write path appends one line per in-class Stop, a stop_hook_active re-entry
+    included; `report` groups Stops into distinct occurrences."""
 
-    def test_a_reentry_neither_counts_nor_records(self) -> None:
-        self.decide(INCIDENT)
-        for _ in range(3):
-            self.decide(INCIDENT, stop_hook_active=True)
+    def test_a_reentry_still_counts_and_records(self) -> None:
+        self.decide("Running the gate now.")
+        self.decide(INCIDENT, stop_hook_active=True)
         self.assertEqual(len(self.shadow()), 1)
-        self.assertEqual(self.counts()["stops_seen"], 1)
+        self.assertEqual(self.counts()["stops_seen"], 2)
+        self.assertEqual(self.counts()["tests_pass_matched"], 1)
 
-    def test_a_second_stop_of_the_same_prompt_records_no_second_line(self) -> None:
+    def test_two_stops_of_one_turn_are_two_lines_and_one_occurrence(self) -> None:
         self.decide(INCIDENT)
-        self.decide(INCIDENT)
+        self.decide(INCIDENT, stop_hook_active=True)
+        self.assertEqual([l["prompt_id"] for l in self.shadow()], ["p-1", "p-1"])
+        self.assertEqual(hook.occurrence_count(self.shadow()), 1)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hook.report(self.dir, [])
+        self.assertIn("2 fired line(s), 1 distinct occurrence(s)", out.getvalue())
+        self.assertIn("sample: n=1 distinct occurrence(s)", out.getvalue())
+
+    def test_lines_without_a_prompt_id_are_never_merged(self) -> None:
+        for _ in range(3):
+            self.decide(INCIDENT, prompt_id="")
         self.decide(INCIDENT, prompt_id="p-2")
-        self.assertEqual([l["prompt_id"] for l in self.shadow()], ["p-1", "p-2"])
-        self.assertEqual(self.counts()["fired"], 2)
+        self.decide(INCIDENT, prompt_id="p-2")
+        self.assertEqual(hook.occurrence_count(self.shadow()), 4)
 
 
 class MissingStatus(StateDir):
@@ -159,10 +174,10 @@ class AC4Report(StateDir):
         with contextlib.redirect_stdout(out):
             self.assertEqual(hook.report(self.dir, [projects.parent]), 0)
         text = out.getvalue()
-        self.assertIn("1 fired, 1 distinct prompt(s)", text)
+        self.assertIn("1 fired line(s), 1 distinct occurrence(s)", text)
         self.assertIn("stops_seen=1", text)
         self.assertIn(f"{projects / 't.jsonl'}:2", text)
-        self.assertIn("sample: n=1 (source: live)", text)
+        self.assertIn("sample: n=1 distinct occurrence(s) (source: live)", text)
         self.assertEqual({p.name: p.read_bytes() for p in self.dir.iterdir()}, before)
 
     def test_pointers_read_the_corpus_once_and_stop_when_every_id_is_found(self) -> None:
@@ -181,11 +196,18 @@ class AC4Report(StateDir):
         self.assertEqual(reads, ["new.jsonl"])
         self.assertEqual(hook.pointers({"p-1", "p-2"}, [root]), {"p-1": f"{new}:3", "p-2": f"{old}:2"})
 
+    def test_a_pointer_resolves_whatever_the_json_spelling(self) -> None:
+        root = Path(self.tmp.name) / "projects2"
+        (root / "-a").mkdir(parents=True)
+        spaced = root / "-a" / "t.jsonl"
+        spaced.write_text('{"type": "user", "promptId": "p-7"}\n{"promptId":"p-7x"}\n')
+        self.assertEqual(hook.pointers({"p-7"}, [root]), {"p-7": f"{spaced}:1"})
+
     def test_report_on_an_empty_state_directory_says_zero(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             hook.report(self.dir, [])
-        self.assertIn("0 fired", out.getvalue())
+        self.assertIn("0 fired line(s)", out.getvalue())
         self.assertFalse(self.dir.exists())
 
 
@@ -208,6 +230,28 @@ class Replay(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 hook.replay(str(Path(tmp) / "*.jsonl"))
             self.assertIn("replay: 1 fire(s) over 1 transcript(s); sample: n=1 (source: replay)", out.getvalue())
+
+
+class ReplayPairing(unittest.TestCase):
+    """Sticky-wicket PATCH step 4: each acknowledged task id takes its own
+    launch's command, never the first launch's in the record."""
+
+    def test_two_launches_acked_in_one_record_keep_their_own_commands(self) -> None:
+        launch = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "tuA", "name": "Bash", "input": {"command": "mise run check", "run_in_background": True}},
+            {"type": "tool_use", "id": "tuB", "name": "Bash", "input": {"command": "npm run build", "run_in_background": True}}]}}
+        ack = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tuA", "content": "Command running in background with ID: tA."},
+            {"type": "tool_result", "tool_use_id": "tuB", "content": "Command running in background with ID: tB."}]}}
+        done_a = {"type": "user", "message": {"content": "<task-notification>\n<task-id>tA</task-id>\n<status>completed</status>"}}
+        final = {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "All tests pass. `mise run check` finished clean."}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text("\n".join(json.dumps(e) for e in (launch, ack, done_a, final)) + "\n")
+            self.assertEqual(hook.replay_file(path), [])
+            path.write_text("\n".join(json.dumps(e) for e in (launch, ack, final)) + "\n")
+            self.assertEqual([m for _, m in hook.replay_file(path)], [("tests pass", "mise run check", "running")])
 
 
 class AC5Registration(unittest.TestCase):

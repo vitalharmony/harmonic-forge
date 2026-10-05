@@ -47,8 +47,8 @@ MIN_SAMPLE = 15
 STATE_DIR = Path.home() / ".claude" / "state" / "claim-stop"
 SHADOW = "shadow.jsonl"
 HEARTBEAT = "heartbeat.json"
-COUNTERS = ("stops_seen", "message_present", "background_tasks_present", "background_tasks_nonempty",
-            "tests_pass_matched", "fired")
+COUNTERS = ("stops_seen", "message_present", "prompt_id_present", "background_tasks_present",
+            "background_tasks_nonempty", "tests_pass_matched", "fired")
 
 
 def _tokens(text: str) -> list[str]:
@@ -112,6 +112,7 @@ def heartbeat(payload: dict, matched_claim: bool, fired: bool, directory: Path |
     tasks = payload.get("background_tasks")
     text = payload.get("last_assistant_message")
     bumps = {"stops_seen": True, "message_present": isinstance(text, str) and bool(text.strip()),
+             "prompt_id_present": bool(str(payload.get("prompt_id") or "").strip()),
              "background_tasks_present": tasks is not None,
              "background_tasks_nonempty": bool(tasks), "tests_pass_matched": matched_claim, "fired": fired}
     try:
@@ -132,19 +133,11 @@ def heartbeat(payload: dict, matched_claim: bool, fired: bool, directory: Path |
         pass
 
 
-def _seen(path: Path, prompt_id: str) -> bool:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    needle = json.dumps(prompt_id)
-    return any(f'"prompt_id": {needle}' in line for line in lines)
-
-
 def record(lane: str, prompt_id: object, match: tuple[str, str, str], directory: Path | None = None) -> bool:
-    """Append one line of exactly six fields, at most once per prompt (one turn
-    is one observation however many Stops it takes; preclose pass 1). Returns
-    whether a line was written. Never raises."""
+    """Append one line of exactly six fields for this Stop, unconditionally (AC1
+    is per Stop). Grouping Stops into occurrences is `report`'s job, at read
+    time (sticky-wicket PATCH, issuecomment-5988105150). Returns whether a line
+    was written. Never raises."""
     directory = STATE_DIR if directory is None else directory
     claim, command, status = match
     pid = str(prompt_id or "")
@@ -152,10 +145,7 @@ def record(lane: str, prompt_id: object, match: tuple[str, str, str], directory:
             "prompt_id": pid, "claim": claim, "command": command, "status": status}
     try:
         with _locked(directory):
-            path = directory / SHADOW
-            if pid and _seen(path, pid):
-                return False
-            with path.open("a", encoding="utf-8") as out:
+            with (directory / SHADOW).open("a", encoding="utf-8") as out:
                 out.write(json.dumps(line) + "\n")
             return True
     except Exception:  # noqa: BLE001
@@ -166,9 +156,11 @@ def decide(payload: object, env: dict | None = None, directory: Path | None = No
     """Record, never decide: always None."""
     env = os.environ if env is None else env
     lane = str(env.get("LANE") or "").strip()
-    # A re-entry after another Stop hook blocked is the same turn, not a new
-    # observation: it neither counts nor records (preclose pass 1).
-    if not lane or not isinstance(payload, dict) or payload.get("stop_hook_active"):
+    # Every lane Stop counts and records, a `stop_hook_active` re-entry included:
+    # this hook never blocks, so a re-entry only means another Stop hook blocked
+    # the turn, and its final message is often the one that matters
+    # (sticky-wicket PATCH; pass 1's skip hid it).
+    if not lane or not isinstance(payload, dict):
         return None
     text = payload.get("last_assistant_message")
     match = selfref_match(text, payload.get("background_tasks"))
@@ -197,10 +189,20 @@ def pointers(prompt_ids: set[str], roots: list[Path]) -> dict[str, str]:
             line = lines[number - 1]
             if '"promptId"' not in line:
                 continue
-            for pid in wanted - set(found):
-                if f'"promptId":"{pid}"' in line:
-                    found[pid] = f"{path}:{number}"
+            try:
+                pid = json.loads(line).get("promptId")
+            except (ValueError, AttributeError):
+                continue
+            if pid in wanted and pid not in found:
+                found[pid] = f"{path}:{number}"
     return found
+
+
+def occurrence_count(lines: list[dict]) -> int:
+    """Distinct occurrences: lines sharing a `prompt_id` are one turn's Stops;
+    a line without one is its own occurrence (fail-closed, never merged)."""
+    ids = [str(line.get("prompt_id") or "") for line in lines]
+    return len({pid for pid in ids if pid}) + sum(1 for pid in ids if not pid)
 
 
 def report(directory: Path | None = None, roots: list[Path] | None = None) -> int:
@@ -221,8 +223,8 @@ def report(directory: Path | None = None, roots: list[Path] | None = None) -> in
         counts = json.loads((directory / HEARTBEAT).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         counts = {}
-    print(f"claim-selfref shadow: {len(lines)} fired, "
-          f"{len({str(l.get('prompt_id')) for l in lines})} distinct prompt(s)")
+    occurrences = occurrence_count(lines)
+    print(f"claim-selfref shadow: {len(lines)} fired line(s), {occurrences} distinct occurrence(s)")
     print("heartbeat: " + ", ".join(f"{k}={int(counts.get(k) or 0)}" for k in COUNTERS))
     where = pointers({str(line.get("prompt_id") or "") for line in lines}, roots)
     for line in lines:
@@ -230,7 +232,7 @@ def report(directory: Path | None = None, roots: list[Path] | None = None) -> in
         pointer = where.get(pid) or (f"(prompt {pid} not found in transcripts)" if pid else "(no prompt id)")
         print(f"- {line.get('ts')} LANE={line.get('lane')} {line.get('claim')!r} / `{line.get('command')}` "
               f"({line.get('status')}) -> {pointer}")
-    print(f"sample: n={len(lines)} (source: live); promotion needs n >= {MIN_SAMPLE}, "
+    print(f"sample: n={occurrences} distinct occurrence(s) (source: live); promotion needs n >= {MIN_SAMPLE}, "
           "labelled by hand, combined with --replay")
     return 0
 
@@ -264,9 +266,17 @@ def replay_file(path: Path) -> list[tuple[int, tuple[str, str, str]]]:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     pending_cmd[block.get("id") or ""] = str((block.get("input") or {}).get("command") or "")
         if "running in background with ID" in line:
-            use_ids = [b.get("tool_use_id") for b in content if isinstance(b, dict)] if isinstance(content, list) else []
-            for task_id in _BG_STARTED_RE.findall(line):
-                running[task_id] = next((pending_cmd[u] for u in use_ids if u in pending_cmd), "")
+            # Each acknowledgement is paired with its own tool_use_id: a task id
+            # takes the command of the launch its result block answers. A block
+            # naming several ids, or a launch it cannot pair, gets an empty
+            # command, a guaranteed non-match (sticky-wicket PATCH step 4).
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                ids = _BG_STARTED_RE.findall(json.dumps(block.get("content")))
+                command = pending_cmd.pop(block.get("tool_use_id") or "", "")
+                for task_id in ids:
+                    running[task_id] = command if len(ids) == 1 else ""
         if "<task-id>" in line:
             for task_id in _BG_ENDED_RE.findall(line):
                 running.pop(task_id, None)
