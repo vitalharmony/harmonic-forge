@@ -242,7 +242,10 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
             materialize(directory, sha, origin)
             # harmonic-forge#865: mark the child as a test so belt writers it
             # reaches (in-process or spawned) never touch the real store.
-            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HARMONIC_FORGE_TESTING": "1"}
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HARMONIC_FORGE_TESTING": "1",
+                   # harmonic-forge#907: the tests it runs emit telemetry too;
+                   # send it to the scratch tree, never the operator's store.
+                   "HARMONIC_FORGE_TELEMETRY_STORE": str(directory / ".telemetry-store")}
             if repo == "vitalharmony/harmonic-forge":
                 env["HARMONIC_FORGE_ROOT"] = str(directory)
             for _ in range(2):

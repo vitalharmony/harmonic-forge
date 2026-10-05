@@ -52,8 +52,31 @@ class SchemaError(ValueError):
     pass
 
 
+#: The operator's real telemetry store -- the one literal for it
+#: (harmonic-forge#907, mirroring belt_candidates.REAL_CANDIDATES_DIR).
+REAL_STORE = Path.home() / "Harmonic_Projects" / "telemetry-store"
+TESTING_ENV = "HARMONIC_FORGE_TESTING"
+
+
 def store_root() -> Path:
-    return Path(os.environ.get(STORE_ENV) or Path.home() / "Harmonic_Projects/telemetry-store").expanduser()
+    return Path(os.environ.get(STORE_ENV) or REAL_STORE).expanduser()
+
+
+def _refuses_real_store(root: Path) -> bool:
+    """Whether a write to `root` must be refused because this is a test process
+    and `root` is the operator's real store (harmonic-forge#907, the
+    harmonic-forge#865 guard applied to telemetry).
+
+    In-process, `unittest` being imported marks a test (no production writer
+    imports it); a writer a test launched as a subprocess is marked by the
+    inherited `HARMONIC_FORGE_TESTING=1`."""
+    under_test = "unittest" in sys.modules or os.environ.get(TESTING_ENV) == "1"
+    if not under_test:
+        return False
+    try:
+        return Path(root).resolve() == Path(REAL_STORE).resolve()
+    except OSError:
+        return True  # cannot tell: refuse, never write the real store from a test
 
 
 def event_id(source: str, repo: Optional[str], issue: Any, subject_id: Optional[str],
@@ -146,6 +169,10 @@ def emit(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     `rejected` lists (index, event_type, reason) -- never the payload."""
     root = store_root()
     counts: dict[str, Any] = {"written": 0, "duplicate": 0, "rejected": []}
+    if _refuses_real_store(root):
+        print("[telemetry] test process: not writing the real telemetry store "
+              f"(set {STORE_ENV}) -- harmonic-forge#907", file=sys.stderr)
+        return counts
     by_part: dict[Path, list[dict[str, Any]]] = {}
     for index, raw in enumerate(events):
         try:

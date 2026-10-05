@@ -1,0 +1,9 @@
+[Unit]
+Description=Extract gate and lane telemetry from issue threads daily, so verification_report.py's baseline accumulates (harmonic-forge#907)
+
+[Timer]
+OnCalendar=*-*-* 05:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
