@@ -41,6 +41,22 @@ def _advance(main: Path) -> str:
     return _git(main, "rev-parse", "HEAD")
 
 
+def _advance_elsewhere(root: Path, main: Path) -> None:
+    """Push a new commit to `main`'s origin from a SEPARATE clone, so `main`'s
+    own refs/remotes/origin/main is behind and its next fetch must write it."""
+    origin = _git(main, "remote", "get-url", "origin")
+    other = root / f"other-{main.name}"
+    if not other.exists():
+        _git(root, "clone", "-q", origin, str(other))
+        _git(other, "config", "user.email", "t@example.invalid")
+        _git(other, "config", "user.name", "T")
+    _git(other, "pull", "-q", "origin", "main")
+    (other / "ELSEWHERE.md").write_text(str(len(list(other.iterdir()))))
+    _git(other, "add", "ELSEWHERE.md")
+    _git(other, "commit", "-q", "-m", "elsewhere")
+    _git(other, "push", "-q", "origin", "main")
+
+
 class _Tree:
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -331,6 +347,41 @@ class FastPath(unittest.TestCase):
                 th.join()
             self.assertEqual([r.returncode for r in results], [0, 0, 0, 0],
                              [r.stderr for r in results])
+
+
+class FetchRetry(unittest.TestCase):
+    """harmonic-forge#905 preclose F2: a ref-lock collision with another
+    process's fetch is retried, not fatal."""
+
+    def test_a_held_origin_main_lock_is_retried_until_released(self):
+        with _Tree() as t:
+            t.run()
+            _advance_elsewhere(t.root, t.project)
+            lock = t.project / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+            lock.write_text("held by another fetch\n")
+            timer = threading.Timer(1.5, lambda: lock.unlink(missing_ok=True))
+            timer.start()
+            try:
+                proc = t.run()
+            finally:
+                timer.cancel()
+                lock.unlink(missing_ok=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(_git(t.project_wt, "rev-parse", "HEAD"),
+                             _git(t.project, "rev-parse", "origin/main"))
+
+    def test_a_persistent_lock_still_fails_with_the_git_message(self):
+        with _Tree() as t:
+            t.run()
+            _advance_elsewhere(t.root, t.project)
+            lock = t.project / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+            lock.write_text("stuck\n")
+            try:
+                proc = t.run()
+            finally:
+                lock.unlink(missing_ok=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("cannot lock ref", proc.stderr)
 
 
 if __name__ == "__main__":

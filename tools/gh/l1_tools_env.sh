@@ -115,9 +115,22 @@ _l1_tools_ensure() {
   # branch's commit locally to compute its merge-base with origin/main.
   exec {ffd}>"$fetch_lock" || return 1
   flock "$ffd" || { exec {ffd}>&-; return 1; }
-  if ! GIT_TERMINAL_PROMPT=0 timeout 60 git -c gc.auto=0 -c maintenance.auto=false \
-       -C "$src" fetch -q --prune origin; then
-    echo "l1_tools_env: git fetch failed in $src -- cannot bring $path to origin/main" >&2
+  # The fetch lock excludes other wrappers but not l1_post.py's own
+  # `git fetch origin main` (harmonic-forge#905 preclose F2), so a ref-lock
+  # collision is retried; any other failure stays fatal.
+  local attempt ferr fetched=""
+  for attempt in 1 2 3 4 5; do
+    if ferr="$(GIT_TERMINAL_PROMPT=0 timeout 60 git -c gc.auto=0 -c maintenance.auto=false \
+         -C "$src" fetch -q --prune origin 2>&1)"; then
+      fetched=1; break
+    fi
+    case "$ferr" in
+      *"cannot lock ref"*|*".lock': File exists"*) sleep "$attempt" ;;
+      *) break ;;
+    esac
+  done
+  if [ -z "$fetched" ]; then
+    echo "l1_tools_env: git fetch failed in $src -- cannot bring $path to origin/main: $ferr" >&2
     exec {ffd}>&-; return 1
   fi
   exec {ffd}>&-

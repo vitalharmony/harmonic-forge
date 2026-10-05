@@ -50,6 +50,10 @@ class StoreCase(unittest.TestCase):
         world = mock.patch.object(L, "world_checks", return_value=([], []))
         world.start()
         self.addCleanup(world.stop)
+        # ...and preceded by refresh_main (preclose F1); never fetch in a test.
+        fresh = mock.patch.object(L, "refresh_main", return_value="f" * 40)
+        fresh.start()
+        self.addCleanup(fresh.stop)
 
     def events(self) -> list[dict]:
         return [json.loads(line) for part in self.store.glob("events/**/*.jsonl")
@@ -306,3 +310,43 @@ class WorldPreflightTests(StoreCase):
             L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br", ack_overlap="mechanical, one line")
         self.assertEqual(seen[0], "mechanical, one line", "the pre-flight must receive --ack-overlap")
         self.assertEqual(ran, [1], "an acknowledged overlap must still reach static_checks")
+
+
+class PreflightFreshnessTests(StoreCase):
+    """harmonic-forge#905 preclose F1/F2."""
+
+    def test_origin_main_is_fetched_before_the_preflight(self):
+        order = []
+        with mock.patch.object(L, "refresh_main", side_effect=lambda: order.append("fetch") or "f" * 40), \
+             mock.patch.object(L, "world_checks", side_effect=lambda *a, **k: order.append("world") or L.fail("stop")):
+            self.refuse()
+        self.assertEqual(order[:2], ["fetch", "world"])
+
+    def test_a_ref_lock_collision_is_retried_then_succeeds(self):
+        import subprocess as sp
+        calls = []
+        def fake_run(*args, **kw):
+            calls.append(args)
+            if args[:2] == ("git", "fetch") and len([c for c in calls if c[:2] == ("git", "fetch")]) == 1:
+                return sp.CompletedProcess(args, 1, "", "error: cannot lock ref 'refs/remotes/origin/main'")
+            return sp.CompletedProcess(args, 0, "a" * 40 + "\n", "")
+        with mock.patch.object(L, "run", side_effect=fake_run), mock.patch.object(L.time, "sleep"):
+            self.assertEqual(_REAL_REFRESH(), "a" * 40)
+        self.assertEqual(len([c for c in calls if c[:2] == ("git", "fetch")]), 2)
+
+    def test_any_other_fetch_failure_fails_at_once(self):
+        import subprocess as sp
+        fetches = []
+        def fake_run(*args, **kw):
+            if args[:2] == ("git", "fetch"):
+                fetches.append(1)
+                return sp.CompletedProcess(args, 128, "", "fatal: unable to access remote")
+            return sp.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(L, "run", side_effect=fake_run), mock.patch.object(L.time, "sleep"), \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            _REAL_REFRESH()
+        self.assertEqual(len(fetches), 1)
+
+
+_REAL_REFRESH = L.refresh_main
+
