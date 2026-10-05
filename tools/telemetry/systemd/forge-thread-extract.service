@@ -1,8 +1,8 @@
 [Unit]
-Description=Harmonic Forge: extract lane markers from issue threads into telemetry, a rolling 3-day window (harmonic-forge#907)
+Description=Harmonic Forge: extract lane markers from issue threads into telemetry, a window from the last successful run (harmonic-forge#907)
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c '/usr/bin/python3 %h/harmonic-forge/tools/telemetry/extract_threads.py --since "$$(date -u -d "3 days ago" +%%Y-%%m-%%dT00:00:00Z)"'
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/telemetry/thread_extract_job.py
 StandardOutput=append:%h/Harmonic_Projects/logs/forge-thread-extract.log
 StandardError=append:%h/Harmonic_Projects/logs/forge-thread-extract.log

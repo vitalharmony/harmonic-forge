@@ -4,8 +4,8 @@
 set -euo pipefail
 # Stand down the extractor (harmonic-forge#907; the operator authorizes it):
 #   systemctl --user disable --now forge-thread-extract.timer
-# A catch-up firing before the keyring unlocks fails as an auth error and the
-# next day's run retries it; extraction is idempotent, so nothing is left partial.
+# A failed run (keyring locked, machine off for days) leaves the watermark in
+# place, so the next successful run re-covers the whole gap; extraction dedupes.
 here="$(cd "$(dirname "$0")" && pwd)"
 dest="$HOME/.config/systemd/user"
 mkdir -p "$dest"
