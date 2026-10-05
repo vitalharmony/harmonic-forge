@@ -34,6 +34,7 @@ that session had no directive entrypoint at all.
 | `rules/universal-claude.md` | Claude-Code-CLI mechanics specifically. |
 | `rules/testing-gate.md` | What a verification claim has to be backed by. |
 | `rules/lane-shorthand.md` | Lane shorthand (`L2S`/`L3F`/`H<N>`/`F<N>`), `BATCH`, and EOQ for chat and belt events. |
+| `rules/lane-tooling-reference.md` | Reference for `lane_state.py`'s derived states and BATCH's mechanics, moved out of `lane-shorthand.md` (harmonic-forge#909). Linked into no session. |
 
 The transaction-log view — recent commits on HEAD, rendered from git — is
 injected at session start; `mise run transaction-log` prints it on demand.

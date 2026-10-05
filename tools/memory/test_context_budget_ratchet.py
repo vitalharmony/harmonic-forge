@@ -220,6 +220,18 @@ class TestBaselineRoundTrip(_Repo):
         self.assertIn("a real reason", text)
         self.assertIn("total_bytes = 1200", text)
 
+    def test_a_multi_line_why_survives_a_round_trip(self):
+        """harmonic-forge#909: a rationale with newlines, quotes and a
+        backslash made --update write TOML it could not read back."""
+        why = 'line one\nsays "quoted" and C:\\path\nline three'
+        self.set_surface(**{"CLAUDE.md": 1200})
+        self.write_baseline(
+            'total_bytes = 900\n[files]\n"CLAUDE.md" = 900\n'
+            '\n[[increase]]\ndate = "2026-09-09"\nfiles = ["CLAUDE.md"]\n'
+            'bytes = 300\nwhy = """\n' + why.replace("\\", "\\\\").replace('"', '\\"') + '"""\n')
+        m.update(self.repo)
+        self.assertEqual(m.load_baseline(self.repo)["increase"][0]["why"], why)
+
     def test_a_rewritten_baseline_passes_its_own_check(self):
         self.set_surface(**{"CLAUDE.md": 900, "rules.md": 100})
         m.update(self.repo)

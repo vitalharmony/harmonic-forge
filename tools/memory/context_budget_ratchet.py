@@ -167,9 +167,24 @@ def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
             f'date = "{entry.get("date", "")}"',
             "files = [" + ", ".join(f'"{f}"' for f in entry.get("files", [])) + "]",
             f'bytes = {entry.get("bytes", 0)}',
-            f'why = "{entry.get("why", "")}"',
+            "why = " + _toml_string(str(entry.get("why", ""))),
         ])
     return "\n".join(lines) + "\n"
+
+
+def _toml_string(text: str) -> str:
+    """A TOML basic string, multi-line when `text` is. A raw newline inside a
+    single-line string is invalid TOML, so every rationale longer than a line
+    made `--update` write a baseline it could not read back (harmonic-forge#909)."""
+    escaped = text.replace("\\", "\\\\")
+    if "\n" not in text:
+        return '"' + escaped.replace('"', '\\"') + '"'
+    # Multi-line: only a run of three quotes, or a quote touching the closing
+    # delimiter, needs escaping; everything else round-trips as written.
+    escaped = escaped.replace('"""', '""\\"')
+    if escaped.endswith('"'):
+        escaped = escaped[:-1] + '\\"'
+    return f'"""\n{escaped}"""'
 
 
 def in_repo(key: str) -> bool:
