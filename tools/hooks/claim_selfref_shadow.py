@@ -47,7 +47,8 @@ MIN_SAMPLE = 15
 STATE_DIR = Path.home() / ".claude" / "state" / "claim-stop"
 SHADOW = "shadow.jsonl"
 HEARTBEAT = "heartbeat.json"
-COUNTERS = ("stops_seen", "background_tasks_present", "background_tasks_nonempty", "tests_pass_matched", "fired")
+COUNTERS = ("stops_seen", "message_present", "background_tasks_present", "background_tasks_nonempty",
+            "tests_pass_matched", "fired")
 
 
 def _tokens(text: str) -> list[str]:
@@ -60,14 +61,16 @@ def _contains(command: list[str], span: list[str]) -> bool:
 
 
 def running_tasks(tasks: object) -> list[dict]:
-    """Entries of the Stop payload's `background_tasks` whose status is not
-    terminal. A dict of arrays is flattened; anything malformed is skipped."""
+    """Entries of the Stop payload's `background_tasks` whose status is present
+    and not terminal. A missing status is not evidence of a running task, so it
+    never fires (preclose pass 1). A dict of arrays is flattened; anything
+    malformed is skipped."""
     if isinstance(tasks, dict):
         tasks = [t for value in tasks.values() if isinstance(value, list) for t in value]
     if not isinstance(tasks, list):
         return []
-    return [t for t in tasks if isinstance(t, dict)
-            and str(t.get("status") or "").strip().lower() not in ENDED_STATUSES]
+    return [t for t in tasks if isinstance(t, dict) and str(t.get("status") or "").strip()
+            and str(t.get("status")).strip().lower() not in ENDED_STATUSES]
 
 
 def selfref_match(text: object, tasks: object) -> tuple[str, str, str] | None:
@@ -103,10 +106,13 @@ def _locked(directory: Path):
 
 
 def heartbeat(payload: dict, matched_claim: bool, fired: bool, directory: Path | None = None) -> None:
-    """Bump the counters on every lane Stop. Never raises."""
+    """Bump the counters on every lane Stop. `message_present` tells "the class
+    never occurred" apart from "there was no message to inspect". Never raises."""
     directory = STATE_DIR if directory is None else directory
     tasks = payload.get("background_tasks")
-    bumps = {"stops_seen": True, "background_tasks_present": tasks is not None,
+    text = payload.get("last_assistant_message")
+    bumps = {"stops_seen": True, "message_present": isinstance(text, str) and bool(text.strip()),
+             "background_tasks_present": tasks is not None,
              "background_tasks_nonempty": bool(tasks), "tests_pass_matched": matched_claim, "fired": fired}
     try:
         with _locked(directory):
@@ -126,51 +132,75 @@ def heartbeat(payload: dict, matched_claim: bool, fired: bool, directory: Path |
         pass
 
 
-def record(lane: str, prompt_id: object, match: tuple[str, str, str], directory: Path | None = None) -> None:
-    """Append one line of exactly six fields. Never raises."""
+def _seen(path: Path, prompt_id: str) -> bool:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    needle = json.dumps(prompt_id)
+    return any(f'"prompt_id": {needle}' in line for line in lines)
+
+
+def record(lane: str, prompt_id: object, match: tuple[str, str, str], directory: Path | None = None) -> bool:
+    """Append one line of exactly six fields, at most once per prompt (one turn
+    is one observation however many Stops it takes; preclose pass 1). Returns
+    whether a line was written. Never raises."""
     directory = STATE_DIR if directory is None else directory
     claim, command, status = match
+    pid = str(prompt_id or "")
     line = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "lane": lane,
-            "prompt_id": str(prompt_id or ""), "claim": claim, "command": command, "status": status}
+            "prompt_id": pid, "claim": claim, "command": command, "status": status}
     try:
-        with _locked(directory), (directory / SHADOW).open("a", encoding="utf-8") as out:
-            out.write(json.dumps(line) + "\n")
+        with _locked(directory):
+            path = directory / SHADOW
+            if pid and _seen(path, pid):
+                return False
+            with path.open("a", encoding="utf-8") as out:
+                out.write(json.dumps(line) + "\n")
+            return True
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
 def decide(payload: object, env: dict | None = None, directory: Path | None = None) -> None:
     """Record, never decide: always None."""
     env = os.environ if env is None else env
     lane = str(env.get("LANE") or "").strip()
-    if not lane or not isinstance(payload, dict):
+    # A re-entry after another Stop hook blocked is the same turn, not a new
+    # observation: it neither counts nor records (preclose pass 1).
+    if not lane or not isinstance(payload, dict) or payload.get("stop_hook_active"):
         return None
     text = payload.get("last_assistant_message")
     match = selfref_match(text, payload.get("background_tasks"))
-    heartbeat(payload, isinstance(text, str) and bool(TESTS_PASS_RE.search(text)), match is not None, directory)
-    if match:
-        record(lane, payload.get("prompt_id"), match, directory)
+    written = bool(match) and record(lane, payload.get("prompt_id"), match, directory)
+    heartbeat(payload, isinstance(text, str) and bool(TESTS_PASS_RE.search(text)), written, directory)
     return None
 
 
 # --- measurement ----------------------------------------------------------------
 
-def _pointer(prompt_id: str, roots: list[Path]) -> str:
-    """`transcript:record` of the newest record carrying this prompt id."""
-    if not prompt_id:
-        return "(no prompt id)"
-    needle = f'"promptId":"{prompt_id}"'
-    best: tuple[float, str] | None = None
-    for root in roots:
-        for path in root.glob("*/*.jsonl"):
-            try:
-                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
+def pointers(prompt_ids: set[str], roots: list[Path]) -> dict[str, str]:
+    """`prompt_id -> transcript:record` of the newest record carrying it, from
+    ONE pass over the corpus, newest file first, stopping once every id is found
+    (preclose pass 1: a per-line rescan took ~100 s per line on 4 GB)."""
+    wanted = {p for p in prompt_ids if p}
+    found: dict[str, str] = {}
+    paths = [p for root in roots for p in root.glob("*/*.jsonl")]
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+        if not wanted - set(found):
+            break
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for number in range(len(lines), 0, -1):
+            line = lines[number - 1]
+            if '"promptId"' not in line:
                 continue
-            hits = [n for n, line in enumerate(lines, 1) if needle in line]
-            if hits and (best is None or path.stat().st_mtime > best[0]):
-                best = (path.stat().st_mtime, f"{path}:{hits[-1]}")
-    return best[1] if best else f"(prompt {prompt_id} not found in transcripts)"
+            for pid in wanted - set(found):
+                if f'"promptId":"{pid}"' in line:
+                    found[pid] = f"{path}:{number}"
+    return found
 
 
 def report(directory: Path | None = None, roots: list[Path] | None = None) -> int:
@@ -194,9 +224,12 @@ def report(directory: Path | None = None, roots: list[Path] | None = None) -> in
     print(f"claim-selfref shadow: {len(lines)} fired, "
           f"{len({str(l.get('prompt_id')) for l in lines})} distinct prompt(s)")
     print("heartbeat: " + ", ".join(f"{k}={int(counts.get(k) or 0)}" for k in COUNTERS))
+    where = pointers({str(line.get("prompt_id") or "") for line in lines}, roots)
     for line in lines:
+        pid = str(line.get("prompt_id") or "")
+        pointer = where.get(pid) or (f"(prompt {pid} not found in transcripts)" if pid else "(no prompt id)")
         print(f"- {line.get('ts')} LANE={line.get('lane')} {line.get('claim')!r} / `{line.get('command')}` "
-              f"({line.get('status')}) -> {_pointer(str(line.get('prompt_id') or ''), roots)}")
+              f"({line.get('status')}) -> {pointer}")
     print(f"sample: n={len(lines)} (source: live); promotion needs n >= {MIN_SAMPLE}, "
           "labelled by hand, combined with --replay")
     return 0

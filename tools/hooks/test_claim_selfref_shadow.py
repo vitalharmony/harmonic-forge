@@ -97,8 +97,34 @@ class Heartbeat(StateDir):
         self.decide("Working on it.", [])
         self.decide("Tests pass.", None)
         self.decide(INCIDENT)
-        self.assertEqual(self.counts(), {"stops_seen": 3, "background_tasks_present": 2,
-                                         "background_tasks_nonempty": 1, "tests_pass_matched": 2, "fired": 1})
+        self.decide(None, RUNNING)
+        self.assertEqual(self.counts(), {"stops_seen": 4, "message_present": 3, "background_tasks_present": 3,
+                                         "background_tasks_nonempty": 2, "tests_pass_matched": 2, "fired": 1})
+
+
+class OneObservationPerTurn(StateDir):
+    """Preclose pass 1: a re-Stop after another hook blocked is the same turn."""
+
+    def test_a_reentry_neither_counts_nor_records(self) -> None:
+        self.decide(INCIDENT)
+        for _ in range(3):
+            self.decide(INCIDENT, stop_hook_active=True)
+        self.assertEqual(len(self.shadow()), 1)
+        self.assertEqual(self.counts()["stops_seen"], 1)
+
+    def test_a_second_stop_of_the_same_prompt_records_no_second_line(self) -> None:
+        self.decide(INCIDENT)
+        self.decide(INCIDENT)
+        self.decide(INCIDENT, prompt_id="p-2")
+        self.assertEqual([l["prompt_id"] for l in self.shadow()], ["p-1", "p-2"])
+        self.assertEqual(self.counts()["fired"], 2)
+
+
+class MissingStatus(StateDir):
+    def test_a_task_without_a_status_is_not_evidence_of_a_running_task(self) -> None:
+        for task in ({"command": RUNNING[0]["command"]}, {**RUNNING[0], "status": ""}, {**RUNNING[0], "status": None}):
+            with self.subTest(task=task):
+                self.assertIsNone(hook.selfref_match(INCIDENT, [task]))
 
 
 class NonShellTasks(StateDir):
@@ -138,6 +164,22 @@ class AC4Report(StateDir):
         self.assertIn(f"{projects / 't.jsonl'}:2", text)
         self.assertIn("sample: n=1 (source: live)", text)
         self.assertEqual({p.name: p.read_bytes() for p in self.dir.iterdir()}, before)
+
+    def test_pointers_read_the_corpus_once_and_stop_when_every_id_is_found(self) -> None:
+        root = Path(self.tmp.name) / "projects"
+        (root / "-a").mkdir(parents=True)
+        (root / "-b").mkdir()
+        old, new = root / "-a" / "old.jsonl", root / "-b" / "new.jsonl"
+        old.write_text('{"promptId":"p-1"}\n{"promptId":"p-2"}\n')
+        new.write_text('{"promptId":"p-1"}\n{"x":1}\n{"promptId":"p-1"}\n')
+        os.utime(old, (1, 1))
+        reads = []
+        real = Path.read_text
+        with patch.object(Path, "read_text", lambda self, *a, **k: reads.append(self.name) or real(self, *a, **k)):
+            found = hook.pointers({"p-1"}, [root])
+        self.assertEqual(found, {"p-1": f"{new}:3"})
+        self.assertEqual(reads, ["new.jsonl"])
+        self.assertEqual(hook.pointers({"p-1", "p-2"}, [root]), {"p-1": f"{new}:3", "p-2": f"{old}:2"})
 
     def test_report_on_an_empty_state_directory_says_zero(self) -> None:
         out = io.StringIO()
