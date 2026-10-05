@@ -1019,7 +1019,7 @@ id = "R-0118"
 file = "rules/lane-shorthand.md"
 anchor = "batch-preauthorize"
 statement = "authorize() and the command it authorizes must be separate tool calls, because a PreToolUse hook evaluates a bundled command's full text before any of it runs."
-text_sha = "e6e66b59ce65d331"
+text_sha = "1db2bde34cabaab2"
 hooks = [
   { script = "batch_gate.py", events = ["PreToolUse"], wired_in = ["HRSE2", "HRSE2-lane2", "HRSE2-lane3", "forge", "forge-lane3", "user-global"] },
 ]
@@ -2234,8 +2234,8 @@ hooks = [{ script = "tools/hooks/expand_lane_shorthand.py", events = ["UserPromp
 id = "R-0342"
 file = "rules/lane-shorthand.md"
 anchor = "batch"
-statement = "A gh pr merge carries no issue number, so it is authorized only via a recorded link-pr; when a merge or close is refused the prompt names which of four states applies -- no authorization, expired, consumed, or PR not linked."
-text_sha = "9299f1c2a2858706"
+statement = "A gh pr merge carries no issue number, so it is authorized only via a recorded link-pr; when a merge is refused the prompt names which of four states applies -- no authorization, expired, consumed, or PR not linked."
+text_sha = "a18d6dc818d665a0"
 hooks = [{ script = "tools/hooks/batch_auth.py", events = ["PreToolUse"], wired_in = "project settings" }]
 
 [[rule]]

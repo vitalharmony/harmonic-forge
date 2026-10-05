@@ -11,8 +11,10 @@ of the closed-without-authorization pattern, this one via a new
 mechanism).
 
 Only fires on `gh pr create`, `gh pr edit`, `gh issue comment`,
-`gh issue edit`, and `gh api ... -X PATCH .../comments/...` — the
-Bash commands whose string arguments can carry a closing keyword.
+`gh issue edit`, and any `gh api` call (a REST call of any method can create
+a PR or a comment) — the Bash commands whose string arguments can carry a
+closing keyword. Both reference forms are denied: `#N` and the issue URL
+(harmonic-forge#911 preclose).
 Non-closing references (Implements/Part of/Refs #N) are unaffected.
 
 ## No BATCH exception (harmonic-forge#911)
@@ -34,8 +36,16 @@ CLOSING_KEYWORD = re.compile(
     r"\s+(?P<repo>[\w.-]+/[\w.-]+)?#(?P<number>\d+)"
 )
 
+#: The URL form GitHub also honors. Mirrors
+#: `tools/hooks/block_undetermined_phase_close.py`'s `CLOSING_KEYWORD_URL`;
+#: kept separate so `CLOSING_KEYWORD` stays byte-identical to that file's copy.
+CLOSING_KEYWORD_URL = re.compile(
+    r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+    r"\s+https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
+)
+
 RELEVANT_COMMAND = re.compile(
-    r"(?i)\bgh\s+(pr\s+(create|edit)|issue\s+(comment|edit)|api\b.*-X\s*PATCH)"
+    r"(?i)\bgh\s+(pr\s+(create|edit)|issue\s+(comment|edit)|api\b)"
 )
 
 def main() -> None:
@@ -54,7 +64,7 @@ def main() -> None:
         print(json.dumps({}))
         return
 
-    matches = list(CLOSING_KEYWORD.finditer(command))
+    matches = [*CLOSING_KEYWORD.finditer(command), *CLOSING_KEYWORD_URL.finditer(command)]
     if not matches:
         print(json.dumps({}))
         return

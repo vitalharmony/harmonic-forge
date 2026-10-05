@@ -211,7 +211,7 @@ now, suspending #1675"`.
 
 Grammar: **`BATCH` + comma-separated repo-prefixed issue tokens**, e.g.
 `BATCH H767,H1108,F316,F329`. The authorization is automatic (R-0341 below),
-lasts 12 hours, and reads no `--ttl` or other flag.
+lasts 12 hours, and reads no flags.
 
 Direction: operator → the session it's said to, in a genuine chat message.
 
@@ -244,8 +244,8 @@ F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
 A `gh pr merge <PR#>` still needs its PR linked to the issue — the command
 carries no issue number, so nothing else can resolve it. `link-pr` has no
 automatic caller, and a missing call costs one Ask prompt per merge. When a
-merge or close is refused, the prompt now names which of the four states
-applies: no authorization, expired, already consumed, or PR not linked.
+merge is refused, the prompt now names which of the four states applies:
+no authorization, expired, already consumed, or PR not linked.
 <!-- /R-0342 -->
 
 **Standing a grant down, and how the state file's own size is bounded**
@@ -281,7 +281,7 @@ instruction.
 - `authorize()` and the command it authorizes must be **separate tool
   calls**. A `PreToolUse` hook evaluates a bundled multi-line command's
   full text before any of it executes, so bundling `authorize` and the
-  now-authorized `close`/`merge` into one call defeats the mechanism — the
+  now-authorized merge into one call defeats the mechanism — the
   hook sees no live entry yet and asks, correctly, even though the
   authorize line runs (harmlessly) right after.
 <!-- /R-0118 -->

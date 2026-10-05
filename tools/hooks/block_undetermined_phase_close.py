@@ -37,8 +37,13 @@ the PR body, its commit messages, or the merge command's own
 `--body`/`-b`/`--subject` values) to a `phase`/`epic` issue -- NOT
 through branch-name resolution the way the sibling hook does, because
 this control is specifically about the keyword auto-close path
-(`hrse#1811`/PR #1813, `harmonic-forge#640`/PR #641 are both live
-examples under the BATCH exception, harmonic-forge#612).
+(`hrse#1811`/PR #1813 and `harmonic-forge#640`/PR #641 went through it under
+harmonic-forge#612's BATCH exception). harmonic-forge#911 retired that
+exception: `tools/gh/block_closing_keywords.py` now denies a closing keyword
+written into a PR body or comment, so the PR-body and commit-message limbs
+here are reached only by text written before #911. The merge command's own
+`--body`/`-b`/`--subject` values stay a live trigger, because that hook's
+`RELEVANT_COMMAND` does not cover `gh pr merge`.
 
 **It does not and cannot prevent the merge or close.** Fail-open by
 design, same rationale as every sibling hook: it sees nothing of `gh api

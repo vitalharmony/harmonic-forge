@@ -182,10 +182,14 @@ class RealDocTests(unittest.TestCase):
         end = doc.find("\n## ", start + 1)
         section = doc[start:end if end != -1 else len(doc)]
         self.assertNotIn("gh issue close", section)
-        self.assertIsNone(re.search(r"--ttl\s+[<\d]", section), "offers a --ttl override")
-        hours = {int(h) for h in re.findall(r"\b(\d+)[- ]hours?\b", section)}
-        self.assertTrue(hours, "the section states no window")
-        self.assertEqual(hours, {int(batch_auth.DEFAULT_TTL_HOURS)})
+        self.assertNotIn("--ttl", section)
+        # Every "<word> hour(s)" names the one window; a spelled-out or
+        # different number fails (harmonic-forge#911 preclose).
+        number = (r"\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+                  r"twelve|twenty[\w-]*|thirty[\w-]*|forty[\w-]*|forty-eight")
+        windows = re.findall(rf"\b({number})[- ]hours?\b", section, flags=re.I)
+        self.assertTrue(windows, "the section states no window")
+        self.assertEqual(set(windows), {str(int(batch_auth.DEFAULT_TTL_HOURS))})
         self.assertEqual(batch_auth.DEFAULT_ACTIONS, ("gh pr merge",))
 
     def test_l_prefix_never_treated_as_repo_prefix(self) -> None:
