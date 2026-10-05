@@ -192,7 +192,18 @@ _l1_tools_ensure() {
   # provisioned marker (one created before #905, or interrupted mid-provision).
   # worktree-provision is idempotent and never replaces a real file.
   if [ -n "$provision" ] && { [ -n "$created" ] || ! _l1_tools_provisioned "$path"; }; then
-    if ! ( cd "$path" && eval "${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}" ) >/dev/null 2>&1; then
+    local prov_err
+    if ! prov_err="$( ( cd "$path" && eval "${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}" ) 2>&1 )"; then
+      # harmonic-forge#905 preclose pass 2 (sticky-wicket PATCH): the
+      # destructive handler below was written for a worktree THIS call just
+      # created, with nothing to lose. An EXISTING worktree that merely lacks
+      # the marker (every one created before #905) is left in place: warn,
+      # write no marker (so a later call retries the provision), and proceed.
+      # A genuinely missing dependency then surfaces at l1_post.py's own
+      # dependency check, which names the missing path.
+      if [ -z "$created" ]; then
+        echo "l1_tools_env: re-provisioning existing $path failed; leaving it in place, unmarked: ${prov_err##*$'\n'}" >&2
+      else
       # A failed `worktree remove` here (locked, transient) must not leave a
       # registered-but-unprovisioned worktree at $path: the next call's
       # `[ -e "$path/.git" ]` would then be true and take the checkout
@@ -205,8 +216,10 @@ _l1_tools_ensure() {
       fi
       echo "l1_tools_env: provisioning $path failed -- removed it; the next call retries" >&2
       exec {fd}>&-; return 1
+      fi
+    else
+      _l1_tools_mark_provisioned "$path" || rc=$?
     fi
-    _l1_tools_mark_provisioned "$path" || rc=$?
   fi
   # Downgrade to a SHARED lock and keep the fd open for the caller's lifetime
   # (inherited by the tool it runs): a concurrent call's exclusive refresh

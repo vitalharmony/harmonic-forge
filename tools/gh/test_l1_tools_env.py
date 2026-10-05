@@ -384,5 +384,26 @@ class FetchRetry(unittest.TestCase):
             self.assertIn("cannot lock ref", proc.stderr)
 
 
+class ExistingWorktreeProvisionFailure(unittest.TestCase):
+    """harmonic-forge#905 preclose pass 2: a healthy, pre-marker worktree whose
+    re-provision fails is left in place, unmarked, and the call succeeds."""
+
+    def test_a_failed_reprovision_never_destroys_an_existing_worktree(self):
+        with _Tree() as t:
+            t.run()  # created + provisioned + marked
+            gitdir = Path(_git(t.project_wt, "rev-parse", "--absolute-git-dir"))
+            (gitdir / "l1-tools-provisioned").unlink()  # a pre-#905 worktree
+            env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                       L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                       L1_TOOLS_PROVISION_CMD="false")
+            proc = subprocess.run(
+                ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{t.project}"'],
+                env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((t.project_wt / ".git").exists(), "the existing worktree was destroyed")
+            self.assertFalse((gitdir / "l1-tools-provisioned").exists(), "a failed provision must not mark")
+            self.assertIn("leaving it in place", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
