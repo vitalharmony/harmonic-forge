@@ -2145,7 +2145,7 @@ hooks = []
 
 [[rule]]
 id = "R-0331"
-file = "rules/lane-shorthand.md"
+file = "rules/lane-tooling-reference.md"
 anchor = "derived-lane-states"
 statement = "gate.ae-without-sweep is an abnormal partial transition, not a waypoint: R-0208 makes AE and sweep one atomic action, and the state names Lane 1 as the sweep's owner."
 text_sha = "95df70f461e20ce6"
@@ -2153,7 +2153,7 @@ hooks = []
 
 [[rule]]
 id = "R-0332"
-file = "rules/lane-shorthand.md"
+file = "rules/lane-tooling-reference.md"
 anchor = "derived-lane-states"
 statement = "gate.executable covers both a fresh AE+sweep pair and that authorization carried forward onto a new SHA by a ready-for-l3 after a FAIL (R-0209); demanding a fresh AE there blocks correctly-authorized work."
 text_sha = "a57d491fcff9716e"
@@ -2161,7 +2161,7 @@ hooks = []
 
 [[rule]]
 id = "R-0333"
-file = "rules/lane-shorthand.md"
+file = "rules/lane-tooling-reference.md"
 anchor = "derived-lane-states"
 statement = "Lane-state authority is the l1-post kind= footer, never a heading; headings are a cross-check whose disagreement is reported as validated=False. l2_post.py now stamps that footer on every kind (harmonic-forge#583); the Lane 3 Test Spec/Gate Results footer status is unconfirmed by that change."
 text_sha = "225bb72cb9361929"
@@ -2169,7 +2169,7 @@ hooks = []
 
 [[rule]]
 id = "R-0334"
-file = "rules/lane-shorthand.md"
+file = "rules/lane-tooling-reference.md"
 anchor = "derived-lane-states"
 statement = "A marker quoted as evidence is never a transition: fenced blocks are stripped before any marker is read, footers included."
 text_sha = "7d243cc240241a05"
@@ -2193,8 +2193,8 @@ hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-
 
 [[rule]]
 id = "R-0337"
-file = "rules/lane-shorthand.md"
-anchor = "derived-lane-states"
+file = "rules/lane-tooling-reference.md"
+anchor = "kind-rework"
 statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework, never as ordinary discussion; it renders the same Fix H<N> trigger as a gate FAIL under a distinct l1.rework key."
 text_sha = "76979902e0659a26"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind rework"], wired_in = "hrse" }]

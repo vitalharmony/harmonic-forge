@@ -129,6 +129,50 @@ def _imports_of(claude_md: Path) -> list[Path]:
     return found
 
 
+class PlatformRulesError(RuntimeError):
+    """`sync_rules.py` exists but its rule list cannot be read. Measuring on
+    regardless would fall back to following the links, which in a platform
+    worktree measures another checkout: the failure #909 fixed."""
+
+
+def _platform_rule_sources(repo: Path) -> dict[str, Path]:
+    """`{name: repo/rules/name}` for each rule `sync_rules.py` links into a
+    session, when `repo` is the platform itself; empty for a consuming repo,
+    whose links rightly measure the platform checkout they point at.
+
+    Read with `ast`, never imported: measuring must not execute the repo. Any
+    `sync_rules.py` whose list cannot be read is an error, never `{}`."""
+    script = repo / "sync_rules.py"
+    if not script.is_file():
+        return {}
+    import ast  # noqa: PLC0415
+    try:
+        tree = ast.parse(script.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        raise PlatformRulesError(f"{script} does not parse: {exc}") from exc
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            named = any(isinstance(t, ast.Name) and t.id == "UNIVERSAL_RULE_FILES" for t in node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            named = isinstance(node.target, ast.Name) and node.target.id == "UNIVERSAL_RULE_FILES"
+        else:
+            continue
+        if not named:
+            continue
+        try:
+            names = ast.literal_eval(node.value)
+        except (ValueError, TypeError) as exc:
+            raise PlatformRulesError(
+                f"{script}: UNIVERSAL_RULE_FILES is not a literal list") from exc
+        if not (isinstance(names, (list, tuple)) and all(isinstance(n, str) for n in names)):
+            raise PlatformRulesError(f"{script}: UNIVERSAL_RULE_FILES is not a list of names")
+        missing = [n for n in names if not (repo / "rules" / n).is_file()]
+        if missing:
+            raise PlatformRulesError(f"{script} declares rules with no rules/ file: {missing}")
+        return {n: repo / "rules" / n for n in names}
+    raise PlatformRulesError(f"{script} declares no UNIVERSAL_RULE_FILES")
+
+
 def surface(repo: Path) -> list[tuple[str, Path, int]]:
     """`(category, path, bytes)` for everything injected at session start."""
     rows: list[tuple[str, Path, int]] = []
@@ -156,10 +200,20 @@ def surface(repo: Path) -> list[tuple[str, Path, int]]:
     # same as being loaded.
 
     rules_dir = repo / ".claude" / "rules"
+    own = _platform_rule_sources(repo)
     if rules_dir.is_dir():
         for rule in sorted(rules_dir.rglob("*.md")):
+            if rule.name in own:
+                continue
             if not _is_path_scoped(rule):
                 add("unscoped rule", rule)
+    for name, source in sorted(own.items()):
+        if not _is_path_scoped(source):
+            # Keyed by the link path a session loads, measured from this
+            # checkout's own file: in a platform worktree the link points at
+            # the main checkout, so following it measured another branch's
+            # copy and the gate never saw this one (harmonic-forge#909).
+            rows.append(("unscoped rule", rules_dir / name, source.stat().st_size))
 
     store = resolve_store(repo)
     index = store / "MEMORY.md"

@@ -167,9 +167,35 @@ def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
             f'date = "{entry.get("date", "")}"',
             "files = [" + ", ".join(f'"{f}"' for f in entry.get("files", [])) + "]",
             f'bytes = {entry.get("bytes", 0)}',
-            f'why = "{entry.get("why", "")}"',
+            "why = " + _toml_string(str(entry.get("why", ""))),
         ])
     return "\n".join(lines) + "\n"
+
+
+def _toml_string(text: str) -> str:
+    """A TOML basic string, multi-line when `text` is. A raw newline inside a
+    single-line string is invalid TOML, so every rationale longer than a line
+    made `--update` write a baseline it could not read back (harmonic-forge#909).
+
+    One pass decides each character once: a backslash doubles, a control
+    character other than newline and tab becomes `\\uXXXX`, and in the
+    multi-line form a quote is escaped only when it would otherwise start a
+    `\"\"\"` run or touch the closing delimiter."""
+    multi = "\n" in text
+    out = []
+    for i, ch in enumerate(text):
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch in "\n\t" and (multi or ch == "\t"):
+            out.append(ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04x}")
+        elif ch == '"' and (not multi or text.startswith('""', i + 1) or i == len(text) - 1):
+            out.append('\\"')
+        else:
+            out.append(ch)
+    body = "".join(out)
+    return f'"""\n{body}"""' if multi else f'"{body}"'
 
 
 def in_repo(key: str) -> bool:
