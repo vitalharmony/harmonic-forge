@@ -164,7 +164,12 @@ def _platform_rule_sources(repo: Path) -> dict[str, Path]:
         except (ValueError, TypeError) as exc:
             raise PlatformRulesError(
                 f"{script}: UNIVERSAL_RULE_FILES is not a literal list") from exc
-        return {n: repo / "rules" / n for n in names if (repo / "rules" / n).is_file()}
+        if not (isinstance(names, (list, tuple)) and all(isinstance(n, str) for n in names)):
+            raise PlatformRulesError(f"{script}: UNIVERSAL_RULE_FILES is not a list of names")
+        missing = [n for n in names if not (repo / "rules" / n).is_file()]
+        if missing:
+            raise PlatformRulesError(f"{script} declares rules with no rules/ file: {missing}")
+        return {n: repo / "rules" / n for n in names}
     raise PlatformRulesError(f"{script} declares no UNIVERSAL_RULE_FILES")
 
 

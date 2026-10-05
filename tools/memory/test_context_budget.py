@@ -193,7 +193,9 @@ class PlatformOwnRulesTests(SurfaceTestBase):
 
     def test_an_unreadable_declaration_is_an_error_not_a_fallback(self) -> None:
         for text in ('UNIVERSAL_RULE_FILES = sorted(["shared.md"])\n',
-                     "OTHER = []\n", "def broken(:\n"):
+                     "OTHER = []\n", "def broken(:\n",
+                     'UNIVERSAL_RULE_FILES = "shared.md"\n',
+                     'UNIVERSAL_RULE_FILES = ["shared.md", "gone.md"]\n'):
             with self.subTest(text=text):
                 self.write("sync_rules.py", text)
                 with self.assertRaises(cb.PlatformRulesError):
