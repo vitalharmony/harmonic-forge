@@ -41,6 +41,22 @@ def _advance(main: Path) -> str:
     return _git(main, "rev-parse", "HEAD")
 
 
+def _advance_elsewhere(root: Path, main: Path) -> None:
+    """Push a new commit to `main`'s origin from a SEPARATE clone, so `main`'s
+    own refs/remotes/origin/main is behind and its next fetch must write it."""
+    origin = _git(main, "remote", "get-url", "origin")
+    other = root / f"other-{main.name}"
+    if not other.exists():
+        _git(root, "clone", "-q", origin, str(other))
+        _git(other, "config", "user.email", "t@example.invalid")
+        _git(other, "config", "user.name", "T")
+    _git(other, "pull", "-q", "origin", "main")
+    (other / "ELSEWHERE.md").write_text(str(len(list(other.iterdir()))))
+    _git(other, "add", "ELSEWHERE.md")
+    _git(other, "commit", "-q", "-m", "elsewhere")
+    _git(other, "push", "-q", "origin", "main")
+
+
 class _Tree:
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -245,6 +261,148 @@ class L1ToolsEnv(unittest.TestCase):
             t.run()
             after = (_git(t.project, "rev-parse", "HEAD"), _git(t.project, "status", "--porcelain"))
             self.assertEqual(before, after)
+
+
+class FastPath(unittest.TestCase):
+    """harmonic-forge#905 AC2: a ready worktree takes only a shared lock, so a
+    second call never waits on a running post; a call that must write still waits."""
+
+    def _consumer(self, t):
+        ready, release = t.root / "ready", t.root / "release"
+        env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                   L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                   L1_TOOLS_PROVISION_CMD="true")
+        proc = subprocess.Popen(
+            ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{t.project}" '
+                           f'&& touch "{ready}" && while [ ! -e "{release}" ]; do sleep 0.05; done'],
+            env=env)
+        for _ in range(400):
+            if ready.exists():
+                break
+            threading.Event().wait(0.05)
+        self.assertTrue(ready.exists(), "consumer never became ready")
+        return proc, release
+
+    def _second(self, t, timeout):
+        env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                   L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                   L1_TOOLS_PROVISION_CMD=f"sh -c 'pwd >> {t.provisioned}'")
+        return subprocess.run(
+            ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{t.project}"'],
+            env=env, capture_output=True, text=True, timeout=timeout)
+
+    def test_a_ready_worktree_does_not_wait_on_a_running_post(self):
+        with _Tree() as t:
+            t.run()  # create + provision once
+            proc, release = self._consumer(t)
+            try:
+                second = self._second(t, timeout=15)
+                self.assertEqual(second.returncode, 0, second.stderr)
+            finally:
+                release.write_text("")
+                proc.wait(timeout=30)
+
+    def test_a_worktree_that_must_move_still_waits_for_the_running_post(self):
+        with _Tree() as t:
+            t.run()
+            proc, release = self._consumer(t)
+            try:
+                _advance(t.project)  # origin/main moves: the next call must check out
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    self._second(t, timeout=3)
+            finally:
+                release.write_text("")
+                proc.wait(timeout=30)
+            after = self._second(t, timeout=30)
+            self.assertEqual(after.returncode, 0, after.stderr)
+            self.assertEqual(_git(t.project_wt, "rev-parse", "HEAD"),
+                             _git(t.project, "rev-parse", "HEAD"))
+
+    def test_a_missing_provision_marker_reprovisions_on_the_exclusive_path(self):
+        with _Tree() as t:
+            t.run()
+            self.assertEqual(len(t.provisioned.read_text().splitlines()), 1)
+            gitdir = Path(_git(t.project_wt, "rev-parse", "--absolute-git-dir"))
+            (gitdir / "l1-tools-provisioned").unlink()
+            second = self._second(t, timeout=30)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(len(t.provisioned.read_text().splitlines()), 2)
+            self.assertTrue((gitdir / "l1-tools-provisioned").exists())
+
+    def test_a_ready_call_does_not_reprovision(self):
+        with _Tree() as t:
+            t.run()
+            t.run()
+            self.assertEqual(len(t.provisioned.read_text().splitlines()), 1)
+
+    def test_four_concurrent_calls_with_overlapping_fetches_all_succeed(self):
+        with _Tree() as t:
+            t.run()
+            _advance(t.project)
+            results = []
+            threads = [threading.Thread(target=lambda: results.append(t.run())) for _ in range(4)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            self.assertEqual([r.returncode for r in results], [0, 0, 0, 0],
+                             [r.stderr for r in results])
+
+
+class FetchRetry(unittest.TestCase):
+    """harmonic-forge#905 preclose F2: a ref-lock collision with another
+    process's fetch is retried, not fatal."""
+
+    def test_a_held_origin_main_lock_is_retried_until_released(self):
+        with _Tree() as t:
+            t.run()
+            _advance_elsewhere(t.root, t.project)
+            lock = t.project / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+            lock.write_text("held by another fetch\n")
+            timer = threading.Timer(1.5, lambda: lock.unlink(missing_ok=True))
+            timer.start()
+            try:
+                proc = t.run()
+            finally:
+                timer.cancel()
+                lock.unlink(missing_ok=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(_git(t.project_wt, "rev-parse", "HEAD"),
+                             _git(t.project, "rev-parse", "origin/main"))
+
+    def test_a_persistent_lock_still_fails_with_the_git_message(self):
+        with _Tree() as t:
+            t.run()
+            _advance_elsewhere(t.root, t.project)
+            lock = t.project / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+            lock.write_text("stuck\n")
+            try:
+                proc = t.run()
+            finally:
+                lock.unlink(missing_ok=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("cannot lock ref", proc.stderr)
+
+
+class ExistingWorktreeProvisionFailure(unittest.TestCase):
+    """harmonic-forge#905 preclose pass 2: a healthy, pre-marker worktree whose
+    re-provision fails is left in place, unmarked, and the call succeeds."""
+
+    def test_a_failed_reprovision_never_destroys_an_existing_worktree(self):
+        with _Tree() as t:
+            t.run()  # created + provisioned + marked
+            gitdir = Path(_git(t.project_wt, "rev-parse", "--absolute-git-dir"))
+            (gitdir / "l1-tools-provisioned").unlink()  # a pre-#905 worktree
+            env = dict(os.environ, HARMONIC_FORGE_ROOT=str(t.forge),
+                       L1_TOOLS_WORKTREE_ROOT=str(t.wt_root),
+                       L1_TOOLS_PROVISION_CMD="false")
+            proc = subprocess.run(
+                ["bash", "-c", f'source "{HELPER}" && l1_tools_env "{t.project}"'],
+                env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((t.project_wt / ".git").exists(), "the existing worktree was destroyed")
+            self.assertFalse((gitdir / "l1-tools-provisioned").exists(), "a failed provision must not mark")
+            self.assertIn("leaving it in place", proc.stderr)
 
 
 if __name__ == "__main__":

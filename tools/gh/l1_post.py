@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1606,6 +1607,12 @@ def _source_repo_is_hrse(repo_root: Path) -> bool:
     return bool(re.search(r"github\.com[:/]vitalharmony/hrse$", normalized))
 
 
+def _is_ref_lock_collision(stderr: str) -> bool:
+    """harmonic-forge#905: git's wording when another process holds a ref lock."""
+    text = stderr or ""
+    return "cannot lock ref" in text or ".lock': File exists" in text
+
+
 def refresh_main() -> str:
     """Fetch `origin/main` and return its SHA. Fails closed (a private-repo incident).
 
@@ -1627,7 +1634,15 @@ def refresh_main() -> str:
     unestablished base being treated as a verified one. That is the same
     posture every other check in this module takes.
     """
+    # harmonic-forge#905 preclose F2: another session's wrapper fetch can hold
+    # the same ref lock for a moment. A ref-lock collision is transient, so it
+    # is retried; any other fetch failure still fails closed at once.
     fetched = run("git", "fetch", "origin", "main")
+    for delay in (0.5, 1.0, 2.0, 4.0):
+        if not fetched.returncode or not _is_ref_lock_collision(fetched.stderr):
+            break
+        time.sleep(delay)
+        fetched = run("git", "fetch", "origin", "main")
     if fetched.returncode:
         fail(
             "cannot fetch origin/main, so the attested SHA's base cannot be "
@@ -1847,6 +1862,16 @@ def _post_kind(
     recorded."""
     local_check_timing: tuple[str, str] | None = None
     if kind == "ready-for-l3":
+        # harmonic-forge#905: the same read-only world checks, once as a
+        # fail-fast pre-flight, so an overlap or a moved branch refuses in
+        # seconds instead of after a full `mise run check`. The call below,
+        # immediately before publication, still gates: state can change
+        # during the suite. `ack_overlap` must be passed here too, or every
+        # acknowledged overlap would refuse at the pre-flight. It is preceded by
+        # the same fetch static_checks makes, so it never reads a stale
+        # origin/main (an unfetched ref hides an already-merged sibling).
+        refresh_main()  # preclose F1: the pre-flight must read a fresh origin/main
+        world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
         checks, local_check_timing, check = static_checks(sha, branch)
         if attempt is not None:
             attempt["local_check_result"] = check["result"]

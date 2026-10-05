@@ -58,6 +58,41 @@ l1_tools_env() {
   _L1_TOOLS_LOCKED=1
 }
 
+# harmonic-forge#905 -- the provisioned marker lives in the worktree's PRIVATE
+# git dir, so a checkout never touches it and `worktree remove` deletes it with
+# the worktree. It is written only after a provision succeeds, so its presence
+# means "provisioned", for any project, without naming that project's paths.
+_l1_tools_marker() {
+  local gitdir
+  gitdir="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  printf '%s/l1-tools-provisioned\n' "$gitdir"
+}
+_l1_tools_provisioned() {
+  local marker
+  marker="$(_l1_tools_marker "$1")" && [ -e "$marker" ]
+}
+_l1_tools_mark_provisioned() {
+  local marker
+  marker="$(_l1_tools_marker "$1")" && : > "$marker"
+}
+
+# _l1_tools_ready <source-repo> <worktree-path> <provision|""> -- true when the
+# worktree needs no write: it exists, sits on the freshly fetched origin/main,
+# has no tracked changes and, when it is provisioned, carries the marker.
+# Accepted residue (harmonic-forge#905): a call that only ever takes this path
+# never runs `git worktree prune`, so dangling registrations and `.stale-*`
+# directories are cleaned only on an exclusive pass.
+_l1_tools_ready() {
+  local src="$1" path="$2" provision="$3" head main
+  [ -e "$path/.git" ] || return 1
+  head="$(git -C "$path" rev-parse HEAD 2>/dev/null)" || return 1
+  main="$(git -C "$src" rev-parse origin/main 2>/dev/null)" || return 1
+  [ "$head" = "$main" ] || return 1
+  [ -z "$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 1
+  if [ -n "$provision" ]; then _l1_tools_provisioned "$path" || return 1; fi
+  return 0
+}
+
 # _l1_tools_ensure <source-repo> <worktree-path> <provision|""> -- create,
 # repair or refresh one tools worktree, serialized on its own flock. Only ever
 # writes inside <worktree-path> (plus the source repo's own ref store via
@@ -66,15 +101,55 @@ l1_tools_env() {
 _l1_tools_ensure() {
   local src="$1" path="$2" provision="$3"
   local lock="${path%/*}/.$(basename "$path").lock"
-  local fd rc=0 created=""
-  exec {fd}>"$lock" || return 1
-  flock "$fd" || { exec {fd}>&-; return 1; }
+  local fetch_lock="${path%/*}/.$(basename "$path").fetch.lock"
+  local fd ffd rc=0 created=""
 
+  # harmonic-forge#905: the fetch takes its OWN short exclusive lock, released
+  # as soon as it returns, so it never waits on a running post's caller-lifetime
+  # shared lock below. It still serializes fetches into $src: two concurrent
+  # fetches can contend on a ref lock, and any fetch failure here is fatal to
+  # the post. Auto-maintenance is off, because `git maintenance run --auto`
+  # (and gc's `worktree prune`) would touch the worktree registry a concurrent
+  # caller's add/remove is mutating.
   # All refs, not just main: ready-for-l3 needs a freshly pushed Lane 2
   # branch's commit locally to compute its merge-base with origin/main.
-  if ! GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$src" fetch -q --prune origin; then
-    echo "l1_tools_env: git fetch failed in $src -- cannot bring $path to origin/main" >&2
-    exec {fd}>&-; return 1
+  exec {ffd}>"$fetch_lock" || return 1
+  flock "$ffd" || { exec {ffd}>&-; return 1; }
+  # The fetch lock excludes other wrappers but not l1_post.py's own
+  # `git fetch origin main` (harmonic-forge#905 preclose F2), so a ref-lock
+  # collision is retried; any other failure stays fatal.
+  local attempt ferr fetched=""
+  for attempt in 1 2 3 4 5; do
+    if ferr="$(GIT_TERMINAL_PROMPT=0 timeout 60 git -c gc.auto=0 -c maintenance.auto=false \
+         -C "$src" fetch -q --prune origin 2>&1)"; then
+      fetched=1; break
+    fi
+    case "$ferr" in
+      *"cannot lock ref"*|*".lock': File exists"*) sleep "$attempt" ;;
+      *) break ;;
+    esac
+  done
+  if [ -z "$fetched" ]; then
+    echo "l1_tools_env: git fetch failed in $src -- cannot bring $path to origin/main: $ferr" >&2
+    exec {ffd}>&-; return 1
+  fi
+  exec {ffd}>&-
+
+  # harmonic-forge#905: decide under a SHARED lock (a concurrent exclusive
+  # refresh holds it off, so nothing moves under the read). A ready worktree
+  # needs no write, so it keeps the shared lock and returns without waiting on
+  # any running post. Only a worktree that needs a write upgrades to exclusive,
+  # and re-checks there, because an unlock-then-lock upgrade is not atomic.
+  exec {fd}>"$lock" || return 1
+  flock -s "$fd" || { exec {fd}>&-; return 1; }
+  if _l1_tools_ready "$src" "$path" "$provision"; then
+    return 0
+  fi
+  flock -u "$fd"
+  flock "$fd" || { exec {fd}>&-; return 1; }
+  if _l1_tools_ready "$src" "$path" "$provision"; then
+    flock -s "$fd" || { exec {fd}>&-; return 1; }
+    return 0
   fi
 
   if [ -e "$path/.git" ] \
@@ -113,8 +188,22 @@ _l1_tools_ensure() {
   # every Tier 1 run at l1_post.py's dependency-directory check. A failed
   # provision removes the worktree it just created, so the next call creates
   # and provisions again instead of reusing an unprovisioned one.
-  if [ -n "$created" ] && [ -n "$provision" ]; then
-    if ! ( cd "$path" && eval "${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}" ) >/dev/null 2>&1; then
+  # harmonic-forge#905: also provision an existing worktree that carries no
+  # provisioned marker (one created before #905, or interrupted mid-provision).
+  # worktree-provision is idempotent and never replaces a real file.
+  if [ -n "$provision" ] && { [ -n "$created" ] || ! _l1_tools_provisioned "$path"; }; then
+    local prov_err
+    if ! prov_err="$( ( cd "$path" && eval "${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}" ) 2>&1 )"; then
+      # harmonic-forge#905 preclose pass 2 (sticky-wicket PATCH): the
+      # destructive handler below was written for a worktree THIS call just
+      # created, with nothing to lose. An EXISTING worktree that merely lacks
+      # the marker (every one created before #905) is left in place: warn,
+      # write no marker (so a later call retries the provision), and proceed.
+      # A genuinely missing dependency then surfaces at l1_post.py's own
+      # dependency check, which names the missing path.
+      if [ -z "$created" ]; then
+        echo "l1_tools_env: re-provisioning existing $path failed; leaving it in place, unmarked: ${prov_err##*$'\n'}" >&2
+      else
       # A failed `worktree remove` here (locked, transient) must not leave a
       # registered-but-unprovisioned worktree at $path: the next call's
       # `[ -e "$path/.git" ]` would then be true and take the checkout
@@ -127,6 +216,9 @@ _l1_tools_ensure() {
       fi
       echo "l1_tools_env: provisioning $path failed -- removed it; the next call retries" >&2
       exec {fd}>&-; return 1
+      fi
+    else
+      _l1_tools_mark_provisioned "$path" || rc=$?
     fi
   fi
   # Downgrade to a SHARED lock and keep the fd open for the caller's lifetime

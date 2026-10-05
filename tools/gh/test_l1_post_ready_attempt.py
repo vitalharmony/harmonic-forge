@@ -44,6 +44,16 @@ class StoreCase(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": str(self.store)})
         env.start()
         self.addCleanup(env.stop)
+        # harmonic-forge#905: post_kind now runs world_checks as a pre-flight
+        # before static_checks. Default it to a no-op so these cases keep
+        # testing what they test; cases about world_checks patch it themselves.
+        world = mock.patch.object(L, "world_checks", return_value=([], []))
+        world.start()
+        self.addCleanup(world.stop)
+        # ...and preceded by refresh_main (preclose F1); never fetch in a test.
+        fresh = mock.patch.object(L, "refresh_main", return_value="f" * 40)
+        fresh.start()
+        self.addCleanup(fresh.stop)
 
     def events(self) -> list[dict]:
         return [json.loads(line) for part in self.store.glob("events/**/*.jsonl")
@@ -267,3 +277,76 @@ class EmitNeverChangesTheOutcomeTests(StoreCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorldPreflightTests(StoreCase):
+    """harmonic-forge#905 AC1: cheap world checks refuse before the full suite."""
+
+    def test_an_overlap_refuses_before_the_full_check_runs(self):
+        ran = []
+        with mock.patch.object(L, "world_checks", side_effect=lambda *a, **k: L.fail("active sibling branch overlaps")), \
+             mock.patch.object(L, "static_checks", side_effect=lambda *a, **k: ran.append(1)):
+            refusal, _ = self.refuse()
+        self.assertIn("overlaps", refusal)
+        self.assertEqual(ran, [], "static_checks must not run when the pre-flight refuses")
+
+    def test_an_acknowledged_overlap_still_reaches_the_full_check(self):
+        seen, ran = [], []
+
+        def world(repo, issue, sha, branch, *, ack_overlap=None):
+            seen.append(ack_overlap)
+            if ack_overlap is None:
+                L.fail("active sibling branch overlaps")
+            return ([], ["override"])
+
+        def check(sha, branch):
+            ran.append(1)
+            return ([], (T0, T1), {"result": "fail", "output": "stop here"})
+
+        with mock.patch.object(L, "world_checks", side_effect=world), \
+             mock.patch.object(L, "static_checks", side_effect=check), \
+             mock.patch.object(L, "_cwd_repo_from_git", return_value=None), \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br", ack_overlap="mechanical, one line")
+        self.assertEqual(seen[0], "mechanical, one line", "the pre-flight must receive --ack-overlap")
+        self.assertEqual(ran, [1], "an acknowledged overlap must still reach static_checks")
+
+
+class PreflightFreshnessTests(StoreCase):
+    """harmonic-forge#905 preclose F1/F2."""
+
+    def test_origin_main_is_fetched_before_the_preflight(self):
+        order = []
+        with mock.patch.object(L, "refresh_main", side_effect=lambda: order.append("fetch") or "f" * 40), \
+             mock.patch.object(L, "world_checks", side_effect=lambda *a, **k: order.append("world") or L.fail("stop")):
+            self.refuse()
+        self.assertEqual(order[:2], ["fetch", "world"])
+
+    def test_a_ref_lock_collision_is_retried_then_succeeds(self):
+        import subprocess as sp
+        calls = []
+        def fake_run(*args, **kw):
+            calls.append(args)
+            if args[:2] == ("git", "fetch") and len([c for c in calls if c[:2] == ("git", "fetch")]) == 1:
+                return sp.CompletedProcess(args, 1, "", "error: cannot lock ref 'refs/remotes/origin/main'")
+            return sp.CompletedProcess(args, 0, "a" * 40 + "\n", "")
+        with mock.patch.object(L, "run", side_effect=fake_run), mock.patch.object(L.time, "sleep"):
+            self.assertEqual(_REAL_REFRESH(), "a" * 40)
+        self.assertEqual(len([c for c in calls if c[:2] == ("git", "fetch")]), 2)
+
+    def test_any_other_fetch_failure_fails_at_once(self):
+        import subprocess as sp
+        fetches = []
+        def fake_run(*args, **kw):
+            if args[:2] == ("git", "fetch"):
+                fetches.append(1)
+                return sp.CompletedProcess(args, 128, "", "fatal: unable to access remote")
+            return sp.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(L, "run", side_effect=fake_run), mock.patch.object(L.time, "sleep"), \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            _REAL_REFRESH()
+        self.assertEqual(len(fetches), 1)
+
+
+_REAL_REFRESH = L.refresh_main
+
