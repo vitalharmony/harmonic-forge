@@ -1536,7 +1536,7 @@ def _read_env_keys(path: Path) -> dict[str, str]:
     """`KEY=value` pairs of a dotenv file, comments and blanks skipped."""
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):  # preclose: a stray byte must not abort l1-post
         return {}
     values = {}
     for line in text.splitlines():
@@ -1548,25 +1548,31 @@ def _read_env_keys(path: Path) -> dict[str, str]:
     return values
 
 
-def _provision_scratch_frontend_env(repo_root: Path, scratch: Path) -> bool:
+def _provision_scratch_frontend_env(repo_root: Path, scratch: Path) -> str | None:
     """COPY the three Keycloak keys from the source worktree's `frontend/.env`
     into the scratch worktree's own, never a symlink: a build writes
     `VITE_APP_VERSION` through `writeFileSync`, which follows a symlink back
     into the source repo (hrse#1356). Best-effort (harmonic-forge#795): a
-    missing source file or key, or an existing scratch file, is skipped and
-    never fails the check. Returns whether the file was written."""
+    missing source file, a missing or empty key (runtimeConfig.ts tests the
+    value's truthiness), or an existing scratch file is skipped and never
+    fails the check. Returns None when written, else the reason it was not,
+    which the caller prints so a false block is never mistaken for the
+    branch's own failure (preclose pass 1)."""
     target = scratch / HRSE_FRONTEND_ENV
+    if target.exists() or target.is_symlink():
+        return f"the scratch {HRSE_FRONTEND_ENV} already exists"
     values = _read_env_keys(repo_root / HRSE_FRONTEND_ENV)
-    if target.exists() or any(key not in values for key in HRSE_FRONTEND_ENV_KEYS):
-        return False
+    unset = [key for key in HRSE_FRONTEND_ENV_KEYS if not values.get(key)]
+    if unset:
+        return f"the source {HRSE_FRONTEND_ENV} has no value for {', '.join(unset)}"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write("".join(f"{key}={values[key]}\n" for key in HRSE_FRONTEND_ENV_KEYS))
-    except OSError:
-        return False
-    return True
+    except OSError as exc:
+        return f"it could not be written ({exc.strerror or exc})"
+    return None
 
 
 def _source_repo_is_hrse(repo_root: Path) -> bool:
@@ -1667,7 +1673,11 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
                 if not source.is_dir():
                     fail(f"source worktree dependency directory is missing: {dependency_dir}")
                 (scratch / dependency_dir).symlink_to(source, target_is_directory=True)
-            _provision_scratch_frontend_env(repo_root, scratch)
+            skipped = _provision_scratch_frontend_env(repo_root, scratch)
+            if skipped:
+                print(f"[l1-post] scratch {HRSE_FRONTEND_ENV} not provisioned: {skipped}; a test that "
+                      "imports the real api client will fail on missing env, not on the branch "
+                      "(run `mise run worktree-provision` here)", file=sys.stderr)
         # a private-repo incident: `git worktree add --detach` never provisions `.claude/`
         # (an untracked, locally-linked directory in every repo this tool
         # runs against) -- a repo whose own `mise run check` self-verifies
