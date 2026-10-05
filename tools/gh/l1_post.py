@@ -1847,6 +1847,13 @@ def _post_kind(
     recorded."""
     local_check_timing: tuple[str, str] | None = None
     if kind == "ready-for-l3":
+        # harmonic-forge#905: the same read-only world checks, once as a
+        # fail-fast pre-flight, so an overlap or a moved branch refuses in
+        # seconds instead of after a full `mise run check`. The call below,
+        # immediately before publication, still gates: state can change
+        # during the suite. `ack_overlap` must be passed here too, or every
+        # acknowledged overlap would refuse at the pre-flight.
+        world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
         checks, local_check_timing, check = static_checks(sha, branch)
         if attempt is not None:
             attempt["local_check_result"] = check["result"]

@@ -44,6 +44,12 @@ class StoreCase(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": str(self.store)})
         env.start()
         self.addCleanup(env.stop)
+        # harmonic-forge#905: post_kind now runs world_checks as a pre-flight
+        # before static_checks. Default it to a no-op so these cases keep
+        # testing what they test; cases about world_checks patch it themselves.
+        world = mock.patch.object(L, "world_checks", return_value=([], []))
+        world.start()
+        self.addCleanup(world.stop)
 
     def events(self) -> list[dict]:
         return [json.loads(line) for part in self.store.glob("events/**/*.jsonl")
@@ -267,3 +273,36 @@ class EmitNeverChangesTheOutcomeTests(StoreCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorldPreflightTests(StoreCase):
+    """harmonic-forge#905 AC1: cheap world checks refuse before the full suite."""
+
+    def test_an_overlap_refuses_before_the_full_check_runs(self):
+        ran = []
+        with mock.patch.object(L, "world_checks", side_effect=lambda *a, **k: L.fail("active sibling branch overlaps")), \
+             mock.patch.object(L, "static_checks", side_effect=lambda *a, **k: ran.append(1)):
+            refusal, _ = self.refuse()
+        self.assertIn("overlaps", refusal)
+        self.assertEqual(ran, [], "static_checks must not run when the pre-flight refuses")
+
+    def test_an_acknowledged_overlap_still_reaches_the_full_check(self):
+        seen, ran = [], []
+
+        def world(repo, issue, sha, branch, *, ack_overlap=None):
+            seen.append(ack_overlap)
+            if ack_overlap is None:
+                L.fail("active sibling branch overlaps")
+            return ([], ["override"])
+
+        def check(sha, branch):
+            ran.append(1)
+            return ([], (T0, T1), {"result": "fail", "output": "stop here"})
+
+        with mock.patch.object(L, "world_checks", side_effect=world), \
+             mock.patch.object(L, "static_checks", side_effect=check), \
+             mock.patch.object(L, "_cwd_repo_from_git", return_value=None), \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br", ack_overlap="mechanical, one line")
+        self.assertEqual(seen[0], "mechanical, one line", "the pre-flight must receive --ack-overlap")
+        self.assertEqual(ran, [1], "an acknowledged overlap must still reach static_checks")
