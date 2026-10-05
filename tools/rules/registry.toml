@@ -2226,8 +2226,8 @@ text_sha = "293a6a8f0d46b166"
 id = "R-0341"
 file = "rules/lane-shorthand.md"
 anchor = "batch"
-statement = "A chat message containing uppercase BATCH followed by issue keys on one line creates the authorization automatically on UserPromptSubmit, before the turn's first tool call: two merge targets and one close target per key, 12-hour TTL."
-text_sha = "27f81106b19654db"
+statement = "A chat message containing uppercase BATCH followed by issue keys on one line creates the authorization automatically on UserPromptSubmit, before the turn's first tool call: two merge targets per key, 12-hour TTL; it grants no close target (harmonic-forge#612)."
+text_sha = "191a829ad8d98a9f"
 hooks = [{ script = "tools/hooks/expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = "project settings" }]
 
 [[rule]]

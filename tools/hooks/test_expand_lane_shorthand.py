@@ -167,6 +167,27 @@ class RealDocTests(unittest.TestCase):
         self.assertIn("issues", expanded)
         self.assertIn("gh pr merge", expanded)
 
+    def test_batch_text_matches_what_batch_auth_mints(self) -> None:
+        """harmonic-forge#911: the always-loaded BATCH section drifted from
+        batch_auth.py after #612 (a close grant, a 2-hour window, a --ttl
+        override). Checks the whole section, not only the injected gloss:
+        the stale facts sat outside it."""
+        import re  # noqa: PLC0415
+        import batch_auth  # noqa: PLC0415
+        import expand_lane_shorthand as els  # noqa: PLC0415
+        doc = els.DOC_PATH.read_text(encoding="utf-8")
+        gloss = els.parse_named_directives(doc)["BATCH"]
+        self.assertNotIn("gh issue close", gloss)
+        start = doc.index("## `BATCH`")
+        end = doc.find("\n## ", start + 1)
+        section = doc[start:end if end != -1 else len(doc)]
+        self.assertNotIn("gh issue close", section)
+        self.assertIsNone(re.search(r"--ttl\s+[<\d]", section), "offers a --ttl override")
+        hours = {int(h) for h in re.findall(r"\b(\d+)[- ]hours?\b", section)}
+        self.assertTrue(hours, "the section states no window")
+        self.assertEqual(hours, {int(batch_auth.DEFAULT_TTL_HOURS)})
+        self.assertEqual(batch_auth.DEFAULT_ACTIONS, ("gh pr merge",))
+
     def test_l_prefix_never_treated_as_repo_prefix(self) -> None:
         """Directly asserts on the parsed prefix set (not on output that,
         when correct, simply doesn't exist) -- the doc reserves `L` and it
