@@ -24,6 +24,10 @@ def main() -> int:
     for pattern in ("test_l1_post*.py", "test_post_lane_discussion*.py"):
         suite.addTests(loader.discover(str(GH_DIR), pattern=pattern))
     with tempfile.TemporaryDirectory(prefix="lane1-transport-tests-") as tmp:
+        # harmonic-forge#907: and every emitted event to a throwaway store.
+        # Forced, as run_tests.py does (harmonic-forge#892): this runner was the
+        # one that leaked l1_post fixture events into the operator's store.
+        os.environ["HARMONIC_FORGE_TELEMETRY_STORE"] = str(Path(tmp) / "telemetry-store")
         with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"), \
                 hermetic_identity_probe():
             result = unittest.TextTestRunner(verbosity=2).run(suite)
