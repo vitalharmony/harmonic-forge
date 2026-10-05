@@ -34,7 +34,8 @@
       "registry",
       "advisory",
       "manual",
-      "archive"
+      "archive",
+      "gate-run"
     ],
     "account": "string: registry account, or 'unresolved'",
     "org": "string: owner segment of the normalized repo, or 'unresolved'",
