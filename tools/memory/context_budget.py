@@ -129,22 +129,43 @@ def _imports_of(claude_md: Path) -> list[Path]:
     return found
 
 
+class PlatformRulesError(RuntimeError):
+    """`sync_rules.py` exists but its rule list cannot be read. Measuring on
+    regardless would fall back to following the links, which in a platform
+    worktree measures another checkout: the failure #909 fixed."""
+
+
 def _platform_rule_sources(repo: Path) -> dict[str, Path]:
     """`{name: repo/rules/name}` for each rule `sync_rules.py` links into a
     session, when `repo` is the platform itself; empty for a consuming repo,
     whose links rightly measure the platform checkout they point at.
 
-    Read with `ast`, never imported: measuring must not execute the repo."""
+    Read with `ast`, never imported: measuring must not execute the repo. Any
+    `sync_rules.py` whose list cannot be read is an error, never `{}`."""
     script = repo / "sync_rules.py"
     if not script.is_file():
         return {}
     import ast  # noqa: PLC0415
-    for node in ast.parse(script.read_text(encoding="utf-8")).body:
-        if (isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "UNIVERSAL_RULE_FILES" for t in node.targets)):
+    try:
+        tree = ast.parse(script.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        raise PlatformRulesError(f"{script} does not parse: {exc}") from exc
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            named = any(isinstance(t, ast.Name) and t.id == "UNIVERSAL_RULE_FILES" for t in node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            named = isinstance(node.target, ast.Name) and node.target.id == "UNIVERSAL_RULE_FILES"
+        else:
+            continue
+        if not named:
+            continue
+        try:
             names = ast.literal_eval(node.value)
-            return {n: repo / "rules" / n for n in names if (repo / "rules" / n).is_file()}
-    return {}
+        except (ValueError, TypeError) as exc:
+            raise PlatformRulesError(
+                f"{script}: UNIVERSAL_RULE_FILES is not a literal list") from exc
+        return {n: repo / "rules" / n for n in names if (repo / "rules" / n).is_file()}
+    raise PlatformRulesError(f"{script} declares no UNIVERSAL_RULE_FILES")
 
 
 def surface(repo: Path) -> list[tuple[str, Path, int]]:

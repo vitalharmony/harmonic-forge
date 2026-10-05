@@ -40,7 +40,7 @@ class ShorthandKeepsItsUnconsultedRules(unittest.TestCase):
         for rid in ("R-0117", "R-0118"):
             self.assertIn(f"<!-- {rid} -->", text)
             self.assertIn(f"<!-- /{rid} -->", text)
-        self.assertEqual(text.count("rules/lane-tooling-reference.md"), 2, "one pointer per moved section")
+        self.assertEqual(text.count("rules/lane-tooling-reference.md"), 1, "one pointer for the moved section")
 
     def test_the_ratchet_gate_passes_on_this_checkout(self):
         # The gate measures this checkout's own rules/ files (not the link's

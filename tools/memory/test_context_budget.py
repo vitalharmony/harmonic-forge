@@ -187,6 +187,18 @@ class PlatformOwnRulesTests(SurfaceTestBase):
     def test_an_absent_link_still_measures_the_declared_rule(self) -> None:
         self.assertEqual(self.sizes(), {".claude/rules/shared.md": 100})
 
+    def test_an_annotated_declaration_is_read(self) -> None:
+        self.write("sync_rules.py", 'UNIVERSAL_RULE_FILES: list[str] = ["shared.md"]\n')
+        self.assertEqual(self.sizes(), {".claude/rules/shared.md": 100})
+
+    def test_an_unreadable_declaration_is_an_error_not_a_fallback(self) -> None:
+        for text in ('UNIVERSAL_RULE_FILES = sorted(["shared.md"])\n',
+                     "OTHER = []\n", "def broken(:\n"):
+            with self.subTest(text=text):
+                self.write("sync_rules.py", text)
+                with self.assertRaises(cb.PlatformRulesError):
+                    cb.surface(self.repo)
+
     def test_a_consuming_repo_still_follows_its_link(self) -> None:
         (self.repo / "sync_rules.py").unlink()
         (self.repo / ".claude" / "rules").mkdir(parents=True)

@@ -1,8 +1,7 @@
-# Lane tooling reference — `lane_state.py` and BATCH's mechanics
+# Lane tooling reference — `lane_state.py`'s derived states
 
-Reference for whoever works on `lane_state.py`, `l1_post.py`'s footers or
-`tools/hooks/batch_auth.py`. Moved out of `rules/lane-shorthand.md`
-(harmonic-forge#909) to keep the always-loaded context under its ceiling.
+Reference for whoever works on `lane_state.py` or `l1_post.py`'s footers.
+Moved out of `rules/lane-shorthand.md` (harmonic-forge#909) to keep the always-loaded context under its ceiling.
 Deliberately **not** in `sync_rules.py`'s `UNIVERSAL_RULE_FILES`, so no session
 loads it; it lives under `rules/` so `check_rule_drift.py` keeps checking its
 R-ids. The rules a lane must follow unconsulted stayed in `lane-shorthand.md`.
@@ -106,46 +105,3 @@ because what Lane 2 must do is identical: re-read the issue and do the work on
 the branch. Only the operator-facing token is shared; the key stays
 `l1.rework`, so the row still says which of the two it is.
 <!-- /R-0337 -->
-
-## BATCH mechanics
-
-**What is automatic and what is not** (harmonic-forge#502). Until that issue,
-"pre-authorizes" was not true unaided: nothing parsed the keyword, so the
-authorization only existed if the assistant session remembered to run
-`authorize` itself — and an unattended batch stalled for hours because no
-session had.
-
-<!-- R-0341 -->
-Typing `BATCH` followed by issue keys on one line creates the authorization
-automatically, on `UserPromptSubmit`, before the turn's first tool call — two
-merge targets and one close target per key, 12-hour TTL. Keys are read to the
-end of that line, so a sentence works: `BATCH these tooling issues F495, F497,
-F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
-<!-- /R-0341 -->
-
-<!-- R-0342 -->
-A `gh pr merge <PR#>` still needs its PR linked to the issue — the command
-carries no issue number, so nothing else can resolve it. `link-pr` has no
-automatic caller, and a missing call costs one Ask prompt per merge. When a
-merge or close is refused, the prompt now names which of the four states
-applies: no authorization, expired, already consumed, or PR not linked.
-<!-- /R-0342 -->
-
-**Standing a grant down, and how the state file's own size is bounded**
-(harmonic-forge#567). `python3 tools/hooks/batch_auth.py revoke <KEY> [<KEY>
-...]` marks every unconsumed target on the named key(s) `consumed`, with
-`consumed_by: "revoked-<ISO timestamp>"` — it never deletes the entry, so the
-`EXPIRED`/consumed-state diagnostics stay truthful rather than reading as
-though nothing was ever authorized. It is a no-op, not an error, on a key
-that does not exist or whose targets are already all consumed — standing
-down a batch that mostly landed is the normal case. `authorize()` and
-`top_up()` each prune entries expired more than `PRUNE_GRACE_HOURS` (7 days)
-ago, on every call, inside the same lock — never as a separate sweep, and
-never touching a still-live entry — so the state file no longer grows
-without bound the way it did before this issue (60 keys / 47 expired / 18
-days of unpruned history at filing time).
-
-While an authorization is live with unconsumed targets, `block_batch_stop.py`
-refuses to end the turn — a batch that stops to be told "keep going" has
-already cost what BATCH exists to save. A turn that asks a genuine question is
-always allowed to end.

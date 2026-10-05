@@ -2224,16 +2224,16 @@ text_sha = "293a6a8f0d46b166"
 
 [[rule]]
 id = "R-0341"
-file = "rules/lane-tooling-reference.md"
-anchor = "batch-mechanics"
+file = "rules/lane-shorthand.md"
+anchor = "batch"
 statement = "A chat message containing uppercase BATCH followed by issue keys on one line creates the authorization automatically on UserPromptSubmit, before the turn's first tool call: two merge targets and one close target per key, 12-hour TTL."
 text_sha = "27f81106b19654db"
 hooks = [{ script = "tools/hooks/expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = "project settings" }]
 
 [[rule]]
 id = "R-0342"
-file = "rules/lane-tooling-reference.md"
-anchor = "batch-mechanics"
+file = "rules/lane-shorthand.md"
+anchor = "batch"
 statement = "A gh pr merge carries no issue number, so it is authorized only via a recorded link-pr; when a merge or close is refused the prompt names which of four states applies -- no authorization, expired, consumed, or PR not linked."
 text_sha = "9299f1c2a2858706"
 hooks = [{ script = "tools/hooks/batch_auth.py", events = ["PreToolUse"], wired_in = "project settings" }]

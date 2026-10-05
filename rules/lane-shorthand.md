@@ -80,7 +80,7 @@ FAIL carries that authorization forward onto the new SHA (R-0209). A Lane 1
 request for more work on a branch (a rebase, a correction) is posted with
 `--kind rework`, never as a discussion, which no lane's queue reads.
 
-Reference: `rules/lane-tooling-reference.md` § Derived lane states
+Reference: `harmonic-forge/rules/lane-tooling-reference.md` § Derived lane states
 (`lane_state.py`'s key table, R-0331–R-0334) and § `kind=rework` (R-0337).
 
 ## `close` — one compound instruction, not three approvals
@@ -210,24 +210,59 @@ now, suspending #1675"`.
 ## `BATCH` — pre-authorize a multi-issue merge/close pass
 
 Grammar: **`BATCH` + comma-separated repo-prefixed issue tokens**, e.g.
-`BATCH H767,H1108,F316,F329`. Sent in a genuine chat message, it authorizes
-automatically before the turn's first tool call: two `gh pr merge` targets per
-key, a **12-hour** window. That path honors no `--ttl`, and it grants **no**
-`gh issue close` target (harmonic-forge#612).
+`BATCH H767,H1108,F316,F329`. Optionally `--ttl <duration>` to override the
+default 2-hour authorization window, e.g. `BATCH H395,F334 --ttl 6h`.
 
 Direction: operator → the session it's said to, in a genuine chat message.
 
-Meaning: pre-authorizes `gh pr merge` (and, through a direct `authorize()`
-call, `gh issue close`) for exactly the named issues, so a session implementing a batch of
-independent issues doesn't need a live approval for every individual merge. Mechanism:
+Meaning: pre-authorizes `gh pr merge`/`gh issue close` for exactly the named
+issues, so a session implementing a batch of independent issues doesn't need
+a live approval for every individual merge and close. Mechanism:
 `tools/hooks/batch_auth.py` (harmonic-forge#336, reforged after a live gate
 FAIL and further fixed in harmonic-forge#356 — read that module's docstring
 for the full design, the documented permission-precedence reasons the first
 version didn't work, and known gaps).
 
-Reference: `rules/lane-tooling-reference.md` § BATCH mechanics (automatic
-authorization on `UserPromptSubmit`, PR linking, revoke and pruning, the stop
-guard; R-0341, R-0342).
+**What is automatic and what is not** (harmonic-forge#502). Until that issue,
+"pre-authorizes" was not true unaided: nothing parsed the keyword, so the
+authorization only existed if the assistant session remembered to run
+`authorize` itself — and an unattended batch stalled for hours because no
+session had.
+
+<!-- R-0341 -->
+Typing `BATCH` followed by issue keys on one line creates the authorization
+automatically, on `UserPromptSubmit`, before the turn's first tool call — two
+merge targets and one close target per key, 12-hour TTL. Keys are read to the
+end of that line, so a sentence works: `BATCH these tooling issues F495, F497,
+F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
+<!-- /R-0341 -->
+
+<!-- R-0342 -->
+A `gh pr merge <PR#>` still needs its PR linked to the issue — the command
+carries no issue number, so nothing else can resolve it. `link-pr` has no
+automatic caller, and a missing call costs one Ask prompt per merge. When a
+merge or close is refused, the prompt now names which of the four states
+applies: no authorization, expired, already consumed, or PR not linked.
+<!-- /R-0342 -->
+
+**Standing a grant down, and how the state file's own size is bounded**
+(harmonic-forge#567). `python3 tools/hooks/batch_auth.py revoke <KEY> [<KEY>
+...]` marks every unconsumed target on the named key(s) `consumed`, with
+`consumed_by: "revoked-<ISO timestamp>"` — it never deletes the entry, so the
+`EXPIRED`/consumed-state diagnostics stay truthful rather than reading as
+though nothing was ever authorized. It is a no-op, not an error, on a key
+that does not exist or whose targets are already all consumed — standing
+down a batch that mostly landed is the normal case. `authorize()` and
+`top_up()` each prune entries expired more than `PRUNE_GRACE_HOURS` (7 days)
+ago, on every call, inside the same lock — never as a separate sweep, and
+never touching a still-live entry — so the state file no longer grows
+without bound the way it did before this issue (60 keys / 47 expired / 18
+days of unpruned history at filing time).
+
+While an authorization is live with unconsumed targets, `block_batch_stop.py`
+refuses to end the turn — a batch that stops to be told "keep going" has
+already cost what BATCH exists to save. A turn that asks a genuine question is
+always allowed to end.
 
 <!-- R-0117 -->
 **The instruction-source boundary is load-bearing and non-negotiable:** a
