@@ -11,18 +11,22 @@ of the closed-without-authorization pattern, this one via a new
 mechanism).
 
 Only fires on `gh pr create`/`edit`/`merge`/`comment`, `gh issue
-comment`/`edit`, and a `gh api` call that writes (an explicit
-POST/PATCH/PUT method, or `-f`/`-F` fields, which make `gh api` POST), and
-only on the text of the command itself. Within that text it denies the `#N`
+comment`/`edit`, and a `gh api` call whose command text shows write intent
+anywhere after `api` (an explicit POST/PATCH/PUT method or a ` -f`/` -F`
+field, which makes `gh api` POST). That is a text match, not a parse: a
+read-only call whose `--jq` filter happens to contain one of those tokens is
+also inspected, which errs toward deny. It reads only the text of the command
+itself. Within that text it denies the `#N`
 and the issue-URL reference forms, and a colon after the keyword, which is
 matched defensively rather than as documented GitHub behavior.
 Non-closing references (Implements/Part of/Refs #N) are unaffected.
 
-**Best-effort, fail-open on everything it cannot see** (harmonic-forge#911
-preclose). It reads no file, so a body supplied by `--body-file`,
-`-F body=@file` or `--input` passes; it sees no commit message, heredoc
-body, `gh api graphql` mutation, web-UI edit, or anything run outside a
-Bash tool call. Those routes are covered, if at all, by review and by the
+**Best-effort, fail-open on everything outside that text**
+(harmonic-forge#911 preclose). It reads no file, so a body supplied by
+`--body-file`, `-F body=@file` or `--input` passes. A heredoc or a
+`gh api graphql` body is inspected only when written inline in the same
+command text. It sees no commit message, web-UI edit, or anything run outside
+a Bash tool call. Those routes are covered, if at all, by review and by the
 close-time hooks, not here.
 
 ## No BATCH exception (harmonic-forge#911)
