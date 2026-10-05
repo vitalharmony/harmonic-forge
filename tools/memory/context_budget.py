@@ -129,6 +129,24 @@ def _imports_of(claude_md: Path) -> list[Path]:
     return found
 
 
+def _platform_rule_sources(repo: Path) -> dict[str, Path]:
+    """`{name: repo/rules/name}` for each rule `sync_rules.py` links into a
+    session, when `repo` is the platform itself; empty for a consuming repo,
+    whose links rightly measure the platform checkout they point at.
+
+    Read with `ast`, never imported: measuring must not execute the repo."""
+    script = repo / "sync_rules.py"
+    if not script.is_file():
+        return {}
+    import ast  # noqa: PLC0415
+    for node in ast.parse(script.read_text(encoding="utf-8")).body:
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "UNIVERSAL_RULE_FILES" for t in node.targets)):
+            names = ast.literal_eval(node.value)
+            return {n: repo / "rules" / n for n in names if (repo / "rules" / n).is_file()}
+    return {}
+
+
 def surface(repo: Path) -> list[tuple[str, Path, int]]:
     """`(category, path, bytes)` for everything injected at session start."""
     rows: list[tuple[str, Path, int]] = []
@@ -156,10 +174,20 @@ def surface(repo: Path) -> list[tuple[str, Path, int]]:
     # same as being loaded.
 
     rules_dir = repo / ".claude" / "rules"
+    own = _platform_rule_sources(repo)
     if rules_dir.is_dir():
         for rule in sorted(rules_dir.rglob("*.md")):
+            if rule.name in own:
+                continue
             if not _is_path_scoped(rule):
                 add("unscoped rule", rule)
+    for name, source in sorted(own.items()):
+        if not _is_path_scoped(source):
+            # Keyed by the link path a session loads, measured from this
+            # checkout's own file: in a platform worktree the link points at
+            # the main checkout, so following it measured another branch's
+            # copy and the gate never saw this one (harmonic-forge#909).
+            rows.append(("unscoped rule", rules_dir / name, source.stat().st_size))
 
     store = resolve_store(repo)
     index = store / "MEMORY.md"

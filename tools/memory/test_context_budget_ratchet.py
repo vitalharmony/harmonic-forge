@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -231,6 +232,15 @@ class TestBaselineRoundTrip(_Repo):
             'bytes = 300\nwhy = """\n' + why.replace("\\", "\\\\").replace('"', '\\"') + '"""\n')
         m.update(self.repo)
         self.assertEqual(m.load_baseline(self.repo)["increase"][0]["why"], why)
+
+    def test_every_escape_shape_round_trips(self):
+        """harmonic-forge#909 preclose: a trailing quote run was escaped twice,
+        and a control character wrote TOML that could not be read back."""
+        cases = ['a\n"""', 'a\n""""', 'x\n"', 'plain "q"', 'tab\there', 'a\x01b',
+                 'm\x01\nz', '\nlead', '"""""\n""', 'cr\r\nx', 'x"', 'back\\slash']
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(tomllib.loads("w = " + m._toml_string(text))["w"], text)
 
     def test_a_rewritten_baseline_passes_its_own_check(self):
         self.set_surface(**{"CLAUDE.md": 900, "rules.md": 100})

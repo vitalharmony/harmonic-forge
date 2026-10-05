@@ -42,15 +42,14 @@ class ShorthandKeepsItsUnconsultedRules(unittest.TestCase):
             self.assertIn(f"<!-- /{rid} -->", text)
         self.assertEqual(text.count("rules/lane-tooling-reference.md"), 2, "one pointer per moved section")
 
-    def test_the_source_file_keeps_the_surface_under_its_ceiling(self):
-        # The ratchet measures the `.claude/rules/` link, which a fresh
-        # checkout lacks; this measures the file that link resolves to.
-        baseline = tomllib.loads((ROOT / "context-budget.baseline.toml").read_text(encoding="utf-8"))
-        rows = dict(baseline["files"])
-        size = SHORTHAND.stat().st_size
-        self.assertLessEqual(size, rows[".claude/rules/lane-shorthand.md"], "grew past its baseline")
-        rows[".claude/rules/lane-shorthand.md"] = size
-        self.assertLess(sum(rows.values()), baseline["ceiling_bytes"])
+    def test_the_ratchet_gate_passes_on_this_checkout(self):
+        # The gate measures this checkout's own rules/ files (not the link's
+        # target), so growth past the committed baseline without an
+        # [[increase]] entry fails here, not on the next commit to main.
+        import subprocess, sys  # noqa: E401, PLC0415
+        result = subprocess.run([sys.executable, str(ROOT / "tools" / "memory" / "context_budget_ratchet.py"),
+                                 "--repo", str(ROOT), "--gate"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

@@ -162,6 +162,38 @@ class MembershipTests(SurfaceTestBase):
         self.assertEqual(cb.surface(self.repo), [])
 
 
+class PlatformOwnRulesTests(SurfaceTestBase):
+    """harmonic-forge#909 preclose: in a platform worktree `.claude/rules/`
+    links point at the main checkout, so following them measured another
+    branch's copy and the gate never saw this one."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write("sync_rules.py", 'UNIVERSAL_RULE_FILES = ["shared.md"]\n')
+        self.own = self.write("rules/shared.md", "x" * 100)
+        self.elsewhere = self.root / "main-checkout" / "rules" / "shared.md"
+        self.elsewhere.parent.mkdir(parents=True)
+        self.elsewhere.write_text("y" * 900, encoding="utf-8")
+
+    def sizes(self) -> dict[str, int]:
+        return {str(Path(p).relative_to(self.repo)): n
+                for _c, p, n in cb.surface(self.repo) if str(p).startswith(str(self.repo))}
+
+    def test_a_link_to_another_checkout_measures_this_ones_file(self) -> None:
+        (self.repo / ".claude" / "rules").mkdir(parents=True)
+        (self.repo / ".claude" / "rules" / "shared.md").symlink_to(self.elsewhere)
+        self.assertEqual(self.sizes(), {".claude/rules/shared.md": 100})
+
+    def test_an_absent_link_still_measures_the_declared_rule(self) -> None:
+        self.assertEqual(self.sizes(), {".claude/rules/shared.md": 100})
+
+    def test_a_consuming_repo_still_follows_its_link(self) -> None:
+        (self.repo / "sync_rules.py").unlink()
+        (self.repo / ".claude" / "rules").mkdir(parents=True)
+        (self.repo / ".claude" / "rules" / "shared.md").symlink_to(self.elsewhere)
+        self.assertEqual(self.sizes(), {".claude/rules/shared.md": 900})
+
+
 class ReportingTests(SurfaceTestBase):
     def setUp(self) -> None:
         super().setUp()

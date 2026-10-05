@@ -210,14 +210,16 @@ now, suspending #1675"`.
 ## `BATCH` — pre-authorize a multi-issue merge/close pass
 
 Grammar: **`BATCH` + comma-separated repo-prefixed issue tokens**, e.g.
-`BATCH H767,H1108,F316,F329`. Optionally `--ttl <duration>` to override the
-default 2-hour authorization window, e.g. `BATCH H395,F334 --ttl 6h`.
+`BATCH H767,H1108,F316,F329`. Sent in a genuine chat message, it authorizes
+automatically before the turn's first tool call: two `gh pr merge` targets per
+key, a **12-hour** window. That path honors no `--ttl`, and it grants **no**
+`gh issue close` target (harmonic-forge#612).
 
 Direction: operator → the session it's said to, in a genuine chat message.
 
-Meaning: pre-authorizes `gh pr merge`/`gh issue close` for exactly the named
-issues, so a session implementing a batch of independent issues doesn't need
-a live approval for every individual merge and close. Mechanism:
+Meaning: pre-authorizes `gh pr merge` (and, through a direct `authorize()`
+call, `gh issue close`) for exactly the named issues, so a session implementing a batch of
+independent issues doesn't need a live approval for every individual merge. Mechanism:
 `tools/hooks/batch_auth.py` (harmonic-forge#336, reforged after a live gate
 FAIL and further fixed in harmonic-forge#356 — read that module's docstring
 for the full design, the documented permission-precedence reasons the first
