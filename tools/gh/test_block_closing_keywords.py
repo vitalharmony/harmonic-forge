@@ -137,5 +137,33 @@ class EveryReferenceFormAndSurfaceIsDenied(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+class InspectedSurfacesAfterThePatch(unittest.TestCase):
+    """harmonic-forge#911 sticky-wicket PATCH: the merge and PR-comment
+    routes and the colon form are inspected; a read-only `gh api` call is
+    not denied just because its text names a keyword."""
+
+    def test_merge_subject_denies(self):
+        result = _run_hook(f'gh pr merge 912 --squash --subject "x ({KEYWORD} #42)"')
+        self.assertTrue(_is_denied(result))
+
+    def test_pr_comment_denies(self):
+        result = _run_hook(f'gh pr comment 912 --body "{KEYWORD} #42"')
+        self.assertTrue(_is_denied(result))
+
+    def test_colon_form_denies(self):
+        result = _run_hook(
+            f'gh pr create --repo vitalharmony/hrse --title x --body "{KEYWORD}: #42"')
+        self.assertTrue(_is_denied(result))
+
+    def test_implicit_post_with_fields_denies(self):
+        result = _run_hook(f"gh api repos/vitalharmony/hrse/pulls -f title=x -f body='{KEYWORD} #42'")
+        self.assertTrue(_is_denied(result))
+
+    def test_read_only_api_mentioning_a_keyword_is_untouched(self):
+        result = _run_hook(
+            f"gh api repos/vitalharmony/hrse/issues/42/comments --jq '.[] | select(.body | test(\"{KEYWORD} #42\"))'")
+        self.assertEqual(result, {})
+
+
 if __name__ == "__main__":
     unittest.main()

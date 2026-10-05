@@ -10,19 +10,27 @@ automation. See harmonic-forge#93 for the incident record (6th instance
 of the closed-without-authorization pattern, this one via a new
 mechanism).
 
-Only fires on `gh pr create`, `gh pr edit`, `gh issue comment`,
-`gh issue edit`, and any `gh api` call (a REST call of any method can create
-a PR or a comment) — the Bash commands whose string arguments can carry a
-closing keyword. Both reference forms are denied: `#N` and the issue URL
-(harmonic-forge#911 preclose).
+Only fires on `gh pr create`/`edit`/`merge`/`comment`, `gh issue
+comment`/`edit`, and a `gh api` call that writes (an explicit
+POST/PATCH/PUT method, or `-f`/`-F` fields, which make `gh api` POST), and
+only on the text of the command itself. Within that text it denies the `#N`
+and the issue-URL reference forms, and a colon after the keyword, which is
+matched defensively rather than as documented GitHub behavior.
 Non-closing references (Implements/Part of/Refs #N) are unaffected.
+
+**Best-effort, fail-open on everything it cannot see** (harmonic-forge#911
+preclose). It reads no file, so a body supplied by `--body-file`,
+`-F body=@file` or `--input` passes; it sees no commit message, heredoc
+body, `gh api graphql` mutation, web-UI edit, or anything run outside a
+Bash tool call. Those routes are covered, if at all, by review and by the
+close-time hooks, not here.
 
 ## No BATCH exception (harmonic-forge#911)
 
 harmonic-forge#612 once allowed a `Closes #N` while a live BATCH grant
 covered that issue's merge, so sequenced issues could close on merge. The
-operator retired that exception (harmonic-forge#911, 2026-10-05): a PR body
-or comment never carries a closing keyword, BATCH or not. A batched issue
+operator retired that exception (harmonic-forge#911, 2026-10-05): on the
+surfaces above, a closing keyword is denied whatever the BATCH state. A batched issue
 closes by an explicit close command after its merge, which keeps every close
 a deliberate, separately visible action. BATCH itself grants merges only
 (`batch_auth.py`'s `DEFAULT_ACTIONS`).
@@ -33,7 +41,7 @@ import sys
 
 CLOSING_KEYWORD = re.compile(
     r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-    r"\s+(?P<repo>[\w.-]+/[\w.-]+)?#(?P<number>\d+)"
+    r":?\s+(?P<repo>[\w.-]+/[\w.-]+)?#(?P<number>\d+)"
 )
 
 #: The URL form GitHub also honors. Mirrors
@@ -41,11 +49,12 @@ CLOSING_KEYWORD = re.compile(
 #: kept separate so `CLOSING_KEYWORD` stays byte-identical to that file's copy.
 CLOSING_KEYWORD_URL = re.compile(
     r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-    r"\s+https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
+    r":?\s+https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
 )
 
 RELEVANT_COMMAND = re.compile(
-    r"(?i)\bgh\s+(pr\s+(create|edit)|issue\s+(comment|edit)|api\b)"
+    r"(?i)\bgh\s+(pr\s+(create|edit|merge|comment)|issue\s+(comment|edit)|"
+    r"api\b(?=.*(?:-X\s*|--method[\s=]+)(?:POST|PATCH|PUT)\b|.*\s-[fF]\s))"
 )
 
 def main() -> None:

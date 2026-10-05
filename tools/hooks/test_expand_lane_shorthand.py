@@ -187,7 +187,7 @@ class RealDocTests(unittest.TestCase):
         # different number fails (harmonic-forge#911 preclose).
         number = (r"\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
                   r"twelve|twenty[\w-]*|thirty[\w-]*|forty[\w-]*|forty-eight")
-        windows = re.findall(rf"\b({number})[- ]hours?\b", section, flags=re.I)
+        windows = re.findall(rf"\b({number})\s*-?\s*(?:hours?|hrs?|h)\b", section, flags=re.I)
         self.assertTrue(windows, "the section states no window")
         self.assertEqual(set(windows), {str(int(batch_auth.DEFAULT_TTL_HOURS))})
         self.assertEqual(batch_auth.DEFAULT_ACTIONS, ("gh pr merge",))
