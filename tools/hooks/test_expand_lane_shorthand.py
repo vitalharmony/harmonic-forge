@@ -726,8 +726,9 @@ class BatchAuthorizationTests(unittest.TestCase):
     def test_authorize_batch_writes_two_merge_targets_and_no_close(self):
         """A cross-repo issue needs one merge per repo; harmonic-forge#497
         needed two and the single granted slot made the second prompt.
-        harmonic-forge#612: no close target at all any more -- closing
-        happens via a live-gated `Closes #N`, never a direct BATCH grant."""
+        harmonic-forge#612: no close target at all any more -- a batched
+        issue closes by an explicit close command after its merge
+        (harmonic-forge#911), never a direct BATCH grant."""
         import json as _json
         import batch_auth as ba
 

@@ -83,8 +83,8 @@ class StateFixture(unittest.TestCase):
 class AuthorizeTests(StateFixture):
     def test_default_authorizes_merge_only(self):
         """harmonic-forge#612: BATCH no longer grants `gh issue close` at
-        all, default or otherwise -- closing now happens via a live-gated
-        `Closes #N` (see `block_closing_keywords.py`), never a second
+        all, default or otherwise -- a batched issue closes by an explicit
+        close command after its merge (harmonic-forge#911), never a second
         direct target here."""
         ba.authorize(["H395"], state_path=self.state_path)
         state = ba._load(self.state_path)
@@ -103,8 +103,8 @@ class AuthorizeTests(StateFixture):
         `gh issue close` -- not merely absent from the default, refused even
         when explicitly requested. The H767 case (an issue closed without
         ever having a PR) this action list used to serve no longer applies:
-        closing is either live-BATCH-linked to a `gh pr merge` (via
-        `Closes #N`) or fully manual; there is no third, close-only shape."""
+        closing is an explicit close command after the merge
+        (harmonic-forge#911); there is no close-only shape."""
         with self.assertRaises(ValueError):
             ba.authorize(["H767"], ["gh issue close"], state_path=self.state_path)
 

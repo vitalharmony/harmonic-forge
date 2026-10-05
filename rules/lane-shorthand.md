@@ -218,7 +218,9 @@ Direction: operator → the session it's said to, in a genuine chat message.
 Meaning: pre-authorizes `gh pr merge` for exactly the named issues, so a
 session implementing a batch of independent issues doesn't need a live
 approval for every individual merge. BATCH grants no close
-(harmonic-forge#612). Mechanism:
+(harmonic-forge#612): a batched issue closes by an explicit close command
+after its merge, and a PR body never carries a closing keyword
+(harmonic-forge#911). Mechanism:
 `tools/hooks/batch_auth.py` (harmonic-forge#336, reforged after a live gate
 FAIL and further fixed in harmonic-forge#356 — read that module's docstring
 for the full design, the documented permission-precedence reasons the first

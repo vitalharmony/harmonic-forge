@@ -178,8 +178,8 @@ def annotate(message: str, *, target_key: str | None = None,
         return (
             f"{message}\n\n{head} Live keys: {listed}.\n"
             "The batch is NOT authorized past this guard — a BATCH grant covers "
-            "`gh pr merge` only (harmonic-forge#612; closing is now live-gated "
-            "separately via `Closes #N`, never a direct BATCH grant), never a "
+            "`gh pr merge` only (harmonic-forge#612; a batched issue closes by "
+            "an explicit close command after its merge, harmonic-forge#911), never a "
             "protocol guard. Satisfy the condition above and continue; do not "
             "look for a way around it.\n"
             "Many of these are satisfiable before a batch starts — run "
