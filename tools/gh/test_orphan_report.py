@@ -56,6 +56,15 @@ class OrphanReport(unittest.TestCase):
         self.assertIn("[test-graph-orphans] test graph with no readable holder, not reaped "
                       "(operator decides): graph-zz-9", out)
 
+    def test_more_than_twenty_lines_say_how_many_earlier_ones_were_cut(self):
+        notes = "".join(f"note graph-{i}\n" for i in range(25))
+        for code, stdout_err in ((0, notes), (1, notes)):
+            with self.subTest(exit=code):
+                _, out = self.run_report(Runner(_repo(True), subprocess.CompletedProcess([], code, "", stdout_err)))
+                self.assertIn("(5 earlier line(s) not shown", out)
+                self.assertIn("note graph-24", out)
+                self.assertNotIn("note graph-0\n", out)
+
     def test_exit_two_is_a_could_not_check_not_an_orphan(self):
         done = subprocess.CompletedProcess([], 2, "", "graph_fixture orphans: ERROR -- no podman\n")
         found, out = self.run_report(Runner(_repo(True), done))

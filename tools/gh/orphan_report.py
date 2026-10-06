@@ -33,6 +33,16 @@ def _say(line: str) -> None:
     print(f"{HEADING} {line}", flush=True)
 
 
+def _print_output(output: str) -> None:
+    """Print the task's last 20 lines under the heading, and say how many earlier ones were cut:
+    a note the report drops silently is a graph the lane never sees."""
+    lines = output.splitlines()
+    if len(lines) > 20:
+        _say(f"({len(lines) - 20} earlier line(s) not shown; run `mise run {TASK}` for all)")
+    for line in lines[-20:]:
+        print(f"{HEADING} {line}", flush=True)
+
+
 def report(cwd: Optional[Path] = None, runner: Runner = subprocess.run) -> bool:
     """Print the orphan report for the repo at `cwd`. True when it printed orphans (exit 1 of the
     task); False in every other case, including every failure. Never raises."""
@@ -66,11 +76,9 @@ def report(cwd: Optional[Path] = None, runner: Runner = subprocess.run) -> bool:
         # exit 0 can still carry notes the operator must see: a graph with no readable holder, or a
         # stopped gate graph (hrse#2218). Print them; the post's outcome stays untouched.
         _say("no orphaned test graphs; notes:")
-        for line in output.splitlines()[-20:]:
-            print(f"{HEADING} {line}", flush=True)
+        _print_output(output)
         return False
-    for line in output.splitlines()[-20:]:
-        print(f"{HEADING} {line}", flush=True)
+    _print_output(output)
     if not output:
         _say(f"exited {result.returncode} with no output")
     return result.returncode == 1
