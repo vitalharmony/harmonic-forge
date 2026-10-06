@@ -57,9 +57,9 @@ def report(cwd: Optional[Path] = None, runner: Runner = subprocess.run) -> bool:
         if not mise_toml.is_file() or DECLARATION not in mise_toml.read_text(encoding="utf-8", errors="replace"):
             _say(f"{root.name} declares no {TASK} task; skipped")
             return False
-        # `-q` drops mise's own `[task] $ command` echo and nothing else (verified: the task's
-        # stdout, stderr, exit code and `ERROR task failed` line are unchanged), so a clean run
-        # has empty output (harmonic-forge#915).
+        # `-q` quiets mise's own informational output (the `[task] $ command` echo, and its WARN
+        # lines). The task's stdout, stderr and exit code, and mise's errors, are unchanged
+        # (verified on mise 2026.9.14), so a clean run has empty output (harmonic-forge#915).
         result = runner(["mise", "run", "-q", TASK], cwd=root, capture_output=True, text=True,
                         stdin=subprocess.DEVNULL, timeout=TIMEOUT_S)
     except FileNotFoundError as exc:
