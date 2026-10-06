@@ -60,7 +60,14 @@ def report(cwd: Optional[Path] = None, runner: Runner = subprocess.run) -> bool:
         return False
     output = ((result.stdout or "") + (result.stderr or "")).strip()
     if result.returncode == 0:
-        _say("no orphaned test graphs")
+        if not output:
+            _say("no orphaned test graphs")
+            return False
+        # exit 0 can still carry notes the operator must see: a graph with no readable holder, or a
+        # stopped gate graph (hrse#2218). Print them; the post's outcome stays untouched.
+        _say("no orphaned test graphs; notes:")
+        for line in output.splitlines()[-20:]:
+            print(f"{HEADING} {line}", flush=True)
         return False
     for line in output.splitlines()[-20:]:
         print(f"{HEADING} {line}", flush=True)

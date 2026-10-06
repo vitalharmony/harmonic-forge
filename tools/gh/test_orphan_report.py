@@ -49,6 +49,19 @@ class OrphanReport(unittest.TestCase):
         self.assertFalse(found)
         self.assertIn("no orphaned test graphs", out)
 
+    def test_exit_zero_notes_are_printed_not_discarded_and_do_not_report_an_orphan(self):
+        note = "test graph with no readable holder, not reaped (operator decides): graph-zz-9\n"
+        found, out = self.run_report(Runner(_repo(True), subprocess.CompletedProcess([], 0, "", note)))
+        self.assertFalse(found)
+        self.assertIn("[test-graph-orphans] test graph with no readable holder, not reaped "
+                      "(operator decides): graph-zz-9", out)
+
+    def test_exit_two_is_a_could_not_check_not_an_orphan(self):
+        done = subprocess.CompletedProcess([], 2, "", "graph_fixture orphans: ERROR -- no podman\n")
+        found, out = self.run_report(Runner(_repo(True), done))
+        self.assertFalse(found)
+        self.assertIn("ERROR -- no podman", out)
+
     def test_orphans_are_printed_under_the_heading_and_reported_true(self):
         done = subprocess.CompletedProcess([], 1, "", "orphan test graph (holder dead): hrse-test-master-x\n")
         found, out = self.run_report(Runner(_repo(True), done))
