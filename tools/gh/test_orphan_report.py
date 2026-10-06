@@ -64,6 +64,15 @@ class OrphanReport(unittest.TestCase):
                 self.assertEqual(len(out.strip().splitlines()), 1)
                 self.assertIn("skipped", out)
 
+    def test_each_failure_names_its_own_cause(self):
+        cases = ((FileNotFoundError(2, "no mise", "mise"), "mise is not installed"),
+                 (subprocess.TimeoutExpired(["mise"], 20), "timed out after 20s"),
+                 (RuntimeError("boom"), "could not run (RuntimeError)"))
+        for exc, wanted in cases:
+            with self.subTest(exc=type(exc).__name__):
+                _, out = self.run_report(Runner(_repo(True), exc))
+                self.assertIn(wanted, out)
+
     def test_a_non_git_directory_is_skipped(self):
         def not_git(argv, **kw):
             return subprocess.CompletedProcess(argv, 128, "", "fatal: not a git repository")
