@@ -161,11 +161,10 @@ STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 #: size on purpose -- a size-derived TTL would be a second thing to get wrong,
 #: and the failure mode of "too short" is the one that actually bit.
 DEFAULT_TTL_HOURS = 12.0
-# harmonic-forge#612: BATCH no longer grants `gh issue close` directly --
-# closing now happens via a `Closes #N` line in the PR body, live-gated
-# independently by `tools/gh/block_closing_keywords.py` (its own state-file
-# read, never a call into this module -- harmonic-forge#600 AC4 forbids
-# `tools/gh/` importing `tools/hooks/`). `"gh issue close"` is refused
+# harmonic-forge#612: BATCH grants no `gh issue close`. A batched issue
+# closes by an explicit close command after its merge; a PR body never
+# carries a closing keyword (`tools/gh/block_closing_keywords.py` denies one
+# unconditionally since harmonic-forge#911). `"gh issue close"` is refused
 # outright if ever passed as an explicit `--action` (AC1: no code path in
 # this module authorizes it, not merely "not the default").
 DEFAULT_ACTIONS = ("gh pr merge",)
@@ -286,10 +285,9 @@ ASK_ISSUE_CLOSE = (
     "Closing an issue directly. This always requires an explicit human "
     "close -- Lane 3's gate or the operator's instruction, never an "
     "agent's own judgement, and BATCH no longer authorizes this command "
-    "at all (harmonic-forge#612). A live BATCH batch that needs a "
-    "sequenced close should carry a `Closes #N` line in the merged PR's "
-    "body instead -- live-gated separately by block_closing_keywords.py, "
-    "never by this decision."
+    "at all (harmonic-forge#612). A batched issue closes by this explicit "
+    "command after its merge, never by a closing keyword in a PR body "
+    "(harmonic-forge#911)."
 )
 
 
@@ -476,9 +474,9 @@ def authorize(
     if CLOSE_ACTION_REMOVED in actions:
         raise ValueError(
             f"{CLOSE_ACTION_REMOVED!r} is no longer an authorizable action "
-            "(harmonic-forge#612) -- closing now happens via a `Closes #N` "
-            "line in the PR body, live-gated independently by "
-            "tools/gh/block_closing_keywords.py, not a direct BATCH grant"
+            "(harmonic-forge#612) -- a batched issue closes by an explicit "
+            "close command after its merge, never by a closing keyword in a "
+            "PR body (harmonic-forge#911)"
         )
     actual_path = STATE_PATH if state_path is None else state_path
     with _locked_state(actual_path):
@@ -1069,10 +1067,9 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
                 # what a state file (even a hand-edited or pre-#612 one
                 # still inside its TTL) might contain. `_match_issue_close`
                 # is never reached for this command class any more; closing
-                # a batched issue now happens via `Closes #N`, live-gated
-                # independently by `block_closing_keywords.py` (its own
-                # state-file read, never a call into this module -- see that
-                # file's docstring for why), never through this function.
+                # a batched issue happens by an explicit close command
+                # after its merge (harmonic-forge#911), never through this
+                # function.
                 return "ask", ASK_ISSUE_CLOSE
 
             match = _match_pr_merge(tokens, state)

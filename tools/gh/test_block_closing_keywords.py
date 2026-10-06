@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Tests for block_closing_keywords.py (harmonic-forge#84/#93, and the
-harmonic-forge#612 live-BATCH exception).
+"""Tests for block_closing_keywords.py (harmonic-forge#84/#93).
 
-No test file existed for this hook before #612 -- this is the first, and it
-covers both the pre-existing blanket-deny behavior and the new live-BATCH
-exception together, since #612 is the first change to ever touch this file.
+harmonic-forge#911 retired #612's live-BATCH exception: a closing keyword is
+denied whatever the BATCH state, so these tests seed a live grant to prove it
+no longer opens anything.
 """
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,191 +53,116 @@ class NonClosingCommandsPassThrough(unittest.TestCase):
         self.assertEqual(result, {})
 
 
-class ClosingKeywordDeniedWithNoLiveBatch(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(__import__("tempfile").mkdtemp()) / "batch-authorized.json"
-        self.patcher = mock.patch.object(bck, "BATCH_STATE_PATH", self.tmp)
-        self.patcher.start()
-
-    def tearDown(self):
-        self.patcher.stop()
-
-    def test_no_state_file_denies(self):
+class ClosingKeywordAlwaysDenied(unittest.TestCase):
+    def test_closes_keyword_denies(self):
         result = _run_hook(
             'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
         )
         self.assertTrue(_is_denied(result))
-        self.assertIn("harmonic-forge#612", result["systemMessage"])
+        self.assertIn("harmonic-forge#911", result["systemMessage"])
 
     def test_fixes_keyword_denies(self):
-        self.tmp.write_text("{}")
         result = _run_hook(
             'gh pr create --repo vitalharmony/hrse --title x --body "Fixes #42"'
         )
         self.assertTrue(_is_denied(result))
 
-    def test_empty_state_denies(self):
-        self.tmp.write_text("{}")
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
-        )
-        self.assertTrue(_is_denied(result))
-
-    def test_malformed_state_denies(self):
-        self.tmp.write_text("not json")
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
-        )
-        self.assertTrue(_is_denied(result))
-
-    def test_expired_grant_denies(self):
-        expired = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        self.tmp.write_text(json.dumps({
-            "H42": {"authorized_at": expired, "expires_at": expired,
-                    "targets": [{"action": "gh pr merge", "consumed": False,
-                                 "consumed_by": None, "repo": None, "pr_number": None}]},
-        }))
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
-        )
-        self.assertTrue(_is_denied(result))
-
-    def test_grant_for_a_different_issue_denies(self):
-        live = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        self.tmp.write_text(json.dumps({
-            "H99": {"authorized_at": datetime.now(timezone.utc).isoformat(),
-                    "expires_at": live,
-                    "targets": [{"action": "gh pr merge", "consumed": False,
-                                 "consumed_by": None, "repo": None, "pr_number": None}]},
-        }))
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
-        )
-        self.assertTrue(_is_denied(result))
-
-    def test_close_only_grant_no_merge_target_denies(self):
-        """A key with only a `gh issue close` target (a legacy/hand-edited
-        entry -- authorize() can no longer construct one) does not satisfy
-        the exception, which checks specifically for a live merge target."""
-        live = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        self.tmp.write_text(json.dumps({
-            "H42": {"authorized_at": datetime.now(timezone.utc).isoformat(),
-                    "expires_at": live,
-                    "targets": [{"action": "gh issue close", "consumed": False,
-                                 "consumed_by": None, "repo": None, "pr_number": None}]},
-        }))
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
-        )
+    def test_comment_with_closing_keyword_denies(self):
+        result = _run_hook('gh issue comment 1 --body "Resolves vitalharmony/hrse#42"')
         self.assertTrue(_is_denied(result))
 
 
-class ClosingKeywordAllowedWithLiveBatch(unittest.TestCase):
-    """harmonic-forge#612: the one live-BATCH exception."""
+KEYWORD = "Clo" + "ses"  # built so no shell text spells a closing keyword
+
+
+def _run_hook_process(command: str, home: Path) -> dict:
+    """The hook as Claude Code runs it: a fresh process, HOME pointed at
+    `home`, so any module-level path bound at import resolves under it."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    env = {**os.environ, "HOME": str(home)}
+    result = subprocess.run([sys.executable, str(HOOK_DIR / "block_closing_keywords.py")],
+                            input=payload, capture_output=True, text=True, env=env, check=True)
+    return json.loads(result.stdout)
+
+
+class LiveBatchGrantOpensNothing(unittest.TestCase):
+    """harmonic-forge#911: a live BATCH grant covering the issue's merge
+    used to allow a closing keyword (#612). With a live grant seeded where
+    the old allow path read it, the hook must still deny."""
 
     def setUp(self):
-        self.tmp = Path(__import__("tempfile").mkdtemp()) / "batch-authorized.json"
-        self.patcher = mock.patch.object(bck, "BATCH_STATE_PATH", self.tmp)
-        self.patcher.start()
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.home, True)
         live = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        self.tmp.write_text(json.dumps({
+        state = self.home / ".claude" / "state" / "batch-authorized.json"
+        state.parent.mkdir(parents=True)
+        state.write_text(json.dumps({
             "H42": {"authorized_at": datetime.now(timezone.utc).isoformat(),
                     "expires_at": live,
                     "targets": [{"action": "gh pr merge", "consumed": False,
                                  "consumed_by": None, "repo": None, "pr_number": None}]},
         }))
 
-    def tearDown(self):
-        self.patcher.stop()
+    def test_live_grant_with_explicit_repo_still_denies(self):
+        result = _run_hook_process(
+            "gh pr create --repo vitalharmony/hrse --title x "
+            f'--body "{KEYWORD} vitalharmony/hrse#42"', self.home)
+        self.assertTrue(_is_denied(result))
 
-    def test_explicit_repo_prefix_allows(self):
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x '
-            '--body "Closes vitalharmony/hrse#42"'
-        )
-        self.assertEqual(result, {})
-
-    def test_repo_flag_fallback_allows(self):
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x --body "Closes #42"'
-        )
-        self.assertEqual(result, {})
-
-    def test_cwd_git_remote_fallback_allows(self):
-        with mock.patch.object(bck.subprocess, "run", return_value=subprocess.CompletedProcess(
-            [], 0, "https://github.com/vitalharmony/hrse.git\n", "",
-        )):
-            result = _run_hook(
-                'gh issue comment 1 --body "Fixes #42"'
-            )
-        self.assertEqual(result, {})
-
-    def test_a_second_unauthorized_issue_in_the_same_body_still_denies(self):
-        """All referenced issues must be live-authorized, not just one."""
-        result = _run_hook(
-            'gh pr create --repo vitalharmony/hrse --title x '
-            '--body "Closes #42, fixes #99"'
-        )
+    def test_live_grant_with_repo_flag_still_denies(self):
+        result = _run_hook_process(
+            f'gh pr create --repo vitalharmony/hrse --title x --body "{KEYWORD} #42"',
+            self.home)
         self.assertTrue(_is_denied(result))
 
 
-class RepoFlagSpoofingIsRejected(unittest.TestCase):
-    """Preclose finding on harmonic-forge#612: a naive command-wide
-    `--repo` search matched `--repo ...` text pasted into the PR BODY
-    (this house's own PR bodies routinely paste example `gh ... --repo
-    ...` command lines) -- when that quoted text appears EARLIER in the
-    command string than the real `--repo` flag, `re.search`'s
-    leftmost-match picked the fake one, redirecting a bare `#N` to
-    whichever repo the quoted text named. A live grant on that OTHER repo
-    then read as a false ALLOW for the real PR's actual issue."""
+class EveryReferenceFormAndSurfaceIsDenied(unittest.TestCase):
+    """harmonic-forge#911 preclose: the URL reference form, and a PR created
+    through the REST API, both passed the hook before."""
 
-    def setUp(self):
-        self.tmp = Path(__import__("tempfile").mkdtemp()) / "batch-authorized.json"
-        self.patcher = mock.patch.object(bck, "BATCH_STATE_PATH", self.tmp)
-        self.patcher.start()
-        live = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        # F42 (harmonic-forge) is live; H42 (hrse) is NOT -- the real PR
-        # below targets hrse, so only H42 should ever be consulted.
-        self.tmp.write_text(json.dumps({
-            "F42": {"authorized_at": datetime.now(timezone.utc).isoformat(),
-                    "expires_at": live,
-                    "targets": [{"action": "gh pr merge", "consumed": False,
-                                 "consumed_by": None, "repo": None, "pr_number": None}]},
-        }))
-
-    def tearDown(self):
-        self.patcher.stop()
-
-    def test_a_repo_flag_quoted_earlier_in_the_body_is_never_read_as_the_real_flag(self):
+    def test_issue_url_form_denies(self):
         result = _run_hook(
-            'gh pr create --title x '
-            '--body "Closes #42 (built with --repo vitalharmony/harmonic-forge)" '
-            '--repo vitalharmony/hrse'
-        )
+            "gh pr create --repo vitalharmony/hrse --title x "
+            f'--body "{KEYWORD} https://github.com/vitalharmony/hrse/issues/42"')
         self.assertTrue(_is_denied(result))
 
+    def test_rest_api_pr_creation_denies(self):
+        result = _run_hook(
+            "gh api -X POST repos/vitalharmony/hrse/pulls -f title=x -f head=b "
+            f"-f base=main -f body='{KEYWORD} #42'")
+        self.assertTrue(_is_denied(result))
 
-class MixedCaseRepoTests(unittest.TestCase):
-    """harmonic-forge#800: mirrors batch_auth's own fix. `_repo_prefixes()`
-    keys are the manifest's lowercased `p.repo` strings, but `repo` here can
-    arrive from `git remote`/CLI in its real, possibly-mixed-case slug."""
-
-    def test_issue_key_resolves_a_mixed_case_repo(self):
-        prefixes = bck._repo_prefixes()
-        if "leasepal-ml/leasepal-app-prototype" not in prefixes:
-            self.skipTest("leasepal not present in this manifest")
-        self.assertEqual(
-            bck._issue_key("LeasePAL-ML/LeasePAL-App-Prototype", "3"), "P3")
+    def test_rest_api_without_a_keyword_is_untouched(self):
+        result = _run_hook("gh api repos/vitalharmony/hrse/issues/42")
+        self.assertEqual(result, {})
 
 
-class CrossAccountPrefixTests(unittest.TestCase):
-    """harmonic-forge#820: the kenekted repos (account harmonicarchitect) resolve to a key, so a
-    `Closes #59` in a kenekted PR is gated like any other."""
+class InspectedSurfacesAfterThePatch(unittest.TestCase):
+    """harmonic-forge#911 sticky-wicket PATCH: the merge and PR-comment
+    routes and the colon form are inspected; a read-only `gh api` call is
+    not denied just because its text names a keyword."""
 
-    def test_a_kenekted_issue_resolves_to_its_prefix_key(self):
-        self.assertEqual(bck._issue_key("kenekted/kenekted-platform", "59"), "K59")
-        self.assertEqual(bck._issue_key("kenekted/kenekted-ai", "12"), "Y12")
-        self.assertEqual(bck._issue_key("kenekted/kenekted-docs", "7"), "D7")
+    def test_merge_subject_denies(self):
+        result = _run_hook(f'gh pr merge 912 --squash --subject "x ({KEYWORD} #42)"')
+        self.assertTrue(_is_denied(result))
+
+    def test_pr_comment_denies(self):
+        result = _run_hook(f'gh pr comment 912 --body "{KEYWORD} #42"')
+        self.assertTrue(_is_denied(result))
+
+    def test_colon_form_denies(self):
+        result = _run_hook(
+            f'gh pr create --repo vitalharmony/hrse --title x --body "{KEYWORD}: #42"')
+        self.assertTrue(_is_denied(result))
+
+    def test_implicit_post_with_fields_denies(self):
+        result = _run_hook(f"gh api repos/vitalharmony/hrse/pulls -f title=x -f body='{KEYWORD} #42'")
+        self.assertTrue(_is_denied(result))
+
+    def test_read_only_api_mentioning_a_keyword_is_untouched(self):
+        result = _run_hook(
+            f"gh api repos/vitalharmony/hrse/issues/42/comments --jq '.[] | select(.body | test(\"{KEYWORD} #42\"))'")
+        self.assertEqual(result, {})
 
 
 if __name__ == "__main__":

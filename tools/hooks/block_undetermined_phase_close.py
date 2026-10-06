@@ -37,8 +37,11 @@ the PR body, its commit messages, or the merge command's own
 `--body`/`-b`/`--subject` values) to a `phase`/`epic` issue -- NOT
 through branch-name resolution the way the sibling hook does, because
 this control is specifically about the keyword auto-close path
-(`hrse#1811`/PR #1813, `harmonic-forge#640`/PR #641 are both live
-examples under the BATCH exception, harmonic-forge#612).
+(`hrse#1811`/PR #1813 and `harmonic-forge#640`/PR #641 went through it under
+harmonic-forge#612's BATCH exception, which harmonic-forge#911 retired).
+`tools/gh/block_closing_keywords.py` denies a closing keyword only in the
+command text it inspects, so every limb here stays live: a body supplied by
+file, a commit message, or text written before #911 still carries one.
 
 **It does not and cannot prevent the merge or close.** Fail-open by
 design, same rationale as every sibling hook: it sees nothing of `gh api
@@ -82,13 +85,13 @@ GATED_LABELS = ("phase", "epic")
 #: runtime (a hooks module must not depend on the `tools/gh` package).
 CLOSING_KEYWORD = re.compile(
     r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-    r"\s+(?P<repo>[\w.-]+/[\w.-]+)?#(?P<number>\d+)"
+    r":?\s+(?P<repo>[\w.-]+/[\w.-]+)?#(?P<number>\d+)"
 )
 
 #: The URL form of the same keywords -- "Closes https://github.com/o/r/issues/N".
 CLOSING_KEYWORD_URL = re.compile(
     r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-    r"\s+https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
+    r":?\s+https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
 )
 
 FENCE = re.compile(r"^\s*(?:```|~~~)")

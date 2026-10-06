@@ -207,17 +207,20 @@ The same honesty requirement in R-0116 applies here: a session acting on
 now, suspending #1675"`.
 <!-- /R-0355 -->
 
-## `BATCH` — pre-authorize a multi-issue merge/close pass
+## `BATCH` — pre-authorize a multi-issue merge pass
 
 Grammar: **`BATCH` + comma-separated repo-prefixed issue tokens**, e.g.
-`BATCH H767,H1108,F316,F329`. Optionally `--ttl <duration>` to override the
-default 2-hour authorization window, e.g. `BATCH H395,F334 --ttl 6h`.
+`BATCH H767,H1108,F316,F329`. The authorization is automatic (R-0341 below),
+lasts 12 hours, and reads no flags.
 
 Direction: operator → the session it's said to, in a genuine chat message.
 
-Meaning: pre-authorizes `gh pr merge`/`gh issue close` for exactly the named
-issues, so a session implementing a batch of independent issues doesn't need
-a live approval for every individual merge and close. Mechanism:
+Meaning: pre-authorizes `gh pr merge` for exactly the named issues, so a
+session implementing a batch of independent issues doesn't need a live
+approval for every individual merge. BATCH grants no close
+(harmonic-forge#612): a batched issue closes by an explicit close command
+after its merge, and a PR body never carries a closing keyword
+(harmonic-forge#911). Mechanism:
 `tools/hooks/batch_auth.py` (harmonic-forge#336, reforged after a live gate
 FAIL and further fixed in harmonic-forge#356 — read that module's docstring
 for the full design, the documented permission-precedence reasons the first
@@ -232,7 +235,7 @@ session had.
 <!-- R-0341 -->
 Typing `BATCH` followed by issue keys on one line creates the authorization
 automatically, on `UserPromptSubmit`, before the turn's first tool call — two
-merge targets and one close target per key, 12-hour TTL. Keys are read to the
+merge targets per key, 12-hour TTL. Keys are read to the
 end of that line, so a sentence works: `BATCH these tooling issues F495, F497,
 F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
 <!-- /R-0341 -->
@@ -241,8 +244,8 @@ F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
 A `gh pr merge <PR#>` still needs its PR linked to the issue — the command
 carries no issue number, so nothing else can resolve it. `link-pr` has no
 automatic caller, and a missing call costs one Ask prompt per merge. When a
-merge or close is refused, the prompt now names which of the four states
-applies: no authorization, expired, already consumed, or PR not linked.
+merge is refused, the prompt now names which of the four states applies:
+no authorization, expired, already consumed, or PR not linked.
 <!-- /R-0342 -->
 
 **Standing a grant down, and how the state file's own size is bounded**
@@ -278,17 +281,14 @@ instruction.
 - `authorize()` and the command it authorizes must be **separate tool
   calls**. A `PreToolUse` hook evaluates a bundled multi-line command's
   full text before any of it executes, so bundling `authorize` and the
-  now-authorized `close`/`merge` into one call defeats the mechanism — the
+  now-authorized merge into one call defeats the mechanism — the
   hook sees no live entry yet and asks, correctly, even though the
   authorize line runs (harmlessly) right after.
 <!-- /R-0118 -->
-- One `authorize()` call covers **both** merge and close for each named
-  issue by default (harmonic-forge#356) — the real lifecycle is
-  implement → merge → close, and a narrower single-action grant is the
-  exception, not the default, unless explicitly scoped (e.g. an issue
-  that only ever closes, never merges).
+- `authorize()` grants merge targets only and raises on a close action
+  (harmonic-forge#612), whatever the caller passes.
 
-This mechanism is scoped to `gh pr merge`/`gh issue close` only. It does not
+This mechanism is scoped to `gh pr merge` only. It does not
 touch, and was never meant to touch, any other permission-gated action.
 
 ## Operator → lane triggers

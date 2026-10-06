@@ -9,15 +9,15 @@
 # `bytes` are re-measured here, not copied. An entry that does not
 # match the real delta fails the check.
 
-total_bytes = 45395
+total_bytes = 45456
 ceiling_bytes = 48000
 target_bytes = 24000
 
 [files]
-".claude/rules/lane-shorthand.md" = 18493
+".claude/rules/lane-shorthand.md" = 18351
 "CLAUDE.md" = 865
 "~/.claude/CLAUDE.md" = 6782
-"~/Harmonic_Projects/operator-memory/MEMORY.md" = 19255
+"~/Harmonic_Projects/operator-memory/MEMORY.md" = 19458
 
 [[increase]]
 date = "2026-09-09"
