@@ -112,7 +112,7 @@ class OrphanReport(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "", "")
             return subprocess.CompletedProcess(argv, 0, f"{_repo(True)}\n", "")
         self.run_report(capture)
-        self.assertEqual(seen["argv"], ["mise", "run", "test-graph-orphans"])
+        self.assertEqual(seen["argv"], ["mise", "run", "-q", orp.TASK])
         self.assertIs(seen["stdin"], subprocess.DEVNULL)
         self.assertEqual(seen["timeout"], orp.TIMEOUT_S)
         self.assertNotIn("env", seen, "MISE_YES must never be injected")
