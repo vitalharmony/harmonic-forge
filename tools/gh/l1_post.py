@@ -88,6 +88,7 @@ except ImportError:
 # however this file is loaded (tests load it by file location).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pitch_receipt  # noqa: E402
+import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
 
 HANDOFF_HEADINGS = [
@@ -1862,6 +1863,9 @@ def _post_kind(
     recorded."""
     local_check_timing: tuple[str, str] | None = None
     if kind == "ready-for-l3":
+        # hrse#2218: name any orphaned test graph before the long check, so the operator sees a
+        # killed run's leak at this lane's finish line. Report only; it cannot change the post.
+        orphan_report.report()
         # harmonic-forge#905: the same read-only world checks, once as a
         # fail-fast pre-flight, so an overlap or a moved branch refuses in
         # seconds instead of after a full `mise run check`. The call below,
