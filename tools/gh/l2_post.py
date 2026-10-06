@@ -32,6 +32,7 @@ from manifest_identity import apply_project_identity  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent))
 from receipt_runner import clear_lock, is_locked, lock_path, strip_ansi, write_receipt  # noqa: E402
 import belt_candidates  # noqa: E402
+import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 
 
 def _sha(text: str) -> str:
@@ -424,6 +425,10 @@ def main() -> int:
     lead = {"Status": args.status, "Change": args.change, "Next": args.next_action}
     validate_lead(args.kind, lead)
     body = compose_body(args.kind, receipts, narrative, lead)
+    if args.kind == "completion":
+        # hrse#2218: a completion is Lane 2's finish line; name any orphaned test graph. Report
+        # only: it prints, and cannot change what is posted.
+        orphan_report.report()
     result = post(args.repo, args.issue, body)
     #: harmonic-forge#691 (AC1'). `belt_candidates` is the one module all
     #: three marker-posting tools call on every successful post --
