@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import forge_onboard_identity  # noqa: E402
 import forge_onboard_skills  # noqa: E402
 import lane_tasks  # noqa: E402
+from required_hooks import REQUIRED_HOOKS, required_hook_gaps  # noqa: E402,F401
 from manifest import (  # noqa: E402
     ManifestError, Project, check_prefix_agreement, load, prefixes,
 )
@@ -699,26 +700,6 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
     return sorted(gaps)
 
 
-#: Platform hooks every onboarded checkout's settings.json must register, as
-#: `(script, event, matcher substring)`: the guard fires only as a `PreToolUse`
-#: hook whose matcher covers `Edit`, so the filename appearing under any other
-#: event reads as guarded while nothing is (harmonic-forge#918).
-REQUIRED_HOOKS = (("require_ci_plan.py", "PreToolUse", "Edit"),)
-
-
-def required_hook_gaps(hooks: dict) -> list[str]:
-    """`REQUIRED_HOOKS` not registered under their event with a covering matcher."""
-    gaps: list[str] = []
-    for script, event, matcher_part in REQUIRED_HOOKS:
-        blocks = hooks.get(event) if isinstance(hooks.get(event), list) else []
-        if not any(isinstance(block, dict) and matcher_part in str(block.get("matcher", ""))
-                   and any(isinstance(h, dict) and script in str(h.get("command", ""))
-                           for h in block.get("hooks") or [])
-                   for block in blocks):
-            gaps.append(f"{script} (under {event}, matcher covering {matcher_part})")
-    return gaps
-
-
 def check_hooks(project: Project) -> Check:
     """Presence, shape, AND that every platform script it names resolves.
 
@@ -739,12 +720,15 @@ def check_hooks(project: Project) -> Check:
         return Check("hooks", FAIL, "settings.json declares no hooks block")
 
     events = sorted(hooks) if isinstance(hooks, dict) else []
+    # Every gap is collected and reported together: a check that returns on its
+    # first failure hides the later ones for as long as the first persists
+    # (harmonic-forge#918, the same principle as hrse#2221).
+    problems: list[str] = []
     missing = unresolvable_hook_targets(hooks) if isinstance(hooks, dict) else []
     if missing:
-        return Check("hooks", FAIL,
-                     f"{len(events)} event(s) declared, but "
-                     f"{len(missing)} named script(s) do not exist: "
-                     + ", ".join(missing))
+        problems.append(f"{len(events)} event(s) declared, but "
+                        f"{len(missing)} named script(s) do not exist: "
+                        + ", ".join(missing))
 
     # Declaring ONE event is not the same as being guarded. Naming the count of
     # PreToolUse entries stops a repo with a single SessionStart line from
@@ -756,28 +740,27 @@ def check_hooks(project: Project) -> Check:
     # worse than none: the report reads green and the session is unguarded.
     gaps = sessionstart_source_gaps(hooks) if isinstance(hooks, dict) else []
     if gaps:
-        return Check("hooks", FAIL,
-                     "belt_wakeup.py matches no SessionStart source for: "
-                     + ", ".join(gaps)
-                     + " -- a session started that way is never told its lane "
-                       "(harmonic-forge#560)")
+        problems.append("belt_wakeup.py matches no SessionStart source for: "
+                        + ", ".join(gaps)
+                        + " -- a session started that way is never told its lane "
+                          "(harmonic-forge#560)")
 
     absent = required_hook_gaps(hooks) if isinstance(hooks, dict) else []
     if absent:
-        return Check("hooks", FAIL,
-                     "required platform hook(s) not registered: " + ", ".join(absent)
-                     + " -- register them in .claude/settings.json (harmonic-forge#918)")
+        problems.append("required platform hook(s) not registered: " + ", ".join(absent)
+                        + " -- register them in .claude/settings.json (harmonic-forge#918)")
 
     # The main checkout being right is not the same as the launcher's checkout
     # being right, and the launchers do not run here.
     stale = stale_worktree_hook_gaps(project)
     if stale:
-        return Check("hooks", FAIL,
-                     "this checkout is correct but these worktrees are not: "
-                     + ", ".join(stale)
-                     + " -- `.claude/settings.json` is tracked, so a detached "
-                       "worktree keeps its own stale copy through any merge, "
-                       "and the lane launchers run THERE (harmonic-forge#560)")
+        problems.append("this checkout is correct but these worktrees are not: "
+                        + ", ".join(stale)
+                        + " -- `.claude/settings.json` is tracked, so a detached "
+                          "worktree keeps its own stale copy through any merge, "
+                          "and the lane launchers run THERE (harmonic-forge#560)")
+    if problems:
+        return Check("hooks", FAIL, "; ".join(problems))
 
     guards = len(hooks.get("PreToolUse") or []) if isinstance(hooks, dict) else 0
     detail = f"{len(events)} event(s): {', '.join(events)}; {guards} PreToolUse matcher(s)"

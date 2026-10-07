@@ -30,6 +30,8 @@ TASKS = {
 
 
 def fake_info(task, cwd):
+    if task == "nomise":
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'mise'")
     if task not in TASKS:
         raise RuntimeError(f"mise task {task!r} not found")
     return TASKS[task]
@@ -116,6 +118,36 @@ class ConstraintsTests(unittest.TestCase):
         self._commit()
         self.assertEqual(ci_plan.constraints(self.root, ["src/foo.py"]), [])
 
+    def test_a_stoplisted_stem_still_matches_its_dotted_module(self):
+        write(self.root, "backend/app/main.py", "x = 1\n")
+        write(self.root, "backend/tests/test_boot.py", "from app.main import create\n")
+        self._commit()
+        out = "\n".join(ci_plan.constraints(self.root, ["backend/app/main.py"]))
+        self.assertIn("backend/tests/test_boot.py", out)
+
+    def test_strong_matches_are_never_truncated_only_weak_ones(self):
+        write(self.root, "src/widget.py", "x = 1\n")
+        for n in range(20):
+            write(self.root, f"tests/test_strong_{n:02d}.py", "import src.widget\n")
+        for n in range(20):
+            write(self.root, f"tests/test_weak_{n:02d}.py", "a widget appears\n")
+        write(self.root, "tests/conftest.py", "# setup\n")
+        self._commit()
+        out = ci_plan.constraints(self.root, ["src/widget.py"])
+        shown = [line for line in out if "test_strong_" in line]
+        self.assertEqual(len(shown), 20)
+        self.assertEqual(len([line for line in out if "test_weak_" in line]), 8)
+        self.assertTrue(any("12 more weaker (bare-word)" in line for line in out))
+        self.assertIn("    setup: tests/conftest.py", out)
+
+    def test_a_broken_search_is_an_error_not_an_empty_map(self):
+        write(self.root, "src/widget.py", "x = 1\n")
+        self._commit()
+        with mock.patch("ci_plan_constraints.subprocess.run") as run:
+            run.return_value = types.SimpleNamespace(returncode=2, stdout="", stderr="boom")
+            with self.assertRaises(RuntimeError):
+                ci_plan.constraints(self.root, ["src/widget.py"])
+
     def test_a_dotted_module_path_matches_an_import(self):
         write(self.root, "pkg/services/widget_service.py", "x = 1\n")
         write(self.root, "tests/test_imp.py", "from services import widget_service\n")
@@ -151,7 +183,7 @@ class ConstraintsTests(unittest.TestCase):
         self._commit()
         out = ci_plan.constraints(self.root, ["src/widget.py"])
         self.assertEqual(out[1].split(":")[0].strip(), "tests/test_zz_strong.py")
-        self.assertTrue(any("more test file(s), weaker" in line for line in out))
+        self.assertTrue(any("more weaker (bare-word)" in line for line in out))
 
 
 class MainTests(unittest.TestCase):
@@ -194,13 +226,50 @@ class MainTests(unittest.TestCase):
         self.assertIn("  2. mise run docs-check", out)
         self.assertTrue((self.receipts / "sess-1.json").is_file())
 
-    def test_a_failed_run_writes_no_receipt(self):
+    def test_a_run_outside_any_git_checkout_writes_no_receipt(self):
+        nongit = Path(tempfile.mkdtemp())
+        cwd = os.getcwd()
+        os.chdir(nongit)
+        err = io.StringIO()
+        try:
+            with mock.patch.dict(os.environ, self.env), contextlib.redirect_stderr(err):
+                code = ci_plan.main([])
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(code, 1)
+        self.assertIn("no receipt written", err.getvalue())
+        self.assertFalse(self.receipts.exists())
+
+    def test_nothing_that_degrades_the_plan_withholds_the_receipt(self):
+        """Only the reading is enforced: an unregistered checkout, a missing
+        merge base and a failing search are warnings, never a lockout."""
         def unresolved(cwd):
             raise ci_plan.ManifestError("not inside any registered checkout")
-        code, _, err = self._run(resolve=unresolved)
-        self.assertEqual(code, 1)
-        self.assertIn("no receipt written", err)
-        self.assertFalse(self.receipts.exists())
+        code, out, _ = self._run(resolve=unresolved)
+        self.assertEqual((code, "no registered project" in out), (0, True))
+        self.assertTrue((self.receipts / "sess-1.json").is_file())
+        (self.receipts / "sess-1.json").unlink()
+        with mock.patch.object(ci_plan, "changed_files", side_effect=RuntimeError("no merge base")):
+            code, out, _ = self._run()
+        self.assertEqual((code, "no merge base" in out), (0, True))
+        self.assertTrue((self.receipts / "sess-1.json").is_file())
+        (self.receipts / "sess-1.json").unlink()
+        with mock.patch.object(ci_plan, "constraints", side_effect=RuntimeError("git grep failed")):
+            code, out, _ = self._run()
+        self.assertEqual((code, "constraints search failed" in out), (0, True))
+        self.assertTrue((self.receipts / "sess-1.json").is_file())
+
+    def test_a_project_with_no_protocol_still_gets_a_receipt(self):
+        self.project.protocol = None
+        code, out, _ = self._run()
+        self.assertEqual((code, "no protocol.gate_task" in out), (0, True))
+        self.assertTrue((self.receipts / "sess-1.json").is_file())
+
+    def test_mise_missing_is_a_warning_and_still_gets_a_receipt(self):
+        self.project.protocol.gate_task = "nomise"
+        code, out, _ = self._run()
+        self.assertEqual((code, "could not be read here" in out), (0, True))
+        self.assertTrue((self.receipts / "sess-1.json").is_file())
 
     def test_a_missing_gate_task_is_reported_not_fatal_and_still_gets_a_receipt(self):
         """A lane must not be locked out of its edits because the declared gate task
@@ -234,6 +303,30 @@ class MainTests(unittest.TestCase):
             other = Path(tempfile.mkdtemp())
             git(other, "init", "-q", "-b", "main")
             self.assertFalse(ci_plan.has_receipt("sess-1", other))
+
+    def test_a_path_argument_relative_to_a_subdirectory_is_converted_not_duplicated(self):
+        write(self.root, "backend/app/services/foo.py", "x = 1\n")
+        write(self.root, "backend/tests/test_foo.py", "from app.services import foo\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "w")
+        git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        cwd = os.getcwd()
+        os.chdir(self.root / "backend")
+        try:
+            self.assertEqual(ci_plan.root_relative("app/services/foo.py", Path.cwd(), self.root),
+                             "backend/app/services/foo.py")
+            self.assertEqual(ci_plan.root_relative("backend/app/services/foo.py", Path.cwd(),
+                                                   self.root), "backend/app/services/foo.py")
+            with mock.patch.dict(os.environ, self.env), \
+                    mock.patch.object(ci_plan, "task_info", fake_info), \
+                    mock.patch.object(ci_plan, "resolve_project", lambda c: self.project), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(ci_plan.main(["app/services/foo.py"]), 0)
+        finally:
+            os.chdir(cwd)
+        text = out.getvalue()
+        self.assertEqual(text.count("backend/app/services/foo.py"), 1)
+        self.assertNotIn("\n  app/services/foo.py", text)
 
     def test_run_from_a_subdirectory_maps_the_same_files_as_from_the_root(self):
         write(self.root, "src/widget.py", "x = 1\n")
@@ -274,6 +367,59 @@ class MainTests(unittest.TestCase):
     def test_an_unsafe_session_id_writes_no_receipt(self):
         self.assertIsNone(ci_plan.receipt_path("../escape"))
         self.assertIsNone(ci_plan.receipt_path(""))
+
+
+class ReceiptStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.patch = mock.patch.dict(os.environ, {ci_plan.RECEIPT_DIR_ENV: str(self.root / "r")})
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def _checkout(self, name):
+        path = self.root / name
+        path.mkdir()
+        git(path, "init", "-q", "-b", "main")
+        git(path, "commit", "-q", "--allow-empty", "-m", "b")
+        return path
+
+    def test_concurrent_runs_in_one_session_keep_every_checkout(self):
+        checkouts = [self._checkout(f"c{n}") for n in range(8)]
+        script = ("import sys; sys.path.insert(0, %r); import ci_plan; from pathlib import Path; "
+                  "ci_plan.write_receipt(Path(sys.argv[1]), 'sess')" % str(HERE))
+        procs = [subprocess.Popen([sys.executable, "-c", script, str(c)], env=os.environ.copy())
+                 for c in checkouts]
+        self.assertEqual([p.wait() for p in procs], [0] * 8)
+        self.assertEqual([ci_plan.has_receipt("sess", c) for c in checkouts], [True] * 8)
+
+    def test_a_corrupt_receipt_is_replaced_whole_never_left_partial(self):
+        a, b = self._checkout("a"), self._checkout("b")
+        ci_plan.write_receipt(a, "sess")
+        path = ci_plan.receipt_path("sess")
+        path.write_text('{"reads": {"/x": ', encoding="utf-8")  # a killed write
+        self.assertFalse(ci_plan.has_receipt("sess", a))
+        ci_plan.write_receipt(b, "sess")
+        self.assertTrue(ci_plan.has_receipt("sess", b))
+        self.assertFalse(list(path.parent.glob("*.tmp")))  # no temp left behind
+
+    def test_the_per_issue_worktree_fallback_resolves_the_main_checkout(self):
+        """A per-issue worktree is registered nowhere; only the git-common-dir
+        fallback finds its project. No patching of resolve_project."""
+        main = self._checkout("main-checkout")
+        manifest = self.root / "projects.toml"
+        manifest.write_text(f'[[project]]\nname = "demo"\nprefix = "D"\npath = "{main}"\n',
+                            encoding="utf-8")
+        worktree = self.root / "wt-impl"
+        git(main, "worktree", "add", "-q", "-b", "tooling/x", str(worktree))
+        with mock.patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(manifest)}):
+            self.assertEqual(ci_plan.resolve_project(worktree).name, "demo")
+            outside = self._checkout("unregistered")
+            with self.assertRaises(ci_plan.ManifestError):
+                ci_plan.resolve_project(outside)
 
 
 if __name__ == "__main__":

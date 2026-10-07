@@ -25,16 +25,21 @@ status. `tools/hooks/require_ci_plan.py` allows an edit only in a checkout and
 branch the session has read. A head change on the same branch does NOT
 invalidate it. `--session` exists because after `--resume` the environment id
 may differ from the hook payload's; the hook's deny message prints the right
-one. A failed run writes nothing and exits 1. Codex lanes have no session id:
-they get the plan and no receipt.
+one. The receipt is unconditional once a git checkout and a session id exist: a plan
+that cannot be fully computed is printed as warnings. Only a directory that is not
+a git checkout fails (exit 1, no receipt). Codex lanes have no session id: they get
+the plan and no receipt.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -137,6 +142,26 @@ def expand(task: str, cwd: Path, seen: set[str] | None = None) -> list[str]:
     return commands
 
 
+@contextlib.contextmanager
+def _receipt_lock(path: Path, wait_seconds: float = 5.0):
+    """Serialize read-modify-write of one session's receipt map (the pattern
+    `batch_auth._locked_state` uses, with a bounded wait instead of failing)."""
+    fd = os.open(str(path.with_suffix(".lock")), os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + wait_seconds
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise OSError("receipt lock held too long")
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)
+
+
 def write_receipt(cwd: Path, session_id: str | None) -> str:
     path = receipt_path(session_id)
     if path is None:
@@ -145,12 +170,17 @@ def write_receipt(cwd: Path, session_id: str | None) -> str:
     head = (_git(cwd, "rev-parse", "HEAD") or "").strip()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            reads = json.loads(path.read_text(encoding="utf-8")).get("reads", {})
-        except (OSError, ValueError, AttributeError):
-            reads = {}
-        reads[top] = {"branch": branch, "head": head, "created": time.time()}
-        path.write_text(json.dumps({"reads": reads}) + "\n", encoding="utf-8")
+        with _receipt_lock(path):
+            try:
+                reads = json.loads(path.read_text(encoding="utf-8")).get("reads", {})
+            except (OSError, ValueError, AttributeError):
+                reads = {}
+            reads[top] = {"branch": branch, "head": head, "created": time.time()}
+            handle = tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False,
+                                                 suffix=".tmp")
+            with handle:
+                handle.write(json.dumps({"reads": reads}) + "\n")
+            os.replace(handle.name, path)
     except OSError as exc:
         return (f"WARNING: the receipt could not be written ({exc}); the guard fails "
                 "open while its directory is unwritable")
@@ -158,6 +188,11 @@ def write_receipt(cwd: Path, session_id: str | None) -> str:
 
 
 def main(argv: list[str]) -> int:
+    """Always exits 0 with a receipt once a git checkout and session id exist:
+    only the READING is enforced, so a plan that cannot be fully computed
+    (no registered project, no gate task, no merge base, a failing search) is
+    printed as warnings, never as a reason to withhold the receipt
+    (harmonic-forge#918 sticky-wicket ruling). Not a git checkout: exit 1."""
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     args = list(argv)
     if "--session" in args:
@@ -167,24 +202,40 @@ def main(argv: list[str]) -> int:
     invoked = Path.cwd()
     try:
         root = repo_root(invoked)
+    except RuntimeError as exc:
+        print(f"ci_plan: FAILED, no receipt written: {exc}", file=sys.stderr)
+        return 1
+    warnings: list[str] = []
+    project, task = None, None
+    try:
         project = resolve_project(root)
         task = project.protocol.gate_task if project.protocol else None
         if not task:
-            raise RuntimeError(f"{project.name} declares no protocol.gate_task in projects.toml")
-        files = sorted(set(changed_files(root)) | {root_relative(a, invoked, root)
-                                                   for a in args if a})
-        mapped = constraints(root, files)
-    except (ManifestError, RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
-        print(f"ci_plan: FAILED, no receipt written: {exc}", file=sys.stderr)
-        return 1
+            warnings.append(f"{project.name} declares no protocol.gate_task in projects.toml")
+    except (ManifestError, OSError, ValueError) as exc:
+        warnings.append(f"no registered project owns this checkout ({exc})")
+    name = project.name if project else root.name
+    if task:
+        try:
+            steps = expand(task, root)
+            print(f"GATE: `mise run {task}` for {name} -- {len(steps)} step(s), in run order")
+            for number, command in enumerate(steps, 1):
+                print(f"{number:3}. {command}")
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
+            warnings.append(f"`mise run {task}` could not be read here ({exc})")
     try:
-        steps = expand(task, root)
-        print(f"GATE: `mise run {task}` for {project.name} -- {len(steps)} step(s), in run order")
-        for number, command in enumerate(steps, 1):
-            print(f"{number:3}. {command}")
-    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
-        print(f"GATE: `mise run {task}` for {project.name} could not be read here: {exc}\n"
-              "  (no step list to read; the constraints below still apply)")
+        changed = changed_files(root)
+    except RuntimeError as exc:
+        warnings.append(f"{exc}; mapping only the paths given as arguments")
+        changed = []
+    files = sorted(set(changed) | {root_relative(a, invoked, root) for a in args if a})
+    try:
+        mapped = constraints(root, files)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        warnings.append(f"the constraints search failed ({exc})")
+        mapped = []
+    for warning in warnings:
+        print(f"WARNING: {warning}\n  (no plan to read for this part; the receipt is still written)")
     print(f"\nCONSTRAINTS: tests that name the {len(files)} file(s) this branch changes")
     print("\n".join(mapped) if mapped else "  (no test names any changed file"
           + ("; the branch changes nothing yet: pass the files you intend to edit as "

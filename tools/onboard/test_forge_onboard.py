@@ -113,7 +113,9 @@ class Base(unittest.TestCase):
             settings = repo / ".claude" / "settings.json"
             settings.parent.mkdir(parents=True, exist_ok=True)
             settings.write_text(json.dumps({"hooks": {"PreToolUse": [
-                {"matcher": "Edit|Write", "hooks": [{"command": "python3 require_ci_plan.py"}]}]}}),
+                {"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+                 "hooks": [{"command": "python3 require_ci_plan.py"}]}],
+                "UserPromptSubmit": [{"hooks": [{"command": "python3 grant_ci_plan_override.py"}]}]}}),
                 encoding="utf-8")
         if worktrees:
             for n in (2, 3):
@@ -426,7 +428,8 @@ class HookContentTests(unittest.TestCase):
         return {"SessionStart": [{"matcher": matcher,
                                   "hooks": [{"type": "command", "command": command}]}],
                 "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
-                                "hooks": [{"command": "python3 require_ci_plan.py"}]}]}
+                                "hooks": [{"command": "python3 require_ci_plan.py"}]}],
+                "UserPromptSubmit": [{"hooks": [{"command": "python3 grant_ci_plan_override.py"}]}]}
 
     def test_a_missing_required_hook_fails_the_hooks_check(self) -> None:
         """harmonic-forge#918: a repo that registers other hooks but not
@@ -441,16 +444,53 @@ class HookContentTests(unittest.TestCase):
         self.assertEqual(check.status, fo.FAIL)
         self.assertIn("require_ci_plan.py", check.detail)
 
-    def test_the_hook_registered_under_the_wrong_event_or_matcher_still_fails(self) -> None:
-        """A filename present under UserPromptSubmit, or under a PreToolUse
-        matcher that never sees an Edit, guards nothing."""
-        for wrong in ({"UserPromptSubmit": [{"hooks": [{"command": "python3 require_ci_plan.py"}]}]},
-                      {"PreToolUse": [{"matcher": "Read",
-                                       "hooks": [{"command": "python3 require_ci_plan.py"}]}]}):
-            hooks = self._hooks("python3 belt_wakeup.py")
-            hooks.pop("PreToolUse")
-            hooks.update(wrong)
-            self.assertEqual(len(fo.required_hook_gaps(hooks)), 1, wrong)
+    def test_a_registration_that_leaves_a_guarded_tool_ungated_is_a_gap(self) -> None:
+        """The matcher is a regex over tool names, not a substring: `NotebookEdit`
+        contains `Edit`, and `Edit|Write` leaves `mise run check` (Bash) ungated."""
+        full = self._hooks("python3 belt_wakeup.py")
+        for matcher in ("NotebookEdit", "Edit|Write", "Edit|Write|MultiEdit|NotebookEdit",
+                        "Read", "Edit(x)"):
+            hooks = {**full, "PreToolUse": [{"matcher": matcher, "hooks": [
+                {"command": "python3 require_ci_plan.py"}]}]}
+            self.assertEqual(len(fo.required_hook_gaps(hooks)), 1, matcher)
+        covered = {**full, "PreToolUse": [
+            {"matcher": "Edit|Write|MultiEdit|NotebookEdit",
+             "hooks": [{"command": "python3 require_ci_plan.py"}]},
+            {"matcher": "Bash", "hooks": [{"command": "python3 require_ci_plan.py"}]}]}
+        self.assertEqual(fo.required_hook_gaps(covered), [])
+        self.assertEqual(fo.required_hook_gaps({**full, "PreToolUse": [
+            {"hooks": [{"command": "python3 require_ci_plan.py"}]}]}), [])  # no matcher = all
+
+    def test_the_guard_registered_under_the_wrong_event_is_a_gap(self) -> None:
+        hooks = self._hooks("python3 belt_wakeup.py")
+        hooks.pop("PreToolUse")
+        hooks["UserPromptSubmit"].append(
+            {"hooks": [{"command": "python3 require_ci_plan.py"}]})
+        self.assertTrue(any("not registered under PreToolUse" in g
+                            for g in fo.required_hook_gaps(hooks)))
+
+    def test_the_override_hook_is_required_alongside_the_guard(self) -> None:
+        """A guard whose deny message says 'type ALLOW EDIT' with nothing to record
+        the grant is un-liftable, and must not read as installed."""
+        hooks = self._hooks("python3 belt_wakeup.py")
+        hooks.pop("UserPromptSubmit")
+        gaps = fo.required_hook_gaps(hooks)
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("grant_ci_plan_override.py", gaps[0])
+
+    def test_every_gap_is_reported_together_not_the_first_only(self) -> None:
+        checkout = self.root / "manygaps"
+        (checkout / ".claude").mkdir(parents=True)
+        hooks = self._hooks("python3 belt_wakeup.py", matcher="startup|resume")
+        hooks.pop("PreToolUse")
+        hooks.pop("UserPromptSubmit")
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="m", prefix="M", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("belt_wakeup.py", check.detail)
+        self.assertIn("require_ci_plan.py", check.detail)
+        self.assertIn("grant_ci_plan_override.py", check.detail)
 
     def test_an_older_belt_gap_is_not_shadowed_by_the_required_hook_gap(self) -> None:
         checkout = self.root / "bothgaps"

@@ -19,7 +19,8 @@ TEST_PATHSPECS = [":(glob)**/tests/**", ":(glob)**/test/**", ":(glob)**/*_test.*
                   ":(glob)**/*Test.*", ":(glob)**/test_*"]
 SETUP_NAMES = ("conftest.py", "flutter_test_config.dart", "TestCase.php", "setup.ts",
                "setupTests.ts", "vitest.setup.ts")
-MAX_HITS = 12
+#: Weak (bare-word) matches shown per file; strong matches are never truncated.
+MAX_WEAK_HITS = 8
 
 
 def git(cwd: Path, *args: str) -> str | None:
@@ -29,6 +30,22 @@ def git(cwd: Path, *args: str) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
+
+
+def git_grep(root: Path, needle: str) -> str:
+    """Matches as `git grep` prints them. Exit 1 is 'no match' and returns ''; any
+    other failure raises, so a broken search is never read as an empty map."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "grep", "-n", "-w", "-F", "-e", needle, "--",
+             *TEST_PATHSPECS], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"git grep could not run: {exc}") from exc
+    if done.returncode == 1:
+        return ""
+    if done.returncode != 0:
+        raise RuntimeError(f"git grep failed ({done.returncode}): {done.stderr.strip()[:200]}")
+    return done.stdout
 
 
 def repo_root(cwd: Path) -> Path:
@@ -72,16 +89,18 @@ def is_test(path: str) -> bool:
 
 def needles(path: str) -> list[tuple[str, bool]]:
     """`(needle, strong)`: strong needles name the file (path tail, basename,
-    dotted module) and rank above a bare-stem match."""
+    dotted module) and rank above a bare-stem match. The stoplist and the data
+    suffixes gate ONLY the bare stem: `app.main` is a precise needle even though
+    `main` is not."""
     pure = Path(path)
     found: list[tuple[str, bool]] = [(pure.name, True)]
     if len(pure.parts) >= 2:
         found.append(("/".join(pure.parts[-2:]), True))
+    if pure.suffix == ".py":
+        found += [(".".join(pure.with_suffix("").parts[-n:]), True)
+                  for n in (2, 3) if len(pure.parts) >= n]
     if pure.suffix not in DATA_SUFFIXES and pure.stem.lower() not in STOPLIST:
         found.append((pure.stem, False))
-        if pure.suffix == ".py":
-            found += [(".".join(pure.with_suffix("").parts[-n:]), True)
-                      for n in (2, 3) if len(pure.parts) >= n]
     return found
 
 
@@ -92,8 +111,7 @@ def constraints(root: Path, files: list[str]) -> list[str]:
             continue
         hits: dict[str, tuple[int, str]] = {}
         for needle, strong in needles(path):
-            out = git(root, "grep", "-n", "-w", "-F", "-e", needle, "--", *TEST_PATHSPECS)
-            for row in (out or "").splitlines():
+            for row in git_grep(root, needle).splitlines():
                 name, _, rest = row.partition(":")
                 score = 2 if strong else 1
                 if name not in hits or hits[name][0] < score:
@@ -101,13 +119,16 @@ def constraints(root: Path, files: list[str]) -> list[str]:
         if not hits:
             continue
         ranked = sorted(hits.items(), key=lambda item: (-item[1][0], item[0]))
+        strong = [item for item in ranked if item[1][0] == 2]
+        weak = [item for item in ranked if item[1][0] == 1]
+        shown = strong + weak[:MAX_WEAK_HITS]
         lines.append(f"  {path}")
-        for name, (_, text) in ranked[:MAX_HITS]:
+        for name, (_, text) in shown:
             lines.append(f"    {name}:{text}")
-        if len(ranked) > MAX_HITS:
-            lines.append(f"    ... and {len(ranked) - MAX_HITS} more test file(s), "
-                         "weaker (bare-word) matches")
-        for setup in setup_files(root, dict(ranked[:MAX_HITS])):
+        if len(weak) > MAX_WEAK_HITS:
+            lines.append(f"    ... and {len(weak) - MAX_WEAK_HITS} more weaker (bare-word) "
+                         "test file(s) not shown")
+        for setup in setup_files(root, dict(shown)):
             lines.append(f"    setup: {setup}")
     return lines
 
