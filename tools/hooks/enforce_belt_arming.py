@@ -349,6 +349,23 @@ _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 _SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
 
 
+def _peel_prefixes(tokens: list[str]) -> list[str]:
+    """Strip the words that can precede the program: the shared invocation prefixes, this hook's
+    own `_SHELL_PREFIXES`, and `env` spelled as a path. `shell_parse` matches `env` by exact
+    token, so `/usr/bin/env bash -c ...` kept `/usr/bin/env` as the program; it is normalised
+    here rather than in the file ten hooks share (harmonic-forge#922)."""
+    tokens = strip_invocation_prefix(tokens, unwrap_shells=False)
+    while tokens:
+        if tokens[0] in _SHELL_PREFIXES:
+            tokens = tokens[1:]
+        elif tokens[0] != "env" and Path(tokens[0]).name == "env":
+            tokens = ["env"] + tokens[1:]
+        else:
+            break
+        tokens = strip_invocation_prefix(tokens, unwrap_shells=False)
+    return tokens
+
+
 def _wrapper_shell(command: str) -> str | None:
     """harmonic-forge#922: the shell (`bash`, `sh`, ...) whose `-c <string>` runs the watcher,
     else None. `strip_invocation_prefix` unwraps `bash -c` but splits the inner string as ONE
@@ -357,17 +374,23 @@ def _wrapper_shell(command: str) -> str | None:
     `command_segments`, like the outer one, and searched the same way.
 
     The recursion ends because each inner string is strictly shorter than the command that
-    carried it. A nest of three or more shells whose escaped quotes `shlex` cannot round-trip
-    is not parsed and is allowed: this hook is a mistake-detector, not a boundary
-    (R-0374/R-0378), and the honest mistake is one `cd`-and-run wrapper."""
+    carried it.
+
+    Allowed by contract (this hook is a mistake-detector, not a boundary, R-0374/R-0378; the
+    honest mistake is one `cd`-first `-c` wrapper). These are NOT defects and a finding that
+    matches one is a documentation check, not a survivor: an inner script `shlex` cannot parse
+    (an apostrophe inside a double-quoted script) or a nest of three or more shells whose
+    escaped quotes it cannot round-trip; a shell fed its script on stdin (`bash <<EOF`,
+    `bash -s`); `eval`; carriers such as `setsid`, `xargs`, `ssh`, `script -c`; and the
+    non-space spelling `bash -c"..."`. An unparseable inner script is allowed rather than
+    searched as text, because a text search cannot tell a quoted `pgrep` pattern from a command
+    and denies honest Monitors."""
     try:
         segments = command_segments(command)
     except ValueError:
         return None
     for segment in segments:
-        tokens = strip_invocation_prefix(segment, unwrap_shells=False)
-        while tokens and tokens[0] in _SHELL_PREFIXES:  # `exec bash -c '...'`, `then bash -c ...`
-            tokens = strip_invocation_prefix(tokens[1:], unwrap_shells=False)
+        tokens = _peel_prefixes(segment)
         if not tokens or Path(tokens[0]).name not in _SHELLS:
             continue
         for index, token in enumerate(tokens[1:], start=1):
@@ -375,25 +398,22 @@ def _wrapper_shell(command: str) -> str | None:
                 # The script is the first non-option word after the flag: `bash -c -- 'S'`
                 # and `bash -cx 'S'` are as valid as `bash -c 'S'`.
                 script = next((t for t in tokens[index + 1:] if t != "--" and not t.startswith("-")), None)
-                if script is not None and _monitor_runs_watcher(script, inner=True):
+                if script is None:
+                    break
+                try:
+                    command_segments(script)
+                except ValueError:
+                    break  # unparseable inner script: allowed by contract (see above)
+                if _monitor_runs_watcher(script):
                     return Path(tokens[0]).name
                 break
     return None
 
 
-#: The inner script of a `-c` wrapper that `shlex` cannot parse (an apostrophe inside a
-#: double-quoted script, say) is judged by whether the watcher is in COMMAND position, not
-#: whether its name appears: `tail -F x | grep watch_lane_posts.py; echo don't` only mentions it.
-_INNER_WATCHER_COMMAND = re.compile(
-    r"(?:^|[;&|(\n]|\bexec|\bpython[\d.]*(?:\s+-\S+)*)\s*\S*" + re.escape(WATCHER_NAME))
-
-
-def _monitor_runs_watcher(command: str, inner: bool = False) -> bool:
+def _monitor_runs_watcher(command: str) -> bool:
     try:
         segments = command_segments(command)
     except ValueError:  # unbalanced quotes: the shell would refuse it too
-        if inner:
-            return _INNER_WATCHER_COMMAND.search(command) is not None
         return WATCHER_NAME in command
     return (any(_executes_watcher(segment) for segment in segments)
             or _wrapper_shell(command) is not None)
