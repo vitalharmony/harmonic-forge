@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -69,9 +70,10 @@ def _canonical_entries() -> list[tuple[str, list[str]]]:
     Lane 3's sweep entry is retired (harmonic-forge#659)."""
     entries = []
     for lane in ("1", "2", "3"):
-        for i, entry in enumerate(watch_lane_posts.CANONICAL_BELTS[lane]):
-            label = f"lane{lane}" if i == 0 else f"lane{lane}-sweep"
-            entries.append((label, entry["argv"]))
+        # harmonic-forge#917: one entry per lane per workspace, so a second entry
+        # is another workspace's belt, not a sweep.
+        for entry in watch_lane_posts.CANONICAL_BELTS[lane]:
+            entries.append((f"lane{lane}-{entry['workspace']}", entry["argv"]))
     return entries
 
 
@@ -92,19 +94,37 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
         """harmonic-forge#659 AC2: `belt_plan.py`'s Monitor command is the
         table's argv, as run -- a subprocess, so the printed JSON is what is
         checked, not a function a refactor could route around."""
-        for lane in ("1", "2", "3"):
-            with self.subTest(lane=lane):
-                env = {**os.environ, "LANE": lane}
-                out = subprocess.run([sys.executable, str(_BELT_PLAN)], env=env,
-                                     capture_output=True, text=True, check=True)
-                plan = json.loads(out.stdout)
-                argv = _extract_commands(plan["monitor"]["command"])
-                self.assertEqual(len(argv), 1, plan["monitor"]["command"])
-                self.assertEqual(argv[0],
-                                 watch_lane_posts.CANONICAL_BELTS[lane][0]["argv"])
-                self.assertEqual(plan["loop"],
-                                 {"skill": "loop",
-                                  "args": "10m proactively find work to do"})
+        # harmonic-forge#917: belt_plan.py prints the entry for the workspace of the
+        # checkout it runs in, so it runs from a fixture `vh` checkout -- never this
+        # test's own checkout, which on a CI runner is registered nowhere.
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp) / "alpha"
+            checkout.mkdir()
+            manifest = Path(tmp) / "projects.toml"
+            manifest.write_text(
+                f'[[project]]\nname = "alpha"\nprefix = "A"\nrepo = "o/alpha"\n'
+                f'account = "vitalharmony"\npath = "{checkout}"\nonboarded = true\n'
+                'workspace = "vh"\n[project.protocol]\n'
+                'worktree_name = "{checkout}-lane{lane}"\nl1_post_task = "l1-post"\n'
+                'lane_comment_task = "lane-comment"\ngate_checkout_task = "gate-checkout"\n'
+                'lane3_begin_task = "lane3-begin"\nlane3_end_task = "lane3-end"\n'
+                'runs_lane3 = true\n', encoding="utf-8")
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    env = {**os.environ, "LANE": lane,
+                           "FORGE_PROJECTS_MANIFEST": str(manifest)}
+                    out = subprocess.run([sys.executable, str(_BELT_PLAN)], env=env,
+                                         cwd=str(checkout), capture_output=True,
+                                         text=True, check=True)
+                    plan = json.loads(out.stdout)
+                    argv = _extract_commands(plan["monitor"]["command"])
+                    self.assertEqual(len(argv), 1, plan["monitor"]["command"])
+                    vh = next(e for e in watch_lane_posts.CANONICAL_BELTS[lane]
+                              if e["workspace"] == "vh")
+                    self.assertEqual(argv[0], vh["argv"])
+                    self.assertEqual(plan["loop"],
+                                     {"skill": "loop",
+                                      "args": "10m proactively find work to do"})
 
     def test_skill_md_carries_no_command(self):
         """harmonic-forge#659 AC4: a command retyped in the skill is a second
@@ -173,11 +193,13 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
                         f"{name} still shows a runnable --sweep-for example")
 
     def test_lane3_table_holds_only_the_queue_belt(self):
-        """harmonic-forge#659 AC1."""
+        """harmonic-forge#659 AC1; one queue belt per workspace since harmonic-forge#917."""
         entries = watch_lane_posts.CANONICAL_BELTS["3"]
-        self.assertEqual(len(entries), 1)
-        self.assertIn("--queue-for", entries[0]["argv"])
-        self.assertNotIn("--sweep-for", entries[0]["argv"])
+        self.assertEqual([e["workspace"] for e in entries],
+                         watch_lane_posts.manifest_workspaces())
+        for entry in entries:
+            self.assertIn("--queue-for", entry["argv"])
+            self.assertNotIn("--sweep-for", entry["argv"])
 
 
 class ObligationsTableMatchesOwesTests(unittest.TestCase):

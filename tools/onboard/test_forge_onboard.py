@@ -72,6 +72,14 @@ class Base(unittest.TestCase):
             side_effect=lambda project, check_cls: check_cls("identity", fo.OK, "stubbed"))
         identity.start()
         self.addCleanup(identity.stop)
+        # harmonic-forge#917: the skills check verifies links against the real
+        # platform checkout, which these fixtures do not reproduce; it has its own
+        # hermetic file (test_forge_onboard_skills.py), stubbed here the same way.
+        skills = mock.patch.object(
+            fo.forge_onboard_skills, "check_skills",
+            side_effect=lambda project, check_cls, source: check_cls("skills", fo.OK, "stubbed"))
+        skills.start()
+        self.addCleanup(skills.stop)
 
     def set_settings(self, data: dict) -> None:
         (self.home / ".claude" / "settings.json").write_text(
@@ -280,6 +288,7 @@ class ExitCodeTests(Base):
             board_owner = "vitalharmony"
             board_number = "1"
             onboarded = true
+            workspace = "vh"
         """)
         if repo is not None:
             body += f'path = "{repo}"\n'

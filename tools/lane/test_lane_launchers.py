@@ -119,7 +119,7 @@ class _FixtureTree:
             raw = (
                 "[[project]]\n"
                 'name = "fixture"\nprefix = "X"\nrepo = "example/fixture"\n'
-                f'account = "vitalharmony"\npath = "{self.main}"\nonboarded = true\n'
+                f'account = "vitalharmony"\npath = "{self.main}"\nonboarded = true\nworkspace = "vh"\n'
                 "[project.protocol]\n"
                 'worktree_name = "{checkout}-lane{lane}"\n'
                 'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'

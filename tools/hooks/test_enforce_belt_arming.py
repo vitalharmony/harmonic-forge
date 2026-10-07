@@ -24,14 +24,36 @@ import enforce_belt_arming as guard  # noqa: E402
 #: Every hook process in this file records arming here, never in the real cache.
 _ARMING_ROOT = tempfile.TemporaryDirectory(prefix="belt_arming_test_")
 
+#: harmonic-forge#917: the hook resolves the session's workspace from the payload's
+#: `cwd`, so every payload carries one -- a fixture checkout in workspace `vh`, never
+#: this test's own checkout (a CI runner path is registered nowhere).
+_FIXTURE = Path(_ARMING_ROOT.name) / "fixture"
+_VH = _FIXTURE / "alpha"
+_LEASEPAL = _FIXTURE / "beta"
+_OUTSIDE = _FIXTURE / "outside"
+_MANIFEST = _FIXTURE / "projects.toml"
+for _d in (_VH, _LEASEPAL, _OUTSIDE):
+    _d.mkdir(parents=True, exist_ok=True)
+_MANIFEST.write_text("\n".join(
+    f'[[project]]\nname = "{n}"\nprefix = "{p}"\nrepo = "o/{n}"\naccount = "vitalharmony"\n'
+    f'path = "{d}"\nonboarded = true\nworkspace = "{w}"\n[project.protocol]\n'
+    'worktree_name = "{checkout}-lane{lane}"\nl1_post_task = "l1-post"\n'
+    'lane_comment_task = "lane-comment"\ngate_checkout_task = "gate-checkout"\n'
+    'lane3_begin_task = "lane3-begin"\nlane3_end_task = "lane3-end"\nruns_lane3 = true\n'
+    for n, p, d, w in (("alpha", "A", _VH, "vh"), ("beta", "B", _LEASEPAL, "leasepal"))),
+    encoding="utf-8")
+
 
 def _run(tool_name, tool_input, lane="3", raw=None, session_id=None, arming_dir=None,
-         event=None, tool_response=None):
+         event=None, tool_response=None, cwd=_VH):
     env = {k: v for k, v in os.environ.items() if k != "LANE"}
+    env["FORGE_PROJECTS_MANIFEST"] = str(_MANIFEST)
     if lane is not None:
         env["LANE"] = lane
     env[guard.ARMING_DIR_ENV] = arming_dir or tempfile.mkdtemp(dir=_ARMING_ROOT.name)
     payload = {"tool_name": tool_name, "tool_input": tool_input}
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
     if session_id is not None:
         payload["session_id"] = session_id
     if event is not None:
@@ -86,15 +108,15 @@ class DeniesTheIncidentArms(unittest.TestCase):
         self.assertEqual(_decision(_run("CronCreate", cron)), "deny")
 
     def test_wrong_lane_belt_is_denied(self):
-        lane2 = belt_plan.canonical_calls("2")["monitor"]["command"]
+        lane2 = belt_plan.canonical_calls("2", "vh")["monitor"]["command"]
         self.assertEqual(_decision(_run("Monitor", {"command": lane2}, lane="3")), "deny")
 
     def test_off_table_interval_is_denied(self):
-        cmd = belt_plan.canonical_calls("3")["monitor"]["command"].replace("300", "60")
+        cmd = belt_plan.canonical_calls("3", "vh")["monitor"]["command"].replace("300", "60")
         self.assertEqual(_decision(_run("Monitor", {"command": cmd})), "deny")
 
     def test_every_deny_quotes_the_exact_calls(self):
-        calls = belt_plan.canonical_calls("3")
+        calls = belt_plan.canonical_calls("3", "vh")
         for tool, tool_input in (
             ("Monitor", {"command": INCIDENT_SWEEP}),
             ("Skill", {"skill": "loop", "args": INCIDENT_LOOP_ARGS}),
@@ -113,12 +135,12 @@ class AllowsTheCanonicalCalls(unittest.TestCase):
     def test_canonical_monitor_is_allowed_for_every_lane(self):
         for lane in ("1", "2", "3"):
             with self.subTest(lane=lane):
-                calls = belt_plan.canonical_calls(lane)
+                calls = belt_plan.canonical_calls(lane, "vh")
                 result = _run("Monitor", calls["monitor"], lane=lane)
                 self.assertEqual(json.loads(result.stdout), {})
 
     def test_home_spellings_are_equivalent(self):
-        monitor = belt_plan.canonical_calls("3")["monitor"]
+        monitor = belt_plan.canonical_calls("3", "vh")["monitor"]
         cmd = monitor["command"]
         home = os.path.expanduser("~")
         for spelling in ("$HOME/", "${HOME}/", home + "/"):
@@ -137,7 +159,7 @@ class AllowsTheCanonicalCalls(unittest.TestCase):
         a `--deadline-seconds` derived from the intended one — the original
         defect one layer up: a derived number and a real lifetime that nothing
         checks against each other."""
-        monitor = dict(belt_plan.canonical_calls("3")["monitor"])
+        monitor = dict(belt_plan.canonical_calls("3", "vh")["monitor"])
         monitor["timeout_ms"] = 300000
         result = _run("Monitor", monitor, lane="3")
         self.assertEqual(_decision(result), "deny",
@@ -151,12 +173,12 @@ class AllowsTheCanonicalCalls(unittest.TestCase):
         """Absent means the Monitor takes its own 300000 default — five
         minutes, not thirty — so the poller's deadline would be six times the
         window it actually has."""
-        monitor = dict(belt_plan.canonical_calls("3")["monitor"])
+        monitor = dict(belt_plan.canonical_calls("3", "vh")["monitor"])
         monitor.pop("timeout_ms")
         self.assertIsNotNone(_decision(_run("Monitor", monitor, lane="3")))
 
     def test_canonical_loop_is_allowed(self):
-        result = _run("Skill", belt_plan.canonical_calls("3")["loop"])
+        result = _run("Skill", belt_plan.canonical_calls("3", "vh")["loop"])
         self.assertEqual(json.loads(result.stdout), {})
 
     def test_the_cron_the_loop_skill_itself_creates_is_allowed(self):
@@ -253,7 +275,7 @@ class PrecloseC_SecondArmInOneSessionIsDenied(unittest.TestCase):
         record is written at the cron, not the skill -- or the skill's own
         cron would be denied as a re-arm."""
         with tempfile.TemporaryDirectory() as arming:
-            skill = _run("Skill", belt_plan.canonical_calls("3")["loop"],
+            skill = _run("Skill", belt_plan.canonical_calls("3", "vh")["loop"],
                          session_id="sess-a", arming_dir=arming)
             self.assertIsNone(_decision(skill))
             cron = _run("CronCreate", CANONICAL_CRON, session_id="sess-a", arming_dir=arming)
@@ -712,3 +734,42 @@ class GrantDirectoryIsHookOwned(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopedToTheSessionsWorkspace(unittest.TestCase):
+    """harmonic-forge#917 AC3."""
+
+    def _monitor(self, command, cwd=_VH, lane="2"):
+        return _run("Monitor", {"command": command, "description": "belt",
+                                "timeout_ms": belt_plan.MONITOR_TIMEOUT_MS},
+                    lane=lane, cwd=cwd)
+
+    def test_the_session_checkouts_scoped_command_is_allowed(self):
+        for cwd, ws in ((_VH, "vh"), (_LEASEPAL, "leasepal")):
+            with self.subTest(ws=ws):
+                cmd = belt_plan.canonical_calls("2", ws)["monitor"]["command"]
+                self.assertIsNone(_decision(self._monitor(cmd, cwd)))
+
+    def test_another_workspaces_command_is_denied(self):
+        cmd = belt_plan.canonical_calls("2", "leasepal")["monitor"]["command"]
+        self.assertEqual(_decision(self._monitor(cmd, _VH)), "deny")
+
+    def test_the_unscoped_command_is_denied(self):
+        cmd = belt_plan.canonical_calls("2", "vh")["monitor"]["command"]
+        unscoped = cmd.replace(" --workspace vh", "")
+        self.assertNotEqual(cmd, unscoped)
+        self.assertEqual(_decision(self._monitor(unscoped, _VH)), "deny")
+
+    def test_an_unresolved_session_cannot_arm_a_belt(self):
+        """Fail closed: an unregistered cwd, or none, never arms some default workspace."""
+        cmd = belt_plan.canonical_calls("2", "vh")["monitor"]["command"]
+        for cwd in (_OUTSIDE, None):
+            with self.subTest(cwd=cwd):
+                result = self._monitor(cmd, cwd)
+                self.assertEqual(_decision(result), "deny")
+                self.assertIn("cannot be resolved", result.stdout)
+
+    def test_an_unresolved_session_may_still_run_the_canonical_loop(self):
+        """`/loop` is the same in every workspace; resolution never gates it."""
+        result = _run("Skill", belt_plan.loop_call("2"), lane="2", cwd=_OUTSIDE)
+        self.assertIsNone(_decision(result))

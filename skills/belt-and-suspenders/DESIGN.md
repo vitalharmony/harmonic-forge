@@ -55,6 +55,14 @@ git staleness refusal) — this list states them, it does not implement them.
 
 ## The belt is `watch_lane_posts.py` — copy the command, don't rebuild it
 
+**One command per lane per workspace (harmonic-forge#917).** Each command
+below carries `--workspace kenekted|leasepal|vh`, which restricts
+`--all-worktrees` and `--account-repos` to that workspace's `projects.toml`
+projects, so the three lane workspaces never queue the same issue. Each
+workspace's belt has its own lock (`belt-lane<N>-<ws>.lock`) and its own
+`belt_id` state (`…@<ws>`). `belt_plan.py` prints the one for the session's
+checkout; the arming hook denies any other.
+
 **`watch_lane_posts.py` already is the belt.** It re-derives `(repo, issue)`
 from a worktree's live branch every cycle, has a `--queue-for` mode for a lane
 with no issue in hand, and reports what it resolved and did not (never
@@ -85,7 +93,9 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace kenekted
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace leasepal
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace vh
   ```
 
   **`--queue-for l1` catches a Lane 2 plan with no worktree yet through a
@@ -163,7 +173,9 @@ mid-issue is not the command to arm:
   load-bearing and does not transfer.
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace kenekted
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace leasepal
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace vh
   ```
 
   **`--queue-for l2` catches that inbound handoff through the same
@@ -180,7 +192,9 @@ mid-issue is not the command to arm:
 - **Lane 3** — no worktree of its own; watches what is handed to it:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800 --workspace kenekted
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800 --workspace leasepal
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800 --workspace vh
   ```
 
   Lane 3 no longer arms a repo-wide sweep. It is the retired account-wide

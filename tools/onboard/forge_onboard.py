@@ -39,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import forge_onboard_identity  # noqa: E402
+import forge_onboard_skills  # noqa: E402
 import lane_tasks  # noqa: E402
 from manifest import (  # noqa: E402
     ManifestError, Project, check_prefix_agreement, load, prefixes,
@@ -818,6 +819,11 @@ def check_identity(project: Project) -> Check:
     return forge_onboard_identity.check_identity(project, Check)
 
 
+def check_skills(project: Project) -> Check:
+    """harmonic-forge#917: the declared platform skills are linked (`forge_onboard_skills`)."""
+    return forge_onboard_skills.check_skills(project, Check, platform_source())
+
+
 def check_board(project: Project) -> Check:
     if not project.repo:
         return Check("board", SKIP, "projected repo")
@@ -829,7 +835,7 @@ def check_board(project: Project) -> Check:
 
 CHECKS = (check_protocol, check_lane_tasks, check_gate_adapter, check_ci, check_branch_protection,
           check_checkout, check_worktrees, check_directives, check_entrypoint, check_hooks,
-          check_memory, check_board, check_identity)
+          check_skills, check_memory, check_board, check_identity)
 
 
 def verify(project: Project, manifest: Path | None = None) -> list[Check]:
