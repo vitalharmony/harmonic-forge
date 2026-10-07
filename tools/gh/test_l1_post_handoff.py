@@ -55,14 +55,14 @@ class HandoffTests(unittest.TestCase):
             post.validate_handoff(
                 self._with_trace("1. The user opens the screen, verified-live by reading it."),
                 requires_preflight=False)
-        self.assertIn("file:line", str(caught.exception))
+        self.assertIn("must cite at least one file:line", str(caught.exception))
 
     def test_scenario_trace_without_verified_live_is_refused(self) -> None:
         with self.assertRaises(SystemExit) as caught:
             post.validate_handoff(
                 self._with_trace("1. The user opens the screen: lib/app_router.dart:158."),
                 requires_preflight=False)
-        self.assertIn("verified-live", str(caught.exception))
+        self.assertIn("must mark at least one hop verified-live", str(caught.exception))
 
     def test_the_templates_own_unfilled_scenario_trace_is_refused_as_a_placeholder(self) -> None:
         """The template carries guidance after its placeholder line, so the section
@@ -136,6 +136,11 @@ class HandoffTests(unittest.TestCase):
         trace = ("1. Run `mise run check`, output below.\n```\n### Summary\nok\n```\n"
                  "2. Entry lib/app_router.dart:158, verified-live (read).")
         post.validate_handoff(self._with_trace(trace), requires_preflight=False)
+
+    def test_a_hop_hidden_in_an_html_comment_does_not_count(self) -> None:
+        message = self._refused("<!-- 1. lib/app_router.dart:158 verified-live -->\n"
+                                "1. Route /quote only, no code reference.")
+        self.assertIn("must cite at least one file:line", message)
 
     def test_hops_inside_a_code_fence_do_not_count(self) -> None:
         self.assertIn("file:line", self._refused("```\nlib/app_router.dart:158 verified-live\n```"))
