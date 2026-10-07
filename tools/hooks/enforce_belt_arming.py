@@ -333,12 +333,47 @@ def _executes_watcher(tokens: list[str]) -> bool:
     return False
 
 
-def _monitor_runs_watcher(command: str) -> bool:
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
+#: A wrapper inside a wrapper is parsed to this depth; a deeper nest is treated as a wrapper
+#: that runs the watcher (denied), because the hook can no longer show it does not.
+_MAX_WRAPPER_DEPTH = 4
+
+
+def _wrapper_shell(command: str, depth: int = 0) -> str | None:
+    """harmonic-forge#922: the shell (`bash`, `sh`, ...) whose `-c <string>` runs the watcher,
+    else None. `strip_invocation_prefix` unwraps `bash -c` but splits the inner string as ONE
+    command, so `bash -c 'cd X; python3 .../watch_lane_posts.py ...'` showed `cd` as the program
+    and the Monitor passed every check this hook makes. The inner string is segmented with
+    `command_segments`, like the outer one, and searched the same way."""
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return None
+    for segment in segments:
+        tokens = strip_invocation_prefix(segment, unwrap_shells=False)
+        if not tokens or Path(tokens[0]).name not in _SHELLS:
+            continue
+        for index, token in enumerate(tokens[1:], start=1):
+            if token == "--command" or _SHELL_C_FLAG.match(token):
+                if index + 1 >= len(tokens):
+                    break
+                inner = tokens[index + 1]
+                if depth >= _MAX_WRAPPER_DEPTH:
+                    return Path(tokens[0]).name if WATCHER_NAME in inner else None
+                if _monitor_runs_watcher(inner, depth + 1):
+                    return Path(tokens[0]).name
+                break
+    return None
+
+
+def _monitor_runs_watcher(command: str, depth: int = 0) -> bool:
     try:
         segments = command_segments(command)
     except ValueError:  # unbalanced quotes: the shell would refuse it too
         return WATCHER_NAME in command
-    return any(_executes_watcher(segment) for segment in segments)
+    return (any(_executes_watcher(segment) for segment in segments)
+            or _wrapper_shell(command, depth) is not None)
 
 
 _OVERRIDE_HINT = (
@@ -504,6 +539,14 @@ def decide(payload: dict[str, Any], lane: str | None,
                            f"workspace cannot be resolved ({unresolved}). A belt arms only "
                            "from inside an onboarded checkout or one of its worktrees, "
                            "scoped to that workspace (harmonic-forge#917).")
+        wrapper = _wrapper_shell(command)
+        if wrapper is not None:
+            return _reason(lane, calls,
+                           f"Denied: this Monitor runs watch_lane_posts.py inside `{wrapper} -c`. "
+                           "A wrapper is never the canonical belt command: it can `cd` into "
+                           "another checkout, and the watcher scopes itself from where it runs "
+                           "(harmonic-forge#917, #922). Run the canonical command directly, "
+                           "from the checkout the session is in.")
         if _normalize_command(command) != _normalize_command(calls["monitor"]["command"]):
             return _reason(lane, calls,
                            "Denied: this Monitor runs watch_lane_posts.py but is not "

@@ -527,6 +527,54 @@ class PrecloseE_MonitorsThatOnlyMentionTheWatcher(unittest.TestCase):
                                  "deny")
 
 
+class WrappedWatcherIsDenied(unittest.TestCase):
+    """harmonic-forge#922: a watcher started inside `bash -c` / `sh -c` is still a belt Monitor.
+
+    `strip_invocation_prefix` unwrapped the shell but split the inner string as one command, so
+    a leading `cd X;` made `cd` the program and the whole Monitor passed every check here.
+    """
+
+    WATCHER = "~/harmonic-forge/tools/gh/watch_lane_posts.py"
+
+    def _monitor(self, command, lane="1"):
+        return _run("Monitor", {"command": command, "description": "belt",
+                                "timeout_ms": belt_plan.MONITOR_TIMEOUT_MS}, lane=lane)
+
+    def test_wrapped_watchers_are_denied_naming_the_wrapper(self):
+        w = self.WATCHER
+        cases = {
+            "bash": (f"bash -c 'python3 {w} --queue-for l1'",
+                     f"bash -c 'cd ~/Harmonic_Projects/LeasePAL-App-Prototype; python3 {w} --workspace leasepal'",
+                     f"bash -lc 'python3 {w} --queue-for l1'",
+                     f"bash -c \"cd /tmp && python3 {w} --queue-for l1\"",
+                     f"timeout 600 bash -c 'cd /tmp; python3 {w} --queue-for l1'",
+                     f"bash -c 'sh -c \"cd /y; python3 {w} --queue-for l1\"'"),
+            "sh": (f"sh -c 'cd /tmp; python3 {w} --queue-for l1'",),
+        }
+        for shell, commands in cases.items():
+            for command in commands:
+                with self.subTest(command=command):
+                    result = self._monitor(command)
+                    self.assertEqual(_decision(result), "deny")
+                    self.assertIn("-c`", result.stdout)
+                    self.assertIn("never the canonical belt command", result.stdout)
+
+    def test_a_wrapper_is_denied_even_around_the_canonical_command(self):
+        canonical = belt_plan.canonical_calls("1", "vh")["monitor"]["command"]
+        for command in (f"bash -c '{canonical}'", f"bash -c 'cd ~/x; {canonical}'"):
+            with self.subTest(command=command):
+                self.assertEqual(_decision(self._monitor(command)), "deny")
+
+    def test_the_canonical_command_and_unrelated_wrappers_are_still_allowed(self):
+        canonical = belt_plan.canonical_calls("1", "vh")["monitor"]["command"]
+        self.assertIsNone(_decision(self._monitor(canonical)))
+        for command in ("bash -c 'tail -f logs/backend.log'",
+                        "sh -c 'cd /tmp; tail -F x.log | grep watch_lane_posts.py'",
+                        "bash -c 'pgrep -af watch_lane_posts.py'"):
+            with self.subTest(command=command):
+                self.assertIsNone(_decision(self._monitor(command)))
+
+
 class FailsOpen(unittest.TestCase):
     def test_malformed_payload_allows_with_exit_0(self):
         result = _run(None, None, raw="not json")
