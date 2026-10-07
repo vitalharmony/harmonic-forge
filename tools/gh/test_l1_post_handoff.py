@@ -76,6 +76,15 @@ class HandoffTests(unittest.TestCase):
                                   requires_preflight=False)
         self.assertIn("template placeholder: Scenario Trace", str(caught.exception))
 
+    def test_the_template_and_the_validator_list_the_same_headings_in_the_same_order(self) -> None:
+        """Parity (harmonic-forge#920 pitch-inspection fixture run): a heading added to
+        HANDOFF_HEADINGS without its templated section makes the first real post refuse."""
+        template = (Path(__file__).resolve().parent.parent.parent / "templates"
+                    / "lane1-handoff.md").read_text(encoding="utf-8")
+        in_template = re.findall(r"(?m)^### (.+?)\s*$", template)
+        self.assertEqual([h for h in in_template if h in post.HANDOFF_HEADINGS],
+                         post.HANDOFF_HEADINGS)
+
     def test_a_complete_scenario_trace_posts_and_other_headings_are_unchanged(self) -> None:
         post.validate_handoff(
             self._with_trace("1. Route /quote -> lib/app_router.dart:158, **verified-live** "
