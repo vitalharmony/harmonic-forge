@@ -313,13 +313,18 @@ def _normalize_command(command: str) -> str:
     return text
 
 
+#: Words that can stand in front of the command a segment really runs: `exec` replaces the shell
+#: with the watcher (the idiomatic wrapped belt), and the control keywords land at the head of a
+#: segment once `;` splits `if c; then CMD; fi` and `while c; do CMD; done` (harmonic-forge#922).
+_SHELL_PREFIXES = {"exec", "if", "then", "else", "elif", "while", "until", "do", "!", "{"}
+
+
 def _executes_watcher(tokens: list[str]) -> bool:
     """True when this command segment runs `watch_lane_posts.py`."""
     tokens = strip_invocation_prefix(tokens)
-    if tokens and tokens[0] == "exec":
-        # `exec` replaces the shell with the watcher: the idiomatic way to write a wrapped belt.
+    if tokens and tokens[0] in _SHELL_PREFIXES:
         # Kept local rather than added to `shell_parse`'s prefix set, which ten hooks share
-        # (harmonic-forge#922).
+        # (harmonic-forge#922). See _SHELL_PREFIXES.
         return _executes_watcher(tokens[1:])
     if tokens and tokens[0] == "timeout":
         rest = tokens[1:]
@@ -361,7 +366,7 @@ def _wrapper_shell(command: str) -> str | None:
         return None
     for segment in segments:
         tokens = strip_invocation_prefix(segment, unwrap_shells=False)
-        while tokens and tokens[0] == "exec":  # `exec bash -c '...'`: not in the shared prefix set
+        while tokens and tokens[0] in _SHELL_PREFIXES:  # `exec bash -c '...'`, `then bash -c ...`
             tokens = strip_invocation_prefix(tokens[1:], unwrap_shells=False)
         if not tokens or Path(tokens[0]).name not in _SHELLS:
             continue
