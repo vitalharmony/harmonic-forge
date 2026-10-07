@@ -37,6 +37,34 @@ have to infer which gate applies.
 ### Root Cause / Entry Point
 > "{quoted line or condition that is the root cause}"
 
+<!--
+Scenario Trace guidance (kept OUTSIDE the section below, which l1_post.py validates):
+The issue's own example (the screen, command or input it names), walked step by
+step from the user-visible entry (route, screen, command, input) to the exact code
+this handoff changes. Every hop carries a `file:line` and is marked `verified-live`
+with how it was verified, this session. For a command the handoff tells a lane to
+run, the trace includes that command's actual output from a run by Lane 1. For a
+route or URL, cite the `file:line` of its handler. `l1_post.py` refuses a trace with
+no `file:line` or no `verified-live`; whether it reaches the changed code is
+`pitch-inspection` check 8's. What a trace catches (harmonic-forge#920, six reworks
+in one week traced to handoffs, not to Lane 2 or Lane 3):
+
+- "Every site" from one grep form: the trace follows the example to the sites that
+  form missed (LeasePAL P9: two `$${obj.field}` sites).
+- A rule's effect on its own surface: the hide rule stranded the bar hidden because
+  nothing walked the viewport (LeasePAL P10, first).
+- Scoping a component out without checking which one the issue's own screen uses
+  (LeasePAL P10, second: the renter quote uses `LpAppDock`).
+- A guard added to the redirects but not to the form the same user lands on (LeasePAL
+  P11).
+- A command specified without running it, and a sibling file the walk would have
+  shown (ke'nekted K61: `sync_rules.py --pull` versus `--project`; a missed
+  `.claude/agents/.gitignore`).
+-->
+
+### Scenario Trace
+{the issue's own example, hop by hop: each hop `path:line` and `verified-live` (with the command or read that verified it)}
+
 ### Design Alternatives Considered
 {none | list each plausible design that was weighed and why it was rejected
 in favor of the chosen one} — "none" means there was one obvious design; a

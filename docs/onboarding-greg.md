@@ -101,7 +101,9 @@ through `ADR-005` in this repo.
    comments.
 2. **`templates/lane1-handoff.md` now has three mandatory fields** on
    every handoff: *Design Alternatives Considered*, *Load-Bearing
-   Assumptions*, *Delegated Judgment Calls*.
+   Assumptions*, *Delegated Judgment Calls*; every handoff also carries a
+   *Scenario Trace* (the issue's own example walked to the changed code,
+   harmonic-forge#920).
 3. **Plan-First Implementation (ADR-004, enforcement fixed by ADR-005):**
    when a handoff delegates a real design decision to you (non-"none" in
    that field) or your work mutates git/live data, Plan-First applies —

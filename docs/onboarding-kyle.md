@@ -188,7 +188,9 @@ what changes your day-to-day work as Lane 2:
    you to invoke yourself.
 2. **`templates/lane1-handoff.md` now has three mandatory fields** you'll
    see on every handoff: *Design Alternatives Considered*, *Load-Bearing
-   Assumptions*, *Delegated Judgment Calls*. Read all three before
+   Assumptions*, *Delegated Judgment Calls*, and every handoff also
+   carries a *Scenario Trace* (the issue's own example walked to the changed
+   code, harmonic-forge#920). Read all three before
    implementing — "Delegated Judgment Calls" specifically means Lane 1 is
    deliberately leaving a design decision to you.
 3. **Plan-First Implementation (ADR-004, enforcement fixed by ADR-005 —

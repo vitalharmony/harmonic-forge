@@ -2,6 +2,7 @@
 """Focused tests for Lane 1 handoff validation."""
 
 import importlib.util
+import re
 from pathlib import Path
 import unittest
 
@@ -23,14 +24,189 @@ class HandoffTests(unittest.TestCase):
 
     def _body(self, consumers: str) -> str:
         return "\n".join(
-            f"### {heading}\n{consumers if heading == 'Consumers and Equivalents' else 'A documented value, per `git grep -n value`.'}"
+            f"### {heading}\n{consumers if heading == 'Consumers and Equivalents' else 'A documented value, per `git grep -n value` (l1_post.py:94), verified-live.'}"
             for heading in post.HANDOFF_HEADINGS
         )
+
+    FILLER = "A documented value, per `git grep -n value` (l1_post.py:94), verified-live."
+
+    def _with_trace(self, trace: str | None) -> str:
+        """Every heading real, `Scenario Trace` set to `trace` (None drops it)."""
+        return "\n".join(
+            f"### {h}\n{trace if h == 'Scenario Trace' else self.FILLER}"
+            for h in post.HANDOFF_HEADINGS if h != "Scenario Trace" or trace is not None)
+
+    def test_scenario_trace_is_a_required_heading_after_root_cause(self) -> None:
+        """harmonic-forge#920 AC1: absent, and the post is refused."""
+        headings = post.HANDOFF_HEADINGS
+        self.assertEqual(headings.index("Scenario Trace"),
+                         headings.index("Root Cause / Entry Point") + 1)
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(self._with_trace(None), requires_preflight=False)
+        self.assertIn("Scenario Trace", str(caught.exception))
+
+    def test_scenario_trace_placeholder_is_refused(self) -> None:
+        with self.assertRaises(SystemExit):
+            post.validate_handoff(self._with_trace("{the issue's own example, hop by hop}"),
+                                  requires_preflight=False)
+
+    def test_scenario_trace_without_a_file_line_is_refused(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(
+                self._with_trace("1. The user opens the screen, verified-live by reading it."),
+                requires_preflight=False)
+        self.assertIn("must cite at least one file:line", str(caught.exception))
+
+    def test_scenario_trace_without_verified_live_is_refused(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(
+                self._with_trace("1. The user opens the screen: lib/app_router.dart:158."),
+                requires_preflight=False)
+        self.assertIn("must mark at least one hop verified-live", str(caught.exception))
+
+    def test_the_templates_own_unfilled_scenario_trace_is_refused_as_a_placeholder(self) -> None:
+        """The template carries guidance after its placeholder line, so the section
+        is more than a single {...} span: the placeholder phrase must still catch it."""
+        template = (Path(__file__).resolve().parent.parent.parent / "templates"
+                    / "lane1-handoff.md").read_text(encoding="utf-8")
+        section = re.search(r"(?ms)^### Scenario Trace\s*$\n(.*?)(?=^### )", template)
+        self.assertIsNotNone(section, "templates/lane1-handoff.md has no Scenario Trace section")
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(self._with_trace(section.group(1).strip()),
+                                  requires_preflight=False)
+        self.assertIn("template placeholder: Scenario Trace", str(caught.exception))
+
+    def test_the_template_and_the_validator_list_the_same_headings_in_the_same_order(self) -> None:
+        """Parity (harmonic-forge#920 pitch-inspection fixture run): a heading added to
+        HANDOFF_HEADINGS without its templated section makes the first real post refuse."""
+        template = (Path(__file__).resolve().parent.parent.parent / "templates"
+                    / "lane1-handoff.md").read_text(encoding="utf-8")
+        in_template = re.findall(r"(?m)^### (.+?)\s*$", template)
+        self.assertEqual([h for h in in_template if h in post.HANDOFF_HEADINGS],
+                         post.HANDOFF_HEADINGS)
+
+    def _refused(self, trace: str) -> str:
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(self._with_trace(trace), requires_preflight=False)
+        return str(caught.exception)
+
+    def test_host_port_and_version_strings_are_not_file_references(self) -> None:
+        """harmonic-forge#920 pass 1: `[\\w./-]+\\.\\w+:\\d+` accepted all three."""
+        for trace in ("1. Operator opens http://127.0.0.1:8002/docs, verified-live (curl).",
+                      "1. https://app.leasepal.example.com:8443/quote verified-live",
+                      "1. Pinned neo4j v5.26:3 image, verified-live."):
+            self.assertIn("file:line", self._refused(trace), trace)
+
+    def test_extensionless_tracked_entry_points_are_file_references(self) -> None:
+        for ref in ("tools/lane/lane1:42", "Makefile:12", "Dockerfile:30", ".githooks/pre-commit:5",
+                    "lib/ui/lp_menu_dock.dart:9-30", "l1_post.py:94"):
+            post.validate_handoff(self._with_trace(f"1. Entry {ref}, verified-live (read)."),
+                                  requires_preflight=False)
+
+    def test_the_templates_guidance_never_supplies_the_verified_live_marker(self) -> None:
+        """Pass 1, five lenses: keep the guidance, replace only the placeholder line with one
+        unverified hop. The guidance now lives OUTSIDE the validated section, and prose that
+        mentions the marker without a hop on the same line is not evidence anyway."""
+        template = (Path(__file__).resolve().parent.parent.parent / "templates"
+                    / "lane1-handoff.md").read_text(encoding="utf-8")
+        section = re.search(r"(?ms)^### Scenario Trace\s*$\n(.*?)(?=^### )", template).group(1)
+        self.assertNotIn("verified-live", re.sub(r"(?m)^\{the issue's own example[^\n]*\}$", "", section)
+                         .replace("`verified-live`", ""), "guidance prose is back inside the section")
+        filled = re.sub(r"(?m)^\{the issue's own example[^\n]*\}$",
+                        "1. Renter taps Quote -> lib/app_router.dart:158 -> LpAppDock.", section)
+        self.assertIn("must mark at least one hop verified-live", self._refused(filled))
+        guidance = re.search(r"(?s)<!--\nScenario Trace guidance.*?-->", template).group(0)
+        self.assertIn("verified-live", guidance)
+        self.assertIn("verified-live", self._refused(filled + "\n" + guidance.replace("<!--", "")
+                                                      .replace("-->", "")))
+
+    def test_absolute_and_home_relative_paths_are_file_references(self) -> None:
+        for ref in ("~/harmonic-forge/tools/gh/l1_post.py:42", "/abs/path/z.py:7", "./lib/a.dart:3",
+                    ".gitignore:5", "l1_post.py:94."):
+            post.validate_handoff(self._with_trace(f"1. Entry {ref} verified-live (read)."),
+                                  requires_preflight=False)
+
+    def test_image_tags_versions_and_glued_tokens_are_not_file_references(self) -> None:
+        for trace in ("1. image neo4j/neo4j:5.26 verified-live", "1. ghcr.io/o/i:1.4 verified-live",
+                      "1. a@b.py:3 verified-live", "1. x.py:5.26 verified-live"):
+            self.assertIn("must cite at least one file:line", self._refused(trace), trace)
+
+    def test_verified_live_is_a_whole_token(self) -> None:
+        for marker in ("unverified-live", "verified-live-pending", "preverified-live"):
+            self.assertIn("must mark at least one hop verified-live",
+                          self._refused(f"1. lib/a.dart:1 {marker}"), marker)
+        for marker in ("(verified-live)", "**verified-live**", "verified-live,"):
+            post.validate_handoff(self._with_trace(f"1. lib/a.dart:1 {marker}"),
+                                  requires_preflight=False)
+
+    def test_every_fence_form_hides_its_hops_and_an_unclosed_one_hides_the_rest(self) -> None:
+        hop = "lib/a.dart:1 verified-live"
+        for block in (f"~~~\n{hop}\n~~~", f"````\n```\n{hop}\n```\n````",
+                      f"```\n{hop}\n```   ", f"```\nx\n```\n```\n{hop}"):
+            self.assertIn("file:line", self._refused(block), block)
+
+    def test_comments_hide_hops_never_splice_lines_and_an_unclosed_one_hides_the_rest(self) -> None:
+        self.assertIn("must cite", self._refused("<!-- lib/a.dart:1 verified-live -->"))
+        self.assertIn("must cite", self._refused("1. no ref\n<!--\nlib/a.dart:1 verified-live"))
+        self.assertIn("BOTH", self._refused("1. lib/a.dart:1 (read) <!--\nx\n--> verified-live"))
+
+    def test_an_unpaired_fence_in_another_heading_does_not_hide_later_headings(self) -> None:
+        """Pass 2's regression: the original per-heading regex reads such a body unchanged."""
+        body = self._with_trace("1. lib/a.dart:1 verified-live (read).")
+        body = body.replace("### Affected Files\n", "### Affected Files\n```\none side of a pasted diff\n", 1)
+        post.validate_handoff(body, requires_preflight=False)
+
+    def test_the_trace_is_located_between_root_cause_and_design_alternatives(self) -> None:
+        real = "1. lib/a.dart:1 verified-live (read)."
+        quoted = "```\n### Scenario Trace\n1. quoted: x.py:1 verified-live\n```\n"
+        body = self._with_trace(None).replace("### Affected Files\n", "### Affected Files\n" + quoted, 1)
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(body, requires_preflight=False)
+        self.assertIn("Scenario Trace", str(caught.exception))
+        quoted_before = self._with_trace(real).replace("### Affected Files\n", "### Affected Files\n" + quoted, 1)
+        post.validate_handoff(quoted_before, requires_preflight=False)
+
+    def test_a_hop_needs_the_file_line_and_the_marker_on_the_same_line(self) -> None:
+        message = self._refused("1. Route /quote -> lib/app_router.dart:158 (read).\n"
+                                "2. It was verified-live, per the above.")
+        self.assertIn("BOTH", message)
+
+    def test_a_quoted_heading_in_a_fence_is_not_the_section(self) -> None:
+        body = ("```\n### Scenario Trace\n1. quoted: x.py:1 verified-live\n```\n\n"
+                + self._with_trace(None))
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(body, requires_preflight=False)
+        self.assertIn("Scenario Trace", str(caught.exception))
+        quoted_then_real = ("```\n### Scenario Trace\n{TBD}\n```\n\n"
+                            + self._with_trace("1. lib/app_router.dart:158, verified-live (read)."))
+        post.validate_handoff(quoted_then_real, requires_preflight=False)
+
+    def test_a_heading_line_inside_pasted_output_does_not_truncate_the_trace(self) -> None:
+        trace = ("1. Run `mise run check`, output below.\n```\n### Summary\nok\n```\n"
+                 "2. Entry lib/app_router.dart:158, verified-live (read).")
+        post.validate_handoff(self._with_trace(trace), requires_preflight=False)
+
+    def test_a_hop_hidden_in_an_html_comment_does_not_count(self) -> None:
+        message = self._refused("<!-- 1. lib/app_router.dart:158 verified-live -->\n"
+                                "1. Route /quote only, no code reference.")
+        self.assertIn("must cite at least one file:line", message)
+
+    def test_hops_inside_a_code_fence_do_not_count(self) -> None:
+        self.assertIn("file:line", self._refused("```\nlib/app_router.dart:158 verified-live\n```"))
+
+    def test_a_complete_scenario_trace_posts_and_other_headings_are_unchanged(self) -> None:
+        post.validate_handoff(
+            self._with_trace("1. Route /quote -> lib/app_router.dart:158, **verified-live** "
+                             "(read 2026-10-06)."), requires_preflight=False)
+        body = self._with_trace("1. lib/app_router.dart:158 verified-live.").replace(
+            "### Ambiguity Gate\n" + self.FILLER, "### Ambiguity Gate\n{unfilled}")
+        with self.assertRaises(SystemExit):
+            post.validate_handoff(body, requires_preflight=False)
 
     def test_consumers_heading_is_required(self) -> None:
         """harmonic-forge#838 AC4."""
         self.assertIn("Consumers and Equivalents", post.HANDOFF_HEADINGS)
-        body = "\n".join(f"### {h}\nA documented value, per `git grep -n value`." for h in post.HANDOFF_HEADINGS
+        body = "\n".join(f"### {h}\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live." for h in post.HANDOFF_HEADINGS
                          if h != "Consumers and Equivalents")
         with self.assertRaises(SystemExit):
             post.validate_handoff(body, requires_preflight=False)
@@ -54,12 +230,12 @@ class HandoffTests(unittest.TestCase):
     def test_none_elsewhere_still_needs_no_search(self) -> None:
         """The rule is scoped to this one heading (plan review change 4)."""
         body = self._body("`HANDOFF_HEADINGS`: l1_post.py (`git grep -n HANDOFF_HEADINGS`)").replace(
-            "### Design Alternatives Considered\nA documented value, per `git grep -n value`.",
+            "### Design Alternatives Considered\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live.",
             "### Design Alternatives Considered\nnone")
         post.validate_handoff(body, requires_preflight=False)
     def test_template_with_real_content_is_accepted(self) -> None:
         body = "\n".join(
-            f"### {heading}\nA documented value, per `git grep -n value`." for heading in post.HANDOFF_HEADINGS
+            f"### {heading}\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live." for heading in post.HANDOFF_HEADINGS
         )
         post.validate_handoff(body, requires_preflight=False)
 
@@ -84,14 +260,14 @@ class HandoffTests(unittest.TestCase):
 
     def test_missing_heading_is_rejected(self) -> None:
         body = "\n".join(
-            f"### {heading}\nA documented value, per `git grep -n value`." for heading in post.HANDOFF_HEADINGS[:-1]
+            f"### {heading}\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live." for heading in post.HANDOFF_HEADINGS[:-1]
         )
         with self.assertRaises(SystemExit):
             post.validate_handoff(body, requires_preflight=False)
 
     def test_live_handoff_cannot_say_none_for_preflight(self) -> None:
         body = "\n".join(
-            f"### {heading}\n{'none' if heading == 'Pre-Flight Preconditions' else 'A documented value, per `git grep -n value`.'}"
+            f"### {heading}\n{'none' if heading == 'Pre-Flight Preconditions' else 'A documented value, per `git grep -n value` (l1_post.py:94), verified-live.'}"
             for heading in post.HANDOFF_HEADINGS
         )
         with self.assertRaises(SystemExit):

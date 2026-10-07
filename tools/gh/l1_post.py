@@ -90,10 +90,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pitch_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
+import _scenario_trace  # noqa: E402
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
-    "Design Alternatives Considered", "Load-Bearing Assumptions",
+    "Scenario Trace", "Design Alternatives Considered", "Load-Bearing Assumptions",
     "Consumers and Equivalents", "Delegated Judgment Calls", "Pre-Flight Preconditions", "Implementation Spec",
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
@@ -385,6 +386,14 @@ def heading_content(body: str, heading: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def section_content(body: str, heading: str) -> str:
+    """A handoff heading's content. `Scenario Trace` is located by span (harmonic-forge#920);
+    every other heading keeps `heading_content`'s original regex (AC2: unchanged)."""
+    if heading == "Scenario Trace":
+        return _scenario_trace.trace_section(body)
+    return heading_content(body, heading)
+
+
 def is_substantive(value: str) -> bool:
     # TEMPLATE_PLACEHOLDER's alternatives are literal phrases with no
     # whitespace tolerance -- harmonic-forge#382's preclose review found
@@ -501,7 +510,7 @@ def validate_plan_first_spec(body: str, plan_first: bool | None) -> None:
 
 
 def validate_handoff(body: str, requires_preflight: bool) -> None:
-    missing = [heading for heading in HANDOFF_HEADINGS if not heading_content(body, heading)]
+    missing = [heading for heading in HANDOFF_HEADINGS if not section_content(body, heading)]
     if missing:
         fail("handoff missing required headings: " + ", ".join(missing))
     for heading in HANDOFF_HEADINGS:
@@ -517,10 +526,13 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
             if ("**If this handoff triggers Plan-First" in spec
                     and "{explicit step-by-step instruction for Lane 2" not in spec):
                 continue
-        if not is_substantive(heading_content(body, heading)):
+        if not is_substantive(section_content(body, heading)):
             fail(f"handoff heading is still a template placeholder: {heading}")
     if requires_preflight and heading_content(body, "Pre-Flight Preconditions").lower() == "none":
         fail("live-mutating/cross-repo handoff requires explicit pre-flight preconditions")
+    refusal = _scenario_trace.trace_refusal(section_content(body, "Scenario Trace"))
+    if refusal:
+        fail(refusal)
     # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by
     # STRUCTURE only -- present and not a placeholder, like every heading
     # above. Whether each reader came with the search that found it is a
