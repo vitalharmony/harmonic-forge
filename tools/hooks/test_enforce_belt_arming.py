@@ -548,7 +548,9 @@ class WrappedWatcherIsDenied(unittest.TestCase):
                      f"bash -lc 'python3 {w} --queue-for l1'",
                      f"bash -c \"cd /tmp && python3 {w} --queue-for l1\"",
                      f"timeout 600 bash -c 'cd /tmp; python3 {w} --queue-for l1'",
-                     f"bash -c 'sh -c \"cd /y; python3 {w} --queue-for l1\"'"),
+                     f"bash -c 'sh -c \"cd /y; python3 {w} --queue-for l1\"'",
+                     f"bash -c 'cd /x && exec python3 {w} --queue-for l1'",
+                     f"bash -c 'exec {w} --queue-for l1'"),
             "sh": (f"sh -c 'cd /tmp; python3 {w} --queue-for l1'",),
         }
         for shell, commands in cases.items():

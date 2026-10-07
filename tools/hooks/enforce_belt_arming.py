@@ -316,6 +316,11 @@ def _normalize_command(command: str) -> str:
 def _executes_watcher(tokens: list[str]) -> bool:
     """True when this command segment runs `watch_lane_posts.py`."""
     tokens = strip_invocation_prefix(tokens)
+    if tokens and tokens[0] == "exec":
+        # `exec` replaces the shell with the watcher: the idiomatic way to write a wrapped belt.
+        # Kept local rather than added to `shell_parse`'s prefix set, which ten hooks share
+        # (harmonic-forge#922).
+        return _executes_watcher(tokens[1:])
     if tokens and tokens[0] == "timeout":
         rest = tokens[1:]
         while rest and rest[0].startswith("-"):
@@ -334,18 +339,22 @@ def _executes_watcher(tokens: list[str]) -> bool:
 
 
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+#: Wider than the `{-c, -lc}` literal other hooks use: `-ic`, `-xc` and `-ec` are the same
+#: "run this string" spelling, and over-detecting here only denies a wrapped belt.
 _SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
-#: A wrapper inside a wrapper is parsed to this depth; a deeper nest is treated as a wrapper
-#: that runs the watcher (denied), because the hook can no longer show it does not.
-_MAX_WRAPPER_DEPTH = 4
 
 
-def _wrapper_shell(command: str, depth: int = 0) -> str | None:
+def _wrapper_shell(command: str) -> str | None:
     """harmonic-forge#922: the shell (`bash`, `sh`, ...) whose `-c <string>` runs the watcher,
     else None. `strip_invocation_prefix` unwraps `bash -c` but splits the inner string as ONE
     command, so `bash -c 'cd X; python3 .../watch_lane_posts.py ...'` showed `cd` as the program
     and the Monitor passed every check this hook makes. The inner string is segmented with
-    `command_segments`, like the outer one, and searched the same way."""
+    `command_segments`, like the outer one, and searched the same way.
+
+    The recursion ends because each inner string is strictly shorter than the command that
+    carried it. A nest of three or more shells whose escaped quotes `shlex` cannot round-trip
+    is not parsed and is allowed: this hook is a mistake-detector, not a boundary
+    (R-0374/R-0378), and the honest mistake is one `cd`-and-run wrapper."""
     try:
         segments = command_segments(command)
     except ValueError:
@@ -356,24 +365,19 @@ def _wrapper_shell(command: str, depth: int = 0) -> str | None:
             continue
         for index, token in enumerate(tokens[1:], start=1):
             if token == "--command" or _SHELL_C_FLAG.match(token):
-                if index + 1 >= len(tokens):
-                    break
-                inner = tokens[index + 1]
-                if depth >= _MAX_WRAPPER_DEPTH:
-                    return Path(tokens[0]).name if WATCHER_NAME in inner else None
-                if _monitor_runs_watcher(inner, depth + 1):
+                if index + 1 < len(tokens) and _monitor_runs_watcher(tokens[index + 1]):
                     return Path(tokens[0]).name
                 break
     return None
 
 
-def _monitor_runs_watcher(command: str, depth: int = 0) -> bool:
+def _monitor_runs_watcher(command: str) -> bool:
     try:
         segments = command_segments(command)
     except ValueError:  # unbalanced quotes: the shell would refuse it too
         return WATCHER_NAME in command
     return (any(_executes_watcher(segment) for segment in segments)
-            or _wrapper_shell(command, depth) is not None)
+            or _wrapper_shell(command) is not None)
 
 
 _OVERRIDE_HINT = (
