@@ -396,6 +396,28 @@ class ReceiptStoreTests(unittest.TestCase):
         self.assertEqual([p.wait() for p in procs], [0] * 8)
         self.assertEqual([ci_plan.has_receipt("sess", c) for c in checkouts], [True] * 8)
 
+    def test_a_writer_waits_for_the_receipt_lock_instead_of_racing(self):
+        """Deterministic: hold the lock, start a write, prove it has not landed,
+        release, prove it then does. A lockless writer lands immediately."""
+        import fcntl
+        import threading
+        import time as _time
+        checkout = self._checkout("held")
+        path = ci_plan.receipt_path("sess")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path.with_suffix(".lock")), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        writer = threading.Thread(target=ci_plan.write_receipt, args=(checkout, "sess"))
+        writer.start()
+        try:
+            _time.sleep(0.4)
+            self.assertFalse(path.exists(), "the write landed while another holder had the lock")
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        writer.join(10)
+        self.assertTrue(ci_plan.has_receipt("sess", checkout))
+
     def test_a_corrupt_receipt_is_replaced_whole_never_left_partial(self):
         a, b = self._checkout("a"), self._checkout("b")
         ci_plan.write_receipt(a, "sess")

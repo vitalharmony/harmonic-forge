@@ -453,6 +453,12 @@ class HookContentTests(unittest.TestCase):
             hooks = {**full, "PreToolUse": [{"matcher": matcher, "hooks": [
                 {"command": "python3 require_ci_plan.py"}]}]}
             self.assertEqual(len(fo.required_hook_gaps(hooks)), 1, matcher)
+        # `NotebookEdit` contains `Edit` as a substring and covers NONE of the
+        # guarded tools except itself: the gap must name Edit as uncovered.
+        notebook = {**full, "PreToolUse": [{"matcher": "NotebookEdit", "hooks": [
+            {"command": "python3 require_ci_plan.py"}]}]}
+        self.assertIn("does not cover Edit, Write, MultiEdit, Bash",
+                      fo.required_hook_gaps(notebook)[0])
         covered = {**full, "PreToolUse": [
             {"matcher": "Edit|Write|MultiEdit|NotebookEdit",
              "hooks": [{"command": "python3 require_ci_plan.py"}]},
