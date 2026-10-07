@@ -40,6 +40,7 @@ have to infer which gate applies.
 ### Scenario Trace
 {the issue's own example, hop by hop: each hop `path:line` and `verified-live` (with the command or read that verified it)}
 
+<!--
 The issue's own example (the screen, command or input it names), walked step by
 step from the user-visible entry (route, screen, command, input) to the exact code
 this handoff changes. Every hop carries a `file:line` and is marked `verified-live`
@@ -61,6 +62,7 @@ in one week traced to handoffs, not to Lane 2 or Lane 3):
 - A command specified without running it, and a sibling file the walk would have
   shown (ke'nekted K61: `sync_rules.py --pull` versus `--project`; a missed
   `.claude/agents/.gitignore`).
+-->
 
 ### Design Alternatives Considered
 {none | list each plausible design that was weighed and why it was rejected

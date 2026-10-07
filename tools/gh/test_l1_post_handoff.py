@@ -85,6 +85,61 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual([h for h in in_template if h in post.HANDOFF_HEADINGS],
                          post.HANDOFF_HEADINGS)
 
+    def _refused(self, trace: str) -> str:
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(self._with_trace(trace), requires_preflight=False)
+        return str(caught.exception)
+
+    def test_host_port_and_version_strings_are_not_file_references(self) -> None:
+        """harmonic-forge#920 pass 1: `[\\w./-]+\\.\\w+:\\d+` accepted all three."""
+        for trace in ("1. Operator opens http://127.0.0.1:8002/docs, verified-live (curl).",
+                      "1. https://app.leasepal.example.com:8443/quote verified-live",
+                      "1. Pinned neo4j v5.26:3 image, verified-live."):
+            self.assertIn("file:line", self._refused(trace), trace)
+
+    def test_extensionless_tracked_entry_points_are_file_references(self) -> None:
+        for ref in ("tools/lane/lane1:42", "Makefile:12", "Dockerfile:30", ".githooks/pre-commit:5",
+                    "lib/ui/lp_menu_dock.dart:9-30", "l1_post.py:94"):
+            post.validate_handoff(self._with_trace(f"1. Entry {ref}, verified-live (read)."),
+                                  requires_preflight=False)
+
+    def test_the_templates_guidance_never_supplies_the_verified_live_marker(self) -> None:
+        """Pass 1, five lenses: keep the guidance, replace only the placeholder line with
+        one unverified hop. The guidance is a comment now and is also not evidence."""
+        template = (Path(__file__).resolve().parent.parent.parent / "templates"
+                    / "lane1-handoff.md").read_text(encoding="utf-8")
+        section = re.search(r"(?ms)^### Scenario Trace\s*$\n(.*?)(?=^### )", template).group(1)
+        filled = re.sub(r"(?m)^\{the issue's own example[^\n]*\}$",
+                        "1. Renter taps Quote -> lib/app_router.dart:158 -> LpAppDock.", section)
+        self.assertIn("verified-live", filled)  # the guidance text is still there
+        self.assertIn("verified-live", self._refused(filled))
+        # the same guidance as bare, uncommented prose must not count either
+        bare = filled.replace("<!--", "").replace("-->", "")
+        self.assertIn("verified-live", self._refused(bare))
+
+    def test_a_hop_needs_the_file_line_and_the_marker_on_the_same_line(self) -> None:
+        message = self._refused("1. Route /quote -> lib/app_router.dart:158 (read).\n"
+                                "2. It was verified-live, per the above.")
+        self.assertIn("BOTH", message)
+
+    def test_a_quoted_heading_in_a_fence_is_not_the_section(self) -> None:
+        body = ("```\n### Scenario Trace\n1. quoted: x.py:1 verified-live\n```\n\n"
+                + self._with_trace(None))
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(body, requires_preflight=False)
+        self.assertIn("Scenario Trace", str(caught.exception))
+        quoted_then_real = ("```\n### Scenario Trace\n{TBD}\n```\n\n"
+                            + self._with_trace("1. lib/app_router.dart:158, verified-live (read)."))
+        post.validate_handoff(quoted_then_real, requires_preflight=False)
+
+    def test_a_heading_line_inside_pasted_output_does_not_truncate_the_trace(self) -> None:
+        trace = ("1. Run `mise run check`, output below.\n```\n### Summary\nok\n```\n"
+                 "2. Entry lib/app_router.dart:158, verified-live (read).")
+        post.validate_handoff(self._with_trace(trace), requires_preflight=False)
+
+    def test_hops_inside_a_code_fence_do_not_count(self) -> None:
+        self.assertIn("file:line", self._refused("```\nlib/app_router.dart:158 verified-live\n```"))
+
     def test_a_complete_scenario_trace_posts_and_other_headings_are_unchanged(self) -> None:
         post.validate_handoff(
             self._with_trace("1. Route /quote -> lib/app_router.dart:158, **verified-live** "

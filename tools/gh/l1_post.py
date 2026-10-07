@@ -90,6 +90,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pitch_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
+import _scenario_trace  # noqa: E402
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -98,11 +99,6 @@ HANDOFF_HEADINGS = [
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
-#: harmonic-forge#920. `Scenario Trace` is enforced by structure plus two markers:
-#: a `path.ext:line` reference and the literal `verified-live`. Whether the trace
-#: reaches the changed code is a reader's question (agents/pitch-inspection.md,
-#: check 8), the same split harmonic-forge#838 drew for `Consumers and Equivalents`.
-FILE_LINE = re.compile(r"[\w./-]+\.\w+:\d+")
 
 # a private-repo incident (pre-close panel): a sweep entry must be a LINE, must name its own
 # case, and must carry text. The deleted TC_STATUS pattern enforced all three
@@ -386,8 +382,9 @@ def resolve_sha(value: str, cwd: Path | None = None) -> str:
 
 
 def heading_content(body: str, heading: str) -> str:
-    match = re.search(rf"(?ms)^### {re.escape(heading)}\s*$\n(.*?)(?=^### |\Z)", body)
-    return match.group(1).strip() if match else ""
+    # Fence-aware (harmonic-forge#920): a heading quoted in a code fence is not one, and a
+    # `###` line inside pasted output does not end its section.
+    return _scenario_trace.section(body, heading)
 
 
 def is_substantive(value: str) -> bool:
@@ -526,12 +523,9 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
             fail(f"handoff heading is still a template placeholder: {heading}")
     if requires_preflight and heading_content(body, "Pre-Flight Preconditions").lower() == "none":
         fail("live-mutating/cross-repo handoff requires explicit pre-flight preconditions")
-    trace = heading_content(body, "Scenario Trace")
-    if not FILE_LINE.search(trace):
-        fail("Scenario Trace must cite at least one file:line (for a route or URL, cite the "
-             "file:line of its handler)")
-    if "verified-live" not in trace:
-        fail("Scenario Trace must mark at least one hop verified-live")
+    refusal = _scenario_trace.trace_refusal(heading_content(body, "Scenario Trace"))
+    if refusal:
+        fail(refusal)
     # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by
     # STRUCTURE only -- present and not a placeholder, like every heading
     # above. Whether each reader came with the search that found it is a
