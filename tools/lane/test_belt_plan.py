@@ -25,7 +25,7 @@ PROTOCOL = (
     '[project.protocol]\nworktree_name = "{checkout}-lane{lane}"\n'
     'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'
     'gate_checkout_task = "gate-checkout"\nlane3_begin_task = "lane3-begin"\n'
-    'lane3_end_task = "lane3-end"\nruns_lane3 = true\n')
+    'lane3_end_task = "lane3-end"\ngate_task = "check"\nruns_lane3 = true\n')
 
 
 def _run(lane, cwd=REPO, env_extra=None):

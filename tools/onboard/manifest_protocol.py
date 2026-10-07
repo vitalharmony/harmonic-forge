@@ -27,6 +27,12 @@ class Protocol:
     #: universal minimum actually names.
     lane3_end_task: str
     runs_lane3: bool
+    #: harmonic-forge#918. The mise task a lane runs as its gate before handing
+    #: off (`check` for hrse and harmonic-forge, `ci-check` where CI runs that).
+    #: Required, so `ci_plan.py` can always print the steps a lane must pass;
+    #: distinct from `gate_checkout_task` (Lane 3's checkout preparation) and
+    #: `ci_parity_task` (what a CI-parity check compares against).
+    gate_task: str
     #: DJC 2 (harmonic-forge#730). A `runs_lane3` repo either ships
     #: `.claude/gate-adapter.json` or declares `needs_gate_adapter = false`
     #: here. `None` means neither, which is the state the check refuses: an
@@ -102,7 +108,7 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
     # leaves the new field unvalidated while everything still imports and runs
     # (harmonic-forge#730). Keep them in step.
     task_fields = ("l1_post_task", "lane_comment_task", "gate_checkout_task",
-                   "lane3_begin_task", "lane3_end_task")
+                   "lane3_begin_task", "lane3_end_task", "gate_task")
     for field in task_fields:
         value = getattr(protocol, field)
         if not isinstance(value, str) or not value.strip():

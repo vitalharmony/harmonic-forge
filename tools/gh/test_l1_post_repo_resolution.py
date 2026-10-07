@@ -22,6 +22,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "check"
 runs_lane3 = true
 """
 

@@ -699,6 +699,18 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
     return sorted(gaps)
 
 
+#: Platform hooks every onboarded checkout's settings.json must register.
+#: `require_ci_plan.py` (harmonic-forge#918): a repo without it lets a lane edit
+#: before reading the gate, so it reads FAIL rather than OK.
+REQUIRED_HOOKS = ("require_ci_plan.py",)
+
+
+def required_hook_gaps(hooks: dict) -> list[str]:
+    """`REQUIRED_HOOKS` that no command in `hooks` names."""
+    commands = " ".join(_hook_commands(hooks))
+    return [name for name in REQUIRED_HOOKS if name not in commands]
+
+
 def check_hooks(project: Project) -> Check:
     """Presence, shape, AND that every platform script it names resolves.
 
@@ -725,6 +737,12 @@ def check_hooks(project: Project) -> Check:
                      f"{len(events)} event(s) declared, but "
                      f"{len(missing)} named script(s) do not exist: "
                      + ", ".join(missing))
+
+    absent = required_hook_gaps(hooks) if isinstance(hooks, dict) else []
+    if absent:
+        return Check("hooks", FAIL,
+                     "required platform hook(s) not registered: " + ", ".join(absent)
+                     + " -- register them in .claude/settings.json (harmonic-forge#918)")
 
     # Declaring ONE event is not the same as being guarded. Naming the count of
     # PreToolUse entries stops a repo with a single SessionStart line from

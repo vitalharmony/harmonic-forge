@@ -112,8 +112,9 @@ class Base(unittest.TestCase):
         if hooks:
             settings = repo / ".claude" / "settings.json"
             settings.parent.mkdir(parents=True, exist_ok=True)
-            settings.write_text(json.dumps({"hooks": {"PreToolUse": []}}),
-                                encoding="utf-8")
+            settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+                {"hooks": [{"command": "python3 require_ci_plan.py"}]}]}}),
+                encoding="utf-8")
         if worktrees:
             for n in (2, 3):
                 (repo.parent / f"{name}-lane{n}").mkdir(exist_ok=True)
@@ -137,7 +138,7 @@ class Base(unittest.TestCase):
                       worktree_name="{checkout}-lane{lane}",
                       l1_post_task="l1-post", lane_comment_task="lane-comment",
                       gate_checkout_task="gate-checkout", lane3_begin_task="lane3-begin",
-                      lane3_end_task="lane3-end", runs_lane3=True,
+                      lane3_end_task="lane3-end", gate_task="check", runs_lane3=True,
                       # These synthetic repos have no gate-adapter.json, and
                       # check_gate_adapter now refuses silence -- declare it,
                       # exactly as a real no-graph repo does.
@@ -300,6 +301,7 @@ class ExitCodeTests(Base):
             gate_checkout_task = "gate-checkout"
             lane3_begin_task = "lane3-begin"
             lane3_end_task = "lane3-end"
+            gate_task = "check"
             runs_lane3 = true
             needs_gate_adapter = false
         """)
@@ -419,8 +421,24 @@ class HookContentTests(unittest.TestCase):
         # to hard-code `startup|resume`, which is the shipped defect itself —
         # so every test built on it was asserting against a settings file that
         # could never wake a `/clear` session.
+        # `require_ci_plan.py` is a required platform hook (harmonic-forge#918);
+        # named bare so it needs no file on disk, as `_wired` names belt_wakeup.
         return {"SessionStart": [{"matcher": matcher,
-                                  "hooks": [{"type": "command", "command": command}]}]}
+                                  "hooks": [{"type": "command", "command": command}]}],
+                "UserPromptSubmit": [{"hooks": [{"command": "python3 require_ci_plan.py"}]}]}
+
+    def test_a_missing_required_hook_fails_the_hooks_check(self) -> None:
+        """harmonic-forge#918: a repo that registers other hooks but not
+        `require_ci_plan.py` lets a lane edit before reading the gate."""
+        checkout = self.root / "norequired"
+        (checkout / ".claude").mkdir(parents=True)
+        hooks = self._hooks("python3 belt_wakeup.py")
+        del hooks["UserPromptSubmit"]
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="n", prefix="N", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("require_ci_plan.py", check.detail)
 
     def test_the_shipped_startup_resume_matcher_is_reported_as_a_gap(self) -> None:
         """harmonic-forge#560, stated as the check that would have caught it.
@@ -674,7 +692,7 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="lane{lane}-{checkout}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=False))
 
         self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
@@ -869,7 +887,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         self.assertEqual(set(project.worktrees), {lane2, lane3})
         real_run = fo._run
@@ -893,7 +911,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         self.assertEqual(set(project.worktrees), {lane2, lane3})
         check = fo.check_worktrees(project)
@@ -908,7 +926,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         check = fo.check_worktrees(project)
         self.assertEqual(check.status, fo.OK, check.detail)
@@ -926,7 +944,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         self.assertNotIn(release, project.worktrees)
 
@@ -962,7 +980,7 @@ class LaneTaskCheckTests(Base):
         renamed = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-            lane3_begin_task="lane3-begin", lane3_end_task="session-close",
+            lane3_begin_task="lane3-begin", lane3_end_task="session-close", gate_task="check",
             runs_lane3=True, needs_gate_adapter=False))
         self.assertEqual(fo.check_lane_tasks(renamed).status, fo.OK)
         # ...and the conventional name is then the one that is missing.
@@ -1010,7 +1028,7 @@ class CheckTaskRequiredForLane3Tests(Base):
         not_lane3 = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
             runs_lane3=False))
         self.assertEqual(fo.check_lane_tasks(not_lane3).status, fo.OK)
 
@@ -1032,7 +1050,7 @@ class GateAdapterDeclarationTests(Base):
     def _protocol(self, **kw):
         base = dict(worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                     lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                    lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                    lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                     runs_lane3=True)
         base.update(kw)
         return mf.Protocol(**base)
@@ -1144,7 +1162,7 @@ class CiCheckTests(Base):
     def _protocol_no_lane3(self):
         return mf.Protocol(worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                            lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                           lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                           lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                            runs_lane3=False)
 
 
@@ -1257,7 +1275,7 @@ class LaneTaskGeneratorTests(Base):
         not_lane3 = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
             runs_lane3=False))
         done = fo.apply_lane_tasks(not_lane3)
         self.assertTrue(all(c.status == fo.OK for c in done))

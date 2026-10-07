@@ -107,7 +107,7 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
                 'workspace = "vh"\n[project.protocol]\n'
                 'worktree_name = "{checkout}-lane{lane}"\nl1_post_task = "l1-post"\n'
                 'lane_comment_task = "lane-comment"\ngate_checkout_task = "gate-checkout"\n'
-                'lane3_begin_task = "lane3-begin"\nlane3_end_task = "lane3-end"\n'
+                'lane3_begin_task = "lane3-begin"\nlane3_end_task = "lane3-end"\ngate_task = "check"\n'
                 'runs_lane3 = true\n', encoding="utf-8")
             for lane in ("1", "2", "3"):
                 with self.subTest(lane=lane):
