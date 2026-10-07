@@ -1644,7 +1644,12 @@ def comment_watch_cycle(
             if priming:
                 if cid:
                     seen.add(cid, SeenSet.PRIMED)
-                suppressed.append(f"{target} {lane} — {detail}")
+                # harmonic-forge#921: the comment's own URL, so reading the swallowed
+                # marker is one click. The REST comment object carries `html_url`;
+                # the constructed form is the same permalink if a fixture omits it.
+                url = comment.get("html_url") or (
+                    f"https://github.com/{repo}/issues/{issue}#issuecomment-{cid}")
+                suppressed.append(f"{target} {lane} — {detail} ({url})")
                 continue
             if cid:
                 seen.add(cid, SeenSet.PENDING)
@@ -1675,17 +1680,17 @@ def comment_watch_cycle(
                 # Named, not counted (harmonic-forge#599 preclose finding): the
                 # overlap window reaches backwards into live work, so this list
                 # can contain a handoff posted minutes before arming. The
-                # seen-set entry is permanent and deleting the watermark does
-                # not undo it, so this print is the only record the operator
-                # gets.
+                # seen-set entry is permanent and no state edit re-announces it (a
+                # reset belt primes again, harmonic-forge#921), so this print, with
+                # each marker's URL, is the only record the operator gets.
                 print(f"[watch_lane_posts] {target}: primed (SUPPRESSED, not "
                       f"announced) {len(suppressed)} marker(s) already on the "
                       "thread at arm time:", file=sys.stderr)
                 for line in suppressed:
                     print(f"[watch_lane_posts]     {line}", file=sys.stderr)
                 print(f"[watch_lane_posts]   if one of those is live work, it "
-                      f"will NOT be re-announced -- delete {seen.path} to "
-                      "replay.", file=sys.stderr)
+                      f"will NOT be re-announced: open each URL above (or read "
+                      f"{target}) and act on it from the thread.", file=sys.stderr)
                 # harmonic-forge#697 AC4: stderr goes to a file no lane reads,
                 # so suppression is also named on stdout, where the lane sees it.
                 lines.append(f"{target} PRIMED at first arm, not announced: "

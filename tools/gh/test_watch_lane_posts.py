@@ -1491,7 +1491,31 @@ class CommentWatchCycleTests(unittest.TestCase):
         out = err.getvalue()
         self.assertIn("SUPPRESSED", out)
         self.assertIn("vitalharmony/hrse#1530", out)
-        self.assertIn("delete", out, "the operator needs the recovery path")
+
+    def test_suppressed_markers_carry_their_comment_url_and_no_state_edit_advice(self):
+        """harmonic-forge#921: the printed recovery used to say to delete the seen file,
+        which replays nothing (the watermark has advanced) or re-primes the same marker.
+        The only recovery that works is reading the thread, so each suppressed marker is
+        named with its URL on stderr AND on the stdout line the lane actually sees."""
+        url = "https://github.com/vitalharmony/hrse/issues/1530#issuecomment-1"
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            lines = self._cycle([{"id": "1", "body": self.HANDOFF, "html_url": url}])
+        out = err.getvalue()
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1)
+        self.assertIn(url, primed[0])
+        self.assertIn(url, out)
+        self.assertIn("open each URL above", out)
+        for state_edit in ("delete", "seen", str(self.seen.path)):
+            self.assertNotIn(state_edit, out.replace("seen-set entry", ""),
+                             f"the recovery must not advise editing state ({state_edit})")
+
+    def test_a_fixture_comment_without_html_url_still_gets_a_permalink(self):
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            lines = self._cycle([{"id": "7", "body": self.HANDOFF}])
+        permalink = "https://github.com/vitalharmony/hrse/issues/1530#issuecomment-7"
+        self.assertIn(permalink, err.getvalue())
+        self.assertIn(permalink, [l for l in lines if "PRIMED at first arm" in l][0])
 
     # --- harmonic-forge#697 ------------------------------------------------
 
