@@ -313,9 +313,19 @@ def _normalize_command(command: str) -> str:
     return text
 
 
+#: Words that can stand in front of the command a segment really runs: `exec` replaces the shell
+#: with the watcher (the idiomatic wrapped belt), and the control keywords land at the head of a
+#: segment once `;` splits `if c; then CMD; fi` and `while c; do CMD; done` (harmonic-forge#922).
+_SHELL_PREFIXES = {"exec", "if", "then", "else", "elif", "while", "until", "do", "!", "{"}
+
+
 def _executes_watcher(tokens: list[str]) -> bool:
     """True when this command segment runs `watch_lane_posts.py`."""
     tokens = strip_invocation_prefix(tokens)
+    if tokens and tokens[0] in _SHELL_PREFIXES:
+        # Kept local rather than added to `shell_parse`'s prefix set, which ten hooks share
+        # (harmonic-forge#922). See _SHELL_PREFIXES.
+        return _executes_watcher(tokens[1:])
     if tokens and tokens[0] == "timeout":
         rest = tokens[1:]
         while rest and rest[0].startswith("-"):
@@ -333,12 +343,80 @@ def _executes_watcher(tokens: list[str]) -> bool:
     return False
 
 
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+#: Wider than the `{-c, -lc}` literal other hooks use: `-ic`, `-xc` and `-ec` are the same
+#: "run this string" spelling, and over-detecting here only denies a wrapped belt.
+_SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
+
+
+def _peel_prefixes(tokens: list[str]) -> list[str]:
+    """Strip the words that can precede the program: the shared invocation prefixes, this hook's
+    own `_SHELL_PREFIXES`, and `env` spelled as a path. `shell_parse` matches `env` by exact
+    token, so `/usr/bin/env bash -c ...` kept `/usr/bin/env` as the program; it is normalised
+    here rather than in the file ten hooks share (harmonic-forge#922)."""
+    tokens = strip_invocation_prefix(tokens, unwrap_shells=False)
+    while tokens:
+        if tokens[0] in _SHELL_PREFIXES:
+            tokens = tokens[1:]
+        elif tokens[0] != "env" and Path(tokens[0]).name == "env":
+            tokens = ["env"] + tokens[1:]
+        else:
+            break
+        tokens = strip_invocation_prefix(tokens, unwrap_shells=False)
+    return tokens
+
+
+def _wrapper_shell(command: str) -> str | None:
+    """harmonic-forge#922: the shell (`bash`, `sh`, ...) whose `-c <string>` runs the watcher,
+    else None. `strip_invocation_prefix` unwraps `bash -c` but splits the inner string as ONE
+    command, so `bash -c 'cd X; python3 .../watch_lane_posts.py ...'` showed `cd` as the program
+    and the Monitor passed every check this hook makes. The inner string is segmented with
+    `command_segments`, like the outer one, and searched the same way.
+
+    The recursion ends because each inner string is strictly shorter than the command that
+    carried it.
+
+    Allowed by contract (this hook is a mistake-detector, not a boundary, R-0374/R-0378; the
+    honest mistake is one `cd`-first `-c` wrapper). These are NOT defects and a finding that
+    matches one is a documentation check, not a survivor: an inner script `shlex` cannot parse
+    (an apostrophe inside a double-quoted script) or a nest of three or more shells whose
+    escaped quotes it cannot round-trip; a shell fed its script on stdin (`bash <<EOF`,
+    `bash -s`); `eval`; carriers such as `setsid`, `xargs`, `ssh`, `script -c`; and the
+    non-space spelling `bash -c"..."`. An unparseable inner script is allowed rather than
+    searched as text, because a text search cannot tell a quoted `pgrep` pattern from a command
+    and denies honest Monitors."""
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return None
+    for segment in segments:
+        tokens = _peel_prefixes(segment)
+        if not tokens or Path(tokens[0]).name not in _SHELLS:
+            continue
+        for index, token in enumerate(tokens[1:], start=1):
+            if token == "--command" or _SHELL_C_FLAG.match(token):
+                # The script is the first non-option word after the flag: `bash -c -- 'S'`
+                # and `bash -cx 'S'` are as valid as `bash -c 'S'`.
+                script = next((t for t in tokens[index + 1:] if t != "--" and not t.startswith("-")), None)
+                if script is None:
+                    break
+                try:
+                    command_segments(script)
+                except ValueError:
+                    break  # unparseable inner script: allowed by contract (see above)
+                if _monitor_runs_watcher(script):
+                    return Path(tokens[0]).name
+                break
+    return None
+
+
 def _monitor_runs_watcher(command: str) -> bool:
     try:
         segments = command_segments(command)
     except ValueError:  # unbalanced quotes: the shell would refuse it too
         return WATCHER_NAME in command
-    return any(_executes_watcher(segment) for segment in segments)
+    return (any(_executes_watcher(segment) for segment in segments)
+            or _wrapper_shell(command) is not None)
 
 
 _OVERRIDE_HINT = (
@@ -504,6 +582,14 @@ def decide(payload: dict[str, Any], lane: str | None,
                            f"workspace cannot be resolved ({unresolved}). A belt arms only "
                            "from inside an onboarded checkout or one of its worktrees, "
                            "scoped to that workspace (harmonic-forge#917).")
+        wrapper = _wrapper_shell(command)
+        if wrapper is not None:
+            return _reason(lane, calls,
+                           f"Denied: this Monitor runs watch_lane_posts.py inside `{wrapper} -c`. "
+                           "A wrapper is never the canonical belt command: it can `cd` into "
+                           "another checkout, and the watcher scopes itself from where it runs "
+                           "(harmonic-forge#917, #922). Run the canonical command directly, "
+                           "from the checkout the session is in.")
         if _normalize_command(command) != _normalize_command(calls["monitor"]["command"]):
             return _reason(lane, calls,
                            "Denied: this Monitor runs watch_lane_posts.py but is not "
