@@ -39,6 +39,7 @@ class RepoResolutionTests(unittest.TestCase):
             repo = "example/project"
             account = "vitalharmony"
             onboarded = true
+            workspace = "vh"
         """) + PROTOCOL, encoding="utf-8")
         subprocess.run(("git", "init", "-q", str(self.root / "checkout")), check=True)
         subprocess.run(("git", "-C", str(self.root / "checkout"), "remote", "add",

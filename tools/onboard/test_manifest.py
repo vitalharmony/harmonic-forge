@@ -142,8 +142,25 @@ class FailLoudlyTests(unittest.TestCase):
 
     def test_onboarded_without_protocol_is_rejected(self) -> None:
         self.assertRaisesManifest(
-            '[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\naccount = "x"\nonboarded = true\n',
+            '[[project]]\nname = "a"\nprefix = "A"\nrepo = "o/a"\naccount = "x"\nonboarded = true\nworkspace = "vh"\n',
             "declares no [project.protocol]")
+
+    def test_onboarded_without_a_workspace_is_rejected_naming_it(self) -> None:
+        """harmonic-forge#917 AC4."""
+        self.assertRaisesManifest(
+            '[[project]]\nname = "lonely"\nprefix = "A"\nrepo = "o/a"\naccount = "x"\n'
+            'onboarded = true\n' + PROTOCOL,
+            "lonely is onboarded but declares no workspace")
+
+    def test_a_projected_repo_needs_no_workspace(self) -> None:
+        manifest = write('[[project]]\nname = "later"\nprefix = "Q"\n')
+        self.assertIsNone(mf.load(manifest)[0].workspace)
+
+    def test_workspaces_are_the_onboarded_rows_values_sorted_and_distinct(self) -> None:
+        from manifest_identity import workspaces  # noqa: PLC0415
+        expected = sorted({p.workspace for p in mf.load(LIVE) if p.onboarded})
+        self.assertEqual(workspaces(LIVE), expected)
+        self.assertTrue(all(expected))
 
     def test_unknown_protocol_key_is_rejected(self) -> None:
         self.assertRaisesManifest(MINIMAL + PROTOCOL + 'typo = "x"\n',
@@ -320,6 +337,7 @@ class ViewTests(unittest.TestCase):
                 account = "vitalharmony"
                 path = "{alias}"
                 onboarded = true
+                workspace = "vh"
             """) + PROTOCOL)
             project = mf.require_onboarded_repo("https://github.com/owner/known.git", path)
             self.assertEqual(project.checkout, checkout.resolve())
@@ -327,7 +345,7 @@ class ViewTests(unittest.TestCase):
     def test_closed_registry_rejects_suffix_aliases(self) -> None:
         path = write(MINIMAL.replace(
             'prefix = "A"',
-            'prefix = "A"\nrepo = "vitalharmony/hrse"\naccount = "vitalharmony"\nonboarded = true') + PROTOCOL)
+            'prefix = "A"\nrepo = "vitalharmony/hrse"\naccount = "vitalharmony"\nonboarded = true\nworkspace = "vh"') + PROTOCOL)
         for value in ("garbage/vitalharmony/hrse",
                       "https://evil.example/vitalharmony/hrse"):
             with self.subTest(value=value), self.assertRaises(mf.ManifestError):

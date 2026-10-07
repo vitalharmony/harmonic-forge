@@ -25,7 +25,7 @@ and resolves to nothing — every path below is written absolute, rooted at
 
 harmonic-forge#651: these four held as prose alone through a 2026-09-14
 incident that exhausted the account's shared REST budget. They are now
-mechanically enforced (`CANONICAL_BELTS`, a per-lane `flock`, and a local
+mechanically enforced (`CANONICAL_BELTS`, a per-lane-per-workspace `flock`, and a local
 git staleness refusal) — this list states them, it does not implement them.
 
 - **Arm the canonical command once.** There is exactly one argument set per
@@ -54,6 +54,24 @@ git staleness refusal) — this list states them, it does not implement them.
   specs were lost in about 30 seconds.
 
 ## The belt is `watch_lane_posts.py` — copy the command, don't rebuild it
+
+**One command per lane per workspace (harmonic-forge#917).** Each command
+below carries `--workspace kenekted|leasepal|vh`, which restricts
+`--all-worktrees` and `--account-repos` to that workspace's `projects.toml`
+projects, so the three lane workspaces never queue the same issue. Each
+workspace's belt has its own lock (`belt-lane<N>-<ws>.lock`) and its own
+`belt_id` state (`…@<ws>`). `belt_plan.py` prints the one for the session's
+checkout; the arming hook and the watcher itself deny any other. A new
+workspace in `projects.toml` needs its three commands added here and in the
+watcher's module docstring; `test_belt_skill_matches_table.py` enforces it.
+
+**The upgrade to scoped belts is a one-time, visible cost, deliberately not
+handled in code** (harmonic-forge#917 sticky-wicket). A scoped belt's state is
+keyed `…@<ws>`, so its first arm primes once and prints `PRIMED at first arm,
+not announced` for what it suppressed (harmonic-forge#697); replay by deleting
+that seen file. A belt armed before #917 keeps the unscoped
+`belt-lane<N>.lock` until its Monitor expires, so for that one lifetime a
+workspace session may see a marker twice; stop the stale Monitor or wait it out.
 
 **`watch_lane_posts.py` already is the belt.** It re-derives `(repo, issue)`
 from a worktree's live branch every cycle, has a `--queue-for` mode for a lane
@@ -85,7 +103,9 @@ mid-issue is not the command to arm:
   silently (harmonic-forge#590).
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace kenekted
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace leasepal
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace vh
   ```
 
   **`--queue-for l1` catches a Lane 2 plan with no worktree yet through a
@@ -163,7 +183,9 @@ mid-issue is not the command to arm:
   load-bearing and does not transfer.
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace kenekted
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace leasepal
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace vh
   ```
 
   **`--queue-for l2` catches that inbound handoff through the same
@@ -180,7 +202,9 @@ mid-issue is not the command to arm:
 - **Lane 3** — no worktree of its own; watches what is handed to it:
 
   ```
-  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800 --workspace kenekted
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800 --workspace leasepal
+  python3 ~/harmonic-forge/tools/gh/watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect --watch l1 --interval 300 --deadline-seconds 1800 --workspace vh
   ```
 
   Lane 3 no longer arms a repo-wide sweep. It is the retired account-wide

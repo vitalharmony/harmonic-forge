@@ -58,6 +58,7 @@ class Project:
     milestones: bool = False
     onboarded: bool = False
     token_exception: str | None = None  # harmonic-forge#805
+    workspace: str | None = None  # harmonic-forge#917
     protocol: Protocol | None = None
 
     @property
@@ -167,6 +168,8 @@ def _validate(projects: list[Project], target: Path) -> None:
         if project.onboarded and not project.repo:
             raise ManifestError(
                 f"{target}: {project.name} is onboarded but declares no repo")
+        if project.onboarded and not project.workspace:  # harmonic-forge#917
+            raise ManifestError(f"{target}: {project.name} is onboarded but declares no workspace")
         if project.onboarded and project.protocol is None:
             raise ManifestError(
                 f"{target}: {project.name} is onboarded but declares no [project.protocol]")

@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import subprocess
+import shutil
 import tempfile
 import time
 import unittest
@@ -1715,9 +1716,11 @@ class SweepForFlagIsUnrecognizedTests(unittest.TestCase):
 
     def test_lane3_table_holds_only_the_queue_belt(self):
         entries = watch_lane_posts.CANONICAL_BELTS["3"]
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["lock"], "belt-lane3.lock")
-        self.assertNotIn("--sweep-for", entries[0]["argv"])
+        # harmonic-forge#917: one belt per workspace, each with its own lock.
+        self.assertEqual([e["lock"] for e in entries],
+                         [f"belt-lane3-{ws}.lock" for ws in watch_lane_posts.manifest_workspaces()])
+        for entry in entries:
+            self.assertNotIn("--sweep-for", entry["argv"])
 
     def test_help_output_does_not_contain_the_retired_flag(self):
         with patch.object(sys, "argv", ["watch_lane_posts.py", "--help"]), \
@@ -1978,8 +1981,23 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
     `_check_git_staleness` and `_acquire_belt_lock` are patched out in every
     case: this class is about the argv/LANE gate alone."""
 
-    def _run(self, argv: list[str], env: dict[str, str] | None):
+    def _run(self, argv: list[str], env: dict[str, str] | None,
+             session_ws: str | None = None, state: str | None = None):
+        # harmonic-forge#917: the watcher checks --workspace against its own cwd's
+        # workspace. These cases run in a checkout that may be registered nowhere
+        # (a CI runner), so the session's workspace is the one the argv names unless
+        # a test passes another.
+        if session_ws is None:
+            session_ws = (argv[argv.index("--workspace") + 1]
+                          if "--workspace" in argv else "vh")
+        if state is None:
+            state = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, state, True)
         patches = [
+            # harmonic-forge#917 preclose: never read or seed the operator's real
+            # belt state from a test.
+            patch("watch_lane_posts._BELT_STATE", Path(state)),
+            patch("watch_lane_posts._session_workspace", return_value=session_ws),
             patch.object(sys, "argv", ["watch_lane_posts.py", *argv]),
             patch("watch_lane_posts.assert_identity"),
             patch("watch_lane_posts._check_git_staleness"),
@@ -2018,13 +2036,68 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         """harmonic-forge#820 (preclose): dropping a dead account by REWRITING the parsed
         --account-repos made the arguments differ from the canonical command, so the belt refused
         to start. It must start, warn loudly, and poll only the healthy accounts."""
-        argv = watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
+        # The vh belt: its repos are all on the healthy account (harmonic-forge#917).
+        argv = next(e for e in watch_lane_posts.CANONICAL_BELTS["1"]
+                    if e["workspace"] == "vh")["argv"]
         dead = ([ "vitalharmony"], [("harmonicarchitect", "slot missing")])
         with patch.object(watch_lane_posts, "_verified_accounts", return_value=dead):
             outcome, err = self._run(list(argv), {"LANE": "1"})
         self.assertEqual(outcome, "looped", err)
         self.assertNotIn("canonical command", err)
         self.assertIn("harmonicarchitect is NOT polled", err)
+
+    def test_a_scoped_belt_never_inherits_the_unscoped_belts_seen_set(self):
+        """harmonic-forge#917 sticky-wicket: the upgrade boundary is the #697 first-arm
+        PRIMED announcement, never a copy of the account-wide seen-set (which is keyed
+        by bare comment id and would silently settle other workspaces' markers)."""
+        state = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, state, True)
+        (state / "watermarks" / "l1+ql2").mkdir(parents=True)
+        (state / "seen-l1+ql2.tsv").write_text("424242\temitted\n", encoding="utf-8")
+        (state / "watermarks" / "l1+ql2" / "t").write_text("x", encoding="utf-8")
+        entry = next(e for e in watch_lane_posts.CANONICAL_BELTS["2"]
+                     if e["workspace"] == "vh")
+        outcome, err = self._run(list(entry["argv"]), {"LANE": "2"}, state=str(state))
+        self.assertEqual(outcome, "looped", err)
+        scoped = state / "seen-l1+ql2@vh.tsv"
+        self.assertNotIn("424242", scoped.read_text(encoding="utf-8")
+                         if scoped.exists() else "")
+        self.assertFalse((state / "watermarks" / "l1+ql2@vh" / "t").exists())
+
+    def test_an_unscoped_belt_is_refused(self):
+        """harmonic-forge#917: the pre-#917 account-wide command no longer matches."""
+        argv = list(watch_lane_posts._BELT_ARGV["2"])
+        outcome, err = self._run(argv, {"LANE": "2"})
+        self.assertEqual(outcome, 2)
+        self.assertIn("canonical command", err)
+
+    def test_another_workspaces_belt_is_refused_by_the_watcher_itself(self):
+        """harmonic-forge#917 preclose: the hook is not registered everywhere, so the
+        watcher refuses a canonical entry for a workspace other than its checkout's."""
+        entry = next(e for e in watch_lane_posts.CANONICAL_BELTS["2"]
+                     if e["workspace"] == "vh")
+        outcome, err = self._run(list(entry["argv"]), {"LANE": "2"},
+                                 session_ws="leasepal")
+        self.assertEqual(outcome, 2)
+        self.assertIn("not this checkout's workspace", err)
+
+    def test_an_undeclared_workspace_is_refused(self):
+        argv = [*watch_lane_posts._BELT_ARGV["2"], "--workspace", "nowhere"]
+        outcome, err = self._run(argv, {"LANE": "2"})
+        self.assertEqual(outcome, 2)
+        self.assertIn("canonical command", err)
+
+    def test_each_workspace_belt_keeps_its_own_state(self):
+        """harmonic-forge#917: belt_id carries the workspace, so two workspaces'
+        Lane 2 belts never share watermarks, seen-sets or tick logs."""
+        logs = {}
+        for entry in watch_lane_posts.CANONICAL_BELTS["2"]:
+            outcome, err = self._run(list(entry["argv"]), {"LANE": "2"})
+            self.assertEqual(outcome, "looped", err)
+            line = next(l for l in err.splitlines() if "tick log:" in l)
+            logs[entry["workspace"]] = line
+            self.assertIn(f"@{entry['workspace']}.jsonl", line)
+        self.assertEqual(len(set(logs.values())), len(logs))
 
     def test_dropping_queue_for_l1_is_refused(self):
         argv = [a for a in watch_lane_posts.CANONICAL_BELTS["1"][0]["argv"]
@@ -2057,7 +2130,8 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         reordered = ["--interval", "300", "--all-worktrees", "--account-repos",
                      "vitalharmony,harmonicarchitect", "--watch", "l3", "--watch", "l2",
                      "--queue-for", "l1", "--deadline-seconds",
-                     str(watch_lane_posts.MONITOR_LIFETIME_S)]
+                     str(watch_lane_posts.MONITOR_LIFETIME_S),
+                     "--workspace", watch_lane_posts.CANONICAL_BELTS["1"][0]["workspace"]]
         self.assertEqual(sorted(canonical), sorted(reordered),
                          "test fixture drifted from CANONICAL_BELTS['1']")
         outcome, _err = self._run(reordered, {"LANE": "1"})
@@ -3456,3 +3530,56 @@ class MissingIssueRetiresTests(unittest.TestCase):
              patch("sys.stderr", io.StringIO()):
             kept = self.drop(7)
         self.assertEqual(kept[0][1], (self.REPO, 7))
+
+
+class WorkspaceRepoSetTests(unittest.TestCase):
+    """harmonic-forge#917 AC2: a belt's repo set is its workspace's projects only."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        rows = []
+        for name, repo, account, ws, prefix in (
+                ("hrse", "vitalharmony/hrse", "vitalharmony", "vh", "H"),
+                ("forge", "vitalharmony/harmonic-forge", "vitalharmony", "vh", "F"),
+                ("leasepal", "LeasePAL-ML/LeasePAL-App-Prototype", "vitalharmony",
+                 "leasepal", "P"),
+                ("kenekted", "kenekted/kenekted-platform", "harmonicarchitect",
+                 "kenekted", "K"),
+                ("kenekted-ai", "kenekted/kenekted-ai", "harmonicarchitect", "kenekted", "Y"),
+                ("kenekted-docs", "kenekted/kenekted-docs", "harmonicarchitect",
+                 "kenekted", "D")):
+            rows.append(
+                f'[[project]]\nname = "{name}"\nprefix = "{prefix}"\nrepo = "{repo}"\n'
+                f'account = "{account}"\nonboarded = true\nworkspace = "{ws}"\n'
+                '[project.protocol]\nworktree_name = "{checkout}-lane{lane}"\n'
+                'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'
+                'gate_checkout_task = "gate-checkout"\nlane3_begin_task = "lane3-begin"\n'
+                'lane3_end_task = "lane3-end"\nruns_lane3 = true\n')
+        manifest = Path(self._tmp.name) / "projects.toml"
+        manifest.write_text("\n".join(rows), encoding="utf-8")
+        self._env = patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(manifest)})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._tmp.cleanup()
+
+    ACCOUNTS = "vitalharmony,harmonicarchitect"
+
+    def test_leasepal_covers_only_leasepal(self):
+        self.assertEqual(watch_lane_posts.manifest_repos(self.ACCOUNTS, "leasepal"),
+                         ["leasepal-ml/leasepal-app-prototype"])
+
+    def test_vh_never_covers_leasepal_or_kenekted(self):
+        repos = watch_lane_posts.manifest_repos(self.ACCOUNTS, "vh")
+        self.assertEqual(repos, ["vitalharmony/harmonic-forge", "vitalharmony/hrse"])
+
+    def test_kenekted_covers_all_three(self):
+        self.assertEqual(watch_lane_posts.manifest_repos(self.ACCOUNTS, "kenekted"),
+                         ["kenekted/kenekted-ai", "kenekted/kenekted-docs",
+                          "kenekted/kenekted-platform"])
+
+    def test_a_workspace_with_no_repos_refuses_rather_than_watching_nothing(self):
+        with self.assertRaises(watch_lane_posts.AccountReposUnavailable):
+            watch_lane_posts.manifest_repos("harmonicarchitect", "leasepal")
+

@@ -137,6 +137,48 @@ def _load_belt_plan():
     return belt_plan
 
 
+def _belt_plan_or_error() -> tuple[Any | None, str | None]:
+    """`(belt_plan, None)`, or `(None, why)` when the plan cannot load.
+
+    harmonic-forge#917: the canonical table is built from projects.toml at import,
+    so a manifest the loader rejects (an onboarded row with no `workspace`, say)
+    raises here. Reaching main()'s fail-open would ALLOW any belt, /loop or
+    CronCreate, so every arming branch fails closed on it instead, while still
+    honoring the operator's plan-free ALLOW LOOP grant (sticky-wicket ruling).
+    """
+    try:
+        return _load_belt_plan(), None
+    except Exception as exc:  # noqa: BLE001 -- reported in the deny reason
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _unloadable(what: str, why: str) -> str:
+    return (f"Denied: {what}, but the belt plan cannot load ({why}), so nothing is "
+            "canonical. Fix projects.toml, then run `python3 "
+            "~/harmonic-forge/tools/lane/belt_plan.py` (harmonic-forge#917)."
+            + _OVERRIDE_HINT)
+
+
+def _session_calls(belt_plan, lane: str,
+                   payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """The arming calls for the session's own workspace, and why they are missing.
+
+    harmonic-forge#917: the canonical Monitor command carries the workspace of the
+    session's checkout, read from the payload's `cwd` and nothing else. When that
+    cannot be resolved the second value says why and `calls["monitor"]` is a note,
+    not a command: the Monitor branch denies (an unresolved session must never arm
+    a belt over some default workspace), while `/loop` and `CronCreate`, whose calls
+    are the same in every workspace, are judged exactly as before.
+    """
+    try:
+        workspace = belt_plan.workspace_for(payload.get("cwd"))
+        return belt_plan.canonical_calls(lane, workspace), None
+    except (belt_plan.ManifestError, KeyError) as exc:
+        why = str(exc)
+        return {"monitor": f"(no canonical belt here: {why})",
+                "loop": belt_plan.loop_call(lane)}, why
+
+
 def arming_dir() -> Path:
     override = os.environ.get(ARMING_DIR_ENV)
     return Path(override) if override else DEFAULT_ARMING_DIR
@@ -452,12 +494,21 @@ def decide(payload: dict[str, Any], lane: str | None,
         command = tool_input.get("command") or ""
         if not isinstance(command, str) or not _monitor_runs_watcher(command):
             return None
-        belt_plan = _load_belt_plan()
-        calls = belt_plan.canonical_calls(lane)
+        belt_plan, broken = _belt_plan_or_error()
+        if broken is not None:
+            return _unloadable("this Monitor runs watch_lane_posts.py", broken)
+        calls, unresolved = _session_calls(belt_plan, lane, payload)
+        if unresolved is not None:
+            return _reason(lane, calls,
+                           "Denied: this Monitor runs watch_lane_posts.py, but the session's "
+                           f"workspace cannot be resolved ({unresolved}). A belt arms only "
+                           "from inside an onboarded checkout or one of its worktrees, "
+                           "scoped to that workspace (harmonic-forge#917).")
         if _normalize_command(command) != _normalize_command(calls["monitor"]["command"]):
             return _reason(lane, calls,
                            "Denied: this Monitor runs watch_lane_posts.py but is not "
-                           f"LANE={lane}'s canonical belt command.")
+                           f"LANE={lane}'s canonical belt command for this checkout's "
+                           "workspace (harmonic-forge#917).")
         # harmonic-forge#680 NC3. The command alone was compared, and
         # `timeout_ms` appeared nowhere in this file — so a belt armed with the
         # canonical command and a NON-canonical lifetime passed the gate, while
@@ -482,10 +533,12 @@ def decide(payload: dict[str, Any], lane: str | None,
         skill = tool_input.get("skill") or ""
         if not isinstance(skill, str) or not (skill == "loop" or skill.endswith(":loop")):
             return None
-        belt_plan = _load_belt_plan()
-        calls = belt_plan.canonical_calls(lane)
+        belt_plan, broken = _belt_plan_or_error()
+        calls = None
+        if broken is None:
+            calls, _unresolved = _session_calls(belt_plan, lane, payload)
         args = tool_input.get("args")
-        if isinstance(args, str) and args.strip() == calls["loop"]["args"]:
+        if calls is not None and isinstance(args, str) and args.strip() == calls["loop"]["args"]:
             return None
         grant = read_grant(session_id)
         if grant is not None and "skill_args" not in grant:
@@ -496,6 +549,8 @@ def decide(payload: dict[str, Any], lane: str | None,
             notes.append("enforce_belt_arming: non-canonical /loop allowed under the "
                          "operator's ALLOW LOOP grant; its CronCreate consumes it.")
             return None
+        if broken is not None:
+            return _unloadable("this is a /loop in a lane session", broken)
         what = "Denied: in a lane session /loop runs only the canonical suspenders prompt."
         if grant is not None:
             what += (" The operator's ALLOW LOOP grant already covered one /loop "
@@ -503,9 +558,11 @@ def decide(payload: dict[str, Any], lane: str | None,
         return _reason(lane, calls, what, override_hint=True)
 
     if tool == "CronCreate":
-        belt_plan = _load_belt_plan()
-        calls = belt_plan.canonical_calls(lane)
-        if not _is_canonical_cron(tool_input):
+        belt_plan, broken = _belt_plan_or_error()
+        calls = None
+        if broken is None:
+            calls, _unresolved = _session_calls(belt_plan, lane, payload)
+        if broken is not None or not _is_canonical_cron(tool_input):
             grant = read_grant(session_id)
             if grant is not None:
                 skill_args = grant.get("skill_args")
@@ -519,6 +576,8 @@ def decide(payload: dict[str, Any], lane: str | None,
                     notes.append("enforce_belt_arming: non-canonical CronCreate allowed; "
                                  "the operator's ALLOW LOOP grant is now consumed.")
                     return None
+            if broken is not None:
+                return _unloadable("this is a CronCreate in a lane session", broken)
             return _reason(lane, calls,
                            "Denied: in a lane session CronCreate is allowed only as "
                            "the canonical suspenders job the loop skill creates.",

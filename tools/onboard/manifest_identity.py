@@ -85,6 +85,53 @@ def project_for_path(path: str | Path, manifest: Path | None = None) -> Project:
     return best[1]
 
 
+def workspaces(manifest: Path | None = None) -> list[str]:
+    """Every workspace an onboarded project declares, sorted and distinct (harmonic-forge#917).
+
+    The belt's canonical table is generated from this, one entry per lane per
+    workspace. Adding a workspace also adds three belt commands, which
+    `watch_lane_posts.py`'s module docstring and `skills/belt-and-suspenders/
+    DESIGN.md` list by hand; `test_belt_skill_matches_table.py` fails until both
+    show them, by design (harmonic-forge#917 preclose). Here rather than in
+    `manifest.py`, which is at R-0006's cap.
+    """
+    return sorted({p.workspace for p in load(manifest) if p.onboarded and p.workspace})
+
+
+def workspace_for(path: str | Path | None, manifest: Path | None = None) -> str:
+    """The workspace of the onboarded project that owns `path` (harmonic-forge#917).
+
+    A checkout or its `-lane2`/`-lane3` worktree resolves through
+    `project_for_path`. A per-issue worktree (`~/Harmonic_Projects/.worktrees/
+    <repo>-<issue>-impl`) is registered nowhere, so on a miss this asks git for
+    the worktree's common dir, whose parent is the main checkout, and retries
+    there. Raises `ManifestError` naming `path` when neither resolves, including
+    a stale worktree git no longer recognizes: an unresolved session must never
+    read as some default workspace.
+    """
+    if not path:
+        raise ManifestError("no path to resolve a workspace from")
+    target = Path(path).expanduser()
+    try:
+        project = project_for_path(target, manifest)
+    except ManifestError:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(target), "rev-parse", "--path-format=absolute",
+                 "--git-common-dir"],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ManifestError(f"{target}: cannot resolve a workspace ({exc})") from exc
+        if result.returncode != 0 or not result.stdout.strip():
+            raise ManifestError(
+                f"{target} is not inside any onboarded checkout, lane worktree, or a "
+                "git worktree of one; no workspace") from None
+        project = project_for_path(Path(result.stdout.strip()).parent, manifest)
+    if not project.onboarded or not project.workspace:
+        raise ManifestError(f"{target}: {project.name} declares no workspace")
+    return project.workspace
+
+
 def slot_env(repo: str, path: Path | None = None) -> dict[str, str]:
     """`os.environ` with the repo's slot injected and tokens removed. No probe.
 

@@ -21,7 +21,10 @@ Prints a JSON object:
                 the literal `/loop 10m proactively find work to do`.
     report   -- what to report once both are armed.
 
-Exits 2 when `LANE` is not 1, 2 or 3: no lane means no protocols.
+Exits 2 when `LANE` is not 1, 2 or 3: no lane means no protocols. Exits 2 too
+when the current directory belongs to no onboarded project: the Monitor command
+carries the session checkout's `--workspace` (harmonic-forge#917), and a belt
+with no workspace would watch every workspace's repos.
 """
 from __future__ import annotations
 
@@ -33,6 +36,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
 from watch_lane_posts import CANONICAL_BELTS, MONITOR_LIFETIME_S  # noqa: E402
+from manifest import ManifestError  # noqa: E402  (on sys.path via watch_lane_posts)
+from manifest_identity import workspace_for  # noqa: E402
 
 LANES = ("1", "2", "3")
 
@@ -54,22 +59,37 @@ LOOP_SKILL = "loop"
 LOOP_ARGS = "10m proactively find work to do"
 
 
-def monitor_command(lane: str) -> str:
-    """The canonical Monitor command for `lane`, from `CANONICAL_BELTS`."""
-    return "python3 " + WATCHER + " " + " ".join(CANONICAL_BELTS[lane][0]["argv"])
+def monitor_command(lane: str, workspace: str) -> str:
+    """The canonical Monitor command for `lane` in `workspace`, from `CANONICAL_BELTS`.
+
+    Raises KeyError for an invalid lane or an undeclared workspace.
+    """
+    for entry in CANONICAL_BELTS[lane]:
+        if entry["workspace"] == workspace:
+            return "python3 " + WATCHER + " " + " ".join(entry["argv"])
+    raise KeyError(workspace)
 
 
-def canonical_calls(lane: str) -> dict[str, Any]:
-    """The exact arming calls for `lane`. Raises KeyError for an invalid lane."""
+def loop_call(lane: str) -> dict[str, str]:
+    """The `/loop` suspenders call; the same in every workspace (harmonic-forge#917)."""
     if lane not in LANES or lane not in CANONICAL_BELTS:
         raise KeyError(lane)
+    return {"skill": LOOP_SKILL, "args": LOOP_ARGS}
+
+
+def canonical_calls(lane: str, workspace: str) -> dict[str, Any]:
+    """The exact arming calls for `lane` in `workspace`.
+
+    Raises KeyError for an invalid lane or a workspace `projects.toml` does not declare.
+    """
+    loop = loop_call(lane)
     return {
         "monitor": {
-            "command": monitor_command(lane),
-            "description": f"Lane {lane} belt",
+            "command": monitor_command(lane, workspace),
+            "description": f"Lane {lane} belt ({workspace})",
             "timeout_ms": MONITOR_TIMEOUT_MS,
         },
-        "loop": {"skill": LOOP_SKILL, "args": LOOP_ARGS},
+        "loop": loop,
         "report": (
             f"LANE={lane} armed: monitor task id <id from Monitor>, loop job id "
             "<id from /loop>. Then stop. When the Monitor expires, re-arm the "
@@ -80,15 +100,21 @@ def canonical_calls(lane: str) -> dict[str, Any]:
 
 def main() -> int:
     lane = os.environ.get("LANE", "")
-    try:
-        calls = canonical_calls(lane)
-    except KeyError:
+    if lane not in LANES or lane not in CANONICAL_BELTS:
         print(
             f"belt_plan: LANE={lane!r} is not 1, 2 or 3 -- no lane means no "
             "protocols, neither one. Launch via lane1/lane2/lane3; do not set "
             "LANE inline and do not fall back to Lane 1 (harmonic-forge#659).",
             file=sys.stderr,
         )
+        return 2
+    try:
+        workspace = workspace_for(Path.cwd())
+        calls = canonical_calls(lane, workspace)
+    except (ManifestError, KeyError) as exc:
+        print(f"belt_plan: {exc}. A belt arms from inside an onboarded checkout or "
+              "one of its worktrees, so it can be scoped to that checkout's workspace "
+              "(harmonic-forge#917).", file=sys.stderr)
         return 2
     print(json.dumps(calls, indent=2))
     return 0

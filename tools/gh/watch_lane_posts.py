@@ -112,11 +112,21 @@ on the same file -- see "Role: Lane 3" in DESIGN.md.
 
 Usage
 -----
+    # One command per lane per workspace (harmonic-forge#917), in
+    # CANONICAL_BELTS order. `--workspace` restricts --all-worktrees and
+    # --account-repos to that workspace's projects.toml projects, so the vh,
+    # leasepal and kenekted sessions never queue the same issue.
+    # tools/lane/belt_plan.py prints the one for the session's checkout.
+
     # The Lane 1 case: every live worktree, repo-wide, plus --queue-for l1
     # re-checking any issue a worktree, --issues, or a recent l2_post.py
     # `plan` posting already names:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
-        --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800
+        --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace kenekted
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
+        --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace leasepal
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
+        --queue-for l1 --watch l2 --watch l3 --interval 300 --deadline-seconds 1800 --workspace vh
 
     # The Lane 2 case: both halves, same candidate-supplied contract.
     # --all-worktrees follows Lane 2 into its per-issue
@@ -124,7 +134,11 @@ Usage
     # of those (plus any --issues, plus a recent l1_post.py `handoff`/
     # `rework` posting) carry an eligible marker:
     python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
-        --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800
+        --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace kenekted
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
+        --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace leasepal
+    python3 watch_lane_posts.py --all-worktrees --account-repos vitalharmony,harmonicarchitect \\
+        --queue-for l2 --watch l1 --interval 300 --deadline-seconds 1800 --workspace vh
 
     # The Lane 3 case: Lane 3 has no worktree of its own, so its candidate
     # set is whatever --repo/--issues names explicitly, plus (harmonic-forge#691
@@ -132,7 +146,11 @@ Usage
     # an empty set yields an empty queue, not a scan. The repo set for
     # --all-worktrees/--account-repos is still DERIVED, not listed (R-0122):
     python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect \\
-        --watch l1 --interval 300 --deadline-seconds 1800
+        --watch l1 --interval 300 --deadline-seconds 1800 --workspace kenekted
+    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect \\
+        --watch l1 --interval 300 --deadline-seconds 1800 --workspace leasepal
+    python3 watch_lane_posts.py --queue-for l3 --account-repos vitalharmony,harmonicarchitect \\
+        --watch l1 --interval 300 --deadline-seconds 1800 --workspace vh
 
     # No lane arms the retired account-wide belt sweep
     # (harmonic-forge#640/#659); the flag no longer exists.
@@ -146,9 +164,10 @@ against `CANONICAL_BELTS[os.environ["LANE"]]` and refused verbatim
 (printing the exact command to copy) if it does not match. A static
 `--repo OWNER/REPO --issues N --watch ...` debugging command that predates
 this issue is no longer runnable this way -- there is no flag combination
-exempt from the LANE/canonical-argv gate. Every lane has exactly one
-table entry, its belt; Lane 3's former repo-wide sweep is the retired
-account-wide belt sweep (harmonic-forge#659) and no longer in the table.
+exempt from the LANE/canonical-argv gate. Every lane has one table
+entry per workspace, its belt (harmonic-forge#917); Lane 3's former
+repo-wide sweep is the retired account-wide belt sweep (harmonic-forge#659)
+and no longer in the table.
 
 The exact tool calls a lane makes to arm (this Monitor command, plus the
 `/loop` suspenders) are printed by `tools/lane/belt_plan.py`, and a
@@ -195,6 +214,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
 import manifest as onboard_manifest  # noqa: E402
+from manifest_identity import workspace_for  # noqa: E402
+from manifest_identity import workspaces as manifest_workspaces  # noqa: E402
 
 import belt_batch_view  # noqa: E402
 import belt_candidates  # noqa: E402
@@ -1246,7 +1267,7 @@ def branch_ahead_lines(
     return lines
 
 
-def manifest_repos(account: str) -> list[str]:
+def manifest_repos(account: str, workspace: str | None = None) -> list[str]:
     """Every onboarded repo on `account`, from `projects.toml`.
 
     R-0122 requires the repo set to be DERIVED, not hand-maintained, and
@@ -1264,10 +1285,10 @@ def manifest_repos(account: str) -> list[str]:
     rather than erroring -- so filtering by account here is what keeps an
     unreachable repo from reading as a quiet one.
     """
-    return sorted(p.repo for p in _manifest_projects(account) if p.repo)
+    return sorted(p.repo for p in _manifest_projects(account, workspace) if p.repo)
 
 
-def manifest_worktree_roots(account: str) -> list[str]:
+def manifest_worktree_roots(account: str, workspace: str | None = None) -> list[str]:
     """Each onboarded repo's local checkout, from `projects.toml`.
 
     Uses the manifest's `checkout` rather than `<dir>/<repo name>`: HRSE2's
@@ -1283,7 +1304,7 @@ def manifest_worktree_roots(account: str) -> list[str]:
     indistinguishable from a repo nobody onboarded."
     """
     roots: list[str] = []
-    for project in _manifest_projects(account):
+    for project in _manifest_projects(account, workspace):
         checkout = project.checkout
         if checkout is None:
             continue
@@ -1295,7 +1316,7 @@ def manifest_worktree_roots(account: str) -> list[str]:
     return roots
 
 
-def _manifest_projects(account: str) -> list:
+def _manifest_projects(account: str, workspace: str | None = None) -> list:
     try:
         projects = onboard_manifest.load()
     except Exception as exc:  # noqa: BLE001 — surfaced, never swallowed
@@ -1308,9 +1329,15 @@ def _manifest_projects(account: str) -> list:
     accounts = {a.strip() for a in account.split(",") if a.strip()}
     selected = [p for p in projects
                 if p.onboarded and p.repo and (p.account or "vitalharmony") in accounts]
+    # harmonic-forge#917: a belt covers its own workspace only, so two workspaces'
+    # sessions never queue the same issue. None (no --workspace) is every workspace,
+    # which the canonical table never arms.
+    if workspace is not None:
+        selected = [p for p in selected if p.workspace == workspace]
     if not selected:
+        where = f" in workspace {workspace!r}" if workspace is not None else ""
         raise AccountReposUnavailable(
-            f"projects.toml declares no onboarded repos for account {account!r} -- "
+            f"projects.toml declares no onboarded repos for account {account!r}{where} -- "
             "refusing to arm a belt that would watch nothing.")
     return selected
 
@@ -1956,33 +1983,37 @@ def queue_cycle(
 #: sweep, is the retired account-wide belt sweep (harmonic-forge#659):
 #: it exhausted the shared REST budget twice on 2026-09-14. `tools/lane/
 #: belt_plan.py` builds the Monitor command from this table -- never retype it.
-CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = {
-    "1": [
-        {
-            "argv": ["--all-worktrees", "--account-repos", "vitalharmony,harmonicarchitect",
-                      "--queue-for", "l1", "--watch", "l2", "--watch", "l3",
-                      "--interval", "300",
-                      "--deadline-seconds", str(MONITOR_LIFETIME_S)],
-            "lock": "belt-lane1.lock",
-        },
-    ],
-    "2": [
-        {
-            "argv": ["--all-worktrees", "--account-repos", "vitalharmony,harmonicarchitect",
-                      "--queue-for", "l2", "--watch", "l1", "--interval", "300",
-                      "--deadline-seconds", str(MONITOR_LIFETIME_S)],
-            "lock": "belt-lane2.lock",
-        },
-    ],
-    "3": [
-        {
-            "argv": ["--queue-for", "l3", "--account-repos", "vitalharmony,harmonicarchitect",
-                      "--watch", "l1", "--interval", "300",
-                      "--deadline-seconds", str(MONITOR_LIFETIME_S)],
-            "lock": "belt-lane3.lock",
-        },
-    ],
+#: Each lane's belt argv BEFORE its workspace is appended (harmonic-forge#917).
+_BELT_ARGV: dict[str, list[str]] = {
+    "1": ["--all-worktrees", "--account-repos", "vitalharmony,harmonicarchitect",
+          "--queue-for", "l1", "--watch", "l2", "--watch", "l3",
+          "--interval", "300",
+          "--deadline-seconds", str(MONITOR_LIFETIME_S)],
+    "2": ["--all-worktrees", "--account-repos", "vitalharmony,harmonicarchitect",
+          "--queue-for", "l2", "--watch", "l1", "--interval", "300",
+          "--deadline-seconds", str(MONITOR_LIFETIME_S)],
+    "3": ["--queue-for", "l3", "--account-repos", "vitalharmony,harmonicarchitect",
+          "--watch", "l1", "--interval", "300",
+          "--deadline-seconds", str(MONITOR_LIFETIME_S)],
 }
+
+
+def _build_canonical_belts(workspaces: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """One entry per lane per workspace (harmonic-forge#917), in sorted workspace order.
+
+    Each entry is the lane's argv plus `--workspace <ws>`, with its own lock, so the
+    exact-argv matcher below needs no special case and two workspaces' belts for one
+    lane run side by side instead of contending for one machine-wide lock.
+    """
+    return {lane: [{"argv": [*argv, "--workspace", ws],
+                    "lock": f"belt-lane{lane}-{ws}.lock",
+                    "workspace": ws}
+                   for ws in workspaces]
+            for lane, argv in _BELT_ARGV.items()}
+
+
+CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = _build_canonical_belts(manifest_workspaces())
+
 
 #: Overridable in tests (`patch("watch_lane_posts.BELT_LOCK_DIR", tmp_path)`)
 #: so a unit test never touches the operator's real cache directory.
@@ -2005,6 +2036,15 @@ def _matching_canonical_entry(
         if actual == _canonical_vars(parser, entry["argv"]):
             return entry
     return None
+
+
+def _session_workspace() -> str:
+    """The workspace of the checkout this belt runs in (harmonic-forge#917).
+
+    A Monitor runs in its session's directory. Raises `ManifestError` outside
+    every onboarded checkout and its worktrees.
+    """
+    return workspace_for(os.getcwd())
 
 
 def _enforce_canonical_belt(
@@ -2032,6 +2072,20 @@ def _enforce_canonical_belt(
         parser.error(
             f"LANE={lane}'s arguments do not match its canonical command "
             f"(harmonic-forge#651) -- copy exactly:\n{canonical_cmds}")
+    # harmonic-forge#917 preclose: the arming hook is not registered in every
+    # consuming repo, so the watcher checks its own scope as well. A canonical
+    # entry for ANOTHER workspace (copied from DESIGN.md, say) is refused here,
+    # whichever session runs it.
+    try:
+        here = _session_workspace()
+    except onboard_manifest.ManifestError as exc:
+        parser.error(f"{exc} -- a belt runs from inside an onboarded checkout or one "
+                     "of its worktrees (harmonic-forge#917)")
+    if entry["workspace"] != here:
+        parser.error(
+            f"--workspace {entry['workspace']} is not this checkout's workspace "
+            f"({here}); a belt watches only its own workspace (harmonic-forge#917). "
+            "Run `python3 ~/harmonic-forge/tools/lane/belt_plan.py` for the right command.")
     return entry
 
 
@@ -2245,6 +2299,11 @@ def _build_parser() -> argparse.ArgumentParser:
                              "roots, via each repo's checkout under --checkout-dir). "
                              "Fails hard if the list cannot be fetched: an empty repo set "
                              "reads as 'no work anywhere'.")
+    parser.add_argument("--workspace", metavar="NAME", default=None,
+                        help="restrict --all-worktrees and --account-repos to the "
+                             "projects.toml projects in this workspace (harmonic-forge#917). "
+                             "Every canonical belt carries one; belt_plan.py resolves it from "
+                             "the session's checkout.")
     parser.add_argument("--repo", action="append", metavar="OWNER/REPO",
                         help="owner/repo for a manual --issues override, or the repo(s) "
                              "--queue-for scans. Repeatable: a lane carries work in hrse "
@@ -2396,7 +2455,7 @@ def main() -> int:
         # by convention under --checkout-dir (harmonic-forge#596).
         try:
             repo_roots = list(repo_roots) + manifest_worktree_roots(
-                effective_account_repos)
+                effective_account_repos, args.workspace)
         except AccountReposUnavailable as exc:
             parser.error(str(exc))
     if repo_roots is not None:
@@ -2416,7 +2475,7 @@ def main() -> int:
     repos: list[str] = list(args.repo or [])
     if effective_account_repos:
         try:
-            derived = manifest_repos(effective_account_repos)
+            derived = manifest_repos(effective_account_repos, args.workspace)
         except AccountReposUnavailable as exc:
             parser.error(str(exc))
         print(f"[watch_lane_posts] --account-repos {effective_account_repos}: "
@@ -2457,6 +2516,14 @@ def main() -> int:
     belt_id = "-".join(sorted(watch)) or "none"
     if args.queue_for:
         belt_id += f"+q{args.queue_for}"
+    if args.workspace:
+        # harmonic-forge#917: two workspaces' belts for one lane are different
+        # processes over different repos; their watermarks, seen-sets and tick
+        # logs must not interleave (harmonic-forge#685).
+        # The first arm under the new key primes once and says so (PRIMED at
+        # first arm, harmonic-forge#697); that announcement is the upgrade
+        # boundary, deliberately not a state copy (harmonic-forge#917 sticky-wicket).
+        belt_id += f"@{args.workspace}"
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
     #: harmonic-forge#685. Keyed by `belt_id` for the same reason the seen-set

@@ -46,6 +46,13 @@
 #                 which a fine-grained PAT cannot read or write (GitHub-documented; verified
 #                 403). Absent means "no exception": `forge-onboard` FAILs a slot holding an
 #                 OAuth or classic token. An empty reason counts as absent.
+# workspace       The lane workspace this repo is worked from (harmonic-forge#917):
+#                 `vh`, `leasepal` or `kenekted`. Required on every onboarded
+#                 project. A belt arms with `--workspace <name>` resolved from its
+#                 session's checkout, so three workspaces' Lane 2 sessions never
+#                 pick up the same issue. Not the account (LeasePAL is on
+#                 vitalharmony) and not the board (harmonic-forge has its own
+#                 board but is worked from `vh`).
 # onboarded       Whether the 3-lane apparatus is installed. A projected repo is
 #                 false; a real repo that is false is a backlog item.
 # protocol        Repo-specific scalar inputs to the portable lane procedure.
@@ -103,6 +110,7 @@ name = "hrse"
 repo = "vitalharmony/hrse"
 path = "~/Harmonic_Projects/HRSE2"
 prefix = "H"
+workspace = "vh"
 account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "1"
@@ -133,6 +141,7 @@ repo = "vitalharmony/harmonic-forge"
 path = "~/harmonic-forge"
 worktree_dir = "~/Harmonic_Projects"
 prefix = "F"
+workspace = "vh"
 account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "3"
@@ -158,6 +167,7 @@ name = "cymagraph-infra"
 repo = "vitalharmony/cymagraph-infra"
 path = "~/Harmonic_Projects/cymagraph-infra"
 prefix = "I"
+workspace = "vh"
 account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "1"
@@ -184,6 +194,7 @@ name = "openclaw-projects"
 repo = "vitalharmony/openclaw-projects"
 path = "~/Harmonic_Projects/openclaw-projects"
 prefix = "O"
+workspace = "vh"
 account = "vitalharmony"
 board_owner = "vitalharmony"
 # Its own board (#4), not CymaGraph's #1. openclaw is a prototyping ground whose
@@ -217,6 +228,7 @@ name = "kenekted"
 repo = "kenekted/kenekted-platform"
 path = "~/Harmonic_Projects/kenekted/kenekted-platform"
 prefix = "K"
+workspace = "kenekted"
 account = "harmonicarchitect"
 board_owner = "harmonicarchitect"
 # The Kenekted Kanban (board #1) is the team's board and holds every kenekted repo. Its
@@ -244,6 +256,7 @@ name = "kenekted-ai"
 repo = "kenekted/kenekted-ai"
 path = "~/Harmonic_Projects/kenekted/kenekted-ai"
 prefix = "Y"
+workspace = "kenekted"
 account = "harmonicarchitect"
 board_owner = "harmonicarchitect"
 # The Kenekted Kanban (board #1) is the team's board and holds every kenekted repo. Its
@@ -269,6 +282,7 @@ name = "kenekted-docs"
 repo = "kenekted/kenekted-docs"
 path = "~/Harmonic_Projects/kenekted/docs"
 prefix = "D"
+workspace = "kenekted"
 account = "harmonicarchitect"
 board_owner = "harmonicarchitect"
 # The Kenekted Kanban (board #1) is the team's board and holds every kenekted repo. Its
@@ -297,6 +311,7 @@ name = "leasepal"
 repo = "LeasePAL-ML/LeasePAL-App-Prototype"
 path = "~/Harmonic_Projects/LeasePAL-App-Prototype"
 prefix = "P"
+workspace = "leasepal"
 account = "vitalharmony"
 board_owner = "LeasePAL-ML"
 board_number = "1"
