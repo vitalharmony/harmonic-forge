@@ -93,11 +93,16 @@ import _prod_run  # noqa: E402
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
-    "Design Alternatives Considered", "Load-Bearing Assumptions",
+    "Scenario Trace", "Design Alternatives Considered", "Load-Bearing Assumptions",
     "Consumers and Equivalents", "Delegated Judgment Calls", "Pre-Flight Preconditions", "Implementation Spec",
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
+#: harmonic-forge#920. `Scenario Trace` is enforced by structure plus two markers:
+#: a `path.ext:line` reference and the literal `verified-live`. Whether the trace
+#: reaches the changed code is a reader's question (agents/pitch-inspection.md,
+#: check 8), the same split harmonic-forge#838 drew for `Consumers and Equivalents`.
+FILE_LINE = re.compile(r"[\w./-]+\.\w+:\d+")
 
 # a private-repo incident (pre-close panel): a sweep entry must be a LINE, must name its own
 # case, and must carry text. The deleted TC_STATUS pattern enforced all three
@@ -245,7 +250,7 @@ def case_ids(body: str) -> set[str]:
 TEMPLATE_PLACEHOLDER = re.compile(
     r"\{(?:url|labels|quoted line or condition that is the root cause|"
     r"explicit step-by-step instruction for Lane 2 — no ambiguity)\}"
-    r"|\{(?:standard \(|none \| )"
+    r"|\{(?:standard \(|none \| |the issue's own example, hop by hop)"
 )
 RESERVED_MARKER = "<!-- l1-post "
 
@@ -521,6 +526,12 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
             fail(f"handoff heading is still a template placeholder: {heading}")
     if requires_preflight and heading_content(body, "Pre-Flight Preconditions").lower() == "none":
         fail("live-mutating/cross-repo handoff requires explicit pre-flight preconditions")
+    trace = heading_content(body, "Scenario Trace")
+    if not FILE_LINE.search(trace):
+        fail("Scenario Trace must cite at least one file:line (for a route or URL, cite the "
+             "file:line of its handler)")
+    if "verified-live" not in trace:
+        fail("Scenario Trace must mark at least one hop verified-live")
     # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by
     # STRUCTURE only -- present and not a placeholder, like every heading
     # above. Whether each reader came with the search that found it is a

@@ -173,6 +173,18 @@ the call gets no retry budget of its own and does not extend it.
    named unavailable authoritative signal, the verdict is **REFORGE BEFORE
    HANDOFF**.
 
+8. **Re-walk the Scenario Trace live** (harmonic-forge#920).
+   `l1_post.py` only checks that the `Scenario Trace` section has a `file:line`
+   and a `verified-live` marker; whether the trace is true and complete is yours.
+   Take the issue's own example, follow each hop against the live code, and name
+   a finding for a trace that (a) does not reach **every** Affected Files path
+   whose change the traced behavior drives, including the tests that call the
+   changed code; (b) skips a hop between the entry and the changed code; (c) uses
+   an example other than the issue's own; or (d) names a command a lane must run
+   without that command's actual output. A trace that stops at the component the
+   handoff scopes out, without checking which one the issue's own screen uses,
+   is the LeasePAL P10 second-rework shape and a **REFORGE BEFORE HANDOFF**.
+
 ## Verdict — exactly one, no hedging
 
 - **PROCEED** — design is sound; any findings are non-structural.

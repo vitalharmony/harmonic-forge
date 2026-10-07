@@ -2511,3 +2511,11 @@ exception_to = ["R-0124", "R-0165", "R-0208"]
 hooks = [
   { script = "auto_ae_toggle.py", events = ["UserPromptSubmit", "PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "harmonic-forge/.codex/hooks.json", "HRSE2/.claude/settings.json"] },
 ]
+
+[[rule]]
+id = "R-0379"
+file = "3-lane-protocol.md"
+anchor = "Plan-First Implementation"
+statement = "Every Lane 1 handoff carries a Scenario Trace: the issue's own example walked step by step from the user-visible entry to the exact code the handoff changes, each hop a file:line marked verified-live with how it was verified, and a command the handoff tells a lane to run appears with its actual output from a run by Lane 1; l1_post.py refuses a handoff whose trace is absent, a placeholder, without a file:line, or without verified-live, and whether the trace reaches the changed code is agents/pitch-inspection.md check 8's (harmonic-forge#920)."
+text_sha = "e6ed15dac32c3e53"
+hooks = []

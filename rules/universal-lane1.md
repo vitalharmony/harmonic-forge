@@ -311,6 +311,8 @@ Use `templates/lane1-handoff.md`. Read it in full when writing a
 handoff; do not reconstruct its section list from memory or this
 summary.
 <!-- /R-0099 -->
+A handoff's `Scenario Trace` section (harmonic-forge#920, `3-lane-protocol.md`
+R-0379) walks the issue's own example to the changed code before the handoff posts.
 
 <!-- R-0373 -->
 Before filing a Tooling Exception issue with its handoff, split it by mechanism

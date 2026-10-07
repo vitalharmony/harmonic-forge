@@ -1903,6 +1903,19 @@ Plan-first is required when any of:
 3. HITL explicitly says "Plan-first #N."
 <!-- /R-0244 -->
 
+<!-- R-0379 -->
+**Every Lane 1 handoff carries a `Scenario Trace`** (harmonic-forge#920): the
+issue's own example (screen, command, input) walked step by step from the
+user-visible entry to the exact code the handoff changes, each hop a `file:line`
+marked `verified-live` with how it was verified; a command the handoff tells a lane
+to run appears with its actual output from a run by Lane 1. `l1_post.py` refuses a
+handoff whose trace is absent, a placeholder, without a `file:line`, or without
+`verified-live`; whether the trace reaches the changed code is
+`agents/pitch-inspection.md` check 8's. Six reworks in LeasePAL's and ke'nekted's
+first week traced to handoffs that passed every heading check without walking the
+example.
+<!-- /R-0379 -->
+
 <!-- R-0245 -->
 **Handoff-splitting — the gate is now physical, not voluntary.** For a
 plan-first issue, Lane 1's handoff comment **omits the Implementation Spec
