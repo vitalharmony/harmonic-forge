@@ -63,7 +63,11 @@ def check_skills(project: Project, check: Callable, source: Path,
                 return check("skills", FAIL, "no .claude/platform-skills.toml — "
                              "nothing states which platform skills this repo consumes")
             names = sync_rules.expected_skill_names(declared)
-            linked = sync_rules.verify_links(project.checkout, names)
+            # Skills only. `verify_links` also checks rules and agents, which
+            # `check_directives` owns; a broken rule link would otherwise read as
+            # a skills failure (harmonic-forge#917 preclose).
+            linked = sync_rules._verify_skill_dir(project.checkout / ".claude" / "skills",
+                                                  names)
     except sync_rules.ManifestError as exc:
         return check("skills", FAIL, f"unreadable .claude/platform-skills.toml: {exc}")
     if not linked:

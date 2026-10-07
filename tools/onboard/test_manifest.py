@@ -156,9 +156,11 @@ class FailLoudlyTests(unittest.TestCase):
         manifest = write('[[project]]\nname = "later"\nprefix = "Q"\n')
         self.assertIsNone(mf.load(manifest)[0].workspace)
 
-    def test_the_real_manifest_declares_three_workspaces(self) -> None:
+    def test_workspaces_are_the_onboarded_rows_values_sorted_and_distinct(self) -> None:
         from manifest_identity import workspaces  # noqa: PLC0415
-        self.assertEqual(workspaces(LIVE), ["kenekted", "leasepal", "vh"])
+        expected = sorted({p.workspace for p in mf.load(LIVE) if p.onboarded})
+        self.assertEqual(workspaces(LIVE), expected)
+        self.assertTrue(all(expected))
 
     def test_unknown_protocol_key_is_rejected(self) -> None:
         self.assertRaisesManifest(MINIMAL + PROTOCOL + 'typo = "x"\n',

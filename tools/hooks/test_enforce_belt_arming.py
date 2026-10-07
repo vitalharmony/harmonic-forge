@@ -534,23 +534,29 @@ class FailsOpen(unittest.TestCase):
         self.assertIsNone(_decision(result))
         self.assertIn("guard did not run", result.stdout)
 
-    def test_internal_error_allows(self):
+    def test_internal_error_denies_a_watcher_monitor_and_allows_the_rest(self):
+        """harmonic-forge#917 preclose: a belt plan that cannot load used to reach
+        main()'s fail-open and ALLOW any belt. A watcher Monitor now fails closed;
+        every other tool keeps the process-level fail-open."""
         original = guard._load_belt_plan
         try:
             guard._load_belt_plan = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+            reason = guard.decide({"tool_name": "Monitor",
+                                   "tool_input": {"command": INCIDENT_SWEEP}}, "3")
+            self.assertIn("cannot load", reason)
             with self.assertRaises(RuntimeError):
-                guard.decide({"tool_name": "Monitor",
-                              "tool_input": {"command": INCIDENT_SWEEP}}, "3")
+                guard.decide({"tool_name": "Skill",
+                              "tool_input": {"skill": "loop", "args": "x"}}, "3")
         finally:
             guard._load_belt_plan = original
-        # The process-level wrapper turns that into an allow; a missing
-        # belt_plan module is the realistic trigger.
+        # The process-level wrapper turns a non-Monitor error into an allow; a
+        # missing belt_plan module is the realistic trigger.
         result = subprocess.run(
             [sys.executable, "-c",
              "import sys, runpy; sys.modules['belt_plan'] = None; "
              f"runpy.run_path({str(HOOK)!r}, run_name='__main__')"],
-            input=json.dumps({"tool_name": "Monitor",
-                              "tool_input": {"command": INCIDENT_SWEEP}}),
+            input=json.dumps({"tool_name": "Skill",
+                              "tool_input": {"skill": "loop", "args": "x"}}),
             env={**os.environ, "LANE": "3"}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(_decision(result))
@@ -773,3 +779,23 @@ class ScopedToTheSessionsWorkspace(unittest.TestCase):
         """`/loop` is the same in every workspace; resolution never gates it."""
         result = _run("Skill", belt_plan.loop_call("2"), lane="2", cwd=_OUTSIDE)
         self.assertIsNone(_decision(result))
+
+
+class FailsClosedOnAnUnloadableManifest(unittest.TestCase):
+    """harmonic-forge#917 preclose: a manifest the loader rejects must not let a belt arm."""
+
+    def test_a_workspace_less_onboarded_row_denies_the_belt(self):
+        bad = Path(_ARMING_ROOT.name) / "bad-projects.toml"
+        bad.write_text(_MANIFEST.read_text(encoding="utf-8")
+                       .replace('workspace = "vh"\n', "", 1), encoding="utf-8")
+        cmd = belt_plan.canonical_calls("2", "vh")["monitor"]["command"]
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        env.update({"LANE": "2", "FORGE_PROJECTS_MANIFEST": str(bad),
+                    guard.ARMING_DIR_ENV: tempfile.mkdtemp(dir=_ARMING_ROOT.name)})
+        payload = {"tool_name": "Monitor", "cwd": str(_VH),
+                   "tool_input": {"command": cmd, "description": "belt",
+                                  "timeout_ms": belt_plan.MONITOR_TIMEOUT_MS}}
+        result = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(_decision(result), "deny", result.stdout)
+        self.assertIn("cannot load", result.stdout)

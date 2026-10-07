@@ -25,7 +25,7 @@ and resolves to nothing — every path below is written absolute, rooted at
 
 harmonic-forge#651: these four held as prose alone through a 2026-09-14
 incident that exhausted the account's shared REST budget. They are now
-mechanically enforced (`CANONICAL_BELTS`, a per-lane `flock`, and a local
+mechanically enforced (`CANONICAL_BELTS`, a per-lane-per-workspace `flock`, and a local
 git staleness refusal) — this list states them, it does not implement them.
 
 - **Arm the canonical command once.** There is exactly one argument set per
@@ -61,7 +61,9 @@ below carries `--workspace kenekted|leasepal|vh`, which restricts
 projects, so the three lane workspaces never queue the same issue. Each
 workspace's belt has its own lock (`belt-lane<N>-<ws>.lock`) and its own
 `belt_id` state (`…@<ws>`). `belt_plan.py` prints the one for the session's
-checkout; the arming hook denies any other.
+checkout; the arming hook and the watcher itself deny any other. A new
+workspace in `projects.toml` needs its three commands added here and in the
+watcher's module docstring; `test_belt_skill_matches_table.py` enforces it.
 
 **`watch_lane_posts.py` already is the belt.** It re-derives `(repo, issue)`
 from a worktree's live branch every cycle, has a `--queue-for` mode for a lane

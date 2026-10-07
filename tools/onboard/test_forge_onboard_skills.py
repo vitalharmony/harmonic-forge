@@ -30,14 +30,18 @@ def _sync_rules(declared, linked=True, raises=None):
             raise _ManifestError(raises)
         return declared
 
-    def verify_links(_root, _names):
+    def verify_skill_dir(_target, _names):
         if not linked:
             print("[MISSING] .claude/skills/belt-and-suspenders", file=sys.stderr)
         return linked
 
+    def verify_links(_root, _names):
+        raise AssertionError("rules and agents are check_directives' job")
+
     module.load_skill_manifest = load_skill_manifest
     module.expected_skill_names = lambda declared_names: sorted(declared_names or [])
     module.verify_links = verify_links
+    module._verify_skill_dir = verify_skill_dir
     return module
 
 
@@ -80,6 +84,10 @@ class SkillsCheck(unittest.TestCase):
     def test_no_checkout_skips(self):
         project = Project(name="p", prefix="P")
         self.assertEqual(self.run_check(_sync_rules(None), project).status, fo.SKIP)
+
+    def test_a_broken_rule_link_is_not_a_skills_failure(self):
+        """The fake's verify_links raises; the check must never call it."""
+        self.assertEqual(self.run_check(_sync_rules(["sprint-plan"])).status, fo.OK)
 
     def test_the_check_is_registered(self):
         self.assertIn(fo.check_skills, fo.CHECKS)

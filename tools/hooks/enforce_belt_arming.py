@@ -472,7 +472,19 @@ def decide(payload: dict[str, Any], lane: str | None,
         command = tool_input.get("command") or ""
         if not isinstance(command, str) or not _monitor_runs_watcher(command):
             return None
-        belt_plan = _load_belt_plan()
+        try:
+            belt_plan = _load_belt_plan()
+        except Exception as exc:  # noqa: BLE001 -- see below
+            # harmonic-forge#917 preclose: the canonical table is built from
+            # projects.toml at import, so a manifest the loader rejects (an
+            # onboarded row with no `workspace`, say) used to raise here and reach
+            # main()'s fail-open, ALLOWING any belt. A watcher Monitor is exactly
+            # what this hook exists to judge, so it fails closed; everything
+            # else keeps main()'s fail-open.
+            return (f"Denied: this Monitor runs watch_lane_posts.py, but the belt plan "
+                    f"cannot load ({type(exc).__name__}: {exc}), so no belt is "
+                    "canonical. Fix projects.toml, then run `python3 "
+                    "~/harmonic-forge/tools/lane/belt_plan.py` (harmonic-forge#917).")
         calls, unresolved = _session_calls(belt_plan, lane, payload)
         if unresolved is not None:
             return _reason(lane, calls,

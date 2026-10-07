@@ -89,8 +89,11 @@ def workspaces(manifest: Path | None = None) -> list[str]:
     """Every workspace an onboarded project declares, sorted and distinct (harmonic-forge#917).
 
     The belt's canonical table is generated from this, one entry per lane per
-    workspace, so a workspace added to `projects.toml` is under a belt with no
-    other edit. Here rather than in `manifest.py`, which is at R-0006's cap.
+    workspace. Adding a workspace also adds three belt commands, which
+    `watch_lane_posts.py`'s module docstring and `skills/belt-and-suspenders/
+    DESIGN.md` list by hand; `test_belt_skill_matches_table.py` fails until both
+    show them, by design (harmonic-forge#917 preclose). Here rather than in
+    `manifest.py`, which is at R-0006's cap.
     """
     return sorted({p.workspace for p in load(manifest) if p.onboarded and p.workspace})
 
