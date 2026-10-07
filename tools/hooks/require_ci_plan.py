@@ -32,21 +32,34 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "lane"))
-from ci_plan import _git, allow_path, receipt_path, resolve_project  # noqa: E402
-from shell_parse import command_segments  # noqa: E402
+from ci_plan import (_git, allow_path, has_receipt, receipt_dir, receipt_path,  # noqa: E402
+                     resolve_project)
+from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 GATE_TASKS = {"check", "ci-check", "check-full"}
 
 
+#: `mise` options that take a value, so the value is not read as the task name.
+_VALUE_FLAGS = {"-C", "--cd", "-E", "--env", "-j", "--jobs", "-o", "--output"}
+
+
 def is_gate_command(command: str) -> bool:
-    for tokens in command_segments(command):
-        if tokens and Path(tokens[0]).name == "mise":
-            rest = [t for t in tokens[1:] if not t.startswith("-")]
-            if rest[:1] in (["run"], ["r"]):
-                rest = rest[1:]
-            if rest[:1] and rest[0] in GATE_TASKS:
-                return True
+    """`mise [run|r] check|ci-check|check-full`, after env assignments, `timeout`,
+    `nohup`, `bash -lc` and the like are stripped (the house recognizer)."""
+    for segment in command_segments(command):
+        tokens = strip_invocation_prefix(segment)
+        if not tokens or Path(tokens[0]).name != "mise":
+            continue
+        rest, index = tokens[1:], 0
+        while index < len(rest) and rest[index].startswith("-"):
+            index += 2 if rest[index] in _VALUE_FLAGS else 1
+        if rest[index:index + 1] in (["run"], ["r"]):
+            index += 1
+        while index < len(rest) and rest[index].startswith("-"):
+            index += 2 if rest[index] in _VALUE_FLAGS else 1
+        if rest[index:index + 1] and rest[index] in GATE_TASKS:
+            return True
     return False
 
 
@@ -70,13 +83,20 @@ def active(lane: str | None, cwd: Path) -> bool:
     return False
 
 
-def deny_reason() -> str:
+def deny_reason(session_id: str) -> str:
     return ("Read the gate first (harmonic-forge#918): run\n"
-            "  python3 ~/harmonic-forge/tools/lane/ci_plan.py [path ...]\n"
-            "in this checkout, once. It prints every gate step and the tests that name "
+            f"  python3 ~/harmonic-forge/tools/lane/ci_plan.py --session {session_id} [path ...]\n"
+            "in this checkout (once per checkout and branch). It prints every gate step and the tests that name "
             "the files you change (pass the handoff's Affected Files as paths), and "
             "records that you read it for this session. Then retry this tool call. "
             "The operator can lift this with a typed `ALLOW EDIT` line.")
+
+
+def _writable(directory: Path) -> bool:
+    """Can a receipt be written there, or created beneath its nearest ancestor?"""
+    while not directory.exists() and directory != directory.parent:
+        directory = directory.parent
+    return os.access(directory, os.W_OK)
 
 
 def decide(payload: dict, lane: str | None) -> str | None:
@@ -91,16 +111,18 @@ def decide(payload: dict, lane: str | None) -> str | None:
     else:
         return None
     session_id = payload.get("session_id")
-    receipt, grant = receipt_path(session_id), allow_path(session_id)
-    if receipt is None or grant is None:
+    grant = allow_path(session_id)
+    if receipt_path(session_id) is None or grant is None:
         return None
     directory = target_dir(payload)
     if not active(lane, directory):
         return None
-    if receipt.is_file() or grant.is_file():
+    if grant.is_file() or has_receipt(session_id, directory):
         return None
     resolve_project(directory)  # raises when no registered project owns it: fail open
-    return deny_reason()
+    if not _writable(receipt_dir()):
+        raise OSError(f"{receipt_dir()} is not writable, so no receipt or grant can exist")
+    return deny_reason(session_id)
 
 
 def main() -> int:

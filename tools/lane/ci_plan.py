@@ -1,29 +1,32 @@
-#!/usr/bin/env python3
 """Print the gate a lane must pass and the tests that constrain its edit
 (harmonic-forge#918), then record that it was read.
 
-    python3 ~/harmonic-forge/tools/lane/ci_plan.py [path ...]
+    python3 ~/harmonic-forge/tools/lane/ci_plan.py [--session ID] [path ...]
 
-Run from any onboarded checkout or worktree. It prints:
+Run from any onboarded checkout or worktree (any subdirectory of it). It prints:
 
 1. **The gate's steps**: the project's `protocol.gate_task` (`projects.toml`),
    expanded through `mise tasks info --json` -- `depends` first, then each `run`
    entry, following a `--task <x>` indirection (hrse's `check` runs
-   `run_gate_steps.py --task check-steps`) -- one numbered command per line.
-2. **The constraints map**: for each file the branch changes against its merge
-   base with `origin/main` (committed or not), plus every `path` argument (a
-   handoff's Affected Files), each test file naming that file's basename -- or,
-   for Python, its dotted module path -- with the matching line, which finds a
-   test that reads a helper's source text as well as one that imports it; then
-   the conftest / setup file of each matched test directory.
+   `run_gate_steps.py --task check-steps`) -- one numbered command per script
+   line, comments and `set -e` dropped. A gate task this checkout does not
+   define is reported, not fatal: there is then nothing to read, and a lane must
+   not be locked out of its edits for it.
+2. **The constraints map** (`ci_plan_constraints.py`): for each file the branch
+   changes against its merge base with `origin/main` (committed, uncommitted or
+   new) plus every `path` argument (a handoff's Affected Files), the test files
+   naming it, strongest matches first, then their conftest / setup files.
 
-RECEIPT. On success, and only when `$CLAUDE_CODE_SESSION_ID` is non-empty, it
-writes `~/.cache/harmonic-forge/ci_plan/<session id>.json` (branch, head,
-timestamp) -- the tool's own exit is the authoritative success signal, because
-a PostToolUse payload carries no exit status. `tools/hooks/require_ci_plan.py`
-keys on it. The receipt is SESSION-scoped only: a later head change does not
-invalidate it (harmonic-forge#918). Any failure writes nothing and exits 1.
-Codex lanes have no session variable: they get the plan and no receipt.
+RECEIPT. On success, and only when a session id is known (`--session`, else
+`$CLAUDE_CODE_SESSION_ID`), it records this checkout and branch in
+`~/.cache/harmonic-forge/ci_plan/<session id>.json` -- the tool's own exit is the
+authoritative success signal, because a PostToolUse payload carries no exit
+status. `tools/hooks/require_ci_plan.py` allows an edit only in a checkout and
+branch the session has read. A head change on the same branch does NOT
+invalidate it. `--session` exists because after `--resume` the environment id
+may differ from the hook payload's; the hook's deny message prints the right
+one. A failed run writes nothing and exits 1. Codex lanes have no session id:
+they get the plan and no receipt.
 """
 from __future__ import annotations
 
@@ -35,18 +38,16 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
+from ci_plan_constraints import (changed_files, constraints, git as _git,  # noqa: E402,F401
+                                 repo_root, root_relative)
 from manifest_identity import ManifestError, project_for_path  # noqa: E402
 
 RECEIPT_DIR_ENV = "HARMONIC_FORGE_CI_PLAN_DIR"
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-STOPLIST = {"index", "app", "main", "utils", "__init__", "init", "test", "tests"}
-TEST_PATHSPECS = [":(glob)**/tests/**", ":(glob)**/test/**", ":(glob)**/*_test.*",
-                  ":(glob)**/*Test.*", ":(glob)**/test_*"]
-SETUP_NAMES = ("conftest.py", "flutter_test_config.dart", "TestCase.php", "setup.ts",
-               "setupTests.ts", "vitest.setup.ts")
-MAX_HITS = 8
 _INDIRECT = re.compile(r"--task[ =](\S+)")
+_NOISE = re.compile(r"^set [-+]")
 
 
 def receipt_dir() -> Path:
@@ -66,13 +67,25 @@ def allow_path(session_id: object) -> Path | None:
     return path.with_suffix(".allow") if path else None
 
 
-def _git(cwd: Path, *args: str) -> str | None:
+def checkout_key(cwd: Path) -> tuple[str, str]:
+    """`(toplevel, branch)` of the checkout `cwd` is in: what a receipt certifies."""
+    top = (_git(cwd, "rev-parse", "--show-toplevel") or "").strip()
+    branch = (_git(cwd, "branch", "--show-current") or "").strip()
+    return top, branch
+
+
+def has_receipt(session_id: object, cwd: Path) -> bool:
+    """Has this session read the gate for the checkout and branch `cwd` is in?"""
+    path = receipt_path(session_id)
+    if path is None or not path.is_file():
+        return False
     try:
-        done = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True,
-                              text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return done.stdout if done.returncode == 0 else None
+        reads = json.loads(path.read_text(encoding="utf-8")).get("reads", {})
+    except (OSError, ValueError, AttributeError):
+        return False
+    top, branch = checkout_key(cwd)
+    entry = reads.get(top) if isinstance(reads, dict) else None
+    return bool(top) and isinstance(entry, dict) and entry.get("branch") == branch
 
 
 def resolve_project(cwd: Path):
@@ -96,6 +109,14 @@ def task_info(task: str, cwd: Path) -> dict:
     return json.loads(done.stdout)
 
 
+def script_lines(entry: str) -> list[str]:
+    """The command lines of one `run` entry: continuations joined, blank lines,
+    `#` comments and `set -e`-style options dropped."""
+    joined = re.sub(r"\s*\\\n\s*", " ", str(entry))
+    lines = [line.strip() for line in joined.splitlines()]
+    return [line for line in lines if line and not line.startswith("#") and not _NOISE.match(line)]
+
+
 def expand(task: str, cwd: Path, seen: set[str] | None = None) -> list[str]:
     """Every command `task` runs, in order, `depends` first, `--task` followed."""
     seen = set() if seen is None else seen
@@ -112,107 +133,63 @@ def expand(task: str, cwd: Path, seen: set[str] | None = None) -> list[str]:
         if indirect:
             commands += expand(indirect.group(1), cwd, seen)
         else:
-            commands.append(" ; ".join(line.strip() for line in str(entry).splitlines()
-                                       if line.strip() and line.strip() != "set -e"))
+            commands += script_lines(entry)
     return commands
 
 
-def changed_files(cwd: Path) -> list[str]:
-    base = _git(cwd, "merge-base", "origin/main", "HEAD")
-    if not base:
-        raise RuntimeError("cannot find the merge base with origin/main (run `git fetch`)")
-    out = _git(cwd, "diff", "--name-only", base.strip())
-    if out is None:
-        raise RuntimeError("git diff against the merge base failed")
-    return [line for line in out.splitlines() if line]
-
-
-def _is_test(path: str) -> bool:
-    name = Path(path).name
-    return bool(re.search(r"(^|/)(tests?)/", path) or name.startswith("test_")
-                or re.search(r"(_test|Test)\.", name))
-
-
-def needles(path: str) -> list[str]:
-    stem = Path(path).stem
-    if stem.lower() in STOPLIST:
-        return []
-    found = [stem]
-    if path.endswith(".py"):
-        parts = Path(path).with_suffix("").parts
-        found += [".".join(parts[-n:]) for n in (2, 3) if len(parts) >= n]
-    return found
-
-
-def constraints(cwd: Path, files: list[str]) -> list[str]:
-    lines: list[str] = []
-    for path in files:
-        if _is_test(path):
-            continue
-        hits: dict[str, str] = {}
-        for needle in needles(path):
-            out = _git(cwd, "grep", "-n", "-w", "-F", "-e", needle, "--", *TEST_PATHSPECS)
-            for row in (out or "").splitlines():
-                name, _, rest = row.partition(":")
-                hits.setdefault(name, rest.strip()[:110])
-        if not hits:
-            continue
-        lines.append(f"  {path}")
-        for name, text in list(hits.items())[:MAX_HITS]:
-            lines.append(f"    {name}:{text}")
-        if len(hits) > MAX_HITS:
-            lines.append(f"    ... and {len(hits) - MAX_HITS} more test file(s)")
-        for setup in _setup_files(cwd, hits):
-            lines.append(f"    setup: {setup}")
-    return lines
-
-
-def _setup_files(cwd: Path, test_files: dict[str, str]) -> list[str]:
-    found: list[str] = []
-    for name in test_files:
-        directory = Path(name).parent
-        while True:
-            for setup in SETUP_NAMES:
-                candidate = directory / setup
-                if (cwd / candidate).is_file() and str(candidate) not in found:
-                    found.append(str(candidate))
-            if directory == Path("."):
-                break
-            directory = directory.parent
-    return found
-
-
-def write_receipt(cwd: Path) -> str:
-    path = receipt_path(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+def write_receipt(cwd: Path, session_id: str | None) -> str:
+    path = receipt_path(session_id)
     if path is None:
-        return "no $CLAUDE_CODE_SESSION_ID: plan printed, no receipt written (Codex lane)"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    branch = (_git(cwd, "branch", "--show-current") or "").strip()
+        return "no session id: plan printed, no receipt written (Codex lane)"
+    top, branch = checkout_key(cwd)
     head = (_git(cwd, "rev-parse", "HEAD") or "").strip()
-    path.write_text(json.dumps({"branch": branch, "head": head, "created": time.time()}) + "\n",
-                    encoding="utf-8")
-    return f"receipt written for this session ({path})"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            reads = json.loads(path.read_text(encoding="utf-8")).get("reads", {})
+        except (OSError, ValueError, AttributeError):
+            reads = {}
+        reads[top] = {"branch": branch, "head": head, "created": time.time()}
+        path.write_text(json.dumps({"reads": reads}) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return (f"WARNING: the receipt could not be written ({exc}); the guard fails "
+                "open while its directory is unwritable")
+    return f"receipt written for this checkout and branch ({path})"
 
 
 def main(argv: list[str]) -> int:
-    cwd = Path.cwd()
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    args = list(argv)
+    if "--session" in args:
+        index = args.index("--session")
+        session = args[index + 1] if index + 1 < len(args) else ""
+        del args[index:index + 2]
+    invoked = Path.cwd()
     try:
-        project = resolve_project(cwd)
+        root = repo_root(invoked)
+        project = resolve_project(root)
         task = project.protocol.gate_task if project.protocol else None
         if not task:
             raise RuntimeError(f"{project.name} declares no protocol.gate_task in projects.toml")
-        steps = expand(task, cwd)
-        files = sorted(set(changed_files(cwd)) | {a for a in argv if a})
-        mapped = constraints(cwd, files)
+        files = sorted(set(changed_files(root)) | {root_relative(a, invoked, root)
+                                                   for a in args if a})
+        mapped = constraints(root, files)
     except (ManifestError, RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"ci_plan: FAILED, no receipt written: {exc}", file=sys.stderr)
         return 1
-    print(f"GATE: `mise run {task}` for {project.name} -- {len(steps)} step(s), in run order")
-    for number, command in enumerate(steps, 1):
-        print(f"{number:3}. {command}")
+    try:
+        steps = expand(task, root)
+        print(f"GATE: `mise run {task}` for {project.name} -- {len(steps)} step(s), in run order")
+        for number, command in enumerate(steps, 1):
+            print(f"{number:3}. {command}")
+    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"GATE: `mise run {task}` for {project.name} could not be read here: {exc}\n"
+              "  (no step list to read; the constraints below still apply)")
     print(f"\nCONSTRAINTS: tests that name the {len(files)} file(s) this branch changes")
-    print("\n".join(mapped) if mapped else "  (no test names any changed file)")
-    print(f"\n{write_receipt(cwd)}")
+    print("\n".join(mapped) if mapped else "  (no test names any changed file"
+          + ("; the branch changes nothing yet: pass the files you intend to edit as "
+             "arguments to see their tests)" if not files else ")"))
+    print(f"\n{write_receipt(root, session)}")
     return 0
 
 

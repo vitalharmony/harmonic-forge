@@ -699,16 +699,24 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
     return sorted(gaps)
 
 
-#: Platform hooks every onboarded checkout's settings.json must register.
-#: `require_ci_plan.py` (harmonic-forge#918): a repo without it lets a lane edit
-#: before reading the gate, so it reads FAIL rather than OK.
-REQUIRED_HOOKS = ("require_ci_plan.py",)
+#: Platform hooks every onboarded checkout's settings.json must register, as
+#: `(script, event, matcher substring)`: the guard fires only as a `PreToolUse`
+#: hook whose matcher covers `Edit`, so the filename appearing under any other
+#: event reads as guarded while nothing is (harmonic-forge#918).
+REQUIRED_HOOKS = (("require_ci_plan.py", "PreToolUse", "Edit"),)
 
 
 def required_hook_gaps(hooks: dict) -> list[str]:
-    """`REQUIRED_HOOKS` that no command in `hooks` names."""
-    commands = " ".join(_hook_commands(hooks))
-    return [name for name in REQUIRED_HOOKS if name not in commands]
+    """`REQUIRED_HOOKS` not registered under their event with a covering matcher."""
+    gaps: list[str] = []
+    for script, event, matcher_part in REQUIRED_HOOKS:
+        blocks = hooks.get(event) if isinstance(hooks.get(event), list) else []
+        if not any(isinstance(block, dict) and matcher_part in str(block.get("matcher", ""))
+                   and any(isinstance(h, dict) and script in str(h.get("command", ""))
+                           for h in block.get("hooks") or [])
+                   for block in blocks):
+            gaps.append(f"{script} (under {event}, matcher covering {matcher_part})")
+    return gaps
 
 
 def check_hooks(project: Project) -> Check:
@@ -738,12 +746,6 @@ def check_hooks(project: Project) -> Check:
                      f"{len(missing)} named script(s) do not exist: "
                      + ", ".join(missing))
 
-    absent = required_hook_gaps(hooks) if isinstance(hooks, dict) else []
-    if absent:
-        return Check("hooks", FAIL,
-                     "required platform hook(s) not registered: " + ", ".join(absent)
-                     + " -- register them in .claude/settings.json (harmonic-forge#918)")
-
     # Declaring ONE event is not the same as being guarded. Naming the count of
     # PreToolUse entries stops a repo with a single SessionStart line from
     # reading identically to one carrying the full guard set — the specific
@@ -759,6 +761,12 @@ def check_hooks(project: Project) -> Check:
                      + ", ".join(gaps)
                      + " -- a session started that way is never told its lane "
                        "(harmonic-forge#560)")
+
+    absent = required_hook_gaps(hooks) if isinstance(hooks, dict) else []
+    if absent:
+        return Check("hooks", FAIL,
+                     "required platform hook(s) not registered: " + ", ".join(absent)
+                     + " -- register them in .claude/settings.json (harmonic-forge#918)")
 
     # The main checkout being right is not the same as the launcher's checkout
     # being right, and the launchers do not run here.

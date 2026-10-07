@@ -113,7 +113,7 @@ class Base(unittest.TestCase):
             settings = repo / ".claude" / "settings.json"
             settings.parent.mkdir(parents=True, exist_ok=True)
             settings.write_text(json.dumps({"hooks": {"PreToolUse": [
-                {"hooks": [{"command": "python3 require_ci_plan.py"}]}]}}),
+                {"matcher": "Edit|Write", "hooks": [{"command": "python3 require_ci_plan.py"}]}]}}),
                 encoding="utf-8")
         if worktrees:
             for n in (2, 3):
@@ -425,7 +425,8 @@ class HookContentTests(unittest.TestCase):
         # named bare so it needs no file on disk, as `_wired` names belt_wakeup.
         return {"SessionStart": [{"matcher": matcher,
                                   "hooks": [{"type": "command", "command": command}]}],
-                "UserPromptSubmit": [{"hooks": [{"command": "python3 require_ci_plan.py"}]}]}
+                "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+                                "hooks": [{"command": "python3 require_ci_plan.py"}]}]}
 
     def test_a_missing_required_hook_fails_the_hooks_check(self) -> None:
         """harmonic-forge#918: a repo that registers other hooks but not
@@ -433,12 +434,34 @@ class HookContentTests(unittest.TestCase):
         checkout = self.root / "norequired"
         (checkout / ".claude").mkdir(parents=True)
         hooks = self._hooks("python3 belt_wakeup.py")
-        del hooks["UserPromptSubmit"]
+        del hooks["PreToolUse"]
         (checkout / ".claude" / "settings.json").write_text(
             json.dumps({"hooks": hooks}), encoding="utf-8")
         check = fo.check_hooks(mf.Project(name="n", prefix="N", path=str(checkout)))
         self.assertEqual(check.status, fo.FAIL)
         self.assertIn("require_ci_plan.py", check.detail)
+
+    def test_the_hook_registered_under_the_wrong_event_or_matcher_still_fails(self) -> None:
+        """A filename present under UserPromptSubmit, or under a PreToolUse
+        matcher that never sees an Edit, guards nothing."""
+        for wrong in ({"UserPromptSubmit": [{"hooks": [{"command": "python3 require_ci_plan.py"}]}]},
+                      {"PreToolUse": [{"matcher": "Read",
+                                       "hooks": [{"command": "python3 require_ci_plan.py"}]}]}):
+            hooks = self._hooks("python3 belt_wakeup.py")
+            hooks.pop("PreToolUse")
+            hooks.update(wrong)
+            self.assertEqual(len(fo.required_hook_gaps(hooks)), 1, wrong)
+
+    def test_an_older_belt_gap_is_not_shadowed_by_the_required_hook_gap(self) -> None:
+        checkout = self.root / "bothgaps"
+        (checkout / ".claude").mkdir(parents=True)
+        hooks = self._hooks("python3 belt_wakeup.py", matcher="startup|resume")
+        del hooks["PreToolUse"]
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="b", prefix="B", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("belt_wakeup.py", check.detail)
 
     def test_the_shipped_startup_resume_matcher_is_reported_as_a_gap(self) -> None:
         """harmonic-forge#560, stated as the check that would have caught it.
@@ -529,7 +552,7 @@ class HookContentTests(unittest.TestCase):
         project = mf.Project(name="x", prefix="X", path=str(checkout))
         check = fo.check_hooks(project)
         self.assertEqual(check.status, fo.OK)
-        self.assertIn("0 PreToolUse matcher(s)", check.detail)
+        self.assertIn("1 PreToolUse matcher(s)", check.detail)
 
     def test_unresolvable_target_fails_the_check(self) -> None:
         checkout = self.root / "repo2"

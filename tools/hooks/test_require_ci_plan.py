@@ -14,6 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "lane"))
+import ci_plan  # noqa: E402
 import require_ci_plan as guard  # noqa: E402
 import grant_ci_plan_override as grant  # noqa: E402
 
@@ -70,9 +71,17 @@ class Fixture(unittest.TestCase):
         return {"tool_name": "Bash", "session_id": session, "cwd": str(self.repo),
                 "tool_input": {"command": command}}
 
-    def receipt(self, session="s1", suffix=".json"):
+    def receipt(self, session="s1", suffix=".json", repo=None):
+        """`.json`: what ci_plan.py writes for a checkout; `.allow`: the grant."""
         self.receipts.mkdir(exist_ok=True)
-        (self.receipts / f"{session}{suffix}").write_text("{}\n", encoding="utf-8")
+        if suffix != ".json":
+            (self.receipts / f"{session}{suffix}").write_text("{}\n", encoding="utf-8")
+            return
+        top, branch = ci_plan.checkout_key(Path(repo or self.repo))
+        path = self.receipts / f"{session}.json"
+        reads = json.loads(path.read_text())["reads"] if path.is_file() else {}
+        reads[top] = {"branch": branch, "head": "x", "created": 0}
+        path.write_text(json.dumps({"reads": reads}) + "\n", encoding="utf-8")
 
 
 def denied(result):
@@ -84,7 +93,7 @@ class GuardTests(Fixture):
         result, _ = self.call(self.edit())
         self.assertTrue(denied(result))
         reason = result["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("python3 ~/harmonic-forge/tools/lane/ci_plan.py", reason)
+        self.assertIn("python3 ~/harmonic-forge/tools/lane/ci_plan.py --session s1", reason)
         self.assertIn("ALLOW EDIT", reason)
 
     def test_a_receipt_allows_it_and_a_new_session_needs_its_own(self):
@@ -98,13 +107,18 @@ class GuardTests(Fixture):
             payload["tool_name"] = tool
             self.assertTrue(denied(self.call(payload)[0]), tool)
         for command in ("mise run check", "mise r ci-check", "mise run check-full --fail-fast",
-                        "cd backend && mise run check", "mise check"):
+                        "cd backend && mise run check", "mise check",
+                        "timeout 1800 mise run check", "GATE_STEP_RUNNER=1 mise run check",
+                        'bash -lc "mise run check"', "nohup mise run check-full",
+                        "mise run -C backend check", "mise -C backend run check",
+                        "nice -n 5 timeout 60 mise run ci-check"):
             self.assertTrue(denied(self.call(self.bash(command))[0]), command)
 
     def test_other_tools_and_commands_are_never_denied(self):
         for payload in ({"tool_name": "Read", "session_id": "s1", "tool_input": {}},
                         self.bash("git status"), self.bash("mise run restart"),
-                        self.bash("echo mise run check"), self.bash("mise run check-steps")):
+                        self.bash("echo mise run check"), self.bash("mise run check-steps"),
+                        self.bash("mise run -C check restart"), self.bash("timeout 5 mise run lint")):
             self.assertFalse(denied(self.call(payload)[0]), payload)
 
     def test_lane3_and_no_lane_are_never_denied(self):
@@ -137,6 +151,35 @@ class GuardTests(Fixture):
         done = subprocess.run([sys.executable, str(GUARD)], input="not json",
                               env=self.env("2"), capture_output=True, text=True)
         self.assertEqual((done.returncode, done.stdout), (0, ""))
+
+    def test_a_receipt_for_one_checkout_does_not_unlock_another_or_another_branch(self):
+        self.receipt("s1")
+        self.assertFalse(denied(self.call(self.edit("s1"))[0]))
+        other = Path(self.tmp.name) / "other"
+        other.mkdir()
+        subprocess.run(["git", "-C", str(other), "init", "-q", "-b", "tooling/2-y"], check=True)
+        subprocess.run(["git", "-C", str(other), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "--allow-empty", "-m", "b"], check=True)
+        with self.manifest.open("a", encoding="utf-8") as handle:
+            handle.write(f'\n[[project]]\nname = "other"\nprefix = "O"\npath = "{other}"\n')
+        elsewhere = self.edit("s1", path=other / "x.py")
+        elsewhere["cwd"] = str(other)
+        self.assertTrue(denied(self.call(elsewhere)[0]))
+        self.git("checkout", "-q", "-b", "tooling/918-second")
+        self.assertTrue(denied(self.call(self.edit("s1"))[0]))
+        self.receipt("s1")
+        self.assertFalse(denied(self.call(self.edit("s1"))[0]))
+
+    def test_an_unwritable_receipt_dir_fails_open(self):
+        blocker = Path(self.tmp.name) / "blocker"
+        blocker.write_text("file", encoding="utf-8")
+        os.chmod(blocker, 0o444)
+        env = self.env("2")
+        env["HARMONIC_FORGE_CI_PLAN_DIR"] = str(blocker / "sub")
+        done = subprocess.run([sys.executable, str(GUARD)], input=json.dumps(self.edit()),
+                              env=env, capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stdout), (0, ""))
+        self.assertIn("not writable", done.stderr)
 
     def test_the_allow_edit_grant_lifts_the_guard(self):
         self.receipt("s1", ".allow")

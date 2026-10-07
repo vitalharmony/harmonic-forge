@@ -22,6 +22,9 @@ TASKS = {
     "check-steps": {"run": ["cd frontend && npm run lint", "mise run docs-check"],
                     "depends": []},
     "ci-check": {"run": "flutter analyze\nflutter test", "depends": ["setup"]},
+    "scripted": {"run": ["set -euo pipefail\n# a comment, not a command\nnpm run lint\n\n"
+                         "docker run --rm \\\n  img cmd\nset -e\n# another\nnpm test"],
+                 "depends": []},
     "setup": {"run": ["flutter pub get"], "depends": []},
 }
 
@@ -50,10 +53,15 @@ class ExpandTests(unittest.TestCase):
             self.assertEqual(ci_plan.expand("check", Path(".")),
                              ["cd frontend && npm run lint", "mise run docs-check"])
 
-    def test_depends_come_first_and_a_string_run_splits_nothing(self):
+    def test_depends_come_first_and_a_string_run_splits_per_line(self):
         with mock.patch.object(ci_plan, "task_info", fake_info):
             self.assertEqual(ci_plan.expand("ci-check", Path(".")),
-                             ["flutter pub get", "flutter analyze ; flutter test"])
+                             ["flutter pub get", "flutter analyze", "flutter test"])
+
+    def test_comments_set_options_and_blank_lines_are_not_steps_and_continuations_join(self):
+        with mock.patch.object(ci_plan, "task_info", fake_info):
+            self.assertEqual(ci_plan.expand("scripted", Path(".")),
+                             ["npm run lint", "docker run --rm img cmd", "npm test"])
 
     def test_a_cycle_terminates(self):
         loop = {"a": {"run": ["echo a"], "depends": ["a"]}}
@@ -115,11 +123,35 @@ class ConstraintsTests(unittest.TestCase):
         out = "\n".join(ci_plan.constraints(self.root, ["pkg/services/widget_service.py"]))
         self.assertIn("tests/test_imp.py", out)
 
-    def test_changed_files_include_uncommitted_work(self):
-        write(self.root, "a.py", "x = 1\n")
-        self.assertEqual(ci_plan.changed_files(self.root), [])  # untracked, not in diff
-        git(self.root, "add", "a.py")
-        self.assertEqual(ci_plan.changed_files(self.root), ["a.py"])
+    def test_changed_files_include_staged_modified_and_untracked_work(self):
+        write(self.root, "new_untracked.py", "x = 1\n")
+        write(self.root, "README.md", "changed\n")
+        write(self.root, "staged.py", "y = 2\n")
+        git(self.root, "add", "staged.py")
+        write(self.root, ".gitignore", "ignored.log\n")
+        write(self.root, "ignored.log", "noise\n")
+        got = ci_plan.changed_files(self.root)
+        self.assertEqual(sorted(got), [".gitignore", "README.md", "new_untracked.py", "staged.py"])
+
+    def test_data_file_stems_are_not_searched_and_strong_matches_rank_first(self):
+        write(self.root, "projects.toml", "x = 1\n")
+        for n in range(15):
+            write(self.root, f"tests/test_noise_{n:02d}.py", "the projects we run\n")
+        write(self.root, "tests/test_zz_manifest.py", "LIVE = 'projects.toml'\n")
+        self._commit()
+        out = ci_plan.constraints(self.root, ["projects.toml"])
+        self.assertEqual(out[1].split(":")[0].strip(), "tests/test_zz_manifest.py")
+        self.assertFalse(any("test_noise" in line for line in out))
+
+    def test_weak_bare_word_matches_are_ranked_below_strong_ones_and_truncated_loudly(self):
+        write(self.root, "src/widget.py", "x = 1\n")
+        for n in range(15):
+            write(self.root, f"tests/test_a_{n:02d}.py", "a widget appears\n")
+        write(self.root, "tests/test_zz_strong.py", "text = open('src/widget.py').read()\n")
+        self._commit()
+        out = ci_plan.constraints(self.root, ["src/widget.py"])
+        self.assertEqual(out[1].split(":")[0].strip(), "tests/test_zz_strong.py")
+        self.assertTrue(any("more test file(s), weaker" in line for line in out))
 
 
 class MainTests(unittest.TestCase):
@@ -170,11 +202,58 @@ class MainTests(unittest.TestCase):
         self.assertIn("no receipt written", err)
         self.assertFalse(self.receipts.exists())
 
-    def test_a_missing_gate_task_is_a_failure_not_a_receipt(self):
+    def test_a_missing_gate_task_is_reported_not_fatal_and_still_gets_a_receipt(self):
+        """A lane must not be locked out of its edits because the declared gate task
+        does not exist in this checkout: there is nothing to read."""
         self.project.protocol.gate_task = "absent"
-        code, _, _ = self._run()
-        self.assertEqual(code, 1)
-        self.assertFalse(self.receipts.exists())
+        code, out, _ = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("could not be read here", out)
+        self.assertTrue((self.receipts / "sess-1.json").is_file())
+
+    def test_the_session_flag_overrides_the_environment_id(self):
+        code, _, _ = self._run(argv=["--session", "payload-id"])
+        self.assertEqual(code, 0)
+        self.assertTrue((self.receipts / "payload-id.json").is_file())
+        self.assertFalse((self.receipts / "sess-1.json").exists())
+
+    def test_an_unwritable_receipt_dir_is_a_warning_not_a_traceback(self):
+        blocker = self.root / "blocker"
+        blocker.write_text("a file, so mkdir beneath it fails", encoding="utf-8")
+        env = {ci_plan.RECEIPT_DIR_ENV: str(blocker / "sub"), "CLAUDE_CODE_SESSION_ID": "s"}
+        code, out, _ = self._run(env=env)
+        self.assertEqual(code, 0)
+        self.assertIn("WARNING: the receipt could not be written", out)
+
+    def test_a_receipt_certifies_only_the_checkout_and_branch_it_was_written_for(self):
+        self._run()
+        with mock.patch.dict(os.environ, {ci_plan.RECEIPT_DIR_ENV: str(self.receipts)}):
+            self.assertTrue(ci_plan.has_receipt("sess-1", self.root))
+            git(self.root, "checkout", "-q", "-b", "other-branch")
+            self.assertFalse(ci_plan.has_receipt("sess-1", self.root))
+            other = Path(tempfile.mkdtemp())
+            git(other, "init", "-q", "-b", "main")
+            self.assertFalse(ci_plan.has_receipt("sess-1", other))
+
+    def test_run_from_a_subdirectory_maps_the_same_files_as_from_the_root(self):
+        write(self.root, "src/widget.py", "x = 1\n")
+        write(self.root, "tests/test_widget.py", "import widget\n")
+        sub = self.root / "docs" / "deep"
+        sub.mkdir(parents=True)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "w")
+        git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        cwd = os.getcwd()
+        os.chdir(sub)
+        try:
+            with mock.patch.dict(os.environ, self.env), \
+                    mock.patch.object(ci_plan, "task_info", fake_info), \
+                    mock.patch.object(ci_plan, "resolve_project", lambda c: self.project), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(ci_plan.main(["src/widget.py"]), 0)
+        finally:
+            os.chdir(cwd)
+        self.assertIn("tests/test_widget.py", out.getvalue())
 
     def test_no_session_id_prints_the_plan_and_writes_nothing(self):
         env = {ci_plan.RECEIPT_DIR_ENV: str(self.receipts), "CLAUDE_CODE_SESSION_ID": ""}
