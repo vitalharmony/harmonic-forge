@@ -1493,8 +1493,8 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("vitalharmony/hrse#1530", out)
 
     def test_suppressed_markers_carry_their_comment_url_and_no_state_edit_advice(self):
-        """harmonic-forge#921: the printed recovery used to say to delete the seen file,
-        which replays nothing (the watermark has advanced) or re-primes the same marker.
+        """harmonic-forge#921: the printed recovery used to advise a state edit, which
+        replays nothing (the watermark has advanced) or re-primes the same marker.
         The only recovery that works is reading the thread, so each suppressed marker is
         named with its URL on stderr AND on the stdout line the lane actually sees."""
         url = "https://github.com/vitalharmony/hrse/issues/1530#issuecomment-1"
