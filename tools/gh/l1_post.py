@@ -246,7 +246,7 @@ def case_ids(body: str) -> set[str]:
 TEMPLATE_PLACEHOLDER = re.compile(
     r"\{(?:url|labels|quoted line or condition that is the root cause|"
     r"explicit step-by-step instruction for Lane 2 — no ambiguity)\}"
-    r"|\{(?:standard \(|none \| |the issue's own example, hop by hop)"
+    r"|\{(?:standard \(|none \| )"
 )
 RESERVED_MARKER = "<!-- l1-post "
 

@@ -29,10 +29,10 @@ _COMMENT = re.compile(r"(?s)<!--.*?-->")
 
 #: A `path:line` (or `path:a-b`) token. The path must contain a letter (so a dotted quad
 #: is never one) and must not continue a word, a dotted name, `@` or `:` to its left. A
-#: leading `/`, `~/` or `./` is part of the path. The line number must not continue into a
+#: preceding `/` (absolute, `~/` and `./` paths) is allowed. The line number must not continue into a
 #: word or a dotted number (`neo4j/neo4j:5.26`, `ghcr.io/o/i:1.4` are image tags).
 _REF = re.compile(
-    r"(?<![\w.@:-])((?:~/|\./|/)?(?:[\w.-]+/)*[\w.-]*[A-Za-z_][\w.-]*):(\d+)(?:[-–]\d+)?"
+    r"(?<![\w.@:-])((?:[\w.-]+/)*[\w.-]*[A-Za-z_][\w.-]*):(\d+)(?:[-–]\d+)?"
     r"(?![\w]|\.\d)")
 #: Extensions that name source, config or docs: an allowlist, because `.com`, `.26` and
 #: `.example` also look like extensions (`app.example.com:8443`, `v5.26:3`).
