@@ -382,9 +382,16 @@ def resolve_sha(value: str, cwd: Path | None = None) -> str:
 
 
 def heading_content(body: str, heading: str) -> str:
-    # Fence-aware (harmonic-forge#920): a heading quoted in a code fence is not one, and a
-    # `###` line inside pasted output does not end its section.
-    return _scenario_trace.section(body, heading)
+    match = re.search(rf"(?ms)^### {re.escape(heading)}\s*$\n(.*?)(?=^### |\Z)", body)
+    return match.group(1).strip() if match else ""
+
+
+def section_content(body: str, heading: str) -> str:
+    """A handoff heading's content. `Scenario Trace` is located by span (harmonic-forge#920);
+    every other heading keeps `heading_content`'s original regex (AC2: unchanged)."""
+    if heading == "Scenario Trace":
+        return _scenario_trace.trace_section(body)
+    return heading_content(body, heading)
 
 
 def is_substantive(value: str) -> bool:
@@ -503,7 +510,7 @@ def validate_plan_first_spec(body: str, plan_first: bool | None) -> None:
 
 
 def validate_handoff(body: str, requires_preflight: bool) -> None:
-    missing = [heading for heading in HANDOFF_HEADINGS if not heading_content(body, heading)]
+    missing = [heading for heading in HANDOFF_HEADINGS if not section_content(body, heading)]
     if missing:
         fail("handoff missing required headings: " + ", ".join(missing))
     for heading in HANDOFF_HEADINGS:
@@ -519,11 +526,11 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
             if ("**If this handoff triggers Plan-First" in spec
                     and "{explicit step-by-step instruction for Lane 2" not in spec):
                 continue
-        if not is_substantive(heading_content(body, heading)):
+        if not is_substantive(section_content(body, heading)):
             fail(f"handoff heading is still a template placeholder: {heading}")
     if requires_preflight and heading_content(body, "Pre-Flight Preconditions").lower() == "none":
         fail("live-mutating/cross-repo handoff requires explicit pre-flight preconditions")
-    refusal = _scenario_trace.trace_refusal(heading_content(body, "Scenario Trace"))
+    refusal = _scenario_trace.trace_refusal(section_content(body, "Scenario Trace"))
     if refusal:
         fail(refusal)
     # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by

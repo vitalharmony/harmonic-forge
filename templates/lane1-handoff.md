@@ -37,10 +37,8 @@ have to infer which gate applies.
 ### Root Cause / Entry Point
 > "{quoted line or condition that is the root cause}"
 
-### Scenario Trace
-{the issue's own example, hop by hop: each hop `path:line` and `verified-live` (with the command or read that verified it)}
-
 <!--
+Scenario Trace guidance (kept OUTSIDE the section below, which l1_post.py validates):
 The issue's own example (the screen, command or input it names), walked step by
 step from the user-visible entry (route, screen, command, input) to the exact code
 this handoff changes. Every hop carries a `file:line` and is marked `verified-live`
@@ -63,6 +61,9 @@ in one week traced to handoffs, not to Lane 2 or Lane 3):
   shown (ke'nekted K61: `sync_rules.py --pull` versus `--project`; a missed
   `.claude/agents/.gitignore`).
 -->
+
+### Scenario Trace
+{the issue's own example, hop by hop: each hop `path:line` and `verified-live` (with the command or read that verified it)}
 
 ### Design Alternatives Considered
 {none | list each plausible design that was weighed and why it was rejected
