@@ -137,6 +137,28 @@ def _load_belt_plan():
     return belt_plan
 
 
+def _belt_plan_or_error() -> tuple[Any | None, str | None]:
+    """`(belt_plan, None)`, or `(None, why)` when the plan cannot load.
+
+    harmonic-forge#917: the canonical table is built from projects.toml at import,
+    so a manifest the loader rejects (an onboarded row with no `workspace`, say)
+    raises here. Reaching main()'s fail-open would ALLOW any belt, /loop or
+    CronCreate, so every arming branch fails closed on it instead, while still
+    honoring the operator's plan-free ALLOW LOOP grant (sticky-wicket ruling).
+    """
+    try:
+        return _load_belt_plan(), None
+    except Exception as exc:  # noqa: BLE001 -- reported in the deny reason
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _unloadable(what: str, why: str) -> str:
+    return (f"Denied: {what}, but the belt plan cannot load ({why}), so nothing is "
+            "canonical. Fix projects.toml, then run `python3 "
+            "~/harmonic-forge/tools/lane/belt_plan.py` (harmonic-forge#917)."
+            + _OVERRIDE_HINT)
+
+
 def _session_calls(belt_plan, lane: str,
                    payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     """The arming calls for the session's own workspace, and why they are missing.
@@ -472,19 +494,9 @@ def decide(payload: dict[str, Any], lane: str | None,
         command = tool_input.get("command") or ""
         if not isinstance(command, str) or not _monitor_runs_watcher(command):
             return None
-        try:
-            belt_plan = _load_belt_plan()
-        except Exception as exc:  # noqa: BLE001 -- see below
-            # harmonic-forge#917 preclose: the canonical table is built from
-            # projects.toml at import, so a manifest the loader rejects (an
-            # onboarded row with no `workspace`, say) used to raise here and reach
-            # main()'s fail-open, ALLOWING any belt. A watcher Monitor is exactly
-            # what this hook exists to judge, so it fails closed; everything
-            # else keeps main()'s fail-open.
-            return (f"Denied: this Monitor runs watch_lane_posts.py, but the belt plan "
-                    f"cannot load ({type(exc).__name__}: {exc}), so no belt is "
-                    "canonical. Fix projects.toml, then run `python3 "
-                    "~/harmonic-forge/tools/lane/belt_plan.py` (harmonic-forge#917).")
+        belt_plan, broken = _belt_plan_or_error()
+        if broken is not None:
+            return _unloadable("this Monitor runs watch_lane_posts.py", broken)
         calls, unresolved = _session_calls(belt_plan, lane, payload)
         if unresolved is not None:
             return _reason(lane, calls,
@@ -521,10 +533,12 @@ def decide(payload: dict[str, Any], lane: str | None,
         skill = tool_input.get("skill") or ""
         if not isinstance(skill, str) or not (skill == "loop" or skill.endswith(":loop")):
             return None
-        belt_plan = _load_belt_plan()
-        calls, _unresolved = _session_calls(belt_plan, lane, payload)
+        belt_plan, broken = _belt_plan_or_error()
+        calls = None
+        if broken is None:
+            calls, _unresolved = _session_calls(belt_plan, lane, payload)
         args = tool_input.get("args")
-        if isinstance(args, str) and args.strip() == calls["loop"]["args"]:
+        if calls is not None and isinstance(args, str) and args.strip() == calls["loop"]["args"]:
             return None
         grant = read_grant(session_id)
         if grant is not None and "skill_args" not in grant:
@@ -535,6 +549,8 @@ def decide(payload: dict[str, Any], lane: str | None,
             notes.append("enforce_belt_arming: non-canonical /loop allowed under the "
                          "operator's ALLOW LOOP grant; its CronCreate consumes it.")
             return None
+        if broken is not None:
+            return _unloadable("this is a /loop in a lane session", broken)
         what = "Denied: in a lane session /loop runs only the canonical suspenders prompt."
         if grant is not None:
             what += (" The operator's ALLOW LOOP grant already covered one /loop "
@@ -542,9 +558,11 @@ def decide(payload: dict[str, Any], lane: str | None,
         return _reason(lane, calls, what, override_hint=True)
 
     if tool == "CronCreate":
-        belt_plan = _load_belt_plan()
-        calls, _unresolved = _session_calls(belt_plan, lane, payload)
-        if not _is_canonical_cron(tool_input):
+        belt_plan, broken = _belt_plan_or_error()
+        calls = None
+        if broken is None:
+            calls, _unresolved = _session_calls(belt_plan, lane, payload)
+        if broken is not None or not _is_canonical_cron(tool_input):
             grant = read_grant(session_id)
             if grant is not None:
                 skill_args = grant.get("skill_args")
@@ -558,6 +576,8 @@ def decide(payload: dict[str, Any], lane: str | None,
                     notes.append("enforce_belt_arming: non-canonical CronCreate allowed; "
                                  "the operator's ALLOW LOOP grant is now consumed.")
                     return None
+            if broken is not None:
+                return _unloadable("this is a CronCreate in a lane session", broken)
             return _reason(lane, calls,
                            "Denied: in a lane session CronCreate is allowed only as "
                            "the canonical suspenders job the loop skill creates.",

@@ -65,6 +65,14 @@ checkout; the arming hook and the watcher itself deny any other. A new
 workspace in `projects.toml` needs its three commands added here and in the
 watcher's module docstring; `test_belt_skill_matches_table.py` enforces it.
 
+**The upgrade to scoped belts is a one-time, visible cost, deliberately not
+handled in code** (harmonic-forge#917 sticky-wicket). A scoped belt's state is
+keyed `…@<ws>`, so its first arm primes once and prints `PRIMED at first arm,
+not announced` for what it suppressed (harmonic-forge#697); replay by deleting
+that seen file. A belt armed before #917 keeps the unscoped
+`belt-lane<N>.lock` until its Monitor expires, so for that one lifetime a
+workspace session may see a marker twice; stop the stale Monitor or wait it out.
+
 **`watch_lane_posts.py` already is the belt.** It re-derives `(repo, issue)`
 from a worktree's live branch every cycle, has a `--queue-for` mode for a lane
 with no issue in hand, and reports what it resolved and did not (never

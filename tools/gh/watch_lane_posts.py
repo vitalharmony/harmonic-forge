@@ -2038,39 +2038,6 @@ def _matching_canonical_entry(
     return None
 
 
-def carry_legacy_belt_state(state: Path, legacy_id: str, belt_id: str) -> bool:
-    """Seed a workspace belt's first arm from its pre-#917 unscoped belt's state.
-
-    harmonic-forge#917 preclose: the `@<workspace>` suffix renames the state key,
-    and an empty seen-set is what `priming_allowed()` reads as a first arm, so
-    without this the first arm after the upgrade re-primes every watched thread
-    and records a marker posted just before it PRIMED instead of emitting it --
-    the harmonic-forge#697 trap. Copies, never moves: every workspace's belt for
-    the lane starts from the same history, and entries for another workspace's
-    repos are simply never consulted. Runs only while the new seen-set is empty,
-    so it happens once. Returns whether anything was carried.
-    """
-    new_seen = state / f"seen-{belt_id}.tsv"
-    old_seen = state / f"seen-{legacy_id}.tsv"
-    if (new_seen.exists() and new_seen.stat().st_size) or not old_seen.is_file():
-        return False
-    new_seen.parent.mkdir(parents=True, exist_ok=True)
-    tmp = new_seen.with_suffix(".tsv.tmp")
-    tmp.write_bytes(old_seen.read_bytes())
-    tmp.replace(new_seen)
-    old_marks = state / "watermarks" / legacy_id
-    new_marks = state / "watermarks" / belt_id
-    if old_marks.is_dir():
-        new_marks.mkdir(parents=True, exist_ok=True)
-        for mark in old_marks.iterdir():
-            target = new_marks / mark.name
-            if mark.is_file() and not target.exists():
-                target.write_bytes(mark.read_bytes())
-    print(f"[watch_lane_posts] carried pre-workspace belt state {legacy_id} -> {belt_id} "
-          "(harmonic-forge#917), so this first arm does not re-prime", file=sys.stderr)
-    return True
-
-
 def _session_workspace() -> str:
     """The workspace of the checkout this belt runs in (harmonic-forge#917).
 
@@ -2176,27 +2143,6 @@ def _parse_lock_holder(raw: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
-
-
-def legacy_belt_lock_held(lane: str) -> bool:
-    """Is a pre-#917 unscoped belt for `lane` still running? (harmonic-forge#917 preclose)
-
-    Scoped belts lock `belt-lane<N>-<ws>.lock`, a different file from the
-    unscoped `belt-lane<N>.lock`, so `flock` alone would let a belt armed before
-    the upgrade keep delivering every workspace's queue lines beside the new
-    scoped one for the rest of its 30-minute life. Probes the legacy lock without
-    keeping it: a free lock is released at once.
-    """
-    path = BELT_LOCK_DIR / f"belt-lane{lane}.lock"
-    if not path.exists():
-        return False
-    with open(path, "a+") as fh:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    return False
 
 
 def _acquire_belt_lock(lock_name: str):
@@ -2488,11 +2434,6 @@ def main() -> int:
         parser.error("--queue-for requires --repo or --account-repos")
     _belt_lock_entry = _enforce_canonical_belt(parser, args)
     _check_git_staleness(parser)
-    if legacy_belt_lock_held(os.environ["LANE"]):
-        print(f"[watch_lane_posts] a pre-#917 unscoped LANE={os.environ['LANE']} belt "
-              "still holds its lock; it expires within its Monitor lifetime. Re-arm "
-              "after it does (harmonic-forge#917).", file=sys.stderr)
-        sys.exit(4)
     _belt_lock_handle = _acquire_belt_lock(_belt_lock_entry["lock"])  # noqa: F841
     # Union, not replacement: an explicitly named --worktrees path stays
     # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
@@ -2579,9 +2520,10 @@ def main() -> int:
         # harmonic-forge#917: two workspaces' belts for one lane are different
         # processes over different repos; their watermarks, seen-sets and tick
         # logs must not interleave (harmonic-forge#685).
-        legacy_id = belt_id
+        # The first arm under the new key primes once and says so (PRIMED at
+        # first arm, harmonic-forge#697); that announcement is the upgrade
+        # boundary, deliberately not a state copy (harmonic-forge#917 sticky-wicket).
         belt_id += f"@{args.workspace}"
-        carry_legacy_belt_state(_BELT_STATE, legacy_id, belt_id)
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
     #: harmonic-forge#685. Keyed by `belt_id` for the same reason the seen-set

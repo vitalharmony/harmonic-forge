@@ -1982,7 +1982,7 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
     case: this class is about the argv/LANE gate alone."""
 
     def _run(self, argv: list[str], env: dict[str, str] | None,
-             session_ws: str | None = None):
+             session_ws: str | None = None, state: str | None = None):
         # harmonic-forge#917: the watcher checks --workspace against its own cwd's
         # workspace. These cases run in a checkout that may be registered nowhere
         # (a CI runner), so the session's workspace is the one the argv names unless
@@ -1990,8 +1990,9 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         if session_ws is None:
             session_ws = (argv[argv.index("--workspace") + 1]
                           if "--workspace" in argv else "vh")
-        state = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, state, True)
+        if state is None:
+            state = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, state, True)
         patches = [
             # harmonic-forge#917 preclose: never read or seed the operator's real
             # belt state from a test.
@@ -2001,7 +2002,6 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
             patch("watch_lane_posts.assert_identity"),
             patch("watch_lane_posts._check_git_staleness"),
             patch("watch_lane_posts._acquire_belt_lock"),
-            patch("watch_lane_posts.legacy_belt_lock_held", return_value=False),
             patch("watch_lane_posts.queue_cycle", side_effect=KeyboardInterrupt),
             patch("watch_lane_posts.time.sleep"),
         ]
@@ -2045,6 +2045,24 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         self.assertEqual(outcome, "looped", err)
         self.assertNotIn("canonical command", err)
         self.assertIn("harmonicarchitect is NOT polled", err)
+
+    def test_a_scoped_belt_never_inherits_the_unscoped_belts_seen_set(self):
+        """harmonic-forge#917 sticky-wicket: the upgrade boundary is the #697 first-arm
+        PRIMED announcement, never a copy of the account-wide seen-set (which is keyed
+        by bare comment id and would silently settle other workspaces' markers)."""
+        state = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, state, True)
+        (state / "watermarks" / "l1+ql2").mkdir(parents=True)
+        (state / "seen-l1+ql2.tsv").write_text("424242\temitted\n", encoding="utf-8")
+        (state / "watermarks" / "l1+ql2" / "t").write_text("x", encoding="utf-8")
+        entry = next(e for e in watch_lane_posts.CANONICAL_BELTS["2"]
+                     if e["workspace"] == "vh")
+        outcome, err = self._run(list(entry["argv"]), {"LANE": "2"}, state=str(state))
+        self.assertEqual(outcome, "looped", err)
+        scoped = state / "seen-l1+ql2@vh.tsv"
+        self.assertNotIn("424242", scoped.read_text(encoding="utf-8")
+                         if scoped.exists() else "")
+        self.assertFalse((state / "watermarks" / "l1+ql2@vh" / "t").exists())
 
     def test_an_unscoped_belt_is_refused(self):
         """harmonic-forge#917: the pre-#917 account-wide command no longer matches."""
@@ -3565,59 +3583,3 @@ class WorkspaceRepoSetTests(unittest.TestCase):
         with self.assertRaises(watch_lane_posts.AccountReposUnavailable):
             watch_lane_posts.manifest_repos("harmonicarchitect", "leasepal")
 
-
-class CarriesLegacyBeltStateTests(unittest.TestCase):
-    """harmonic-forge#917 preclose: the first scoped arm must not re-prime."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.state = Path(self._tmp.name)
-        (self.state / "watermarks" / "l1+ql2").mkdir(parents=True)
-        (self.state / "seen-l1+ql2.tsv").write_text("123\temitted\n", encoding="utf-8")
-        (self.state / "watermarks" / "l1+ql2" / "hrse-1").write_text("t", encoding="utf-8")
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_first_arm_copies_the_seen_set_and_watermarks(self):
-        self.assertTrue(watch_lane_posts.carry_legacy_belt_state(
-            self.state, "l1+ql2", "l1+ql2@vh"))
-        self.assertEqual((self.state / "seen-l1+ql2@vh.tsv").read_text(encoding="utf-8"),
-                         "123\temitted\n")
-        self.assertTrue((self.state / "watermarks" / "l1+ql2@vh" / "hrse-1").is_file())
-        seen = watch_lane_posts.SeenSet(self.state / "seen-l1+ql2@vh.tsv")
-        self.assertFalse(watch_lane_posts.priming_allowed(seen))
-
-    def test_an_existing_scoped_seen_set_is_never_overwritten(self):
-        (self.state / "seen-l1+ql2@vh.tsv").write_text("999\temitted\n", encoding="utf-8")
-        self.assertFalse(watch_lane_posts.carry_legacy_belt_state(
-            self.state, "l1+ql2", "l1+ql2@vh"))
-        self.assertEqual((self.state / "seen-l1+ql2@vh.tsv").read_text(encoding="utf-8"),
-                         "999\temitted\n")
-
-    def test_no_legacy_state_carries_nothing(self):
-        self.assertFalse(watch_lane_posts.carry_legacy_belt_state(
-            self.state, "l2-l3+ql1", "l2-l3+ql1@vh"))
-
-
-class LegacyBeltLockTests(unittest.TestCase):
-    """harmonic-forge#917 preclose: a scoped belt does not run beside an unscoped one."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._dir = patch.object(watch_lane_posts, "BELT_LOCK_DIR", Path(self._tmp.name))
-        self._dir.start()
-
-    def tearDown(self):
-        self._dir.stop()
-        self._tmp.cleanup()
-
-    def test_a_held_legacy_lock_is_detected(self):
-        import fcntl as _fcntl
-        with open(Path(self._tmp.name) / "belt-lane2.lock", "a+") as fh:
-            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-            self.assertTrue(watch_lane_posts.legacy_belt_lock_held("2"))
-        self.assertFalse(watch_lane_posts.legacy_belt_lock_held("2"))
-
-    def test_no_legacy_lock_file_is_not_held(self):
-        self.assertFalse(watch_lane_posts.legacy_belt_lock_held("2"))

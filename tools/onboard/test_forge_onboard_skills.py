@@ -89,6 +89,19 @@ class SkillsCheck(unittest.TestCase):
         """The fake's verify_links raises; the check must never call it."""
         self.assertEqual(self.run_check(_sync_rules(["sprint-plan"])).status, fo.OK)
 
+    def test_the_check_verifies_against_the_platform_checkout(self):
+        """harmonic-forge#917 sticky-wicket: links resolve against `platform_source()`,
+        never `_THIS_CHECKOUT` (an impl worktree would fail all eight projects)."""
+        from unittest import mock
+        sentinel = Path("/platform-sentinel")
+        self.assertNotEqual(sentinel, fo._THIS_CHECKOUT)
+        seen = []
+        with mock.patch.object(fo, "platform_source", return_value=sentinel), \
+             mock.patch.object(fo.forge_onboard_skills, "check_skills",
+                               side_effect=lambda p, c, source: seen.append(source)):
+            fo.check_skills(self.project)
+        self.assertEqual(seen, [sentinel])
+
     def test_the_check_is_registered(self):
         self.assertIn(fo.check_skills, fo.CHECKS)
 
