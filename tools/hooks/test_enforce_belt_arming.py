@@ -550,7 +550,12 @@ class WrappedWatcherIsDenied(unittest.TestCase):
                      f"timeout 600 bash -c 'cd /tmp; python3 {w} --queue-for l1'",
                      f"bash -c 'sh -c \"cd /y; python3 {w} --queue-for l1\"'",
                      f"bash -c 'cd /x && exec python3 {w} --queue-for l1'",
-                     f"bash -c 'exec {w} --queue-for l1'"),
+                     f"bash -c 'exec {w} --queue-for l1'",
+                     f"exec bash -c 'cd ~/Harmonic_Projects/LeasePAL-App-Prototype; python3 {w} --workspace leasepal'",
+                     f"bash -c 'exec bash -c \"cd /x; python3 {w} --queue-for l1\"'",
+                     f"bash -c -- 'cd /tmp; python3 {w} --queue-for l1'",
+                     f"bash -cx 'cd /x; python3 {w} --queue-for l1'",
+                     f"bash -c \"cd /x; python3 {w} --queue-for l1 --note don't\""),
             "sh": (f"sh -c 'cd /tmp; python3 {w} --queue-for l1'",),
         }
         for shell, commands in cases.items():
@@ -558,23 +563,34 @@ class WrappedWatcherIsDenied(unittest.TestCase):
                 with self.subTest(command=command):
                     result = self._monitor(command)
                     self.assertEqual(_decision(result), "deny")
-                    self.assertIn("-c`", result.stdout)
+                    self.assertIn(f"`{shell} -c`", result.stdout)
                     self.assertIn("never the canonical belt command", result.stdout)
 
     def test_a_wrapper_is_denied_even_around_the_canonical_command(self):
         canonical = belt_plan.canonical_calls("1", "vh")["monitor"]["command"]
         for command in (f"bash -c '{canonical}'", f"bash -c 'cd ~/x; {canonical}'"):
             with self.subTest(command=command):
-                self.assertEqual(_decision(self._monitor(command)), "deny")
+                result = self._monitor(command)
+                self.assertEqual(_decision(result), "deny")
+                # the wrapper reason, not the older canonical-mismatch one
+                self.assertIn("never the canonical belt command", result.stdout)
+
+    def _assert_allowed(self, command):
+        result = self._monitor(command)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("guard did not run", result.stdout)  # a fail-open reads as None too
+        self.assertIsNone(_decision(result))
 
     def test_the_canonical_command_and_unrelated_wrappers_are_still_allowed(self):
         canonical = belt_plan.canonical_calls("1", "vh")["monitor"]["command"]
-        self.assertIsNone(_decision(self._monitor(canonical)))
+        self._assert_allowed(canonical)
         for command in ("bash -c 'tail -f logs/backend.log'",
                         "sh -c 'cd /tmp; tail -F x.log | grep watch_lane_posts.py'",
-                        "bash -c 'pgrep -af watch_lane_posts.py'"):
+                        "bash -c 'pgrep -af watch_lane_posts.py'",
+                        # an apostrophe makes the inner script unparseable; a mention is still a mention
+                        "bash -c \"tail -F logs/belt.log | grep watch_lane_posts.py; echo don't\""):
             with self.subTest(command=command):
-                self.assertIsNone(_decision(self._monitor(command)))
+                self._assert_allowed(command)
 
 
 class FailsOpen(unittest.TestCase):
