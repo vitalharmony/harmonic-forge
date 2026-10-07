@@ -69,6 +69,10 @@
 #                       anything, and a session boundary with no declared close
 #                       is how a worktree reads as Lane 3-active forever
 #                       (harmonic-forge#730).
+#   gate_task           The mise task a lane runs as its gate before handing off
+#                       (harmonic-forge#918): `check` for hrse, harmonic-forge and
+#                       cymagraph-infra; `ci-check` where CI runs exactly that.
+#                       `tools/lane/ci_plan.py` expands it into the step list.
 #   runs_lane3          Whether the repo owns a Lane 3 worktree at all. This is
 #                       a declared capability, not inferred from today's disk.
 #   needs_gate_adapter  Optional. A `runs_lane3` repo either ships
@@ -125,6 +129,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "check"
 runs_lane3 = true
 # harmonic-forge#802: hrse's CI mirrors `check`'s commands against its own
 # drift-detection tool rather than declaring a `ci-check` task; this is the
@@ -156,6 +161,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#730 DJC 2): no graph, database
 # or live app service of its own -- its own lane3-end says it plainly:
@@ -182,6 +188,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#730 DJC 2): provisions
 # infrastructure and owns no graph; ADR-008's capabilities (residue_sweep,
@@ -215,6 +222,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "ci-check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#730 DJC 2): a prototyping
 # ground with no graph, database or live service; its Lane 3 scope is static
@@ -245,6 +253,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "ci-check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#806): DEFERRED, not declined: this Laravel app owns a database and live service, so a gate adapter
 # is owed. It has no `ci-check` yet either; both belong to the kenekted-platform CI child
@@ -273,6 +282,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "ci-check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#806): no graph or live service of its own is declared yet; deferred to its CI child.
 needs_gate_adapter = false
@@ -299,6 +309,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "ci-check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#806): documentation repo with no service. Its checkout basename is `docs`, so its worktrees are
 # docs-lane2 and docs-lane3: the lane launchers derive the worktree from the checkout basename
@@ -326,6 +337,7 @@ lane_comment_task = "lane-comment"
 gate_checkout_task = "gate-checkout"
 lane3_begin_task = "lane3-begin"
 lane3_end_task = "lane3-end"
+gate_task = "ci-check"
 runs_lane3 = true
 # needs_gate_adapter = false (harmonic-forge#800): a Flutter web prototype with no live
 # backend service, which Lane 3 exercises with flutter analyze / flutter test /

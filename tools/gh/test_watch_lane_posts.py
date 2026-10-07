@@ -3554,7 +3554,7 @@ class WorkspaceRepoSetTests(unittest.TestCase):
                 '[project.protocol]\nworktree_name = "{checkout}-lane{lane}"\n'
                 'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'
                 'gate_checkout_task = "gate-checkout"\nlane3_begin_task = "lane3-begin"\n'
-                'lane3_end_task = "lane3-end"\nruns_lane3 = true\n')
+                'lane3_end_task = "lane3-end"\ngate_task = "check"\nruns_lane3 = true\n')
         manifest = Path(self._tmp.name) / "projects.toml"
         manifest.write_text("\n".join(rows), encoding="utf-8")
         self._env = patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(manifest)})

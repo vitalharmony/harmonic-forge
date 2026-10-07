@@ -44,6 +44,7 @@ PROTOCOL = """
     gate_checkout_task = "gate-checkout"
     lane3_begin_task = "lane3-begin"
     lane3_end_task = "lane3-end"
+    gate_task = "check"
     runs_lane3 = true
 """
 
@@ -352,6 +353,41 @@ class ViewTests(unittest.TestCase):
                 mf.require_onboarded_repo(value, path)
 
 
+class GateTaskTests(unittest.TestCase):
+    """harmonic-forge#918 AC6: an onboarded project must declare `gate_task`."""
+
+    def test_a_protocol_without_gate_task_is_refused(self) -> None:
+        body = PROTOCOL.replace('    gate_task = "check"\n', "")
+        path = write("""
+            [[project]]
+            name = "alpha"
+            prefix = "A"
+            repo = "o/alpha"
+            account = "acct"
+            path = "/tmp/alpha"
+            workspace = "vh"
+            onboarded = true
+        """ + body)
+        with self.assertRaises(mf.ManifestError) as caught:
+            mf.load(path)
+        self.assertIn("gate_task", str(caught.exception))
+
+    def test_an_empty_gate_task_is_refused(self) -> None:
+        body = PROTOCOL.replace('gate_task = "check"', 'gate_task = " "')
+        path = write("""
+            [[project]]
+            name = "alpha"
+            prefix = "A"
+            repo = "o/alpha"
+            account = "acct"
+            path = "/tmp/alpha"
+            workspace = "vh"
+            onboarded = true
+        """ + body)
+        with self.assertRaises(mf.ManifestError):
+            mf.load(path)
+
+
 class LiveManifestTests(unittest.TestCase):
     """Two properties that must hold for the shipped file. A fixture cannot
     catch either, because both are about this change not altering behavior."""
@@ -438,13 +474,17 @@ class LiveManifestTests(unittest.TestCase):
         # harmonic-forge#806: kenekted-docs' checkout basename is `docs`; the lane launchers
         # derive worktrees from that basename, so it keeps the default template.
         worktree: dict[str, dict[str, str]] = {}
+        # harmonic-forge#918: the task a lane runs as its gate. Where CI runs
+        # exactly `ci-check` that is the answer; these three run `check`.
+        gate_task = {"hrse": "check", "harmonic-forge": "check", "cymagraph-infra": "check"}
         # The operational switch itself, pinned: `onboarded` is what makes l1_post,
         # preclose_check and the sweeps treat these repos as lane repos at all.
         for name in ("kenekted", "kenekted-ai", "kenekted-docs"):
             self.assertTrue(next(p for p in projects if p.name == name).onboarded, name)
         self.assertEqual(
             {project.name: project.protocol for project in projects},
-            {name: mf.Protocol(**{**common, **worktree.get(name, {})},
+            {name: mf.Protocol(**{**common, "gate_task": gate_task.get(name, "ci-check"),
+                                  **worktree.get(name, {})},
                                runs_lane3=True,
                                needs_gate_adapter=False if name in no_adapter else None,
                                ci_parity_task=parity_task.get(name),

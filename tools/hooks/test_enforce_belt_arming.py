@@ -39,7 +39,7 @@ _MANIFEST.write_text("\n".join(
     f'path = "{d}"\nonboarded = true\nworkspace = "{w}"\n[project.protocol]\n'
     'worktree_name = "{checkout}-lane{lane}"\nl1_post_task = "l1-post"\n'
     'lane_comment_task = "lane-comment"\ngate_checkout_task = "gate-checkout"\n'
-    'lane3_begin_task = "lane3-begin"\nlane3_end_task = "lane3-end"\nruns_lane3 = true\n'
+    'lane3_begin_task = "lane3-begin"\nlane3_end_task = "lane3-end"\ngate_task = "check"\nruns_lane3 = true\n'
     for n, p, d, w in (("alpha", "A", _VH, "vh"), ("beta", "B", _LEASEPAL, "leasepal"))),
     encoding="utf-8")
 

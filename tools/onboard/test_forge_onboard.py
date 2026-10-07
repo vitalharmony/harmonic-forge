@@ -112,8 +112,11 @@ class Base(unittest.TestCase):
         if hooks:
             settings = repo / ".claude" / "settings.json"
             settings.parent.mkdir(parents=True, exist_ok=True)
-            settings.write_text(json.dumps({"hooks": {"PreToolUse": []}}),
-                                encoding="utf-8")
+            settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+                {"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+                 "hooks": [{"command": "python3 require_ci_plan.py"}]}],
+                "UserPromptSubmit": [{"hooks": [{"command": "python3 grant_ci_plan_override.py"}]}]}}),
+                encoding="utf-8")
         if worktrees:
             for n in (2, 3):
                 (repo.parent / f"{name}-lane{n}").mkdir(exist_ok=True)
@@ -137,7 +140,7 @@ class Base(unittest.TestCase):
                       worktree_name="{checkout}-lane{lane}",
                       l1_post_task="l1-post", lane_comment_task="lane-comment",
                       gate_checkout_task="gate-checkout", lane3_begin_task="lane3-begin",
-                      lane3_end_task="lane3-end", runs_lane3=True,
+                      lane3_end_task="lane3-end", gate_task="check", runs_lane3=True,
                       # These synthetic repos have no gate-adapter.json, and
                       # check_gate_adapter now refuses silence -- declare it,
                       # exactly as a real no-graph repo does.
@@ -300,6 +303,7 @@ class ExitCodeTests(Base):
             gate_checkout_task = "gate-checkout"
             lane3_begin_task = "lane3-begin"
             lane3_end_task = "lane3-end"
+            gate_task = "check"
             runs_lane3 = true
             needs_gate_adapter = false
         """)
@@ -419,8 +423,91 @@ class HookContentTests(unittest.TestCase):
         # to hard-code `startup|resume`, which is the shipped defect itself —
         # so every test built on it was asserting against a settings file that
         # could never wake a `/clear` session.
+        # `require_ci_plan.py` is a required platform hook (harmonic-forge#918);
+        # named bare so it needs no file on disk, as `_wired` names belt_wakeup.
         return {"SessionStart": [{"matcher": matcher,
-                                  "hooks": [{"type": "command", "command": command}]}]}
+                                  "hooks": [{"type": "command", "command": command}]}],
+                "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+                                "hooks": [{"command": "python3 require_ci_plan.py"}]}],
+                "UserPromptSubmit": [{"hooks": [{"command": "python3 grant_ci_plan_override.py"}]}]}
+
+    def test_a_missing_required_hook_fails_the_hooks_check(self) -> None:
+        """harmonic-forge#918: a repo that registers other hooks but not
+        `require_ci_plan.py` lets a lane edit before reading the gate."""
+        checkout = self.root / "norequired"
+        (checkout / ".claude").mkdir(parents=True)
+        hooks = self._hooks("python3 belt_wakeup.py")
+        del hooks["PreToolUse"]
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="n", prefix="N", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("require_ci_plan.py", check.detail)
+
+    def test_a_registration_that_leaves_a_guarded_tool_ungated_is_a_gap(self) -> None:
+        """The matcher is a regex over tool names, not a substring: `NotebookEdit`
+        contains `Edit`, and `Edit|Write` leaves `mise run check` (Bash) ungated."""
+        full = self._hooks("python3 belt_wakeup.py")
+        for matcher in ("NotebookEdit", "Edit|Write", "Edit|Write|MultiEdit|NotebookEdit",
+                        "Read", "Edit(x)"):
+            hooks = {**full, "PreToolUse": [{"matcher": matcher, "hooks": [
+                {"command": "python3 require_ci_plan.py"}]}]}
+            self.assertEqual(len(fo.required_hook_gaps(hooks)), 1, matcher)
+        # `NotebookEdit` contains `Edit` as a substring and covers NONE of the
+        # guarded tools except itself: the gap must name Edit as uncovered.
+        notebook = {**full, "PreToolUse": [{"matcher": "NotebookEdit", "hooks": [
+            {"command": "python3 require_ci_plan.py"}]}]}
+        self.assertIn("does not cover Edit, Write, MultiEdit, Bash",
+                      fo.required_hook_gaps(notebook)[0])
+        covered = {**full, "PreToolUse": [
+            {"matcher": "Edit|Write|MultiEdit|NotebookEdit",
+             "hooks": [{"command": "python3 require_ci_plan.py"}]},
+            {"matcher": "Bash", "hooks": [{"command": "python3 require_ci_plan.py"}]}]}
+        self.assertEqual(fo.required_hook_gaps(covered), [])
+        self.assertEqual(fo.required_hook_gaps({**full, "PreToolUse": [
+            {"hooks": [{"command": "python3 require_ci_plan.py"}]}]}), [])  # no matcher = all
+
+    def test_the_guard_registered_under_the_wrong_event_is_a_gap(self) -> None:
+        hooks = self._hooks("python3 belt_wakeup.py")
+        hooks.pop("PreToolUse")
+        hooks["UserPromptSubmit"].append(
+            {"hooks": [{"command": "python3 require_ci_plan.py"}]})
+        self.assertTrue(any("not registered under PreToolUse" in g
+                            for g in fo.required_hook_gaps(hooks)))
+
+    def test_the_override_hook_is_required_alongside_the_guard(self) -> None:
+        """A guard whose deny message says 'type ALLOW EDIT' with nothing to record
+        the grant is un-liftable, and must not read as installed."""
+        hooks = self._hooks("python3 belt_wakeup.py")
+        hooks.pop("UserPromptSubmit")
+        gaps = fo.required_hook_gaps(hooks)
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("grant_ci_plan_override.py", gaps[0])
+
+    def test_every_gap_is_reported_together_not_the_first_only(self) -> None:
+        checkout = self.root / "manygaps"
+        (checkout / ".claude").mkdir(parents=True)
+        hooks = self._hooks("python3 belt_wakeup.py", matcher="startup|resume")
+        hooks.pop("PreToolUse")
+        hooks.pop("UserPromptSubmit")
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="m", prefix="M", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("belt_wakeup.py", check.detail)
+        self.assertIn("require_ci_plan.py", check.detail)
+        self.assertIn("grant_ci_plan_override.py", check.detail)
+
+    def test_an_older_belt_gap_is_not_shadowed_by_the_required_hook_gap(self) -> None:
+        checkout = self.root / "bothgaps"
+        (checkout / ".claude").mkdir(parents=True)
+        hooks = self._hooks("python3 belt_wakeup.py", matcher="startup|resume")
+        del hooks["PreToolUse"]
+        (checkout / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        check = fo.check_hooks(mf.Project(name="b", prefix="B", path=str(checkout)))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("belt_wakeup.py", check.detail)
 
     def test_the_shipped_startup_resume_matcher_is_reported_as_a_gap(self) -> None:
         """harmonic-forge#560, stated as the check that would have caught it.
@@ -511,7 +598,7 @@ class HookContentTests(unittest.TestCase):
         project = mf.Project(name="x", prefix="X", path=str(checkout))
         check = fo.check_hooks(project)
         self.assertEqual(check.status, fo.OK)
-        self.assertIn("0 PreToolUse matcher(s)", check.detail)
+        self.assertIn("1 PreToolUse matcher(s)", check.detail)
 
     def test_unresolvable_target_fails_the_check(self) -> None:
         checkout = self.root / "repo2"
@@ -674,7 +761,7 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="lane{lane}-{checkout}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=False))
 
         self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
@@ -869,7 +956,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         self.assertEqual(set(project.worktrees), {lane2, lane3})
         real_run = fo._run
@@ -893,7 +980,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         self.assertEqual(set(project.worktrees), {lane2, lane3})
         check = fo.check_worktrees(project)
@@ -908,7 +995,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         check = fo.check_worktrees(project)
         self.assertEqual(check.status, fo.OK, check.detail)
@@ -926,7 +1013,7 @@ class WorktreeCommitCurrencyTests(unittest.TestCase):
             protocol=mf.Protocol(
                 worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                 lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=True))
         self.assertNotIn(release, project.worktrees)
 
@@ -962,7 +1049,7 @@ class LaneTaskCheckTests(Base):
         renamed = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-            lane3_begin_task="lane3-begin", lane3_end_task="session-close",
+            lane3_begin_task="lane3-begin", lane3_end_task="session-close", gate_task="check",
             runs_lane3=True, needs_gate_adapter=False))
         self.assertEqual(fo.check_lane_tasks(renamed).status, fo.OK)
         # ...and the conventional name is then the one that is missing.
@@ -1010,7 +1097,7 @@ class CheckTaskRequiredForLane3Tests(Base):
         not_lane3 = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
             runs_lane3=False))
         self.assertEqual(fo.check_lane_tasks(not_lane3).status, fo.OK)
 
@@ -1032,7 +1119,7 @@ class GateAdapterDeclarationTests(Base):
     def _protocol(self, **kw):
         base = dict(worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                     lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                    lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                    lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                     runs_lane3=True)
         base.update(kw)
         return mf.Protocol(**base)
@@ -1144,7 +1231,7 @@ class CiCheckTests(Base):
     def _protocol_no_lane3(self):
         return mf.Protocol(worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
                            lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-                           lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+                           lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                            runs_lane3=False)
 
 
@@ -1257,7 +1344,7 @@ class LaneTaskGeneratorTests(Base):
         not_lane3 = self.project(repo, protocol=mf.Protocol(
             worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
             lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
-            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end",
+            lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
             runs_lane3=False))
         done = fo.apply_lane_tasks(not_lane3)
         self.assertTrue(all(c.status == fo.OK for c in done))
