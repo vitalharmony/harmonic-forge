@@ -353,6 +353,41 @@ class ViewTests(unittest.TestCase):
                 mf.require_onboarded_repo(value, path)
 
 
+class GateTaskTests(unittest.TestCase):
+    """harmonic-forge#918 AC6: an onboarded project must declare `gate_task`."""
+
+    def test_a_protocol_without_gate_task_is_refused(self) -> None:
+        body = PROTOCOL.replace('    gate_task = "check"\n', "")
+        path = write("""
+            [[project]]
+            name = "alpha"
+            prefix = "A"
+            repo = "o/alpha"
+            account = "acct"
+            path = "/tmp/alpha"
+            workspace = "vh"
+            onboarded = true
+        """ + body)
+        with self.assertRaises(mf.ManifestError) as caught:
+            mf.load(path)
+        self.assertIn("gate_task", str(caught.exception))
+
+    def test_an_empty_gate_task_is_refused(self) -> None:
+        body = PROTOCOL.replace('gate_task = "check"', 'gate_task = " "')
+        path = write("""
+            [[project]]
+            name = "alpha"
+            prefix = "A"
+            repo = "o/alpha"
+            account = "acct"
+            path = "/tmp/alpha"
+            workspace = "vh"
+            onboarded = true
+        """ + body)
+        with self.assertRaises(mf.ManifestError):
+            mf.load(path)
+
+
 class LiveManifestTests(unittest.TestCase):
     """Two properties that must hold for the shipped file. A fixture cannot
     catch either, because both are about this change not altering behavior."""

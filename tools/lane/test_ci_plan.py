@@ -102,6 +102,12 @@ class ConstraintsTests(unittest.TestCase):
         self._commit()
         self.assertEqual(ci_plan.constraints(self.root, ["src/utils.py"]), [])
 
+    def test_the_search_is_exact_word_not_substring(self):
+        write(self.root, "src/foo.py", "x = 1\n")
+        write(self.root, "tests/test_noise.py", "foobar = 1  # food, not the module\n")
+        self._commit()
+        self.assertEqual(ci_plan.constraints(self.root, ["src/foo.py"]), [])
+
     def test_a_dotted_module_path_matches_an_import(self):
         write(self.root, "pkg/services/widget_service.py", "x = 1\n")
         write(self.root, "tests/test_imp.py", "from services import widget_service\n")
