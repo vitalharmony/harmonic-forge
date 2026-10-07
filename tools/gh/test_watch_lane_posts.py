@@ -1517,6 +1517,15 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn(permalink, err.getvalue())
         self.assertIn(permalink, [l for l in lines if "PRIMED at first arm" in l][0])
 
+    def test_design_doc_recovery_reads_the_thread_and_never_advises_deleting_state(self):
+        """harmonic-forge#921 AC2: the DESIGN.md upgrade paragraph is the other text that
+        used to say 'replay by deleting that seen file'. Pin both halves so it cannot
+        regress past the code-side tests."""
+        text = " ".join(_SKILL_MD.read_text().split())
+        self.assertIn("read them from the thread", text)
+        self.assertNotIn("replay by deleting", text)
+        self.assertNotIn("deleting that seen file", text)
+
     # --- harmonic-forge#697 ------------------------------------------------
 
     def _new_process(self):
