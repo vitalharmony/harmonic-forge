@@ -307,7 +307,8 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         self.assertNotIn("### No-open-PR override", captured["body"])
 
 
-def _open_run(prs: list[dict], *, post_rc: int = 0, post_out: str = '{"number": 77}'):
+def _open_run(prs: list[dict], *, post_rc: int = 0, post_out: str = '{"number": 77}',
+              source_repo: str = "vitalharmony/hrse"):
     """harmonic-forge#942: route by argv shape. The lookup GET's argv is
     `repos/<r>/pulls?head=...`, so `"pulls" in argv` is False for it; the POST
     is told apart by its `-f` fields."""
@@ -317,7 +318,7 @@ def _open_run(prs: list[dict], *, post_rc: int = 0, post_out: str = '{"number": 
         argv = args[0] if args and isinstance(args[0], (list, tuple)) else args
         calls.append(tuple(argv))
         if "remote" in argv:
-            return _git_remote_result()
+            return _git_remote_result(source_repo)
         if "log" in argv:
             return subprocess.CompletedProcess(("git",), 0, "feat: the commit subject\n", "")
         if "-f" in argv:
@@ -350,6 +351,22 @@ class OpensTheMissingPr(unittest.TestCase):
         body = next(a for a in post if a.startswith("body="))[len("body="):]
         self.assertTrue(body.startswith("Related to vitalharmony/hrse#1234"))
         self.assertNotRegex(body.lower(), r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b")
+
+    def test_a_cross_repo_attestation_opens_and_names_the_pr_in_the_source_repo(self) -> None:
+        """The source checkout's repo (`cwd_repo`) and the issue's repo differ
+        on a cross-repo attestation: the PR is created in, and named by, the
+        source repo, while its body still points at the issue's repo
+        (harmonic-forge#942 sticky-wicket PATCH)."""
+        run, calls = _open_run([], source_repo="vitalharmony/harmonic-forge")
+        with mock.patch.object(L, "run", side_effect=run):
+            _, _, opened = L.require_open_pr(
+                "vitalharmony/hrse", "feat/x", open_missing=True, issue=1234, sha="abc")
+        (post,) = _posts(calls)
+        self.assertIn("repos/vitalharmony/harmonic-forge/pulls", post)
+        self.assertNotIn("repos/vitalharmony/hrse/pulls", post)
+        self.assertIn("PR vitalharmony/harmonic-forge#77", opened[0])
+        body = next(a for a in post if a.startswith("body="))[len("body="):]
+        self.assertTrue(body.startswith("Related to vitalharmony/hrse#1234"))
 
     def test_the_lookup_get_still_routes_to_the_pr_list(self) -> None:
         run, calls = _open_run([{"number": 5, "state": "OPEN"}])
