@@ -3,7 +3,7 @@
 A full `claude-` ID pins one release and goes stale at the next one; the
 advisory agents ran `claude-opus-5` after `claude-opus-5-5` shipped. An alias
 (`opus` …) resolves to the latest model of that family. A missing `model:`
-falls back to Sonnet, so it fails here too.
+falls back to Sonnet, so it fails here too, as does any alias below the high tier.
 """
 
 import unittest
@@ -11,7 +11,10 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 AGENTS_DIR = _ROOT / "agents"
-ALLOWED = {"opus", "sonnet", "haiku", "fable", "inherit"}
+# The high-tier families (`model_tier_gate.CLAUDE_HIGH_FAMILIES`): an advisory
+# agent on `sonnet`, `haiku` or `inherit` (the session model, Sonnet in a lane)
+# would review at a lower tier than it is meant to.
+ALLOWED = {"opus", "fable"}
 
 
 def _model_of(path: Path) -> str | None:
