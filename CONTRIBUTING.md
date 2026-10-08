@@ -13,7 +13,7 @@ Open an issue with one of the forms in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE
 ## Send a change
 
 1. Fork the repo and create a branch.
-2. Run `git config core.hooksPath .githooks` once in your clone (the hooks keep direct commits to `main` out and link the platform rules).
+2. Run `git config core.hooksPath .githooks` once in your clone (the hooks keep direct commits to `main` out; they also link the platform rules for a maintainer whose clone sits at `~/harmonic-forge`, and do nothing extra elsewhere).
 3. Make your change, then run the check CI runs:
 
    ```bash
