@@ -1336,6 +1336,15 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
         argv = self.argv_file.read_text().splitlines()
         self.assertEqual(argv[argv.index("-m") + 1], "gpt-6-sol", result.stderr)
 
+    def test_codex_verify_pins_the_reasoning_effort(self) -> None:
+        """harmonic-forge#939 preclose: `--ignore-user-config` drops the user's
+        effort, and gpt-6.1-sol's catalog default is `low` where gpt-6-sol's
+        was `medium`, so the verify run pins `medium` itself."""
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "verify", "--cwd", self.tmp.name)
+        pairs = [argv[i + 1] for i, tok in enumerate(argv[:-1]) if tok == "-c"]
+        self.assertIn('model_reasoning_effort="medium"', pairs)
+
     def test_codex_caller_never_resolves_a_codex_model(self) -> None:
         """A Codex caller is reviewed by Claude, so no `debug models` runs."""
         self._codex_stub("exit 0")

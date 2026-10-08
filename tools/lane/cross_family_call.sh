@@ -435,7 +435,12 @@ invoke_codex() {
   elif [ "$posture" = verify ]; then
     cd_args=(-C "$cwd" --skip-git-repo-check)
     model_args=(--ignore-user-config -m "$VERIFY_MODEL")
-    config_args=(-c "projects.\"$cwd\".trust_level=\"trusted\"")
+    # harmonic-forge#939 preclose: the effort is pinned, not the model's
+    # default. `--ignore-user-config` drops the user's `model_reasoning_effort`,
+    # and the catalog default varies by model (gpt-6.1-sol `low`, gpt-6-sol
+    # `medium`), so following the latest Sol must not silently lower the
+    # review's reasoning depth.
+    config_args=(-c "projects.\"$cwd\".trust_level=\"trusted\"" -c "model_reasoning_effort=\"medium\"")
     # harmonic-forge#757: hosted web search, so the reviewer can check web
     # claims. `--search` is a TOP-LEVEL flag: it must precede `exec`
     # (`codex exec --search` exits 2, "unexpected argument"). The sandbox
