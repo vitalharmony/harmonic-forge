@@ -785,6 +785,29 @@ class CrossFamilyReceiptTests(ScratchRepo):
         with self.assertRaises(SystemExit):
             preclose.require_recorded_envelope(str(path))
 
+    def _claude_native(self, init_model: str) -> list[dict]:
+        return [
+            {"type": "system", "subtype": "init", "tools": ["Glob", "Grep", "Read"], "mcp_servers": [], "model": init_model},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read-1", "name": "Read"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read-1"}]}},
+            {"type": "result", "subtype": "success", "result": "{}"},
+        ]
+
+    def test_claude_verify_accepts_any_high_tier_reviewer(self) -> None:
+        """harmonic-forge#939: the run passes `--model opus`, so the check takes
+        any model the tier gate treats as high (Opus or Fable), not one pin."""
+        for model in ("claude-opus-5-5", "claude-opus-6", "claude-fable-5-1"):
+            with self.subTest(model=model):
+                self.assertTrue(preclose._claude_verify_trace(self._claude_native(model), model))
+
+    def test_claude_verify_rejects_a_lower_tier_reviewer(self) -> None:
+        self.assertFalse(preclose._claude_verify_trace(
+            self._claude_native("claude-sonnet-5-5"), "claude-sonnet-5-5"))
+
+    def test_claude_verify_rejects_verify_model_disagreeing_with_its_trace(self) -> None:
+        self.assertFalse(preclose._claude_verify_trace(
+            self._claude_native("claude-opus-5-5"), "claude-opus-6"))
+
     def test_same_family_envelope_is_refused(self) -> None:
         path = self.repo / "same-family-envelope.json"
         path.write_text(json.dumps({"status": "ok", "family": "codex", "caller_family": "codex",

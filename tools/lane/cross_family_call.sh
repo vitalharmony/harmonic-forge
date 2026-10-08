@@ -169,12 +169,24 @@ for policy_file in "$readonly_policy" "$probe_policy"; do
   fi
 done
 
-# Pinned here, not inherited from `~/.codex/config.toml` -- `verify` passes
+# Set here, not inherited from `~/.codex/config.toml` -- `verify` passes
 # `--ignore-user-config`, so without an explicit `-m` the reviewer would fall
-# back to a packaged default rather than the model this posture was validated
-# against. Overridable for a deliberate experiment; never left to ambient
-# config (harmonic-forge#448). Re-pinned to gpt-6-sol by harmonic-forge#848.
-VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-gpt-6-sol}"
+# back to a packaged default. The latest Sol, by operator decision 2026-10-07
+# (harmonic-forge#939), replacing the repeatability pin of #448/#848: resolved
+# through tools/models/resolve_model.py, falling back to gpt-6-sol when it
+# fails or prints nothing. Resolved only when the Codex arm can run (a verify
+# posture whose caller is not codex), and at top level: invoke_codex runs in a
+# backgrounded subshell, so a value set there never reaches the envelope.
+# CROSS_FAMILY_VERIFY_MODEL is for an operator-directed experiment only.
+if [ -n "${CROSS_FAMILY_VERIFY_MODEL:-}" ]; then
+  VERIFY_MODEL="$CROSS_FAMILY_VERIFY_MODEL"
+elif [ "$posture" = verify ] && [ "$caller" != codex ]; then
+  VERIFY_MODEL="$(python3 "$script_dir/../models/resolve_model.py" sol 2>/dev/null)" \
+    || VERIFY_MODEL=gpt-6-sol
+  [ -n "$VERIFY_MODEL" ] || VERIFY_MODEL=gpt-6-sol
+else
+  VERIFY_MODEL=gpt-6-sol
+fi
 
 # harmonic-forge#482. The previous pin, `gemini-2.5-pro`, was hardcoded at the
 # call site since harmonic-forge#366 and now fails every Gemini invocation:
@@ -189,8 +201,9 @@ VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-gpt-6-sol}"
 # `gemini-2.5-flash` (the issue's own suggestion) and `gemini-3.1-pro-preview`
 # — a *preview*, which is a deprecation notice with extra steps.
 #
-# The determinism argument for a concrete pin is real and it is why
-# `VERIFY_MODEL` above is pinned. It does not apply here: `verify` is
+# The determinism argument for a concrete pin is real, and it is why
+# `VERIFY_MODEL` above was pinned until the operator chose the latest Sol
+# (harmonic-forge#939). It does not apply here: `verify` is
 # Codex-only and reproducible by design, while `read-only`/`probe` are
 # ADVISORY — they surface findings a human reads, and nothing compares two
 # runs for equality. Capability matters more than repeatability for an
@@ -340,7 +353,7 @@ invoke_claude() {
     if [ "$posture" = verify ]; then
       claude -p \
         --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
-        --model "claude-opus-5-5" \
+        --model opus \
         --no-session-persistence --output-format stream-json --verbose <"$prompt_file"
     else
       claude -p --output-format json <"$prompt_file"
@@ -758,9 +771,14 @@ for family in "${targets[@]}"; do
   envelope_err="$(mktemp -p "$scratch")"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
-           --arg verify_model "claude-opus-5-5" --arg codex_model "$VERIFY_MODEL" \
+           --arg codex_model "$VERIFY_MODEL" \
            '. + {caller_family:$caller, target_family:$target} +
-            (if $target == "claude" and .posture == "verify" then {verify_model:$verify_model}
+            (if $target == "claude" and .posture == "verify" then
+               # harmonic-forge#939: the model the run itself reports, since
+               # --model opus is an alias.
+               {verify_model: ([(.native // [])[]? | objects
+                                | select(.type == "system" and .subtype == "init")
+                                | .model][0])}
              elif $target == "codex" and .posture == "verify" then {verify_model:$codex_model}
              else {} end)' \
        >"$envelope_out" 2>"$envelope_err"; then
