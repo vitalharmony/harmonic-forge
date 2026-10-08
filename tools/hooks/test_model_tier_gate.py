@@ -423,8 +423,13 @@ class ModelTierFamilies(unittest.TestCase):
     def test_settings_fallback_can_deny(self):
         with patch.object(m.session_model, "transcript_model", return_value=None), \
              patch.object(m.session_model, "recorded_model", return_value=None), \
-             patch.object(m.session_model, "settings_model", return_value="sonnet"):
+             patch.object(m.session_model, "launch_model", return_value=None), \
+             patch.object(m.session_model, "settings_model", return_value="sonnet") as settings:
             self.assertFalse(m.required_tier_met({"transcript_path": "/nope"}, True))
+            # The deny must come from the settings fallback. An unpatched launch_model that finds
+            # this session's own `--model` answers first (harmonic-forge#927) and settings_model is
+            # never consulted, so asserting only the result cannot see the missing patch.
+            settings.assert_called()
 
     def test_codex_sol_satisfies_deep_unchanged(self):
         self.assertTrue(m.required_tier_met({"model": "gpt-5.6-sol"}, True))

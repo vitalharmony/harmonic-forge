@@ -46,7 +46,7 @@ _MANIFEST.write_text("\n".join(
 
 def _run(tool_name, tool_input, lane="3", raw=None, session_id=None, arming_dir=None,
          event=None, tool_response=None, cwd=_VH):
-    env = {k: v for k, v in os.environ.items() if k != "LANE"}
+    env = {k: v for k, v in os.environ.items() if k not in ("LANE", "CLAUDE_PID")}
     env["FORGE_PROJECTS_MANIFEST"] = str(_MANIFEST)
     if lane is not None:
         env["LANE"] = lane
@@ -398,11 +398,12 @@ class StaleArmingRecordsDoNotLockTheSessionOut(unittest.TestCase):
         os.environ[guard.ARMING_DIR_ENV] = self.arming.name
         self.addCleanup(os.environ.pop, guard.ARMING_DIR_ENV, None)
 
-    def _fake_process(self, pid, cmdline):
+    def _fake_process(self, pid, cmdline, ppid=1, comm=None):
         entry = Path(self.proc.name) / str(pid)
         entry.mkdir()
         (entry / "cmdline").write_bytes(b"\0".join(part.encode() for part in cmdline))
-        (entry / "status").write_text("PPid:\t1\n")
+        (entry / "comm").write_text((comm or os.path.basename(cmdline[0])) + "\n")
+        (entry / "status").write_text(f"PPid:\t{ppid}\n")
 
     def _write_record(self, **fields):
         self.marker.write_text(json.dumps(dict(guard.LOOP_CRON, **fields)), encoding="utf-8")
@@ -448,12 +449,50 @@ class StaleArmingRecordsDoNotLockTheSessionOut(unittest.TestCase):
 
     def test_the_owner_pid_walk_finds_the_nearest_claude_ancestor(self):
         self._fake_process(11, ["claude", "--permission-mode", "auto"])
-        entry = Path(self.proc.name) / "12"
-        entry.mkdir()
-        (entry / "cmdline").write_bytes(b"python3\0hook.py")
-        (entry / "status").write_text("PPid:\t11\n")
-        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12), 11)
-        self.assertIsNone(guard.owner_claude_pid(self.proc.name, pid=99))
+        self._fake_process(12, ["python3", "hook.py"], ppid=11)
+        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12, env={}), 11)
+        self.assertIsNone(guard.owner_claude_pid(self.proc.name, pid=99, env={}))
+
+    # harmonic-forge#927: the owner is the process named `claude`, never one whose arguments
+    # merely contain the word (a checkout under /tmp/claude-.../, the Bash tool's wrapper shell).
+    def test_a_hook_running_from_a_path_containing_claude_is_not_the_owner(self):
+        self._fake_process(11, ["claude", "--model", "opus"])
+        self._fake_process(12, ["python3", "/tmp/claude-1000/x/enforce_belt_arming.py"],
+                           ppid=11, comm="python3")
+        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12, env={}), 11)
+
+    def test_the_bash_tool_wrapper_shell_is_not_the_owner(self):
+        self._fake_process(11, ["claude", "--model", "opus"])
+        self._fake_process(12, ["/bin/bash", "-c", "source /home/u/.claude/shell-snapshots/s.sh"],
+                           ppid=11, comm="bash")
+        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12, env={}), 11)
+
+    def test_claude_pid_is_used_when_its_comm_is_claude(self):
+        self._fake_process(30, ["claude"])
+        self._fake_process(12, ["python3", "hook.py"], ppid=1, comm="python3")
+        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12, env={"CLAUDE_PID": "30"}), 30)
+        self.assertIsNone(guard.owner_claude_pid(self.proc.name, pid=12, env={}))
+
+    def test_claude_pid_naming_another_process_falls_back_to_the_walk(self):
+        self._fake_process(11, ["claude", "--model", "opus"])
+        self._fake_process(31, ["node", "server.js"])
+        self._fake_process(12, ["python3", "hook.py"], ppid=11, comm="python3")
+        self.assertEqual(guard.owner_claude_pid(self.proc.name, pid=12, env={"CLAUDE_PID": "31"}), 11)
+
+    def test_a_record_whose_owner_is_the_wrapper_shell_is_stale(self):
+        now = 1_000_000.0
+        self._fake_process(4243, ["/bin/bash", "-c", "source /home/u/.claude/shell-snapshots/s.sh"],
+                           comm="bash")
+        self._write_record(created=now, owner_pid=4243, id="cron-x")
+        self.assertIsNone(self._decide(now))
+
+    def test_a_record_with_an_id_and_no_owner_keeps_denying_and_names_the_marker(self):
+        now = 1_000_000.0
+        self._write_record(created=now, owner_pid=None, id="cron-x")
+        for when in (now, now + guard.ID_LESS_STALE_SECONDS + 1):
+            reason = self._decide(when) or ""
+            self.assertIn("cron-x", reason)
+            self.assertIn(str(self.marker), reason)
 
 
 class PostToolUseFailsOpen(unittest.TestCase):
