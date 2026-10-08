@@ -223,6 +223,8 @@ mise run commit                       # stage + commit
 mise run transaction-log              # recent commits, rendered from git
 ```
 
+Contributing from outside? Start with [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 macOS and Linux. Symlinks work natively on both; Windows needs WSL.
 
 ---

@@ -423,6 +423,7 @@ class ModelTierFamilies(unittest.TestCase):
     def test_settings_fallback_can_deny(self):
         with patch.object(m.session_model, "transcript_model", return_value=None), \
              patch.object(m.session_model, "recorded_model", return_value=None), \
+             patch.object(m.session_model, "launch_model", return_value=None), \
              patch.object(m.session_model, "settings_model", return_value="sonnet"):
             self.assertFalse(m.required_tier_met({"transcript_path": "/nope"}, True))
 

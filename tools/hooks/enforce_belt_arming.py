@@ -31,14 +31,20 @@ WHAT IS DENIED (in a LANE=1/2/3 session)
 
 THE ARMING RECORD (harmonic-forge#675)
 --------------------------------------
-PreToolUse writes the record with `created` and `owner_pid` (the nearest
-ancestor `claude` process). PostToolUse `CronCreate` adds the job `id`, and
+PreToolUse writes the record with `created` and `owner_pid` (the session's
+`claude` process: `CLAUDE_PID` when its `/proc/<pid>/comm` is `claude`, else the
+nearest ancestor whose `comm` is -- the kernel's process name, so a checkout path
+or a wrapper shell that merely mentions "claude" is never mistaken for it). PostToolUse `CronCreate` adds the job `id`, and
 PostToolUse `CronDelete` of that same id removes the record, so a deleted
 suspenders job can be re-armed. Deleting any other cron leaves it. A record that
 cannot correspond to a live job is stale and does not block a re-arm: one with no
 `id` older than `ID_LESS_STALE_SECONDS` (the create was denied or failed after
-PreToolUse wrote it), or one whose `owner_pid` is gone or no longer `claude` (the
-session was resumed in a new process, and session-only crons die with the old one).
+PreToolUse wrote it), or one whose `owner_pid` is gone or whose `comm` is no longer
+`claude` (the session was resumed in a new process, and session-only crons die with
+the old one). A record with NO owner (no `claude` process was found, such as a
+node-based install whose `comm` is `node`) keeps the mechanics unchanged: with no `id`
+it expires after `ID_LESS_STALE_SECONDS`; with an `id` it never goes stale, so a re-arm
+is denied with the message naming the marker to remove (harmonic-forge#927).
 - `Monitor` whose command *executes* `watch_lane_posts.py` -- as the program, or
   as the script argument to `python`/`python3` -- and is not, after whitespace
   normalization, the lane's canonical command (`~`, `$HOME`, `${HOME}` and the
@@ -450,23 +456,31 @@ def _is_canonical_cron(tool_input: dict[str, Any]) -> bool:
             and tool_input.get("recurring", True) is True)
 
 
-def _cmdline(proc_root: str, pid: int) -> str | None:
+def _comm(proc_root: str, pid: int) -> str | None:
+    """The kernel's name for the process (`/proc/<pid>/comm`), None if it is gone."""
     try:
-        with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
-            return " ".join(a.decode(errors="replace") for a in fh.read().split(b"\0") if a)
+        with open(f"{proc_root}/{pid}/comm") as fh:
+            return fh.read().strip()
     except OSError:
         return None
 
 
-def owner_claude_pid(proc_root: str = "/proc", pid: int | None = None) -> int | None:
-    """The nearest ancestor process whose cmdline contains `claude`, walking
-    `/proc/<pid>/status` `PPid:` like `session_model.launch_model`."""
+def owner_claude_pid(proc_root: str = "/proc", pid: int | None = None,
+                     env: Any = os.environ) -> int | None:
+    """The session's Claude Code process, identified by `/proc/<pid>/comm` == `claude`
+    (harmonic-forge#927): `CLAUDE_PID` when set and its `comm` is `claude` (the recycled-pid
+    guard), else the nearest ancestor whose `comm` is, walking `/proc/<pid>/status` `PPid:`
+    like `session_model.launch_model`. A text match on the command line took any path or
+    wrapper that contained "claude" for the CLI."""
+    candidate = str(env.get("CLAUDE_PID", ""))
+    if candidate.isdigit() and _comm(proc_root, int(candidate)) == "claude":
+        return int(candidate)
     current = os.getpid() if pid is None else pid
     for _ in range(12):
-        cmdline = _cmdline(proc_root, current)
-        if cmdline is None:
+        comm = _comm(proc_root, current)
+        if comm is None:
             return None
-        if "claude" in cmdline:
+        if comm == "claude":
             return current
         try:
             with open(f"{proc_root}/{current}/status") as fh:
@@ -506,8 +520,7 @@ def _record_is_stale(marker: Path, record: dict[str, Any], now: float, proc_root
         return True
     owner = record.get("owner_pid")
     if isinstance(owner, int):
-        cmdline = _cmdline(proc_root, owner)
-        if cmdline is None or "claude" not in cmdline:
+        if _comm(proc_root, owner) != "claude":
             return True
     return False
 
