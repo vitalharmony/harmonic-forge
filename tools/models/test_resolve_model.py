@@ -67,7 +67,11 @@ class CodexSelectionTests(_Base):
     def test_list_runs_the_binary_once(self):
         code, out, _ = self.cli("--list")
         self.assertEqual(code, 0)
-        self.assertEqual(self.run_mock.call_count, 1)
+        # The full call, timeout included: a mock raising TimeoutExpired
+        # cannot tell whether the real call carries the timeout at all.
+        self.run_mock.assert_called_once_with(
+            ["codex", "debug", "models"], capture_output=True, text=True,
+            timeout=rm.CODEX_TIMEOUT_SECONDS)
         self.assertIn("sol\tgpt-6.1-sol", out.splitlines())
         self.assertIn("astra\t-", out.splitlines())
 
