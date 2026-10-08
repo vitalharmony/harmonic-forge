@@ -1,7 +1,7 @@
 ---
 name: ai-review-queue-synthesis
 description: Use when the operator asks to "run the review queue", "synthesize the (R) briefs", or otherwise batch-process the video-analysis briefs sitting in a Drive review-queue folder. Reads every unprocessed brief together, deduplicates within and across batches, verifies every repo-state claim live against the actual checkouts and the live GitHub backlog, and produces one prioritized synthesis doc that ends in a ready-to-file GitHub plan (parent epic, proposed children, labels, estimates, relative priority). Advisory on GitHub — it surveys read-only and proposes; it never creates, edits, closes, or comments on an issue. Do NOT use for a single brief, for filing issues, or for implementing anything a brief recommends.
-model: claude-opus-5
+model: opus
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch, mcp__workspace-vh__search_drive_files, mcp__workspace-vh__list_drive_items, mcp__workspace-vh__get_doc_as_markdown, mcp__workspace-vh__import_to_google_doc, mcp__workspace-vh__update_drive_file
 ---
 
