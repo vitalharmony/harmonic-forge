@@ -18,9 +18,16 @@ Providers:
   is the newest model the LOCAL `codex` binary knows about: offline, the
   command silently serves its bundled catalog, which can be older.
 
-Usage with the operator's Sol profile (the profile file is not edited):
+Usage with the operator's Sol profile (the profile file is not edited). Bind
+the result first: inside `-m "$(...)"` an exit 1 is discarded and codex gets
+an empty model, silently running its default.
 
-    codex exec -p sol -m "$(python3 ~/harmonic-forge/tools/models/resolve_model.py sol)" ...
+    m=$(python3 ~/harmonic-forge/tools/models/resolve_model.py sol) && codex exec -p sol -m "$m" ...
+
+`--list` with a hung `codex` binary: the lister's memo does not cache a
+failure, so each codex family waits out its own 30 s timeout (about 120 s for
+four). Accepted (operator, harmonic-forge#938): `--list` is for people, and a
+fast failure costs nothing extra.
 """
 
 from __future__ import annotations

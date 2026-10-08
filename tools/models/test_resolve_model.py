@@ -11,10 +11,11 @@ import resolve_model as rm
 
 # Today's catalog shape (2026-10-07), `upgrade` written explicitly as null,
 # plus two priority-0 Sol entries the visibility and upgrade filters must skip.
+# The Sol rows are NOT in priority order, so taking the first match fails.
 CATALOG = {"models": [
+    {"slug": "gpt-5.6-sol", "visibility": "list", "priority": 5, "upgrade": None},
     {"slug": "gpt-6.1-sol", "visibility": "list", "priority": 1, "upgrade": None},
     {"slug": "gpt-6-sol", "visibility": "list", "priority": 3, "upgrade": None},
-    {"slug": "gpt-5.6-sol", "visibility": "list", "priority": 5, "upgrade": None},
     {"slug": "gpt-6-luna", "visibility": "list", "priority": 4, "upgrade": None},
     {"slug": "gpt-5.6-luna", "visibility": "list", "priority": 9, "upgrade": None},
     {"slug": "gpt-5.6-terra", "visibility": "list", "priority": 7, "upgrade": None},
