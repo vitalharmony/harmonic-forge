@@ -198,6 +198,9 @@ the call gets no retry budget of its own and does not extend it.
 An open-grammar recognizer that does not satisfy check 7 is always the
 REFORGE case, not a list of additional spellings to patch.
 
+A finding whose fix adds a mechanism beyond the issue's literal ask is not a
+named change: return it as a question for the operator (R-0380).
+
 ## Operating rules
 
 - Verify against reality; any external claim needs a live, dated source.

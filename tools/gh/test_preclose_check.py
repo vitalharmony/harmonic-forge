@@ -224,6 +224,41 @@ class PanelSizingTests(unittest.TestCase):
     def test_lenses_are_distinct(self) -> None:
         self.assertEqual(len(set(preclose.LENSES)), len(preclose.LENSES))
 
+    # R-0382 (harmonic-forge#931): a small Tier fast diff to a launcher entrypoint gets one refuter.
+    def _sized(self, files, tier="fast", lines=5, dirty=False):
+        return preclose.panel_size(preclose.blast_radius(files), tier, files=files,
+                                   lines=lines, dirty=dirty)
+
+    def test_a_small_fast_launcher_entrypoint_diff_gets_one_refuter_and_says_why(self) -> None:
+        size, why = self._sized(["tools/lane/lane1"], lines=99)
+        self.assertEqual(size, 1)
+        self.assertEqual(why, "small fast diff (99 lines), no hook/gate/live-data path: 1 refuter")
+
+    def test_the_carve_out_stops_at_100_lines(self) -> None:
+        self.assertEqual(self._sized(["tools/lane/lane1"], lines=100)[0], len(preclose.LENSES))
+
+    def test_every_other_high_blast_path_keeps_the_full_panel_when_small(self) -> None:
+        for path in ("tools/lane/install_lane_hooks.py", "tools/hooks/x.py", "agents/a.md",
+                     ".claude/settings.json", ".github/workflows/ci.yml", "mise.toml",
+                     ".githooks/pre-commit", "scripts/gate_x.py", "scripts/l1_post.py",
+                     "backend/app/x.py", "scripts/migrate_x.py"):
+            self.assertEqual(self._sized([path], lines=5)[0], len(preclose.LENSES), path)
+
+    def test_a_mixed_diff_keeps_the_full_panel(self) -> None:
+        self.assertEqual(self._sized(["tools/lane/lane1", "tools/hooks/x.py"])[0], len(preclose.LENSES))
+
+    def test_no_files_an_uncounted_diff_or_a_dirty_tree_keep_the_full_panel(self) -> None:
+        reasons = ["tools/hooks/x.py: hook implementations"]
+        self.assertEqual(preclose.panel_size(reasons, "fast", files=(), lines=10)[0], len(preclose.LENSES))
+        self.assertEqual(self._sized(["tools/lane/lane1"], lines=None)[0], len(preclose.LENSES))
+        self.assertEqual(self._sized(["tools/lane/lane1"], dirty=True)[0], len(preclose.LENSES))
+
+    def test_standard_and_deep_are_unchanged_by_the_carve_out(self) -> None:
+        self.assertEqual(self._sized(["tools/lane/lane1"], tier="standard")[0], len(preclose.LENSES))
+        self.assertEqual(self._sized(["tools/lane/lane1"], tier="deep")[0], len(preclose.LENSES))
+        self.assertEqual(preclose.panel_size([], "standard", files=["docs/a.md"], lines=5)[0], 3)
+        self.assertEqual(preclose.panel_size([], "deep", files=["docs/a.md"], lines=5)[0], 5)
+
 
 class RepoNormalizationTests(unittest.TestCase):
     def test_spellings_collapse_to_one_key(self) -> None:
@@ -278,6 +313,18 @@ class DiffReadingTests(ScratchRepo):
         with self.assertRaises(SystemExit) as caught:
             self.plan(tier="fast")
         self.assertIn("uncommitted", str(caught.exception))
+
+    def test_plan_sizes_a_small_fast_launcher_diff_at_one_refuter(self) -> None:
+        self.commit("tools/lane/lane1", "x\n" * 10)
+        self.assertIn("refuters: 1 — small fast diff (10 lines)", self.plan(tier="fast"))
+
+    def test_a_binary_entry_cannot_be_counted_so_it_never_shrinks_the_panel(self) -> None:
+        target = self.repo / "tools" / "lane"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "x.bin").write_bytes(b"\x00\x01\x02")
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-qm", "binary", cwd=self.repo)
+        self.assertIsNone(preclose.changed_lines("base", "HEAD"))
 
     def test_allow_dirty_proceeds_on_the_committed_diff(self) -> None:
         self.commit("scripts/ordinary.py")

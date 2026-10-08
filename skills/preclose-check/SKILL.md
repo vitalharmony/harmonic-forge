@@ -69,7 +69,9 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    Blast radius leads because every incident in this class so far was a small
    diff — a hook that locked out Bash, `l1_post.py`'s worktree-overlap check,
    a stale `harmonic-forge` checkout. Sizing by diff size would have
-   under-reviewed all three.
+   under-reviewed all three. R-0382's carve-out is therefore narrow: it covers
+   only launcher-entrypoint diffs under 100 lines at Tier `fast`, which none of
+   those three incidents were.
 
 3. **Spawn one `preclose-inspection` agent per lens — fresh context, never a
    fork.** A fork inherits the reasoning that produced the defect and anchors
@@ -170,7 +172,10 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    difference.
 
 7. **Act on the survivors**, then hand back to the operator. State plainly
-   that the check ran, what it found, and that closure is theirs to call.
+   that the check ran, what it found, and that closure is theirs to call. A
+   survivor whose fix needs a new mechanism (a new function, file, state, trap
+   or external call) is resolved by deleting the feature it attacks or by
+   asking the operator, never by patching the mechanism in (R-0381).
 
 ## Two passes, then sticky-wicket or the operator
 
@@ -228,6 +233,7 @@ new cost evidence.**
 
 Judgment still applies on the blast-radius half: `tools/gh/preclose_check.py`
 computes the panel from the diff, and anything touching hooks, hook wiring,
-lane launchers, CI, or live data escalates to the full panel regardless of
-Tier. If you are unsure whether a change qualifies, run the planner — it is
+CI, live data, or a lane launcher outside the carve-out in R-0382 (a Tier
+`fast` diff under 100 lines to a launcher entrypoint) escalates to the full
+panel regardless of Tier. If you are unsure whether a change qualifies, run the planner — it is
 cheap and only the refuters cost anything.

@@ -2519,3 +2519,35 @@ anchor = "Plan-First Implementation"
 statement = "Every Lane 1 handoff carries a Scenario Trace: the issue's own example walked step by step from the user-visible entry to the exact code the handoff changes, each hop a file:line marked verified-live with how it was verified, and a command the handoff tells a lane to run appears with its actual output from a run by Lane 1; l1_post.py refuses a handoff whose trace is absent, a placeholder, without a file:line, or without verified-live, and whether the trace reaches the changed code is agents/pitch-inspection.md check 8's (harmonic-forge#920)."
 text_sha = "e6ed15dac32c3e53"
 hooks = []
+
+[[rule]]
+id = "R-0380"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "A Tooling Exception handoff names the simplest design that meets the issue's literal ask, any mechanism beyond it needs the operator's one-line approval before the handoff posts, and a pitch finding whose fix adds such a mechanism is returned to the operator as a question (extends R-0048, R-0050, R-0154 to design)."
+text_sha = "398b74b7f025ded7"
+hooks = []
+
+[[rule]]
+id = "R-0381"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "A preclose survivor whose fix needs a new mechanism (function, file, state, trap or external call) is resolved by deleting the feature it attacks or by asking the operator, never by patching it in."
+text_sha = "e20988dc0640c5aa"
+hooks = []
+
+[[rule]]
+id = "R-0382"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "A Tier fast diff under 100 changed lines gets one refuter and one pass unless it touches a hook or gate itself, application code or a migration; a cross-repo change or one that mutates git state or live data is not planned as fast."
+text_sha = "5a262f302514c33b"
+hooks = []
+
+[[rule]]
+id = "R-0383"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "If a part of the design can be verified only in a live session Lane 1 cannot run, ship it without that part and write the fallback into the issue as an acceptance branch the operator's live check decides."
+text_sha = "703376d91bb11c73"
+hooks = []
