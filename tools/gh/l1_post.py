@@ -20,7 +20,6 @@ from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
-import manifest  # noqa: E402
 from manifest import ManifestError, require_onboarded_repo  # noqa: E402
 from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
 
@@ -372,27 +371,15 @@ def _describe_repo(cwd: Path | None) -> str:
     return f"cwd {actual_cwd} (no git remote 'origin' found there)"
 
 
-def resolve_sha(value: str, cwd: Path | None = None, hint: str | None = None) -> str:
+def resolve_sha(value: str, cwd: Path | None = None) -> str:
     result = run("git", "rev-parse", "--verify", f"{value}^{{commit}}", cwd=cwd)
     if result.returncode:
         fail(
             f"cannot resolve --sha {value!r} in {_describe_repo(cwd)}: "
-            f"{result.stderr.strip()}" + (f" -- {hint}" if hint else "")
+            f"{result.stderr.strip()}"
         )
     return result.stdout.strip()
 
-
-def _wrong_checkout_hint(repo: str) -> str | None:
-    """harmonic-forge#942 rework: when `--repo` is not this checkout's repo, say
-    where to run instead. A message only -- nothing resolves or runs elsewhere.
-    None when the repos match or this checkout's repo cannot be read."""
-    here = _cwd_repo_from_git(None)
-    if here is None or here.lower() == repo.lower():
-        return None
-    checkout = next((str(p.checkout) for p in manifest.load()
-                     if (p.repo or "").lower() == repo.lower() and p.checkout), None)
-    return (f"--repo {repo} is not this checkout's repo ({here}); run l1-post from "
-            f"{checkout or 'that repo' + chr(39) + 's checkout'}")
 
 
 def heading_content(body: str, heading: str) -> str:
@@ -1487,7 +1474,7 @@ def require_open_pr(
     if open_missing and ack_no_pr_required is None:
         number = _open_pr(cwd_repo, repo, branch, issue, sha, cwd)
         return ([f"pr-opened #{number}"], [],
-                [f"- PR #{number} opened by `l1-post` for `{branch}` against `main` "
+                [f"- PR {cwd_repo}#{number} opened by `l1-post` for `{branch}` against `main` "
                  "(no PR was open; harmonic-forge#942)."])
     message = (
         f"no open PR exists for {branch!r} against main -- CI will never run "
@@ -2192,7 +2179,7 @@ def main() -> None:
     # first `gh` call, so a client account's repo is reachable and a wrong
     # login refuses before anything is written.
     apply_project_identity(repo)
-    sha = resolve_sha(args.sha, hint=_wrong_checkout_hint(repo))
+    sha = resolve_sha(args.sha)
 
     if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic

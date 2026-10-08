@@ -78,7 +78,7 @@ class IdentityAppliedInMainTests(unittest.TestCase):
         body = ast.unparse(main)
         resolve, apply_, sha = (body.index("resolve_repo(args.repo)"),
                                 body.index("apply_project_identity(repo)"),
-                                body.index("resolve_sha(args.sha"))
+                                body.index("resolve_sha(args.sha)"))
         self.assertLess(resolve, apply_)
         self.assertLess(apply_, sha)
 

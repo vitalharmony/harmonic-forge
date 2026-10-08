@@ -341,7 +341,7 @@ class OpensTheMissingPr(unittest.TestCase):
                 "vitalharmony/hrse", "feat/1234-thing", open_missing=True, issue=1234, sha="abc")
         self.assertEqual(checks, ["pr-opened #77"])
         self.assertEqual(warnings, [])
-        self.assertTrue(opened and "PR #77" in opened[0])
+        self.assertTrue(opened and "PR vitalharmony/hrse#77" in opened[0])
         (post,) = _posts(calls)
         self.assertIn("repos/vitalharmony/hrse/pulls", post)
         self.assertIn("head=feat/1234-thing", post)
@@ -372,6 +372,17 @@ class OpensTheMissingPr(unittest.TestCase):
         with mock.patch.object(L, "run", side_effect=run):
             with self.assertRaises(SystemExit):
                 L.require_open_pr("vitalharmony/hrse", "feat/x")
+        self.assertEqual(_posts(calls), [])
+
+    def test_an_acknowledged_override_opens_nothing(self) -> None:
+        """`--ack-no-pr-required` keeps its meaning: no PR, recorded override."""
+        run, calls = _open_run([])
+        with mock.patch.object(L, "run", side_effect=run):
+            checks, warnings, opened = L.require_open_pr(
+                "vitalharmony/hrse", "feat/x", ack_no_pr_required="doc-only",
+                open_missing=True, issue=1, sha="abc")
+        self.assertEqual((checks, opened), (["pr-open (acknowledged override)"], []))
+        self.assertTrue(warnings)
         self.assertEqual(_posts(calls), [])
 
     def test_a_failed_create_fails_the_post(self) -> None:
@@ -415,32 +426,6 @@ class OpensTheMissingPr(unittest.TestCase):
              L.write_receipt, L.require_open_pr, L.pr_issue_marker, L.refresh_main) = original
         self.assertIn("### PR opened by l1-post\n- PR #77", captured["body"])
         self.assertNotIn("operator-acknowledged", captured["body"])
-
-
-class WrongCheckoutHint(unittest.TestCase):
-    """harmonic-forge#942 rework: an unresolvable --sha names where to run."""
-
-    def _hint(self, here: str, repo: str) -> str | None:
-        projects = [mock.Mock(repo="vitalharmony/harmonic-forge",
-                              checkout=Path("/home/u/harmonic-forge"))]
-        with mock.patch.object(L, "_cwd_repo_from_git", return_value=here), \
-             mock.patch.object(L.manifest, "load", return_value=projects):
-            return L._wrong_checkout_hint(repo)
-
-    def test_a_different_repo_names_its_checkout(self) -> None:
-        hint = self._hint("vitalharmony/hrse", "vitalharmony/harmonic-forge")
-        self.assertIn("run l1-post from /home/u/harmonic-forge", hint)
-
-    def test_the_same_repo_adds_nothing(self) -> None:
-        self.assertIsNone(self._hint("vitalharmony/hrse", "vitalharmony/hrse"))
-
-    def test_the_hint_reaches_the_failure_message(self) -> None:
-        failed = subprocess.CompletedProcess(("git",), 128, "", "fatal: Needed a single revision")
-        with mock.patch.object(L, "run", return_value=failed), \
-             mock.patch.object(L, "fail", side_effect=SystemExit) as fail:
-            with self.assertRaises(SystemExit):
-                L.resolve_sha("abc", hint="run l1-post from /x")
-        self.assertIn("run l1-post from /x", fail.call_args.args[0])
 
 
 if __name__ == "__main__":
