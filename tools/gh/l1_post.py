@@ -1641,6 +1641,48 @@ def _announce_scratch_frontend_env(repo_root: Path, scratch: Path) -> None:
               "(run `mise run worktree-provision` here)", file=sys.stderr)
 
 
+# harmonic-forge#945: the source checkout's install is linked, then the package
+# manager is asked whether it satisfies the attested commit. Comparing lockfiles
+# cannot answer that: Lane 1's tools worktree links the main checkout's install,
+# which nothing re-installs when main's manifests move.
+_DEPENDENCY_PROBES = {
+    "frontend/node_modules": (("npm", "ls", "--all"), "frontend"),
+    "backend/.venv": ((".venv/bin/python", "-m", "pip", "install", "--dry-run", "--no-index",
+                       "-r", "requirements.txt", "-r", "requirements-dev.txt"), "backend"),
+}
+_DEPENDENCY_INSTALLS = {
+    "frontend/node_modules": [("npm", "ci")],
+    "backend/.venv": [("mise", "exec", "--", "python3", "-m", "venv", ".venv"),
+                      (".venv/bin/pip", "install", "-r", "requirements.txt", "-r", "requirements-dev.txt")],
+}
+
+
+def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir: str) -> str:
+    """Link `dependency_dir` from the source checkout; if the package manager
+    says the linked install does not satisfy the attested commit, replace the
+    link with a real install in the scratch. Returns "linked" or "installed".
+    A failed install fails the check; it never falls back to the link."""
+    source = repo_root / dependency_dir
+    if not source.is_dir():
+        fail(f"source worktree dependency directory is missing: {dependency_dir}")
+    target = scratch / dependency_dir
+    target.symlink_to(source, target_is_directory=True)
+    probe, workdir = _DEPENDENCY_PROBES[dependency_dir]
+    probed = run(*probe, cwd=scratch / workdir)
+    if probed.returncode == 0:
+        return "linked"
+    target.unlink()
+    print(f"[l1-post] scratch {dependency_dir}: installed (the linked install does not satisfy "
+          f"the attested commit: {' '.join(probe)} exited {probed.returncode})", file=sys.stderr)
+    for command in _DEPENDENCY_INSTALLS[dependency_dir]:
+        installed = run(*command, cwd=scratch / workdir)
+        if installed.returncode:
+            tail = "\n".join((installed.stdout + installed.stderr).splitlines()[-40:])
+            fail(f"scratch install failed for {dependency_dir}: {' '.join(command)} "
+                 f"exited {installed.returncode}\n{tail}")
+    return "installed"
+
+
 def _source_repo_is_hrse(repo_root: Path) -> bool:
     """Whether repo_root's own git remote is vitalharmony/hrse -- independent
     of --repo, which names the GitHub issue's repo, not the repo the
@@ -1749,10 +1791,7 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
             fail("check worktree HEAD changed before validation")
         if _source_repo_is_hrse(repo_root):
             for dependency_dir in HRSE_DEPENDENCY_DIRS:
-                source = repo_root / dependency_dir
-                if not source.is_dir():
-                    fail(f"source worktree dependency directory is missing: {dependency_dir}")
-                (scratch / dependency_dir).symlink_to(source, target_is_directory=True)
+                _provision_scratch_dependency(repo_root, scratch, dependency_dir)
             _announce_scratch_frontend_env(repo_root, scratch)
         # a private-repo incident: `git worktree add --detach` never provisions `.claude/`
         # (an untracked, locally-linked directory in every repo this tool
