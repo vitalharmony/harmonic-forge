@@ -1121,9 +1121,10 @@ class TestGeminiModelPin(unittest.TestCase):
 
     def test_it_keeps_the_pro_tier(self) -> None:
         """Substituting flash would silently downgrade every posture's
-        reviewer. `verify` stays pinned and Codex-only; it is unaffected."""
+        reviewer. `verify` is Codex-only and unaffected: it resolves the
+        latest Sol (harmonic-forge#939), and its operator override survives."""
         self.assertIn("gemini-pro-latest", self.SOURCE)
-        self.assertIn('VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-', self.SOURCE)
+        self.assertIn('VERIFY_MODEL="$CROSS_FAMILY_VERIFY_MODEL"', self.SOURCE)
 
 
 @unittest.skipUnless(os.environ.get("CROSS_FAMILY_LIVE") == "1",
