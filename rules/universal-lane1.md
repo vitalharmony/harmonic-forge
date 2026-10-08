@@ -320,6 +320,36 @@ where `3-lane-protocol.md` R-0370 requires, and file any authorization mechanism
 alone at Tier `deep` (R-0371).
 <!-- /R-0373 -->
 
+<!-- R-0380 -->
+A Tooling Exception handoff names the simplest design that meets the issue's
+literal ask, and any mechanism beyond that ask needs the operator's one-line
+approval before the handoff posts. This carries R-0048, R-0050 and R-0154
+(minimum change, no scope creep) from Lane 2's implementation back to Lane 1's
+design and to pitch-inspection: a pitch finding whose fix adds a mechanism
+beyond the literal ask is returned to the operator as a question, not as a
+required change. (hrse#2261)
+<!-- /R-0380 -->
+
+<!-- R-0381 -->
+A preclose survivor whose fix needs a new mechanism (a new function, file,
+state, trap or external call) is resolved by deleting the feature it attacks
+or by asking the operator, never by patching the mechanism in. (hrse#2261)
+<!-- /R-0381 -->
+
+<!-- R-0382 -->
+A Tier `fast` diff under 100 changed lines gets one refuter and one pass,
+unless `preclose_check.py --plan` flags a path as high blast radius (hook code
+or wiring, git hooks, gate scripts, CI workflows, the Lane 1 posting gates,
+lane launchers, application code or a migration). Lane 1 does not plan a cross-repo change, or one that mutates git
+state or live data, as `fast` for panel purposes. (hrse#2261)
+<!-- /R-0382 -->
+
+<!-- R-0383 -->
+If a part of the design can be verified only in a live session Lane 1 cannot
+run, ship the version without it and write the fallback into the issue as an
+acceptance branch the operator's live check decides. (hrse#2261)
+<!-- /R-0383 -->
+
 <!-- R-0100 -->
 For a Plan-First issue, withhold implementation steps from the first
 handoff; post them only after Lane 2's plan clears review, as defined by

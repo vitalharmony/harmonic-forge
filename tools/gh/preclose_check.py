@@ -101,6 +101,10 @@ LENSES: tuple[str, ...] = (
 
 TIER_PANEL = {"fast": 1, "standard": 3, "deep": 5}
 
+# R-0382 (harmonic-forge#931): a Tier `fast` diff reaches one refuter only under this many
+# changed lines. A path on HIGH_BLAST_PATTERNS keeps the full panel at any size.
+SMALL_FAST_LINES = 100
+
 
 # harmonic-forge#701. The file:line anchor a finding must carry to survive the
 # filter. `path:line` or `path:line-line`, the shape the plan output demands.
@@ -230,11 +234,31 @@ def changed_files(base: str, head: str) -> list[str]:
     return [path for path in result.stdout.split("\0") if path]
 
 
+def changed_lines(base: str, head: str) -> int | None:
+    """Added plus deleted lines in the committed diff, or None when it cannot be counted
+    (a binary entry shows `-`, or git failed). None never shrinks a panel."""
+    result = run("git", "-c", "core.quotePath=false", "diff", "--numstat", "--no-renames", "-z",
+                 f"{base}...{head}")
+    if result.returncode:
+        return None
+    total = 0
+    for entry in (e for e in result.stdout.split("\0") if e):
+        added, _, rest = entry.partition("\t")
+        deleted = rest.partition("\t")[0]
+        if not added.isdigit() or not deleted.isdigit():
+            return None
+        total += int(added) + int(deleted)
+    return total
+
+
 def uncommitted_files() -> list[str]:
     """Anything the committed diff cannot see -- staged, dirty, or untracked."""
     result = run("git", "-c", "core.quotePath=false", "status", "--porcelain", "-z")
     if result.returncode:
-        return []
+        # A failed status is not a clean tree: reading it as one let a dirty Tier fast diff plan
+        # one refuter (harmonic-forge#931 cross-family finding).
+        raise SystemExit(f"preclose-check: `git status` failed (exit {result.returncode}); "
+                         "cannot tell whether the tree is clean, so no panel is planned.")
     entries = [entry for entry in result.stdout.split("\0") if entry]
     return [entry[3:] for entry in entries if len(entry) > 3]
 
@@ -250,9 +274,15 @@ def blast_radius(files: list[str]) -> list[str]:
     return reasons
 
 
-def panel_size(reasons: list[str], tier: str | None) -> tuple[int, str]:
+def panel_size(reasons: list[str], tier: str | None, lines: int | None = None,
+               dirty: bool = False) -> tuple[int, str]:
     if reasons:
         return len(LENSES), "high blast radius — full panel regardless of Tier or diff size"
+    # R-0382: Tier fast is one refuter only for a counted, committed diff under the ceiling.
+    if tier == "fast" and (dirty or lines is None or lines >= SMALL_FAST_LINES):
+        return len(LENSES), "Tier fast, but the diff is 100+ lines, uncounted or uncommitted: full panel"
+    if tier == "fast":
+        return TIER_PANEL["fast"], f"small fast diff ({lines} lines), no flagged path: 1 refuter"
     if tier in TIER_PANEL:
         return TIER_PANEL[tier], f"Tier {tier}"
     # An unset Tier is not an error (population is lazy, per planning.md), but
@@ -767,7 +797,8 @@ def plan(args: argparse.Namespace) -> int:
     # was not sized at.
     prior = find_receipt(repo, args.issue)
     tier = args.tier or preclose_passes.last_tier(prior)
-    size, why = panel_size(reasons, tier)
+    size, why = panel_size(reasons, tier, lines=changed_lines(args.base, args.head),
+                           dirty=bool(dirty))
     enrollment_file = enrollment_path(repo, args.issue)
     enrollment, new_event = preclose_enrollment.decide(
         enrollment_file, receipt_dir(), repo, args.issue, getattr(args, "arm", None) or "auto",

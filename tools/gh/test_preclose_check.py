@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -212,7 +213,7 @@ class PanelSizingTests(unittest.TestCase):
         self.assertFalse(preclose.blast_radius(["docs/ONTOLOGY.md", "scripts/1-one-off.py"]))
 
     def test_tier_scales_an_ordinary_change(self) -> None:
-        self.assertEqual(preclose.panel_size([], "fast")[0], 1)
+        self.assertEqual(preclose.panel_size([], "fast", lines=5)[0], 1)
         self.assertEqual(preclose.panel_size([], "standard")[0], 3)
         self.assertEqual(preclose.panel_size([], "deep")[0], 5)
 
@@ -223,6 +224,31 @@ class PanelSizingTests(unittest.TestCase):
 
     def test_lenses_are_distinct(self) -> None:
         self.assertEqual(len(set(preclose.LENSES)), len(preclose.LENSES))
+
+    # R-0382 (harmonic-forge#931): Tier fast is one refuter only under 100 counted, committed lines.
+    def test_a_small_fast_diff_gets_one_refuter_and_says_why(self) -> None:
+        size, why = preclose.panel_size([], "fast", lines=99)
+        self.assertEqual(size, 1)
+        self.assertEqual(why, "small fast diff (99 lines), no flagged path: 1 refuter")
+
+    def test_a_fast_diff_of_100_lines_gets_the_full_panel(self) -> None:
+        self.assertEqual(preclose.panel_size([], "fast", lines=100)[0], len(preclose.LENSES))
+        self.assertEqual(preclose.panel_size([], "fast", lines=5000)[0], len(preclose.LENSES))
+
+    def test_an_uncounted_or_dirty_fast_diff_gets_the_full_panel(self) -> None:
+        self.assertEqual(preclose.panel_size([], "fast", lines=None)[0], len(preclose.LENSES))
+        self.assertEqual(preclose.panel_size([], "fast", lines=5, dirty=True)[0], len(preclose.LENSES))
+
+    def test_a_flagged_path_keeps_the_full_panel_however_small(self) -> None:
+        for path in ("tools/lane/lane2", "tools/lane/_lane_refresh.sh", "tools/hooks/x.py", "agents/a.md",
+                     ".claude/settings.json", ".github/workflows/ci.yml", "mise.toml",
+                     ".githooks/pre-commit", "scripts/gate_x.py", "backend/app/x.py"):
+            size, _ = preclose.panel_size(preclose.blast_radius([path]), "fast", lines=5)
+            self.assertEqual(size, len(preclose.LENSES), path)
+
+    def test_standard_and_deep_ignore_the_line_count(self) -> None:
+        self.assertEqual(preclose.panel_size([], "standard", lines=5)[0], 3)
+        self.assertEqual(preclose.panel_size([], "deep", lines=5)[0], 5)
 
 
 class RepoNormalizationTests(unittest.TestCase):
@@ -279,10 +305,34 @@ class DiffReadingTests(ScratchRepo):
             self.plan(tier="fast")
         self.assertIn("uncommitted", str(caught.exception))
 
+    def test_plan_sizes_a_small_fast_diff_at_one_refuter(self) -> None:
+        self.commit("scripts/ordinary.py", "x\n" * 10)
+        self.assertIn("refuters: 1 — small fast diff (10 lines)", self.plan(tier="fast"))
+
+    def test_plan_sizes_a_large_fast_diff_at_the_full_panel(self) -> None:
+        self.commit("scripts/ordinary.py", "x\n" * 150)
+        self.assertIn(f"refuters: {len(preclose.LENSES)}", self.plan(tier="fast"))
+
+    def test_a_binary_entry_cannot_be_counted_so_it_never_shrinks_the_panel(self) -> None:
+        target = self.repo / "tools" / "lane"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "x.bin").write_bytes(b"\x00\x01\x02")
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-qm", "binary", cwd=self.repo)
+        self.assertIsNone(preclose.changed_lines("base", "HEAD"))
+
+    def test_a_failed_git_status_refuses_to_plan_rather_than_read_as_clean(self) -> None:
+        self.commit("scripts/ordinary.py")
+        failed = subprocess.CompletedProcess(("git", "status"), 128, "", "fatal")
+        with mock.patch.object(preclose, "run", return_value=failed):
+            with self.assertRaises(SystemExit) as caught:
+                preclose.uncommitted_files()
+        self.assertIn("git status", str(caught.exception))
+
     def test_allow_dirty_proceeds_on_the_committed_diff(self) -> None:
         self.commit("scripts/ordinary.py")
         (self.repo / "stray.txt").write_text("x\n")
-        self.assertIn("refuters:", self.plan(tier="fast", allow_dirty=True))
+        self.assertIn(f"refuters: {len(preclose.LENSES)}", self.plan(tier="fast", allow_dirty=True))
 
 
 class RepoMismatchTests(ScratchRepo):
