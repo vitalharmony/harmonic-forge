@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -319,6 +320,14 @@ class DiffReadingTests(ScratchRepo):
         git("add", "-A", cwd=self.repo)
         git("commit", "-qm", "binary", cwd=self.repo)
         self.assertIsNone(preclose.changed_lines("base", "HEAD"))
+
+    def test_a_failed_git_status_refuses_to_plan_rather_than_read_as_clean(self) -> None:
+        self.commit("scripts/ordinary.py")
+        failed = subprocess.CompletedProcess(("git", "status"), 128, "", "fatal")
+        with mock.patch.object(preclose, "run", return_value=failed):
+            with self.assertRaises(SystemExit) as caught:
+                preclose.uncommitted_files()
+        self.assertIn("git status", str(caught.exception))
 
     def test_allow_dirty_proceeds_on_the_committed_diff(self) -> None:
         self.commit("scripts/ordinary.py")

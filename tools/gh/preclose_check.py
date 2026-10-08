@@ -255,7 +255,10 @@ def uncommitted_files() -> list[str]:
     """Anything the committed diff cannot see -- staged, dirty, or untracked."""
     result = run("git", "-c", "core.quotePath=false", "status", "--porcelain", "-z")
     if result.returncode:
-        return []
+        # A failed status is not a clean tree: reading it as one let a dirty Tier fast diff plan
+        # one refuter (harmonic-forge#931 cross-family finding).
+        raise SystemExit(f"preclose-check: `git status` failed (exit {result.returncode}); "
+                         "cannot tell whether the tree is clean, so no panel is planned.")
     entries = [entry for entry in result.stdout.split("\0") if entry]
     return [entry[3:] for entry in entries if len(entry) > 3]
 
