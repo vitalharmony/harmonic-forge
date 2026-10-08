@@ -67,6 +67,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_passes  # noqa: E402  (harmonic-forge#834)
 import preclose_enrollment  # noqa: E402  (harmonic-forge#890)
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+# harmonic-forge#939: the Claude verify reviewer is accepted by the model-tier
+# gate's reviewed family allowlist, not a second pin of its own.
+from model_tier_gate import claude_model_is_high  # noqa: E402
+
 # A change under any of these runs on every session, every commit, or every
 # gate -- so its failure mode is silent and total rather than local.
 HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -446,8 +451,10 @@ def _claude_blocks(event: dict, kind: str) -> list[dict]:
 
 
 def _claude_verify_trace(native: object, verify_model: object) -> bool:
-    expected_model = "claude-opus-5-5"
-    if not isinstance(native, list) or verify_model != expected_model:
+    # harmonic-forge#939: any high-tier Claude reviewer (Opus or Fable), since
+    # the run passes `--model opus` and records the model its init reports.
+    if (not isinstance(native, list) or not isinstance(verify_model, str)
+            or not verify_model.startswith("claude-") or not claude_model_is_high(verify_model)):
         return False
     inits = [event for event in native if isinstance(event, dict)
              and event.get("type") == "system" and event.get("subtype") == "init"]

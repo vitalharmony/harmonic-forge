@@ -177,7 +177,7 @@ class TestVerifyPostureGuards(unittest.TestCase):
         stub.write_text(
             '#!/usr/bin/env bash\n'
             'printf "%s\\0" "$@" > "$CLAUDE_ARGS"\n'
-            'printf "%s\\n" \'{"type":"system","subtype":"init","tools":["Glob","Grep","Read"],"mcp_servers":[],"model":"claude-opus-5-5"}\'\n'
+            'printf "%s\\n" \'{"type":"system","subtype":"init","tools":["Glob","Grep","Read"],"mcp_servers":[],"model":"claude-opus-6"}\'\n'
             'printf "%s\\n" \'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"u1","name":"Read"}]}}\'\n'
             'printf "%s\\n" \'{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u1"}]}}\'\n'
             'printf "%s\\n" \'{"type":"result","subtype":"success","result":"{\\"summary\\":\\"ok\\",\\"findings\\":[],\\"assumptions\\":[{\\"assumption\\":\\"a\\",\\"verdict\\":\\"confirmed\\",\\"evidence\\":\\"Read x\\"}]}"}\'\n'
@@ -193,12 +193,14 @@ class TestVerifyPostureGuards(unittest.TestCase):
         for flag in (b"--restricted", b"--strict-mcp-config", b"--no-session-persistence",
                      b"--output-format", b"stream-json", b"--verbose"):
             self.assertIn(flag, argv)
-        self.assertEqual(argv[argv.index(b"--model") + 1], b"claude-opus-5-5")
+        # harmonic-forge#939: the alias, so the reviewer is the latest Opus.
+        self.assertEqual(argv[argv.index(b"--model") + 1], b"opus")
         # harmonic-forge#848 AC8: a Codex caller is reviewed by Claude.
         envelope = json.loads([ln for ln in result.stdout.splitlines() if ln.startswith("{")][-1])
         self.assertEqual(envelope["caller_family"], "codex")
         self.assertEqual(envelope["target_family"], "claude")
-        self.assertEqual(envelope.get("verify_model"), "claude-opus-5-5")
+        # harmonic-forge#939: the model the run's own init event reports.
+        self.assertEqual(envelope.get("verify_model"), "claude-opus-6")
 
     def test_verify_rejects_gemini_caller(self):
         result = run_script("--caller", "gemini", "--families", "2",
@@ -1119,9 +1121,10 @@ class TestGeminiModelPin(unittest.TestCase):
 
     def test_it_keeps_the_pro_tier(self) -> None:
         """Substituting flash would silently downgrade every posture's
-        reviewer. `verify` stays pinned and Codex-only; it is unaffected."""
+        reviewer. `verify` is Codex-only and unaffected: it resolves the
+        latest Sol (harmonic-forge#939), and its operator override survives."""
         self.assertIn("gemini-pro-latest", self.SOURCE)
-        self.assertIn('VERIFY_MODEL="${CROSS_FAMILY_VERIFY_MODEL:-', self.SOURCE)
+        self.assertIn('VERIFY_MODEL="$CROSS_FAMILY_VERIFY_MODEL"', self.SOURCE)
 
 
 @unittest.skipUnless(os.environ.get("CROSS_FAMILY_LIVE") == "1",
@@ -1270,17 +1273,86 @@ class TestVerifyWebSearchArgv(unittest.TestCase):
         self.assertTrue(lines, result.stderr)
         return json.loads(lines[-1])
 
-    def test_codex_verify_defaults_to_gpt_6_sol_and_records_it(self) -> None:
-        """harmonic-forge#848 AC7: the reviewer is re-pinned, and the envelope
-        records the model that actually ran so the label can name it."""
+    def _codex_stub(self, debug_models: str) -> None:
+        """A `codex` whose `debug models` runs `debug_models` (shell) and
+        logs that it ran; every other call behaves like the setUp stub."""
+        self.debug_log = Path(self.tmp.name) / "debug-models.calls"
+        stub = Path(self.tmp.name) / "stubbin" / "codex"
+        stub.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [ "$1" = debug ] && [ "$2" = models ]; then\n'
+            f'  echo called >> "{self.debug_log}"\n'
+            f'  {debug_models}\n'
+            'fi\n'
+            f'printf "%s\\n" "$@" > "{self.argv_file}"\n'
+            'echo \'{"type":"item.completed","item":{"type":"agent_message",'
+            '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[],\\"assumptions\\":[]}"}}\'\n'
+        )
+        stub.chmod(0o755)
+
+    def _verify_model(self) -> tuple[str, str | None]:
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "verify", "--cwd", self.tmp.name)
+        env = self._envelope("--caller", "claude", "--families", "2",
+                             "--posture", "verify", "--cwd", self.tmp.name)
+        return argv[argv.index("-m") + 1], env.get("verify_model")
+
+    def test_codex_verify_uses_the_resolved_latest_sol_and_records_it(self) -> None:
+        """harmonic-forge#939 AC1: the reviewer is the latest Sol the local
+        catalog lists (tools/models/resolve_model.py), recorded in the envelope."""
+        catalog = json.dumps({"models": [
+            {"slug": "gpt-6-sol", "visibility": "list", "priority": 3, "upgrade": None},
+            {"slug": "gpt-6.1-sol", "visibility": "list", "priority": 1, "upgrade": None}]})
+        catalog_file = Path(self.tmp.name) / "catalog.json"
+        catalog_file.write_text(catalog)
+        self._codex_stub(f'cat "{catalog_file}"; exit 0')
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CROSS_FAMILY_VERIFY_MODEL", None)
-            argv = self.codex_argv("--caller", "claude", "--families", "2",
-                                   "--posture", "verify", "--cwd", self.tmp.name)
-            self.assertEqual(argv[argv.index("-m") + 1], "gpt-6-sol")
-            env = self._envelope("--caller", "claude", "--families", "2",
-                                 "--posture", "verify", "--cwd", self.tmp.name)
-        self.assertEqual(env.get("verify_model"), "gpt-6-sol")
+            self.assertEqual(self._verify_model(), ("gpt-6.1-sol", "gpt-6.1-sol"))
+
+    def test_codex_verify_falls_back_when_the_resolver_fails(self) -> None:
+        self._codex_stub("exit 1")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CROSS_FAMILY_VERIFY_MODEL", None)
+            self.assertEqual(self._verify_model(), ("gpt-6-sol", "gpt-6-sol"))
+
+    def test_codex_verify_falls_back_when_the_resolver_prints_nothing(self) -> None:
+        """A resolver that exits 0 with no output must not leave `-m ""`."""
+        fake_root = Path(self.tmp.name) / "fakeforge"
+        (fake_root / "lane").mkdir(parents=True)
+        (fake_root / "models").mkdir()
+        (fake_root / "models" / "resolve_model.py").write_text("")
+        script = fake_root / "lane" / "cross_family_call.sh"
+        script.write_text(SCRIPT.read_text())
+        for sibling in SCRIPT.parent.iterdir():
+            if sibling.name != SCRIPT.name and not (fake_root / "lane" / sibling.name).exists():
+                (fake_root / "lane" / sibling.name).symlink_to(sibling)
+        env = dict(os.environ, PATH=self.path)
+        env.pop("CROSS_FAMILY_VERIFY_MODEL", None)
+        result = subprocess.run(["bash", str(script), "--caller", "claude", "--families", "2",
+                                 "--posture", "verify", "--cwd", self.tmp.name,
+                                 "--brief", str(self.brief)],
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+        argv = self.argv_file.read_text().splitlines()
+        self.assertEqual(argv[argv.index("-m") + 1], "gpt-6-sol", result.stderr)
+
+    def test_codex_verify_pins_the_reasoning_effort(self) -> None:
+        """harmonic-forge#939 preclose: `--ignore-user-config` drops the user's
+        effort, and gpt-6.1-sol's catalog default is `low` where gpt-6-sol's
+        was `medium`, so the verify run pins `medium` itself."""
+        argv = self.codex_argv("--caller", "claude", "--families", "2",
+                               "--posture", "verify", "--cwd", self.tmp.name)
+        pairs = [argv[i + 1] for i, tok in enumerate(argv[:-1]) if tok == "-c"]
+        self.assertIn('model_reasoning_effort="medium"', pairs)
+
+    def test_codex_caller_never_resolves_a_codex_model(self) -> None:
+        """A Codex caller is reviewed by Claude, so no `debug models` runs."""
+        self._codex_stub("exit 0")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CROSS_FAMILY_VERIFY_MODEL", None)
+            run_script("--caller", "codex", "--families", "2", "--posture", "verify",
+                       "--cwd", self.tmp.name, "--brief", str(self.brief), path=self.path)
+        self.assertFalse(self.debug_log.exists(), "codex debug models ran for a codex caller")
 
     def test_codex_verify_override_flows_to_argv_and_envelope(self) -> None:
         with patch.dict(os.environ, {"CROSS_FAMILY_VERIFY_MODEL": "gpt-x-test"}):

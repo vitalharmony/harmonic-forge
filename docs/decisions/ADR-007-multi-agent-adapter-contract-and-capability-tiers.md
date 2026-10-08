@@ -507,7 +507,7 @@ real `~/.gemini/.env`, if present, is copied into the throwaway one.
   before invoking anything, with a green suite on each side of the
   contradiction). It is the first posture built
   around removing an inherited capability rather than adding a restriction.
-  `codex exec --ignore-user-config -m gpt-6-sol --sandbox read-only` (re-pinned by harmonic-forge#848), with
+  `codex exec --ignore-user-config -m <latest Sol> --sandbox read-only` (resolved by `tools/models/resolve_model.py sol`, falling back to `gpt-6-sol`; harmonic-forge#939 replaced #848's pin), with
   trust re-added by `-c` for exactly the one `--cwd` it is given. It reuses
   the existing high tier (`CODEX_HIGH_FAMILIES`, the `sol` family), so no new model tier is
   introduced. Enforcement is on the resolved target list, not on
