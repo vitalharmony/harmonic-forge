@@ -212,7 +212,7 @@ class PanelSizingTests(unittest.TestCase):
         self.assertFalse(preclose.blast_radius(["docs/ONTOLOGY.md", "scripts/1-one-off.py"]))
 
     def test_tier_scales_an_ordinary_change(self) -> None:
-        self.assertEqual(preclose.panel_size([], "fast")[0], 1)
+        self.assertEqual(preclose.panel_size([], "fast", lines=5)[0], 1)
         self.assertEqual(preclose.panel_size([], "standard")[0], 3)
         self.assertEqual(preclose.panel_size([], "deep")[0], 5)
 
@@ -224,40 +224,30 @@ class PanelSizingTests(unittest.TestCase):
     def test_lenses_are_distinct(self) -> None:
         self.assertEqual(len(set(preclose.LENSES)), len(preclose.LENSES))
 
-    # R-0382 (harmonic-forge#931): a small Tier fast diff to a launcher entrypoint gets one refuter.
-    def _sized(self, files, tier="fast", lines=5, dirty=False):
-        return preclose.panel_size(preclose.blast_radius(files), tier, files=files,
-                                   lines=lines, dirty=dirty)
-
-    def test_a_small_fast_launcher_entrypoint_diff_gets_one_refuter_and_says_why(self) -> None:
-        size, why = self._sized(["tools/lane/lane1"], lines=99)
+    # R-0382 (harmonic-forge#931): Tier fast is one refuter only under 100 counted, committed lines.
+    def test_a_small_fast_diff_gets_one_refuter_and_says_why(self) -> None:
+        size, why = preclose.panel_size([], "fast", lines=99)
         self.assertEqual(size, 1)
-        self.assertEqual(why, "small fast diff (99 lines), no hook/gate/live-data path: 1 refuter")
+        self.assertEqual(why, "small fast diff (99 lines), no flagged path: 1 refuter")
 
-    def test_the_carve_out_stops_at_100_lines(self) -> None:
-        self.assertEqual(self._sized(["tools/lane/lane1"], lines=100)[0], len(preclose.LENSES))
+    def test_a_fast_diff_of_100_lines_gets_the_full_panel(self) -> None:
+        self.assertEqual(preclose.panel_size([], "fast", lines=100)[0], len(preclose.LENSES))
+        self.assertEqual(preclose.panel_size([], "fast", lines=5000)[0], len(preclose.LENSES))
 
-    def test_every_other_high_blast_path_keeps_the_full_panel_when_small(self) -> None:
-        for path in ("tools/lane/install_lane_hooks.py", "tools/hooks/x.py", "agents/a.md",
+    def test_an_uncounted_or_dirty_fast_diff_gets_the_full_panel(self) -> None:
+        self.assertEqual(preclose.panel_size([], "fast", lines=None)[0], len(preclose.LENSES))
+        self.assertEqual(preclose.panel_size([], "fast", lines=5, dirty=True)[0], len(preclose.LENSES))
+
+    def test_a_flagged_path_keeps_the_full_panel_however_small(self) -> None:
+        for path in ("tools/lane/lane2", "tools/lane/_lane_refresh.sh", "tools/hooks/x.py", "agents/a.md",
                      ".claude/settings.json", ".github/workflows/ci.yml", "mise.toml",
-                     ".githooks/pre-commit", "scripts/gate_x.py", "scripts/l1_post.py",
-                     "backend/app/x.py", "scripts/migrate_x.py"):
-            self.assertEqual(self._sized([path], lines=5)[0], len(preclose.LENSES), path)
+                     ".githooks/pre-commit", "scripts/gate_x.py", "backend/app/x.py"):
+            size, _ = preclose.panel_size(preclose.blast_radius([path]), "fast", lines=5)
+            self.assertEqual(size, len(preclose.LENSES), path)
 
-    def test_a_mixed_diff_keeps_the_full_panel(self) -> None:
-        self.assertEqual(self._sized(["tools/lane/lane1", "tools/hooks/x.py"])[0], len(preclose.LENSES))
-
-    def test_no_files_an_uncounted_diff_or_a_dirty_tree_keep_the_full_panel(self) -> None:
-        reasons = ["tools/hooks/x.py: hook implementations"]
-        self.assertEqual(preclose.panel_size(reasons, "fast", files=(), lines=10)[0], len(preclose.LENSES))
-        self.assertEqual(self._sized(["tools/lane/lane1"], lines=None)[0], len(preclose.LENSES))
-        self.assertEqual(self._sized(["tools/lane/lane1"], dirty=True)[0], len(preclose.LENSES))
-
-    def test_standard_and_deep_are_unchanged_by_the_carve_out(self) -> None:
-        self.assertEqual(self._sized(["tools/lane/lane1"], tier="standard")[0], len(preclose.LENSES))
-        self.assertEqual(self._sized(["tools/lane/lane1"], tier="deep")[0], len(preclose.LENSES))
-        self.assertEqual(preclose.panel_size([], "standard", files=["docs/a.md"], lines=5)[0], 3)
-        self.assertEqual(preclose.panel_size([], "deep", files=["docs/a.md"], lines=5)[0], 5)
+    def test_standard_and_deep_ignore_the_line_count(self) -> None:
+        self.assertEqual(preclose.panel_size([], "standard", lines=5)[0], 3)
+        self.assertEqual(preclose.panel_size([], "deep", lines=5)[0], 5)
 
 
 class RepoNormalizationTests(unittest.TestCase):
@@ -314,9 +304,13 @@ class DiffReadingTests(ScratchRepo):
             self.plan(tier="fast")
         self.assertIn("uncommitted", str(caught.exception))
 
-    def test_plan_sizes_a_small_fast_launcher_diff_at_one_refuter(self) -> None:
-        self.commit("tools/lane/lane1", "x\n" * 10)
+    def test_plan_sizes_a_small_fast_diff_at_one_refuter(self) -> None:
+        self.commit("scripts/ordinary.py", "x\n" * 10)
         self.assertIn("refuters: 1 — small fast diff (10 lines)", self.plan(tier="fast"))
+
+    def test_plan_sizes_a_large_fast_diff_at_the_full_panel(self) -> None:
+        self.commit("scripts/ordinary.py", "x\n" * 150)
+        self.assertIn(f"refuters: {len(preclose.LENSES)}", self.plan(tier="fast"))
 
     def test_a_binary_entry_cannot_be_counted_so_it_never_shrinks_the_panel(self) -> None:
         target = self.repo / "tools" / "lane"
@@ -329,7 +323,7 @@ class DiffReadingTests(ScratchRepo):
     def test_allow_dirty_proceeds_on_the_committed_diff(self) -> None:
         self.commit("scripts/ordinary.py")
         (self.repo / "stray.txt").write_text("x\n")
-        self.assertIn("refuters:", self.plan(tier="fast", allow_dirty=True))
+        self.assertIn(f"refuters: {len(preclose.LENSES)}", self.plan(tier="fast", allow_dirty=True))
 
 
 class RepoMismatchTests(ScratchRepo):

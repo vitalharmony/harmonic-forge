@@ -338,9 +338,9 @@ or by asking the operator, never by patching the mechanism in. (hrse#2261)
 
 <!-- R-0382 -->
 A Tier `fast` diff under 100 changed lines gets one refuter and one pass,
-unless it touches a hook or gate itself (hook code or wiring, git hooks, gate
-scripts, CI workflows, the Lane 1 posting gates), application code or a
-migration. Lane 1 does not plan a cross-repo change, or one that mutates git
+unless `preclose_check.py --plan` flags a path as high blast radius (hook code
+or wiring, git hooks, gate scripts, CI workflows, the Lane 1 posting gates,
+lane launchers, application code or a migration). Lane 1 does not plan a cross-repo change, or one that mutates git
 state or live data, as `fast` for panel purposes. (hrse#2261)
 <!-- /R-0382 -->
 

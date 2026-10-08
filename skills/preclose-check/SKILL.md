@@ -69,9 +69,9 @@ authority is unchanged: only the operator's explicit `Close H<N>` /
    Blast radius leads because every incident in this class so far was a small
    diff — a hook that locked out Bash, `l1_post.py`'s worktree-overlap check,
    a stale `harmonic-forge` checkout. Sizing by diff size would have
-   under-reviewed all three. R-0382's carve-out is therefore narrow: it covers
-   only launcher-entrypoint diffs under 100 lines at Tier `fast`, which none of
-   those three incidents were.
+   under-reviewed all three. R-0382 therefore shrinks only a Tier `fast` diff of
+   under 100 counted lines whose paths the planner does not flag; a flagged
+   path keeps the full panel at any size.
 
 3. **Spawn one `preclose-inspection` agent per lens — fresh context, never a
    fork.** A fork inherits the reasoning that produced the defect and anchors
@@ -233,7 +233,6 @@ new cost evidence.**
 
 Judgment still applies on the blast-radius half: `tools/gh/preclose_check.py`
 computes the panel from the diff, and anything touching hooks, hook wiring,
-CI, live data, or a lane launcher outside the carve-out in R-0382 (a Tier
-`fast` diff under 100 lines to a launcher entrypoint) escalates to the full
-panel regardless of Tier. If you are unsure whether a change qualifies, run the planner — it is
+CI, live data, or a lane launcher escalates to the full panel regardless of
+Tier or diff size. If you are unsure whether a change qualifies, run the planner — it is
 cheap and only the refuters cost anything.

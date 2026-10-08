@@ -2540,8 +2540,8 @@ hooks = []
 id = "R-0382"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
-statement = "A Tier fast diff under 100 changed lines gets one refuter and one pass unless it touches a hook or gate itself, application code or a migration; a cross-repo change or one that mutates git state or live data is not planned as fast."
-text_sha = "5a262f302514c33b"
+statement = "A Tier fast diff under 100 changed lines gets one refuter and one pass unless the preclose planner flags a path as high blast radius (hook, gate, CI, posting-gate, launcher, application code or migration); a cross-repo change or one that mutates git state or live data is not planned as fast."
+text_sha = "78a9d194f131942a"
 hooks = []
 
 [[rule]]

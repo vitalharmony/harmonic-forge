@@ -101,13 +101,9 @@ LENSES: tuple[str, ...] = (
 
 TIER_PANEL = {"fast": 1, "standard": 3, "deep": 5}
 
-# R-0382 (harmonic-forge#931): a Tier `fast` diff under this many changed lines gets one
-# refuter, unless it touches a hook or gate itself. The only high-blast paths it forgives are
-# launcher ENTRYPOINTS: every other high-blast path is a hook, gate, CI, posting-gate,
-# permission, migration or application path, which the rule keeps at the full panel.
+# R-0382 (harmonic-forge#931): a Tier `fast` diff reaches one refuter only under this many
+# changed lines. A path on HIGH_BLAST_PATTERNS keeps the full panel at any size.
 SMALL_FAST_LINES = 100
-SMALL_FAST_ELIGIBLE = re.compile(
-    r"(^|/)tools/lane/(lane1|lane2|lane3|lane3-provision|lane-queue-run|_lane_[a-z_]+\.sh)$")
 
 
 # harmonic-forge#701. The file:line anchor a finding must carry to survive the
@@ -275,15 +271,15 @@ def blast_radius(files: list[str]) -> list[str]:
     return reasons
 
 
-def panel_size(reasons: list[str], tier: str | None, files: tuple[str, ...] | list[str] = (),
-               lines: int | None = None, dirty: bool = False) -> tuple[int, str]:
-    # R-0382: small fast diff, nothing flagged except launcher entrypoints -> one refuter.
-    if (tier == "fast" and files and not dirty and lines is not None
-            and lines < SMALL_FAST_LINES
-            and all(SMALL_FAST_ELIGIBLE.search(f) for f in files if blast_radius([f]))):
-        return 1, f"small fast diff ({lines} lines), no hook/gate/live-data path: 1 refuter"
+def panel_size(reasons: list[str], tier: str | None, lines: int | None = None,
+               dirty: bool = False) -> tuple[int, str]:
     if reasons:
         return len(LENSES), "high blast radius — full panel regardless of Tier or diff size"
+    # R-0382: Tier fast is one refuter only for a counted, committed diff under the ceiling.
+    if tier == "fast" and (dirty or lines is None or lines >= SMALL_FAST_LINES):
+        return len(LENSES), "Tier fast, but the diff is 100+ lines, uncounted or uncommitted: full panel"
+    if tier == "fast":
+        return TIER_PANEL["fast"], f"small fast diff ({lines} lines), no flagged path: 1 refuter"
     if tier in TIER_PANEL:
         return TIER_PANEL[tier], f"Tier {tier}"
     # An unset Tier is not an error (population is lazy, per planning.md), but
@@ -798,7 +794,7 @@ def plan(args: argparse.Namespace) -> int:
     # was not sized at.
     prior = find_receipt(repo, args.issue)
     tier = args.tier or preclose_passes.last_tier(prior)
-    size, why = panel_size(reasons, tier, files=files, lines=changed_lines(args.base, args.head),
+    size, why = panel_size(reasons, tier, lines=changed_lines(args.base, args.head),
                            dirty=bool(dirty))
     enrollment_file = enrollment_path(repo, args.issue)
     enrollment, new_event = preclose_enrollment.decide(
