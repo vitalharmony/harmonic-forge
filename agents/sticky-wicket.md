@@ -1,7 +1,7 @@
 ---
 name: sticky-wicket
 description: Use when the SAME issue has cycled through 2+ rounds of Lane 2 completion claim → Lane 3 gate FAIL (or Lane 1 declining a completion claim) without qualitative resolution — the signal that repeated incremental fixes aren't converging and the underlying approach itself may be wrong, not just the latest bug. Reads the full issue thread fresh (no anchoring on the round-by-round back-and-forth a continuing session has already accumulated) and asks whether the current approach should be reforged rather than patched again. Do NOT use for a single failure, or when category-level comparison shows each round's finding is a genuinely new, unrelated bug. Different immediate symptoms are not enough to claim the carve-out: if both findings share a structural category, invoke at round 2. Trigger is countable, not a vibe check — 2 consecutive FAIL/declined-completion verdicts on one issue (lowered from an original 3 after HRSE2 #233, see ADR-002). Also fires on Lane 1 Tooling Exception work when pass 1 has two surviving findings sharing an author-declared mechanism (harmonic-forge#845), before either is fixed, or when two completed preclose passes BOTH left surviving findings (harmonic-forge#834); the verdict is 'patch' (the next pass runs normally for a pass-1 cluster; after two passes the operator --forces the final head, with the harmonic-forge#838 post-verdict check) or 'reforge' (a new approach whose pass count restarts, which the operator starts with --force --reforge; Lane 1 cannot start it).
-model: claude-opus-5
+model: opus
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 hooks:
   PreToolUse:

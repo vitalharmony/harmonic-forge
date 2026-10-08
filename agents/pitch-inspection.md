@@ -1,7 +1,7 @@
 ---
 name: pitch-inspection
 description: Use BEFORE posting a Lane 1 handoff to GitHub, when any of these four checkable conditions holds — (1) the handoff's Design-alternatives field is anything other than "none" (Lane 1 chose between plausible designs); (2) the handoff's Load-bearing-assumptions field contains any assumption marked "asserted" rather than "verified-live"; (3) the implementation's own operation mutates git state or live data (not merely the deliverable's normal function); (4) the issue carries the `tooling-exception` label, whatever the other fields say (harmonic-forge#838; `l1_post.py` refuses the handoff until `tools/gh/pitch_receipt.py record` stores your verdict). Also usable on explicit operator request. Reviews the DRAFT handoff plus the live codebase with fresh context and answers one question: will this design survive contact with Lane 2, or does it contain a structural flaw that will generate a #233-style thrashing class? Do NOT use on routine handoffs (single obvious design, no unverified assumptions, no self-mutating automation) — that is Lane 1's existing job, and a second read there is pure overhead. ONE pass only: if Lane 1 disagrees with the verdict after one revision, escalate to the human operator — never re-invoke for a second round on the same handoff.
-model: claude-opus-5
+model: opus
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 hooks:
   PreToolUse:
