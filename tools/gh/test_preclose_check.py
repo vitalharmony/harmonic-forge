@@ -204,6 +204,13 @@ class PanelSizingTests(unittest.TestCase):
                      ".githooks/pre-commit", "scripts/gate_codex_tool.py"):
             self.assertTrue(preclose.blast_radius([path]), path)
 
+    def test_lane1_posting_gates_are_high_blast(self) -> None:
+        for path in ("tools/gh/l1_post.py", "tools/gh/post_lane1_issue.py", "scripts/l1_post.py",
+                     "scripts/post_lane1_issue.py", "x/tools/gh/l1_post.py"):
+            self.assertTrue(preclose.blast_radius([path]), path)
+        for path in ("tools/gh/l1_post.py.bak", "tools/gh/xl1_post.py"):
+            self.assertFalse(preclose.blast_radius([path]), path)
+
     def test_high_blast_beats_tier(self) -> None:
         size, why = preclose.panel_size(preclose.blast_radius(["tools/hooks/x.py"]), "fast")
         self.assertEqual(size, len(preclose.LENSES))

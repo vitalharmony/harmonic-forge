@@ -1527,7 +1527,7 @@ records the actual points, and a lane session on the issue needs the high-tier
 model `deep` routes to. Isolating it
 must not shrink its review: the panel is 1, 3 or 5 refuters by Tier
 (`tools/gh/preclose_check.py`), and `HIGH_BLAST_PATTERNS` does not cover
-`tools/gh/`, where harmonic-forge#851's auto-AE defect lived.
+`tools/gh/` apart from its two Lane 1 posting gates (harmonic-forge#933), where harmonic-forge#851's auto-AE defect lived.
 
 Authorizations, enumerated: an AE or `ready-for-l3`; a `tools/hooks/batch_auth.py`
 merge grant; the `preclose-inspected` label gate (R-0233/R-0234); the model-tier

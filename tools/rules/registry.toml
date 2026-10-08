@@ -2449,7 +2449,7 @@ id = "R-0371"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
 statement = "Any mechanism that mints, relaxes or bypasses an authorization (an AE or ready-for-l3, a batch_auth merge grant, the preclose-inspected label gate, the model-tier gate, auto-AE, a review waiver, any PreToolUse deny-hook relaxation) is its own issue at any Tier, carries board Tier deep (overriding HRSE2 planning.md's point-to-Tier table for it), and runs preclose-check with --tier deep; when in doubt it is its own issue (harmonic-forge#856)."
-text_sha = "2bb076ba3b1a9b6e"
+text_sha = "6a65d95f4c7559cf"
 hooks = []
 
 [[rule]]
