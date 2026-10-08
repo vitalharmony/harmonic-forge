@@ -155,7 +155,7 @@ class PostedTests(StoreCase):
         with mock.patch.object(L, "static_checks",
                                return_value=(["mise-check"], (T0, T1), {"result": "pass"})), \
              mock.patch.object(L, "world_checks", return_value=([], [])), \
-             mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [])), \
+             mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [], [])), \
              mock.patch.object(L, "run", side_effect=self._fake_run), \
              mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "ok")), \
              mock.patch.object(L, "comment_body", side_effect=comment_body), \
@@ -179,7 +179,7 @@ class PostedTests(StoreCase):
             with mock.patch.object(L, "static_checks",
                                    return_value=(["mise-check"], (T0, T1), {"result": "pass"})), \
                  mock.patch.object(L, "world_checks", return_value=([], [])), \
-                 mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [])), \
+                 mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [], [])), \
                  mock.patch.object(L, "run", side_effect=self._fake_run), \
                  mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "ok")), \
                  mock.patch.object(L, "comment_body", return_value=("https://x/9", 9)), \
@@ -192,7 +192,7 @@ class PostedTests(StoreCase):
              mock.patch.object(L, "static_checks",
                                return_value=(["mise-check"], (T0, T1), {"result": "pass"})), \
              mock.patch.object(L, "world_checks", return_value=([], [])), \
-             mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [])), \
+             mock.patch.object(L, "require_open_pr", return_value=(["pr-open"], [], [])), \
              mock.patch.object(L, "run", side_effect=self._fake_run), \
              mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "ok")), \
              mock.patch.object(L, "comment_body", return_value=("https://x/9", 9)), \

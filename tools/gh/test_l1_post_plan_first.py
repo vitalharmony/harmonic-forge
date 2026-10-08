@@ -84,7 +84,7 @@ class FooterFieldTests(unittest.TestCase):
         l1_post.world_checks = lambda *a, **k: ([], [])
         # a private-repo incident: not this file's own concern (Plan-First field placement),
         # so stubbed satisfied exactly like static_checks/world_checks above.
-        l1_post.require_open_pr = lambda *a, **k: (["pr-open"], [])
+        l1_post.require_open_pr = lambda *a, **k: (["pr-open"], [], [])
         l1_post.pr_issue_marker = lambda *a, **k: "<!-- lane-pr-link v1 -->"
         l1_post.write_receipt = lambda record: captured.setdefault("receipt", record)
         try:
