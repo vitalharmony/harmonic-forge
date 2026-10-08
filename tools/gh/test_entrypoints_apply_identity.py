@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 #: `preclose_check.py` is deliberately absent: it makes no GitHub call, so a live identity
 #: probe there only makes the pre-close gate network-dependent (harmonic-forge#804 preclose).
 ENTRYPOINTS = {
-    "l1_post.py": "resolve_sha(args.sha)",
+    "l1_post.py": "resolve_sha(args.sha",
     "post_lane_discussion.py": None,
     "post_lane1_issue.py": None,
     "gh_issue.py": "fetch_milestones(args.repo)",

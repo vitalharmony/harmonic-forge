@@ -20,6 +20,7 @@ from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
+import manifest  # noqa: E402
 from manifest import ManifestError, require_onboarded_repo  # noqa: E402
 from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
 
@@ -371,14 +372,27 @@ def _describe_repo(cwd: Path | None) -> str:
     return f"cwd {actual_cwd} (no git remote 'origin' found there)"
 
 
-def resolve_sha(value: str, cwd: Path | None = None) -> str:
+def resolve_sha(value: str, cwd: Path | None = None, hint: str | None = None) -> str:
     result = run("git", "rev-parse", "--verify", f"{value}^{{commit}}", cwd=cwd)
     if result.returncode:
         fail(
             f"cannot resolve --sha {value!r} in {_describe_repo(cwd)}: "
-            f"{result.stderr.strip()}"
+            f"{result.stderr.strip()}" + (f" -- {hint}" if hint else "")
         )
     return result.stdout.strip()
+
+
+def _wrong_checkout_hint(repo: str) -> str | None:
+    """harmonic-forge#942 rework: when `--repo` is not this checkout's repo, say
+    where to run instead. A message only -- nothing resolves or runs elsewhere.
+    None when the repos match or this checkout's repo cannot be read."""
+    here = _cwd_repo_from_git(None)
+    if here is None or here.lower() == repo.lower():
+        return None
+    checkout = next((str(p.checkout) for p in manifest.load()
+                     if (p.repo or "").lower() == repo.lower() and p.checkout), None)
+    return (f"--repo {repo} is not this checkout's repo ({here}); run l1-post from "
+            f"{checkout or 'that repo' + chr(39) + 's checkout'}")
 
 
 def heading_content(body: str, heading: str) -> str:
@@ -1383,7 +1397,8 @@ def _open_prs_via_rest(cwd_repo: str, branch: str, cwd: Path | None) -> list[dic
 
 def require_open_pr(
     repo: str, branch: str, *, ack_no_pr_required: str | None = None, cwd: Path | None = None,
-) -> tuple[list[str], list[str]]:
+    open_missing: bool = False, issue: int | None = None, sha: str | None = None,
+) -> tuple[list[str], list[str], list[str]]:
     """a private-repo incident: `ready-for-l3`/`ae` must not be postable for a branch with
     no open PR against `main`.
 
@@ -1412,11 +1427,23 @@ def require_open_pr(
     any per-project identity was applied) and passed to `pr list` as `--repo`,
     rather than leaving `gh` to infer it.
 
-    Returns (checks, warnings), matching `world_checks`' shape: warnings is
-    durable text the caller appends into the posted comment body itself
-    (mirroring `--ack-overlap`'s a private-repo incident pattern) so an override leaves a
-    trace on the thread, never just a CLI argument that leaves none.
+    Returns (checks, warnings, opened): warnings is durable text the caller
+    appends into the posted comment body itself (mirroring `--ack-overlap`'s a
+    private-repo incident pattern) so an override leaves a trace on the thread,
+    never just a CLI argument that leaves none.
+
+    harmonic-forge#942: with `open_missing` (the caller passes it for
+    `ready-for-l3` only), a missing PR is opened here instead of refused,
+    over REST against the same `cwd_repo` the lookup used. `opened` is its
+    one-line record, rendered under its own heading -- never through
+    `warnings`, which renders as an operator acknowledgement. `ae` still
+    refuses: it follows a `ready-for-l3` on the same SHA, so a missing PR
+    there is an anomaly. `--prod-run` on a `ready-for-l3` is refused only
+    after this step (`_post_kind`), which can leave an opened PR behind; that
+    PR is wanted, and re-entry finds it open.
     """
+    if open_missing and (issue is None or sha is None):
+        fail("open_missing needs issue and sha")
     # harmonic-forge#220, REST first, GraphQL only as a fallback. Both halves
     # of this check -- resolving the repo and listing its PRs -- used to be
     # GraphQL-backed (`gh repo view`, `gh pr list`), which made the whole
@@ -1456,7 +1483,12 @@ def require_open_pr(
         except json.JSONDecodeError:
             fail("gh pr list returned unparseable output")
     if any(pr.get("state") == "OPEN" for pr in prs):
-        return ["pr-open"], []
+        return ["pr-open"], [], []
+    if open_missing and ack_no_pr_required is None:
+        number = _open_pr(cwd_repo, repo, branch, issue, sha, cwd)
+        return ([f"pr-opened #{number}"], [],
+                [f"- PR #{number} opened by `l1-post` for `{branch}` against `main` "
+                 "(no PR was open; harmonic-forge#942)."])
     message = (
         f"no open PR exists for {branch!r} against main -- CI will never run "
         f"on this SHA until one does. Open one first, from the branch's own "
@@ -1466,7 +1498,30 @@ def require_open_pr(
     )
     if ack_no_pr_required is None:
         fail(message)
-    return ["pr-open (acknowledged override)"], [f"- {message} -- acknowledged: {ack_no_pr_required}"]
+    return ["pr-open (acknowledged override)"], [f"- {message} -- acknowledged: {ack_no_pr_required}"], []
+
+
+def _open_pr(cwd_repo: str, repo: str, branch: str, issue: int, sha: str,
+             cwd: Path | None) -> int:
+    """Open `branch` -> `main` in `cwd_repo` and return the PR number (harmonic-forge#942).
+
+    The body never carries a closing keyword (harmonic-forge#911): a batched
+    issue closes by an explicit close command after its merge."""
+    log = run("git", "log", "-1", "--format=%s", sha, cwd=cwd)
+    title = (log.stdout.strip() if not log.returncode else "") or f"{branch} ({repo}#{issue})"
+    body = (f"Related to {repo}#{issue}.\n\n"
+            "Opened by `l1-post --kind ready-for-l3` (harmonic-forge#942).\n")
+    result = run("gh", "api", f"repos/{cwd_repo}/pulls", "-f", f"head={branch}",
+                 "-f", "base=main", "-f", f"title={title}", "-f", f"body={body}", cwd=cwd)
+    try:
+        number = json.loads(result.stdout).get("number") if not result.returncode else None
+    except (json.JSONDecodeError, AttributeError):
+        number = None
+    if not isinstance(number, int):
+        fail(f"could not open a PR for {branch!r} against main in {cwd_repo}: "
+             + (result.stderr.strip() or result.stdout.strip() or "no PR number returned"))
+    print(f"[l1-post] opened PR #{number} for {branch} against main", file=sys.stderr)
+    return number
 
 
 def pr_issue_marker(
@@ -1917,13 +1972,16 @@ def _post_kind(
     # (standalone) always follows an `ae` on the same SHA that already
     # required one.
     pr_warnings: list[str] = []
+    pr_opened: list[str] = []
     if kind == "ae" and grant_on_main:
         # harmonic-forge#858: a grant AE for a production step after the squash
         # merge runs at a commit already on origin/main, where CI runs on push;
         # validate_grant_ae has already shown it tree-identical to the gated SHA.
         checks.append("merged-to-main")
     elif kind in ("ready-for-l3", "ae"):
-        pr_check_names, pr_warnings = require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required)
+        pr_check_names, pr_warnings, pr_opened = require_open_pr(
+            repo, branch, ack_no_pr_required=ack_no_pr_required,
+            open_missing=(kind == "ready-for-l3"), issue=issue, sha=sha)
         checks += pr_check_names
     # Two distinct override classes, two distinct headings -- a reader
     # auditing the thread for one kind of waiver must not find the other's
@@ -1935,6 +1993,10 @@ def _post_kind(
         body = body.rstrip("\n") + "\n\n### Sibling-overlap override (operator-acknowledged)\n" + "\n".join(overlap_warnings) + "\n"
     if pr_warnings:
         body = body.rstrip("\n") + "\n\n### No-open-PR override (operator-acknowledged)\n" + "\n".join(pr_warnings) + "\n"
+    if pr_opened:
+        # harmonic-forge#942: its own heading -- this PR was opened by the
+        # transport, not waived by the operator.
+        body = body.rstrip("\n") + "\n\n### PR opened by l1-post\n" + "\n".join(pr_opened) + "\n"
     if kind == "ready-for-l3":
         marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing,
                                  snapshot_out=attempt)
@@ -2130,7 +2192,7 @@ def main() -> None:
     # first `gh` call, so a client account's repo is reachable and a wrong
     # login refuses before anything is written.
     apply_project_identity(repo)
-    sha = resolve_sha(args.sha)
+    sha = resolve_sha(args.sha, hint=_wrong_checkout_hint(repo))
 
     if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic

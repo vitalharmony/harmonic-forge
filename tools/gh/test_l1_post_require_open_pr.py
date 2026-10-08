@@ -86,7 +86,7 @@ class RequireOpenPr(unittest.TestCase):
         with mock.patch.object(
             L, "run", side_effect=_run_returning(_pr_list_result([{"number": 42, "state": "OPEN"}]))
         ):
-            checks, warnings = L.require_open_pr("vitalharmony/hrse", "feat/1234-thing")
+            checks, warnings, _opened = L.require_open_pr("vitalharmony/hrse", "feat/1234-thing")
         self.assertEqual(checks, ["pr-open"])
         self.assertEqual(warnings, [])
 
@@ -102,7 +102,7 @@ class RequireOpenPr(unittest.TestCase):
         """a private-repo incident's own pattern: the override must leave a trace on the
         thread, not just a CLI argument nobody else ever sees."""
         with mock.patch.object(L, "run", side_effect=_run_returning(_pr_list_result([]))):
-            checks, warnings = L.require_open_pr(
+            checks, warnings, _opened = L.require_open_pr(
                 "vitalharmony/hrse", "feat/1234-thing",
                 ack_no_pr_required="deliberately gating a doc-only branch, no CI needed",
             )
@@ -155,7 +155,7 @@ class RequireOpenPr(unittest.TestCase):
                 _pr_list_result([{"number": 1, "state": "OPEN"}]))(*args, **kwargs)
 
         with mock.patch.object(L, "run", side_effect=_run):
-            checks, warnings = L.require_open_pr("vitalharmony/hrse", "feat/x")
+            checks, warnings, _opened = L.require_open_pr("vitalharmony/hrse", "feat/x")
 
         self.assertEqual(checks, ["pr-open"])
         self.assertEqual(warnings, [])
@@ -182,7 +182,7 @@ class RequireOpenPr(unittest.TestCase):
         project = mock.Mock(repo="vitalharmony/hrse")
         with mock.patch.object(L, "run", side_effect=_run), \
              mock.patch.object(L, "project_for_path", return_value=project):
-            checks, _ = L.require_open_pr("vitalharmony/hrse", "feat/x")
+            checks, _, _opened = L.require_open_pr("vitalharmony/hrse", "feat/x")
 
         self.assertEqual(checks, ["pr-open"])
         self.assertFalse(any("view" in c for c in captured), "gh repo view was called")
@@ -267,6 +267,7 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         L.require_open_pr = lambda *a, **k: (
             ["pr-open (acknowledged override)"],
             ["- no open PR exists -- acknowledged: doc-only branch, no CI needed"],
+            [],
         )
         L.write_receipt = lambda record: None
         try:
@@ -294,7 +295,7 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         L.world_checks = lambda *a, **k: (
             [], ["- active sibling branch overlaps -- acknowledged: reason"],
         )
-        L.require_open_pr = lambda *a, **k: (["pr-open"], [])
+        L.require_open_pr = lambda *a, **k: (["pr-open"], [], [])
         L.write_receipt = lambda record: None
         try:
             L.post_kind("o/r", 1, "ae", "body", "abc", "br")
@@ -304,6 +305,142 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
 
         self.assertIn("### Sibling-overlap override (operator-acknowledged)", captured["body"])
         self.assertNotIn("### No-open-PR override", captured["body"])
+
+
+def _open_run(prs: list[dict], *, post_rc: int = 0, post_out: str = '{"number": 77}'):
+    """harmonic-forge#942: route by argv shape. The lookup GET's argv is
+    `repos/<r>/pulls?head=...`, so `"pulls" in argv` is False for it; the POST
+    is told apart by its `-f` fields."""
+    calls: list[tuple] = []
+
+    def _run(*args, **kwargs):
+        argv = args[0] if args and isinstance(args[0], (list, tuple)) else args
+        calls.append(tuple(argv))
+        if "remote" in argv:
+            return _git_remote_result()
+        if "log" in argv:
+            return subprocess.CompletedProcess(("git",), 0, "feat: the commit subject\n", "")
+        if "-f" in argv:
+            return subprocess.CompletedProcess(("gh",), post_rc, post_out if not post_rc else "",
+                                               "" if not post_rc else "HTTP 422")
+        return _pr_list_result(prs)
+    return _run, calls
+
+
+def _posts(calls: list[tuple]) -> list[tuple]:
+    return [c for c in calls if "-f" in c]
+
+
+class OpensTheMissingPr(unittest.TestCase):
+    """harmonic-forge#942: `ready-for-l3` opens the PR itself; `ae` still refuses."""
+
+    def test_no_pr_opens_one_with_a_related_to_body_and_no_closing_keyword(self) -> None:
+        run, calls = _open_run([])
+        with mock.patch.object(L, "run", side_effect=run):
+            checks, warnings, opened = L.require_open_pr(
+                "vitalharmony/hrse", "feat/1234-thing", open_missing=True, issue=1234, sha="abc")
+        self.assertEqual(checks, ["pr-opened #77"])
+        self.assertEqual(warnings, [])
+        self.assertTrue(opened and "PR #77" in opened[0])
+        (post,) = _posts(calls)
+        self.assertIn("repos/vitalharmony/hrse/pulls", post)
+        self.assertIn("head=feat/1234-thing", post)
+        self.assertIn("base=main", post)
+        self.assertIn("title=feat: the commit subject", post)
+        body = next(a for a in post if a.startswith("body="))[len("body="):]
+        self.assertTrue(body.startswith("Related to vitalharmony/hrse#1234"))
+        self.assertNotRegex(body.lower(), r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b")
+
+    def test_the_lookup_get_still_routes_to_the_pr_list(self) -> None:
+        run, calls = _open_run([{"number": 5, "state": "OPEN"}])
+        with mock.patch.object(L, "run", side_effect=run):
+            L.require_open_pr("vitalharmony/hrse", "feat/x", open_missing=True, issue=1, sha="abc")
+        gets = [c for c in calls if any("pulls?head=" in str(a) for a in c)]
+        self.assertEqual(len(gets), 1)
+        self.assertNotIn("-f", gets[0])
+
+    def test_an_open_pr_opens_nothing(self) -> None:
+        run, calls = _open_run([{"number": 5, "state": "OPEN"}])
+        with mock.patch.object(L, "run", side_effect=run):
+            checks, _, opened = L.require_open_pr(
+                "vitalharmony/hrse", "feat/x", open_missing=True, issue=1, sha="abc")
+        self.assertEqual((checks, opened), (["pr-open"], []))
+        self.assertEqual(_posts(calls), [])
+
+    def test_without_open_missing_it_still_refuses_and_opens_nothing(self) -> None:
+        run, calls = _open_run([])
+        with mock.patch.object(L, "run", side_effect=run):
+            with self.assertRaises(SystemExit):
+                L.require_open_pr("vitalharmony/hrse", "feat/x")
+        self.assertEqual(_posts(calls), [])
+
+    def test_a_failed_create_fails_the_post(self) -> None:
+        run, _ = _open_run([], post_rc=1)
+        with mock.patch.object(L, "run", side_effect=run):
+            with self.assertRaises(SystemExit):
+                L.require_open_pr("vitalharmony/hrse", "feat/x", open_missing=True, issue=1, sha="abc")
+
+    def test_missing_issue_refuses_before_any_post(self) -> None:
+        run, calls = _open_run([])
+        with mock.patch.object(L, "run", side_effect=run):
+            with self.assertRaises(SystemExit):
+                L.require_open_pr("vitalharmony/hrse", "feat/x", open_missing=True, issue=None, sha="abc")
+        self.assertEqual(_posts(calls), [])
+
+    def test_only_ready_for_l3_opens(self) -> None:
+        body = ast.unparse(_fn("_post_kind"))
+        self.assertIn("open_missing=kind == 'ready-for-l3'", body)
+
+    def test_an_opened_pr_renders_under_its_own_heading(self) -> None:
+        captured = {}
+
+        def fake_comment_body(repo, issue, body):
+            captured["body"] = body
+            return "https://example/1", 1
+
+        original = (L.comment_body, L.static_checks, L.world_checks,
+                    L.write_receipt, L.require_open_pr, L.pr_issue_marker, L.refresh_main)
+        L.comment_body = fake_comment_body
+        L.refresh_main = lambda *a, **k: None
+        L.static_checks = lambda sha, branch: (["body-validation"], (None, None), {"result": "pass"})
+        L.world_checks = lambda *a, **k: ([], [])
+        L.require_open_pr = lambda *a, **k: (
+            ["pr-opened #77"], [], ["- PR #77 opened by `l1-post` for `br` against `main`."])
+        L.pr_issue_marker = lambda *a, **k: "<!-- marker -->"
+        L.write_receipt = lambda record: None
+        try:
+            L.post_kind("o/r", 1, "ready-for-l3", "body", "abc", "br")
+        finally:
+            (L.comment_body, L.static_checks, L.world_checks,
+             L.write_receipt, L.require_open_pr, L.pr_issue_marker, L.refresh_main) = original
+        self.assertIn("### PR opened by l1-post\n- PR #77", captured["body"])
+        self.assertNotIn("operator-acknowledged", captured["body"])
+
+
+class WrongCheckoutHint(unittest.TestCase):
+    """harmonic-forge#942 rework: an unresolvable --sha names where to run."""
+
+    def _hint(self, here: str, repo: str) -> str | None:
+        projects = [mock.Mock(repo="vitalharmony/harmonic-forge",
+                              checkout=Path("/home/u/harmonic-forge"))]
+        with mock.patch.object(L, "_cwd_repo_from_git", return_value=here), \
+             mock.patch.object(L.manifest, "load", return_value=projects):
+            return L._wrong_checkout_hint(repo)
+
+    def test_a_different_repo_names_its_checkout(self) -> None:
+        hint = self._hint("vitalharmony/hrse", "vitalharmony/harmonic-forge")
+        self.assertIn("run l1-post from /home/u/harmonic-forge", hint)
+
+    def test_the_same_repo_adds_nothing(self) -> None:
+        self.assertIsNone(self._hint("vitalharmony/hrse", "vitalharmony/hrse"))
+
+    def test_the_hint_reaches_the_failure_message(self) -> None:
+        failed = subprocess.CompletedProcess(("git",), 128, "", "fatal: Needed a single revision")
+        with mock.patch.object(L, "run", return_value=failed), \
+             mock.patch.object(L, "fail", side_effect=SystemExit) as fail:
+            with self.assertRaises(SystemExit):
+                L.resolve_sha("abc", hint="run l1-post from /x")
+        self.assertIn("run l1-post from /x", fail.call_args.args[0])
 
 
 if __name__ == "__main__":
