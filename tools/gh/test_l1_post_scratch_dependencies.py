@@ -127,6 +127,15 @@ class ScratchDependencies(unittest.TestCase):
         script.write_text("import sys; sys.stdout.buffer.write(b'\\xff ok\\n')\n")
         result = L._install((sys.executable, str(script)), self.scratch)
         self.assertIn("ok", result.stdout)
+        self.assertIn("�", result.stdout)  # replaced, not dropped (errors="ignore")
+
+    def test_an_unreadable_manifest_fails_closed(self) -> None:
+        # Mocked rather than chmod 000, which root (CI) still reads.
+        for error in (PermissionError("denied"), OSError("io")):
+            with mock.patch.object(Path, "read_bytes", side_effect=error), \
+                    self.assertRaises(SystemExit) as raised:
+                self.provision("frontend/node_modules")
+            self.assertIn("cannot read", str(raised.exception))
 
     def test_a_manifest_that_is_a_directory_fails_closed(self) -> None:
         (self.scratch / "frontend/package.json").unlink()
