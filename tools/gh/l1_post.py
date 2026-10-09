@@ -1667,10 +1667,14 @@ def _manifest_differences(owner: Path, scratch_dir: Path, names: tuple[str, ...]
             ours = (owner / name).read_bytes()
         except FileNotFoundError:
             ours = None
+        except OSError as exc:  # preclose pass 1: a directory or unreadable file
+            fail(f"cannot read {owner / name}: {exc}")
         try:
             theirs = (scratch_dir / name).read_bytes()
         except FileNotFoundError:
             theirs = None
+        except OSError as exc:
+            fail(f"cannot read {scratch_dir / name}: {exc}")
         if ours != theirs:
             differ.append(name)
     return differ
@@ -1678,9 +1682,11 @@ def _manifest_differences(owner: Path, scratch_dir: Path, names: tuple[str, ...]
 
 def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False,
-                              timeout=DEPENDENCY_INSTALL_TIMEOUT_SECONDS)
-    except FileNotFoundError as exc:
+        # errors="replace": a non-UTF-8 byte in install output must not raise
+        # past fail() (preclose pass 1).
+        return subprocess.run(command, cwd=cwd, text=True, errors="replace", capture_output=True,
+                              check=False, timeout=DEPENDENCY_INSTALL_TIMEOUT_SECONDS)
+    except OSError as exc:  # missing or non-executable tool (preclose pass 1)
         fail(f"scratch install could not start: {' '.join(command)}: {exc}")
     except subprocess.TimeoutExpired:
         fail(f"scratch install timed out after {DEPENDENCY_INSTALL_TIMEOUT_SECONDS}s: "
@@ -1697,11 +1703,13 @@ def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir
     if not source.is_dir():
         fail(f"source worktree dependency directory is missing: {dependency_dir}")
     workdir, names = _DEPENDENCY_MANIFESTS[dependency_dir]
-    owner = source.resolve().parent
-    differ = _manifest_differences(owner, scratch / workdir, names)
+    # Resolve once and link to exactly what was compared, so retargeting the
+    # source link afterward cannot change what the scratch uses (preclose pass 1).
+    install = source.resolve()
+    differ = _manifest_differences(install.parent, scratch / workdir, names)
     target = scratch / dependency_dir
     if not differ:
-        target.symlink_to(source, target_is_directory=True)
+        target.symlink_to(install, target_is_directory=True)
         return "linked"
     print(f"[l1-post] scratch {dependency_dir}: installing (the linked install's "
           f"{', '.join(differ)} differ from the attested commit's)", file=sys.stderr)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -78,8 +79,7 @@ class ScratchDependencies(unittest.TestCase):
         (self.scratch / "frontend/package-lock.json").write_text("branch lock\n")
         self.assertEqual(self.provision("frontend/node_modules"), "installed")
         self.assertFalse((self.scratch / "frontend/node_modules").is_symlink())
-        self.assertEqual(self.commands(), ["npm ci"])
-        self.assertEqual(self.calls[0][1], self.scratch / "frontend")
+        self.assertEqual(self.calls, [(("npm", "ci"), self.scratch / "frontend")])
         self.assertIn("package-lock.json differ", self.stderr.getvalue())
 
     def test_a_manifest_present_on_one_side_only_differs(self) -> None:
@@ -94,9 +94,11 @@ class ScratchDependencies(unittest.TestCase):
     def test_changed_requirements_rebuild_the_venv_with_the_pinned_python(self) -> None:
         (self.scratch / "backend/requirements.txt").write_text("new pin\n")
         self.assertEqual(self.provision("backend/.venv"), "installed")
-        self.assertEqual(self.calls[0][0][:4], ("mise", "exec", "--", "python3"))
-        self.assertEqual(self.calls[1][0][:2], (".venv/bin/pip", "install"))
-        self.assertEqual(self.calls[1][1], self.scratch / "backend")
+        self.assertEqual(self.calls, [
+            (("mise", "exec", "--", "python3", "-m", "venv", ".venv"), self.scratch / "backend"),
+            ((".venv/bin/pip", "install", "-r", "requirements.txt", "-r", "requirements-dev.txt"),
+             self.scratch / "backend"),
+        ])
 
     # AC4
     def test_a_failed_install_fails_with_its_output_and_leaves_no_link(self) -> None:
@@ -109,15 +111,34 @@ class ScratchDependencies(unittest.TestCase):
         self.assertFalse((self.scratch / "frontend/node_modules").exists())
 
     def test_an_install_that_cannot_start_or_times_out_fails(self) -> None:
-        with mock.patch.object(L.subprocess, "run", side_effect=FileNotFoundError("npm")), \
-                self.assertRaises(SystemExit) as raised:
-            L._install(("npm", "ci"), self.scratch)
-        self.assertIn("could not start", str(raised.exception))
+        for error in (FileNotFoundError("npm"), PermissionError("npm")):
+            with mock.patch.object(L.subprocess, "run", side_effect=error), \
+                    self.assertRaises(SystemExit) as raised:
+                L._install(("npm", "ci"), self.scratch)
+            self.assertIn("could not start", str(raised.exception))
         timeout = subprocess.TimeoutExpired(["npm", "ci"], L.DEPENDENCY_INSTALL_TIMEOUT_SECONDS)
         with mock.patch.object(L.subprocess, "run", side_effect=timeout), \
                 self.assertRaises(SystemExit) as raised:
             L._install(("npm", "ci"), self.scratch)
         self.assertIn("timed out", str(raised.exception))
+
+    def test_non_utf8_install_output_is_replaced_not_raised(self) -> None:
+        script = self.scratch / "emit.py"
+        script.write_text("import sys; sys.stdout.buffer.write(b'\\xff ok\\n')\n")
+        result = L._install((sys.executable, str(script)), self.scratch)
+        self.assertIn("ok", result.stdout)
+
+    def test_a_manifest_that_is_a_directory_fails_closed(self) -> None:
+        (self.scratch / "frontend/package.json").unlink()
+        (self.scratch / "frontend/package.json").mkdir()
+        with self.assertRaises(SystemExit) as raised:
+            self.provision("frontend/node_modules")
+        self.assertIn("cannot read", str(raised.exception))
+
+    def test_the_link_targets_the_install_that_was_compared(self) -> None:
+        self.assertEqual(self.provision("frontend/node_modules"), "linked")
+        link = self.scratch / "frontend/node_modules"
+        self.assertEqual(Path(os.readlink(link)), (self.main / "frontend/node_modules").resolve())
 
     def test_a_missing_source_install_still_fails_as_before(self) -> None:
         (self.repo / "frontend/node_modules").unlink()
