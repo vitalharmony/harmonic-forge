@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""harmonic-forge#945: l1-post's scratch check links the source checkout's
-dependency install, then asks the package manager whether it satisfies the
-attested commit, and installs for real in the scratch when it does not."""
+"""harmonic-forge#945 (reforged): l1-post's scratch check links the source
+checkout's dependency install only when the manifests beside the real install
+equal the attested commit's byte for byte, and installs for real in the
+scratch when they differ."""
 from __future__ import annotations
 
 import contextlib
@@ -21,69 +22,107 @@ def _done(code: int, out: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], code, out, "")
 
 
+MANIFESTS = {"frontend": ("package.json", "package-lock.json"),
+             "backend": ("requirements.txt", "requirements-dev.txt")}
+
+
 class ScratchDependencies(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.repo, self.scratch = Path(tmp.name) / "repo", Path(tmp.name) / "scratch"
-        for directory in ("frontend/node_modules", "backend/.venv"):
-            (self.repo / directory).mkdir(parents=True)
-        (self.scratch / "frontend").mkdir(parents=True)
-        (self.scratch / "backend").mkdir(parents=True)
-        self.calls: list[tuple[tuple[str, ...], Path | None]] = []
+        root = Path(tmp.name)
+        # The tools worktree links the main checkout's install, as on Lane 1.
+        self.main, self.repo, self.scratch = root / "main", root / "repo", root / "scratch"
+        for workdir, names in MANIFESTS.items():
+            for base in (self.main, self.scratch):
+                (base / workdir).mkdir(parents=True)
+                for name in names:
+                    (base / workdir / name).write_text(f"{name} v1\n")
+            (self.repo / workdir).mkdir(parents=True)
+        (self.main / "frontend/node_modules").mkdir()
+        (self.main / "backend/.venv").mkdir()
+        (self.repo / "frontend/node_modules").symlink_to(self.main / "frontend/node_modules")
+        (self.repo / "backend/.venv").symlink_to(self.main / "backend/.venv")
+        self.calls: list[tuple[tuple[str, ...], Path]] = []
+        self.stderr = io.StringIO()
 
-    def provision(self, dependency_dir: str, answers: dict[str, int]) -> str:
-        """`answers` maps a command's first two words to its exit code; anything
-        unlisted exits 0."""
-        def fake_run(*args: str, cwd: Path | None = None, env=None):
-            self.calls.append((args, cwd))
-            return _done(answers.get(" ".join(args[:2]), 0), "line\n" * 50)
-        with mock.patch.object(L, "run", side_effect=fake_run), contextlib.redirect_stderr(io.StringIO()):
+    def provision(self, dependency_dir: str, codes: dict[str, int] | None = None) -> str:
+        codes = codes or {}
+
+        def fake_install(command: tuple[str, ...], cwd: Path):
+            self.calls.append((command, cwd))
+            return _done(codes.get(" ".join(command[:2]), 0), "line\n" * 50)
+        with mock.patch.object(L, "_install", side_effect=fake_install), \
+                contextlib.redirect_stderr(self.stderr):
             return L._provision_scratch_dependency(self.repo, self.scratch, dependency_dir)
 
     def commands(self) -> list[str]:
-        return [" ".join(args[:2]) for args, _ in self.calls]
+        return [" ".join(command[:2]) for command, _ in self.calls]
 
     # AC1
-    def test_a_satisfying_install_stays_linked_and_nothing_installs(self) -> None:
-        self.assertEqual(self.provision("frontend/node_modules", {}), "linked")
+    def test_identical_manifests_stay_linked_and_nothing_installs(self) -> None:
+        self.assertEqual(self.provision("frontend/node_modules"), "linked")
         self.assertTrue((self.scratch / "frontend/node_modules").is_symlink())
-        self.assertEqual(self.commands(), ["npm ls"])
-        self.assertEqual(self.calls[0][1], self.scratch / "frontend")
+        self.assertEqual(self.calls, [])
+
+    def test_the_manifests_compared_are_the_real_installs_not_the_links(self) -> None:
+        # The tools worktree's own frontend has no manifests at all; only the
+        # main checkout's, beside the real install, count.
+        self.assertEqual(self.provision("frontend/node_modules"), "linked")
+        (self.main / "frontend/package-lock.json").write_text("moved on main\n")
+        (self.scratch / "frontend/node_modules").unlink()
+        self.assertEqual(self.provision("frontend/node_modules"), "installed")
 
     # AC2
-    def test_an_unsatisfying_install_is_replaced_by_npm_ci_in_the_scratch(self) -> None:
-        self.assertEqual(self.provision("frontend/node_modules", {"npm ls": 1}), "installed")
+    def test_a_changed_lockfile_is_installed_with_npm_ci_in_the_scratch(self) -> None:
+        (self.scratch / "frontend/package-lock.json").write_text("branch lock\n")
+        self.assertEqual(self.provision("frontend/node_modules"), "installed")
         self.assertFalse((self.scratch / "frontend/node_modules").is_symlink())
-        self.assertEqual(self.commands(), ["npm ls", "npm ci"])
-        self.assertEqual(self.calls[1][1], self.scratch / "frontend")
+        self.assertEqual(self.commands(), ["npm ci"])
+        self.assertEqual(self.calls[0][1], self.scratch / "frontend")
+        self.assertIn("package-lock.json differ", self.stderr.getvalue())
+
+    def test_a_manifest_present_on_one_side_only_differs(self) -> None:
+        (self.scratch / "backend/requirements-dev.txt").unlink()
+        self.assertEqual(self.provision("backend/.venv"), "installed")
 
     # AC3
-    def test_a_satisfying_venv_stays_linked(self) -> None:
-        self.assertEqual(self.provision("backend/.venv", {}), "linked")
+    def test_identical_requirements_keep_the_venv_linked(self) -> None:
+        self.assertEqual(self.provision("backend/.venv"), "linked")
         self.assertTrue((self.scratch / "backend/.venv").is_symlink())
-        args, cwd = self.calls[0]
-        self.assertEqual(args[:5], (".venv/bin/python", "-m", "pip", "install", "--dry-run"))
-        self.assertIn("--no-index", args)
-        self.assertEqual(cwd, self.scratch / "backend")
 
-    def test_an_unsatisfying_venv_is_rebuilt_with_the_pinned_python(self) -> None:
-        self.assertEqual(self.provision("backend/.venv", {".venv/bin/python -m": 1}), "installed")
-        self.assertFalse((self.scratch / "backend/.venv").is_symlink())
-        self.assertEqual(self.calls[1][0][:4], ("mise", "exec", "--", "python3"))
-        self.assertEqual(self.calls[2][0][:2], (".venv/bin/pip", "install"))
+    def test_changed_requirements_rebuild_the_venv_with_the_pinned_python(self) -> None:
+        (self.scratch / "backend/requirements.txt").write_text("new pin\n")
+        self.assertEqual(self.provision("backend/.venv"), "installed")
+        self.assertEqual(self.calls[0][0][:4], ("mise", "exec", "--", "python3"))
+        self.assertEqual(self.calls[1][0][:2], (".venv/bin/pip", "install"))
+        self.assertEqual(self.calls[1][1], self.scratch / "backend")
 
     # AC4
-    def test_a_failed_install_fails_and_leaves_no_link(self) -> None:
+    def test_a_failed_install_fails_with_its_output_and_leaves_no_link(self) -> None:
+        (self.scratch / "frontend/package.json").write_text("changed\n")
         with self.assertRaises(SystemExit) as raised:
-            self.provision("frontend/node_modules", {"npm ls": 1, "npm ci": 1})
-        self.assertIn("npm ci exited 1", str(raised.exception))
+            self.provision("frontend/node_modules", {"npm ci": 1})
+        message = str(raised.exception)
+        self.assertIn("npm ci exited 1", message)
+        self.assertIn("line", message)
         self.assertFalse((self.scratch / "frontend/node_modules").exists())
 
+    def test_an_install_that_cannot_start_or_times_out_fails(self) -> None:
+        with mock.patch.object(L.subprocess, "run", side_effect=FileNotFoundError("npm")), \
+                self.assertRaises(SystemExit) as raised:
+            L._install(("npm", "ci"), self.scratch)
+        self.assertIn("could not start", str(raised.exception))
+        timeout = subprocess.TimeoutExpired(["npm", "ci"], L.DEPENDENCY_INSTALL_TIMEOUT_SECONDS)
+        with mock.patch.object(L.subprocess, "run", side_effect=timeout), \
+                self.assertRaises(SystemExit) as raised:
+            L._install(("npm", "ci"), self.scratch)
+        self.assertIn("timed out", str(raised.exception))
+
     def test_a_missing_source_install_still_fails_as_before(self) -> None:
-        (self.repo / "frontend/node_modules").rmdir()
+        (self.repo / "frontend/node_modules").unlink()
         with self.assertRaises(SystemExit) as raised:
-            self.provision("frontend/node_modules", {})
+            self.provision("frontend/node_modules")
         self.assertIn("dependency directory is missing", str(raised.exception))
 
     def test_the_ready_for_l3_loop_uses_it(self) -> None:

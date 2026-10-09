@@ -1641,41 +1641,72 @@ def _announce_scratch_frontend_env(repo_root: Path, scratch: Path) -> None:
               "(run `mise run worktree-provision` here)", file=sys.stderr)
 
 
-# harmonic-forge#945: the source checkout's install is linked, then the package
-# manager is asked whether it satisfies the attested commit. Comparing lockfiles
-# cannot answer that: Lane 1's tools worktree links the main checkout's install,
-# which nothing re-installs when main's manifests move.
-_DEPENDENCY_PROBES = {
-    "frontend/node_modules": (("npm", "ls", "--all"), "frontend"),
-    "backend/.venv": ((".venv/bin/python", "-m", "pip", "install", "--dry-run", "--no-index",
-                       "-r", "requirements.txt", "-r", "requirements-dev.txt"), "backend"),
+# harmonic-forge#945 (reforged after sticky-wicket, comment 6070187605): the
+# source install is linked only when the manifests beside it are byte-identical
+# to the attested commit's; any difference means a real install in the scratch.
+# The manifests are read next to the directory that actually holds the install
+# (the link resolved), because Lane 1's tools worktree links the main checkout's
+# install, which nothing re-installs when main's manifests move.
+_DEPENDENCY_MANIFESTS = {
+    "frontend/node_modules": ("frontend", ("package.json", "package-lock.json")),
+    "backend/.venv": ("backend", ("requirements.txt", "requirements-dev.txt")),
 }
 _DEPENDENCY_INSTALLS = {
     "frontend/node_modules": [("npm", "ci")],
     "backend/.venv": [("mise", "exec", "--", "python3", "-m", "venv", ".venv"),
                       (".venv/bin/pip", "install", "-r", "requirements.txt", "-r", "requirements-dev.txt")],
 }
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 900
+
+
+def _manifest_differences(owner: Path, scratch_dir: Path, names: tuple[str, ...]) -> list[str]:
+    """Names of the manifests that differ (or exist on one side only)."""
+    differ = []
+    for name in names:
+        try:
+            ours = (owner / name).read_bytes()
+        except FileNotFoundError:
+            ours = None
+        try:
+            theirs = (scratch_dir / name).read_bytes()
+        except FileNotFoundError:
+            theirs = None
+        if ours != theirs:
+            differ.append(name)
+    return differ
+
+
+def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False,
+                              timeout=DEPENDENCY_INSTALL_TIMEOUT_SECONDS)
+    except FileNotFoundError as exc:
+        fail(f"scratch install could not start: {' '.join(command)}: {exc}")
+    except subprocess.TimeoutExpired:
+        fail(f"scratch install timed out after {DEPENDENCY_INSTALL_TIMEOUT_SECONDS}s: "
+             f"{' '.join(command)}")
+    raise AssertionError("unreachable")  # fail() exits
 
 
 def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir: str) -> str:
-    """Link `dependency_dir` from the source checkout; if the package manager
-    says the linked install does not satisfy the attested commit, replace the
-    link with a real install in the scratch. Returns "linked" or "installed".
-    A failed install fails the check; it never falls back to the link."""
+    """Link `dependency_dir` from the source checkout when the manifests beside
+    the real install equal the attested commit's byte for byte; otherwise
+    install for real in the scratch. Returns "linked" or "installed". A failed
+    install fails the check; it never falls back to the link."""
     source = repo_root / dependency_dir
     if not source.is_dir():
         fail(f"source worktree dependency directory is missing: {dependency_dir}")
+    workdir, names = _DEPENDENCY_MANIFESTS[dependency_dir]
+    owner = source.resolve().parent
+    differ = _manifest_differences(owner, scratch / workdir, names)
     target = scratch / dependency_dir
-    target.symlink_to(source, target_is_directory=True)
-    probe, workdir = _DEPENDENCY_PROBES[dependency_dir]
-    probed = run(*probe, cwd=scratch / workdir)
-    if probed.returncode == 0:
+    if not differ:
+        target.symlink_to(source, target_is_directory=True)
         return "linked"
-    target.unlink()
-    print(f"[l1-post] scratch {dependency_dir}: installed (the linked install does not satisfy "
-          f"the attested commit: {' '.join(probe)} exited {probed.returncode})", file=sys.stderr)
+    print(f"[l1-post] scratch {dependency_dir}: installing (the linked install's "
+          f"{', '.join(differ)} differ from the attested commit's)", file=sys.stderr)
     for command in _DEPENDENCY_INSTALLS[dependency_dir]:
-        installed = run(*command, cwd=scratch / workdir)
+        installed = _install(command, scratch / workdir)
         if installed.returncode:
             tail = "\n".join((installed.stdout + installed.stderr).splitlines()[-40:])
             fail(f"scratch install failed for {dependency_dir}: {' '.join(command)} "
