@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_check as preclose  # noqa: E402
+import _scratch  # noqa: E402
 
 SCRATCH_AGE_SECONDS = 24 * 60 * 60
 
@@ -302,10 +303,10 @@ def run(args: argparse.Namespace) -> int:
             if args.timeout <= 0:
                 raise ValueError("--timeout must be positive")
             origin = git_value("remote", "get-url", "origin")
-            parent = scratch_parent()
-            reap_old(parent)
-            results = [one_check(check, sha=sha, origin=origin, repo=repo,
-                                 parent=parent, timeout=args.timeout) for check in checks]
+            # harmonic-forge#949: under the shared, locked, reaped scratch root.
+            with _scratch.scratch_dir(f"kill-check {repo}#{args.issue}", prefix="kill-check-") as parent:
+                results = [one_check(check, sha=sha, origin=origin, repo=repo,
+                                     parent=parent, timeout=args.timeout) for check in checks]
         except (Exception, SystemExit) as exc:
             # checked_inputs/git_value use SystemExit for invalid input;
             # record failure rather than leaving an ambiguous running receipt.

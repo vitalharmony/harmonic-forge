@@ -71,11 +71,12 @@ class StaticChecksWiringTests(unittest.TestCase):
         tree = _fn("static_checks")
         finals = [ast.unparse(n) for t in ast.walk(tree) if isinstance(t, ast.Try)
                   for n in t.finalbody]
-        self.assertTrue(any("shutil.rmtree(check_tmp" in f for f in finals))
+        # harmonic-forge#949: the private root lives inside the scratch holder,
+        # which the holder's own exit removes (and the next run reaps if killed).
+        self.assertTrue(any("holder_cm.__exit__" in f for f in finals))
 
-    def test_check_tmp_exists_before_the_try(self) -> None:
-        self.assertLess(self.body.index("check_tmp: Path | None = None"),
-                        self.body.index("try:"))
+    def test_the_private_root_is_inside_the_scratch_holder(self) -> None:
+        self.assertIn("_private_check_tmp(holder)", self.body)
 
 
 if __name__ == "__main__":

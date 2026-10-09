@@ -161,7 +161,10 @@ class KillCheckTests(unittest.TestCase):
         after = (git(self.repo, "status", "--porcelain"),
                  git(self.repo, "worktree", "list"), git(self.repo, "rev-parse", "HEAD"))
         self.assertEqual(after, before)
-        self.assertEqual(self.receipt()["scratch_parent"], str(kill.scratch_parent()))
+        # harmonic-forge#949: the run's parent is a scratch dir under the shared root, removed on exit.
+        recorded = Path(self.receipt()["scratch_parent"])
+        self.assertEqual(recorded.parent, kill._scratch.root())
+        self.assertFalse(recorded.exists())
 
     def test_reaper_removes_only_old_scratch(self) -> None:
         parent = kill.scratch_parent()

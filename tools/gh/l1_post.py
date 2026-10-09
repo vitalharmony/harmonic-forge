@@ -91,6 +91,7 @@ import pitch_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
+import _scratch  # noqa: E402  (harmonic-forge#949)
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -262,13 +263,15 @@ def run(*args: str, cwd: Path | None = None,
 CHECK_TMP_BASE = Path.home() / ".cache" / "l1-post-check"
 
 
-def _private_check_tmp() -> tuple[Path, dict[str, str]]:
+def _private_check_tmp(base: Path | None = None) -> tuple[Path, dict[str, str]]:
     """Return a fresh private temp directory and an environment using it."""
-    CHECK_TMP_BASE.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="check-", dir=CHECK_TMP_BASE))
+    base = base or CHECK_TMP_BASE
+    base.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="check-", dir=base))
     env = dict(os.environ)
     for name in ("TMPDIR", "TMP", "TEMP"):
         env[name] = str(root)
+    env[_scratch.HELD_ENV] = str(root)  # harmonic-forge#949: nested checks don't re-lock
     return root, env
 
 
@@ -1820,8 +1823,14 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
     repo_root = Path(repo_root_result.stdout.strip())
-    scratch = Path(tempfile.mkdtemp(prefix="hrse-l1-post-"))
-    check_tmp: Path | None = None
+    # harmonic-forge#949: the scratch copy and its install live under the
+    # disk-backed, locked, reaped root, never the /tmp tmpfs.
+    holder_cm = _scratch.scratch_dir(f"l1-post {branch}@{sha[:8]}", prefix="l1-post-")
+    try:
+        holder = holder_cm.__enter__()
+    except _scratch.ScratchError as error:
+        fail(str(error))
+    scratch = holder / "wt"
     try:
         added = run("git", "worktree", "add", "--detach", str(scratch), sha)
         if added.returncode:
@@ -1860,7 +1869,7 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
                     if real.exists():
                         link.unlink()
                         link.symlink_to(real, target_is_directory=True)
-        check_tmp, check_env = _private_check_tmp()
+        _, check_env = _private_check_tmp(holder)
         # harmonic-forge#745 AC1: bracket the local pre-flight in UTC, not
         # wall-clock local time -- the reporter compares this against GitHub
         # API timestamps, which are always UTC.
@@ -1875,9 +1884,8 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
             fail("verification left the detached worktree dirty")
     finally:
         run("git", "worktree", "remove", "--force", str(scratch))
-        shutil.rmtree(scratch, ignore_errors=True)
-        if check_tmp is not None:
-            shutil.rmtree(check_tmp, ignore_errors=True)
+        holder_cm.__exit__(None, None, None)
+        run("git", "worktree", "prune")
     return (["mise-check", "origin-main-ancestor", "branch-sha-match", "clean-worktree"],
             (local_check_started_at, local_check_finished_at), {"result": "pass"})
 
