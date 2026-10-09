@@ -1641,6 +1641,87 @@ def _announce_scratch_frontend_env(repo_root: Path, scratch: Path) -> None:
               "(run `mise run worktree-provision` here)", file=sys.stderr)
 
 
+# harmonic-forge#945 (reforged after sticky-wicket, comment 6070187605): the
+# source install is linked only when the manifests beside it are byte-identical
+# to the attested commit's; any difference means a real install in the scratch.
+# The manifests are read next to the directory that actually holds the install
+# (the link resolved), because Lane 1's tools worktree links the main checkout's
+# install, which nothing re-installs when main's manifests move.
+_DEPENDENCY_MANIFESTS = {
+    "frontend/node_modules": ("frontend", ("package.json", "package-lock.json")),
+    "backend/.venv": ("backend", ("requirements.txt", "requirements-dev.txt")),
+}
+_DEPENDENCY_INSTALLS = {
+    "frontend/node_modules": [("npm", "ci")],
+    "backend/.venv": [("mise", "exec", "--", "python3", "-m", "venv", ".venv"),
+                      (".venv/bin/pip", "install", "-r", "requirements.txt", "-r", "requirements-dev.txt")],
+}
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 900
+
+
+def _manifest_differences(owner: Path, scratch_dir: Path, names: tuple[str, ...]) -> list[str]:
+    """Names of the manifests that differ (or exist on one side only)."""
+    differ = []
+    for name in names:
+        try:
+            ours = (owner / name).read_bytes()
+        except FileNotFoundError:
+            ours = None
+        except OSError as exc:  # preclose pass 1: a directory or unreadable file
+            fail(f"cannot read {owner / name}: {exc}")
+        try:
+            theirs = (scratch_dir / name).read_bytes()
+        except FileNotFoundError:
+            theirs = None
+        except OSError as exc:
+            fail(f"cannot read {scratch_dir / name}: {exc}")
+        if ours != theirs:
+            differ.append(name)
+    return differ
+
+
+def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess[str]:
+    try:
+        # errors="replace": a non-UTF-8 byte in install output must not raise
+        # past fail() (preclose pass 1).
+        return subprocess.run(command, cwd=cwd, text=True, errors="replace", capture_output=True,
+                              check=False, timeout=DEPENDENCY_INSTALL_TIMEOUT_SECONDS)
+    except OSError as exc:  # missing or non-executable tool (preclose pass 1)
+        fail(f"scratch install could not start: {' '.join(command)}: {exc}")
+    except subprocess.TimeoutExpired:
+        fail(f"scratch install timed out after {DEPENDENCY_INSTALL_TIMEOUT_SECONDS}s: "
+             f"{' '.join(command)}")
+    raise AssertionError("unreachable")  # fail() exits
+
+
+def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir: str) -> str:
+    """Link `dependency_dir` from the source checkout when the manifests beside
+    the real install equal the attested commit's byte for byte; otherwise
+    install for real in the scratch. Returns "linked" or "installed". A failed
+    install fails the check; it never falls back to the link."""
+    source = repo_root / dependency_dir
+    if not source.is_dir():
+        fail(f"source worktree dependency directory is missing: {dependency_dir}")
+    workdir, names = _DEPENDENCY_MANIFESTS[dependency_dir]
+    # Resolve once and link to exactly what was compared, so retargeting the
+    # source link afterward cannot change what the scratch uses (preclose pass 1).
+    install = source.resolve()
+    differ = _manifest_differences(install.parent, scratch / workdir, names)
+    target = scratch / dependency_dir
+    if not differ:
+        target.symlink_to(install, target_is_directory=True)
+        return "linked"
+    print(f"[l1-post] scratch {dependency_dir}: installing (the linked install's "
+          f"{', '.join(differ)} differ from the attested commit's)", file=sys.stderr)
+    for command in _DEPENDENCY_INSTALLS[dependency_dir]:
+        installed = _install(command, scratch / workdir)
+        if installed.returncode:
+            tail = "\n".join((installed.stdout + installed.stderr).splitlines()[-40:])
+            fail(f"scratch install failed for {dependency_dir}: {' '.join(command)} "
+                 f"exited {installed.returncode}\n{tail}")
+    return "installed"
+
+
 def _source_repo_is_hrse(repo_root: Path) -> bool:
     """Whether repo_root's own git remote is vitalharmony/hrse -- independent
     of --repo, which names the GitHub issue's repo, not the repo the
@@ -1749,10 +1830,7 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
             fail("check worktree HEAD changed before validation")
         if _source_repo_is_hrse(repo_root):
             for dependency_dir in HRSE_DEPENDENCY_DIRS:
-                source = repo_root / dependency_dir
-                if not source.is_dir():
-                    fail(f"source worktree dependency directory is missing: {dependency_dir}")
-                (scratch / dependency_dir).symlink_to(source, target_is_directory=True)
+                _provision_scratch_dependency(repo_root, scratch, dependency_dir)
             _announce_scratch_frontend_env(repo_root, scratch)
         # a private-repo incident: `git worktree add --detach` never provisions `.claude/`
         # (an untracked, locally-linked directory in every repo this tool
