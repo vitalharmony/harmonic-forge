@@ -80,6 +80,14 @@ class Base(unittest.TestCase):
             side_effect=lambda project, check_cls, source: check_cls("skills", fo.OK, "stubbed"))
         skills.start()
         self.addCleanup(skills.stop)
+        # harmonic-forge#960: the gh shim check reads the real ~/.local/bin and PATH,
+        # which these fixtures do not reproduce (CI has no shim installed); it has its
+        # own hermetic file (test_forge_onboard_gh_shim.py), stubbed here the same way.
+        gh_shim = mock.patch.object(
+            fo.forge_onboard_gh_shim, "check_gh_shim",
+            side_effect=lambda check_cls, platform: check_cls("gh shim", fo.OK, "stubbed"))
+        gh_shim.start()
+        self.addCleanup(gh_shim.stop)
 
     def set_settings(self, data: dict) -> None:
         (self.home / ".claude" / "settings.json").write_text(
