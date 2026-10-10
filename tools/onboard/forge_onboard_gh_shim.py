@@ -39,7 +39,10 @@ def check_gh_shim(make_check: Callable, platform: Path) -> object:
             return make_check(NAME, FAIL, f"{target} is a real file, not the shim; inspect it, then: {cmd}")
         return make_check(NAME, FAIL, f"{target} is missing (R-0363); operator installs it with: {cmd}")
     if os.path.realpath(target) != os.path.realpath(shim):
-        return make_check(NAME, FAIL, f"{target} -> {os.readlink(target)}, not {shim}; re-link with: {cmd}")
+        # The installer refuses to overwrite a link that resolves elsewhere (or dangles),
+        # so the remedy is to remove it first (harmonic-forge#960 sticky-wicket PATCH).
+        return make_check(NAME, FAIL, f"{target} -> {os.readlink(target)}, not {shim}; the installer will not "
+                                      f"overwrite it: inspect it, then rm {target} and run: {cmd}")
     if not (shim.is_file() and os.access(shim, os.X_OK)):
         # The link is right but its target is gone or not executable: the PATH
         # lookup would skip it, and "put ~/.local/bin first" would be the wrong cause.

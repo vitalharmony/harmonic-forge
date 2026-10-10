@@ -33,6 +33,8 @@ class GhShimCheck(unittest.TestCase):
         real.write_text("#!/bin/sh\n")
         real.chmod(0o755)
         self.path = f"{self.bin}:{self.usr}"
+        # AC3: every FAIL detail carries this literal command (resolved path).
+        self.cmd = f"bash {self.platform}/tools/gh/install_gh_shim.sh"
         for p in (mock.patch.object(fo, "platform_source", return_value=self.platform),
                   mock.patch.object(Path, "home", return_value=self.home)):
             p.start()
@@ -49,29 +51,35 @@ class GhShimCheck(unittest.TestCase):
         self.assertEqual(check.status, "FAIL")
         self.assertIn("missing or not executable", check.detail)
         self.assertNotIn("first on PATH", check.detail)
+        self.assertIn(self.cmd, check.detail)
 
     def test_missing_fails_and_names_the_install_command(self):  # TC1, TC3
         check = self.run_check()
         self.assertEqual(check.status, fo.FAIL)
-        self.assertIn(f"bash {self.platform}/tools/gh/install_gh_shim.sh", check.detail)
+        self.assertIn(self.cmd, check.detail)
         self.assertFalse((self.bin / "gh").exists())  # AC4: nothing written
 
     def test_a_real_file_fails(self):  # TC2
         (self.bin / "gh").write_text("#!/bin/sh\n")
         (self.bin / "gh").chmod(0o755)
-        self.assertEqual(self.run_check().status, fo.FAIL)
+        check = self.run_check()
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("real file", check.detail)
+        self.assertIn(self.cmd, check.detail)
 
     def test_a_link_elsewhere_fails(self):  # TC2
         (self.bin / "gh").symlink_to(self.usr / "gh")
         check = self.run_check()
         self.assertEqual(check.status, fo.FAIL)
-        self.assertIn("re-link", check.detail)
+        self.assertIn(f"rm {self.bin / 'gh'}", check.detail)  # the installer won't overwrite it
+        self.assertIn(self.cmd, check.detail)
 
     def test_not_first_on_path_fails(self):  # TC2
         (self.bin / "gh").symlink_to(self.shim)
         check = self.run_check(f"{self.usr}:{self.bin}")
         self.assertEqual(check.status, fo.FAIL)
         self.assertIn("first on PATH", check.detail)
+        self.assertIn(self.cmd, check.detail)
 
     def test_linked_and_first_is_ok(self):  # TC5
         (self.bin / "gh").symlink_to(self.shim)
