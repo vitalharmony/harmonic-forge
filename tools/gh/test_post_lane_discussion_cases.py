@@ -136,6 +136,12 @@ class ASpecDeclaresItsWriteTier(Case):
                 body = SPEC_TC.replace("Write tier: W", line)
                 self.assertIn("kind=spec", last_line(self.post("spec", body)))
 
+    def test_bold_label_prose_is_not_a_declaration(self):
+        # Preclose pass 2 survivor: `w/o` and `r/w` read as W and R.
+        for line in ("**Write tier** w/o any graph writes", "**Write tier** r/w split below"):
+            with self.subTest(line=line):
+                self.refused(SPEC_TC.replace("Write tier: W", line))
+
     def test_two_that_disagree_are_refused(self):
         self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
 
