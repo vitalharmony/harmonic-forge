@@ -54,6 +54,14 @@ class RequireHtmlGmailDraft(unittest.TestCase):
         self.assertIsNone(run(json.dumps(["a", "list"])))
         self.assertIsNone(run(json.dumps({"tool_name": "mcp__x__draft_gmail_message",
                                           "tool_input": "a string"})))
+        # Falsy malformed shapes fail open too (cross-family refutation, preclose pass 1).
+        for bad in ([], "", 0):
+            self.assertIsNone(run(json.dumps({"tool_name": "mcp__x__draft_gmail_message",
+                                              "tool_input": bad})), bad)
+
+    def test_a_null_tool_input_is_checked_like_a_missing_body_format(self):
+        self.assertTrue(denied(run(json.dumps({"tool_name": "mcp__x__draft_gmail_message",
+                                               "tool_input": None}))))
 
 
 if __name__ == "__main__":

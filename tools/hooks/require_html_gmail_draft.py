@@ -32,8 +32,10 @@ def decide(payload: object) -> str | None:
     name = payload.get("tool_name")
     if not isinstance(name, str) or not name.endswith(TOOL_TAIL):
         return None
-    tool_input = payload.get("tool_input") or {}
-    if not isinstance(tool_input, dict):
+    tool_input = payload.get("tool_input")
+    if tool_input is None:
+        tool_input = {}  # missing: the tool's default (plain) applies, so it is checked
+    if not isinstance(tool_input, dict):  # malformed, including a falsy [] or "": fail open
         return None
     # The tool's own default is "plain", so a missing body_format is denied too.
     return None if tool_input.get("body_format") == "html" else REASON
