@@ -7,6 +7,7 @@ import contextlib
 import json
 import shutil
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -336,3 +337,18 @@ class CurrencyCheck(unittest.TestCase):
         self.assertIn("items(first: 1)", cache._BOARD_CURRENCY_QUERY)
         self.assertIn("totalCount", cache._BOARD_CURRENCY_QUERY)
         self.assertIn("updatedAt", cache._BOARD_CURRENCY_QUERY)
+
+class ShimMarker(unittest.TestCase):  # harmonic-forge#964
+    def test_the_board_read_runs_under_the_marker_and_restores_it(self):
+        seen = []
+
+        def run(cmd):
+            seen.append(os.environ.get("GH_SHIM_CALLER"))
+            return MagicMock(returncode=0, stdout='{"items": []}', stderr="")
+
+        with unittest.mock.patch.dict(os.environ, {"GH_SHIM_CALLER": "before"}):
+            with tempfile.TemporaryDirectory() as d:
+                cache.fetch_full_board("1", "vitalharmony", ttl=0, force=True, run=run, cache_dir=Path(d))
+            self.assertEqual(os.environ["GH_SHIM_CALLER"], "before")
+        self.assertIn("item_list_cache", seen)
+

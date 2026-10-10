@@ -16,7 +16,9 @@ call invalidate() around its own writes -- this module does not do that
 automatically, since it has no way to know when a caller is about to mutate.
 """
 
+import contextlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -31,6 +33,23 @@ from pathlib import Path
 _CACHE_DIR = Path(tempfile.gettempdir()) / "harmonic-forge-gh-item-list-cache"
 PROJECT_OWNER = "vitalharmony"
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+@contextlib.contextmanager
+def _shim_marker():
+    """harmonic-forge#964: identify this module to the gh shim as a sanctioned
+    caller, for the board read only. Set in the process environment because
+    the `run` callable is the caller's, and every runner here inherits it."""
+    previous = os.environ.get("GH_SHIM_CALLER")
+    os.environ["GH_SHIM_CALLER"] = "item_list_cache"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("GH_SHIM_CALLER", None)
+        else:
+            os.environ["GH_SHIM_CALLER"] = previous
+
 
 # harmonic-forge#329: both `gh_issue.py` and `model_tier_gate.py` independently
 # hardcoded `--limit 1000` for a full board scan. hrse's board measured 721
@@ -245,10 +264,11 @@ def fetch_full_board(
         except OSError:
             pass  # an unstattable cache file is a miss, never a block
 
-    result = run([
-        "gh", "project", "item-list", str(number), "--owner", owner,
-        "--limit", str(limit), "--format", "json",
-    ])
+    with _shim_marker():
+        result = run([
+            "gh", "project", "item-list", str(number), "--owner", owner,
+            "--limit", str(limit), "--format", "json",
+        ])
     if result.returncode != 0:
         stderr = getattr(result, "stderr", None)
         raise GhItemListError(stderr.strip() if stderr else "gh project item-list failed")
@@ -549,8 +569,9 @@ def _scan_issue_field(repo: str, issue_number: int, project_number: str, owner: 
     issue in an ORGANIZATION repo (the kenekted repos), however the issue is boarded, so the cheap
     per-issue read cannot tell "no Tier" from "cannot see the board". Reading the board can.
     """
-    result = run(["gh", "project", "item-list", str(project_number), "--owner", owner,
-                  "--limit", "1000", "--format", "json"])
+    with _shim_marker():
+        result = run(["gh", "project", "item-list", str(project_number), "--owner", owner,
+                      "--limit", "1000", "--format", "json"])
     if result.returncode != 0:
         stderr = getattr(result, "stderr", None)
         raise GhItemListError(stderr.strip() if stderr else "gh project item-list failed")

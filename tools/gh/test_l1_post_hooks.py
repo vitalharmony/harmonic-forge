@@ -490,6 +490,19 @@ class EstimateGateTests(unittest.TestCase):
         self.assertIn("item-list", argv)
         self.assertIn("harmonicarchitect", argv)
 
+    def test_the_board_scan_reads_through_the_shim_sanctioned_cache(self) -> None:
+        """harmonic-forge#964 AC3: the Estimate fallback reads the board through item_list_cache,
+        never as its own `gh project item-list` call, which the installed shim refuses."""
+        items = [{"content": {"number": 59}, "tier": "standard"}]
+        with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \
+             patch.object(post._item_list_cache, "fetch_full_board", return_value=items) as board, \
+             patch.object(post, "run") as run_call:
+            self.assertEqual(
+                post.resolve_board_tier("kenekted/kenekted-platform", "harmonicarchitect", "1", 59),
+                "standard")
+        board.assert_called_once()
+        run_call.assert_not_called()
+
     def test_a_repo_whose_owner_holds_its_board_never_falls_through_to_a_scan(self) -> None:
         """An unset Tier on an ordinary board is one query, not a full-board scan (#820 preclose)."""
         with patch.object(post._item_list_cache, "fetch_issue_tier", return_value=None, create=True), \

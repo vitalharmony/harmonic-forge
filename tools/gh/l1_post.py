@@ -957,14 +957,23 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
     # Fallback for a checkout whose harmonic-forge sibling predates #802 (or is
     # absent entirely). Deliberately the old full-board scan: correctness first,
     # cost second -- a stale sibling must still gate correctly, just expensively.
-    result = run("gh", "project", "item-list", number, "--owner", owner,
-                 "--limit", "1000", "--format", "json")
-    if result.returncode != 0:
-        fail(f"cannot fetch project board {owner}/{number} to verify Estimate: " + result.stderr.strip())
-    try:
-        items = json.loads(result.stdout)["items"]
-    except (json.JSONDecodeError, KeyError):
-        fail(f"unexpected response shape from project board {owner}/{number}")
+    # harmonic-forge#964: through item_list_cache, the gh shim's sanctioned board
+    # reader, when it is importable; live (ttl=0, force) as before.
+    if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_full_board"):
+        try:
+            items = _item_list_cache.fetch_full_board(
+                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: run(*cmd))
+        except _item_list_cache.GhItemListError as exc:
+            fail(f"cannot fetch project board {owner}/{number} to verify Estimate: {exc}")
+    else:
+        result = run("gh", "project", "item-list", number, "--owner", owner,
+                     "--limit", "1000", "--format", "json")
+        if result.returncode != 0:
+            fail(f"cannot fetch project board {owner}/{number} to verify Estimate: " + result.stderr.strip())
+        try:
+            items = json.loads(result.stdout)["items"]
+        except (json.JSONDecodeError, KeyError):
+            fail(f"unexpected response shape from project board {owner}/{number}")
     for item in items:
         content = item.get("content") or {}
         # A board can carry issues from several repos; match the repo too when it is reported.

@@ -82,6 +82,31 @@ class Refusal(unittest.TestCase):
         self.assertIsNone(code)
         execv.assert_called_once()
 
+    # harmonic-forge#964: the caller marker, not the argv, decides the exemption.
+    def _with_caller(self, caller, **kw):
+        env = {k: v for k, v in os.environ.items() if k != "GH_SHIM_CALLER"}
+        if caller is not None:
+            env["GH_SHIM_CALLER"] = caller
+        with mock.patch.dict(os.environ, env, clear=True):
+            return self._run_main_with(["project", "item-list", "1"], scan_reason="scan!", **kw)
+
+    def test_each_sanctioned_caller_lets_a_scan_through(self):
+        for caller in ("item_list_cache", "batch_preflight"):
+            code, execv = self._with_caller(caller)
+            self.assertIsNone(code, caller)
+            execv.assert_called_once()
+
+    def test_an_unknown_empty_or_absent_marker_is_refused(self):
+        for caller in ("someone_else", "", None):
+            code, execv = self._with_caller(caller)
+            self.assertEqual(code, 3, caller)
+            execv.assert_not_called()
+
+    def test_the_budget_floor_still_fires_for_a_sanctioned_caller(self):
+        code, execv = self._with_caller("item_list_cache", budget_result=(500, 1.0))
+        self.assertEqual(code, 3)
+        execv.assert_not_called()
+
     def test_low_budget_refuses_with_exit_3(self):
         code, execv = self._run_main_with(["pr", "view", "5"], scan_reason=None,
                                            budget_result=(500, 1.0))
