@@ -141,6 +141,24 @@ def _split_argv(args: list[str]) -> tuple[str, list[str]]:
     return resolved_method, positional
 
 
+def _has_head_filter(argv: list[str]) -> bool:
+    """`--head <branch>` or `--head=<branch>` with a non-empty value, standing
+    as its own flag (not the value of a preceding flag such as `--search`).
+    An empty value is gh's no-filter default (preclose pass 1, harmonic-forge#954)."""
+    for index, token in enumerate(argv):
+        prev = argv[index - 1] if index else ""
+        if prev.startswith("-") and "=" not in prev and prev != "--head":
+            continue  # this token is the previous flag's value
+        if token.startswith("--head="):
+            if token[len("--head="):].strip():
+                return True
+        elif token == "--head" and index + 1 < len(argv):
+            value = argv[index + 1]
+            if value.strip() and not value.startswith("-"):
+                return True
+    return False
+
+
 def scan_reason(argv: list[str]) -> str | None:
     """Classify a `gh` argument list (without the leading `gh` token).
 
@@ -165,7 +183,7 @@ def scan_reason(argv: list[str]) -> str | None:
     if head == "pr" and len(positional) >= 2 and positional[1] == "list":
         # harmonic-forge#954: `--head <branch>` filters to that branch's PR,
         # a single-item lookup (l1-post's open-PR check), not a scan.
-        if any(token == "--head" or token.startswith("--head=") for token in argv):
+        if _has_head_filter(argv):
             return None
         return "`gh pr list` (full-PR-list scan)"
     if head == "search":

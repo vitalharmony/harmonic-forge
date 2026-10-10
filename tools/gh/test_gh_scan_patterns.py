@@ -27,6 +27,15 @@ class ScanReason(unittest.TestCase):
         self.assertIsNone(gsp.scan_reason(["pr", "list", "--repo", "o/r", "--head", "b", "--base", "main"]))
         self.assertIsNone(gsp.scan_reason(["pr", "list", "--head=b"]))
 
+    def test_an_empty_or_borrowed_head_is_still_a_scan(self):
+        # Preclose pass 1: an empty value is gh's no-filter default, and a
+        # --head that is another flag's value filters nothing.
+        for argv in (["pr", "list", "--head="], ["pr", "list", "--head", ""],
+                     ["pr", "list", "--search", "--head", "--limit", "1000"],
+                     ["pr", "list", "-S", "--head"]):
+            with self.subTest(argv=argv):
+                self.assertIsNotNone(gsp.scan_reason(argv))
+
     def test_search_subcommand_is_a_scan(self):
         self.assertIsNotNone(gsp.scan_reason(["search", "issues", "foo"]))
 
