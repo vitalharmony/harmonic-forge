@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments  # noqa: E402
 
 LOOP_WORDS = ("until", "while")
-SHELLS = ("bash", "sh")
+SHELLS = ("bash", "sh", "zsh", "dash")
 LEADERS = ("do", "then", "else", "elif", "{", "!", "command", "exec")
 
 
@@ -49,6 +49,17 @@ REASON = (
     "`timeout 1800 bash -c 'until ...; do sleep 10; done'`, or run the "
     "command in the background and rely on its completion notice."
 )
+
+
+def _shell_payload_polls(tokens: list[str]) -> bool:
+    """`<shell> [flags] -c 'payload'`: the payload follows the first flag that
+    ends in `c` (`-c`, `-lc`, `-x -c`); sticky-wicket PATCH, reforge pass 2."""
+    for index, token in enumerate(tokens[1:-1], start=1):
+        if not token.startswith("-") or token == "--":
+            return False
+        if token.endswith("c"):
+            return unbounded_poll(tokens[index + 1])
+    return False
 
 
 def unbounded_poll(command: str) -> bool:
@@ -70,9 +81,7 @@ def unbounded_poll(command: str) -> bool:
             sleeps = sleeps or _is_sleep(tokens[1:])
         elif _is_sleep(tokens):
             sleeps = True
-        elif (Path(tokens[0]).name in SHELLS and len(tokens) > 2
-              and tokens[1].startswith("-") and tokens[1].endswith("c")
-              and unbounded_poll(tokens[2])):
+        elif Path(tokens[0]).name in SHELLS and _shell_payload_polls(tokens):
             return True
     return loop and sleeps
 
