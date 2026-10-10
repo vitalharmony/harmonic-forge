@@ -270,21 +270,20 @@ def _account_of(repo: str) -> str:
     return _REPO_ACCOUNTS.get((repo or "").lower()) or _ACCOUNT
 
 
-_ACTIVE_MILESTONES: "dict[str, frozenset[str]] | None" = None
-
-
 def _active_milestones(repo: str) -> frozenset[str]:
     """The operator's live releases for `repo` from `projects.toml`
-    (harmonic-forge#952); empty means no milestone filtering. An unreadable
-    manifest filters nothing, the same fail-open as `_account_of`."""
-    global _ACTIVE_MILESTONES
-    if _ACTIVE_MILESTONES is None:
-        try:
-            _ACTIVE_MILESTONES = {p.repo.lower(): frozenset(p.active_milestones)
-                                  for p in onboard_manifest.load() if p.repo}
-        except Exception:  # noqa: BLE001 -- unreadable manifest: no filtering
-            _ACTIVE_MILESTONES = {}
-    return _ACTIVE_MILESTONES.get((repo or "").lower(), frozenset())
+    (harmonic-forge#952); empty means no milestone filtering. Read on every
+    call, never cached: the list changes with each release, and a belt runs
+    for hours (preclose finding: a process-lifetime cache kept skipping a
+    newly listed milestone). An unreadable manifest filters nothing, and says so."""
+    try:
+        for project in onboard_manifest.load():
+            if project.repo and project.repo.lower() == (repo or "").lower():
+                return frozenset(project.active_milestones)
+    except Exception as exc:  # noqa: BLE001 -- fail open, loudly
+        print(f"[watch_lane_posts] projects.toml unreadable, no milestone filtering: {exc}",
+              file=sys.stderr)
+    return frozenset()
 _COUNTER = CallCounter()
 
 #: The full marker text, not just its `kind=` field (harmonic-forge#583) --
@@ -1153,7 +1152,8 @@ def discover_queue(repo: str, lane: str,
             # (`active_milestones` in projects.toml). Reported on stderr only:
             # a stdout line would wake every lane on every tick. The store
             # entry is left alone, so adding the milestone to the list queues
-            # it again, until the candidate ages out (DEFAULT_MAX_AGE_DAYS).
+            # it again on the next tick, until the candidate ages out
+            # (DEFAULT_MAX_AGE_DAYS).
             print(f"skipped-out-of-release {repo}#{issue} milestone={milestone}",
                   file=sys.stderr)
             continue

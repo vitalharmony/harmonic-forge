@@ -2773,10 +2773,23 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
         self.assertEqual(queue, {1: "handoff owes=plan"})
 
     def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
-        watch_lane_posts._ACTIVE_MILESTONES = None
-        self.addCleanup(setattr, watch_lane_posts, "_ACTIVE_MILESTONES", None)
         self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
         self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0"}))
+
+    def test_an_edited_list_takes_effect_without_a_restart(self):
+        # Preclose pass 1 survivor: the list was cached for the process's life.
+        def project(active):
+            return [type("P", (), {"repo": "vitalharmony/hrse", "active_milestones": active})()]
+        with patch("watch_lane_posts.onboard_manifest.load", side_effect=[project(("3.0",)), project(("3.0", "3.1"))]):
+            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0"}))
+            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0", "3.1"}))
+
+    def test_an_unreadable_manifest_filters_nothing_and_says_so(self):
+        err = io.StringIO()
+        with patch("watch_lane_posts.onboard_manifest.load", side_effect=RuntimeError("bad toml")), \
+             patch("sys.stderr", err):
+            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset())
+        self.assertIn("no milestone filtering", err.getvalue())
 
     def test_a_fail_still_reaches_its_lane_out_of_release(self):
         with patch("watch_lane_posts._issue_meta", return_value=("open", set(), "3.2")):
