@@ -352,3 +352,16 @@ class ShimMarker(unittest.TestCase):  # harmonic-forge#964
             self.assertEqual(os.environ["GH_SHIM_CALLER"], "before")
         self.assertIn("item_list_cache", seen)
 
+    def test_the_issue_field_board_scan_also_runs_under_the_marker(self):
+        seen = []
+
+        def run(cmd):
+            seen.append(os.environ.get("GH_SHIM_CALLER"))
+            return MagicMock(returncode=0, stdout='{"items": []}', stderr="")
+
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GH_SHIM_CALLER", None)
+            cache._scan_issue_field("kenekted/kenekted-platform", 59, "1", "harmonicarchitect", "Tier", run)
+            self.assertNotIn("GH_SHIM_CALLER", os.environ)
+        self.assertEqual(seen, ["item_list_cache"])
+
