@@ -24,9 +24,9 @@ sys.path.insert(0, str(HERE.parent / "telemetry"))
 import post_lane_discussion as P  # noqa: E402
 import verification_report as VR  # noqa: E402
 
-SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\n**Next:** submit for HITL approval.\n\n"
+SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n\n"
            "### Test cases\n- TC1 — a thing.\n- TC2 — another.\n")
-SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\n**Next:** submit for HITL approval.\n\n"
+SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n\n"
                  "### Test cases\n1. A thing.\n2. Another.\n")
 GATE_PASS = ("## Lane 3 Gate Results — H1\n\n**Verdict:** PASS — both ran.\n**Finding:** none.\n"
              "**Next:** Lane 1 merges.\n\n### Test cases\n- TC1 — pass\n- TC2 — pass\n")
@@ -106,6 +106,34 @@ class TheMapIsTheRecord(Case):
                 "```\n| 42 | not a case |\n```\n")
         self.assertIn("results=1:pass,2:fail -->", last_line(self.post("gate-result", body,
                                                                     results={"1": "pass", "2": "fail"})))
+
+
+class ASpecDeclaresItsWriteTier(Case):
+    """harmonic-forge#947: auto-AE reads the tier from the spec, so the poster
+    refuses a spec it could not read one from."""
+
+    def refused(self, body: str) -> str:
+        err = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", new=err), \
+             self.assertRaises(SystemExit) as raised:
+            self.post("spec", body)
+        self.assertEqual(raised.exception.code, 2)
+        return err.getvalue()
+
+    def test_a_spec_with_no_declaration_is_refused(self):
+        self.assertIn("Write tier: R|W|P", self.refused(SPEC_TC.replace("Write tier: W\n", "")))
+
+    def test_one_declaration_is_accepted(self):
+        self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC)))
+
+    def test_a_p_declaration_is_accepted_by_the_poster(self):
+        self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
+
+    def test_two_that_disagree_are_refused(self):
+        self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
+
+    def test_a_fenced_only_declaration_is_refused(self):
+        self.refused(SPEC_TC.replace("Write tier: W\n", "```\nWrite tier: W\n```\n"))
 
 
 class TelemetryNeverRefuses(Case):

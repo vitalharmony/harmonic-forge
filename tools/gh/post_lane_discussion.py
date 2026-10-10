@@ -48,6 +48,20 @@ from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_g
 # different rules.
 import check_lane3_ready
 
+# harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
+# poster checks with the same one and the two cannot drift.
+from _auto_ae import declared_tier
+
+
+def require_write_tier(body: str) -> None:
+    """Refuse a Lane 3 spec with no single unfenced `Write tier: R|W|P` line."""
+    if declared_tier(body) is None:
+        print("[post-comment] refused: the Lane 3 spec has no single unfenced "
+              "`Write tier: R|W|P` declaration (none, or two that disagree). Add one "
+              "line, e.g. `Write tier: W`, naming the ceiling of every case's tier "
+              "(harmonic-forge#947; auto-AE reads it from the spec).", file=sys.stderr)
+        raise SystemExit(2)
+
 # harmonic-forge#691 (AC1'). This is the THIRD marker-posting tool -- the
 # one the pre-rescope design missed, despite it being the actual path
 # Lane 2's own guard routes `plan` postings through (`reject_plan_as_
@@ -527,6 +541,7 @@ def main() -> None:
         # said to drop it on the fourth rather than patch it again.
         case_fields = case_field("results", load_case_map(args.tc_results, CASE_RESULTS, "--tc-results"))
     elif artifact == "spec":
+        require_write_tier(body)
         case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
     elif args.tc_results is not None or args.tc_classes is not None:
         print("[post-comment] WARNING: --tc-results/--tc-classes given, but this post is not a "

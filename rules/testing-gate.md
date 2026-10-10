@@ -81,6 +81,10 @@ for the UI-only variant.
      **The sweep leads with `Write tier <R|W|P>` — exactly one literal
      letter, the ceiling of every TC's tier. Prose ("mixed", "read-only")
      matches nothing and BLOCKs identically to omitting the line.**
+     **Lane 3's spec carries the same declaration** (one unfenced `Write
+     tier: R|W|P` line): auto-AE reads the tier from the spec, and
+     `post_lane_discussion.py` refuses a spec without one
+     (harmonic-forge#947).
      `check_lane3_ready.py` validates the `l1-post` footer, never the
      heading: confirm the byte-exact heading independently — "ready" from
      that tool is necessary, not sufficient.
