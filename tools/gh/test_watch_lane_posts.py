@@ -3758,12 +3758,3 @@ class OneReadPerTickTests(unittest.TestCase):
             watch_lane_posts._reset_tick_reads()
             self.assertFalse(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
 
-
-class SinceIsHourlyTests(unittest.TestCase):
-    """harmonic-forge#958 AC3 (rescoped): the comment-watch `since` is floored to
-    the hour, never later than `query_since`."""
-
-    def test_since_is_floored_to_the_hour(self):
-        import inspect
-        src = inspect.getsource(watch_lane_posts)
-        self.assertIn("replace(\n                minute=0, second=0, microsecond=0)", src)

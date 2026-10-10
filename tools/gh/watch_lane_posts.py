@@ -1676,10 +1676,8 @@ def comment_watch_cycle(
         mark = watermarks.get(account, _wm_key(repo, issue))
         comments = _fetch_comments(
             repo, issue,
-            # harmonic-forge#958 AC3: floored to the hour, so the URL is stable
-            # between ticks and never later than `query_since` (no comment skipped).
-            query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).replace(
-                minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"))
         if comments is None:
             print(f"[watch_lane_posts] {target}: comment fetch failed -- "
                   "watermark held, window will be re-read", file=sys.stderr)
