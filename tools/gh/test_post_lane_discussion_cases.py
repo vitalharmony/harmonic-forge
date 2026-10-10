@@ -153,7 +153,7 @@ class ASpecDeclaresItsWriteTier(Case):
         # Pass 2 survivor: the widened pattern backtracked in O(n^4).
         import time
         start = time.monotonic()
-        self.refused(SPEC_TC.replace("Write tier: W", "Write tier" + " " * 5000 + "x"))
+        self.refused(SPEC_TC.replace("Write tier: W\n", "") + "Write tier" + " " * 5000 + "x\n")
         self.assertLess(time.monotonic() - start, 2)
 
     def test_two_that_disagree_are_refused(self):
