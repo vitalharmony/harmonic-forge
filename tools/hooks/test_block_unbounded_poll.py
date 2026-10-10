@@ -75,6 +75,15 @@ class Polls(unittest.TestCase):
         self.assertEqual(decision("if true; then while :; do sleep 1; done; fi"), "deny")
         self.assertEqual(decision("{ until x; do sleep 1; done; }"), "deny")
 
+    def test_every_leader_keyword_is_stripped(self):
+        # Reforge pass 2: each LEADERS entry needs its own failing case.
+        for command in ("if a; then :; else until b; do sleep 1; done; fi",
+                        "if a; then :; elif b; then while :; do sleep 1; done; fi",
+                        "! until x; do sleep 1; done",
+                        "until x; do exec sleep 1; done"):
+            with self.subTest(command=command):
+                self.assertEqual(decision(command), "deny")
+
     def test_sleep_by_path_or_builtin_prefix_counts(self):
         self.assertEqual(decision("until [ -f x ]; do /bin/sleep 5; done"), "deny")
         self.assertEqual(decision("until x; do command sleep 1; done"), "deny")
