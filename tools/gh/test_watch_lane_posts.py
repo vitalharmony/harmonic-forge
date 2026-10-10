@@ -2735,6 +2735,72 @@ class DiscoverQueueLabelFilterTests(unittest.TestCase):
         self.assertEqual(queue, {1: "handoff owes=plan"})
 
 
+class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
+    """harmonic-forge#952: a candidate whose milestone is set and outside the
+    project's `active_milestones` is skipped, reported on stderr only, and
+    left in the store; no milestone, or no list, queues as before."""
+
+    HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
+
+    def run_queue(self, repo: str, milestone: str | None, active: frozenset[str]):
+        err, out = io.StringIO(), io.StringIO()
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set(), milestone)), \
+             patch("watch_lane_posts._active_milestones", return_value=active), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]), \
+             patch("watch_lane_posts.belt_candidates.retire_candidate") as retire, \
+             patch("sys.stderr", err), patch("sys.stdout", out):
+            queue, ok = discover_queue(repo, "l2", {1})
+        self.assertTrue(ok)
+        retire.assert_not_called()
+        return queue, err.getvalue(), out.getvalue()
+
+    def test_an_in_release_candidate_is_queued(self):
+        queue, _, _ = self.run_queue("vitalharmony/hrse", "3.0", frozenset({"3.0"}))
+        self.assertEqual(queue, {1: "handoff owes=plan"})
+
+    def test_an_out_of_release_candidate_is_skipped_and_reported_on_stderr(self):
+        queue, err, out = self.run_queue("vitalharmony/hrse", "3.2", frozenset({"3.0"}))
+        self.assertEqual(queue, {})
+        self.assertIn("skipped-out-of-release vitalharmony/hrse#1 milestone=3.2", err)
+        self.assertEqual(out, "")
+
+    def test_a_candidate_with_no_milestone_is_queued(self):
+        queue, _, _ = self.run_queue("vitalharmony/hrse", None, frozenset({"3.0"}))
+        self.assertEqual(queue, {1: "handoff owes=plan"})
+
+    def test_no_list_means_no_filtering(self):
+        queue, _, _ = self.run_queue("vitalharmony/hrse", "3.2", frozenset())
+        self.assertEqual(queue, {1: "handoff owes=plan"})
+
+    def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
+        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
+        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0", "Platform"}))
+
+    def test_an_edited_list_takes_effect_without_a_restart(self):
+        # Preclose pass 1 survivor: the list was cached for the process's life.
+        def project(active):
+            return [type("P", (), {"repo": "vitalharmony/hrse", "active_milestones": active})()]
+        with patch("watch_lane_posts.onboard_manifest.load", side_effect=[project(("3.0",)), project(("3.0", "3.1"))]):
+            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0"}))
+            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0", "3.1"}))
+
+    def test_an_unreadable_manifest_holds_milestoned_candidates(self):
+        # Preclose pass 2: a half-saved manifest must not dispatch for a tick.
+        err = io.StringIO()
+        with patch("watch_lane_posts.onboard_manifest.load", side_effect=RuntimeError("bad toml")), \
+             patch("sys.stderr", err):
+            self.assertIsNone(watch_lane_posts._active_milestones("vitalharmony/hrse"))
+        self.assertIn("holding milestoned candidates", err.getvalue())
+        held, _, _ = self.run_queue("vitalharmony/hrse", "3.2", None)
+        self.assertEqual(held, {})
+        unmilestoned, _, _ = self.run_queue("vitalharmony/hrse", None, None)
+        self.assertEqual(unmilestoned, {1: "handoff owes=plan"})
+
+    def test_a_fail_still_reaches_its_lane_out_of_release(self):
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set(), "3.2")):
+            self.assertTrue(watch_lane_posts._fail_may_reach("vitalharmony/hrse", 1, "l2"))
+
+
 class DeadlineAwareSleep(unittest.TestCase):
     """harmonic-forge#680. The belt went blind for ~20 minutes of every quiet
     30-minute window and missed a real Lane 3 spec. Two independent causes."""
@@ -3095,17 +3161,18 @@ class IssueMetaReadTests(unittest.TestCase):
 
     def test_one_read_returns_state_and_labels(self):
         with patch("watch_lane_posts.gh_as",
-                   return_value='{"state": "closed", "labels": ["epic", "bug"]}') as g:
+                   return_value='{"state": "closed", "labels": ["epic", "bug"], "milestone": "3.2"}') as g:
             got = _REAL_ISSUE_META("vitalharmony/hrse", 7)
-        self.assertEqual(got, ("closed", {"epic", "bug"}))
+        # harmonic-forge#952: the milestone rides in the same single read.
+        self.assertEqual(got, ("closed", {"epic", "bug"}, "3.2"))
         g.assert_called_once()
         argv = g.call_args.args[1]
         self.assertIn("repos/vitalharmony/hrse/issues/7", argv)
-        self.assertEqual(argv[argv.index("--jq") + 1], "{state: .state, labels: [.labels[].name]}")
+        self.assertEqual(argv[argv.index("--jq") + 1], "{state: .state, labels: [.labels[].name], milestone: .milestone.title}")
 
     def test_a_read_without_state_fails_open(self):
         with patch("watch_lane_posts.gh_as", return_value='["epic"]'):
-            self.assertEqual(_REAL_ISSUE_META("vitalharmony/hrse", 7), (None, None))
+            self.assertEqual(_REAL_ISSUE_META("vitalharmony/hrse", 7), (None, None, None))
 
 
 class ClosedIssueRetirementTests(unittest.TestCase):
@@ -3500,17 +3567,17 @@ class MissingIssueRetiresTests(unittest.TestCase):
     def test_a_502_stays_unreadable(self):
         with patch("watch_lane_posts.gh_as", self.fake_gh(502, 200)), \
              patch("sys.stderr", io.StringIO()):
-            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None))
+            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None, None))
 
     def test_an_unparseable_status_stays_unreadable(self):
         with patch("watch_lane_posts.gh_as", self.fake_gh(None, 200)), \
              patch("sys.stderr", io.StringIO()):
-            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None))
+            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None, None))
 
     def test_a_probe_timeout_stays_unreadable_and_the_cycle_continues(self):
         with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200, raise_on="--include")), \
              patch("sys.stderr", io.StringIO()):
-            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None))
+            self.assertEqual(_REAL_ISSUE_META(self.REPO, 7), (None, None, None))
 
     def test_the_last_status_line_wins_after_a_redirect(self):
         with patch("watch_lane_posts.gh_as", self.fake_gh(404, 200)):

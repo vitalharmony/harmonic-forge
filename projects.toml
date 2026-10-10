@@ -40,6 +40,12 @@
 #                 harmonic-forge is a DECISION, not a gap: its work is pulled by
 #                 several ventures and belongs to no single release. See
 #                 hrse docs/ROADMAP.md. Do not "fix" it.
+# active_milestones  The operator's live releases (harmonic-forge#952): the lane
+#                 queue skips an issue whose milestone is set and not listed; an
+#                 issue with no milestone is never skipped. Explicit on purpose:
+#                 the 2026-09-14 ruling removed an inferred "future milestone"
+#                 exclusion because it dropped the lane's real queue. Absent
+#                 means no filtering. Only valid where `milestones = true`.
 # token_exception Why this account's slot may hold a token that is NOT a fine-grained PAT
 #                 (harmonic-forge#805). Lane credentials are fine-grained PATs; the one
 #                 exception on record is an account whose boards are USER-owned Projects v2,
@@ -119,6 +125,7 @@ account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "1"
 milestones = true
+active_milestones = ["3.0", "Platform"]  # operator, 2026-10-10: Platform holds hrse tooling
 onboarded = true
 token_exception = "fine-grained PATs cannot access user-owned Projects v2 (GitHub-documented limitation; verified 403 in harmonic-forge#805 issuecomment-5883764727). Revisit if the boards move to an organization."
 

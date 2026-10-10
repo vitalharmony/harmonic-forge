@@ -69,6 +69,32 @@ class LoadTests(unittest.TestCase):
         self.assertEqual([p.name for p in mf.load(path)], ["zulu", "alpha"])
 
 
+class ActiveMilestonesTests(unittest.TestCase):
+    """harmonic-forge#952: an optional, explicit list; absent means no filtering."""
+
+    def test_absent_is_empty(self) -> None:
+        self.assertEqual(mf.load(write(MINIMAL))[0].active_milestones, ())
+
+    def test_a_list_loads_as_a_tuple(self) -> None:
+        path = write(MINIMAL + '    milestones = true\n    active_milestones = ["3.0", "Later"]\n')
+        self.assertEqual(mf.load(path)[0].active_milestones, ("3.0", "Later"))
+
+    def test_refused_on_a_repo_without_milestones(self) -> None:
+        with self.assertRaises(mf.ManifestError) as ctx:
+            mf.load(write(MINIMAL + '    active_milestones = ["3.0"]\n'))
+        self.assertIn("carries no milestones", str(ctx.exception))
+
+    def test_refused_when_not_a_list_of_titles(self) -> None:
+        for value in ('"3.0"', "[1]", '[""]'):
+            with self.subTest(value=value), self.assertRaises(mf.ManifestError):
+                mf.load(write(MINIMAL + f"    milestones = true\n    active_milestones = {value}\n"))
+
+    def test_the_live_manifest_scopes_only_the_cymagraph_repos(self) -> None:
+        scoped = {p.name: p.active_milestones for p in mf.load(LIVE) if p.active_milestones}
+        # cymagraph-infra has no 3.0 milestone (preclose pass 2), so no list.
+        self.assertEqual(scoped, {"hrse": ("3.0", "Platform")})
+
+
 class FailLoudlyTests(unittest.TestCase):
     """A loader that returned [] on a bad manifest would make every consumer
     behave as if nothing were onboarded — `gh_issue.py` treats "no board" as a

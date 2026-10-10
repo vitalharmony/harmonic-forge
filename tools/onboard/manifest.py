@@ -56,6 +56,9 @@ class Project:
     board_owner: str | None = None
     board_number: str | None = None
     milestones: bool = False
+    # harmonic-forge#952: the operator's live releases; the lane queue skips an
+    # issue whose milestone is set and not listed. Empty means no filtering.
+    active_milestones: tuple[str, ...] = ()
     onboarded: bool = False
     token_exception: str | None = None  # harmonic-forge#805
     workspace: str | None = None  # harmonic-forge#917
@@ -129,6 +132,12 @@ def load(path: Path | None = None) -> list[Project]:
                 f"{', '.join(sorted(unknown))}")
         if entry.get("repo"):
             entry["repo"] = normalize_repo(str(entry["repo"]))
+        if "active_milestones" in entry:
+            value = entry["active_milestones"]
+            if not isinstance(value, list) or not all(isinstance(m, str) and m for m in value):
+                raise ManifestError(
+                    f"{target}: {entry['name']} active_milestones must be a list of milestone titles")
+            entry["active_milestones"] = tuple(value)
         protocol_entry = entry.pop("protocol", None)
         protocol = load_protocol(protocol_entry, target, str(entry["name"]))
         projects.append(Project(**entry, protocol=protocol))
@@ -165,6 +174,9 @@ def _validate(projects: list[Project], target: Path) -> None:
             seen_repo[project.repo] = project.name
             if not project.account:  # harmonic-forge#804: no repo without an identity
                 raise ManifestError(f"{target}: {project.name} declares a repo but no `account`")
+        if project.active_milestones and not project.milestones:  # harmonic-forge#952
+            raise ManifestError(
+                f"{target}: {project.name} lists active_milestones but carries no milestones")
         if project.onboarded and not project.repo:
             raise ManifestError(
                 f"{target}: {project.name} is onboarded but declares no repo")
