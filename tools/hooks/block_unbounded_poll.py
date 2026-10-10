@@ -16,9 +16,13 @@ a `sleep` (as its own segment, or as the loop's condition). A loop inside a
 `bash -c`/`sh -c` payload is checked the same way, unless `timeout <N>` leads
 that segment, which is the bounded form AC1 allows.
 
-Known limits, accepted: a `while read` loop over finite input that sleeps
-between items is denied (AC1's literal rule; the deny reason names the
-fixes), and so is a loop followed by a separate `sleep` in the same command.
+Known limits, accepted (R-0380: no mechanism beyond the literal ask):
+- denied although bounded: a `while read` loop over finite input that sleeps
+  between items (AC1's literal rule), and any command holding both a loop and
+  a separate `sleep`, before or after it;
+- allowed although unbounded: a loop reached only through a wrapper before
+  the shell (`env`/`nohup`/`nice … bash -c`), `eval`, a heredoc fed to a
+  shell, or `timeout 0`. Each is a deliberate spelling, not the H2245 slip.
 """
 from __future__ import annotations
 
@@ -32,6 +36,11 @@ from shell_parse import command_segments  # noqa: E402
 
 LOOP_WORDS = ("until", "while")
 SHELLS = ("bash", "sh")
+LEADERS = ("do", "then", "else", "elif", "{", "!", "command", "exec")
+
+
+def _is_sleep(tokens: list[str]) -> bool:
+    return bool(tokens) and Path(tokens[0]).name == "sleep"
 
 REASON = (
     "Blocked: a polling loop (`until`/`while` with `sleep`) with no `timeout` "
@@ -50,16 +59,19 @@ def unbounded_poll(command: str) -> bool:
         return False
     loop = sleeps = False
     for tokens in segments:
-        if tokens and tokens[0] == "do":
+        # Reforge pass 1: a loop or sleep may follow a compound keyword
+        # (`{ until …`, `then while …`) or a builtin prefix (`command sleep`).
+        while tokens and tokens[0] in LEADERS:
             tokens = tokens[1:]
         if not tokens:
             continue
         if tokens[0] in LOOP_WORDS:
             loop = True
-            sleeps = sleeps or tokens[1:2] == ["sleep"]
-        elif tokens[0] == "sleep":
+            sleeps = sleeps or _is_sleep(tokens[1:])
+        elif _is_sleep(tokens):
             sleeps = True
-        elif (Path(tokens[0]).name in SHELLS and len(tokens) > 2 and tokens[1] == "-c"
+        elif (Path(tokens[0]).name in SHELLS and len(tokens) > 2
+              and tokens[1].startswith("-") and tokens[1].endswith("c")
               and unbounded_poll(tokens[2])):
             return True
     return loop and sleeps

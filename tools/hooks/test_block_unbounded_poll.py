@@ -70,6 +70,18 @@ class Polls(unittest.TestCase):
             H.main()
         self.assertEqual(json.loads(out.getvalue()), {})
 
+    # Reforge pass 1 survivors.
+    def test_a_loop_after_a_compound_keyword_is_caught(self):
+        self.assertEqual(decision("if true; then while :; do sleep 1; done; fi"), "deny")
+        self.assertEqual(decision("{ until x; do sleep 1; done; }"), "deny")
+
+    def test_sleep_by_path_or_builtin_prefix_counts(self):
+        self.assertEqual(decision("until [ -f x ]; do /bin/sleep 5; done"), "deny")
+        self.assertEqual(decision("until x; do command sleep 1; done"), "deny")
+
+    def test_a_combined_shell_flag_is_checked(self):
+        self.assertEqual(decision("bash -lc 'until x; do sleep 1; done'"), "deny")
+
     def test_other_tools_are_ignored(self):
         self.assertIsNone(decision("until false; do sleep 1; done", tool="Read"))
 
