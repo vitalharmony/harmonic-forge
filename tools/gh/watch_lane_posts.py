@@ -270,19 +270,22 @@ def _account_of(repo: str) -> str:
     return _REPO_ACCOUNTS.get((repo or "").lower()) or _ACCOUNT
 
 
-def _active_milestones(repo: str) -> frozenset[str]:
+def _active_milestones(repo: str) -> frozenset[str] | None:
     """The operator's live releases for `repo` from `projects.toml`
     (harmonic-forge#952); empty means no milestone filtering. Read on every
     call, never cached: the list changes with each release, and a belt runs
     for hours (preclose finding: a process-lifetime cache kept skipping a
-    newly listed milestone). An unreadable manifest filters nothing, and says so."""
+    newly listed milestone). None when the manifest cannot be read: the caller
+    then holds back every milestoned candidate for that tick (preclose pass 2:
+    reading "no filtering" there dispatched out-of-release work for one tick)."""
     try:
         for project in onboard_manifest.load():
             if project.repo and project.repo.lower() == (repo or "").lower():
                 return frozenset(project.active_milestones)
-    except Exception as exc:  # noqa: BLE001 -- fail open, loudly
-        print(f"[watch_lane_posts] projects.toml unreadable, no milestone filtering: {exc}",
+    except Exception as exc:  # noqa: BLE001 -- reported; the caller fails closed
+        print(f"[watch_lane_posts] projects.toml unreadable, holding milestoned candidates: {exc}",
               file=sys.stderr)
+        return None
     return frozenset()
 _COUNTER = CallCounter()
 
@@ -1147,7 +1150,7 @@ def discover_queue(repo: str, lane: str,
             # that, leaving `queue_qualifiers` itself an untested orphan).
             continue
         active = _active_milestones(repo)
-        if active and milestone and milestone not in active:
+        if milestone and (active is None or (active and milestone not in active)):
             # harmonic-forge#952: outside the operator's live releases
             # (`active_milestones` in projects.toml). Reported on stderr only:
             # a stdout line would wake every lane on every tick. The store

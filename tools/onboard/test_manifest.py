@@ -91,7 +91,8 @@ class ActiveMilestonesTests(unittest.TestCase):
 
     def test_the_live_manifest_scopes_only_the_cymagraph_repos(self) -> None:
         scoped = {p.name: p.active_milestones for p in mf.load(LIVE) if p.active_milestones}
-        self.assertEqual(scoped, {"hrse": ("3.0",), "cymagraph-infra": ("3.0",)})
+        # cymagraph-infra has no 3.0 milestone (preclose pass 2), so no list.
+        self.assertEqual(scoped, {"hrse": ("3.0", "Platform")})
 
 
 class FailLoudlyTests(unittest.TestCase):

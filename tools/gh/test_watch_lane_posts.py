@@ -2774,7 +2774,7 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
 
     def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
         self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
-        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0"}))
+        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0", "Platform"}))
 
     def test_an_edited_list_takes_effect_without_a_restart(self):
         # Preclose pass 1 survivor: the list was cached for the process's life.
@@ -2784,12 +2784,17 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
             self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0"}))
             self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0", "3.1"}))
 
-    def test_an_unreadable_manifest_filters_nothing_and_says_so(self):
+    def test_an_unreadable_manifest_holds_milestoned_candidates(self):
+        # Preclose pass 2: a half-saved manifest must not dispatch for a tick.
         err = io.StringIO()
         with patch("watch_lane_posts.onboard_manifest.load", side_effect=RuntimeError("bad toml")), \
              patch("sys.stderr", err):
-            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset())
-        self.assertIn("no milestone filtering", err.getvalue())
+            self.assertIsNone(watch_lane_posts._active_milestones("vitalharmony/hrse"))
+        self.assertIn("holding milestoned candidates", err.getvalue())
+        held, _, _ = self.run_queue("vitalharmony/hrse", "3.2", None)
+        self.assertEqual(held, {})
+        unmilestoned, _, _ = self.run_queue("vitalharmony/hrse", None, None)
+        self.assertEqual(unmilestoned, {1: "handoff owes=plan"})
 
     def test_a_fail_still_reaches_its_lane_out_of_release(self):
         with patch("watch_lane_posts._issue_meta", return_value=("open", set(), "3.2")):

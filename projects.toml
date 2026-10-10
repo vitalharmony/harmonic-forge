@@ -125,7 +125,7 @@ account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "1"
 milestones = true
-active_milestones = ["3.0"]
+active_milestones = ["3.0", "Platform"]  # operator, 2026-10-10: Platform holds hrse tooling
 onboarded = true
 token_exception = "fine-grained PATs cannot access user-owned Projects v2 (GitHub-documented limitation; verified 403 in harmonic-forge#805 issuecomment-5883764727). Revisit if the boards move to an organization."
 
@@ -185,7 +185,6 @@ account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "1"
 milestones = true
-active_milestones = ["3.0"]
 onboarded = true
 token_exception = "fine-grained PATs cannot access user-owned Projects v2 (GitHub-documented limitation; verified 403 in harmonic-forge#805 issuecomment-5883764727). Revisit if the boards move to an organization."
 
