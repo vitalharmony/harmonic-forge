@@ -112,7 +112,17 @@ class GhAsMemoTests(unittest.TestCase):
         fake.write_text(fake.read_text().replace(
             f'  "api user --jq .login") cat "{self.login}" ;;',
             f'  "api user --jq .login") cat "{self.login}"; echo tok-B > "{self.token}" ;;'))
-        self.run_gh_as()
+        result = self.run_gh_as()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("changed its token", result.stderr)
+        self.assertFalse((self.slot / ".identity-memo").exists())
+
+    def test_a_probe_that_exits_nonzero_is_a_failed_probe(self):
+        fake = self.bin / "gh"
+        fake.write_text(fake.read_text().replace(
+            f'  "api user --jq .login") cat "{self.login}" ;;',
+            f'  "api user --jq .login") cat "{self.login}"; exit 1 ;;'))
+        self.assertEqual(self.run_gh_as().returncode, 1)
         self.assertFalse((self.slot / ".identity-memo").exists())
 
     def test_the_shim_exempts_auth_token_before_the_override(self):  # AC6

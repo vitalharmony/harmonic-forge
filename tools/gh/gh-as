@@ -107,7 +107,11 @@ fi
 
 # Verify the slot still holds the account it claims, so a command can never
 # run against the wrong identity because a token was replaced out of band.
-actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null || true)"
+# A probe that exits nonzero is a failed probe, whatever it printed (preclose
+# cross-family check).
+if ! actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null)"; then
+  actual=""
+fi
 if [ -z "$actual" ]; then
   echo "gh-as: account '$acct' is not authenticated (token expired or revoked)." >&2
   echo "Re-run:  gh-as --init $acct" >&2
@@ -122,7 +126,12 @@ fi
 # so one token's hash can never be tied to another token's login (pass 1).
 if [ -n "$fp" ]; then
   fp_after="$(GH_CONFIG_DIR="$dir" gh auth token 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1 || true)"
-  [ "$fp_after" = "$fp" ] || fp=""
+  if [ "$fp_after" != "$fp" ]; then
+    # The token changed during verification, so the command would run under a
+    # token nobody probed: refuse (fails closed; preclose cross-family check).
+    echo "gh-as: slot '$acct' changed its token during verification -- refusing; retry." >&2
+    exit 1
+  fi
 fi
 if [ -n "$fp" ]; then
   tmp="$(umask 077; mktemp "$dir/.identity-memo.XXXXXX")" \
