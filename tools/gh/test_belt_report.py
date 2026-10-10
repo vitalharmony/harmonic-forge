@@ -285,5 +285,43 @@ class TestTickLogRecordsTheMarkerTimestamp(unittest.TestCase):
         self.assertEqual(rec["owed_found"][0]["id"], "hrse#3")
 
 
+class HourlyReportTests(unittest.TestCase):
+    """harmonic-forge#959 AC3-AC5."""
+
+    def _out(self, records):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            belt_report.hourly_report(records)
+        return buf.getvalue()
+
+    def _rec(self, hour, used, requests=10):
+        return {"ts": f"2026-10-10T{hour:02d}:30:00Z", "http_requests": requests,
+                "ratelimit": {"vitalharmony": {"used": used, "reset": 0}}}
+
+    def test_peaks_and_the_phase1_gate_line(self):
+        out = self._out([self._rec(1, 1000), self._rec(2, 2600), self._rec(3, 3000)])
+        self.assertIn("vitalharmony 1000 (20%)", out)
+        self.assertIn("vitalharmony 2600 (52%)", out)
+        self.assertIn("vitalharmony 3000 (60%)", out)
+        self.assertIn("Phase 1 gate: 2 of 3 hours > 50%", out)
+
+    def test_a_legacy_record_reads_legacy_never_zero(self):
+        out = self._out([{"ts": "2026-10-10T01:10:00Z", "calls_rest": 4}])
+        line = [l for l in out.splitlines() if "2026-10-10T01:00" in l][0]
+        self.assertIn("legacy", line)
+        self.assertNotRegex(line, r"\s0\s")
+
+    def test_a_tick_record_carries_the_new_fields(self):
+        from belt_mechanics import CallCounter
+        with tempfile.TemporaryDirectory() as d:
+            log = TickLog(Path(d) / "t.jsonl", lane="l1", trigger="loop")
+            log.counter = CallCounter(http_requests=3,
+                                      ratelimit={"vh": {"used": 1, "reset": 2}})
+            rec = log.write()
+        self.assertEqual(rec["http_requests"], 3)
+        self.assertEqual(rec["ratelimit"], {"vh": {"used": 1, "reset": 2}})
+        self.assertIn("gh-as probe", rec["excludes"])
+
+
 if __name__ == "__main__":
     unittest.main()

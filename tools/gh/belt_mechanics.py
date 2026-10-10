@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -119,12 +120,65 @@ class CallCounter:
 
     calls_rest: int = 0
     calls_graphql: int = 0
+    #: harmonic-forge#959: one per `gh_as` call. A `--paginate` call's extra
+    #: pages and the `gh-as` probe are not counted (`TickLog`'s `excludes`).
+    http_requests: int = 0
+    #: `{account: {"used", "reset"}}` from the REST `core` bucket's response
+    #: headers, the last value seen wins. Cleared per tick by the caller.
+    ratelimit: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def record(self, argv: list[str]) -> None:
+        self.http_requests += 1
         if _is_graphql(argv):
             self.calls_graphql += 1
         else:
             self.calls_rest += 1
+
+    def record_headers(self, account: str, headers: str) -> None:
+        """Record `x-ratelimit-used`/`-reset` from one response's header block.
+        Unparseable headers are skipped, never raised: accounting must never
+        fail the call it is counting."""
+        used = _RATELIMIT_USED.search(headers)
+        reset = _RATELIMIT_RESET.search(headers)
+        resource = _RATELIMIT_RESOURCE.search(headers)
+        if not used or not reset:
+            return
+        if resource and resource.group(1).lower() != "core":
+            return
+        self.ratelimit[account] = {"used": int(used.group(1)), "reset": int(reset.group(1))}
+
+
+# Same form as gh_scan_patterns.py's `_RATELIMIT_*` (multiline, any case; the
+# CRLF is consumed by `\s*`). Not imported: that module is the gh shim's.
+_RATELIMIT_USED = re.compile(r"(?im)^X-Ratelimit-Used:\s*(\d+)\s*$")
+_RATELIMIT_RESET = re.compile(r"(?im)^X-Ratelimit-Reset:\s*(\d+)\s*$")
+_RATELIMIT_RESOURCE = re.compile(r"(?im)^X-Ratelimit-Resource:\s*(\S+)\s*$")
+
+
+def _wants_headers(argv: list[str]) -> bool:
+    """A single-page REST `gh api` call the caller did not already ask headers
+    for. `--paginate` prints one header block per page, interleaved with the
+    bodies, so it is left alone (harmonic-forge#959 handoff)."""
+    return (bool(argv) and argv[0] == "api" and not _is_graphql(argv)
+            and not any(a in ("--paginate", "--include", "-i") for a in argv))
+
+
+def _strip_headers(stdout: str) -> tuple[Optional[str], str]:
+    """`(last header block, body)`. A followed redirect prints one block per
+    response (watch_lane_posts.py `_http_status`), so blocks are stripped
+    while the text starts with a status line, and the last one is the final
+    response's. No separator: `(None, stdout)` unchanged."""
+    last: Optional[str] = None
+    rest = stdout
+    while rest.startswith("HTTP/"):
+        for sep in ("\r\n\r\n", "\n\n"):
+            idx = rest.find(sep)
+            if idx != -1:
+                last, rest = rest[:idx], rest[idx + len(sep):]
+                break
+        else:
+            return (None, stdout) if last is None else (last, rest)
+    return last, rest
 
 
 def gh_as(
@@ -142,10 +196,12 @@ def gh_as(
     `gh-as`'s own header states the guarantee this relies on: "There is no
     switch to undo: the scoping lives and dies with the process."
     """
+    include = counter is not None and _wants_headers(argv)
     if counter is not None:
         counter.record(argv)
+    run_argv = ["api", "--include", *argv[1:]] if include else argv
     proc = subprocess.run(
-        ["gh-as", account, "gh", *argv],
+        ["gh-as", account, "gh", *run_argv],
         capture_output=True, text=True, timeout=timeout,
     )
     if check and proc.returncode != 0:
@@ -153,7 +209,12 @@ def gh_as(
             f"gh-as {account} gh {' '.join(argv)} -> exit {proc.returncode}: "
             f"{proc.stderr.strip()[:400]}"
         )
-    return proc.stdout
+    if not include:
+        return proc.stdout
+    headers, body = _strip_headers(proc.stdout)
+    if headers is not None:
+        counter.record_headers(account, headers)
+    return body
 
 
 def list_accounts() -> dict[str, str]:
@@ -451,6 +512,10 @@ class TickLog:
             "repos_polled": self.repos_polled,
             "calls_rest": self.counter.calls_rest,
             "calls_graphql": self.counter.calls_graphql,
+            # harmonic-forge#959: per-tick delta and snapshot, never totals.
+            "http_requests": self.counter.http_requests,
+            "ratelimit": dict(self.counter.ratelimit),
+            "excludes": ["gh-as probe", "--paginate extra pages"],
             # Normalised at write time, not at append time: a caller that does
             # `log.matched.append("hrse#1725")` still produces a well-formed
             # record rather than a silently different one. Under-recording

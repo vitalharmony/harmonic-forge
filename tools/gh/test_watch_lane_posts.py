@@ -2635,6 +2635,19 @@ class QueueCycleOwesTests(unittest.TestCase):
         self.assertEqual(got, {("vitalharmony/harmonic-forge", 851)})
 
 
+class TickRateLimitSnapshotTests(unittest.TestCase):
+    """harmonic-forge#959 AC1: `ratelimit` is this tick's snapshot. The tick
+    clears it where it snapshots the call counts, before any call."""
+
+    def test_the_tick_clears_ratelimit_beside_the_call_snapshot(self):
+        import inspect
+        import watch_lane_posts
+        src = inspect.getsource(watch_lane_posts._main)
+        start = src.index("_calls_at_start = (")
+        self.assertIn("_COUNTER.ratelimit.clear()", src[start:start + 300])
+        self.assertIn("ratelimit=dict(_COUNTER.ratelimit)", src)
+
+
 if __name__ == "__main__":
     unittest.main()
 

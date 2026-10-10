@@ -2687,7 +2687,9 @@ def _main() -> int:
         #: what the tick actually spent. Snapshot here, subtract at write.
         #: A zero left in the record would be worse than absent: `belt_report`
         #: reads it as a real measurement.
-        _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql)
+        _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql,
+                           _COUNTER.http_requests)
+        _COUNTER.ratelimit.clear()  # harmonic-forge#959: a per-tick snapshot
         _reset_tick_reads()  # harmonic-forge#958 AC5: the memo never spans two ticks
         #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
         #: line at all, across every source below (queue-for,
@@ -2842,6 +2844,8 @@ def _main() -> int:
         tick.counter = CallCounter(
             calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
             calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],
+            http_requests=_COUNTER.http_requests - _calls_at_start[2],
+            ratelimit=dict(_COUNTER.ratelimit),
         )
         if comment_fetch_failed:
             tick.actions_taken.append("comment-fetch-failed")
