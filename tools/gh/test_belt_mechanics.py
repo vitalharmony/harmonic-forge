@@ -241,5 +241,78 @@ class TestAgainstTheLiveAccounts(unittest.TestCase):
                 assert_identity(account, accounts)
 
 
+class RequestAccountingTests(unittest.TestCase):
+    """harmonic-forge#959 AC1/AC2: `gh_as` reads the rate limit from the
+    headers of the call it already makes, and returns only the body."""
+
+    HDR = ("HTTP/2.0 200 OK\r\nX-Ratelimit-Reset: 1791671689\r\n"
+           "X-Ratelimit-Resource: core\r\nX-Ratelimit-Used: 130\r\n\r\n")
+
+    def _run(self, argv, stdout, returncode=0, check=True):
+        import belt_mechanics
+        from unittest.mock import patch
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            return type("P", (), {"returncode": returncode, "stdout": stdout, "stderr": "boom"})()
+
+        counter = belt_mechanics.CallCounter()
+        with patch("belt_mechanics.subprocess.run", side_effect=fake):
+            out = belt_mechanics.gh_as("vitalharmony", argv, counter=counter, check=check)
+        return out, counter, calls
+
+    def test_the_header_block_is_stripped(self):
+        out, _, _ = self._run(["api", "repos/o/r/issues/1"], self.HDR + '{"a": 1}')
+        self.assertEqual(out, '{"a": 1}')
+
+    def test_the_rate_limit_is_recorded_from_mixed_case_headers(self):
+        _, counter, _ = self._run(["api", "repos/o/r/issues/1"], self.HDR + "open\n")
+        self.assertEqual(counter.ratelimit,
+                         {"vitalharmony": {"used": 130, "reset": 1791671689}})
+        self.assertEqual(counter.http_requests, 1)
+
+    def test_a_caller_passing_include_gets_raw_output(self):
+        raw = self.HDR + "{}"
+        out, counter, calls = self._run(["api", "--include", "repos/o/r"], raw)
+        self.assertEqual(out, raw)
+        self.assertEqual(calls[0].count("--include"), 1)
+
+    def test_a_paginated_call_is_not_given_include(self):
+        out, counter, calls = self._run(["api", "x", "--paginate"], "[]")
+        self.assertNotIn("--include", calls[0])
+        self.assertEqual(out, "[]")
+
+    def test_a_redirect_strips_every_block_and_records_the_last(self):
+        stdout = ("HTTP/2.0 301 Moved Permanently\r\nLocation: x\r\n\r\n"
+                  "HTTP/2.0 200 OK\r\nX-Ratelimit-Used: 7\r\nX-Ratelimit-Reset: 9\r\n\r\n"
+                  "open\n")
+        out, counter, _ = self._run(["api", "repos/o/r/issues/1"], stdout)
+        self.assertEqual(out, "open\n")
+        self.assertEqual(counter.ratelimit["vitalharmony"]["used"], 7)
+
+    def test_a_failed_call_still_raises(self):
+        import belt_mechanics
+        with self.assertRaises(belt_mechanics.GhAsError) as ctx:
+            self._run(["api", "repos/o/r"], self.HDR + "{}", returncode=1)
+        self.assertNotIn("--include", str(ctx.exception))
+
+    def test_a_403_still_records_the_rate_limit(self):
+        import belt_mechanics
+        hdr = ("HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Used: 5000\r\n"
+               "X-Ratelimit-Reset: 9\r\n\r\n")
+        from unittest.mock import patch
+        counter = belt_mechanics.CallCounter()
+        fake = type("P", (), {"returncode": 1, "stdout": hdr + "{}", "stderr": "rate"})()
+        with patch("belt_mechanics.subprocess.run", return_value=fake):
+            with self.assertRaises(belt_mechanics.GhAsError):
+                belt_mechanics.gh_as("vitalharmony", ["api", "x"], counter=counter)
+        self.assertEqual(counter.ratelimit["vitalharmony"]["used"], 5000)
+
+    def test_one_subprocess_per_call(self):
+        _, _, calls = self._run(["api", "repos/o/r/issues/1"], self.HDR + "{}")
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

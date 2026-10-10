@@ -285,5 +285,68 @@ class TestTickLogRecordsTheMarkerTimestamp(unittest.TestCase):
         self.assertEqual(rec["owed_found"][0]["id"], "hrse#3")
 
 
+class HourlyReportTests(unittest.TestCase):
+    """harmonic-forge#959 AC3-AC5."""
+
+    def _out(self, records):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            belt_report.hourly_report(records)
+        return buf.getvalue()
+
+    def _rec(self, hour, used, requests=10):
+        return {"ts": f"2026-10-10T{hour:02d}:30:00Z", "http_requests": requests,
+                "ratelimit": {"vitalharmony": {"used": used, "reset": 0}}}
+
+    def test_peaks_and_the_phase1_gate_line(self):
+        out = self._out([self._rec(1, 1000), self._rec(2, 2600), self._rec(3, 3000)])
+        self.assertIn("vitalharmony 1000 (20%)", out)
+        self.assertIn("vitalharmony 2600 (52%)", out)
+        self.assertIn("vitalharmony 3000 (60%)", out)
+        self.assertIn("Phase 1 gate: 2 of 3 hours > 50%", out)
+        self.assertIn("logged hours ending 2026-10-10T03:00 UTC", out)
+
+    def test_a_legacy_record_reads_legacy_never_zero(self):
+        out = self._out([{"ts": "2026-10-10T01:10:00Z", "calls_rest": 4}])
+        line = [l for l in out.splitlines() if "2026-10-10T01:00" in l][0]
+        self.assertIn("legacy", line)
+        self.assertNotRegex(line, r"\s0\s")
+
+    def test_a_mixed_hour_is_marked_partial(self):
+        out = self._out([{"ts": "2026-10-10T01:05:00Z", "calls_rest": 4},
+                         self._rec(1, 1000, requests=5)])
+        self.assertIn("5 (partial: 1 legacy)", out)
+
+    def test_hours_outside_the_72_hour_window_are_not_counted(self):
+        old = {"ts": "2026-10-01T01:30:00Z", "http_requests": 1,
+               "ratelimit": {"vitalharmony": {"used": 4000, "reset": 0}}}
+        out = self._out([old, self._rec(1, 1000), self._rec(2, 3000)])
+        self.assertIn("Phase 1 gate: 1 of 2 hours > 50%", out)
+
+    def test_a_wrong_typed_record_is_skipped_not_fatal(self):
+        bad = {"ts": "2026-10-10T01:10:00Z", "http_requests": None,
+               "ratelimit": {"vitalharmony": None}}
+        out = self._out([bad, self._rec(1, 3000)])
+        self.assertIn("1 record(s) with unreadable request fields skipped", out)
+        self.assertIn("10 (partial: 1 legacy)", out)
+        self.assertIn("Phase 1 gate: 1 of 1 hours > 50%", out)
+
+    def test_requests_without_headers_warn(self):
+        out = self._out([{"ts": "2026-10-10T01:10:00Z", "http_requests": 9, "ratelimit": {}}])
+        self.assertIn("WARNING: 1 hour(s) in the window recorded requests but no rate-limit header", out)
+        self.assertNotIn("Check gh_as", out)
+
+    def test_a_tick_record_carries_the_new_fields(self):
+        from belt_mechanics import CallCounter
+        with tempfile.TemporaryDirectory() as d:
+            log = TickLog(Path(d) / "t.jsonl", lane="l1", trigger="loop")
+            log.counter = CallCounter(http_requests=3,
+                                      ratelimit={"vh": {"used": 1, "reset": 2}})
+            rec = log.write()
+        self.assertEqual(rec["http_requests"], 3)
+        self.assertEqual(rec["ratelimit"], {"vh": {"used": 1, "reset": 2}})
+        self.assertIn("gh-as probe", rec["excludes"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,7 +35,7 @@ import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -217,6 +217,81 @@ def latency_report(records: list[dict], f: Findings) -> None:
         )
 
 
+#: The REST `core` bucket per account per hour (harmonic-forge#959).
+BUCKET = 5000
+PHASE1_THRESHOLD = BUCKET // 2
+PHASE1_WINDOW_HOURS = 72
+
+
+def hourly_report(records: list[dict]) -> None:
+    """AC3/AC4 (harmonic-forge#959): per-UTC-hour ticks, requests and peak
+    bucket use, and the Phase 1 gate line. A record written before #959 has
+    no `http_requests`: an all-legacy hour reads `legacy` and a mixed hour is
+    marked partial, never a bare count (AC5). The projected-at-reset line was
+    dropped by operator ruling after preclose pass 1 (sticky-wicket REFORGE)."""
+    hours: dict[str, dict[str, Any]] = {}
+    unreadable = 0
+    for r in records:
+        ts = _parse_ts(r.get("ts"))
+        if ts is None:
+            continue
+        key = ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
+        h = hours.setdefault(key, {"ticks": 0, "requests": 0, "legacy": 0, "peak": {}})
+        h["ticks"] += 1
+        if "http_requests" not in r:
+            h["legacy"] += 1
+            continue
+        # A record that parses but carries a wrong-typed field is skipped and
+        # counted, never allowed to stop the report (pass-1 survivor 7).
+        try:
+            requests = int(r["http_requests"])
+            peaks = {str(a): int(rl["used"]) for a, rl in (r.get("ratelimit") or {}).items()}
+        except (TypeError, ValueError, KeyError, AttributeError):
+            # Marked like a legacy record, so its hour never prints a bare
+            # count it does not hold (pass-2 survivor 1).
+            h["legacy"] += 1
+            unreadable += 1
+            continue
+        h["requests"] += requests
+        for account, used in peaks.items():
+            h["peak"][account] = max(used, h["peak"].get(account, -1))
+    if not hours:
+        return
+    print("\nhourly (UTC):  hour           ticks  requests  peak used / 5,000")
+    for key in sorted(hours):
+        h = hours[key]
+        if h["legacy"] == h["ticks"]:
+            requests = "legacy"
+        elif h["legacy"]:
+            requests = f"{h['requests']} (partial: {h['legacy']} legacy)"
+        else:
+            requests = str(h["requests"])
+        peak = ", ".join(f"{a} {u} ({u * 100 // BUCKET}%)"
+                         for a, u in sorted(h["peak"].items())) or (
+            "legacy" if h["legacy"] == h["ticks"] else "no headers")
+        print(f"  {key}:00  {h['ticks']:>5}  {requests:>8}  {peak}")
+    if unreadable:
+        print(f"  {unreadable} record(s) with unreadable request fields skipped")
+
+    cutoff = (max(_parse_ts(f"{k}:00:00Z") for k in hours)
+              - timedelta(hours=PHASE1_WINDOW_HOURS - 1))
+    window = {k: h for k, h in hours.items() if _parse_ts(f"{k}:00:00Z") >= cutoff}
+    observed = [h for h in window.values() if h["peak"]]
+    over = sum(1 for h in observed if max(h["peak"].values()) > PHASE1_THRESHOLD)
+    share = f"{over * 100 // len(observed)}%" if observed else "n/a"
+    # Anchored to the newest logged hour, which the line names, so a log that
+    # stopped days ago reads as stale rather than current (pass-2 survivor 4).
+    print(f"  Phase 1 gate: {over} of {len(observed)} hours > 50% "
+          f"in the {PHASE1_WINDOW_HOURS} logged hours ending {max(hours)}:00 UTC ({share})")
+    # Requests recorded but no rate-limit header ever parsed: the gate has no
+    # input, which must be said, not printed as "0 of 0" (pass-1 survivor 8).
+    blind = sum(1 for h in window.values() if h["requests"] and not h["peak"])
+    if blind:
+        print(f"  WARNING: {blind} hour(s) in the window recorded requests but no "
+              "rate-limit header (header-less --paginate/repo-list ticks, or a "
+              "parsing fault); the Phase 1 gate has no input for those hours.")
+
+
 def report(records: list[dict], malformed_lines: list[str], last: int,
            window: int, path: Path) -> int:
     f = Findings()
@@ -247,6 +322,7 @@ def report(records: list[dict], malformed_lines: list[str], last: int,
     print(f"  triggers: {dict(Counter(r.get('trigger', '?') for r in records))}")
     print(f"  lock:     {dict(Counter(r.get('lock', '?') for r in records))}")
     print(f"  calls:    rest={rest}  graphql={graphql}")
+    hourly_report(records)
 
     # AC4 — name the tick, so the defect is findable rather than merely counted.
     offenders = [r.get("ts") for r in records if r.get("calls_graphql", 0)]
