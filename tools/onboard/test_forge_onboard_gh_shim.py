@@ -42,6 +42,14 @@ class GhShimCheck(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PATH": path or self.path}):
             return fo.check_gh_shim(None)
 
+    def test_a_link_to_a_missing_shim_names_the_missing_shim(self):  # preclose pass 1
+        (self.bin / "gh").symlink_to(self.shim)
+        self.shim.unlink()
+        check = self.run_check()
+        self.assertEqual(check.status, "FAIL")
+        self.assertIn("missing or not executable", check.detail)
+        self.assertNotIn("first on PATH", check.detail)
+
     def test_missing_fails_and_names_the_install_command(self):  # TC1, TC3
         check = self.run_check()
         self.assertEqual(check.status, fo.FAIL)

@@ -40,6 +40,11 @@ def check_gh_shim(make_check: Callable, platform: Path) -> object:
         return make_check(NAME, FAIL, f"{target} is missing (R-0363); operator installs it with: {cmd}")
     if os.path.realpath(target) != os.path.realpath(shim):
         return make_check(NAME, FAIL, f"{target} -> {os.readlink(target)}, not {shim}; re-link with: {cmd}")
+    if not (shim.is_file() and os.access(shim, os.X_OK)):
+        # The link is right but its target is gone or not executable: the PATH
+        # lookup would skip it, and "put ~/.local/bin first" would be the wrong cause.
+        return make_check(NAME, FAIL, f"{target} links to {shim}, which is missing or not "
+                                      f"executable; restore it in the platform checkout, then: {cmd}")
     found = shutil.which("gh")
     resolved = os.path.realpath(found) if found else None
     if resolved != os.path.realpath(target):
