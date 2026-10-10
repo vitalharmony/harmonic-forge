@@ -1604,7 +1604,7 @@ class CommentWatchCycleTests(unittest.TestCase):
     def test_main_delivers_through_the_tested_function(self):
         """Preclose finding 3: pin `main()` to the tested seams."""
         import inspect
-        src = inspect.getsource(watch_lane_posts.main)
+        src = inspect.getsource(watch_lane_posts._main)  # harmonic-forge#958: main() wraps _main
         self.assertIn("allow_priming=allow_priming", src)
         self.assertIn("deferred_advances=deferred_advances", src)
         self.assertIn("deliver_comment_lines(comment_lines", src)
@@ -3683,3 +3683,86 @@ class WorkspaceRepoSetTests(unittest.TestCase):
         with self.assertRaises(watch_lane_posts.AccountReposUnavailable):
             watch_lane_posts.manifest_repos("harmonicarchitect", "leasepal")
 
+
+
+class OneReadPerTickTests(unittest.TestCase):
+    """harmonic-forge#958 AC5 (rescoped): within a tick, one `issues/{n}` read
+    serves `_issue_meta` and `_issue_is_open`, and one full-thread read serves
+    every `_fetch_all_comments` caller; outside a tick nothing is cached."""
+
+    def setUp(self):
+        self.calls = []
+        self.addCleanup(watch_lane_posts._end_tick_reads)
+        # The module-wide stub hides `_issue_meta` (setUpModule); these tests
+        # need the real one, with only the gh transport faked.
+        real = patch.object(watch_lane_posts, "_issue_meta", _REAL_ISSUE_META)
+        real.start()
+        self.addCleanup(real.stop)
+
+    def fake_gh_as(self, account, args, **kw):
+        self.calls.append(args)
+        path = args[3]
+        if path.endswith("/comments"):
+            return '[{"id": 1, "body": "x"}]'
+        return '{"state": "open", "labels": [], "milestone": null}'
+
+    def test_meta_and_is_open_share_one_issue_read_within_a_tick(self):
+        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+            watch_lane_posts._reset_tick_reads()
+            watch_lane_posts._issue_meta("vitalharmony/hrse", 5)
+            self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
+            watch_lane_posts._issue_meta("vitalharmony/hrse", 5)
+        self.assertEqual(len(self.calls), 1, self.calls)
+
+    def test_the_full_thread_is_read_once_per_tick(self):
+        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+            watch_lane_posts._reset_tick_reads()
+            first = watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
+            second = watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.calls), 1, self.calls)
+
+    def test_a_new_tick_reads_again(self):
+        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+            watch_lane_posts._reset_tick_reads()
+            watch_lane_posts._issue_meta("vitalharmony/hrse", 5)
+            watch_lane_posts._reset_tick_reads()
+            watch_lane_posts._issue_meta("vitalharmony/hrse", 5)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_nothing_is_cached_outside_a_tick(self):
+        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+            watch_lane_posts._end_tick_reads()
+            watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
+            watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_failed_read_is_not_cached_and_still_fails_open(self):
+        def failing(account, args, **kw):
+            self.calls.append(args)
+            raise watch_lane_posts.GhAsError("rate limited")
+        with patch.object(watch_lane_posts, "gh_as", side_effect=failing), \
+                patch.object(watch_lane_posts, "_confirmed_missing", return_value=False):
+            watch_lane_posts._reset_tick_reads()
+            self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))  # AC6: fail open
+            self.assertIsNone(watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5))  # None, never []
+            self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
+        self.assertEqual(len(self.calls), 3)  # each failure re-attempted, none served from cache
+
+    def test_a_missing_issue_is_not_open(self):
+        def gone(account, args, **kw):
+            raise watch_lane_posts.GhAsError("404")
+        with patch.object(watch_lane_posts, "gh_as", side_effect=gone), \
+                patch.object(watch_lane_posts, "_confirmed_missing", return_value=True):
+            watch_lane_posts._reset_tick_reads()
+            self.assertFalse(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
+
+
+class SinceIsHourlyTests(unittest.TestCase):
+    """harmonic-forge#958 AC3 (rescoped): the comment-watch `since` is floored to
+    the hour, never later than `query_since`."""
+
+    def test_since_is_floored_to_the_hour(self):
+        import inspect
+        src = inspect.getsource(watch_lane_posts)
+        self.assertIn("replace(\n                minute=0, second=0, microsecond=0)", src)
