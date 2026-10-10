@@ -91,20 +91,22 @@ def _owner(path: Path) -> dict | None:
         return None
 
 
-def reap(base: Path) -> list[Path]:
+def reap(base: Path, ownerless: bool = True) -> list[Path]:
     """Delete every scratch directory under `base` whose owner is dead.
 
     A directory with no readable owner file is ours only if it carries one of
     `PREFIXES` (a run killed between creating it and writing the owner file);
     any other ownerless directory belongs to a tool that pointed `TMPDIR` here
-    and is left alone."""
+    and is left alone. `ownerless=False` (an unlocked caller) skips that case:
+    without the lock, a half-created directory may belong to a run still in
+    progress."""
     removed = []
     for child in sorted(base.iterdir()) if base.is_dir() else []:
         if not child.is_dir() or child.name.startswith("."):
             continue
         owner = _owner(child)
         if owner is None:
-            if not child.name.startswith(PREFIXES):
+            if not ownerless or not child.name.startswith(PREFIXES):
                 continue
         elif _alive(owner):
             continue
@@ -163,15 +165,21 @@ def _lock(base: Path, label: str) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def scratch_dir(label: str, prefix: str = "scratch-") -> Iterator[Path]:
+def scratch_dir(label: str, prefix: str = "scratch-", lock: bool = True) -> Iterator[Path]:
     """A fresh scratch directory under the disk-backed root, one run at a time.
 
     The directory is removed on exit; if the process is killed, the next
-    caller reaps it."""
+    caller reaps it.
+
+    `lock=False` is for a check that runs inside another locked scratch run
+    (HRSE2's `ci_parity_check` under `l1_post`'s `mise run check`), which would
+    otherwise wait on its own parent's lock. It still gets the root, the
+    owned-dir reap and the preflight; only the call site sets it, so nothing
+    is inherited (harmonic-forge#949, operator ruling on AC2)."""
     base = root()
     base.mkdir(parents=True, exist_ok=True)
-    with _lock(base, label):
-        reap(base)
+    with (_lock(base, label) if lock else contextlib.nullcontext()):
+        reap(base, ownerless=lock)
         preflight(base)
         path = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
         try:

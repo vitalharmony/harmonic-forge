@@ -72,6 +72,23 @@ class ScratchTest(unittest.TestCase):
         self.assertEqual(_scratch.reap(self.base), [reused])
         self.assertTrue(live.exists())
 
+    def test_an_unlocked_run_does_not_wait_on_a_held_lock(self) -> None:
+        # lock=False is set only by a call site (HRSE2's ci_parity_check, which runs
+        # inside l1_post's locked check); it must not wait on that lock.
+        with mock.patch.dict(os.environ, {"HRSE_SCRATCH_LOCK_WAIT_S": "0"}):
+            with _scratch.scratch_dir("outer") as outer:
+                with _scratch.scratch_dir("inner", lock=False) as inner:
+                    self.assertEqual(inner.parent, self.base)
+                    self.assertTrue(outer.exists())
+                self.assertFalse(inner.exists())
+
+    def test_an_unlocked_reap_leaves_ownerless_dirs_of_ours(self) -> None:
+        # Without the lock, a prefixed dir with no owner may be a locked run's,
+        # mid-creation.
+        half = self._dir("l1-post-abc123", None)
+        self.assertEqual(_scratch.reap(self.base, ownerless=False), [])
+        self.assertTrue(half.exists())
+
     def test_a_root_under_tmp_is_refused(self) -> None:
         with mock.patch.dict(os.environ, {"HRSE_SCRATCH_ROOT": "/tmp/hrse-scratch"}):
             with self.assertRaises(_scratch.ScratchError):
