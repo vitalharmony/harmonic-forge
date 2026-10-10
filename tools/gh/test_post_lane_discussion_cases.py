@@ -170,6 +170,17 @@ class ASpecDeclaresItsWriteTier(Case):
     def test_a_tilde_fenced_example_is_not_a_declaration(self):
         self.refused(SPEC_TC.replace("Write tier: W\n", "~~~\nWrite tier: W\n~~~\n"))
 
+    def test_hyphenated_letters_are_not_a_second_tier(self):
+        # Reforge pass 2: "R-only" is prose, not a second declaration.
+        for line in ("Write tier: W (TC2 is R-only)", "Write tier: W (W-only lease)"):
+            with self.subTest(line=line):
+                self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("Write tier: W", line))))
+
+    def test_hidden_or_unclosed_examples_never_declare(self):
+        for block in ("<!-- Write tier: W -->\n", "```\nWrite tier: W\n"):
+            with self.subTest(block=block):
+                self.refused(SPEC_TC.replace("Write tier: W\n", "") + block)
+
     def test_two_that_disagree_are_refused(self):
         self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
 
