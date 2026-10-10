@@ -289,6 +289,31 @@ def _active_milestones(repo: str) -> frozenset[str] | None:
     return frozenset()
 _COUNTER = CallCounter()
 
+#: harmonic-forge#958 AC5: one `issues/{n}` read and one full-thread read per
+#: issue per tick, whichever readers ask. Cleared at the start of every tick
+#: (`_reset_tick_reads`), so nothing is served across ticks. Only successful
+#: reads are kept: a failure is re-attempted by the next caller exactly as
+#: before, so the error semantics (AC6) are unchanged.
+_TICK_META: dict[tuple[str, int], tuple[str | None, set[str] | None, str | None]] = {}
+_TICK_THREADS: dict[tuple[str, int], list[dict]] = {}
+#: Off until the tick loop starts a tick: a caller outside the loop (a test,
+#: another module) never gets a cached read.
+_TICK_READS_ON = False
+
+
+def _reset_tick_reads() -> None:
+    global _TICK_READS_ON
+    _TICK_META.clear()
+    _TICK_THREADS.clear()
+    _TICK_READS_ON = True
+
+
+def _end_tick_reads() -> None:
+    global _TICK_READS_ON
+    _TICK_READS_ON = False
+    _TICK_META.clear()
+    _TICK_THREADS.clear()
+
 #: The full marker text, not just its `kind=` field (harmonic-forge#583) --
 #: `posted-by` has to be extracted from the SAME matched span, the same way
 #: `fetch_lane1_context.py`'s `is_lane1_comment` already scopes its field
@@ -936,6 +961,16 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str
     filter defined and correct but never called, and an epic or a
     Lane-1-owned Tooling Exception issue free to land on Lane 2/3's queue the
     moment its worktree exists."""
+    cached = _TICK_META.get((repo, issue)) if _TICK_READS_ON else None
+    if cached is not None:
+        return cached
+    result = _read_issue_meta(repo, issue)
+    if _TICK_READS_ON and result[0] is not None:  # a read (or a confirmed-missing) is kept; a failure is not
+        _TICK_META[(repo, issue)] = result
+    return result
+
+
+def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
     try:
         raw = gh_as(
             _account_of(repo),
@@ -1025,6 +1060,9 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     still silently returned `[]` for it, so it was excluded from `queued`
     anyway and reported as `left-queue-for-l1` -- indistinguishable from
     the issue actually having been resolved."""
+    cached = _TICK_THREADS.get((repo, issue)) if _TICK_READS_ON else None
+    if cached is not None:
+        return cached  # harmonic-forge#958 AC5: one full-thread read per issue per tick
     try:
         raw = gh_as(
             _account_of(repo),
@@ -1041,9 +1079,12 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
               file=sys.stderr)
         return None
     try:
-        return json.loads(raw)
+        comments = json.loads(raw)
     except json.JSONDecodeError:
         return None
+    if _TICK_READS_ON:
+        _TICK_THREADS[(repo, issue)] = comments
+    return comments
 
 
 
@@ -1051,29 +1092,18 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
 def _issue_is_open(repo: str, issue: int) -> bool:
     """Live open/closed check for one issue (harmonic-forge#579 AC4) --
     used only for `extra_issues` candidates a caller cannot otherwise vouch
-    for as open. On fetch failure, treat
-    the issue as still open (fail toward keeping it queued, not toward
-    silently dropping it -- the same fail-safe direction as the rest of
-    this module's error handling), unless it is confirmed missing
-    (harmonic-forge#866: `_confirmed_missing`)."""
-    try:
-        raw = gh_as(_account_of(repo),
-                    ["api", "-X", "GET", f"repos/{repo}/issues/{issue}", "--jq", ".state"],
-                    counter=_COUNTER)
-    except GhAsError as exc:
-        # harmonic-forge#866 preclose: a missing issue is not open. Kept open,
-        # its worktree stayed in `discovered` and its comment fetch 404'd every
-        # tick, so the belt never went quiet and never backed off.
-        if _confirmed_missing(repo, issue):
-            print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as "
-                  f"{_account_of(repo)}): dropping its worktree", file=sys.stderr)
-            return False
-        print(f"[watch_lane_posts] _issue_is_open failed for #{issue}: {exc}", file=sys.stderr)
+    for as open. On fetch failure, treat the issue as still open (fail toward
+    keeping it queued), unless it is confirmed missing (harmonic-forge#866).
+
+    harmonic-forge#958 AC5: it reads through `_issue_meta`, so one
+    `issues/{n}` read per tick serves both. `_issue_meta` already returns
+    "missing" only after `_confirmed_missing`, and `None` on any other failure."""
+    state, *_ = _issue_meta(repo, issue)
+    if state == "missing":
+        return False
+    if state is None:
         return True
-    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
-        print(f"[watch_lane_posts] _issue_is_open failed for #{issue}: {exc}", file=sys.stderr)
-        return True
-    return raw.strip() != "closed"
+    return state != "closed"
 
 
 def discover_queue(repo: str, lane: str,
@@ -2447,6 +2477,15 @@ def _verified_accounts(account_repos: str, primary: str) -> tuple[list[str], lis
 
 
 def main() -> int:
+    """The belt's entry point. harmonic-forge#958: the per-tick read cache is
+    switched off however `_main` exits, so no caller inherits a tick's reads."""
+    try:
+        return _main()
+    finally:
+        _end_tick_reads()
+
+
+def _main() -> int:
     global _ACCOUNT
     parser = _build_parser()
     args = parser.parse_args()
@@ -2649,6 +2688,7 @@ def main() -> int:
         #: A zero left in the record would be worse than absent: `belt_report`
         #: reads it as a real measurement.
         _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql)
+        _reset_tick_reads()  # harmonic-forge#958 AC5: the memo never spans two ticks
         #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
         #: line at all, across every source below (queue-for,
         #: comment-watch, branch-ahead). Drives `quiet_streak`.
@@ -2821,6 +2861,7 @@ def main() -> int:
             #: one failure this protocol cannot tolerate (DESIGN.md).
             print(f"[watch_lane_posts] tick log write failed: {exc}",
                   file=sys.stderr)
+        _end_tick_reads()  # harmonic-forge#958: nothing cached outlives its tick
         quiet_streak = 0 if not quiet else quiet_streak + 1
         polls_this_window += 1
         sleep_for = sleep_before_next_poll(
