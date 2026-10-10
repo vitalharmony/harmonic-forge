@@ -98,6 +98,23 @@ class GhAsMemoTests(unittest.TestCase):
         self.run_gh_as()
         self.assertEqual(self.probes(), 2)
 
+    def test_a_malformed_memo_time_reprobes_instead_of_crashing(self):
+        self.run_gh_as()
+        memo = self.slot / ".identity-memo"
+        fp, acct, _ = memo.read_text().split()
+        for bad in ("abc", "1 2"):
+            memo.write_text(f"{fp} {acct} {bad}\n")
+            self.assertEqual(self.run_gh_as().returncode, 0, bad)
+        self.assertEqual(self.probes(), 3)
+
+    def test_a_token_changed_during_the_probe_is_not_remembered(self):
+        fake = self.bin / "gh"
+        fake.write_text(fake.read_text().replace(
+            f'  "api user --jq .login") cat "{self.login}" ;;',
+            f'  "api user --jq .login") cat "{self.login}"; echo tok-B > "{self.token}" ;;'))
+        self.run_gh_as()
+        self.assertFalse((self.slot / ".identity-memo").exists())
+
     def test_the_shim_exempts_auth_token_before_the_override(self):  # AC6
         text = SHIM.read_text()
         exempt = text.index('argv == ["auth", "token"]')

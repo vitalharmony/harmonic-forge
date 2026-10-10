@@ -95,8 +95,11 @@ fi
 if [ -n "$fp" ] && [ -f "$memo" ]; then
   read -r m_fp m_acct m_time < "$memo" 2>/dev/null || true
   now="$(date +%s)"
+  # A non-numeric time is a malformed memo: a miss that re-probes, never an
+  # arithmetic error (preclose pass 1).
+  case "${m_time:-}" in ''|*[!0-9]*) m_time="" ;; esac
   if [ "${m_fp:-}" = "$fp" ] && [ "${m_acct:-}" = "$acct" ] \
-     && [ -n "${m_time:-}" ] && [ $((now - m_time)) -lt "$ttl" ] && [ $((now - m_time)) -ge 0 ]; then
+     && [ -n "$m_time" ] && [ $((now - m_time)) -lt "$ttl" ] && [ $((now - m_time)) -ge 0 ]; then
     export GH_CONFIG_DIR="$dir"
     exec "$@"
   fi
@@ -115,6 +118,12 @@ if [ "$actual" != "$acct" ]; then
   exit 1
 fi
 
+# Remember only if the token is still the one fingerprinted before the probe,
+# so one token's hash can never be tied to another token's login (pass 1).
+if [ -n "$fp" ]; then
+  fp_after="$(GH_CONFIG_DIR="$dir" gh auth token 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1 || true)"
+  [ "$fp_after" = "$fp" ] || fp=""
+fi
 if [ -n "$fp" ]; then
   tmp="$(umask 077; mktemp "$dir/.identity-memo.XXXXXX")" \
     && printf '%s %s %s\n' "$fp" "$acct" "$(date +%s)" > "$tmp" \
