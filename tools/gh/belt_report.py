@@ -225,59 +225,66 @@ PHASE1_WINDOW_HOURS = 72
 
 def hourly_report(records: list[dict]) -> None:
     """AC3/AC4 (harmonic-forge#959): per-UTC-hour ticks, requests and peak
-    bucket use, a projection for the latest hour, and the Phase 1 gate line.
-    A record written before #959 has no `http_requests`: its hour reads
-    `legacy`, never 0 (AC5)."""
+    bucket use, and the Phase 1 gate line. A record written before #959 has
+    no `http_requests`: an all-legacy hour reads `legacy` and a mixed hour is
+    marked partial, never a bare count (AC5). The projected-at-reset line was
+    dropped by operator ruling after preclose pass 1 (sticky-wicket REFORGE)."""
     hours: dict[str, dict[str, Any]] = {}
+    unreadable = 0
     for r in records:
         ts = _parse_ts(r.get("ts"))
         if ts is None:
             continue
         key = ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
-        h = hours.setdefault(key, {"ticks": 0, "requests": 0, "legacy": 0,
-                                   "peak": {}, "reset": {}})
+        h = hours.setdefault(key, {"ticks": 0, "requests": 0, "legacy": 0, "peak": {}})
         h["ticks"] += 1
         if "http_requests" not in r:
             h["legacy"] += 1
             continue
-        h["requests"] += int(r["http_requests"])
-        for account, rl in (r.get("ratelimit") or {}).items():
-            used = int(rl.get("used", 0))
-            if used >= h["peak"].get(account, -1):
-                h["peak"][account] = used
-                h["reset"][account] = int(rl.get("reset", 0))
+        # A record that parses but carries a wrong-typed field is skipped and
+        # counted, never allowed to stop the report (pass-1 survivor 7).
+        try:
+            requests = int(r["http_requests"])
+            peaks = {str(a): int(rl["used"]) for a, rl in (r.get("ratelimit") or {}).items()}
+        except (TypeError, ValueError, KeyError, AttributeError):
+            unreadable += 1
+            continue
+        h["requests"] += requests
+        for account, used in peaks.items():
+            h["peak"][account] = max(used, h["peak"].get(account, -1))
     if not hours:
         return
     print("\nhourly (UTC):  hour           ticks  requests  peak used / 5,000")
     for key in sorted(hours):
         h = hours[key]
-        requests = "legacy" if h["legacy"] == h["ticks"] else str(h["requests"])
+        if h["legacy"] == h["ticks"]:
+            requests = "legacy"
+        elif h["legacy"]:
+            requests = f"{h['requests']} (partial: {h['legacy']} legacy)"
+        else:
+            requests = str(h["requests"])
         peak = ", ".join(f"{a} {u} ({u * 100 // BUCKET}%)"
                          for a, u in sorted(h["peak"].items())) or (
-            "legacy" if h["legacy"] else "no headers")
+            "legacy" if h["legacy"] == h["ticks"] else "no headers")
         print(f"  {key}:00  {h['ticks']:>5}  {requests:>8}  {peak}")
-
-    latest_key = max(hours)
-    latest = hours[latest_key]
-    if latest["peak"]:
-        latest_ts = max(t for r in records
-                        if (t := _parse_ts(r.get("ts"))) is not None)
-        minutes_in = latest_ts.minute + latest_ts.second / 60 or 1
-        rate = latest["requests"] / minutes_in
-        for account, used in sorted(latest["peak"].items()):
-            to_reset = max(0.0, (latest["reset"][account] - latest_ts.timestamp()) / 60)
-            projected = int(used + rate * to_reset)
-            print(f"  projected at reset ({account}): {projected} "
-                  f"({projected * 100 // BUCKET}% of {BUCKET})")
+    if unreadable:
+        print(f"  {unreadable} record(s) with unreadable request fields skipped")
 
     cutoff = (max(_parse_ts(f"{k}:00:00Z") for k in hours)
               - timedelta(hours=PHASE1_WINDOW_HOURS - 1))
-    observed = [h for k, h in hours.items()
-                if h["peak"] and _parse_ts(f"{k}:00:00Z") >= cutoff]
+    window = {k: h for k, h in hours.items() if _parse_ts(f"{k}:00:00Z") >= cutoff}
+    observed = [h for h in window.values() if h["peak"]]
     over = sum(1 for h in observed if max(h["peak"].values()) > PHASE1_THRESHOLD)
     share = f"{over * 100 // len(observed)}%" if observed else "n/a"
     print(f"  Phase 1 gate: {over} of {len(observed)} hours > 50% "
           f"in the last {PHASE1_WINDOW_HOURS} ({share})")
+    # Requests recorded but no rate-limit header ever parsed: the gate has no
+    # input, which must be said, not printed as "0 of 0" (pass-1 survivor 8).
+    blind = sum(1 for h in window.values() if h["requests"] and not h["peak"])
+    if blind:
+        print(f"  WARNING: {blind} hour(s) recorded requests but no rate-limit "
+              "header; the Phase 1 gate is missing that input. Check gh_as's "
+              "header parsing (belt_mechanics.record_headers).")
 
 
 def report(records: list[dict], malformed_lines: list[str], last: int,

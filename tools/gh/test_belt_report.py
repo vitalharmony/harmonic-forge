@@ -311,6 +311,28 @@ class HourlyReportTests(unittest.TestCase):
         self.assertIn("legacy", line)
         self.assertNotRegex(line, r"\s0\s")
 
+    def test_a_mixed_hour_is_marked_partial(self):
+        out = self._out([{"ts": "2026-10-10T01:05:00Z", "calls_rest": 4},
+                         self._rec(1, 1000, requests=5)])
+        self.assertIn("5 (partial: 1 legacy)", out)
+
+    def test_hours_outside_the_72_hour_window_are_not_counted(self):
+        old = {"ts": "2026-10-01T01:30:00Z", "http_requests": 1,
+               "ratelimit": {"vitalharmony": {"used": 4000, "reset": 0}}}
+        out = self._out([old, self._rec(1, 1000), self._rec(2, 3000)])
+        self.assertIn("Phase 1 gate: 1 of 2 hours > 50%", out)
+
+    def test_a_wrong_typed_record_is_skipped_not_fatal(self):
+        bad = {"ts": "2026-10-10T01:10:00Z", "http_requests": None,
+               "ratelimit": {"vitalharmony": None}}
+        out = self._out([bad, self._rec(1, 3000)])
+        self.assertIn("1 record(s) with unreadable request fields skipped", out)
+        self.assertIn("Phase 1 gate: 1 of 1 hours > 50%", out)
+
+    def test_requests_without_headers_warn(self):
+        out = self._out([{"ts": "2026-10-10T01:10:00Z", "http_requests": 9, "ratelimit": {}}])
+        self.assertIn("WARNING: 1 hour(s) recorded requests but no rate-limit header", out)
+
     def test_a_tick_record_carries_the_new_fields(self):
         from belt_mechanics import CallCounter
         with tempfile.TemporaryDirectory() as d:
