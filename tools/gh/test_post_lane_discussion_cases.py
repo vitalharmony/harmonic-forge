@@ -24,9 +24,9 @@ sys.path.insert(0, str(HERE.parent / "telemetry"))
 import post_lane_discussion as P  # noqa: E402
 import verification_report as VR  # noqa: E402
 
-SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\n**Next:** submit for HITL approval.\n\n"
+SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n\n"
            "### Test cases\n- TC1 — a thing.\n- TC2 — another.\n")
-SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\n**Next:** submit for HITL approval.\n\n"
+SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n\n"
                  "### Test cases\n1. A thing.\n2. Another.\n")
 GATE_PASS = ("## Lane 3 Gate Results — H1\n\n**Verdict:** PASS — both ran.\n**Finding:** none.\n"
              "**Next:** Lane 1 merges.\n\n### Test cases\n- TC1 — pass\n- TC2 — pass\n")
@@ -106,6 +106,86 @@ class TheMapIsTheRecord(Case):
                 "```\n| 42 | not a case |\n```\n")
         self.assertIn("results=1:pass,2:fail -->", last_line(self.post("gate-result", body,
                                                                     results={"1": "pass", "2": "fail"})))
+
+
+class ASpecDeclaresItsWriteTier(Case):
+    """harmonic-forge#947: auto-AE reads the tier from the spec, so the poster
+    refuses a spec it could not read one from."""
+
+    def refused(self, body: str) -> str:
+        err = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", new=err), \
+             self.assertRaises(SystemExit) as raised:
+            self.post("spec", body)
+        self.assertEqual(raised.exception.code, 2)
+        return err.getvalue()
+
+    def test_a_spec_with_no_declaration_is_refused(self):
+        self.assertIn("Write tier: R|W|P", self.refused(SPEC_TC.replace("Write tier: W\n", "")))
+
+    def test_one_declaration_is_accepted(self):
+        self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC)))
+
+    def test_a_p_declaration_is_accepted_by_the_poster(self):
+        self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
+
+    def test_the_bold_label_forms_are_accepted(self):
+        # Preclose pass 1 survivor: `**Write tier:** W` used to be refused.
+        for line in ("**Write tier:** W", "**Write tier**: W"):
+            with self.subTest(line=line):
+                body = SPEC_TC.replace("Write tier: W", line)
+                self.assertIn("kind=spec", last_line(self.post("spec", body)))
+
+    def test_bold_label_prose_is_not_a_declaration(self):
+        # Preclose pass 2 survivor: `w/o` and `r/w` read as W and R.
+        for line in ("**Write tier** w/o any graph writes", "**Write tier** r/w split below"):
+            with self.subTest(line=line):
+                self.refused(SPEC_TC.replace("Write tier: W", line))
+
+    def test_a_label_with_no_colon_is_prose(self):
+        # Sticky-wicket REFORGE: the colon is required.
+        for line in ("Write tier W", "Write tier W's semantics", "write tier w, not yet",
+                     "Write tier R or W both apply"):
+            with self.subTest(line=line):
+                self.refused(SPEC_TC.replace("Write tier: W", line))
+
+    def test_a_long_whitespace_run_is_decided_quickly(self):
+        # Pass 2 survivor: the widened pattern backtracked in O(n^4).
+        import time
+        start = time.monotonic()
+        self.refused(SPEC_TC.replace("Write tier: W\n", "") + "Write tier" + " " * 5000 + "x\n")
+        self.assertLess(time.monotonic() - start, 2)
+
+    def test_crlf_and_unicode_space_still_declare(self):
+        # Reforge pass 1: web-edited bodies carry CRLF; pastes carry NBSP.
+        for line in ("Write tier: W\r", "Write tier: W\u00a0(writes)"):
+            with self.subTest(line=repr(line)):
+                self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("Write tier: W", line))))
+
+    def test_a_second_tier_letter_on_the_line_declares_nothing(self):
+        for line in ("Write tier: R | W per case", "Write tier: R; TC3 needs W", "Write tier: R. W for TC3"):
+            with self.subTest(line=line):
+                self.refused(SPEC_TC.replace("Write tier: W", line))
+
+    def test_a_tilde_fenced_example_is_not_a_declaration(self):
+        self.refused(SPEC_TC.replace("Write tier: W\n", "~~~\nWrite tier: W\n~~~\n"))
+
+    def test_hyphenated_letters_are_not_a_second_tier(self):
+        # Reforge pass 2: "R-only" is prose, not a second declaration.
+        for line in ("Write tier: W (TC2 is R-only)", "Write tier: W (W-only lease)"):
+            with self.subTest(line=line):
+                self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("Write tier: W", line))))
+
+    def test_hidden_or_unclosed_examples_never_declare(self):
+        for block in ("<!-- Write tier: W -->\n", "```\nWrite tier: W\n"):
+            with self.subTest(block=block):
+                self.refused(SPEC_TC.replace("Write tier: W\n", "") + block)
+
+    def test_two_that_disagree_are_refused(self):
+        self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
+
+    def test_a_fenced_only_declaration_is_refused(self):
+        self.refused(SPEC_TC.replace("Write tier: W\n", "```\nWrite tier: W\n```\n"))
 
 
 class TelemetryNeverRefuses(Case):

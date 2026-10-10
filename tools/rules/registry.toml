@@ -1104,7 +1104,7 @@ id = "R-0128"
 file = "rules/testing-gate.md"
 anchor = "rules"
 statement = "The sweep comment must use the mechanically required heading format, which exists because the rule failed twice as prose."
-text_sha = "b4bf90f9ba422291"
+text_sha = "bf3f63e789f7b11f"
 hooks = []
 
 [[rule]]

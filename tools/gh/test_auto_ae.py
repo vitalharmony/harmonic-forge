@@ -34,12 +34,12 @@ def ready(comment_id: int = READY_ID, sha: str = SHA) -> dict:
 
 def spec(comment_id: int = SPEC_ID, tier: str | None = "W", edited: bool = False,
          marker: bool = True, tier_line: str | None = None, extra: str = "") -> dict:
-    # The default tier line is the form real Lane 3 specs use (bold, no colon).
+    # The declaration form harmonic-forge#947 requires: the colon, then the letter.
     lines = ["## Lane 3 Test Spec — H42", "", "**Cases:** 2 cases.", ""]
     if tier_line is not None:
         lines.append(tier_line)
     elif tier:
-        lines.append(f"Proposed ceiling **{tier}**: write tier **{tier}** throughout.")
+        lines.append(f"Proposed ceiling **{tier}**. Write tier: **{tier}** throughout.")
     if extra:
         lines.append(extra)
     lines += ["", "### Test cases", "1. TC1 — read the list.", "2. TC2 — dismiss and undo."]
@@ -164,7 +164,7 @@ class AutoAeRefusalTests(AutoAeCase):
         self.assertIn("Tier P", self.refusal(comments=[ready(), spec(extra=fenced)]))
 
     def test_a_newer_spec_without_a_footer_supersedes_the_footered_one(self):
-        heading_only = {"id": SPEC_ID + 5, "body": "## Lane 3 Test Spec — H42\n\nRevised. Write tier **W**."}
+        heading_only = {"id": SPEC_ID + 5, "body": "## Lane 3 Test Spec — H42\n\nRevised. Write tier: **W**."}
         reason = self.refusal(comments=[ready(), spec(), heading_only])
         self.assertIn(str(SPEC_ID + 5), reason)
 
@@ -208,10 +208,10 @@ class AutoAeRefusalTests(AutoAeCase):
 
     def test_a_cypher_lowercase_p_is_not_a_tier(self):
         line = "Proposed ceiling **W**: raw Cypher `SET p.promoted_at = datetime()` on its own node."
-        self.assertIsNone(self.refusal(comments=[ready(), spec(tier_line=line + " Write tier **W**.")]))
+        self.assertIsNone(self.refusal(comments=[ready(), spec(tier_line=line + " Write tier: **W**.")]))
 
     def test_a_spec_revision_posted_as_a_discussion_supersedes(self):
-        revision = {"id": SPEC_ID + 7, "body": _footered("## Lane 3 Test Spec — H42\n\nRevised. Write tier **W**.",
+        revision = {"id": SPEC_ID + 7, "body": _footered("## Lane 3 Test Spec — H42\n\nRevised. Write tier: **W**.",
                                                           "discussion", " posted-by=LANE3;")}
         reason = self.refusal(comments=[ready(), spec(), revision], spec_comment=SPEC_ID)
         self.assertIn(str(SPEC_ID + 7), reason)
