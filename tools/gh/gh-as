@@ -78,9 +78,40 @@ if [ ! -d "$dir" ]; then
   exit 1
 fi
 
+# harmonic-forge#957: a probe that succeeded under the slot's CURRENT token is
+# remembered for GH_AS_IDENTITY_TTL seconds (default 900; 0 disables), keyed by
+# a SHA-256 fingerprint of that token. A token replaced out of band has a new
+# fingerprint, so it is always re-probed (R-0015). Only the fingerprint is
+# stored; a failed or mismatched probe is never remembered.
+ttl="${GH_AS_IDENTITY_TTL:-900}"
+case "$ttl" in ''|*[!0-9]*) ttl=900 ;; esac
+memo="$dir/.identity-memo"
+fp=""
+if [ "$ttl" -gt 0 ]; then
+  fp="$(GH_CONFIG_DIR="$dir" gh auth token 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1 || true)"
+  # An empty token hashes to this; treat it as unreadable (AC3).
+  [ "$fp" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ] && fp=""
+fi
+if [ -n "$fp" ] && [ -f "$memo" ]; then
+  read -r m_fp m_acct m_time < "$memo" 2>/dev/null || true
+  now="$(date +%s)"
+  # A non-numeric time is a malformed memo: a miss that re-probes, never an
+  # arithmetic error (preclose pass 1).
+  case "${m_time:-}" in ''|*[!0-9]*) m_time="" ;; esac
+  if [ "${m_fp:-}" = "$fp" ] && [ "${m_acct:-}" = "$acct" ] \
+     && [ -n "$m_time" ] && [ $((now - m_time)) -lt "$ttl" ] && [ $((now - m_time)) -ge 0 ]; then
+    export GH_CONFIG_DIR="$dir"
+    exec "$@"
+  fi
+fi
+
 # Verify the slot still holds the account it claims, so a command can never
 # run against the wrong identity because a token was replaced out of band.
-actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null || true)"
+# A probe that exits nonzero is a failed probe, whatever it printed (preclose
+# cross-family check).
+if ! actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null)"; then
+  actual=""
+fi
 if [ -z "$actual" ]; then
   echo "gh-as: account '$acct' is not authenticated (token expired or revoked)." >&2
   echo "Re-run:  gh-as --init $acct" >&2
@@ -89,6 +120,23 @@ fi
 if [ "$actual" != "$acct" ]; then
   echo "gh-as: slot '$acct' is authenticated as '$actual' — refusing to run." >&2
   exit 1
+fi
+
+# Remember only if the token is still the one fingerprinted before the probe,
+# so one token's hash can never be tied to another token's login (pass 1).
+if [ -n "$fp" ]; then
+  fp_after="$(GH_CONFIG_DIR="$dir" gh auth token 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1 || true)"
+  if [ "$fp_after" != "$fp" ]; then
+    # The token changed during verification, so the command would run under a
+    # token nobody probed: refuse (fails closed; preclose cross-family check).
+    echo "gh-as: slot '$acct' changed its token during verification -- refusing; retry." >&2
+    exit 1
+  fi
+fi
+if [ -n "$fp" ]; then
+  tmp="$(umask 077; mktemp "$dir/.identity-memo.XXXXXX")" \
+    && printf '%s %s %s\n' "$fp" "$acct" "$(date +%s)" > "$tmp" \
+    && chmod 600 "$tmp" && mv -f "$tmp" "$memo" || rm -f "${tmp:-}"
 fi
 
 export GH_CONFIG_DIR="$dir"
