@@ -257,6 +257,12 @@ def run(*args: str, cwd: Path | None = None,
     return subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
+def _pr_lookup_env() -> dict[str, str]:
+    """harmonic-forge#964: one branch's open-PR lookup names itself to the gh shim,
+    which otherwise refuses `pulls?head=` as a full PR-list scan."""
+    return {**os.environ, "GH_SHIM_CALLER": "l1_post"}
+
+
 # The pre-post check must not inherit the ambient temp root. A transient
 # ``.git`` there makes every fixture below it look as though it belongs to an
 # unrelated repository and can cause correct SHAs to be refused.
@@ -957,14 +963,23 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
     # Fallback for a checkout whose harmonic-forge sibling predates #802 (or is
     # absent entirely). Deliberately the old full-board scan: correctness first,
     # cost second -- a stale sibling must still gate correctly, just expensively.
-    result = run("gh", "project", "item-list", number, "--owner", owner,
-                 "--limit", "1000", "--format", "json")
-    if result.returncode != 0:
-        fail(f"cannot fetch project board {owner}/{number} to verify Estimate: " + result.stderr.strip())
-    try:
-        items = json.loads(result.stdout)["items"]
-    except (json.JSONDecodeError, KeyError):
-        fail(f"unexpected response shape from project board {owner}/{number}")
+    # harmonic-forge#964: through item_list_cache, the gh shim's sanctioned board
+    # reader, when it is importable; live (ttl=0, force) as before.
+    if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_full_board"):
+        try:
+            items = _item_list_cache.fetch_full_board(
+                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: run(*cmd))
+        except _item_list_cache.GhItemListError as exc:
+            fail(f"cannot fetch project board {owner}/{number} to verify Estimate: {exc}")
+    else:
+        result = run("gh", "project", "item-list", number, "--owner", owner,
+                     "--limit", "1000", "--format", "json")
+        if result.returncode != 0:
+            fail(f"cannot fetch project board {owner}/{number} to verify Estimate: " + result.stderr.strip())
+        try:
+            items = json.loads(result.stdout)["items"]
+        except (json.JSONDecodeError, KeyError):
+            fail(f"unexpected response shape from project board {owner}/{number}")
     for item in items:
         content = item.get("content") or {}
         # A board can carry issues from several repos; match the repo too when it is reported.
@@ -1370,7 +1385,7 @@ def _open_prs_via_rest(cwd_repo: str, branch: str, cwd: Path | None) -> list[dic
     head = f"{cwd_repo.split('/')[0]}:{branch}"
     result = run("gh", "api",
                  f"repos/{cwd_repo}/pulls?head={head}&base=main&state=open",
-                 cwd=cwd)
+                 cwd=cwd, env=_pr_lookup_env())
     if result.returncode:
         return None
     try:
@@ -1537,7 +1552,8 @@ def pr_issue_marker(
     if source_repo is None:
         fail("cannot resolve source repo for PR provenance")
     head = f"{source_repo.split('/')[0]}:{branch}"
-    prs = run("gh", "api", f"repos/{source_repo}/pulls?head={head}&base=main&state=open")
+    prs = run("gh", "api", f"repos/{source_repo}/pulls?head={head}&base=main&state=open",
+              env=_pr_lookup_env())
     if prs.returncode:
         fail("cannot resolve open PR for provenance: " + prs.stderr.strip())
     try:

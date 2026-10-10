@@ -26,6 +26,16 @@ def issue(labels: list[str], state: str = "OPEN") -> str:
                        "labels": [{"name": n} for n in labels]})
 
 
+class ShimMarkerTests(unittest.TestCase):
+    """harmonic-forge#964 AC2: every gh call this module makes names itself to the shim."""
+
+    def test_gh_runs_under_the_sanctioned_caller_marker(self) -> None:
+        done = mock.Mock(returncode=0, stdout="[]\n")
+        with mock.patch.object(bp.subprocess, "run", return_value=done) as run:
+            bp._gh("pr", "list", "--repo", "vitalharmony/hrse")
+        self.assertEqual(run.call_args.kwargs["env"]["GH_SHIM_CALLER"], "batch_preflight")
+
+
 class ResolveRepoTests(unittest.TestCase):
     def test_a_known_prefix_resolves(self) -> None:
         self.assertEqual(bp.resolve_repo("H1631"), ("vitalharmony/hrse", "1631"))

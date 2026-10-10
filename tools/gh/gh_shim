@@ -45,6 +45,13 @@ def _resolve_real_gh() -> str:
     return "/usr/bin/gh"
 
 
+#: harmonic-forge#964: callers whose scans are sanctioned, by the
+#: `GH_SHIM_CALLER` marker they set. `item_list_cache` throttles its own
+#: board reads; `batch_preflight` finds an issue's PR by branch prefix;
+#: `l1_post` reads one branch's open PR (`pulls?head=`).
+SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight", "l1_post"})
+
+
 def main() -> None:
     argv = sys.argv[1:]
     real_gh = _resolve_real_gh()
@@ -80,7 +87,12 @@ def main() -> None:
             # control flow (fall through to the final execv is a bug, not
             # a fallback -- it would exec `gh` a second time).
 
-        reason = gh_scan_patterns.scan_reason(argv)
+        # harmonic-forge#964: a sanctioned caller is identified by the marker it
+        # sets, never by its argv. It skips only the scan refusal; the budget
+        # floor below still applies. A convention, not a boundary: the
+        # PreToolUse hook still refuses a scan typed directly.
+        sanctioned = os.environ.get("GH_SHIM_CALLER", "") in SANCTIONED_CALLERS
+        reason = None if sanctioned else gh_scan_patterns.scan_reason(argv)
         if reason is not None:
             print(
                 f"gh-shim: refused ({reason}). Read named issues only; for a "

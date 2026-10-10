@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -67,8 +68,10 @@ class Finding:
 
 def _gh(*args: str, repo: str | None = None) -> str | None:
     try:
+        # harmonic-forge#964: the shim's sanctioned-caller marker.
+        env = {**(_slot_env(repo) or os.environ), "GH_SHIM_CALLER": "batch_preflight"}
         result = subprocess.run(["gh", *args], capture_output=True, text=True,
-                                timeout=30, env=_slot_env(repo))  # harmonic-forge#804
+                                timeout=30, env=env)  # harmonic-forge#804
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
