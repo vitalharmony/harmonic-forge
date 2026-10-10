@@ -1,6 +1,7 @@
 """harmonic-forge#949: scratch checks get disk-backed, locked, reaped, preflighted space."""
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -153,10 +154,16 @@ class ScratchTest(unittest.TestCase):
             self.assertFalse(str(_scratch.root()).startswith("/tmp"))
 
     def test_call_sites_use_the_helper_not_mkdtemp_on_tmp(self) -> None:
-        l1 = (HERE / "l1_post.py").read_text()
-        self.assertNotIn('tempfile.mkdtemp(prefix="hrse-l1-post-")', l1)
-        self.assertIn("_scratch.scratch_dir(", l1)
-        self.assertIn("_scratch.scratch_dir(", (HERE / "kill_check.py").read_text())
+        # Real call nodes, not source text: a comment naming the helper must not
+        # satisfy this (harmonic-forge#949 preclose pass 2).
+        def calls(path: Path, name: str) -> int:
+            tree = ast.parse(path.read_text())
+            return sum(1 for node in ast.walk(tree) if isinstance(node, ast.Call)
+                       and getattr(node.func, "attr", getattr(node.func, "id", None)) == name)
+
+        self.assertGreaterEqual(calls(HERE / "l1_post.py", "scratch_dir"), 1)
+        self.assertGreaterEqual(calls(HERE / "kill_check.py", "scratch_dir"), 1)
+        self.assertNotIn('tempfile.mkdtemp(prefix="hrse-l1-post-")', (HERE / "l1_post.py").read_text())
 
 
 if __name__ == "__main__":
