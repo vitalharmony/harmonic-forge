@@ -3750,6 +3750,17 @@ class OneReadPerTickTests(unittest.TestCase):
             self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
         self.assertEqual(len(self.calls), 3)  # each failure re-attempted, none served from cache
 
+    def test_a_closed_issue_is_not_open_and_an_open_one_is(self):
+        # harmonic-forge#958 preclose pass 2 (sticky-wicket PATCH): the closed branch.
+        def state(value):
+            return lambda account, args, **kw: '{"state": "%s", "labels": [], "milestone": null}' % value
+        with patch.object(watch_lane_posts, "gh_as", side_effect=state("closed")):
+            watch_lane_posts._reset_tick_reads()
+            self.assertFalse(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
+        with patch.object(watch_lane_posts, "gh_as", side_effect=state("open")):
+            watch_lane_posts._reset_tick_reads()
+            self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
+
     def test_a_missing_issue_is_not_open(self):
         def gone(account, args, **kw):
             raise watch_lane_posts.GhAsError("404")
