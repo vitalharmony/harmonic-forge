@@ -30,7 +30,10 @@ def git(cwd: Path, *args: str) -> str:
 
 class KillCheckTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
+        # is refused under /tmp (harmonic-forge#949).
+        (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=Path.home() / ".cache", prefix="kill-check-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
@@ -364,7 +367,10 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
     FILES = 700
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
+        # is refused under /tmp (harmonic-forge#949).
+        (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=Path.home() / ".cache", prefix="kill-check-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"

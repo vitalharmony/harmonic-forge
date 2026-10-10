@@ -20,7 +20,10 @@ HERE = Path(__file__).resolve().parent
 
 class ScratchTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        # Not under /tmp: root() refuses a root there (harmonic-forge#949).
+        cache = Path.home() / ".cache"
+        cache.mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=cache, prefix="hrse-scratch-test-")
         self.base = Path(self.tmp.name) / "root"
         env = mock.patch.dict(os.environ, {"HRSE_SCRATCH_ROOT": str(self.base),
                                            "HRSE_SCRATCH_MIN_FREE_GB": "0"})
@@ -50,13 +53,29 @@ class ScratchTest(unittest.TestCase):
         # A directory another tool made via TMPDIR (no owner file) is not ours.
         self.assertTrue(orphan.exists())
 
-    def test_nested_run_takes_a_subdir_without_the_lock(self) -> None:
-        with _scratch.scratch_dir("outer") as outer:
-            with mock.patch.dict(os.environ, {_scratch.HELD_ENV: str(outer),
-                                              "HRSE_SCRATCH_LOCK_WAIT_S": "0"}):
-                with _scratch.scratch_dir("inner") as inner:
-                    self.assertEqual(inner.parent, outer)
-                self.assertFalse(inner.exists())
+    def test_an_ownerless_dir_of_ours_is_reaped(self) -> None:
+        # A run killed between mkdtemp and the owner write leaves this behind.
+        half = self._dir("l1-post-abc123", None)
+        foreign = self._dir("tmpxyz", None)
+        self.assertEqual(_scratch.reap(self.base), [half])
+        self.assertTrue(foreign.exists())
+
+    def test_a_reused_pid_does_not_keep_a_dead_runs_dir(self) -> None:
+        reused = self.base / "scratch-reused"
+        reused.mkdir(parents=True)
+        # Our own pid is alive, but the recorded start time is another process's.
+        (reused / _scratch.OWNER).write_text(json.dumps({"pid": os.getpid(), "proc_start": "1"}))
+        live = self.base / "scratch-live"
+        live.mkdir()
+        (live / _scratch.OWNER).write_text(json.dumps(
+            {"pid": os.getpid(), "proc_start": _scratch._proc_start(os.getpid())}))
+        self.assertEqual(_scratch.reap(self.base), [reused])
+        self.assertTrue(live.exists())
+
+    def test_a_root_under_tmp_is_refused(self) -> None:
+        with mock.patch.dict(os.environ, {"HRSE_SCRATCH_ROOT": "/tmp/hrse-scratch"}):
+            with self.assertRaises(_scratch.ScratchError):
+                _scratch.root()
 
     def test_scratch_dir_reaps_before_creating_and_removes_on_exit(self) -> None:
         dead = self._dir("dead", self._dead_pid())

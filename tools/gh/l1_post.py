@@ -271,7 +271,6 @@ def _private_check_tmp(base: Path | None = None) -> tuple[Path, dict[str, str]]:
     env = dict(os.environ)
     for name in ("TMPDIR", "TMP", "TEMP"):
         env[name] = str(root)
-    env[_scratch.HELD_ENV] = str(root)  # harmonic-forge#949: nested checks don't re-lock
     return root, env
 
 
