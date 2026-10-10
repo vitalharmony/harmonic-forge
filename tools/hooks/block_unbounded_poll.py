@@ -52,13 +52,20 @@ REASON = (
 
 
 def _shell_payload_polls(tokens: list[str]) -> bool:
-    """`<shell> [flags] -c 'payload'`: the payload follows the first flag that
-    ends in `c` (`-c`, `-lc`, `-x -c`); sticky-wicket PATCH, reforge pass 2."""
-    for index, token in enumerate(tokens[1:-1], start=1):
-        if not token.startswith("-") or token == "--":
-            return False
-        if token.endswith("c"):
-            return unbounded_poll(tokens[index + 1])
+    """`<shell> [flags] -c [flags] 'payload'`: once a short-option cluster holds
+    `c` (`-c`, `-lc`, `-cx`, `-x -c`), the first non-flag argument after it is
+    the payload, as bash reads it (sticky-wicket PATCH and its post-verdict
+    cross-family check)."""
+    seen_c = False
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            seen_c = seen_c or "c" in token[1:]
+            continue
+        if token.startswith("--"):
+            continue
+        return seen_c and unbounded_poll(token)
     return False
 
 

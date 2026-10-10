@@ -94,7 +94,9 @@ class Polls(unittest.TestCase):
     def test_split_flags_and_other_shells_are_checked(self):
         for command in ('bash -x -c "until f; do sleep 1; done"',
                         "zsh -c 'until f; do sleep 1; done'",
-                        "dash -c 'while :; do sleep 1; done'"):
+                        "dash -c 'while :; do sleep 1; done'",
+                        "bash -cx 'until f; do sleep 10; done'",
+                        "bash -c -x 'until f; do sleep 10; done'"):
             with self.subTest(command=command):
                 self.assertEqual(decision(command), "deny")
         self.assertIsNone(decision("bash -x script.sh"))
