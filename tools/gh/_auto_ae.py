@@ -58,10 +58,12 @@ _SPEC_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Test Spec\b")
 # Gate 1, the declaration: unfenced "Write tier: X" / "Write tier **X**", one
 # letter on the same line. Every declaration must agree, and be R or W; none,
 # or two that differ, refuses. A fenced example can never supply the tier.
-# harmonic-forge#947 preclose: the bold label forms `**Write tier:** W` and
-# `**Write tier**: W` are accepted too (whitespace after the closing `**`).
-# A letter followed by `/` is prose (`w/o`, `r/w`), never a declaration (pass 2).
-_DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*\**[^\S\n]*:?[^\S\n]*\**[^\S\n]*`?([RWP])`?\**(?![\w/-])")
+# harmonic-forge#947 (sticky-wicket REFORGE after two preclose passes): the
+# colon is required, inside or outside the bold (`Write tier: W`,
+# `**Write tier:** W`, `**Write tier**: W`), and the letter must stand alone
+# (whitespace, `|` or end of line after it). A bare label with no separator
+# let prose parse as a declaration (`w/o`, `W's`, `R or W`).
+_DECLARATION = re.compile(r"(?im)\bwrite[ \t]*tier[ \t]*\**[ \t]*:[ \t]*\**[ \t]*`?([RWP])`?\**(?=[ \t.,;)]|\||$)")
 # Gate 2, the veto: ANY standalone capital P token anywhere in the raw body,
 # fences and tables included, in whatever layout (a first column, no leading
 # pipe, a slash or comma list), plus a `--tier p` flag in either case. Two

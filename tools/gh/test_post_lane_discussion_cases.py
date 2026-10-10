@@ -142,6 +142,20 @@ class ASpecDeclaresItsWriteTier(Case):
             with self.subTest(line=line):
                 self.refused(SPEC_TC.replace("Write tier: W", line))
 
+    def test_a_label_with_no_colon_is_prose(self):
+        # Sticky-wicket REFORGE: the colon is required.
+        for line in ("Write tier W", "Write tier W's semantics", "write tier w, not yet",
+                     "Write tier R or W both apply"):
+            with self.subTest(line=line):
+                self.refused(SPEC_TC.replace("Write tier: W", line))
+
+    def test_a_long_whitespace_run_is_decided_quickly(self):
+        # Pass 2 survivor: the widened pattern backtracked in O(n^4).
+        import time
+        start = time.monotonic()
+        self.refused(SPEC_TC.replace("Write tier: W", "Write tier" + " " * 5000 + "x"))
+        self.assertLess(time.monotonic() - start, 2)
+
     def test_two_that_disagree_are_refused(self):
         self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
 
