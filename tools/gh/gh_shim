@@ -60,7 +60,9 @@ def main() -> None:
         # consuming it here would spend the operator's one-shot grant on a call that
         # needed none, leaving the scan it was `touch`ed for still refused (preclose
         # finding), and a low REST budget must not block every post at its first line.
-        if argv == ["api", "user", "--jq", ".login"]:
+        # harmonic-forge#957 AC6: gh-as's token-fingerprint read is local (no
+        # API call) and must never spend the override either.
+        if argv == ["api", "user", "--jq", ".login"] or argv == ["auth", "token"]:
             os.execv(real_gh, [real_gh, *argv])
             return  # pragma: no cover -- see the execv note below
 
