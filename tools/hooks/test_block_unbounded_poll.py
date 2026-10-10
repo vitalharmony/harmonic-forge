@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Tests for block_unbounded_poll (harmonic-forge#948 AC3)."""
+import io
+import json
+import sys
+import unittest
+import unittest.mock
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import block_unbounded_poll as H  # noqa: E402
+
+
+def decision(command: str, tool: str = "Bash") -> str | None:
+    out = io.StringIO()
+    payload = json.dumps({"tool_name": tool, "tool_input": {"command": command}})
+    with unittest.mock.patch.object(sys, "stdin", io.StringIO(payload)), \
+         unittest.mock.patch.object(sys, "stdout", out):
+        H.main()
+    return json.loads(out.getvalue()).get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+class Polls(unittest.TestCase):
+    def test_the_h2245_loop_is_denied(self):
+        self.assertEqual(decision('until grep -q "^exit=" out.log; do sleep 10; done'), "deny")
+
+    def test_a_while_poll_across_lines_is_denied(self):
+        self.assertEqual(decision("while pgrep -f job >/dev/null\ndo\n  sleep 15\ndone; echo ok"), "deny")
+
+    def test_a_loop_under_timeout_is_allowed(self):
+        self.assertIsNone(decision("timeout 600 bash -c 'until grep -q x f; do sleep 10; done'"))
+
+    def test_a_while_read_loop_without_sleep_is_allowed(self):
+        self.assertIsNone(decision("ls | while read f; do echo $f; done"))
+
+    def test_sleep_alone_is_allowed(self):
+        self.assertIsNone(decision("sleep 5"))
+
+    def test_a_timeout_after_the_loop_does_not_count(self):
+        self.assertEqual(decision("until false; do sleep 1; done; timeout 5 true"), "deny")
+
+    def test_other_tools_are_ignored(self):
+        self.assertIsNone(decision("until false; do sleep 1; done", tool="Read"))
+
+    def test_the_reason_names_both_fixes(self):
+        self.assertIn("timeout 1800", H.REASON)
+        self.assertIn("background", H.REASON)
+
+
+if __name__ == "__main__":
+    unittest.main()
