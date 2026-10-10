@@ -40,6 +40,36 @@ class Polls(unittest.TestCase):
     def test_a_timeout_after_the_loop_does_not_count(self):
         self.assertEqual(decision("until false; do sleep 1; done; timeout 5 true"), "deny")
 
+    # Preclose pass 1 survivors (reforged onto shell_parse), one test each.
+    def test_an_earlier_unrelated_timeout_does_not_exempt_the_loop(self):
+        self.assertEqual(decision("timeout 5 true; until false; do sleep 1; done"), "deny")
+        self.assertEqual(decision("curl --connect-timeout 5 x; until false; do sleep 1; done"), "deny")
+
+    def test_a_nested_loop_does_not_hide_the_outer_sleep(self):
+        self.assertEqual(decision("until a; do until b; do :; done; sleep 5; done"), "deny")
+
+    def test_a_sleep_in_the_loop_condition_is_caught(self):
+        self.assertEqual(decision("while sleep 10; do grep -q x f && break; done"), "deny")
+
+    def test_quoted_prose_is_not_a_loop(self):
+        self.assertIsNone(decision('git commit -m "wait until ready; do not sleep forever; done"'))
+
+    def test_a_bare_bash_c_loop_is_checked(self):
+        self.assertEqual(decision("bash -c 'until x; do sleep 1; done'"), "deny")
+
+    def test_large_input_is_decided_quickly(self):
+        import time
+        start = time.monotonic()
+        decision("while x; do " * 3000)
+        self.assertLess(time.monotonic() - start, 2)
+
+    def test_a_non_object_payload_is_allowed_not_crashed(self):
+        out = io.StringIO()
+        with unittest.mock.patch.object(sys, "stdin", io.StringIO("[]")), \
+             unittest.mock.patch.object(sys, "stdout", out):
+            H.main()
+        self.assertEqual(json.loads(out.getvalue()), {})
+
     def test_other_tools_are_ignored(self):
         self.assertIsNone(decision("until false; do sleep 1; done", tool="Read"))
 

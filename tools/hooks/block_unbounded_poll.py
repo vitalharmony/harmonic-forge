@@ -4,19 +4,34 @@
 harmonic-forge#948. A Lane 1 subagent waited on its own background check with
 `until grep -q "^exit=" <output>; do sleep 10; done`. The job died without
 writing `exit=`, so the loop could never end, and the agent spun for about 57
-minutes. A loop whose body sleeps (`until`/`while` ... `do` ... `sleep` ...
-`done`) is denied unless a `timeout <N>` precedes it. A loop with no `sleep`
-in its body (`while read line; do ...; done`) is not a poll and is allowed.
+minutes.
+
+Reforged after preclose pass 1 (sticky-wicket REFORGE): the first version read
+raw text with a regex, which could not see quoting or loop structure. This one
+reads the shell segments from `shell_parse.command_segments`, the parser the
+other hooks share, so quoted prose and heredoc bodies are never keywords.
+
+Denied: a command whose top-level segments include an `until`/`while` loop and
+a `sleep` (as its own segment, or as the loop's condition). A loop inside a
+`bash -c`/`sh -c` payload is checked the same way, unless `timeout <N>` leads
+that segment, which is the bounded form AC1 allows.
+
+Known limits, accepted: a `while read` loop over finite input that sleeps
+between items is denied (AC1's literal rule; the deny reason names the
+fixes), and so is a loop followed by a separate `sleep` in the same command.
 """
 from __future__ import annotations
 
 import json
-import re
 import sys
+from pathlib import Path
 
-LOOP = re.compile(r"(?s)\b(?:until|while)\b.*?(?:;|\n)\s*do\b(.*?)\bdone\b")
-SLEEP = re.compile(r"\bsleep\b")
-TIMEOUT = re.compile(r"\btimeout\s+\d")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from shell_parse import command_segments  # noqa: E402
+
+LOOP_WORDS = ("until", "while")
+SHELLS = ("bash", "sh")
 
 REASON = (
     "Blocked: a polling loop (`until`/`while` with `sleep`) with no `timeout` "
@@ -28,11 +43,26 @@ REASON = (
 
 
 def unbounded_poll(command: str) -> bool:
-    """Whether the command holds a sleeping loop with no timeout before it."""
-    for loop in LOOP.finditer(command):
-        if SLEEP.search(loop.group(1)) and not TIMEOUT.search(command[:loop.start()]):
+    """Whether the command holds a sleeping until/while loop with no timeout."""
+    try:
+        segments = command_segments(command)
+    except ValueError:  # unbalanced quoting: nothing to decide, allow
+        return False
+    loop = sleeps = False
+    for tokens in segments:
+        if tokens and tokens[0] == "do":
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        if tokens[0] in LOOP_WORDS:
+            loop = True
+            sleeps = sleeps or tokens[1:2] == ["sleep"]
+        elif tokens[0] == "sleep":
+            sleeps = True
+        elif (Path(tokens[0]).name in SHELLS and len(tokens) > 2 and tokens[1] == "-c"
+              and unbounded_poll(tokens[2])):
             return True
-    return False
+    return loop and sleeps
 
 
 def main() -> None:
@@ -41,8 +71,10 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         print(json.dumps({}))
         return
-    command = (data.get("tool_input") or {}).get("command", "") if data.get("tool_name") == "Bash" else ""
-    if command and unbounded_poll(command):
+    command = ""
+    if isinstance(data, dict) and data.get("tool_name") == "Bash":
+        command = (data.get("tool_input") or {}).get("command", "")
+    if isinstance(command, str) and command and unbounded_poll(command):
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
