@@ -257,6 +257,12 @@ def run(*args: str, cwd: Path | None = None,
     return subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
+def _pr_lookup_env() -> dict[str, str]:
+    """harmonic-forge#964: one branch's open-PR lookup names itself to the gh shim,
+    which otherwise refuses `pulls?head=` as a full PR-list scan."""
+    return {**os.environ, "GH_SHIM_CALLER": "l1_post"}
+
+
 # The pre-post check must not inherit the ambient temp root. A transient
 # ``.git`` there makes every fixture below it look as though it belongs to an
 # unrelated repository and can cause correct SHAs to be refused.
@@ -1379,7 +1385,7 @@ def _open_prs_via_rest(cwd_repo: str, branch: str, cwd: Path | None) -> list[dic
     head = f"{cwd_repo.split('/')[0]}:{branch}"
     result = run("gh", "api",
                  f"repos/{cwd_repo}/pulls?head={head}&base=main&state=open",
-                 cwd=cwd)
+                 cwd=cwd, env=_pr_lookup_env())
     if result.returncode:
         return None
     try:
@@ -1546,7 +1552,8 @@ def pr_issue_marker(
     if source_repo is None:
         fail("cannot resolve source repo for PR provenance")
     head = f"{source_repo.split('/')[0]}:{branch}"
-    prs = run("gh", "api", f"repos/{source_repo}/pulls?head={head}&base=main&state=open")
+    prs = run("gh", "api", f"repos/{source_repo}/pulls?head={head}&base=main&state=open",
+              env=_pr_lookup_env())
     if prs.returncode:
         fail("cannot resolve open PR for provenance: " + prs.stderr.strip())
     try:

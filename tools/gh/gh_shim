@@ -47,8 +47,9 @@ def _resolve_real_gh() -> str:
 
 #: harmonic-forge#964: callers whose scans are sanctioned, by the
 #: `GH_SHIM_CALLER` marker they set. `item_list_cache` throttles its own
-#: board reads; `batch_preflight` finds an issue's PR by branch prefix.
-SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight"})
+#: board reads; `batch_preflight` finds an issue's PR by branch prefix;
+#: `l1_post` reads one branch's open PR (`pulls?head=`).
+SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight", "l1_post"})
 
 
 def main() -> None:

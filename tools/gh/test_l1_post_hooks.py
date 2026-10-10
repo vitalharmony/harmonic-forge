@@ -901,5 +901,21 @@ class MilestoneGateTests(unittest.TestCase):
             self.assertEqual(post.repo_milestone_titles("vitalharmony/hrse"), ["2.7", "Later"])
 
 
+
+class ShimMarkerOnPrLookup(unittest.TestCase):
+    """harmonic-forge#964: l1_post's single-branch open-PR reads name themselves to the shim."""
+
+    def test_open_prs_via_rest_runs_under_the_marker(self) -> None:
+        with patch.object(post, "run", return_value=SimpleNamespace(returncode=0, stdout="[]", stderr="")) as run_call:
+            post._open_prs_via_rest("vitalharmony/hrse", "fix/x", None)
+        self.assertEqual(run_call.call_args.kwargs["env"]["GH_SHIM_CALLER"], "l1_post")
+
+    def test_pr_issue_marker_lookup_runs_under_the_marker(self) -> None:
+        with patch.object(post, "_cwd_repo_from_git", return_value="vitalharmony/hrse"), \
+             patch.object(post, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="x")) as run_call:
+            with self.assertRaises(SystemExit):
+                post.pr_issue_marker("vitalharmony/hrse", 1, "fix/x", "abc")
+        self.assertEqual(run_call.call_args.kwargs["env"]["GH_SHIM_CALLER"], "l1_post")
+
 if __name__ == "__main__":
     unittest.main()

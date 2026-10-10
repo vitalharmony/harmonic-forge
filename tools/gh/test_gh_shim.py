@@ -91,7 +91,7 @@ class Refusal(unittest.TestCase):
             return self._run_main_with(["project", "item-list", "1"], scan_reason="scan!", **kw)
 
     def test_each_sanctioned_caller_lets_a_scan_through(self):
-        for caller in ("item_list_cache", "batch_preflight"):
+        for caller in ("item_list_cache", "batch_preflight", "l1_post"):
             code, execv = self._with_caller(caller)
             self.assertIsNone(code, caller)
             execv.assert_called_once()
