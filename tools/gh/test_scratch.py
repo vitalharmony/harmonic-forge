@@ -89,6 +89,12 @@ class ScratchTest(unittest.TestCase):
         self.assertEqual(_scratch.reap(self.base, ownerless=False), [])
         self.assertTrue(half.exists())
 
+    def test_an_unlocked_scratch_dir_leaves_ownerless_dirs_of_ours(self) -> None:
+        # The wiring: scratch_dir(lock=False) must reap with ownerless=False.
+        half = self._dir("kill-check-abc123", None)
+        with _scratch.scratch_dir("inner", lock=False):
+            self.assertTrue(half.exists())
+
     def test_a_root_under_tmp_is_refused(self) -> None:
         with mock.patch.dict(os.environ, {"HRSE_SCRATCH_ROOT": "/tmp/hrse-scratch"}):
             with self.assertRaises(_scratch.ScratchError):
