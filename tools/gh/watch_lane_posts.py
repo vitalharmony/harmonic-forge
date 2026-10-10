@@ -268,6 +268,23 @@ def _account_of(repo: str) -> str:
         except Exception:  # noqa: BLE001 -- unreadable manifest: fall back to the default
             _REPO_ACCOUNTS = {}
     return _REPO_ACCOUNTS.get((repo or "").lower()) or _ACCOUNT
+
+
+_ACTIVE_MILESTONES: "dict[str, frozenset[str]] | None" = None
+
+
+def _active_milestones(repo: str) -> frozenset[str]:
+    """The operator's live releases for `repo` from `projects.toml`
+    (harmonic-forge#952); empty means no milestone filtering. An unreadable
+    manifest filters nothing, the same fail-open as `_account_of`."""
+    global _ACTIVE_MILESTONES
+    if _ACTIVE_MILESTONES is None:
+        try:
+            _ACTIVE_MILESTONES = {p.repo.lower(): frozenset(p.active_milestones)
+                                  for p in onboard_manifest.load() if p.repo}
+        except Exception:  # noqa: BLE001 -- unreadable manifest: no filtering
+            _ACTIVE_MILESTONES = {}
+    return _ACTIVE_MILESTONES.get((repo or "").lower(), frozenset())
 _COUNTER = CallCounter()
 
 #: The full marker text, not just its `kind=` field (harmonic-forge#583) --
@@ -902,9 +919,10 @@ def read_queue_candidates(
 #: the account-wide sweep (harmonic-forge#659) removed one flag and the
 #: same call simply continued under `--queue-for`, which is how it survived.
 
-def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None]:
-    """`(state, label names)` for `issue` from ONE issue read, or
-    `(None, None)` if the fetch failed (harmonic-forge#854: the state comes
+def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
+    """`(state, label names, milestone title)` for `issue` from ONE issue
+    read, or `(None, None, None)` if the fetch failed (harmonic-forge#952:
+    the milestone rides in the same read) (harmonic-forge#854: the state comes
     from the same call that already read the labels, so retiring a closed
     issue costs no extra REST call).
 
@@ -920,11 +938,13 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None]:
         raw = gh_as(
             _account_of(repo),
             ["api", "-X", "GET", f"repos/{repo}/issues/{issue}",
-             "--jq", "{state: .state, labels: [.labels[].name]}"],
+             "--jq", "{state: .state, labels: [.labels[].name], milestone: .milestone.title}"],
             counter=_COUNTER,
         )
         meta = json.loads(raw)
-        return str(meta["state"]), {str(name) for name in meta["labels"]}
+        milestone = meta.get("milestone")
+        return (str(meta["state"]), {str(name) for name in meta["labels"]},
+                str(milestone) if milestone else None)
     except GhAsError as exc:
         # harmonic-forge#866: a 404 means the issue is gone only when this
         # account can see the repo itself; a private repo read with the wrong
@@ -933,14 +953,14 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None]:
         if _confirmed_missing(repo, issue):
             print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
                   "retiring its candidate", file=sys.stderr)
-            return "missing", None
+            return "missing", None, None
         print(f"[watch_lane_posts] issue read failed for {repo}#{issue} as {account}: {exc}",
               file=sys.stderr)
-        return None, None
+        return None, None, None
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
         print(f"[watch_lane_posts] issue read failed for #{issue}: {exc}",
               file=sys.stderr)
-        return None, None
+        return None, None, None
 
 
 def _fail_may_reach(repo: str, issue: int, lane: str) -> bool:
@@ -948,7 +968,9 @@ def _fail_may_reach(repo: str, issue: int, lane: str) -> bool:
     (harmonic-forge#866, nothing to fix), nor for an epic or a Lane-1-owned
     Tooling Exception issue (`queue_qualifiers`); an unreadable label set fails
     open, as `discover_queue` does."""
-    state, labels = _issue_meta(repo, issue)
+    # The milestone is ignored here on purpose (harmonic-forge#952): a FAIL on
+    # an in-flight branch must reach its lane whatever the release.
+    state, labels, *_ = _issue_meta(repo, issue)
     if state == "missing":
         return False
     return not (labels is not None and labels & set(queue_qualifiers(repo, lane)))
@@ -1105,7 +1127,8 @@ def discover_queue(repo: str, lane: str,
         # candidate set because its store entry is marked closed, which
         # `read_candidates` skips and a fresh `record_candidate` clears. An
         # unreadable state is treated as open (AC4).
-        state, labels = _issue_meta(repo, issue)
+        state, labels, *rest = _issue_meta(repo, issue)
+        milestone = rest[0] if rest else None
         if state in ("closed", "missing"):
             # Marked at detection, which depends only on this issue's own
             # state read: another issue's failed comment fetch below still
@@ -1123,6 +1146,16 @@ def discover_queue(repo: str, lane: str,
             # from the constants here, so the two cannot drift apart again
             # (a second preclose finding: this block used to do exactly
             # that, leaving `queue_qualifiers` itself an untested orphan).
+            continue
+        active = _active_milestones(repo)
+        if active and milestone and milestone not in active:
+            # harmonic-forge#952: outside the operator's live releases
+            # (`active_milestones` in projects.toml). Reported on stderr only:
+            # a stdout line would wake every lane on every tick. The store
+            # entry is left alone, so adding the milestone to the list queues
+            # it again, until the candidate ages out (DEFAULT_MAX_AGE_DAYS).
+            print(f"skipped-out-of-release {repo}#{issue} milestone={milestone}",
+                  file=sys.stderr)
             continue
         last_kind: tuple[str, str] | None = None
         last_body = ""
