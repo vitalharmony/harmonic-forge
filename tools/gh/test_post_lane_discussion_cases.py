@@ -156,6 +156,20 @@ class ASpecDeclaresItsWriteTier(Case):
         self.refused(SPEC_TC.replace("Write tier: W\n", "") + "Write tier" + " " * 5000 + "x\n")
         self.assertLess(time.monotonic() - start, 2)
 
+    def test_crlf_and_unicode_space_still_declare(self):
+        # Reforge pass 1: web-edited bodies carry CRLF; pastes carry NBSP.
+        for line in ("Write tier: W\r", "Write tier: W\u00a0(writes)"):
+            with self.subTest(line=repr(line)):
+                self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("Write tier: W", line))))
+
+    def test_a_second_tier_letter_on_the_line_declares_nothing(self):
+        for line in ("Write tier: R | W per case", "Write tier: R; TC3 needs W", "Write tier: R. W for TC3"):
+            with self.subTest(line=line):
+                self.refused(SPEC_TC.replace("Write tier: W", line))
+
+    def test_a_tilde_fenced_example_is_not_a_declaration(self):
+        self.refused(SPEC_TC.replace("Write tier: W\n", "~~~\nWrite tier: W\n~~~\n"))
+
     def test_two_that_disagree_are_refused(self):
         self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
 

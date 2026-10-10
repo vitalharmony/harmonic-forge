@@ -45,7 +45,7 @@ import check_lane3_ready as clr
 RULE = "R-0378"
 STATE_RELPATH = Path(".claude") / "state" / "auto-ae.json"
 _HOOKS = Path(__file__).resolve().parent.parent / "hooks"
-_FENCE = re.compile(r"```.*?```", re.S)
+_FENCE = re.compile(r"```.*?```|~~~.*?~~~", re.S)  # harmonic-forge#947: both CommonMark fence forms
 _AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized\**:?\**[^\n]*$")
 _CLAIM = re.compile(r"\bauto[- ]?AE\b|\bR-0378\b", re.I)
 #: The only tiers auto-AE covers (operator ruling 1, 2026-10-02).
@@ -62,8 +62,10 @@ _SPEC_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Test Spec\b")
 # colon is required, inside or outside the bold (`Write tier: W`,
 # `**Write tier:** W`, `**Write tier**: W`), and the letter must stand alone
 # (whitespace, `|` or end of line after it). A bare label with no separator
-# let prose parse as a declaration (`w/o`, `W's`, `R or W`).
-_DECLARATION = re.compile(r"(?im)\bwrite[ \t]*tier[ \t]*\**[ \t]*:[ \t]*\**[ \t]*`?([RWP])`?\**(?=[ \t.,;)]|\||$)")
+# let prose parse as a declaration (`w/o`, `W's`, `R or W`). A second
+# standalone R/W/P later on the same line (`R | W`, `R; TC3 needs W`) makes
+# the line ambiguous, so it declares nothing (fails closed).
+_DECLARATION = re.compile(r"(?im)\bwrite[ \t]*tier[ \t]*\**[ \t]*:[ \t]*\**[ \t]*`?([RWP])`?\**(?=[\s.,;)|]|$)(?![^\n]*(?-i:\b[RWP]\b))")
 # Gate 2, the veto: ANY standalone capital P token anywhere in the raw body,
 # fences and tables included, in whatever layout (a first column, no leading
 # pipe, a slash or comma list), plus a `--tier p` flag in either case. Two
