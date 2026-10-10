@@ -30,7 +30,10 @@ def git(cwd: Path, *args: str) -> str:
 
 class KillCheckTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
+        # is refused under /tmp (harmonic-forge#949).
+        (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=Path.home() / ".cache", prefix="kill-check-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
@@ -38,7 +41,10 @@ class KillCheckTests(unittest.TestCase):
         self.cwd = Path.cwd()
         os.chdir(self.repo)
         self.addCleanup(os.chdir, self.cwd)
-        home = patch.dict(os.environ, {"HOME": str(self.root / "home")})
+        home = patch.dict(os.environ, {"HOME": str(self.root / "home"),
+                                       # harmonic-forge#949: its own scratch root and lock, so a
+                                       # suite run inside a locked l1_post check never waits on it.
+                                       "HRSE_SCRATCH_ROOT": str(self.root / "scratch")})
         home.start()
         self.addCleanup(home.stop)
         git(self.repo, "init", "-q", "-b", "main")
@@ -75,6 +81,7 @@ class KillCheckTests(unittest.TestCase):
         return kill.read_receipt(REPO, ISSUE)
 
     def test_killed_same_length_stub_and_receipt(self) -> None:
+        leftovers = self.record_leftovers()
         self.assertEqual(self.execute(), 0)
         item = self.receipt()["checks"][0]
         self.assertEqual(item["baseline_rcs"], [0, 0])
@@ -85,7 +92,26 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(item["patch_text"], self.patch_file.read_text())
         self.assertEqual(item["patch_sha256"],
                          hashlib.sha256(item["patch_text"].encode()).hexdigest())
-        self.assertEqual(list(kill.scratch_parent().glob("kill-check-*")), [])
+        self.assertEqual(leftovers, [])
+
+    def record_leftovers(self) -> list:
+        """Wrap the run's scratch dir and record every kill-check-* dir still in it
+        just before it is removed, so per-check cleanup is what the assertion sees
+        (harmonic-forge#949: the dir's own removal would otherwise hide a leak)."""
+        leftovers: list = []
+        real = kill._scratch.scratch_dir
+
+        @contextlib.contextmanager
+        def recording(*args, **kwargs):
+            with real(*args, **kwargs) as parent:
+                try:
+                    yield parent
+                finally:
+                    leftovers.extend(sorted(p.name for p in parent.glob("kill-check-*")))
+        recorder = patch.object(kill._scratch, "scratch_dir", recording)
+        recorder.start()
+        self.addCleanup(recorder.stop)
+        return leftovers
 
     def test_vacuous_test_is_not_a_kill(self) -> None:
         (self.repo / "check.py").write_text("assert True\n")
@@ -104,10 +130,11 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "patch-failed")
 
     def test_broken_and_flaky_baselines(self) -> None:
+        leftovers = self.record_leftovers()
         self.write_checks(test=["python3", "-c", "raise AssertionError('broken')"])
         self.assertEqual(self.execute(), 1)
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "broken-test")
-        self.assertEqual(list(kill.scratch_parent().glob("kill-check-*")), [])
+        self.assertEqual(leftovers, [])
         (self.repo / "flaky.py").write_text(
             "from pathlib import Path\n"
             "p = Path('ran')\n"
@@ -161,7 +188,10 @@ class KillCheckTests(unittest.TestCase):
         after = (git(self.repo, "status", "--porcelain"),
                  git(self.repo, "worktree", "list"), git(self.repo, "rev-parse", "HEAD"))
         self.assertEqual(after, before)
-        self.assertEqual(self.receipt()["scratch_parent"], str(kill.scratch_parent()))
+        # harmonic-forge#949: the run's parent is a scratch dir under the shared root, removed on exit.
+        recorded = Path(self.receipt()["scratch_parent"])
+        self.assertEqual(recorded.parent, kill._scratch.root())
+        self.assertFalse(recorded.exists())
 
     def test_reaper_removes_only_old_scratch(self) -> None:
         parent = kill.scratch_parent()
@@ -216,10 +246,11 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(kill.receipt_path(REPO, ISSUE).read_bytes(), before)
 
     def test_materialize_exception_and_cleanup_failure(self) -> None:
+        leftovers = self.record_leftovers()
         with patch.object(kill, "materialize", side_effect=RuntimeError("unpack failed")):
             self.assertEqual(self.execute(), 1)
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "error")
-        self.assertEqual(list(kill.scratch_parent().glob("kill-check-*")), [])
+        self.assertEqual(leftovers, [])
         with patch.object(kill, "remove_tree", return_value="permission denied"):
             self.assertEqual(self.execute(), 1)
         self.assertEqual(self.receipt()["checks"][0]["verdict"], "cleanup-failed")
@@ -361,7 +392,10 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
     FILES = 700
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
+        # is refused under /tmp (harmonic-forge#949).
+        (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=Path.home() / ".cache", prefix="kill-check-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
@@ -369,7 +403,10 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
         cwd = Path.cwd()
         os.chdir(self.repo)
         self.addCleanup(os.chdir, cwd)
-        home = patch.dict(os.environ, {"HOME": str(self.root / "home")})
+        home = patch.dict(os.environ, {"HOME": str(self.root / "home"),
+                                       # harmonic-forge#949: its own scratch root and lock, so a
+                                       # suite run inside a locked l1_post check never waits on it.
+                                       "HRSE_SCRATCH_ROOT": str(self.root / "scratch")})
         home.start()
         self.addCleanup(home.stop)
         git(self.repo, "init", "-q", "-b", "main")
