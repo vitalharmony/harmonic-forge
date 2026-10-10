@@ -58,7 +58,9 @@ _SPEC_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Test Spec\b")
 # Gate 1, the declaration: unfenced "Write tier: X" / "Write tier **X**", one
 # letter on the same line. Every declaration must agree, and be R or W; none,
 # or two that differ, refuses. A fenced example can never supply the tier.
-_DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*:?[^\S\n]*\**`?([RWP])`?\**(?![\w-])")
+# harmonic-forge#947 preclose: the bold label forms `**Write tier:** W` and
+# `**Write tier**: W` are accepted too (whitespace after the closing `**`).
+_DECLARATION = re.compile(r"(?i)\bwrite[ \t]*tier[^\S\n]*\**[^\S\n]*:?[^\S\n]*\**[^\S\n]*`?([RWP])`?\**(?![\w-])")
 # Gate 2, the veto: ANY standalone capital P token anywhere in the raw body,
 # fences and tables included, in whatever layout (a first column, no leading
 # pipe, a slash or comma list), plus a `--tier p` flag in either case. Two

@@ -129,6 +129,13 @@ class ASpecDeclaresItsWriteTier(Case):
     def test_a_p_declaration_is_accepted_by_the_poster(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
 
+    def test_the_bold_label_forms_are_accepted(self):
+        # Preclose pass 1 survivor: `**Write tier:** W` used to be refused.
+        for line in ("**Write tier:** W", "**Write tier**: W"):
+            with self.subTest(line=line):
+                body = SPEC_TC.replace("Write tier: W", line)
+                self.assertIn("kind=spec", last_line(self.post("spec", body)))
+
     def test_two_that_disagree_are_refused(self):
         self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nWrite tier: R\n"))
 
