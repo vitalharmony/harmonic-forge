@@ -20,6 +20,12 @@ class ScanReason(unittest.TestCase):
 
     def test_pr_list_is_a_scan(self):
         self.assertIsNotNone(gsp.scan_reason(["pr", "list"]))
+        self.assertIsNotNone(gsp.scan_reason(["pr", "list", "--repo", "o/r", "--state", "all"]))
+
+    def test_pr_list_for_one_head_is_not_a_scan(self):
+        # harmonic-forge#954: l1-post's open-PR check for its own branch.
+        self.assertIsNone(gsp.scan_reason(["pr", "list", "--repo", "o/r", "--head", "b", "--base", "main"]))
+        self.assertIsNone(gsp.scan_reason(["pr", "list", "--head=b"]))
 
     def test_search_subcommand_is_a_scan(self):
         self.assertIsNotNone(gsp.scan_reason(["search", "issues", "foo"]))

@@ -163,6 +163,10 @@ def scan_reason(argv: list[str]) -> str | None:
     if head == "issue" and len(positional) >= 2 and positional[1] == "list":
         return "`gh issue list` (full-issue-list scan)"
     if head == "pr" and len(positional) >= 2 and positional[1] == "list":
+        # harmonic-forge#954: `--head <branch>` filters to that branch's PR,
+        # a single-item lookup (l1-post's open-PR check), not a scan.
+        if any(token == "--head" or token.startswith("--head=") for token in argv):
+            return None
         return "`gh pr list` (full-PR-list scan)"
     if head == "search":
         return "`gh search ...` (search-endpoint scan)"
