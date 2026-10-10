@@ -3732,7 +3732,8 @@ class OneReadPerTickTests(unittest.TestCase):
 
     def test_nothing_is_cached_outside_a_tick(self):
         with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
-            watch_lane_posts._end_tick_reads()
+            watch_lane_posts._reset_tick_reads()  # a tick opens...
+            watch_lane_posts._end_tick_reads()    # ...and ends: the cache is off again
             watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
             watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
         self.assertEqual(len(self.calls), 2)
