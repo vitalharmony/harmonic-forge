@@ -32,7 +32,9 @@ class ScanReason(unittest.TestCase):
         # --head that is another flag's value filters nothing.
         for argv in (["pr", "list", "--head="], ["pr", "list", "--head", ""],
                      ["pr", "list", "--search", "--head", "--limit", "1000"],
-                     ["pr", "list", "-S", "--head"]):
+                     ["pr", "list", "-S", "--head"],
+                     ["pr", "list", "--head", "b", "--head", ""],
+                     ["pr", "list", "--head=b", "--head="]):
             with self.subTest(argv=argv):
                 self.assertIsNotNone(gsp.scan_reason(argv))
 
