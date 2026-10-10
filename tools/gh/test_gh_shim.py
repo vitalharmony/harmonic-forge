@@ -234,6 +234,14 @@ class Installer(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not this repo's gh_shim", result.stderr)
 
+    def test_a_dotdot_spelling_of_local_bin_on_path_is_the_same_dir(self):  # harmonic-forge#960
+        self.local_bin.mkdir(parents=True)
+        (self.home / ".local" / "share").mkdir()
+        env = dict(os.environ, HOME=str(self.home),
+                   PATH=f"{self.home}/.local/share/../bin:{os.environ.get('PATH', '')}")
+        result = subprocess.run(["bash", str(_INSTALLER)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

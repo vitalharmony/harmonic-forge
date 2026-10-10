@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import forge_onboard_gh_shim  # noqa: E402
 import forge_onboard_identity  # noqa: E402
 import forge_onboard_skills  # noqa: E402
 import lane_tasks  # noqa: E402
@@ -791,6 +792,13 @@ def check_memory(_project: Project) -> Check:
     return Check("shared memory", OK, str(store))
 
 
+def check_gh_shim(_project: Project) -> Check:
+    """harmonic-forge#960: R-0363's shim is linked and first on PATH. Detect-only:
+    installing is the operator's action (`install_gh_shim.sh:8-10`), so `apply()`
+    never calls this."""
+    return forge_onboard_gh_shim.check_gh_shim(Check, platform_source())
+
+
 def check_prefix(project: Project, manifest: Path | None = None) -> Check:
     """The manifest and `rules/lane-shorthand.md` must claim the same letters.
 
@@ -844,7 +852,7 @@ def check_board(project: Project) -> Check:
 
 CHECKS = (check_protocol, check_lane_tasks, check_gate_adapter, check_ci, check_branch_protection,
           check_checkout, check_worktrees, check_directives, check_entrypoint, check_hooks,
-          check_skills, check_memory, check_board, check_identity)
+          check_skills, check_memory, check_gh_shim, check_board, check_identity)
 
 
 def verify(project: Project, manifest: Path | None = None) -> list[Check]:
