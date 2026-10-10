@@ -39,8 +39,10 @@ fi
 
 ln -sfn "${SHIM_PATH}" "${TARGET}"
 
+# Resolved paths, never text: a PATH entry spelled ~/.local/share/../bin is
+# this same directory (harmonic-forge#960).
 RESOLVED="$(command -v gh || true)"
-if [ "${RESOLVED}" != "${TARGET}" ]; then
+if [ -z "${RESOLVED}" ] || [ "$(readlink -f "${RESOLVED}")" != "$(readlink -f "${TARGET}")" ]; then
     echo "install_gh_shim: installed the symlink but 'command -v gh' resolves to '${RESOLVED}', not ${TARGET} -- check PATH ordering." >&2
     exit 1
 fi
