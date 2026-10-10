@@ -304,6 +304,7 @@ class HourlyReportTests(unittest.TestCase):
         self.assertIn("vitalharmony 2600 (52%)", out)
         self.assertIn("vitalharmony 3000 (60%)", out)
         self.assertIn("Phase 1 gate: 2 of 3 hours > 50%", out)
+        self.assertIn("logged hours ending 2026-10-10T03:00 UTC", out)
 
     def test_a_legacy_record_reads_legacy_never_zero(self):
         out = self._out([{"ts": "2026-10-10T01:10:00Z", "calls_rest": 4}])
@@ -327,11 +328,13 @@ class HourlyReportTests(unittest.TestCase):
                "ratelimit": {"vitalharmony": None}}
         out = self._out([bad, self._rec(1, 3000)])
         self.assertIn("1 record(s) with unreadable request fields skipped", out)
+        self.assertIn("10 (partial: 1 legacy)", out)
         self.assertIn("Phase 1 gate: 1 of 1 hours > 50%", out)
 
     def test_requests_without_headers_warn(self):
         out = self._out([{"ts": "2026-10-10T01:10:00Z", "http_requests": 9, "ratelimit": {}}])
-        self.assertIn("WARNING: 1 hour(s) recorded requests but no rate-limit header", out)
+        self.assertIn("WARNING: 1 hour(s) in the window recorded requests but no rate-limit header", out)
+        self.assertNotIn("Check gh_as", out)
 
     def test_a_tick_record_carries_the_new_fields(self):
         from belt_mechanics import CallCounter

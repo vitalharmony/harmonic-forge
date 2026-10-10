@@ -204,16 +204,19 @@ def gh_as(
         ["gh-as", account, "gh", *run_argv],
         capture_output=True, text=True, timeout=timeout,
     )
+    # Headers are read before the exit check: a 403 at 100% of the bucket still
+    # prints them, and that hour is the one the Phase 1 gate most needs
+    # (harmonic-forge#959 pass-2 survivor 3).
+    body = proc.stdout
+    if include:
+        headers, body = _strip_headers(proc.stdout)
+        if headers is not None:
+            counter.record_headers(account, headers)
     if check and proc.returncode != 0:
         raise GhAsError(
             f"gh-as {account} gh {' '.join(argv)} -> exit {proc.returncode}: "
             f"{proc.stderr.strip()[:400]}"
         )
-    if not include:
-        return proc.stdout
-    headers, body = _strip_headers(proc.stdout)
-    if headers is not None:
-        counter.record_headers(account, headers)
     return body
 
 

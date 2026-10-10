@@ -297,6 +297,18 @@ class RequestAccountingTests(unittest.TestCase):
             self._run(["api", "repos/o/r"], self.HDR + "{}", returncode=1)
         self.assertNotIn("--include", str(ctx.exception))
 
+    def test_a_403_still_records_the_rate_limit(self):
+        import belt_mechanics
+        hdr = ("HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Used: 5000\r\n"
+               "X-Ratelimit-Reset: 9\r\n\r\n")
+        from unittest.mock import patch
+        counter = belt_mechanics.CallCounter()
+        fake = type("P", (), {"returncode": 1, "stdout": hdr + "{}", "stderr": "rate"})()
+        with patch("belt_mechanics.subprocess.run", return_value=fake):
+            with self.assertRaises(belt_mechanics.GhAsError):
+                belt_mechanics.gh_as("vitalharmony", ["api", "x"], counter=counter)
+        self.assertEqual(counter.ratelimit["vitalharmony"]["used"], 5000)
+
     def test_one_subprocess_per_call(self):
         _, _, calls = self._run(["api", "repos/o/r/issues/1"], self.HDR + "{}")
         self.assertEqual(len(calls), 1)

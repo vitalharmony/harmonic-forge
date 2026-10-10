@@ -247,6 +247,9 @@ def hourly_report(records: list[dict]) -> None:
             requests = int(r["http_requests"])
             peaks = {str(a): int(rl["used"]) for a, rl in (r.get("ratelimit") or {}).items()}
         except (TypeError, ValueError, KeyError, AttributeError):
+            # Marked like a legacy record, so its hour never prints a bare
+            # count it does not hold (pass-2 survivor 1).
+            h["legacy"] += 1
             unreadable += 1
             continue
         h["requests"] += requests
@@ -276,15 +279,17 @@ def hourly_report(records: list[dict]) -> None:
     observed = [h for h in window.values() if h["peak"]]
     over = sum(1 for h in observed if max(h["peak"].values()) > PHASE1_THRESHOLD)
     share = f"{over * 100 // len(observed)}%" if observed else "n/a"
+    # Anchored to the newest logged hour, which the line names, so a log that
+    # stopped days ago reads as stale rather than current (pass-2 survivor 4).
     print(f"  Phase 1 gate: {over} of {len(observed)} hours > 50% "
-          f"in the last {PHASE1_WINDOW_HOURS} ({share})")
+          f"in the {PHASE1_WINDOW_HOURS} logged hours ending {max(hours)}:00 UTC ({share})")
     # Requests recorded but no rate-limit header ever parsed: the gate has no
     # input, which must be said, not printed as "0 of 0" (pass-1 survivor 8).
     blind = sum(1 for h in window.values() if h["requests"] and not h["peak"])
     if blind:
-        print(f"  WARNING: {blind} hour(s) recorded requests but no rate-limit "
-              "header; the Phase 1 gate is missing that input. Check gh_as's "
-              "header parsing (belt_mechanics.record_headers).")
+        print(f"  WARNING: {blind} hour(s) in the window recorded requests but no "
+              "rate-limit header (header-less --paginate/repo-list ticks, or a "
+              "parsing fault); the Phase 1 gate has no input for those hours.")
 
 
 def report(records: list[dict], malformed_lines: list[str], last: int,
