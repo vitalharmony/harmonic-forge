@@ -1712,6 +1712,75 @@ def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess
     raise AssertionError("unreachable")  # fail() exits
 
 
+STALE_INSTALL_FIX = {
+    "frontend/node_modules": "cd {dir} && npm ci",
+    "backend/.venv": "cd {dir} && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt",
+}
+_REQ_SKIP = ("-r", "-e", "-c", "--")
+
+
+def _pep503(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_pins(text: str) -> dict[str, str]:
+    """`{normalized name: version}` for every `==` pin in a requirements file.
+    `-r`/`-e`/`-c` and option lines are skipped; `; markers`, `[extras]` and
+    `--hash` are stripped (harmonic-forge#970 pitch finding 2)."""
+    pins: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith(_REQ_SKIP):
+            continue
+        line = line.split(";", 1)[0].split(" --hash", 1)[0].strip()
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*==\s*([^\s,]+)$", line)
+        if match:
+            pins[_pep503(match.group(1))] = match.group(3)
+    return pins
+
+
+def install_staleness(dependency_dir: str, install: Path) -> list[str]:
+    """What the source install lacks against its own manifest, empty when it
+    satisfies it (harmonic-forge#970 AC1). Frontend: `npm ls --depth=0 --json`
+    `missing`, or `invalid` direct deps (extraneous is allowed). Backend: every
+    `==` pin compared with the venv's installed versions, read in one
+    subprocess, names PEP 503-normalized."""
+    workdir = install.parent
+    if dependency_dir == "frontend/node_modules":
+        try:
+            proc = subprocess.run(["npm", "ls", "--depth=0", "--json"], cwd=workdir, text=True,
+                                  errors="replace", capture_output=True, timeout=120, check=False)
+            deps = (json.loads(proc.stdout or "{}").get("dependencies") or {})
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return []  # cannot decide: the full check still gates
+        return sorted(f"{name} (missing)" if dep.get("missing") else f"{name} (invalid)"
+                      for name, dep in deps.items()
+                      if isinstance(dep, dict) and (dep.get("missing") or dep.get("invalid")))
+    if dependency_dir == "backend/.venv":
+        pins: dict[str, str] = {}
+        for name in _DEPENDENCY_MANIFESTS[dependency_dir][1]:
+            path = workdir / name
+            if path.is_file():
+                pins.update(requirement_pins(path.read_text(errors="replace")))
+        if not pins:
+            return []
+        script = ("import json,sys,re,importlib.metadata as m\n"
+                  "out={}\n"
+                  "for d in m.distributions():\n"
+                  " n=d.metadata.get('Name')\n"
+                  " if n: out[re.sub(r'[-_.]+','-',n).lower()]=d.version\n"
+                  "print(json.dumps(out))")
+        try:
+            proc = subprocess.run([str(install / "bin" / "python"), "-c", script], text=True,
+                                  errors="replace", capture_output=True, timeout=60, check=False)
+            installed = json.loads(proc.stdout or "{}")
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return []
+        return sorted(f"{name} {installed.get(name, 'MISSING')}!={want}"
+                      for name, want in pins.items() if installed.get(name) != want)
+    return []
+
+
 def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir: str) -> str:
     """Link `dependency_dir` from the source checkout when the manifests beside
     the real install equal the attested commit's byte for byte; otherwise
@@ -1727,6 +1796,16 @@ def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir
     differ = _manifest_differences(install.parent, scratch / workdir, names)
     target = scratch / dependency_dir
     if not differ:
+        # harmonic-forge#970 AC1: equal manifests are not enough. A source
+        # install that does not satisfy its own manifest would be linked and
+        # fail the whole check twenty minutes later; refuse it in seconds.
+        stale = install_staleness(dependency_dir, install)
+        if stale:
+            fail(f"source install {dependency_dir} ({install}) does not satisfy its manifest: "
+                 f"{', '.join(stale[:12])}{' …' if len(stale) > 12 else ''}\n"
+                 f"  fix: {STALE_INSTALL_FIX[dependency_dir].format(dir=install.parent)}\n"
+                 f"  (checks direct dependencies against package.json ranges and "
+                 f"requirements pins, not the lockfile's transitive pins)")
         target.symlink_to(install, target_is_directory=True)
         return "linked"
     print(f"[l1-post] scratch {dependency_dir}: installing (the linked install's "
@@ -1937,6 +2016,77 @@ def _ms_between(started: str, finished: str) -> int | None:
     return int(delta.total_seconds() * 1000)
 
 
+def install_fingerprint(repo_root: Path) -> str:
+    """harmonic-forge#970 AC5: sha256 over each source dependency dir's
+    manifests and what is actually installed there (`.package-lock.json`, the
+    venv's dist-info names). It changes after `npm ci` or a pip install."""
+    digest = hashlib.sha256()
+    for dependency_dir in HRSE_DEPENDENCY_DIRS:
+        source = (repo_root / dependency_dir)
+        if not source.exists():
+            continue
+        install = source.resolve()
+        workdir, names = _DEPENDENCY_MANIFESTS[dependency_dir]
+        for name in names:
+            manifest = install.parent / name
+            if manifest.is_file():
+                digest.update(name.encode() + b"\0" + manifest.read_bytes())
+        lock = install / ".package-lock.json"
+        if lock.is_file():
+            digest.update(lock.read_bytes())
+        for site in sorted(install.glob("lib/python*/site-packages")):
+            digest.update("\n".join(sorted(p.name for p in site.glob("*.dist-info"))).encode())
+    return digest.hexdigest()
+
+
+def last_attempt(repo: str, issue: int, sha: str) -> dict | None:
+    """The newest `ready-for-l3.attempt` event for this issue and SHA in the
+    telemetry store, or None (harmonic-forge#970 AC5). Best-effort by design:
+    no record, or an unreadable store, means no refusal (fail open)."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        import emit as telemetry_emit  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        base = telemetry_emit.store_root() / "events" / origin.account / origin.org / "manual"
+        subject = f"{repo}#{issue}@{sha[:12]}"
+        newest: dict | None = None
+        for path in sorted(base.glob("*.jsonl"))[-2:]:
+            for line in path.read_text(errors="replace").splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if (event.get("event_type") == "ready-for-l3.attempt"
+                        and event.get("subject_id") == subject
+                        and (newest is None or str(event.get("ts")) > str(newest.get("ts")))):
+                    newest = event
+        return newest
+    except Exception:  # noqa: BLE001 - fail open
+        return None
+
+
+def refuse_unchanged_rerun(repo: str, issue: int, sha: str, fingerprint: str) -> None:
+    """harmonic-forge#970 AC5: the last attempt at this exact SHA failed its
+    full check, and nothing that could change the result has changed."""
+    previous = last_attempt(repo, issue, sha)
+    if not previous:
+        return
+    attrs = previous.get("attrs") or {}
+    if attrs.get("outcome") != "refused-check":
+        return
+    if attrs.get("install_fingerprint_sha") not in (None, fingerprint):
+        return
+    if attrs.get("install_fingerprint_sha") is None:
+        return  # a record from before this field: cannot tell, fail open
+    fail(f"the last ready-for-l3 attempt for {repo}#{issue} at {sha[:12]} "
+         f"({previous.get('ts')}) failed its full check, and neither the SHA nor the "
+         f"source installs have changed since. Fix the cause (push a new commit, or "
+         f"reinstall: frontend `npm ci`, backend pip install) before re-running.")
+
+
 def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) -> None:
     """harmonic-forge#892: one `ready-for-l3.attempt` event. Counts and labels
     only. Any failure, raised or returned as `rejected`, goes to stderr and
@@ -1959,6 +2109,7 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) 
                 "outcome": outcome, "local_check_ms": attempt.get("local_check_ms"),
                 "local_check_result": result_state, "ci_state": ci_state,
                 "ci_green_local_red": ci_state == "green" and result_state == "fail",
+                "install_fingerprint_sha": attempt.get("install_fingerprint"),
             },
         }
         counts = telemetry_emit.emit([event])
@@ -2031,6 +2182,14 @@ def _post_kind(
         # origin/main (an unfetched ref hides an already-merged sibling).
         refresh_main()  # preclose F1: the pre-flight must read a fresh origin/main
         world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
+        # harmonic-forge#970 AC5: never pay the full check again for an
+        # unchanged commit whose last full check failed.
+        _root = run("git", "rev-parse", "--show-toplevel")
+        if not _root.returncode:
+            fingerprint = install_fingerprint(Path(_root.stdout.strip()))
+            refuse_unchanged_rerun(repo, issue, sha, fingerprint)
+            if attempt is not None:
+                attempt["install_fingerprint"] = fingerprint
         checks, local_check_timing, check = static_checks(sha, branch)
         if attempt is not None:
             attempt["local_check_result"] = check["result"]
