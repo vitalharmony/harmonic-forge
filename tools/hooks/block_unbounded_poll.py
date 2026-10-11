@@ -27,7 +27,6 @@ Known limits, accepted (R-0380: no mechanism beyond the literal ask):
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -94,84 +93,6 @@ def unbounded_poll(command: str) -> bool:
     return loop and sleeps
 
 
-def _payloads(tokens: list[str]) -> list[str]:
-    """`-c` payloads of a shell anywhere in the segment (`timeout 60 bash -c ...`)."""
-    out = []
-    for i, tok in enumerate(tokens):
-        if Path(tok).name in SHELLS and "-c" in tokens[i + 1:]:
-            j = tokens.index("-c", i + 1)
-            if j + 1 < len(tokens):
-                out.append(tokens[j + 1])
-    return out
-
-
-def _has_loop(command: str) -> bool:
-    """Whether any segment (including a `bash -c` payload) opens an until/while loop."""
-    try:
-        segments = command_segments(command)
-    except ValueError:
-        return False
-    for tokens in segments:
-        while tokens and tokens[0] in LEADERS:
-            tokens = tokens[1:]
-        if not tokens:
-            continue
-        if tokens[0] in LOOP_WORDS:
-            return True
-        if any(_has_loop(payload) for payload in _payloads(tokens)):
-            return True
-    return False
-
-
-def _pgrep_patterns(command: str) -> list[str]:
-    """The pattern argument of every `pgrep` that matches full command lines (`-f`)."""
-    try:
-        segments = command_segments(command)
-    except ValueError:
-        return []
-    found: list[str] = []
-    for tokens in segments:
-        for payload in _payloads(tokens):
-            found += _pgrep_patterns(payload)
-        for i, tok in enumerate(tokens):
-            if Path(tok).name != "pgrep":
-                continue
-            rest = tokens[i + 1:]
-            full = any(t.startswith("-") and not t.startswith("--") and "f" in t[1:] for t in rest) \
-                or "--full" in rest
-            args = [t for t in rest if not t.startswith("-")]
-            if full and args:
-                found.append(args[0])
-    return found
-
-
-def pgrep_self_match(command: str) -> str | None:
-    """harmonic-forge#970 AC4: inside a wait loop, a `pgrep -f` pattern that
-    matches the command's own text makes the loop see itself and never exit.
-    Returns the matching text, or None. POSIX classes (`[[:...:]]`) and
-    invalid patterns are allowed rather than mistranslated."""
-    if not _has_loop(command):
-        return None
-    for pattern in _pgrep_patterns(command):
-        if "[[:" in pattern:
-            continue
-        try:
-            hit = re.search(pattern, command)
-        except re.error:
-            continue
-        if hit:
-            return hit.group(0)
-    return None
-
-
-SELF_MATCH_REASON = (
-    "Blocked (harmonic-forge#970): this wait loop's `pgrep -f` pattern matches the "
-    "loop's own command line (matched {hit!r}), so pgrep always finds it and the loop "
-    "never exits. Bracket every alternative (`l1_post[.]py|pip[ ]install`), or use "
-    "run_in_background and wait for the completion notification."
-)
-
-
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -181,18 +102,6 @@ def main() -> None:
     command = ""
     if isinstance(data, dict) and data.get("tool_name") == "Bash":
         command = (data.get("tool_input") or {}).get("command", "")
-    hit = pgrep_self_match(command) if isinstance(command, str) and command else None
-    if hit is not None:
-        reason = SELF_MATCH_REASON.format(hit=hit)
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            },
-            "systemMessage": reason,
-        }))
-        return
     if isinstance(command, str) and command and unbounded_poll(command):
         print(json.dumps({
             "hookSpecificOutput": {

@@ -109,25 +109,5 @@ class Polls(unittest.TestCase):
         self.assertIn("background", H.REASON)
 
 
-
-class PgrepSelfMatchTests(unittest.TestCase):
-    """harmonic-forge#970 AC4."""
-
-    def test_an_unbracketed_alternative_in_a_wait_loop_is_refused(self):
-        cmd = """timeout 60 bash -c 'while pgrep -f "l1_post[.]py --issue|pip install" >/dev/null; do sleep 20; done'"""
-        self.assertEqual(H.pgrep_self_match(cmd), "pip install")
-
-    def test_the_bracketed_form_is_allowed(self):
-        cmd = """timeout 60 bash -c 'while pgrep -f "l1_post[.]py --issue|pip[ ]install" >/dev/null; do sleep 20; done'"""
-        self.assertIsNone(H.pgrep_self_match(cmd))
-
-    def test_a_one_shot_pgrep_is_untouched(self):
-        self.assertIsNone(H.pgrep_self_match("pgrep -f foo; echo foo"))
-
-    def test_posix_classes_and_invalid_patterns_are_allowed(self):
-        loop = "timeout 9 bash -c 'while pgrep -f \"{}\"; do sleep 1; done'"
-        self.assertIsNone(H.pgrep_self_match(loop.format("x[[:digit:]]")))
-        self.assertIsNone(H.pgrep_self_match(loop.format("(unclosed")))
-
 if __name__ == "__main__":
     unittest.main()
