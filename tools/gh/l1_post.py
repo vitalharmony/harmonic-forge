@@ -1765,6 +1765,33 @@ class StaleProbeError(Exception):
     """The install could not be checked; l1-post refuses rather than link blind."""
 
 
+def _lockfile_drift(workdir: Path, install: Path) -> list[str]:
+    """Top-level packages whose installed version differs from the version
+    `package-lock.json` resolved: a lockfile-only bump inside the
+    package.json range, which `npm ls` cannot see (pass-2 survivor 3). The
+    same equality check as the pip pins; no stored state. A missing or
+    unreadable lockfile adds nothing (npm ls still gates)."""
+    try:
+        packages = json.loads((workdir / "package-lock.json").read_text()).get("packages") or {}
+    except (OSError, ValueError):
+        return []
+    drift = []
+    for key, meta in packages.items():
+        if not key.startswith("node_modules/") or key.count("node_modules/") != 1:
+            continue
+        want = (meta or {}).get("version")
+        if not want or (meta or {}).get("optional"):
+            continue
+        manifest = install / key[len("node_modules/"):] / "package.json"
+        try:
+            have = json.loads(manifest.read_text()).get("version")
+        except (OSError, ValueError):
+            continue  # absent optional or platform package: npm ls reports real misses
+        if have != want:
+            drift.append(f"{key[len('node_modules/'):]} {have} (lockfile {want})")
+    return drift
+
+
 def install_staleness(dependency_dir: str, install: Path) -> list[str]:
     """What the source install lacks against its own manifest, empty when it
     satisfies it (harmonic-forge#970 AC1). Frontend: `npm ls --depth=0 --json`
@@ -1776,12 +1803,16 @@ def install_staleness(dependency_dir: str, install: Path) -> list[str]:
         try:
             proc = subprocess.run(["npm", "ls", "--depth=0", "--json"], cwd=workdir, text=True,
                                   errors="replace", capture_output=True, timeout=120, check=False)
-            deps = (json.loads(proc.stdout or "")["dependencies"] or {})
-        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+            tree = json.loads(proc.stdout or "")
+            if not isinstance(tree, dict):
+                raise ValueError("npm ls output is not an object")
+            deps = tree.get("dependencies") or {}  # npm omits the key for an empty tree
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
             raise StaleProbeError(f"`npm ls --depth=0 --json` in {workdir} could not run: {exc}") from exc
-        return sorted(f"{name} (missing)" if dep.get("missing") else f"{name} (invalid)"
-                      for name, dep in deps.items()
-                      if isinstance(dep, dict) and (dep.get("missing") or dep.get("invalid")))
+        stale = [f"{name} (missing)" if dep.get("missing") else f"{name} (invalid)"
+                 for name, dep in deps.items()
+                 if isinstance(dep, dict) and (dep.get("missing") or dep.get("invalid"))]
+        return sorted(stale + _lockfile_drift(workdir, install))
     if dependency_dir == "backend/.venv":
         lines: list[str] = []
         for name in _DEPENDENCY_MANIFESTS[dependency_dir][1]:

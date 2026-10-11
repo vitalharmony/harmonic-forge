@@ -71,6 +71,32 @@ class InstallStalenessTests(unittest.TestCase):
             stale = l1_post.install_staleness("frontend/node_modules", Path("/x/frontend/node_modules"))
         self.assertEqual(stale, ["@sentry/react (missing)"])
 
+    def _npm(self, payload: dict, lock: dict | None = None, installed: dict | None = None) -> list:
+        with tempfile.TemporaryDirectory() as d:
+            nm = Path(d) / "frontend" / "node_modules"
+            nm.mkdir(parents=True)
+            if lock is not None:
+                (Path(d) / "frontend" / "package-lock.json").write_text(json.dumps(lock))
+            for name, version in (installed or {}).items():
+                (nm / name).mkdir(parents=True)
+                (nm / name / "package.json").write_text(json.dumps({"version": version}))
+            with mock.patch.object(l1_post.subprocess, "run",
+                                   return_value=mock.Mock(stdout=json.dumps(payload), returncode=0)):
+                return l1_post.install_staleness("frontend/node_modules", nm)
+
+    def test_an_empty_dependency_tree_is_satisfied(self):
+        self.assertEqual(self._npm({"name": "x"}), [])
+
+    def test_an_invalid_version_is_reported(self):
+        self.assertEqual(self._npm({"dependencies": {"react": {"invalid": True}}}), ["react (invalid)"])
+
+    def test_lockfile_only_drift_is_reported(self):
+        lock = {"packages": {"": {}, "node_modules/vite": {"version": "5.2.3"},
+                             "node_modules/vite/node_modules/esbuild": {"version": "0.1.0"}}}
+        self.assertEqual(self._npm({"dependencies": {"vite": {"version": "5.1.0"}}}, lock, {"vite": "5.1.0"}),
+                         ["vite 5.1.0 (lockfile 5.2.3)"])
+        self.assertEqual(self._npm({"dependencies": {}}, lock, {"vite": "5.2.3"}), [])
+
     def test_provision_refuses_a_stale_install_instead_of_linking(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "src"

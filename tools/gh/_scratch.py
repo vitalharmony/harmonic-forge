@@ -28,7 +28,6 @@ import fcntl
 import json
 import os
 import shutil
-import sys
 import tempfile
 import time
 from collections.abc import Iterator
@@ -139,9 +138,8 @@ def preflight(base: Path) -> None:
 
 
 @contextlib.contextmanager
-def _lock(base: Path, label: str, wait: float | None = None) -> Iterator[None]:
-    if wait is None:
-        wait = float(os.environ.get("HRSE_SCRATCH_LOCK_WAIT_S", "3600"))
+def _lock(base: Path, label: str) -> Iterator[None]:
+    wait = float(os.environ.get("HRSE_SCRATCH_LOCK_WAIT_S", "3600"))
     path = base / ".lock"
     with open(path, "a+") as handle:
         deadline = time.monotonic() + wait
@@ -190,34 +188,3 @@ def scratch_dir(label: str, prefix: str = "scratch-", lock: bool = True) -> Iter
             yield path
         finally:
             shutil.rmtree(path, ignore_errors=True)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """`_scratch.py lock --label L --timeout S -- CMD...` runs CMD holding the
-    machine-wide scratch lock (harmonic-forge#970 AC3), so a dependency
-    reinstall never runs under a live scratch check and needs no wait loop.
-    Exit 75 (EX_TEMPFAIL) when the lock is not had within the timeout."""
-    import argparse
-    import subprocess
-    parser = argparse.ArgumentParser(prog="_scratch.py")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    lock = sub.add_parser("lock")
-    lock.add_argument("--label", required=True)
-    lock.add_argument("--timeout", type=float, default=120.0)
-    lock.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
-    command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if not command:
-        parser.error("lock needs a command after --")
-    base = root()
-    base.mkdir(parents=True, exist_ok=True)
-    try:
-        with _lock(base, args.label, wait=args.timeout):
-            return subprocess.run(command, check=False).returncode
-    except ScratchError as error:
-        print(f"[_scratch] {error}", file=sys.stderr)
-        return 75
-
-
-if __name__ == "__main__":
-    sys.exit(main())

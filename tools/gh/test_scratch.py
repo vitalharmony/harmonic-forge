@@ -166,19 +166,5 @@ class ScratchTest(unittest.TestCase):
         self.assertNotIn('tempfile.mkdtemp(prefix="hrse-l1-post-")', (HERE / "l1_post.py").read_text())
 
 
-
-class LockCliTests(unittest.TestCase):
-    """harmonic-forge#970 AC3: the lock CLI runs a command under the scratch lock."""
-
-    def test_runs_the_command_and_refuses_when_held(self):
-        import fcntl
-        with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(_scratch, "root", return_value=Path(d)):
-                self.assertEqual(_scratch.main(["lock", "--label", "t", "--timeout", "1", "--", "true"]), 0)
-                with open(Path(d) / ".lock", "a+") as held:
-                    fcntl.flock(held, fcntl.LOCK_EX)
-                    self.assertEqual(
-                        _scratch.main(["lock", "--label", "t", "--timeout", "0", "--", "true"]), 75)
-
 if __name__ == "__main__":
     unittest.main()
