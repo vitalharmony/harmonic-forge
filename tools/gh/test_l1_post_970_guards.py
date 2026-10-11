@@ -97,6 +97,12 @@ class InstallStalenessTests(unittest.TestCase):
                          ["vite 5.1.0 (lockfile 5.2.3)"])
         self.assertEqual(self._npm({"dependencies": {}}, lock, {"vite": "5.2.3"}), [])
 
+    def test_an_installed_optional_package_is_checked_and_an_absent_one_is_not(self):
+        lock = {"packages": {"node_modules/fsevents": {"version": "2.3.3", "optional": True},
+                             "node_modules/absent-opt": {"version": "1.0.0", "optional": True}}}
+        self.assertEqual(self._npm({"dependencies": {}}, lock, {"fsevents": "2.3.2"}),
+                         ["fsevents 2.3.2 (lockfile 2.3.3)"])
+
     def test_provision_refuses_a_stale_install_instead_of_linking(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "src"

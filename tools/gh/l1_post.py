@@ -1780,7 +1780,7 @@ def _lockfile_drift(workdir: Path, install: Path) -> list[str]:
         if not key.startswith("node_modules/") or key.count("node_modules/") != 1:
             continue
         want = (meta or {}).get("version")
-        if not want or (meta or {}).get("optional"):
+        if not want:
             continue
         manifest = install / key[len("node_modules/"):] / "package.json"
         try:
