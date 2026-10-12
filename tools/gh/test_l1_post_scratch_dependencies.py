@@ -53,7 +53,10 @@ class ScratchDependencies(unittest.TestCase):
         def fake_install(command: tuple[str, ...], cwd: Path):
             self.calls.append((command, cwd))
             return _done(codes.get(" ".join(command[:2]), 0), "line\n" * 50)
+        # harmonic-forge#970: the staleness probe has its own tests
+        # (test_l1_post_970_guards); here the fake installs count as satisfied.
         with mock.patch.object(L, "_install", side_effect=fake_install), \
+                mock.patch.object(L, "install_staleness", return_value=[]), \
                 contextlib.redirect_stderr(self.stderr):
             return L._provision_scratch_dependency(self.repo, self.scratch, dependency_dir)
 

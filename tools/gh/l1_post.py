@@ -1712,6 +1712,127 @@ def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess
     raise AssertionError("unreachable")  # fail() exits
 
 
+STALE_INSTALL_FIX = {
+    "frontend/node_modules": "cd {dir} && npm ci",
+    "backend/.venv": "cd {dir} && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt",
+}
+_REQ_SKIP = ("-r", "-e", "-c", "--")
+
+
+def requirement_lines(text: str) -> list[str]:
+    """Requirement specifiers from a requirements file: comments, blank lines
+    and `-r`/`-e`/`-c`/option lines dropped, `--hash` stripped. Markers and
+    extras are kept; the venv's own `packaging` evaluates them."""
+    out = []
+    for raw in text.splitlines():
+        line = raw.split(" #", 1)[0].split("\t#", 1)[0].strip()
+        if not line or line.startswith("#") or line.startswith(_REQ_SKIP):
+            continue
+        out.append(line.split(" --hash", 1)[0].strip())
+    return out
+
+
+#: Runs inside the source venv (harmonic-forge#970 pass-1 survivors 5/14): version
+#: specifier semantics and environment markers, from that venv's own `packaging`.
+_VENV_CHECK = """
+import json, sys
+try:
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+except ImportError:
+    from pip._vendor.packaging.requirements import Requirement
+    from pip._vendor.packaging.utils import canonicalize_name
+import importlib.metadata as m
+installed = {}
+for d in m.distributions():  # first on sys.path wins, as imports resolve
+    if d.metadata.get("Name"):
+        installed.setdefault(canonicalize_name(d.metadata["Name"]), d.version)
+stale = []
+for line in json.load(sys.stdin):
+    req = Requirement(line)
+    if req.marker is not None and not req.marker.evaluate():
+        continue
+    have = installed.get(canonicalize_name(req.name))
+    if have is None:
+        stale.append(f"{req.name} MISSING (wants {req.specifier})")
+    elif not req.specifier.contains(have, prereleases=True):
+        stale.append(f"{req.name} {have} (wants {req.specifier})")
+print(json.dumps(stale))
+"""
+
+
+class StaleProbeError(Exception):
+    """The install could not be checked; l1-post refuses rather than link blind."""
+
+
+def _lockfile_drift(workdir: Path, install: Path) -> list[str]:
+    """Top-level packages whose installed version differs from the version
+    `package-lock.json` resolved: a lockfile-only bump inside the
+    package.json range, which `npm ls` cannot see (pass-2 survivor 3). The
+    same equality check as the pip pins; no stored state. A missing or
+    unreadable lockfile adds nothing (npm ls still gates)."""
+    try:
+        packages = json.loads((workdir / "package-lock.json").read_text()).get("packages") or {}
+    except (OSError, ValueError):
+        return []
+    drift = []
+    for key, meta in packages.items():
+        if not key.startswith("node_modules/") or key.count("node_modules/") != 1:
+            continue
+        want = (meta or {}).get("version")
+        if not want:
+            continue
+        manifest = install / key[len("node_modules/"):] / "package.json"
+        try:
+            have = json.loads(manifest.read_text()).get("version")
+        except (OSError, ValueError):
+            continue  # absent optional or platform package: npm ls reports real misses
+        if have != want:
+            drift.append(f"{key[len('node_modules/'):]} {have} (lockfile {want})")
+    return drift
+
+
+def install_staleness(dependency_dir: str, install: Path) -> list[str]:
+    """What the source install lacks against its own manifest, empty when it
+    satisfies it (harmonic-forge#970 AC1). Frontend: `npm ls --depth=0 --json`
+    `missing`, or `invalid` direct deps (extraneous is allowed). Backend: each
+    requirement checked by the venv's own `packaging` (specifier semantics,
+    markers). A probe that cannot run raises StaleProbeError: fail closed."""
+    workdir = install.parent
+    if dependency_dir == "frontend/node_modules":
+        try:
+            proc = subprocess.run(["npm", "ls", "--depth=0", "--json"], cwd=workdir, text=True,
+                                  errors="replace", capture_output=True, timeout=120, check=False)
+            tree = json.loads(proc.stdout or "")
+            if not isinstance(tree, dict):
+                raise ValueError("npm ls output is not an object")
+            deps = tree.get("dependencies") or {}  # npm omits the key for an empty tree
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise StaleProbeError(f"`npm ls --depth=0 --json` in {workdir} could not run: {exc}") from exc
+        stale = [f"{name} (missing)" if dep.get("missing") else f"{name} (invalid)"
+                 for name, dep in deps.items()
+                 if isinstance(dep, dict) and (dep.get("missing") or dep.get("invalid"))]
+        return sorted(stale + _lockfile_drift(workdir, install))
+    if dependency_dir == "backend/.venv":
+        lines: list[str] = []
+        for name in _DEPENDENCY_MANIFESTS[dependency_dir][1]:
+            path = workdir / name
+            if path.is_file():
+                lines += requirement_lines(path.read_text(errors="replace"))
+        if not lines:
+            return []
+        try:
+            proc = subprocess.run([str(install / "bin" / "python"), "-c", _VENV_CHECK],
+                                  input=json.dumps(lines), text=True, errors="replace",
+                                  capture_output=True, timeout=60, check=False)
+            if proc.returncode:
+                raise ValueError(proc.stderr.strip()[-300:] or f"exit {proc.returncode}")
+            return sorted(json.loads(proc.stdout))
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise StaleProbeError(f"the venv check in {install} could not run: {exc}") from exc
+    return []
+
+
 def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir: str) -> str:
     """Link `dependency_dir` from the source checkout when the manifests beside
     the real install equal the attested commit's byte for byte; otherwise
@@ -1727,6 +1848,19 @@ def _provision_scratch_dependency(repo_root: Path, scratch: Path, dependency_dir
     differ = _manifest_differences(install.parent, scratch / workdir, names)
     target = scratch / dependency_dir
     if not differ:
+        # harmonic-forge#970 AC1: equal manifests are not enough. A source
+        # install that does not satisfy its own manifest would be linked and
+        # fail the whole check twenty minutes later; refuse it in seconds.
+        try:
+            stale = install_staleness(dependency_dir, install)
+        except StaleProbeError as error:
+            fail(f"cannot verify source install {dependency_dir} before linking it: {error}")
+        if stale:
+            fail(f"source install {dependency_dir} ({install}) does not satisfy its manifest: "
+                 f"{', '.join(stale[:12])}{' …' if len(stale) > 12 else ''}\n"
+                 f"  fix: {STALE_INSTALL_FIX[dependency_dir].format(dir=install.parent)}\n"
+                 f"  (checks direct dependencies against package.json ranges and "
+                 f"requirements pins, not the lockfile's transitive pins)")
         target.symlink_to(install, target_is_directory=True)
         return "linked"
     print(f"[l1-post] scratch {dependency_dir}: installing (the linked install's "
