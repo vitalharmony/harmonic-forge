@@ -130,16 +130,39 @@ class ReforgeCases(Decide):
     """The reforge epoch (sticky-wicket, harmonic-forge#981): one strict reader,
     ambiguity denied, MultiEdit creation refused, the whole file scanned."""
 
-    def test_multiedit_creation_is_refused_whatever_its_edits(self) -> None:
-        path = self.store / "feedback_x.md"
-        for edits in (
-            [{"old_string": "", "new_string": memory("none (searched: x)")}],
-            [{"old_string": "", "new_string": memory("none (searched: x)")},
-             {"old_string": "", "new_string": "R-0039"}],
-        ):
-            msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": edits}, self.store, IDS)
-            self.assertIsNotNone(msg)
-            self.assertIn("with Write, not MultiEdit", msg)
+    def me(self, name: str, edits: list[dict]) -> str | None:
+        return gate.decide("MultiEdit", {"file_path": str(self.store / name), "edits": edits},
+                           self.store, IDS)
+
+    def test_multiedit_is_checked_on_the_text_after_every_edit(self) -> None:
+        base = memory("none (searched: x)")
+        self.assertIsNotNone(self.me("feedback_x.md", [
+            {"old_string": "", "new_string": base},
+            {"old_string": "A lesson.", "new_string": "See R-0039."}]))
+        self.assertIsNotNone(self.me("feedback_x.md", [
+            {"old_string": "", "new_string": base},
+            {"old_string": "none (searched: x)", "new_string": "R-0039"}]))
+        self.assertIsNone(self.me("feedback_x.md", [
+            {"old_string": "", "new_string": memory(None)},
+            {"old_string": "  type: feedback", "new_string": "  type: feedback\nrule_check: none (searched: y)"}]))
+
+    def test_multiedit_creating_a_non_feedback_memory_passes(self) -> None:
+        for name in ("project_x.md", "INDEX-x.md"):
+            self.assertIsNone(self.me(name, [
+                {"old_string": "", "new_string": memory(None, mtype="project")},
+                {"old_string": "A lesson.", "new_string": "Notes."}]), name)
+
+    def test_a_hash_inside_the_search_list_is_kept(self) -> None:
+        self.assertIsNone(self.write("feedback_x.md", memory("none (searched: memory gate, #981)")))
+
+    def test_a_body_line_starting_rule_check_is_still_scanned(self) -> None:
+        msg = self.write("feedback_x.md", memory("none (searched: x)", body="rule_check: R-0039 was close\n"))
+        self.assertIsNotNone(msg)
+        self.assertIn("R-0039", msg)
+
+    def test_a_type_key_nested_under_another_key_is_not_the_gate_type(self) -> None:
+        text = "---\nname: x\nmetadata:\n  type: reference\nsource:\n  type: url\n---\nbody\n"
+        self.assertIsNone(self.write("reference_x.md", text))
 
     def test_rule_id_in_the_description_is_denied(self) -> None:
         text = "---\nname: x\ndescription: restates R-0039\nmetadata:\n  type: feedback\nrule_check: none (searched: x)\n---\nbody\n"
@@ -161,6 +184,11 @@ AMBIGUOUS = [
     ("feedback_dup.md", "---\nname: a\nrule_check: none (searched: x)\nrule_check: R-0039\n---\nbody\n"),
     ("feedback_bare_none.md", "---\nname: a\nrule_check: none\n---\nbody\n"),
     ("feedback_untyped.md", "---\nname: a\nmetadata:\n  type: project\n---\nbody\n"),
+    ("lesson_quoted_key.md", '---\nname: a\n"type": feedback\n---\nbody\n'),
+    ("lesson_block.md", "---\nname: a\ndescription: |\n  type: feedback\n---\nbody\n"),
+    ("lesson_deep.md", "---\nname: a\nmetadata:\n    type: feedback\n---\nbody\n"),
+    ("lesson_unclosed.md", "---\nname: a\ntype: feedback\nbody with no closing marker\n"),
+    ("feedback_nested_rc.md", "---\nname: a\nmetadata:\n  rule_check: none (searched: x)\n---\nbody\n"),
 ]
 
 

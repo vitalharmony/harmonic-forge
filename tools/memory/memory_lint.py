@@ -447,23 +447,32 @@ RULE_CHECK_FORM = re.compile(r"^(?:R-\d{4}|none\s*\(\s*searched:\s*[^)\s][^)]*\)
 
 
 class GateFrontmatter:
-    """The two fields the #981 gate decides on, read strictly.
+    """The two fields the #981 gate decides on, read by a strict grammar.
 
-    Reforged after two preclose passes found the regex readers let through
-    every form they did not recognize (sticky-wicket, harmonic-forge#981): one
-    canonical form is accepted and anything ambiguous is MALFORMED, never
-    silently "not feedback". Both the hook and Check 9 use this one reader.
+    Reforged twice (sticky-wicket, harmonic-forge#981): regex readers let
+    through every form they did not recognize, and a scope-blind reader read a
+    nested key as the gate's. Frontmatter is now accepted only in the two-level
+    `key: value` shape every memory in the store already uses (verified against
+    all 367 on 2026-10-13): a top-level `key:` or `key: value` line, or a
+    two-space-indented `key: value` under a top-level `key:` with no value.
+    Anything else (a quoted key, a list item, deeper indentation, a block
+    scalar, unclosed frontmatter) is an error, and so is a key seen twice in
+    the same scope.
 
-    `type` is read flat or nested under `metadata:`; `rule_check` is top-level.
-    An inline ` #` comment and surrounding quotes are stripped. A key seen
-    twice, a list or empty value, or a `rule_check` that is neither `R-NNNN`
-    nor `none (searched: <terms>)` is an error.
+    `type` is read at the top level or directly under `metadata:`, with an
+    inline ` #` comment and surrounding quotes stripped. `rule_check` is read at
+    the top level only, verbatim but for surrounding quotes, and must be
+    `R-NNNN` or `none (searched: <terms>)`.
     """
+
+    _TOP = re.compile(r"^([A-Za-z_]+):(?: (.*))?$")
+    _CHILD = re.compile(r"^  ([A-Za-z_]+):(?: (.*))?$")
 
     def __init__(self, text: str) -> None:
         self.values: dict[str, str] = {}
         self.errors: list[str] = []
         self.has_frontmatter = False
+        self.frontmatter_lines = 0
         lines = text.splitlines()
         if not lines or lines[0].strip() != "---":
             return
@@ -474,23 +483,43 @@ class GateFrontmatter:
                 break
             body.append(line)
         if not self.has_frontmatter:
+            self.errors.append("frontmatter opened with `---` is never closed")
             return
+        self.frontmatter_lines = len(body) + 2
+        seen: set[tuple[str, str]] = set()
+        parent: str | None = None
         for line in body:
-            m = re.match(r"^\s*(type|rule_check)\s*:(.*)$", line)
-            if not m:
+            if not line.strip():
                 continue
-            key, raw = m.group(1), m.group(2)
-            value = re.sub(r"\s+#.*$", "", raw).strip().strip("\"'").strip()
-            if key in self.values:
+            top, child = self._TOP.match(line), self._CHILD.match(line)
+            if top:
+                key, raw = top.group(1), (top.group(2) or "").strip()
+                parent = key if not raw else None
+                scope = ""
+            elif child and parent is not None:
+                key, raw = child.group(1), (child.group(2) or "").strip()
+                scope = parent
+            else:
+                self.errors.append(f"frontmatter line {line.strip()[:40]!r} is outside the `key: value` grammar")
+                continue
+            if (scope, key) in seen:
                 self.errors.append(f"`{key}:` appears more than once")
                 continue
-            if not value or value.startswith("["):
-                self.errors.append(f"`{key}:` has no single value ({raw.strip()!r})")
-                continue
-            self.values[key] = value
-        rc = self.values.get("rule_check")
-        if rc is not None and not RULE_CHECK_FORM.match(rc):
-            self.errors.append(f"`rule_check: {rc}` is neither `R-NNNN` nor `none (searched: <terms>)`")
+            seen.add((scope, key))
+            if key == "type" and scope in ("", "metadata"):
+                value = re.sub(r"\s+#.*$", "", raw).strip().strip("\"'").strip()
+                if not value or value.startswith("["):
+                    self.errors.append(f"`type:` has no single value ({raw!r})")
+                elif "type" in self.values:
+                    self.errors.append("`type:` appears more than once")
+                else:
+                    self.values["type"] = value
+            elif key == "rule_check" and scope == "":
+                value = raw.strip().strip("\"'").strip()
+                if not RULE_CHECK_FORM.match(value):
+                    self.errors.append(f"`rule_check: {value}` is neither `R-NNNN` nor `none (searched: <terms>)`")
+                else:
+                    self.values["rule_check"] = value
 
     @property
     def rule_check(self) -> str | None:
@@ -539,8 +568,7 @@ def check_rule_check(store: Path) -> list[str]:
         if f.name in allowed:
             continue
         gate = GateFrontmatter(text)
-        type_unreadable = any(e.startswith("`type:") for e in gate.errors)
-        if gate.errors and (is_feedback_memory(f.name, text) or type_unreadable):
+        if gate.errors:
             findings.append(f"{f.name}: malformed gate frontmatter: {'; '.join(gate.errors)}")
         elif is_feedback_memory(f.name, text) and not gate.rule_check:
             findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "

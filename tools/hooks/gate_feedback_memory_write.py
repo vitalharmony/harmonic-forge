@@ -17,7 +17,8 @@ gates the CREATION of a feedback memory under the configured store on a
 * ambiguous frontmatter (a key twice, a list or commented-out value, a bare
   `none`) -> deny. One strict reader, `memory_lint.GateFrontmatter`, decides
   for both this hook and Check 9.
-* a MultiEdit that creates a file in the store -> deny: write it with Write.
+* a MultiEdit that creates a file is replayed edit by edit, so the text
+  checked is the text written.
 * missing, or an `R-NNNN` that does not resolve -> deny, naming both forms.
 
 What counts as creation: the path does not exist yet (including an `Edit` whose
@@ -43,8 +44,6 @@ sys.path.insert(0, str(_HERE.parent / "memory"))
 import memory_lint  # noqa: E402
 
 TOOLS = {"Write", "Edit", "MultiEdit"}
-#: Sentinel: a MultiEdit that creates a file in the store (refused outright).
-MULTIEDIT_CREATE = "\0multiedit-create"
 _RULE_ID = re.compile(r"\bR-\d{4}\b")
 
 #: The forge registry, resolved next to this file so it works in any checkout,
@@ -98,8 +97,18 @@ def new_text(tool: str, tool_input: dict, path: Path) -> str | None:
         return None
     if tool == "MultiEdit":
         edits = tool_input.get("edits") or []
-        if edits and edits[0].get("old_string", "") == "":
-            return MULTIEDIT_CREATE
+        if not edits or edits[0].get("old_string", "") != "":
+            return None
+        # Replay the edits exactly as MultiEdit applies them, so the text
+        # checked is the text written. An edit MultiEdit itself would reject
+        # (an empty or absent old_string) means nothing is written.
+        text = str(edits[0].get("new_string", ""))
+        for edit in edits[1:]:
+            old_s, new_s = str(edit.get("old_string", "")), str(edit.get("new_string", ""))
+            if not old_s or old_s not in text:
+                return None
+            text = text.replace(old_s, new_s) if edit.get("replace_all") else text.replace(old_s, new_s, 1)
+        return text
     return None
 
 
@@ -151,12 +160,10 @@ def decide(tool: str, tool_input: dict, store: Path, ids: set[str]) -> str | Non
     text = new_text(tool, tool_input, path)
     if text is None:
         return None
-    if text == MULTIEDIT_CREATE:
-        return ("Blocked (harmonic-forge#981): create a memory with Write, not MultiEdit. "
-                "A MultiEdit's later edits change the text after the gate reads it, so the "
-                "gate cannot certify it. Write the whole file, with its `rule_check:` line.")
     gate = memory_lint.GateFrontmatter(text)
-    if gate.errors and (is_feedback(path, text) or any(e.startswith("`type:") for e in gate.errors)):
+    if gate.errors:
+        # A new memory in the store must be readable by the strict grammar,
+        # whatever its type: an unreadable line could be hiding one.
         return _missing("its frontmatter is ambiguous: " + "; ".join(gate.errors))
     if not is_feedback(path, text):
         return None
@@ -170,7 +177,11 @@ def decide(tool: str, tool_input: dict, store: Path, ids: set[str]) -> str | Non
     # `none (searched: …)`: the whole file except the rule_check line itself
     # must cite no resolving rule (operator ruling 2; sticky-wicket: the
     # description is scanned too).
-    rest = "\n".join(ln for ln in text.splitlines() if not re.match(r"^\s*rule_check\s*:", ln))
+    # Only the frontmatter's own rule_check line is skipped; a body line that
+    # merely starts with `rule_check:` is scanned like any other.
+    lines = text.splitlines()
+    rest = "\n".join(ln for i, ln in enumerate(lines)
+                     if not (i < gate.frontmatter_lines and re.match(r"^rule_check:", ln)))
     cited = [r for r in dict.fromkeys(_RULE_ID.findall(rest)) if r in ids]
     if cited:
         return _restates(cited[0], store, "declares `rule_check: none` but cites")
