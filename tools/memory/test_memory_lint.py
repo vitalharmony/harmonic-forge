@@ -274,6 +274,14 @@ class RuleCheckBypass(unittest.TestCase):
         named = sorted(f.split(":")[0] for f in findings)
         self.assertEqual(named, ["feedback_new.md", "lesson.md"])
 
+    def test_filename_alone_and_flat_type_are_each_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            self._mem(store, "feedback_untyped.md", mtype="project")
+            (store / "flat.md").write_text("---\nname: flat\ntype: feedback\n---\nbody\n")
+            named = sorted(f.split(":")[0] for f in lint.check_rule_check(store))
+        self.assertEqual(named, ["feedback_untyped.md", "flat.md"])
+
     def test_allowlisted_feedback_is_not_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp)

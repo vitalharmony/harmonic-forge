@@ -41,7 +41,7 @@ import memory_lint  # noqa: E402
 TOOLS = {"Write", "Edit", "MultiEdit"}
 _RULE_ID = re.compile(r"\bR-\d{4}\b")
 _RULE_CHECK = re.compile(r"^rule_check:\s*(.*?)\s*$", re.MULTILINE)
-_NONE_FORM = re.compile(r"^none\b", re.IGNORECASE)
+_NONE_FORM = re.compile(r"^none\s*\(\s*searched:\s*[^)\s][^)]*\)\s*$", re.IGNORECASE)
 
 #: The forge registry, resolved next to this file so it works in any checkout,
 #: plus HRSE2's sibling registry (a disjoint ID set, `check_cross_registry.py`).
@@ -73,9 +73,7 @@ def _frontmatter_block(text: str) -> str:
 
 
 def is_feedback(path: Path, text: str) -> bool:
-    if path.name.startswith("feedback_") and path.suffix == ".md":
-        return True
-    return memory_lint._parse_frontmatter(text).get("metadata.type", "").strip() == "feedback"
+    return memory_lint.is_feedback_memory(path.name, text)
 
 
 def _in_store(path: Path, store: Path) -> bool:
@@ -106,8 +104,17 @@ def new_text(tool: str, tool_input: dict, path: Path) -> str | None:
         return None
     if tool == "MultiEdit":
         edits = tool_input.get("edits") or []
-        if edits and edits[0].get("old_string", "") == "":
-            return str(edits[0].get("new_string", ""))
+        if not edits or edits[0].get("old_string", "") != "":
+            return None
+        # Apply every edit in order: the text checked must be the text written
+        # (preclose pass 1: a later edit could otherwise swap the declaration).
+        text = str(edits[0].get("new_string", ""))
+        for edit in edits[1:]:
+            old_s, new_s = str(edit.get("old_string", "")), str(edit.get("new_string", ""))
+            if not old_s:
+                continue
+            text = text.replace(old_s, new_s) if edit.get("replace_all") else text.replace(old_s, new_s, 1)
+        return text
     return None
 
 
@@ -162,7 +169,9 @@ def decide(tool: str, tool_input: dict, store: Path, ids: set[str]) -> str | Non
     m = _RULE_CHECK.search(_frontmatter_block(text))
     if not m or not m.group(1):
         return _missing("none found")
-    value = m.group(1)
+    value = m.group(1).strip().strip("\"'")
+    if value.lower().startswith("none") and not _NONE_FORM.match(value):
+        return _missing(f"`{value}` names no search; write `none (searched: <terms>)`")
     if _NONE_FORM.match(value):
         body = memory_lint._body_text(text)
         cited = [rid for rid in dict.fromkeys(_RULE_ID.findall(body)) if rid in ids]

@@ -442,6 +442,23 @@ def _allow_unpromoted() -> dict[str, str]:
     return allowed
 
 
+_FLAT_FEEDBACK_TYPE = re.compile(r"""^\s*type:\s*["']?feedback["']?\s*$""", re.MULTILINE | re.IGNORECASE)
+
+
+def is_feedback_memory(name: str, text: str) -> bool:
+    """harmonic-forge#981: a `feedback_*.md` filename, or a frontmatter `type`
+    of feedback, nested under `metadata:` or flat, quoted or not."""
+    if name.startswith("feedback_") and name.endswith(".md"):
+        return True
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            return bool(_FLAT_FEEDBACK_TYPE.search("\n".join(lines[1:i])))
+    return False
+
+
 #: harmonic-forge#981: the feedback memories that predate the `rule_check:` gate.
 FEEDBACK_ALLOWLIST = Path(__file__).resolve().parent / "feedback_allowlist.txt"
 
@@ -466,11 +483,11 @@ def check_rule_check(store: Path) -> list[str]:
     findings: list[str] = []
     for f in memory_files(store):
         try:
-            fm = _parse_frontmatter(f.read_text(encoding="utf-8", errors="replace"))
+            text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        is_feedback = f.name.startswith("feedback_") or fm.get("metadata.type", "").strip() == "feedback"
-        if is_feedback and not fm.get("rule_check", "").strip() and f.name not in allowed:
+        fm = _parse_frontmatter(text)
+        if is_feedback_memory(f.name, text) and not fm.get("rule_check", "").strip() and f.name not in allowed:
             findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "
                             "feedback_allowlist.txt (written around the #981 gate?)")
     return findings

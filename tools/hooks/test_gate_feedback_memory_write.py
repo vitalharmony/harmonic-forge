@@ -126,6 +126,43 @@ class Decide(unittest.TestCase):
                                      memory("none (searched: x)", body="See R-9999.\n")))
 
 
+class PassOneFixes(Decide):
+    """Preclose pass 1 (harmonic-forge#981): each fix pinned by a case."""
+
+    def test_multiedit_later_edit_adding_a_body_id_is_denied(self) -> None:
+        path = self.store / "feedback_x.md"
+        msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": [
+            {"old_string": "", "new_string": memory("none (searched: x)")},
+            {"old_string": "A lesson.", "new_string": "See R-0039."}]}, self.store, IDS)
+        self.assertIsNotNone(msg)
+        self.assertIn("R-0039", msg)
+
+    def test_multiedit_later_edit_swapping_the_declaration_is_denied(self) -> None:
+        path = self.store / "feedback_x.md"
+        msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": [
+            {"old_string": "", "new_string": memory("none (searched: x)")},
+            {"old_string": "none (searched: x)", "new_string": "R-0039"}]}, self.store, IDS)
+        self.assertIsNotNone(msg)
+
+    def test_multiedit_later_edit_adding_a_valid_declaration_is_allowed(self) -> None:
+        path = self.store / "feedback_x.md"
+        msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": [
+            {"old_string": "", "new_string": memory(None)},
+            {"old_string": "  type: feedback", "new_string": "  type: feedback\nrule_check: none (searched: y)"}]},
+            self.store, IDS)
+        self.assertIsNone(msg)
+
+    def test_flat_and_quoted_feedback_type_are_gated(self) -> None:
+        flat = "---\nname: x\ntype: feedback\nrule_check: R-0039\n---\nbody\n"
+        quoted = '---\nname: x\nmetadata:\n  type: "feedback"\nrule_check: R-0039\n---\nbody\n'
+        self.assertIsNotNone(self.write("lesson_a.md", flat))
+        self.assertIsNotNone(self.write("lesson_b.md", quoted))
+
+    def test_bare_none_without_a_search_is_denied(self) -> None:
+        for value in ("none", "none ()", "none (searched: )"):
+            self.assertIsNotNone(self.write("feedback_x.md", memory(value)), value)
+
+
 class Registry(unittest.TestCase):
     def test_real_registry_resolves_a_known_rule(self) -> None:
         self.assertIn("R-0039", gate.rule_ids())
