@@ -732,7 +732,7 @@ id = "R-0084"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
 statement = "For Git commands that could open an editor or hook, set GIT_EDITOR/EDITOR/NO_COLOR and use --no-edit --no-verify where applicable, never --no-verify on git push (it skips the R-0389 pre-push gate)."
-text_sha = "61e33aadf98fc2f8"
+text_sha = "46f14650fd73cce2"
 hooks = []
 
 [[rule]]
@@ -2602,5 +2602,5 @@ id = "R-0389"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
 statement = "A Tooling Exception branch is pushed only with a passing mise run check receipt at the pushed SHA; a refused push means running check at that SHA, never bypassing the hook."
-text_sha = "8339ddc6c5a12cc8"
+text_sha = "6c4dee10a8fe18fd"
 hooks = []
