@@ -154,6 +154,18 @@ For a row that is genuinely un-promotable — a judgment no rule can express as 
 predicate — add it to `tools/memory/allow_unpromoted.toml` **with a non-empty
 reason**. An empty reason does not exempt.
 
+## Fold run (harmonic-forge#982)
+
+When Lane 1's context carries `memory-fold owed: <trigger>`, queue the fold
+behind the current task, mention it once, then:
+
+1. Run the classifier (`python3 tools/memory/memory_triage.py --counts`, then
+   the full report) and consolidate the DUP and FOLD rows.
+2. File one promotion issue for rule text (as harmonic-forge#979 did), and one
+   for any FOLD+HOOK rule that recurred, under R-0039.
+3. Record the fold so the triggers measure from here:
+   `python3 ~/harmonic-forge/tools/memory/fold_due.py --record`.
+
 ## What this skill does not do
 
 - It does not edit the store, delete a memory, or write frontmatter. Every
