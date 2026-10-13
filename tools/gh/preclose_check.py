@@ -527,7 +527,7 @@ def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
     surviving = len(surviving_findings(findings))
     reasons = blast_radius(changed_files(args.base, args.head))
     required, why = cross_family_gate(surviving, reasons, args.cross_family)
-    if imc_forced(args.repo, args.issue):
+    if imc_forced(registered_repo(args.repo), args.issue):
         # harmonic-forge#895: forced whenever the receipt exists, not while it
         # is live -- keyed on liveness, it would invert at expiry.
         required, why = True, "IMC waiver receipt exists (R-0384) — cross-family forced"
@@ -921,6 +921,8 @@ def complete(args: argparse.Namespace) -> int:
             "has been evaluated (harmonic-forge#701).")
     if args.force:
         imc_refusal(repo, args.issue, "--force")
+    if getattr(args, "allow_dirty", False):
+        imc_refusal(repo, args.issue, "--allow-dirty")
     if getattr(args, "reforge", False):
         imc_refusal(repo, args.issue, "--reforge")
     if args.not_triggered:

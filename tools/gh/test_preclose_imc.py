@@ -68,6 +68,15 @@ class ImcPrecloseTests(base.ScratchRepo):
             self.plan(tier="fast")
         self.assertIn("no matching waiver receipt", str(refused.exception))
 
+    def test_plan_refuses_a_pending_receipt(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.hook_record(now)
+        (self.state / f"{KEY}.waiver.json").write_text(json.dumps(
+            {"key": KEY, "granted_at": _iso(now), "comment_url": None, "status": "pending"}))
+        with self.assertRaises(SystemExit) as refused:
+            self.plan(tier="fast")
+        self.assertIn("no matching waiver receipt", str(refused.exception))
+
     def test_plan_refuses_receipt_with_a_different_granted_at(self) -> None:
         now = datetime.now(timezone.utc)
         self.hook_record(now)
@@ -146,6 +155,21 @@ class ImcPrecloseTests(base.ScratchRepo):
         with self.assertRaises(SystemExit) as refused:
             self.complete([], envelope_label=base.FALLBACK)
         self.assertIn("in-family fallback", str(refused.exception))
+
+    def test_gate_forced_for_a_url_form_repo(self) -> None:
+        self.receipt(datetime.now(timezone.utc))
+        args = base._Args(repo="https://github.com/vitalharmony/hrse", issue=1208, base="base",
+                          head="HEAD", findings=self.findings_file([]), cross_family=False)
+        required, why, _, _ = preclose.gate_decision(args)
+        self.assertTrue(required)
+        self.assertIn("IMC", why)
+
+    def test_complete_refuses_allow_dirty(self) -> None:
+        self._planned_with_receipt()
+        with self.assertRaises(SystemExit) as refused:
+            with patch.object(base._Args, "allow_dirty", True, create=True):
+                self.complete([])
+        self.assertIn("--allow-dirty", str(refused.exception))
 
     def test_complete_refuses_force(self) -> None:
         self._planned_with_receipt()

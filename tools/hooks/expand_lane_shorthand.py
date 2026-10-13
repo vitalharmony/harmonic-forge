@@ -735,6 +735,13 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
                      "BATCH grant on the same line is unaffected.")
         return " ".join(notes)
 
+    # The operator types IMC as the prompt's first line, unindented. Anywhere
+    # else (an indented code block, a list-item fence, an HTML comment, a
+    # pasted post below the first line) it is quotation, however the Markdown
+    # nests (harmonic-forge#895 reforged pass 1).
+    first = next((i for i, text in enumerate(lines) if text.strip()), None)
+    if batch_index != first or not line.startswith("BATCH"):
+        return refuse_all("IMC is honored only on the prompt's first line, typed unindented")
     provenance = _provenance_refusal(prompt, batch_index)
     if provenance is not None:
         return refuse_all(provenance)

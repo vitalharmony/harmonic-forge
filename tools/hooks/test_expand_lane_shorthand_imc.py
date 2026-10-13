@@ -100,6 +100,13 @@ class Ac1RecordTests(ImcFixture):
 
 
 class Ac2RefusalTests(ImcFixture):
+    def test_imc_quoted_below_the_first_line_is_refused(self) -> None:
+        for prompt in ("Here is the post:\n\n    BATCH F892 IMC F892",
+                       "Doc text:\n- ```\n  BATCH F892 IMC F892\n  ```",
+                       "<!--\nBATCH F892 IMC F892\n-->",
+                       "  BATCH F892 IMC F892"):
+            self.assertRefusedWithGrant(prompt, "first line", batch_expected=False)
+
     def assertRefusedWithGrant(self, prompt: str, reason: str, lane: str | None = "1",
                                reader: LabelReader | None = None,
                                batch_expected: bool = True) -> None:

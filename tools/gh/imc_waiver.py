@@ -176,7 +176,10 @@ def unmatched_hook_record(repo: str, issue: int, now: datetime | None = None) ->
     if record is None:
         return None
     receipt = read_json(receipt_path(key))
-    if receipt and receipt.get("granted_at") == record.get("granted_at"):
+    # Only a RECORDED receipt says the waiver is on the issue; a pending one
+    # means the post never confirmed (harmonic-forge#895 reforged pass 1).
+    if (receipt and receipt.get("granted_at") == record.get("granted_at")
+            and receipt.get("status", "recorded") == "recorded"):
         return None
     return record
 
