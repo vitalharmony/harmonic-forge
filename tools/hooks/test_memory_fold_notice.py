@@ -30,10 +30,13 @@ class Decide(unittest.TestCase):
         self._tmp.cleanup()
 
     def run_decide(self, payload: dict, lane: str | None = "1", now: float = 1000.0,
-                   line: str = LINE) -> dict | None:
+                   line: str = LINE, kinds: str = "fallback", deliver: bool = True) -> dict | None:
         env = {} if lane is None else {"LANE": lane}
-        return notice.decide(payload, env, now, line_fn=lambda _cwd: line,
-                             suppress_path=self.suppress)
+        out, key = notice.decide(payload, env, now, line_fn=lambda _cwd: (line, kinds if line else ""),
+                                 suppress_path=self.suppress)
+        if out and key and deliver:
+            notice.mark_sent(key, now, self.suppress)
+        return out
 
     def test_lane1_prompt_gets_additional_context_only(self) -> None:
         out = self.run_decide({"prompt": "proactively find work to do", "cwd": "/x"})
@@ -57,13 +60,25 @@ class Decide(unittest.TestCase):
         self.assertIsNone(self.run_decide({"prompt": "b"}, now=1000.0 + 3600))
         self.assertIsNotNone(self.run_decide({"prompt": "c"}, now=1000.0 + 25 * 3600))
 
-    def test_a_different_trigger_is_not_suppressed(self) -> None:
-        self.assertIsNotNone(self.run_decide({"prompt": "a"}, now=1000.0))
-        other = "memory-fold owed: R-0039 failed again since the last fold"
-        self.assertIsNotNone(self.run_decide({"prompt": "b"}, now=1001.0, line=other))
+    def test_a_changed_count_in_the_same_trigger_stays_suppressed(self) -> None:
+        self.assertIsNotNone(self.run_decide({"prompt": "a"}, line="memory-fold owed: 15 new", kinds="volume"))
+        self.assertIsNone(self.run_decide({"prompt": "b"}, now=1001.0, line="memory-fold owed: 16 new", kinds="volume"))
 
-    def test_session_start_uses_its_own_event_name(self) -> None:
-        out = self.run_decide({"hook_event_name": "SessionStart", "source": "startup"})
+    def test_a_different_trigger_set_is_not_suppressed(self) -> None:
+        self.assertIsNotNone(self.run_decide({"prompt": "a"}, now=1000.0))
+        self.assertIsNotNone(self.run_decide({"prompt": "b"}, now=1001.0, kinds="recurrence,fallback"))
+
+    def test_another_session_is_not_suppressed(self) -> None:
+        self.assertIsNotNone(self.run_decide({"prompt": "a", "session_id": "s1"}))
+        self.assertIsNotNone(self.run_decide({"prompt": "a", "session_id": "s2"}, now=1001.0))
+
+    def test_undelivered_notice_is_not_suppressed(self) -> None:
+        self.assertIsNotNone(self.run_decide({"prompt": "a"}, deliver=False))
+        self.assertIsNotNone(self.run_decide({"prompt": "b"}, now=1001.0))
+
+    def test_session_start_always_gets_the_line(self) -> None:
+        self.assertIsNotNone(self.run_decide({"prompt": "a"}))
+        out = self.run_decide({"hook_event_name": "SessionStart", "source": "clear"}, now=1001.0)
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "SessionStart")
 
     def test_nothing_owed_is_silent(self) -> None:

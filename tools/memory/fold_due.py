@@ -6,8 +6,7 @@ when someone remembered to start them. This script decides, from local files
 only (no network, no GitHub), whether Lane 1 owes a fold, measured against the
 snapshot `--record` writes after each fold. Any one trigger is enough:
 
-1. volume: 15 or more feedback memories whose `first_seen` is strictly after
-   the marker's date (one first seen on the fold's own day was in that fold);
+1. volume: 15 or more feedback memories absent from the last snapshot;
 2. recurrence: the same non-empty `rule_ref` in two or more
    `protocol-failures.jsonl` records appended since the marker;
 3. growth: `MEMORY.md` bytes, or this repo's always-loaded surface
@@ -24,8 +23,10 @@ never break the hook that runs it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import date, datetime, timedelta, timezone
@@ -77,54 +78,90 @@ def _surface_bytes(repo: Path) -> int:
         return 0
 
 
-def _feedback_first_seen(store: Path) -> list[date]:
-    dates: list[date] = []
+def _feedback_names(store: Path) -> set[str]:
+    """Feedback memories by filename or `metadata.type`. Volume counts files
+    absent from the last snapshot, not dates: a `first_seen` is a day and the
+    snapshot is a moment, so a date test misses files written after a fold on
+    the fold's own day (preclose pass 1)."""
+    names: set[str] = set()
     for f in memory_lint.memory_files(store):
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         fm = memory_lint._parse_frontmatter(text)
-        if not (f.name.startswith("feedback_") or fm.get("metadata.type", "").strip() == "feedback"):
-            continue
-        raw = fm.get("first_seen", "").strip()
-        try:
-            dates.append(date.fromisoformat(raw))
-        except ValueError:
-            continue
-    return dates
+        if f.name.startswith("feedback_") or fm.get("metadata.type", "").strip() == "feedback":
+            names.add(f.name)
+    return names
 
 
-def snapshot(store: Path, repo: Path, now: datetime) -> dict:
+def repo_key(repo: Path) -> tuple[str, Path]:
+    """A repo's identity and its checkout root. Keyed on the git common dir, so
+    every worktree and subdirectory of one repo shares a baseline."""
+    try:
+        common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute",
+                                 "--git-common-dir", "--show-toplevel"],
+                                capture_output=True, text=True, timeout=5, check=True).stdout.split()
+        return str(Path(common[0]).resolve()), Path(common[1])
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return str(repo.resolve()), repo.resolve()
+
+
+#: Repos whose surface every --record re-measures, so a fold recorded from one
+#: lane repo still baselines the others (preclose pass 1).
+DEFAULT_REPOS = (Path.home() / "harmonic-forge", Path.home() / "Harmonic_Projects" / "HRSE2")
+
+
+def _head_hash(lines: list[str], n: int) -> str:
+    return hashlib.sha256("\n".join(lines[:n]).encode()).hexdigest()[:16]
+
+
+def snapshot(store: Path, repo: Path, now: datetime, known: dict | None = None) -> dict:
+    lines = _failure_lines(store)
+    surfaces: dict[str, dict] = {}
+    roots = [Path(v["path"]) for v in (known or {}).values()
+             if isinstance(v, dict) and isinstance(v.get("path"), str)]
+    for root in [*roots, *DEFAULT_REPOS, repo]:
+        if root.is_dir():
+            key, top = repo_key(root)
+            surfaces[key] = {"path": str(top), "bytes": _surface_bytes(top)}
     return {
         "ts": now.isoformat(),
         "date": now.date().isoformat(),
-        "store_count": len(memory_lint.memory_files(store)),
-        "failures_offset": len(_failure_lines(store)),
+        "feedback_names": sorted(_feedback_names(store)),
+        "failures_offset": len(lines),
+        "failures_head": _head_hash(lines, len(lines)),
         "memory_md_bytes": _memory_md_bytes(store),
-        "surface_bytes": {str(repo): _surface_bytes(repo)},
+        "surface_bytes": surfaces,
     }
 
 
 def read_marker(path: Path | None = None) -> dict | None:
+    """The marker, or None when it is missing or any field is unusable: an
+    untrusted marker reads as "no marker", never as quiet (preclose pass 1)."""
     try:
         data = json.loads((path or marker_path()).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        datetime.fromisoformat(str(data["ts"]))
+        date.fromisoformat(str(data["date"]))
+        ok = (isinstance(data["feedback_names"], list)
+              and all(isinstance(n, str) for n in data["feedback_names"])
+              and isinstance(data["failures_offset"], int) and data["failures_offset"] >= 0
+              and isinstance(data["failures_head"], str)
+              and isinstance(data["memory_md_bytes"], int)
+              and isinstance(data["surface_bytes"], dict)
+              and all(isinstance(v, dict) and isinstance(v.get("bytes"), int)
+                      and isinstance(v.get("path"), str) for v in data["surface_bytes"].values()))
+    except (OSError, ValueError, TypeError, KeyError):
         return None
-    required = ("ts", "date", "failures_offset", "memory_md_bytes", "surface_bytes")
-    if not isinstance(data, dict) or any(k not in data for k in required):
-        return None
-    return data
+    return data if ok else None
 
 
 def record(store: Path, repo: Path, now: datetime, path: Path | None = None) -> Path:
     """Write the snapshot atomically (temp file plus rename)."""
     target = path or marker_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = snapshot(store, repo, now)
     old = read_marker(target)
-    if old and isinstance(old.get("surface_bytes"), dict):
-        data["surface_bytes"] = {**old["surface_bytes"], **data["surface_bytes"]}
+    data = snapshot(store, repo, now, old["surface_bytes"] if old else None)
     fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".marker-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -136,29 +173,33 @@ def record(store: Path, repo: Path, now: datetime, path: Path | None = None) -> 
 
 
 def _grew(now_value: int, then_value: int) -> bool:
-    return then_value > 0 and now_value >= then_value * (1 + GROWTH_FRACTION)
+    """Up 10% or more, in integers (a float product can miss exactly 10%)."""
+    return then_value > 0 and now_value * 10 >= then_value * 11
 
 
-def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[str]:
-    """Every trigger that fires, in order. Empty means no fold is owed."""
+#: Trigger kinds, in report order. The hook suppresses by kind, not by text.
+KINDS = ("no-marker", "volume", "recurrence", "growth", "fallback")
+
+
+def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[tuple[str, str]]:
+    """Every trigger that fires, as (kind, message), in order. Empty: none owed."""
     if marker is None:
-        return ["no marker"]
-    try:
-        marker_date = date.fromisoformat(str(marker["date"]))
-        marker_ts = datetime.fromisoformat(str(marker["ts"]))
-        offset = int(marker["failures_offset"])
-    except (KeyError, TypeError, ValueError):
-        return ["no marker"]
+        return [("no-marker", "no marker")]
+    marker_ts = datetime.fromisoformat(str(marker["ts"]))
     if marker_ts.tzinfo is None:
         marker_ts = marker_ts.replace(tzinfo=timezone.utc)
-    fired: list[str] = []
+    fired: list[tuple[str, str]] = []
 
-    new = sum(1 for d in _feedback_first_seen(store) if d > marker_date)
+    new = len(_feedback_names(store) - set(marker["feedback_names"]))
     if new >= VOLUME_THRESHOLD:
-        fired.append(f"{new} new feedback memories since the last fold")
+        fired.append(("volume", f"{new} new feedback memories since the last fold"))
 
+    lines = _failure_lines(store)
+    offset = marker["failures_offset"]
+    if offset > len(lines) or _head_hash(lines, offset) != marker["failures_head"]:
+        offset = 0  # the log was truncated or replaced: count all of it
     counts: dict[str, int] = {}
-    for line in _failure_lines(store)[max(offset, 0):]:
+    for line in lines[offset:]:
         try:
             ref = json.loads(line).get("rule_ref")
         except (ValueError, AttributeError):
@@ -167,17 +208,19 @@ def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[st
             counts[ref.strip()] = counts.get(ref.strip(), 0) + 1
     recurring = sorted(r for r, n in counts.items() if n >= RECURRENCE_THRESHOLD)
     if recurring:
-        fired.append(f"{', '.join(recurring)} failed again since the last fold")
+        fired.append(("recurrence", f"{', '.join(recurring)} failed again since the last fold"))
 
-    then_surface = (marker.get("surface_bytes") or {}).get(str(repo), 0) \
-        if isinstance(marker.get("surface_bytes"), dict) else 0
-    if _grew(_memory_md_bytes(store), int(marker.get("memory_md_bytes") or 0)):
-        fired.append("MEMORY.md grew 10% or more since the last fold")
-    elif _grew(_surface_bytes(repo), int(then_surface or 0)):
-        fired.append("the always-loaded surface grew 10% or more since the last fold")
+    key, top = repo_key(repo)
+    base = marker["surface_bytes"].get(key)
+    if _grew(_memory_md_bytes(store), marker["memory_md_bytes"]):
+        fired.append(("growth", "MEMORY.md grew 10% or more since the last fold"))
+    elif base is None:
+        fired.append(("growth", f"no surface baseline for {top}; run the fold from here"))
+    elif _grew(_surface_bytes(top), base["bytes"]):
+        fired.append(("growth", "the always-loaded surface grew 10% or more since the last fold"))
 
     if now - marker_ts >= timedelta(days=FALLBACK_DAYS):
-        fired.append(f"{FALLBACK_DAYS} days since last fold")
+        fired.append(("fallback", f"{FALLBACK_DAYS} days since last fold"))
     return fired
 
 
@@ -191,15 +234,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--marker", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        store = args.store or memory_lint.resolve_store()
         repo = args.repo.resolve()
+        store = args.store or memory_lint.resolve_store(repo_key(repo)[1])
         now = datetime.now(timezone.utc)
         if args.record:
             print(f"memory-fold recorded: {record(store, repo, now, args.marker)}")
             return 0
         fired = owed(store, repo, now, read_marker(args.marker))
         if fired:
-            print(f"memory-fold owed: {fired[0]}")
+            print(f"memory-fold owed: {fired[0][1]}")
+            print(f"kinds: {','.join(kind for kind, _m in fired)}")
     except Exception as exc:  # noqa: BLE001 -- always exit 0
         print(f"fold_due: internal error ({exc!r})", file=sys.stderr)
     return 0

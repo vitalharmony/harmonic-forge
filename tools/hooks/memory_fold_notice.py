@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -49,67 +50,97 @@ def _wrapped(prompt: str) -> bool:
         return True
 
 
-def fold_line(cwd: str) -> str:
+def fold_line(cwd: str) -> tuple[str, str]:
+    """(line, kinds) from fold_due.py, or ("", "") when nothing is owed."""
     try:
         out = subprocess.run([sys.executable, str(FOLD_DUE), "--repo", cwd],
                              capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError):
-        return ""
-    line = out.stdout.strip().splitlines()
-    return line[0] if line and line[0].startswith("memory-fold owed:") else ""
+        return "", ""
+    lines = out.stdout.strip().splitlines()
+    if not lines or not lines[0].startswith("memory-fold owed:"):
+        return "", ""
+    kinds = lines[1][len("kinds:"):].strip() if len(lines) > 1 and lines[1].startswith("kinds:") else lines[0]
+    return lines[0], kinds
 
 
-def suppressed(line: str, now: float, path: Path | None = None) -> bool:
-    """True when this trigger line was already injected in the last 24 hours.
-    Records it otherwise."""
-    path = path or _suppress_path()
-    key = hashlib.sha256(line.encode()).hexdigest()[:16]
+def _key(session: str, kinds: str) -> str:
+    """Suppression is per session and per SET OF TRIGGER KINDS, never per line
+    text: a count in the line ("16 new ...") must not re-send it (preclose
+    pass 1), and one session's notice must not silence another's."""
+    return hashlib.sha256(f"{session}\0{kinds}".encode()).hexdigest()[:16]
+
+
+def _load(path: Path) -> dict:
     try:
         seen = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(seen, dict):
-            seen = {}
     except (OSError, ValueError):
-        seen = {}
-    last = seen.get(key)
-    if isinstance(last, (int, float)) and now - last < SUPPRESS_SECONDS:
-        return True
-    seen = {k: v for k, v in seen.items()
+        return {}
+    return seen if isinstance(seen, dict) else {}
+
+
+def is_suppressed(key: str, now: float, path: Path) -> bool:
+    last = _load(path).get(key)
+    return isinstance(last, (int, float)) and now - last < SUPPRESS_SECONDS
+
+
+def mark_sent(key: str, now: float, path: Path) -> bool:
+    """Record a delivered notice. False when the state cannot be written."""
+    seen = {k: v for k, v in _load(path).items()
             if isinstance(v, (int, float)) and now - v < SUPPRESS_SECONDS}
     seen[key] = now
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(seen), encoding="utf-8")
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".notice-")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(seen, handle)
         os.replace(tmp, path)
     except OSError:
-        pass
-    return False
+        return False
+    return True
 
 
 def decide(payload: dict, env: dict, now: float, line_fn=fold_line,
-           suppress_path: Path | None = None) -> dict | None:
+           suppress_path: Path | None = None) -> tuple[dict | None, str | None]:
+    """(output, suppression key to record after delivery)."""
     if env.get("LANE") != "1":
-        return None
+        return None, None
     event = payload.get("hook_event_name") or "UserPromptSubmit"
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt")
         if not isinstance(prompt, str) or _wrapped(prompt):
-            return None
-    line = line_fn(payload.get("cwd") or os.getcwd())
-    if not line or suppressed(line, now, suppress_path):
-        return None
-    return {"hookSpecificOutput": {"hookEventName": event,
-                                   "additionalContext": f"{line}. {PROCEDURE}"}}
+            return None, None
+    line, kinds = line_fn(payload.get("cwd") or os.getcwd())
+    if not line:
+        return None, None
+    path = suppress_path or _suppress_path()
+    key = _key(str(payload.get("session_id") or ""), kinds)
+    # A session start (new context, /clear, resume) always gets the line.
+    if event == "UserPromptSubmit" and is_suppressed(key, now, path):
+        return None, None
+    text = f"{line}. {PROCEDURE}"
+    return ({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}, key)
 
 
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
-        result = decide(payload if isinstance(payload, dict) else {}, os.environ, time.time())
+        now = time.time()
+        path = _suppress_path()
+        result, key = decide(payload if isinstance(payload, dict) else {}, os.environ, now,
+                             suppress_path=path)
+        if result and key:
+            # Recorded only after the line is written out, so a failed delivery
+            # is not suppressed. An unwritable state is said, not hidden.
+            ctx = result["hookSpecificOutput"]
+            if not os.access(path.parent if path.parent.exists() else path.parent.parent, os.W_OK):
+                ctx["additionalContext"] += (f" (Suppression state at {path} is not writable, "
+                                             "so this line repeats on every prompt until it is.)")
+            print(json.dumps(result))
+            sys.stdout.flush()
+            mark_sent(key, now, path)
     except Exception:  # noqa: BLE001 -- always exit 0
         return 0
-    if result:
-        print(json.dumps(result))
     return 0
 
 

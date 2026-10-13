@@ -38,9 +38,12 @@ class Base(unittest.TestCase):
         (self.store / "MEMORY.md").write_text("# Memory Index\n" + "- x\n" * 50)
         self.surface = mock.patch.object(fold_due, "_surface_bytes", return_value=1000)
         self.surface_mock = self.surface.start()
+        self.repos = mock.patch.object(fold_due, "DEFAULT_REPOS", ())  # never the real checkouts
+        self.repos.start()
 
     def tearDown(self) -> None:
         self.surface.stop()
+        self.repos.stop()
         self._tmp.cleanup()
 
     def record(self, when: datetime) -> dict:
@@ -48,7 +51,7 @@ class Base(unittest.TestCase):
         return fold_due.read_marker(self.marker)
 
     def owed(self, marker: dict | None) -> list[str]:
-        return fold_due.owed(self.store, self.repo, NOW, marker)
+        return [msg for _kind, msg in fold_due.owed(self.store, self.repo, NOW, marker)]
 
 
 class Triggers(Base):
@@ -61,10 +64,18 @@ class Triggers(Base):
         fired = self.owed(marker)
         self.assertTrue(any("15 new feedback memories" in f for f in fired), fired)
 
-    def test_volume_counts_strictly_after_the_marker_date(self) -> None:
-        marker = self.record(NOW - timedelta(days=1))
+    def test_volume_counts_files_added_after_the_snapshot_same_day(self) -> None:
+        for i in range(3):
+            feedback(self.store, f"feedback_old{i}.md", "2026-10-19")
+        marker = self.record(NOW - timedelta(hours=1))
         for i in range(15):
             feedback(self.store, f"feedback_n{i}.md", "2026-10-19")  # the fold's own day
+        self.assertTrue(any("15 new" in f for f in self.owed(marker)))
+
+    def test_volume_ignores_files_already_in_the_snapshot(self) -> None:
+        for i in range(20):
+            feedback(self.store, f"feedback_n{i}.md", "2026-10-20")
+        marker = self.record(NOW - timedelta(hours=1))
         self.assertEqual(self.owed(marker), [])
 
     def test_recurrence(self) -> None:
@@ -107,6 +118,32 @@ class Triggers(Base):
         marker = self.record(NOW - timedelta(days=7))
         self.assertEqual(self.owed(marker), ["7 days since last fold"])
 
+    def test_truncated_failures_log_counts_from_the_start(self) -> None:
+        (self.store / "protocol-failures.jsonl").write_text(
+            "".join(json.dumps({"rule_ref": f"R-{i:04d}"}) + "\n" for i in range(10)))
+        marker = self.record(NOW - timedelta(days=1))
+        (self.store / "protocol-failures.jsonl").write_text(
+            json.dumps({"rule_ref": "R-0039"}) + "\n" + json.dumps({"rule_ref": "R-0039"}) + "\n")
+        self.assertTrue(any("R-0039 failed again" in f for f in self.owed(marker)))
+
+    def test_replaced_failures_log_of_equal_length_counts_from_the_start(self) -> None:
+        (self.store / "protocol-failures.jsonl").write_text(
+            json.dumps({"rule_ref": "R-0001"}) + "\n" + json.dumps({"rule_ref": "R-0002"}) + "\n")
+        marker = self.record(NOW - timedelta(days=1))
+        (self.store / "protocol-failures.jsonl").write_text(
+            json.dumps({"rule_ref": "R-0039"}) + "\n" + json.dumps({"rule_ref": "R-0039"}) + "\n")
+        self.assertTrue(any("R-0039 failed again" in f for f in self.owed(marker)))
+
+    def test_missing_surface_baseline_for_this_repo_is_reported(self) -> None:
+        marker = self.record(NOW - timedelta(days=1))
+        marker["surface_bytes"] = {}
+        self.assertTrue(any("no surface baseline" in f for f in self.owed(marker)))
+
+    def test_exactly_ten_percent_growth_fires(self) -> None:
+        self.assertTrue(fold_due._grew(110, 100))
+        self.assertTrue(fold_due._grew(1100, 1000))
+        self.assertFalse(fold_due._grew(109, 100))
+
     def test_nothing_due(self) -> None:
         marker = self.record(NOW - timedelta(days=1))
         self.assertEqual(self.owed(marker), [])
@@ -135,7 +172,17 @@ class Marker(Base):
             code = fold_due.main(["--store", str(self.store), "--repo", str(self.repo),
                                   "--marker", str(self.marker)])
         self.assertEqual(code, 0)
-        self.assertEqual(out.getvalue().strip(), "memory-fold owed: no marker")
+        self.assertEqual(out.getvalue().splitlines(), ["memory-fold owed: no marker", "kinds: no-marker"])
+
+    def test_marker_with_a_corrupt_field_reads_as_no_marker(self) -> None:
+        self.record(NOW)
+        data = json.loads(self.marker.read_text())
+        for field, bad in (("memory_md_bytes", "x"), ("failures_offset", -1),
+                           ("surface_bytes", {"k": {"path": "/x", "bytes": "x"}}),
+                           ("feedback_names", "nope"), ("ts", "yesterday")):
+            broken = {**data, field: bad}
+            self.marker.write_text(json.dumps(broken))
+            self.assertIsNone(fold_due.read_marker(self.marker), field)
 
     def test_record_is_atomic_and_leaves_no_temp_file(self) -> None:
         self.record(NOW)
