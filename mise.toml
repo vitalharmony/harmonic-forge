@@ -87,6 +87,9 @@ python3 tools/rules/check_cross_registry.py
 # index, so a CI run would measure a smaller surface and pass on a number
 # nothing pays.
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
+# harmonic-forge#975: reached only when every step above passed (set -e);
+# the pre-push gate reads this receipt for Tooling Exception branches.
+python3 tools/hooks/check_receipt.py record --repo-root .
 """
 
 [tasks.context-budget-ratchet]
