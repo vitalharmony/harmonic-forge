@@ -506,7 +506,9 @@ def directive_lines(prompt: str):
         yield index, line
 
 
-_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+#: Any indentation opens a fence, as before the CommonMark change: a quoted,
+#: indented fence is still quotation (harmonic-forge#895 sticky-wicket).
+_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 
 
 def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:

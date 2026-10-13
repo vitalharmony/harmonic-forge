@@ -166,6 +166,14 @@ def waiver_receipt(repo: str, issue: int) -> dict | None:
     return data if data is not None else dict(UNREADABLE_RECEIPT)
 
 
+def waiver_satisfied(receipt: dict | None) -> bool:
+    """The one test of "the waiver is on the issue": a receipt that exists and
+    says `recorded`. A pending or unreadable receipt is not (harmonic-forge#895
+    sticky-wicket: every caller asks this one question)."""
+    return bool(receipt) and receipt.get("status", "recorded") == "recorded" \
+        and not receipt.get("unreadable")
+
+
 def unmatched_hook_record(repo: str, issue: int, now: datetime | None = None) -> dict | None:
     """A live hook record with no receipt carrying the same `granted_at`: an
     IMC run that skipped `record` and so never put the waiver on the issue."""
@@ -178,8 +186,7 @@ def unmatched_hook_record(repo: str, issue: int, now: datetime | None = None) ->
     receipt = read_json(receipt_path(key))
     # Only a RECORDED receipt says the waiver is on the issue; a pending one
     # means the post never confirmed (harmonic-forge#895 reforged pass 1).
-    if (receipt and receipt.get("granted_at") == record.get("granted_at")
-            and receipt.get("status", "recorded") == "recorded"):
+    if waiver_satisfied(receipt) and receipt.get("granted_at") == record.get("granted_at"):
         return None
     return record
 

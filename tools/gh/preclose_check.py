@@ -799,6 +799,12 @@ def plan(args: argparse.Namespace) -> int:
         imc_refusal(repo, args.issue, "--force")
     if getattr(args, "reforge", False):
         imc_refusal(repo, args.issue, "--reforge")
+    held = imc_waiver.waiver_receipt(repo, args.issue)
+    if held is not None and not imc_waiver.waiver_satisfied(held):
+        raise SystemExit(
+            f"preclose-check: {repo}#{args.issue} holds an IMC waiver receipt that is not "
+            f"recorded (status {held.get('status', 'unreadable')!r}): the waiver comment never "
+            "confirmed. Re-run `python3 tools/gh/imc_waiver.py record` under a live IMC line.")
     unmatched = imc_waiver.unmatched_hook_record(repo, args.issue)
     if unmatched is not None:
         raise SystemExit(

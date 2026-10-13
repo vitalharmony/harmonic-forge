@@ -75,7 +75,16 @@ class ImcPrecloseTests(base.ScratchRepo):
             {"key": KEY, "granted_at": _iso(now), "comment_url": None, "status": "pending"}))
         with self.assertRaises(SystemExit) as refused:
             self.plan(tier="fast")
-        self.assertIn("no matching waiver receipt", str(refused.exception))
+        self.assertIn("not recorded", str(refused.exception))
+
+    def test_plan_refuses_a_pending_receipt_after_the_hook_record_expired(self) -> None:
+        old = datetime.now(timezone.utc) - timedelta(days=2)
+        self.hook_record(old)
+        (self.state / f"{KEY}.waiver.json").write_text(json.dumps(
+            {"key": KEY, "granted_at": _iso(old), "comment_url": None, "status": "pending"}))
+        with self.assertRaises(SystemExit) as refused:
+            self.plan(tier="fast")
+        self.assertIn("not recorded", str(refused.exception))
 
     def test_plan_refuses_receipt_with_a_different_granted_at(self) -> None:
         now = datetime.now(timezone.utc)
