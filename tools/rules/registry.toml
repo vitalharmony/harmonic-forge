@@ -731,8 +731,8 @@ restates = "R-0019"
 id = "R-0084"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
-statement = "For Git commands that could open an editor or hook, set GIT_EDITOR/EDITOR/NO_COLOR and use --no-edit --no-verify where applicable."
-text_sha = "92a8612594ea5f06"
+statement = "For Git commands that could open an editor or hook, set GIT_EDITOR/EDITOR/NO_COLOR and use --no-edit --no-verify where applicable, never --no-verify on git push (it skips the R-0389 pre-push gate) unless the operator explicitly authorizes it for that push."
+text_sha = "46f14650fd73cce2"
 hooks = []
 
 [[rule]]
@@ -2564,3 +2564,43 @@ exception_to = ["R-0229", "R-0230"]
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
 ]
+
+[[rule]]
+id = "R-0385"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "While an R-0377 production AE names main at a SHA, Lane 1 merges nothing into that repo until every production step has reported; a merge voids the AE and its grant."
+text_sha = "6464d505066d217b"
+hooks = []
+
+[[rule]]
+id = "R-0386"
+file = "rules/universal-agent.md"
+anchor = "citing-github-ids-harmonic-forge979"
+statement = "A comment, run or PR ID cited in a post is fetched in the same command that builds the post, never recalled."
+text_sha = "130c7a2785555953"
+hooks = []
+
+[[rule]]
+id = "R-0387"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "An l1_post overlap limited to generated files is acknowledged with --ack-overlap and posted, never presented to the operator as a choice."
+text_sha = "f937e5d58692fc9f"
+hooks = []
+
+[[rule]]
+id = "R-0388"
+file = "rules/universal-claude.md"
+anchor = "tool-use-safeguards"
+statement = "Scratch-heavy checks run one at a time."
+text_sha = "0276a5a4bb931577"
+hooks = []
+
+[[rule]]
+id = "R-0389"
+file = "rules/universal-claude.md"
+anchor = "tool-use-safeguards"
+statement = "A Tooling Exception branch is pushed only with a passing mise run check receipt at the pushed SHA; a refused push means running check at that SHA, never bypassing the hook unless the operator explicitly authorizes --no-verify for that push."
+text_sha = "6c4dee10a8fe18fd"
+hooks = []

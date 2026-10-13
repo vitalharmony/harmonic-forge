@@ -73,8 +73,24 @@ derivable from code or Git.
 <!-- R-0084 -->
 - For Git commands that could open an editor/hook, set
   `GIT_EDITOR=true EDITOR=: NO_COLOR=1` and use `--no-edit --no-verify`
-  where applicable.
+  where applicable. Never `--no-verify` on `git push` (it skips the pre-push
+  gate, R-0389) unless the operator explicitly authorizes `--no-verify` for
+  that specific push.
 <!-- /R-0084 -->
+<!-- R-0388 -->
+- Scratch-heavy checks (`l1-post` ready-for-l3 checks, image builds,
+  kill-check archives) run one at a time. (Parallel checks filled the 16 GB
+  `/tmp` tmpfs on 2026-10-08.)
+<!-- /R-0388 -->
+<!-- R-0389 -->
+- A Tooling Exception branch is pushed only with a passing `mise run check`
+  receipt at the pushed SHA (`.githooks/pre-push`,
+  `tools/hooks/check_receipt.py`, harmonic-forge#975). A refused push means
+  running `check` at that SHA, never bypassing the hook unless the operator
+  explicitly authorizes `--no-verify` for that specific push; a rebase makes a new
+  SHA, which needs its own `check`. The refusal names its own remedy, so it is
+  not a Git failure that R-0085's stop-and-wait applies to.
+<!-- /R-0389 -->
 <!-- R-0085 -->
 - On one Git/GitHub failure or apparent hang, stop, report the exact
   error, and wait for direction. Do not blindly retry variants.

@@ -1249,6 +1249,12 @@ the runner installed is reported BLOCKED with that reason, and Lane 3 never
 improvises a production read in its place.
 <!-- /R-0377 -->
 
+<!-- R-0385 -->
+While an R-0377 production AE names `main` at a SHA, Lane 1 merges nothing
+into that repo until every production step has reported. A merge moves
+`main` and voids both the AE and its grant (incident: H2254, 2026-10-10).
+<!-- /R-0385 -->
+
 <!-- R-0209 -->
 **A routine retest after a FAIL does not need a new AE/sweep pair.**
 HRSE2's `check_lane3_ready.py` (hrse#1102, generalized hrse#1359) already

@@ -29,6 +29,14 @@ harmonic-forge/rules/universal-*.md
 - Push to the remote only when the human operator explicitly asks.
 <!-- /R-0003 -->
 
+## CITING GITHUB IDS (harmonic-forge#979)
+
+<!-- R-0386 -->
+A comment, run or PR ID cited in a post is fetched in the same command that
+builds the post, never recalled from memory (two invented comment IDs on
+2026-10-10; one wrong SHA on 2026-10-13).
+<!-- /R-0386 -->
+
 ## VERIFICATION GATE (HARD REQUIREMENT)
 
 <!-- R-0004 -->
