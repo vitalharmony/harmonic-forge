@@ -149,8 +149,11 @@ def from_capture(cwd: Path | None = None) -> str:
             raise SystemExit(f"sprint-plan summary: git {' '.join(args)} failed: {out.stderr.strip()}")
         return out.stdout
 
-    git("fetch", "-q", "origin", CAPTURE_BRANCH)
-    text = git("show", f"FETCH_HEAD:{CAPTURE_PATH}")
+    # A named ref, never FETCH_HEAD: another session's fetch in the same
+    # checkout rewrites FETCH_HEAD between our fetch and our show.
+    ref = f"refs/remotes/origin/{CAPTURE_BRANCH}"
+    git("fetch", "-q", "origin", f"+{CAPTURE_BRANCH}:{ref}")
+    text = git("show", f"{ref}:{CAPTURE_PATH}")
     body = "\n".join(line for line in text.splitlines() if line.strip() != CAPTURE_HEADER).strip()
     if not body:
         raise SystemExit(f"sprint-plan summary: {CAPTURE_BRANCH}:{CAPTURE_PATH} is empty")

@@ -81,7 +81,8 @@ class FromCaptureTests(unittest.TestCase):
         self.assertEqual([c.args[0][1] for c in run.call_args_list], ["fetch", "show"])
 
     def test_a_failed_fetch_or_empty_capture_fails_loudly(self):
-        with mock.patch.object(summary.subprocess, "run", side_effect=self._git("", fail="fetch")):
+        # The show output is non-empty, so only the fetch-failure check can stop it.
+        with mock.patch.object(summary.subprocess, "run", side_effect=self._git("# stale\n", fail="fetch")):
             with self.assertRaises(SystemExit):
                 summary.from_capture()
         with mock.patch.object(summary.subprocess, "run", side_effect=self._git(summary.CAPTURE_HEADER + "\n")):
