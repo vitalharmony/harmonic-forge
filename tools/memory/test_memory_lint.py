@@ -254,6 +254,40 @@ class OverflowIndexes(unittest.TestCase):
                              len((store / "MEMORY.md").read_text().splitlines()))
 
 
+class RuleCheckBypass(unittest.TestCase):
+    """harmonic-forge#981 AC6: Check 9 reports a feedback memory written around the gate."""
+
+    @staticmethod
+    def _mem(store: Path, name: str, *, mtype: str = "feedback", rule_check: str | None = None) -> None:
+        extra = f"rule_check: {rule_check}\n" if rule_check else ""
+        (store / name).write_text(
+            f"---\nname: {name[:-3]}\ndescription: d\nmetadata:\n  type: {mtype}\n{extra}---\nbody\n")
+
+    def test_unlisted_feedback_without_rule_check_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            self._mem(store, "feedback_new.md")
+            self._mem(store, "lesson.md")  # typed feedback, other filename
+            self._mem(store, "feedback_checked.md", rule_check="none (searched: x)")
+            self._mem(store, "project_x.md", mtype="project")
+            findings = lint.check_rule_check(store)
+        named = sorted(f.split(":")[0] for f in findings)
+        self.assertEqual(named, ["feedback_new.md", "lesson.md"])
+
+    def test_allowlisted_feedback_is_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            self._mem(store, "feedback_old.md")
+            allow = store / "allow.txt"
+            allow.write_text("# header\nfeedback_old.md\n")
+            original = lint.FEEDBACK_ALLOWLIST
+            lint.FEEDBACK_ALLOWLIST = allow
+            try:
+                self.assertEqual(lint.check_rule_check(store), [])
+            finally:
+                lint.FEEDBACK_ALLOWLIST = original
+
+
 class IssueReferences(unittest.TestCase):
     """TC5 — `[[hrse#1303]]` is not a broken memory link."""
 

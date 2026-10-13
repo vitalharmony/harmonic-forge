@@ -91,7 +91,7 @@ def memory_files(store: Path) -> list[Path]:
 
 #: Top-level frontmatter keys this lint reads. `first_seen`/`instances`/
 #: `promoted` were added by harmonic-forge#500 for the aging check.
-_TOP_LEVEL_KEYS = ("name", "description", "first_seen", "instances", "promoted")
+_TOP_LEVEL_KEYS = ("name", "description", "first_seen", "instances", "promoted", "rule_check")
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
@@ -442,6 +442,40 @@ def _allow_unpromoted() -> dict[str, str]:
     return allowed
 
 
+#: harmonic-forge#981: the feedback memories that predate the `rule_check:` gate.
+FEEDBACK_ALLOWLIST = Path(__file__).resolve().parent / "feedback_allowlist.txt"
+
+
+def _allowlisted() -> set[str]:
+    try:
+        lines = FEEDBACK_ALLOWLIST.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    return {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
+
+
+def check_rule_check(store: Path) -> list[str]:
+    """Check 9 (report-only, harmonic-forge#981): a feedback memory with no
+    `rule_check:` that is not in the committed allowlist.
+
+    `gate_feedback_memory_write.py` refuses such a file at a Write/Edit; this
+    catches what that hook cannot see: a Bash or Codex write, a type flipped
+    after creation, or a write from a repo that does not wire the hook.
+    """
+    allowed = _allowlisted()
+    findings: list[str] = []
+    for f in memory_files(store):
+        try:
+            fm = _parse_frontmatter(f.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        is_feedback = f.name.startswith("feedback_") or fm.get("metadata.type", "").strip() == "feedback"
+        if is_feedback and not fm.get("rule_check", "").strip() and f.name not in allowed:
+            findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "
+                            "feedback_allowlist.txt (written around the #981 gate?)")
+    return findings
+
+
 def check_aging(store: Path, today: date | None = None) -> list[str]:
     """Feedback memories that are due for promotion, or cannot be assessed.
 
@@ -548,6 +582,7 @@ def run(store: Path, gate: bool, today: date | None = None) -> int:
         ("Check 6 — index load cap (warning)", cap_warnings),
         ("Check 4 — issue references (report-only)", issue_refs),
         ("Check 7 — staleness (report-only)", check_staleness(store)),
+        ("Check 9 — feedback without rule_check (report-only)", check_rule_check(store)),
     ]
 
     for tag, group in (("FAIL", gating), ("note", advisory)):
