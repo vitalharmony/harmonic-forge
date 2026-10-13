@@ -1942,7 +1942,8 @@ id = "R-0229"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
 statement = "The exception requires one human-reviewed pass before the work becomes irreversible -- before commit for a single implementer, before merge/close for a delegated batch -- checking scope, containment, and honesty. This pass cannot be delegated to the implementing agent, and a delegated batch's completion is verified against live GitHub state, never the subagent's own self-report."
-text_sha = "012a408ce9ee2140"
+text_sha = "16ccb6998f584710"
+excepted_by = "R-0384"
 hooks = []
 
 [[rule]]
@@ -1950,7 +1951,8 @@ id = "R-0230"
 file = "3-lane-protocol.md"
 anchor = "Tooling Exception — Dev/Test Tooling Skips the Full Loop"
 statement = "Even under the exception the implementer never grades its own verification — get a second read before trusting the result."
-text_sha = "8f620d65ddc6c049"
+text_sha = "69a1f4110b3de9a3"
+excepted_by = "R-0384"
 hooks = []
 
 [[rule]]
@@ -2226,8 +2228,8 @@ text_sha = "293a6a8f0d46b166"
 id = "R-0341"
 file = "rules/lane-shorthand.md"
 anchor = "batch"
-statement = "A chat message containing uppercase BATCH followed by issue keys on one line creates the authorization automatically on UserPromptSubmit, before the turn's first tool call: two merge targets per key, 12-hour TTL; it grants no close target (harmonic-forge#612)."
-text_sha = "191a829ad8d98a9f"
+statement = "A chat message containing uppercase BATCH followed by issue keys on one line creates the authorization automatically on UserPromptSubmit, before the turn's first tool call: two merge targets per key, 12-hour TTL; it grants merges only, never a close target (harmonic-forge#612), and a batched issue closes by an explicit close command after its merge (harmonic-forge#911)."
+text_sha = "3e2b959be4793b4a"
 hooks = [{ script = "tools/hooks/expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = "project settings" }]
 
 [[rule]]
@@ -2242,8 +2244,8 @@ hooks = [{ script = "tools/hooks/batch_auth.py", events = ["PreToolUse"], wired_
 id = "R-0343"
 file = "rules/lane-shorthand.md"
 anchor = "operator-to-lane-triggers"
-statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close; AE and close go to Lane 1, which posts the AE, and Lane 3 runs from the posted comment); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session. One equivalence: a queued-for-l3 owes=spec belt event is Spec H<N>."
-text_sha = "b207217db19b35e8"
+statement = "The operator->lane trigger vocabulary is fixed (Plan/Implement/Fix/Spec/AE/close; AE and close go to Lane 1, which posts the AE, and Lane 3 runs from the posted comment); never invent a trigger to fill a gap, because naming the wrong lane sends real work to the wrong session. One equivalence: a queued-for-l3 owes=spec belt event is Spec H<N>. IMC <keys> is a Lane 1 trigger, Tooling Exception issues only, always on a BATCH line (R-0384)."
+text_sha = "fd5d2a2022d26024"
 
 [[rule]]
 id = "R-0344"
@@ -2551,3 +2553,15 @@ anchor = "lane-1-handoff-artifact"
 statement = "If a part of the design can be verified only in a live session Lane 1 cannot run, ship it without that part and write the fallback into the issue as an acceptance branch the operator's live check decides."
 text_sha = "703376d91bb11c73"
 hooks = []
+
+[[rule]]
+id = "R-0384"
+file = "rules/lane-shorthand.md"
+anchor = "imc"
+statement = "IMC on an operator-typed BATCH line records a per-issue waiver of R-0229 and R-0230 for a LANE=1, vitalharmony, tooling-exception issue, minting no authority; imc_waiver.py record posts and refetches the fixed-format waiver comment before writing the receipt, and while the receipt exists preclose_check forces the cross-family gate and refuses --force, --allow-dirty, --reforge, --cluster-verdict --force, --not-triggered and the in-family fallback (harmonic-forge#895)."
+text_sha = "04749ee12ec16939"
+exception_to = ["R-0229", "R-0230"]
+hooks = [
+  { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+  { script = "guard_imc_state.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+]

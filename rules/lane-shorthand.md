@@ -238,6 +238,9 @@ automatically, on `UserPromptSubmit`, before the turn's first tool call — two
 merge targets per key, 12-hour TTL. Keys are read to the
 end of that line, so a sentence works: `BATCH these tooling issues F495, F497,
 F500` authorizes all three. Lowercase "batch" in prose authorizes nothing.
+It grants merges only, never a close target (harmonic-forge#612): a batched
+issue closes by an explicit close command after its merge
+(harmonic-forge#911).
 <!-- /R-0341 -->
 
 <!-- R-0342 -->
@@ -291,6 +294,36 @@ instruction.
 This mechanism is scoped to `gh pr merge` only. It does not
 touch, and was never meant to touch, any other permission-gated action.
 
+## `IMC` — per-issue waiver of the Tooling Exception review
+
+Grammar: **`IMC` + issue keys, on a line starting with `BATCH`**, e.g.
+`BATCH F874 IMC F892, F893`. Keys after `IMC` are IMC keys; every key on the
+line is still a BATCH key.
+
+Meaning: Lane 1 implements, merges and closes each IMC issue (Tooling
+Exception only) without R-0229's human pass or R-0230's second read, which
+are waived for that issue by name. IMC mints no authority: the merge grant is
+the line's BATCH grant.
+
+<!-- R-0384 -->
+The hook records a waiver (`~/.claude/state/imc/<KEY>.json`, 12h to start a
+run) only for an operator-typed line passing BATCH's filter and R-0117,
+`LANE=1`, a `vitalharmony` key, and a `tooling-exception` label read; each
+refusal is named in its receipt and never touches the BATCH grant. The run
+cuts `feat|fix/<N>-…`, runs `python3 tools/gh/imc_waiver.py record --key
+<K>` (posts and refetches `## IMC waiver — <K>`, then writes the receipt),
+then kill checks, `preclose-check`, the `preclose-inspected` label, a PR
+titled `… (<repo-slug>#<N>)` with no closing keyword, merge, deploy. While
+the receipt exists, `preclose_check.py` forces cross-family and refuses
+`--force`, `--allow-dirty`, `--reforge`, `--cluster-verdict --force`,
+`--not-triggered` and the in-family fallback; `--plan` refuses a live record
+with no receipt. A refusal, survivors at the pass limit, a failed
+cross-family call, red CI, a conflict or an open dependency is an IMC stop:
+end the turn with the operator's decision. R-0229 is waived, never claimed
+satisfied. Only the hook and `record` write that directory
+(`guard_imc_state.py`).
+<!-- /R-0384 -->
+
 ## Operator → lane triggers
 
 <!-- R-0343 -->
@@ -299,7 +332,9 @@ The vocabulary is fixed: `Plan H<N>`, `Implement H<N>` / `Fix H<N>` (Lane 2),
 trigger to fill a gap — naming the wrong lane sends real work to the wrong
 session (hrse#1636 precedent: `Test #N` was the wrong name for `Spec H<N>`).
 One equivalence (harmonic-forge#851): a `queued-for-l3 kind=ready-for-l3
-owes=spec` belt event is `Spec H<N>`.
+owes=spec` belt event is `Spec H<N>`. One addition (harmonic-forge#895):
+`IMC <keys>` is a Lane 1 trigger, for Tooling Exception issues only, and
+always on a `BATCH` line (R-0384).
 <!-- /R-0343 -->
 
 ## Repo prefixes

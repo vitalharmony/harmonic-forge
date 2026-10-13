@@ -33,6 +33,7 @@ ENTRYPOINTS = {
     "gate_ci.py": "check_gate_result(",
     "lane_transition_report.py": "api(",
     "belt_report.py": "audit(",
+    "imc_waiver.py": "record(args.key)",
 }
 
 

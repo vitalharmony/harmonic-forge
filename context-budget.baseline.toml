@@ -129,3 +129,15 @@ known BEFORE the first prompt, which is hrse#1730's own criterion for staying
 unscoped. It cannot be a doc a session reads once the situation arises -- by
 then the session has already interrupted or queued.
 """
+
+[[increase]]
+date = "2026-10-13"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 1939
+why = """
+harmonic-forge#895: the `IMC` directive and its rule R-0384, plus the R-0341
+merges-only sentence and R-0343's IMC trigger. IMC arrives in the operator's
+first message on a BATCH line, so its grammar and the waiver's limits must be
+known before the first prompt (hrse#1730's criterion for staying unscoped);
+the rule text was condensed to the obligations and refusals only.
+"""
