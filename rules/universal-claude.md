@@ -86,7 +86,8 @@ derivable from code or Git.
   receipt at the pushed SHA (`.githooks/pre-push`,
   `tools/hooks/check_receipt.py`, harmonic-forge#975). A refused push means
   running `check` at that SHA, never bypassing the hook; a rebase makes a new
-  SHA, which needs its own `check`.
+  SHA, which needs its own `check`. The refusal names its own remedy, so it is
+  not a Git failure that R-0085's stop-and-wait applies to.
 <!-- /R-0389 -->
 <!-- R-0085 -->
 - On one Git/GitHub failure or apparent hang, stop, report the exact

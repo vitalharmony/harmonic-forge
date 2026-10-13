@@ -366,7 +366,9 @@ something already flagged as missing.
 <!-- R-0387 -->
 An `l1_post` overlap limited to generated files (a version line, generated
 docs) is acknowledged with `--ack-overlap "<reason>"` and posted. It is
-never presented to the operator as a choice.
+never presented to the operator as a choice: this rule is the operator's
+standing acknowledgment for that case, which is what `l1_post`'s
+"operator-acknowledged" heading then records.
 <!-- /R-0387 -->
 
 ## Verification standard

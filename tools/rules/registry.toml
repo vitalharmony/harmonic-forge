@@ -2586,7 +2586,7 @@ id = "R-0387"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
 statement = "An l1_post overlap limited to generated files is acknowledged with --ack-overlap and posted, never presented to the operator as a choice."
-text_sha = "7c58b05c51bd6957"
+text_sha = "f937e5d58692fc9f"
 hooks = []
 
 [[rule]]
@@ -2602,5 +2602,5 @@ id = "R-0389"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
 statement = "A Tooling Exception branch is pushed only with a passing mise run check receipt at the pushed SHA; a refused push means running check at that SHA, never bypassing the hook."
-text_sha = "bf17004e0ab2dff3"
+text_sha = "8339ddc6c5a12cc8"
 hooks = []
