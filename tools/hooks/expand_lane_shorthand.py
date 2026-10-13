@@ -486,14 +486,29 @@ def directive_lines(prompt: str):
     harmonic-forge#659) so the two directives cannot disagree about what counts
     as quoting. A courtesy, not the trust boundary -- `_provenance_refusal` is.
     """
-    fenced = False
+    # CommonMark fences (harmonic-forge#895): opened by >=3 backticks or
+    # tildes after up to 3 spaces; closed only by the SAME character, at least
+    # the opener's length, followed by nothing but whitespace.
+    opener: str | None = None
     for index, line in enumerate(prompt.splitlines()):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
+        match = _FENCE_RE.match(line)
+        if opener is None:
+            if match:
+                opener = match.group(1)
+                continue
+        else:
+            if (match and match.group(1)[0] == opener[0]
+                    and len(match.group(1)) >= len(opener) and not match.group(2).strip()):
+                opener = None
             continue
-        if fenced or _QUOTE_PREFIX_RE.match(line):
+        if _QUOTE_PREFIX_RE.match(line):
             continue
         yield index, line
+
+
+#: Any indentation opens a fence, as before the CommonMark change: a quoted,
+#: indented fence is still quotation (harmonic-forge#895 sticky-wicket).
+_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 
 
 def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:
@@ -626,6 +641,148 @@ def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
            "first tool call (harmonic-forge#502)."
 
 
+#: `IMC` (harmonic-forge#895, R-0384): uppercase, a whole word. Lowercase is
+#: noticed only so it can be refused out loud.
+_IMC_RE = re.compile(r"\bIMC\b")
+_IMC_ANY_CASE_RE = re.compile(r"\bimc\b", re.IGNORECASE)
+_IMC_LABEL = "tooling-exception"
+
+
+def _imc_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+    import imc_waiver  # noqa: PLC0415
+
+    return imc_waiver
+
+
+def read_issue_labels(repo: str, number: int,
+                      timeout: int = _FETCH_TIMEOUT_SECONDS) -> tuple[list[str] | None, str]:
+    """One `gh issue view <N> --repo <r> --json labels` read (the handoff's
+    amended AC3 -- the shape `fetch_issue_context` already uses; the gh shim
+    refuses `search/issues` from this caller). `(labels, "")`, or
+    `(None, reason)` on any failure, a shim refusal included."""
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(number), "--repo", repo, "--json", "labels"],
+            capture_output=True, text=True, timeout=timeout, check=False,
+            env=_slot_env(repo),  # harmonic-forge#804
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"the label read timed out after {timeout}s"
+    except OSError as exc:
+        return None, f"the label read could not run ({exc})"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        return None, ("the label read failed or was refused"
+                      + (f" ({detail[0][:160]})" if detail else ""))
+    try:
+        data = json.loads(result.stdout)
+        return [str(item.get("name")) for item in data.get("labels") or []], ""
+    except (ValueError, AttributeError, TypeError):
+        return None, "the label read returned unparseable output"
+
+
+def authorize_imc(prompt: str, session_id: str | None, lane: str | None,
+                  label_reader=None, now=None) -> str:
+    """Record an IMC waiver for each key after `IMC` on the BATCH line
+    (harmonic-forge#895). Mints NOTHING: the merge grant is `authorize_batch`'s,
+    and nothing here touches the batch state, so no refusal here can affect it.
+
+    Returns a receipt for `additionalContext`, or "" when the prompt carries no
+    IMC token at all. Every refusal names its key and reason. Never raises.
+    """
+    try:
+        return _authorize_imc(prompt, session_id, lane, label_reader or read_issue_labels, now)
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing recorded
+        return f"IMC REFUSED: the IMC check failed ({type(exc).__name__}: {exc}). No waiver recorded."
+
+
+def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
+    directive = dict(directive_lines(prompt))
+    lines = prompt.splitlines()
+    scan = _scan_batch(prompt)
+    batch_index = scan[0] if scan else None
+    notes: list[str] = []
+    for index, line in enumerate(lines):
+        if index == batch_index or not _IMC_ANY_CASE_RE.search(line):
+            continue
+        if index not in directive:
+            notes.append("IMC REFUSED: an IMC line inside a fenced block or blockquote is "
+                         "quotation, not an instruction. No waiver recorded.")
+        elif _IMC_RE.search(line):
+            notes.append("IMC REFUSED: IMC needs BATCH first on the same line (`BATCH <keys> "
+                         "IMC <keys>`). No waiver recorded.")
+    if batch_index is None:
+        return " ".join(dict.fromkeys(notes))
+    line = lines[batch_index]
+    imc = _IMC_RE.search(line)
+    if imc is None:
+        if _IMC_ANY_CASE_RE.search(line):
+            notes.append("IMC REFUSED: `imc` must be uppercase IMC. No waiver recorded.")
+        return " ".join(dict.fromkeys(notes))
+    try:
+        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
+        valid = {p.upper() for p in REPO_PREFIXES.values()}
+    except Exception:  # noqa: BLE001
+        valid = set()
+    keys = [k.upper() for k in _BATCH_KEY_RE.findall(line[imc.end():])]
+    keys = list(dict.fromkeys(k for k in keys if not valid or k[0] in valid))
+    if not keys:
+        notes.append("IMC REFUSED: no issue keys follow IMC on the BATCH line.")
+        return " ".join(notes)
+    refused: list[str] = []
+
+    def refuse_all(reason: str) -> str:
+        notes.append(f"IMC REFUSED for {', '.join(keys)}: {reason}. No waiver recorded; the "
+                     "BATCH grant on the same line is unaffected.")
+        return " ".join(notes)
+
+    # The operator types IMC as the prompt's first line, unindented. Anywhere
+    # else (an indented code block, a list-item fence, an HTML comment, a
+    # pasted post below the first line) it is quotation, however the Markdown
+    # nests (harmonic-forge#895 reforged pass 1).
+    first = next((i for i, text in enumerate(lines) if text.strip()), None)
+    if batch_index != first or not line.startswith("BATCH"):
+        return refuse_all("IMC is honored only on the prompt's first line, typed unindented")
+    provenance = _provenance_refusal(prompt, batch_index)
+    if provenance is not None:
+        return refuse_all(provenance)
+    if lane != "1":
+        return refuse_all(f"LANE is {lane!r}, and IMC is recorded only in a LANE=1 session")
+    imc = _imc_module()
+    recorded: list[str] = []
+    for key in keys:
+        target = imc.key_target(key)
+        if target is None:
+            refused.append(f"{key}: no repo maps to its prefix")
+            continue
+        repo, number = target
+        if not repo.lower().startswith(imc.VITALHARMONY):
+            refused.append(f"{key}: {repo} is a cross-account repo, and IMC fails closed there")
+            continue
+        labels, why = label_reader(repo, number)
+        if labels is None:
+            refused.append(f"{key}: {why}")
+            continue
+        if _IMC_LABEL not in labels:
+            refused.append(f"{key}: {repo}#{number} does not carry `{_IMC_LABEL}`")
+            continue
+        moment = now or imc._now()
+        imc.write_json_atomic(imc.hook_record_path(key), {
+            "key": key, "repo": repo, "issue": number, "granted_at": imc._iso(moment),
+            "session_id": session_id or "", "line": line, "hook_version": imc.HOOK_VERSION,
+        })
+        recorded.append(key)
+    if recorded:
+        notes.append(f"IMC: waiver hook record written for {', '.join(recorded)} "
+                     f"({imc.TTL_HOURS:g}h to start the run; R-0384). Next: "
+                     "`python3 tools/gh/imc_waiver.py record --key <K>` on a "
+                     "`feat|fix/<N>-` branch.")
+    for item in refused:
+        notes.append(f"IMC REFUSED for {item}. No waiver recorded; the BATCH grant is unaffected.")
+    return " ".join(notes)
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -643,6 +800,14 @@ def main() -> None:
         batch_receipt = authorize_batch(prompt)
     except Exception:
         batch_receipt = ""
+    # harmonic-forge#895: after BATCH, never instead of it. IMC reads its
+    # labels outside the R-0212 re-read budget below.
+    try:
+        imc_receipt = authorize_imc(prompt, payload.get("session_id"), os.environ.get("LANE"))
+    except Exception:
+        imc_receipt = ""
+    if imc_receipt:
+        batch_receipt = " ".join(p for p in (batch_receipt, imc_receipt) if p)
     try:
         doc_text = DOC_PATH.read_text(encoding="utf-8")
         expanded = annotate(prompt, doc_text)

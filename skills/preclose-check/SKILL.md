@@ -15,7 +15,15 @@ produces no PASS verdict. A subagent panel whose findings Lane 1 interprets
 and summarizes is still self-grading with one level of indirection. Say so in
 the report; never let the output read as an authorization. **Closure
 authority is unchanged: only the operator's explicit `Close H<N>` /
-`Close F<N>`.** This skill takes no closing action of its own.
+`Close F<N>`.** This skill takes no closing action of its own. Under an IMC
+waiver (`rules/lane-shorthand.md` R-0384) the closure authority is the
+operator's `IMC` line, never this check's output; on such an issue the
+cross-family gate is forced, and `--force`, `--allow-dirty`, `--reforge`,
+`--cluster-verdict --force`, `--not-triggered` and the in-family fallback
+label are refused — each is an IMC stop for the operator. A pending or
+unparseable receipt counts. Like BATCH, IMC trusts the operator-typed line and
+the session: the receipt and the `## IMC waiver` comment are an audit trail,
+not proof against a session that can write files.
 
 ## Procedure
 

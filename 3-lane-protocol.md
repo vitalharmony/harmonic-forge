@@ -1579,6 +1579,7 @@ own issue.
   indistinguishable from one that worked unless something checks the
   world rather than the report; requiring a PR to exist before it can be
   merged makes that failure self-detecting rather than silent.
+  One named exception: R-0384 (`rules/lane-shorthand.md`, `IMC`).
 <!-- /R-0229 -->
 <!-- R-0230 -->
 - **Even under this exception, the implementer never grades its own
@@ -1592,6 +1593,7 @@ own issue.
   night as #233: Lane 1 wrote a one-line fix, ran it through the suite
   itself without independent review, and had gotten the fix backwards —
   caught only because `sticky-wicket` was invoked afterward. See ADR-002.
+  One named exception: R-0384 (`rules/lane-shorthand.md`, `IMC`).
 <!-- /R-0230 -->
 <!-- R-0231 -->
 - **Lane 3 still gates the moment the tooling's output matters.** The

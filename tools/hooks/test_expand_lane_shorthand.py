@@ -42,6 +42,10 @@ class RealDocTests(unittest.TestCase):
     """AC1/AC3/AC4 against the actual rules/lane-shorthand.md, not a fixture --
     proves the parser works against the real doc, not an idealized shape."""
 
+    def test_a_four_space_indented_fence_still_quotes_batch(self) -> None:
+        prompt = "Here is the proposal:\n    ```\n    BATCH F1\n    ```"
+        self.assertEqual(m.batch_keys(prompt), [])
+
     def test_lane_token_and_repo_token_both_expand(self) -> None:
         result = _run("L2D H1304 please review")
         self.assertIsNotNone(result)
@@ -878,6 +882,25 @@ class BatchQuotationBoundaryTests(unittest.TestCase):
 
     def test_a_blockquote_authorizes_nothing(self) -> None:
         self.assertEqual(m.batch_keys("> BATCH F495, F497\n\nwhat does that do?"), [])
+
+    def test_mixed_fence_markers_do_not_close_each_other(self) -> None:
+        prompt = "```text\n~~~\nBATCH F495\n~~~\n```\n"
+        self.assertEqual(m.batch_keys(prompt), [])
+        self.assertEqual([l for _, l in m.directive_lines(prompt)], [])
+
+    def test_shorter_fence_does_not_close_a_longer_opener(self) -> None:
+        prompt = "````\n```\nBATCH F495\n````\nafter"
+        self.assertEqual([l for _, l in m.directive_lines(prompt)], ["after"])
+
+    def test_closing_fence_with_trailing_text_does_not_close(self) -> None:
+        prompt = "```\n``` not a close\nBATCH F495\n```\nafter"
+        self.assertEqual([l for _, l in m.directive_lines(prompt)], ["after"])
+
+    def test_an_indented_fence_still_opens_quoting(self) -> None:
+        # Any indentation opens a fence (sticky-wicket: the CommonMark 0-3
+        # space limit let an indented, pasted BATCH line mint a grant).
+        prompt = "    ```\nquoted\n    ```\nkept"
+        self.assertEqual([l for _, l in m.directive_lines(prompt)], ["kept"])
 
     def test_a_fenced_block_authorizes_nothing(self) -> None:
         self.assertEqual(

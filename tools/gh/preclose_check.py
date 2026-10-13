@@ -66,6 +66,7 @@ from manifest import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_passes  # noqa: E402  (harmonic-forge#834)
 import preclose_enrollment  # noqa: E402  (harmonic-forge#890)
+import imc_waiver  # noqa: E402  (harmonic-forge#895)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 # harmonic-forge#939: the Claude verify reviewer is accepted by the model-tier
@@ -135,8 +136,25 @@ PROVENANCE_TOOL = Path(os.environ.get(
 NOT_A_GATE = (
     "This is an adversarial pre-close check, not a Lane 3 gate. It raises the "
     "floor; it does not authorize closure. Closure remains the operator's "
-    "explicit call."
+    "explicit call. Under an IMC waiver (R-0384) the closure authority is the "
+    "operator's IMC line, never this output."
 )
+
+
+def imc_refusal(repo: str, issue: int, what: str) -> None:
+    """harmonic-forge#895 AC6: refuse `what` on an issue holding an IMC waiver
+    receipt. Keyed on the receipt's PRESENCE, never on the hook record's or the
+    BATCH grant's liveness, so the refusal survives their expiry. Under IMC no
+    operator sees a sticky-wicket ruling or a forced pass, so each refused
+    option is an IMC stop for the operator to decide."""
+    if imc_waiver.waiver_receipt(repo, issue) is not None:
+        raise SystemExit(
+            f"preclose-check: {repo}#{issue} holds an IMC waiver receipt (R-0384), which refuses "
+            f"{what}. This is an IMC stop: end the turn with the decision the operator owes.")
+
+
+def imc_forced(repo: str, issue: int) -> bool:
+    return imc_waiver.waiver_receipt(repo, issue) is not None
 
 
 def run(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -509,6 +527,10 @@ def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
     surviving = len(surviving_findings(findings))
     reasons = blast_radius(changed_files(args.base, args.head))
     required, why = cross_family_gate(surviving, reasons, args.cross_family)
+    if imc_forced(registered_repo(args.repo), args.issue):
+        # harmonic-forge#895: forced whenever the receipt exists, not while it
+        # is live -- keyed on liveness, it would invert at expiry.
+        required, why = True, "IMC waiver receipt exists (R-0384) — cross-family forced"
     return required, why, surviving, reasons
 
 
@@ -771,6 +793,25 @@ def plan(args: argparse.Namespace) -> int:
     require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
+    if args.allow_dirty:
+        imc_refusal(repo, args.issue, "--allow-dirty")
+    if args.force:
+        imc_refusal(repo, args.issue, "--force")
+    if getattr(args, "reforge", False):
+        imc_refusal(repo, args.issue, "--reforge")
+    held = imc_waiver.waiver_receipt(repo, args.issue)
+    if held is not None and not imc_waiver.waiver_satisfied(held):
+        raise SystemExit(
+            f"preclose-check: {repo}#{args.issue} holds an IMC waiver receipt that is not "
+            f"recorded (status {held.get('status', 'unreadable')!r}): the waiver comment never "
+            "confirmed. Re-run `python3 tools/gh/imc_waiver.py record` under a live IMC line.")
+    unmatched = imc_waiver.unmatched_hook_record(repo, args.issue)
+    if unmatched is not None:
+        raise SystemExit(
+            f"preclose-check: {repo}#{args.issue} holds a live IMC hook record (granted "
+            f"{unmatched.get('granted_at')}) but no matching waiver receipt. Record the waiver "
+            f"on the issue first: python3 tools/gh/imc_waiver.py record --key "
+            f"{unmatched.get('key')}")
     check_pass_cap(repo, args.issue, head_sha, local_patch_id(args.base, args.head), args.force,
                    getattr(args, "reforge", False))
     if not args.force and not kill_receipt_ok(
@@ -884,6 +925,14 @@ def complete(args: argparse.Namespace) -> int:
             "preclose-check: --complete needs --findings (the panel's findings, JSON) and one of "
             "--envelope/--not-triggered -- a pass is not complete until the cross-family gate "
             "has been evaluated (harmonic-forge#701).")
+    if args.force:
+        imc_refusal(repo, args.issue, "--force")
+    if getattr(args, "allow_dirty", False):
+        imc_refusal(repo, args.issue, "--allow-dirty")
+    if getattr(args, "reforge", False):
+        imc_refusal(repo, args.issue, "--reforge")
+    if args.not_triggered:
+        imc_refusal(repo, args.issue, "--not-triggered (the cross-family check is forced)")
     cost = pass_cost(args)
     # harmonic-forge#701 preclose finding (two refuters): without this, a
     # second --complete on the same SHA overwrote the receipt and could
@@ -900,6 +949,9 @@ def complete(args: argparse.Namespace) -> int:
         require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
     check_provenance(required, provenance)
+    if provenance.startswith(PROVENANCE_TRIGGERED[1]):
+        imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
+                    "could not run is an IMC stop, never a pass")
     # The call ran whenever an envelope is recorded, a fallback included: a
     # call that timed out still spent its wall-clock (#889 preclose pass 1).
     ran = bool(args.envelope)
@@ -1187,6 +1239,8 @@ def cluster_verdict(args: argparse.Namespace) -> int:
     """Record sticky-wicket's ruling without changing the vouched-for head."""
     require_writable(receipt_dir())
     repo = registered_repo(args.repo)
+    if args.force:
+        imc_refusal(repo, args.issue, "--cluster-verdict with --force")
     prior = find_receipt(repo, args.issue)
     if not prior:
         raise SystemExit("preclose-check: --cluster-verdict needs a prior receipt")
