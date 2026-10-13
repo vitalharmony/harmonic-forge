@@ -238,6 +238,15 @@ class OverflowIndexes(unittest.TestCase):
         self.assertEqual([d for d in dead if "INDEX-missing.md" in d],
                          ["MEMORY.md → (INDEX-missing.md): file does not exist"])
 
+    def test_non_utf8_overflow_index_does_not_crash_and_still_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            raw = (store / "INDEX-a.md").read_bytes() + b"- caf\x92 note\n"
+            (store / "INDEX-a.md").write_bytes(raw)
+            orphans = lint.check_orphans(store)
+            lint.check_dead_links(store)
+        self.assertFalse(any(o.startswith("feedback_in_a.md") for o in orphans), orphans)
+
     def test_index_cap_still_measures_memory_md_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = self._store(tmp)

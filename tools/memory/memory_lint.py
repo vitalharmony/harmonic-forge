@@ -174,7 +174,9 @@ def _index_texts(store: Path) -> list[tuple[str, str]]:
         path = store / target
         if _OVERFLOW_INDEX.match(target) and path.is_file():
             try:
-                texts.append((target, path.read_text(encoding="utf-8")))
+                # errors="replace": a stray non-UTF-8 byte must not crash every
+                # check; the links around it still parse (preclose pass 1).
+                texts.append((target, path.read_text(encoding="utf-8", errors="replace")))
             except OSError:
                 continue
     return texts
