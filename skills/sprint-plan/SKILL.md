@@ -189,8 +189,20 @@ as useless as it was: reconciling the doc and stopping, with no view of the
 milestone just reconciled against.
 
 ```
-python3 .claude/skills/sprint-plan/scripts/milestone_summary.py
+mise run sprint-summary-publish
+python3 .claude/skills/sprint-plan/scripts/milestone_summary.py --from-capture
 ```
+
+**In an agent session, publish first and then read the capture** (hrse#2366).
+A session cannot scan: the `gh` shim refuses full-list scans, and its override
+is single-use, while the summary scans three repos. `mise run
+sprint-summary-publish` therefore starts the `hrse-sprint-summary-publish`
+unit, which scans outside the shim, and `--from-capture` prints what the unit
+captured on `metrics/board-snapshots`, with no `gh` call. The operator
+accepted that bypass with a 30-minute floor: a start within 30 minutes of the
+unit's last run is skipped, and the latest capture is read instead. A bare
+`milestone_summary.py` (no flag) still scans, for the unit and for a terminal
+with a real `gh`.
 
 **Emitted, never persisted.** No part of the summary is written into
 `docs/PRIORITIES.md` or any other tracked file. A view cannot drift; a second
@@ -199,8 +211,8 @@ hrse#800/#802/#803/#807/#808/#809/#814.
 
 ### Redeploy board.cymagraph.ai's Sprint summary tab (hrse#1381)
 
-**Also runs by default on every `/sprint-plan` invocation, after the summary
-above.** `--no-summary` suppresses this too — there is nothing fresh to
+**Also runs by default on every `/sprint-plan` invocation, as the first
+line of the step above.** `--no-summary` suppresses this too — there is nothing fresh to
 publish without it.
 
 ```
