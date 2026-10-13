@@ -442,21 +442,71 @@ def _allow_unpromoted() -> dict[str, str]:
     return allowed
 
 
-_FLAT_FEEDBACK_TYPE = re.compile(r"""^\s*type:\s*["']?feedback["']?\s*$""", re.MULTILINE | re.IGNORECASE)
+_GATE_KEYS = ("type", "rule_check")
+RULE_CHECK_FORM = re.compile(r"^(?:R-\d{4}|none\s*\(\s*searched:\s*[^)\s][^)]*\))$", re.IGNORECASE)
+
+
+class GateFrontmatter:
+    """The two fields the #981 gate decides on, read strictly.
+
+    Reforged after two preclose passes found the regex readers let through
+    every form they did not recognize (sticky-wicket, harmonic-forge#981): one
+    canonical form is accepted and anything ambiguous is MALFORMED, never
+    silently "not feedback". Both the hook and Check 9 use this one reader.
+
+    `type` is read flat or nested under `metadata:`; `rule_check` is top-level.
+    An inline ` #` comment and surrounding quotes are stripped. A key seen
+    twice, a list or empty value, or a `rule_check` that is neither `R-NNNN`
+    nor `none (searched: <terms>)` is an error.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.values: dict[str, str] = {}
+        self.errors: list[str] = []
+        self.has_frontmatter = False
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return
+        body: list[str] = []
+        for line in lines[1:]:
+            if line.strip() == "---":
+                self.has_frontmatter = True
+                break
+            body.append(line)
+        if not self.has_frontmatter:
+            return
+        for line in body:
+            m = re.match(r"^\s*(type|rule_check)\s*:(.*)$", line)
+            if not m:
+                continue
+            key, raw = m.group(1), m.group(2)
+            value = re.sub(r"\s+#.*$", "", raw).strip().strip("\"'").strip()
+            if key in self.values:
+                self.errors.append(f"`{key}:` appears more than once")
+                continue
+            if not value or value.startswith("["):
+                self.errors.append(f"`{key}:` has no single value ({raw.strip()!r})")
+                continue
+            self.values[key] = value
+        rc = self.values.get("rule_check")
+        if rc is not None and not RULE_CHECK_FORM.match(rc):
+            self.errors.append(f"`rule_check: {rc}` is neither `R-NNNN` nor `none (searched: <terms>)`")
+
+    @property
+    def rule_check(self) -> str | None:
+        return self.values.get("rule_check")
+
+    @property
+    def is_feedback_type(self) -> bool:
+        return self.values.get("type", "").lower() == "feedback"
 
 
 def is_feedback_memory(name: str, text: str) -> bool:
     """harmonic-forge#981: a `feedback_*.md` filename, or a frontmatter `type`
-    of feedback, nested under `metadata:` or flat, quoted or not."""
+    of feedback (read by `GateFrontmatter`)."""
     if name.startswith("feedback_") and name.endswith(".md"):
         return True
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return False
-    for i, line in enumerate(lines[1:], 1):
-        if line.strip() == "---":
-            return bool(_FLAT_FEEDBACK_TYPE.search("\n".join(lines[1:i])))
-    return False
+    return GateFrontmatter(text).is_feedback_type
 
 
 #: harmonic-forge#981: the feedback memories that predate the `rule_check:` gate.
@@ -486,8 +536,13 @@ def check_rule_check(store: Path) -> list[str]:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        fm = _parse_frontmatter(text)
-        if is_feedback_memory(f.name, text) and not fm.get("rule_check", "").strip() and f.name not in allowed:
+        if f.name in allowed:
+            continue
+        gate = GateFrontmatter(text)
+        type_unreadable = any(e.startswith("`type:") for e in gate.errors)
+        if gate.errors and (is_feedback_memory(f.name, text) or type_unreadable):
+            findings.append(f"{f.name}: malformed gate frontmatter: {'; '.join(gate.errors)}")
+        elif is_feedback_memory(f.name, text) and not gate.rule_check:
             findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "
                             "feedback_allowlist.txt (written around the #981 gate?)")
     return findings

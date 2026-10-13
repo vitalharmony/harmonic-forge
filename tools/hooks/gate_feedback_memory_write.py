@@ -11,9 +11,13 @@ gates the CREATION of a feedback memory under the configured store on a
 * `rule_check: R-NNNN` that resolves in a rule registry -> deny, with the
   `capture_failure.py` command and the grep for the memory already pointing at
   that rule. There is no override.
-* `rule_check: none (searched: <terms>)` -> allow, unless the file's own body
-  cites an R-ID that resolves (operator ruling 2, 2026-10-13: the one checkable
-  half of a "none" declaration).
+* `rule_check: none (searched: <terms>)` -> allow, unless the file cites an
+  R-ID that resolves anywhere but its `rule_check:` line, the description
+  included (operator ruling 2, 2026-10-13; widened by the sticky-wicket reforge).
+* ambiguous frontmatter (a key twice, a list or commented-out value, a bare
+  `none`) -> deny. One strict reader, `memory_lint.GateFrontmatter`, decides
+  for both this hook and Check 9.
+* a MultiEdit that creates a file in the store -> deny: write it with Write.
 * missing, or an `R-NNNN` that does not resolve -> deny, naming both forms.
 
 What counts as creation: the path does not exist yet (including an `Edit` whose
@@ -39,9 +43,9 @@ sys.path.insert(0, str(_HERE.parent / "memory"))
 import memory_lint  # noqa: E402
 
 TOOLS = {"Write", "Edit", "MultiEdit"}
+#: Sentinel: a MultiEdit that creates a file in the store (refused outright).
+MULTIEDIT_CREATE = "\0multiedit-create"
 _RULE_ID = re.compile(r"\bR-\d{4}\b")
-_RULE_CHECK = re.compile(r"^rule_check:\s*(.*?)\s*$", re.MULTILINE)
-_NONE_FORM = re.compile(r"^none\s*\(\s*searched:\s*[^)\s][^)]*\)\s*$", re.IGNORECASE)
 
 #: The forge registry, resolved next to this file so it works in any checkout,
 #: plus HRSE2's sibling registry (a disjoint ID set, `check_cross_registry.py`).
@@ -60,16 +64,6 @@ def rule_ids() -> set[str]:
             continue
         ids |= set(re.findall(r'^id\s*=\s*"(R-\d{4})"', text, re.MULTILINE))
     return ids
-
-
-def _frontmatter_block(text: str) -> str:
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return ""
-    for i, line in enumerate(lines[1:], 1):
-        if line.strip() == "---":
-            return "\n".join(lines[1:i])
-    return ""
 
 
 def is_feedback(path: Path, text: str) -> bool:
@@ -104,17 +98,8 @@ def new_text(tool: str, tool_input: dict, path: Path) -> str | None:
         return None
     if tool == "MultiEdit":
         edits = tool_input.get("edits") or []
-        if not edits or edits[0].get("old_string", "") != "":
-            return None
-        # Apply every edit in order: the text checked must be the text written
-        # (preclose pass 1: a later edit could otherwise swap the declaration).
-        text = str(edits[0].get("new_string", ""))
-        for edit in edits[1:]:
-            old_s, new_s = str(edit.get("old_string", "")), str(edit.get("new_string", ""))
-            if not old_s:
-                continue
-            text = text.replace(old_s, new_s) if edit.get("replace_all") else text.replace(old_s, new_s, 1)
-        return text
+        if edits and edits[0].get("old_string", "") == "":
+            return MULTIEDIT_CREATE
     return None
 
 
@@ -164,24 +149,32 @@ def decide(tool: str, tool_input: dict, store: Path, ids: set[str]) -> str | Non
     if not _in_store(path, store):
         return None
     text = new_text(tool, tool_input, path)
-    if text is None or not is_feedback(path, text):
+    if text is None:
         return None
-    m = _RULE_CHECK.search(_frontmatter_block(text))
-    if not m or not m.group(1):
+    if text == MULTIEDIT_CREATE:
+        return ("Blocked (harmonic-forge#981): create a memory with Write, not MultiEdit. "
+                "A MultiEdit's later edits change the text after the gate reads it, so the "
+                "gate cannot certify it. Write the whole file, with its `rule_check:` line.")
+    gate = memory_lint.GateFrontmatter(text)
+    if gate.errors and (is_feedback(path, text) or any(e.startswith("`type:") for e in gate.errors)):
+        return _missing("its frontmatter is ambiguous: " + "; ".join(gate.errors))
+    if not is_feedback(path, text):
+        return None
+    if not gate.rule_check:
         return _missing("none found")
-    value = m.group(1).strip().strip("\"'")
-    if value.lower().startswith("none") and not _NONE_FORM.match(value):
-        return _missing(f"`{value}` names no search; write `none (searched: <terms>)`")
-    if _NONE_FORM.match(value):
-        body = memory_lint._body_text(text)
-        cited = [rid for rid in dict.fromkeys(_RULE_ID.findall(body)) if rid in ids]
-        if cited:
-            return _restates(cited[0], store, "declares `rule_check: none` but its body cites")
-        return None
-    rid = value.split()[0]
-    if rid in ids:
-        return _restates(rid, store, "declares `rule_check:`")
-    return _missing(f"`{value}` is not a rule ID in any registry")
+    rid = gate.rule_check.split()[0]
+    if rid.upper().startswith("R-"):
+        if rid in ids:
+            return _restates(rid, store, "declares `rule_check:`")
+        return _missing(f"`{rid}` is not a rule ID in any registry")
+    # `none (searched: …)`: the whole file except the rule_check line itself
+    # must cite no resolving rule (operator ruling 2; sticky-wicket: the
+    # description is scanned too).
+    rest = "\n".join(ln for ln in text.splitlines() if not re.match(r"^\s*rule_check\s*:", ln))
+    cited = [r for r in dict.fromkeys(_RULE_ID.findall(rest)) if r in ids]
+    if cited:
+        return _restates(cited[0], store, "declares `rule_check: none` but cites")
+    return None
 
 
 def main() -> int:

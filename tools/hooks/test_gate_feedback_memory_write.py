@@ -126,41 +126,65 @@ class Decide(unittest.TestCase):
                                      memory("none (searched: x)", body="See R-9999.\n")))
 
 
-class PassOneFixes(Decide):
-    """Preclose pass 1 (harmonic-forge#981): each fix pinned by a case."""
+class ReforgeCases(Decide):
+    """The reforge epoch (sticky-wicket, harmonic-forge#981): one strict reader,
+    ambiguity denied, MultiEdit creation refused, the whole file scanned."""
 
-    def test_multiedit_later_edit_adding_a_body_id_is_denied(self) -> None:
+    def test_multiedit_creation_is_refused_whatever_its_edits(self) -> None:
         path = self.store / "feedback_x.md"
-        msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": [
-            {"old_string": "", "new_string": memory("none (searched: x)")},
-            {"old_string": "A lesson.", "new_string": "See R-0039."}]}, self.store, IDS)
+        for edits in (
+            [{"old_string": "", "new_string": memory("none (searched: x)")}],
+            [{"old_string": "", "new_string": memory("none (searched: x)")},
+             {"old_string": "", "new_string": "R-0039"}],
+        ):
+            msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": edits}, self.store, IDS)
+            self.assertIsNotNone(msg)
+            self.assertIn("with Write, not MultiEdit", msg)
+
+    def test_rule_id_in_the_description_is_denied(self) -> None:
+        text = "---\nname: x\ndescription: restates R-0039\nmetadata:\n  type: feedback\nrule_check: none (searched: x)\n---\nbody\n"
+        msg = self.write("feedback_x.md", text)
         self.assertIsNotNone(msg)
         self.assertIn("R-0039", msg)
-
-    def test_multiedit_later_edit_swapping_the_declaration_is_denied(self) -> None:
-        path = self.store / "feedback_x.md"
-        msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": [
-            {"old_string": "", "new_string": memory("none (searched: x)")},
-            {"old_string": "none (searched: x)", "new_string": "R-0039"}]}, self.store, IDS)
-        self.assertIsNotNone(msg)
-
-    def test_multiedit_later_edit_adding_a_valid_declaration_is_allowed(self) -> None:
-        path = self.store / "feedback_x.md"
-        msg = gate.decide("MultiEdit", {"file_path": str(path), "edits": [
-            {"old_string": "", "new_string": memory(None)},
-            {"old_string": "  type: feedback", "new_string": "  type: feedback\nrule_check: none (searched: y)"}]},
-            self.store, IDS)
-        self.assertIsNone(msg)
-
-    def test_flat_and_quoted_feedback_type_are_gated(self) -> None:
-        flat = "---\nname: x\ntype: feedback\nrule_check: R-0039\n---\nbody\n"
-        quoted = '---\nname: x\nmetadata:\n  type: "feedback"\nrule_check: R-0039\n---\nbody\n'
-        self.assertIsNotNone(self.write("lesson_a.md", flat))
-        self.assertIsNotNone(self.write("lesson_b.md", quoted))
 
     def test_bare_none_without_a_search_is_denied(self) -> None:
         for value in ("none", "none ()", "none (searched: )"):
             self.assertIsNotNone(self.write("feedback_x.md", memory(value)), value)
+
+
+#: (name, frontmatter text) cases the hook must deny AND Check 9 must report.
+AMBIGUOUS = [
+    ("lesson_flat.md", "---\nname: a\ntype: feedback\n---\nbody\n"),
+    ("lesson_quoted.md", '---\nname: a\nmetadata:\n  type: "feedback"\n---\nbody\n'),
+    ("lesson_comment.md", "---\nname: a\ntype: feedback  # lesson\n---\nbody\n"),
+    ("lesson_list.md", "---\nname: a\ntype: [feedback]\n---\nbody\n"),
+    ("feedback_dup.md", "---\nname: a\nrule_check: none (searched: x)\nrule_check: R-0039\n---\nbody\n"),
+    ("feedback_bare_none.md", "---\nname: a\nrule_check: none\n---\nbody\n"),
+    ("feedback_untyped.md", "---\nname: a\nmetadata:\n  type: project\n---\nbody\n"),
+]
+
+
+class SharedReader(unittest.TestCase):
+    """The hook and Check 9 agree on every ambiguous or undeclared case."""
+
+    def test_hook_denies_and_lint_reports_each_case(self) -> None:
+        import memory_lint  # tools/memory is on sys.path via the hook module
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            for name, text in AMBIGUOUS:
+                with self.subTest(case=name, side="hook"):
+                    self.assertIsNotNone(gate.decide(
+                        "Write", {"file_path": str(store / name), "content": text}, store, IDS))
+                (store / name).write_text(text)
+            original = memory_lint.FEEDBACK_ALLOWLIST
+            memory_lint.FEEDBACK_ALLOWLIST = store / "no-allowlist.txt"
+            try:
+                reported = {f.split(":")[0] for f in memory_lint.check_rule_check(store)}
+            finally:
+                memory_lint.FEEDBACK_ALLOWLIST = original
+        for name, _text in AMBIGUOUS:
+            with self.subTest(case=name, side="lint"):
+                self.assertIn(name, reported)
 
 
 class Registry(unittest.TestCase):
