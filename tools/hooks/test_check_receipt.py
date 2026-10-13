@@ -89,6 +89,15 @@ class Verify(Base):
         self.assertIn("WARNING", self.stderr.getvalue())
 
 
+class Main(Base):
+    def test_unreadable_store_warns_and_passes(self):
+        stdin = mock.patch("sys.stdin", __import__("io").StringIO(line("fix/975-x") + "\n"))
+        with stdin, mock.patch.object(C, "labels", return_value=["tooling-exception"]), \
+                mock.patch.object(C, "receipt_path", side_effect=PermissionError("denied")):
+            self.assertEqual(C.main(["x", "verify", "origin", SSH]), 0)
+        self.assertIn("WARNING", self.stderr.getvalue())
+
+
 class Record(Base):
     def _repo(self, root: Path):
         run = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731

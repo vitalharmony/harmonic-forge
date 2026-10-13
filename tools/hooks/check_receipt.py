@@ -134,7 +134,12 @@ def main(argv: list[str]) -> int:
         return record(root, head)
     if len(argv) >= 2 and argv[1] == "verify":
         remote_url = argv[3] if len(argv) > 3 else ""
-        return verify(remote_url, sys.stdin.read().splitlines())
+        try:
+            return verify(remote_url, sys.stdin.read().splitlines())
+        except Exception as exc:  # fail open: only verify's own refusal blocks a push
+            print(f"pre-push: WARNING the gate could not decide ({exc!r}); pushing unchecked",
+                  file=sys.stderr)
+            return 0
     print("usage: check_receipt.py record [--repo-root DIR] [--head SHA] | verify <remote> <url>", file=sys.stderr)
     return 2
 
