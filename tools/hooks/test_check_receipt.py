@@ -98,6 +98,16 @@ class Main(Base):
         self.assertIn("WARNING", self.stderr.getvalue())
 
 
+    def test_a_label_error_on_a_later_ref_keeps_the_earlier_refusal(self):
+        def lookup(slug, issue):
+            if issue == "976":
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+            return ["tooling-exception"]
+
+        with mock.patch.object(C, "labels", side_effect=lookup):
+            self.assertEqual(C.verify(SSH, [line("fix/975-x"), line("fix/976-y")]), 1)
+        self.assertIn("WARNING", self.stderr.getvalue())
+
     def test_an_error_on_one_ref_keeps_another_refs_refusal(self):
         real = C.receipt_path
 
