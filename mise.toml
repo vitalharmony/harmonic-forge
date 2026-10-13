@@ -64,9 +64,13 @@ test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1
 
 [tasks.check]
 description = "Verification gate — depends on ci-check (the CI-runnable subset), plus the machine-local steps a CI runner cannot execute (harmonic-forge#802)."
-depends = ["ci-check"]
 run = """
 set -e
+# harmonic-forge#975: HEAD at the start, so the receipt below covers only the
+# commit every step tested. ci-check runs inline (not as a dependency) so it
+# falls inside that window.
+head=$(git rev-parse HEAD)
+mise run ci-check
 # harmonic-forge#645: machine-local -- reads $HOME/.local/bin, which a CI
 # runner does not have.
 python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
@@ -89,7 +93,7 @@ python3 tools/rules/check_cross_registry.py
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
 # harmonic-forge#975: reached only when every step above passed (set -e);
 # the pre-push gate reads this receipt for Tooling Exception branches.
-python3 tools/hooks/check_receipt.py record --repo-root .
+python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"
 """
 
 [tasks.context-budget-ratchet]

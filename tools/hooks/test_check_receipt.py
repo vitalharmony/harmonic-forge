@@ -17,8 +17,8 @@ SLUG = "vitalharmony__harmonic-forge"
 SSH = "git@github.com:vitalharmony/harmonic-forge.git"
 
 
-def line(branch: str, sha: str = SHA) -> str:
-    return f"refs/heads/{branch} {sha} refs/heads/{branch} {'0' * 40}"
+def line(branch: str, sha: str = SHA, local: str | None = None) -> str:
+    return f"{local or 'refs/heads/' + branch} {sha} refs/heads/{branch} {'0' * 40}"
 
 
 class Base(unittest.TestCase):
@@ -42,7 +42,9 @@ class RepoSlug(unittest.TestCase):
     def test_url_forms_normalize_alike(self):
         for url in (SSH, "https://github.com/vitalharmony/harmonic-forge",
                     "https://github.com/vitalharmony/harmonic-forge.git",
-                    "ssh://git@github.com/vitalharmony/harmonic-forge.git"):
+                    "ssh://git@github.com/vitalharmony/harmonic-forge.git",
+                    "ssh://git@ssh.github.com:443/vitalharmony/harmonic-forge.git",
+                    "https://GitHub.com/VitalHarmony/Harmonic-Forge.git"):
             self.assertEqual(C.repo_slug(url), SLUG, url)
 
 
@@ -71,13 +73,18 @@ class Verify(Base):
             self.assertEqual(C.verify(SSH, [line("feat/975x"), line("main")]), 0)
             looked.assert_not_called()
 
-    def test_deletion_and_te_line_together(self):
+    def test_deletion_of_te_branch_passes(self):
         deletion = f"(delete) {'0' * 40} refs/heads/fix/975-old {SHA}"
         with mock.patch.object(C, "labels", return_value=["tooling-exception"]):
-            self.assertEqual(C.verify(SSH, [deletion, line("fix/975-x")]), 1)
+            self.assertEqual(C.verify(SSH, [deletion]), 0)
+
+    def test_head_refspec_is_gated_by_its_remote_ref(self):
+        with mock.patch.object(C, "labels", return_value=["tooling-exception"]):
+            self.assertEqual(C.verify(SSH, [line("fix/975-x", local="HEAD")]), 1)
 
     def test_lookup_failure_warns_and_passes(self):
-        with mock.patch.object(C, "labels", return_value=None):
+        failed = subprocess.CompletedProcess([], 1, "", "gh: error")
+        with mock.patch.object(C.subprocess, "run", return_value=failed):
             self.assertEqual(C.verify(SSH, [line("fix/975-x")]), 0)
         self.assertIn("WARNING", self.stderr.getvalue())
 
@@ -98,6 +105,19 @@ class Record(Base):
             head = self._repo(Path(d))
             C.record(d)
             self.assertTrue(C.receipt_path(SLUG, head).exists())
+
+    def test_head_moved_during_check_refuses(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            self.assertEqual(C.record(d, head=OTHER), 0)
+            self.assertFalse(C.receipt_path(SLUG, head).exists())
+
+    def test_no_origin_warns_and_does_not_fail(self):
+        with TemporaryDirectory() as d:
+            self._repo(Path(d))
+            subprocess.run(["git", "remote", "remove", "origin"], cwd=d, check=True)
+            self.assertEqual(C.record(d), 0)
+        self.assertIn("WARNING", self.stderr.getvalue())
 
     def test_untracked_file_refuses(self):
         with TemporaryDirectory() as d:

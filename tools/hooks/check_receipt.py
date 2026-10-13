@@ -9,7 +9,15 @@ only; lane branches are already gated by `l1-post`'s check).
 
 Receipts live in a per-user store keyed by repo and commit SHA, so a receipt
 written in any worktree vouches for exactly that commit. `record` refuses a dirty
-tree (untracked files included), so a receipt never covers uncommitted work.
+tree (untracked files included) and a HEAD that moved since `check` started
+(`--head`, captured at its start), so a receipt never covers untested work.
+`record` never fails a passing `check`: anything it cannot decide skips the
+receipt with a warning.
+
+The issue is read from the remote ref being updated (`HEAD:fix/975-x` is
+gated like `fix/975-x`), and its repo is the push remote's. Known gap
+(operator ruling, F975): a branch in one repo named for another repo's issue
+is looked up in the wrong repo; branch names carry no repo.
 
 This is a mistake-detector, not a boundary: if the label lookup fails (no
 network, or `gh` refuses), the hook warns and lets the push through. The one
@@ -26,13 +34,14 @@ from pathlib import Path
 STORE = Path.home() / ".cache" / "harmonic-forge" / "check-receipts"
 BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)-")
 ZERO = "0" * 40
-_SLUG = re.compile(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$")
+_SLUG = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", re.IGNORECASE)
 
 
 def repo_slug(url: str) -> str | None:
     """`owner__repo` for an https, ssh or scp-form GitHub URL; None otherwise."""
     match = _SLUG.search(url.strip())
-    return f"{match.group(1)}__{match.group(2)}" if match else None
+    # GitHub owner and repo names are case-insensitive.
+    return f"{match.group(1)}__{match.group(2)}".lower() if match else None
 
 
 def _git(*args: str, cwd: str | None = None) -> str:
@@ -44,18 +53,25 @@ def receipt_path(slug: str, sha: str) -> Path:
     return STORE / slug / sha
 
 
-def record(repo_root: str = ".") -> int:
-    if _git("status", "--porcelain", cwd=repo_root):
-        print("check-receipt: tree is not clean; no receipt recorded", file=sys.stderr)
+def record(repo_root: str = ".", head: str | None = None) -> int:
+    try:
+        if _git("status", "--porcelain", cwd=repo_root):
+            print("check-receipt: tree is not clean; no receipt recorded", file=sys.stderr)
+            return 0
+        sha = _git("rev-parse", "HEAD", cwd=repo_root)
+        if head is not None and sha != head:
+            print("check-receipt: HEAD moved during check; no receipt recorded", file=sys.stderr)
+            return 0
+        slug = repo_slug(_git("remote", "get-url", "origin", cwd=repo_root))
+        if slug is None:
+            print("check-receipt: origin is not a GitHub URL; no receipt recorded", file=sys.stderr)
+            return 0
+        path = receipt_path(slug, sha)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"check-receipt: WARNING no receipt recorded ({exc})", file=sys.stderr)
         return 0
-    slug = repo_slug(_git("remote", "get-url", "origin", cwd=repo_root))
-    if slug is None:
-        print("check-receipt: origin is not a GitHub URL; no receipt recorded", file=sys.stderr)
-        return 0
-    sha = _git("rev-parse", "HEAD", cwd=repo_root)
-    path = receipt_path(slug, sha)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
     print(f"check-receipt: recorded {slug} {sha[:12]}")
     return 0
 
@@ -87,10 +103,10 @@ def verify(remote_url: str, lines: list[str]) -> int:
         parts = line.split()
         if len(parts) != 4:
             continue
-        local_ref, local_sha, _remote_ref, _remote_sha = parts
+        _local_ref, local_sha, remote_ref, _remote_sha = parts
         if local_sha == ZERO:
             continue  # a branch deletion
-        branch = local_ref.removeprefix("refs/heads/")
+        branch = remote_ref.removeprefix("refs/heads/")
         match = BRANCH_ISSUE.match(branch)
         if not match:
             continue
@@ -114,11 +130,12 @@ def verify(remote_url: str, lines: list[str]) -> int:
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "record":
         root = argv[argv.index("--repo-root") + 1] if "--repo-root" in argv else "."
-        return record(root)
+        head = argv[argv.index("--head") + 1] if "--head" in argv else None
+        return record(root, head)
     if len(argv) >= 2 and argv[1] == "verify":
         remote_url = argv[3] if len(argv) > 3 else ""
         return verify(remote_url, sys.stdin.read().splitlines())
-    print("usage: check_receipt.py record [--repo-root DIR] | verify <remote> <url>", file=sys.stderr)
+    print("usage: check_receipt.py record [--repo-root DIR] [--head SHA] | verify <remote> <url>", file=sys.stderr)
     return 2
 
 
