@@ -131,6 +131,8 @@ class ImcPrecloseTests(base.ScratchRepo):
         with self.assertRaises(SystemExit) as refused:
             with patch.object(base._Args, "reforge", True, create=True):
                 self.complete([])
+        # The IMC refusal itself, not check_pass_cap's own --reforge error.
+        self.assertIn("IMC waiver receipt", str(refused.exception))
         self.assertIn("--reforge", str(refused.exception))
 
     def test_complete_records_cross_family_under_receipt(self) -> None:
