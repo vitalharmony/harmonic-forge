@@ -488,7 +488,8 @@ def directive_lines(prompt: str):
     """
     fenced = False
     for index, line in enumerate(prompt.splitlines()):
-        if line.lstrip().startswith("```"):
+        # `~~~` opens a fence as surely as ``` (harmonic-forge#895 preclose).
+        if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
             continue
         if fenced or _QUOTE_PREFIX_RE.match(line):

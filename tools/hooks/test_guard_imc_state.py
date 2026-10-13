@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +65,31 @@ class GuardTests(unittest.TestCase):
                                "touch ~/.claude/state/imc/F892.waiver.json"))
         self.assertDenied(bash("python3 tools/gh/imc_waiver.py record --key F892 && "
                                "mkdir -p ~/.claude/state/imc"))
+
+    def test_unnormalized_paths_are_denied(self) -> None:
+        for path in ("/home/u/.claude/state//imc/F1.waiver.json",
+                     "/home/u/.claude/state/./imc/F1.waiver.json",
+                     "/home/u/.claude/state/x/../imc/F1.json"):
+            self.assertDenied({"tool_name": "Write", "tool_input": {"file_path": path, "content": "{}"}})
+            self.assertDenied(bash(f"touch {path}"))
+
+    def test_module_state_writers_are_denied(self) -> None:
+        self.assertDenied(bash("python3 -c \"import imc_waiver as w; "
+                               "w.write_json_atomic(w.receipt_path('F1'), {})\""))
+        self.assertDenied(bash("python3 -c \"import imc_waiver as w; w.receipt_path('F1').unlink()\""))
+
+    def test_record_command_chained_to_anything_is_denied(self) -> None:
+        self.assertDenied(bash("python3 tools/gh/imc_waiver.py record --key F892; echo done"))
+        self.assertDenied(bash("python3 tools/gh/imc_waiver.py record --key F892 --force"))
+
+    def test_main_fails_closed_when_the_guard_raises(self) -> None:
+        payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}
+        stdin = mock.Mock(buffer=io.BytesIO(json.dumps(payload).encode()))
+        with mock.patch.object(g, "guard", side_effect=RuntimeError("boom")), \
+                mock.patch.object(g.sys, "stdin", stdin), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(g.main(), 0)
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_unrelated_calls_pass(self) -> None:
         self.assertAllowed(bash("ls ~/.claude/state/preclose"))

@@ -55,6 +55,9 @@ class RecordTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.now = datetime.now(timezone.utc)
+        lane = patch.dict(imc_waiver.os.environ, {"LANE": "1"})
+        lane.start()
+        self.addCleanup(lane.stop)
 
     def hook_record(self, granted: datetime | None = None) -> None:
         self.state.mkdir(parents=True, exist_ok=True)
@@ -72,6 +75,13 @@ class RecordTests(unittest.TestCase):
 
     def receipt_exists(self) -> bool:
         return (self.state / f"{KEY}.waiver.json").exists()
+
+    def test_refuses_outside_lane_1(self) -> None:
+        self.hook_record()
+        with patch.dict(imc_waiver.os.environ, {"LANE": "2"}):
+            with self.assertRaises(SystemExit) as refused:
+                imc_waiver.record("F892", branch="fix/892-x", batch_state_path=self.batch)
+        self.assertIn("LANE", str(refused.exception))
 
     def test_refuses_with_no_hook_record(self) -> None:
         self.grant()

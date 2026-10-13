@@ -78,6 +78,14 @@ class ImcPrecloseTests(base.ScratchRepo):
             self.plan(tier="fast", force=True)
         self.assertIn("--force", str(refused.exception))
 
+    def test_plan_refuses_reforge_under_receipt(self) -> None:
+        self.receipt(datetime.now(timezone.utc))
+        with self.assertRaises(SystemExit) as refused:
+            with patch.object(base._Args, "reforge", True, create=True):
+                self.plan(tier="fast")
+        self.assertIn("IMC waiver receipt", str(refused.exception))
+        self.assertIn("--reforge", str(refused.exception))
+
     def test_plan_allows_force_and_dirty_without_receipt(self) -> None:
         self.assertIn("refuters:", self.plan(tier="fast", allow_dirty=True))
 

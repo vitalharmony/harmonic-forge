@@ -36,6 +36,13 @@ _PATCH_PATH = re.compile(r"(?m)^\*\*\* (?:(?:Add|Update|Delete) File|Move to):[ 
 #: `state/imc`, however joined: a slash path, or pathlib/os.path segments
 #: (`'state' / 'imc'`, `"state", "imc"`).
 _PROTECTED = re.compile(r"""state\s*['"]?\s*[/,]\s*['"]?imc(?![A-Za-z0-9_-])""", re.I)
+#: A command that loads `imc_waiver` and calls one of its state writers writes
+#: the state without naming the directory (preclose pass 1, cross-family).
+_MODULE_WRITE = re.compile(
+    r"imc_waiver.*?(write_json_atomic|receipt_path|hook_record_path|\.unlink|write_text|open\()",
+    re.S)
+#: Any invocation of the record command must be exactly the allowed form.
+_RECORD_CALL = re.compile(r"imc_waiver\.py[ \t]+record\b")
 #: The single exception. Whole command, nothing chained.
 _ALLOWED = re.compile(
     r"python3[ \t]+(?:\S*/)?tools/gh/imc_waiver\.py[ \t]+record[ \t]+--key[ \t]+[A-Za-z]\d{1,6}")
@@ -53,6 +60,18 @@ def _strings(value: object):
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _strings(item)
+
+
+def _normalize(text: str) -> str:
+    """Collapse `//`, `/./` and `seg/../` so a path that resolves into the
+    state directory is matched however it is spelled (preclose pass 1)."""
+    text = re.sub(r"/{2,}", "/", text)
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r"/\./", "/", text)
+        text = re.sub(r"/[^/\s'\"]+/\.\./", "/", text)
+    return text
 
 
 def allowed_command(command: str) -> bool:
@@ -74,7 +93,9 @@ def guard(payload: dict) -> str | None:
                 and allowed_command(str(tool_input.get("command") or "")):
             return None
         text = "\n".join(_strings(tool_input))
-    return _REASON if _PROTECTED.search(text) else None
+        if _MODULE_WRITE.search(text) or _RECORD_CALL.search(text):
+            return _REASON
+    return _REASON if _PROTECTED.search(_normalize(text)) else None
 
 
 def main() -> int:

@@ -241,6 +241,12 @@ def record(key: str, *, branch: str | None = None, now: datetime | None = None,
     """AC5: refuse unless every precondition holds; then post, refetch, and
     only then write the receipt. Returns the receipt."""
     key = key.strip().upper()
+    lane = os.environ.get("LANE", "")
+    if lane != "1":
+        # The hook records only in LANE=1; the waiver is posted only there too
+        # (harmonic-forge#895 preclose pass 1).
+        raise SystemExit(f"imc-waiver: LANE is {lane!r}; an IMC waiver is recorded only in a "
+                         "LANE=1 session.")
     target = key_target(key)
     if target is None:
         raise SystemExit(f"imc-waiver: {key} is not a repo-prefixed issue key.")

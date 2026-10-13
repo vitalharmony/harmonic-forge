@@ -125,6 +125,10 @@ class Ac2RefusalTests(ImcFixture):
         self.assertRefusedWithGrant("BATCH F892\n```\nBATCH F892 IMC F892\n```",
                                     "fenced block or blockquote")
 
+    def test_imc_in_tilde_fence(self) -> None:
+        self.assertRefusedWithGrant("BATCH F892\n~~~\nBATCH F892 IMC F892\n~~~",
+                                    "fenced block or blockquote")
+
     def test_imc_in_blockquote(self) -> None:
         self.assertRefusedWithGrant("BATCH F892\n> BATCH F892 IMC F892", "fenced block or blockquote")
 
