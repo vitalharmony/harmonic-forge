@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# harmonic-forge#975: refuse pushing a Tooling Exception branch without a
+# passing `mise run check` receipt at its SHA. The forge script owns the logic;
+# if it is not installed yet, warn and let the push through (mistake-detector).
+script="$HOME/harmonic-forge/tools/hooks/check_receipt.py"
+if [ ! -f "$script" ]; then
+  echo "pre-push: WARNING $script missing; pushing unchecked" >&2
+  exit 0
+fi
+exec python3 "$script" verify "$@"
