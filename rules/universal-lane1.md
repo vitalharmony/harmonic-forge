@@ -363,6 +363,12 @@ constraint like "only this file changes" must never silently exclude
 something already flagged as missing.
 <!-- /R-0101 -->
 
+<!-- R-0387 -->
+An `l1_post` overlap limited to generated files (a version line, generated
+docs) is acknowledged with `--ack-overlap "<reason>"` and posted. It is
+never presented to the operator as a choice.
+<!-- /R-0387 -->
+
 ## Verification standard
 
 <!-- R-0102 -->
