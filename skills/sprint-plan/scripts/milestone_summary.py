@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -128,6 +129,37 @@ def capture(path: Path, summary: str) -> None:
         raise
 
 
+#: hrse#2366: where `publish_sprint_summary.py` (run by the
+#: `hrse-sprint-summary-publish` unit) writes its capture.
+CAPTURE_BRANCH = "metrics/board-snapshots"
+CAPTURE_PATH = "docs/metrics/status/sprint-summary.md"
+
+
+def from_capture(cwd: Path | None = None) -> str:
+    """The latest published summary, read from the capture branch with no `gh` call.
+
+    hrse#2366: an agent session cannot scan (the `gh` shim refuses full-list
+    scans and its override is single-use), so `/sprint-plan` publishes through
+    the systemd unit, which scans, and then reads what the unit captured.
+    Fails loudly: an empty or missing capture is never printed as a summary.
+    """
+    def git(*args: str) -> str:
+        out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        if out.returncode:
+            raise SystemExit(f"sprint-plan summary: git {' '.join(args)} failed: {out.stderr.strip()}")
+        return out.stdout
+
+    # A named ref, never FETCH_HEAD: another session's fetch in the same
+    # checkout rewrites FETCH_HEAD between our fetch and our show.
+    ref = f"refs/remotes/origin/{CAPTURE_BRANCH}"
+    git("fetch", "-q", "origin", f"+{CAPTURE_BRANCH}:{ref}")
+    text = git("show", f"{ref}:{CAPTURE_PATH}")
+    body = "\n".join(line for line in text.splitlines() if line.strip() != CAPTURE_HEADER).strip()
+    if not body:
+        raise SystemExit(f"sprint-plan summary: {CAPTURE_BRANCH}:{CAPTURE_PATH} is empty")
+    return body
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--priorities", type=Path, default=Path("docs/PRIORITIES.md"))
@@ -138,7 +170,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reconcile-only", dest="reconcile_only", action="store_true")
     parser.add_argument("--capture", type=Path,
                         help="atomically capture generated output for the metrics branch")
+    parser.add_argument("--from-capture", action="store_true",
+                        help="print the unit's latest capture; no gh scan (hrse#2366)")
     args = parser.parse_args(argv)
+    if args.from_capture:
+        print(from_capture())
+        return
     anchor = args.milestone or read_anchor(args.priorities)
     milestone, correction = resolve_milestone(
         anchor, milestone_counts(MILESTONE_REPOS), known_milestones(MILESTONE_REPOS))

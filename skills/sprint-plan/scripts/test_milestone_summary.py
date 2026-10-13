@@ -60,6 +60,36 @@ lane_state = load("lane_state")
 KNOWN = ["2.7", "2.8", "2.9", "3.0", "Later", "Platform"]
 
 
+class FromCaptureTests(unittest.TestCase):
+    """hrse#2366: the session reads the unit's capture and never scans."""
+
+    def _git(self, show_stdout: str, fail: str | None = None):
+        def run(argv, **_kw):
+            if fail and fail in argv:
+                return mock.Mock(returncode=1, stdout="", stderr="boom")
+            return mock.Mock(returncode=0, stdout=show_stdout if "show" in argv else "", stderr="")
+        return run
+
+    def test_prints_the_capture_and_makes_no_gh_call(self):
+        captured = summary.CAPTURE_HEADER + "\n# Sprint 3.0\nrow\n"
+        with mock.patch.object(summary.subprocess, "run", side_effect=self._git(captured)) as run, \
+                mock.patch.object(summary, "gh_json", side_effect=AssertionError("gh scanned")), \
+                mock.patch.object(summary, "fetch_issues", side_effect=AssertionError("gh scanned")), \
+                mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()) as out:
+            summary.main(["--from-capture"])
+        self.assertEqual(out.getvalue().strip(), "# Sprint 3.0\nrow")
+        self.assertEqual([c.args[0][1] for c in run.call_args_list], ["fetch", "show"])
+
+    def test_a_failed_fetch_or_empty_capture_fails_loudly(self):
+        # The show output is non-empty, so only the fetch-failure check can stop it.
+        with mock.patch.object(summary.subprocess, "run", side_effect=self._git("# stale\n", fail="fetch")):
+            with self.assertRaises(SystemExit):
+                summary.from_capture()
+        with mock.patch.object(summary.subprocess, "run", side_effect=self._git(summary.CAPTURE_HEADER + "\n")):
+            with self.assertRaises(SystemExit):
+                summary.from_capture()
+
+
 class AnchorTests(unittest.TestCase):
     def write(self, text: str) -> Path:
         tmp = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False)
