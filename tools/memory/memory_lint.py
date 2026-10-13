@@ -157,23 +157,47 @@ def _index_text(store: Path) -> str:
         return ""
 
 
+_OVERFLOW_INDEX = re.compile(r"^INDEX-[^/]*\.md$")
+
+
+def _index_texts(store: Path) -> list[tuple[str, str]]:
+    """`MEMORY.md`, then each overflow `INDEX-*.md` it links (harmonic-forge#983).
+
+    One level by decision: an `INDEX-*.md` linked only from another overflow
+    index is not followed. A dead `INDEX-*.md` link is skipped here; check 2
+    reports it from `MEMORY.md`'s row. Check 6 keeps `_index_text`, because
+    only `MEMORY.md` is loaded every session.
+    """
+    root = _index_text(store)
+    texts = [("MEMORY.md", root)]
+    for target in dict.fromkeys(_memory_links(root)):
+        path = store / target
+        if _OVERFLOW_INDEX.match(target) and path.is_file():
+            try:
+                texts.append((target, path.read_text(encoding="utf-8")))
+            except OSError:
+                continue
+    return texts
+
+
 # ---------------------------------------------------------------------------
 # Check 1 — orphan files
 # ---------------------------------------------------------------------------
 
 def check_orphans(store: Path) -> list[str]:
-    linked = set(_memory_links(_index_text(store)))
-    return [f"{f.name}: not linked in MEMORY.md (orphan)"
+    linked = {t for _name, text in _index_texts(store) for t in _memory_links(text)}
+    return [f"{f.name}: not linked in MEMORY.md or any linked INDEX-*.md (orphan)"
             for f in memory_files(store) if f.name not in linked]
 
 
 # ---------------------------------------------------------------------------
-# Check 2 — dead MEMORY.md links
+# Check 2 — dead index links (MEMORY.md and its linked INDEX-*.md files)
 # ---------------------------------------------------------------------------
 
 def check_dead_links(store: Path) -> list[str]:
-    return [f"MEMORY.md → ({t}): file does not exist"
-            for t in _memory_links(_index_text(store)) if not (store / t).exists()]
+    return [f"{name} → ({t}): file does not exist"
+            for name, text in _index_texts(store)
+            for t in _memory_links(text) if not (store / t).exists()]
 
 
 # ---------------------------------------------------------------------------
@@ -511,7 +535,7 @@ def run(store: Path, gate: bool, today: date | None = None) -> int:
     cap_findings, cap_warnings = check_index_cap(store)
     gating: list[tuple[str, list[str]]] = [
         ("Check 1 — orphan files", check_orphans(store)),
-        ("Check 2 — dead MEMORY.md links", check_dead_links(store)),
+        ("Check 2 — dead index links", check_dead_links(store)),
         ("Check 4 — broken [[slug]] refs", broken),
         ("Check 5 — missing frontmatter", check_missing_frontmatter(store)),
         ("Check 6 — index load cap", cap_findings),

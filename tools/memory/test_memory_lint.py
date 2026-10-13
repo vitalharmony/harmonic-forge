@@ -188,6 +188,63 @@ class FixtureCounts(unittest.TestCase):
         self.assertIn("feedback_marc_always_triggers_lanes", known)
 
 
+class OverflowIndexes(unittest.TestCase):
+    """harmonic-forge#983: `MEMORY.md` plus the `INDEX-*.md` files it links."""
+
+    @staticmethod
+    def _mem(store: Path, name: str) -> None:
+        (store / name).write_text(
+            f"---\nname: {name[:-3]}\ndescription: d\nmetadata:\n  type: feedback\n---\nbody\n")
+
+    def _store(self, tmp: str) -> Path:
+        store = Path(tmp)
+        for n in ("INDEX-a.md", "INDEX-b.md", "INDEX-nested.md",
+                  "feedback_in_a.md", "feedback_in_b.md", "feedback_in_nested.md"):
+            self._mem(store, n)
+        (store / "INDEX-a.md").write_text(
+            (store / "INDEX-a.md").read_text()
+            + "- [x](feedback_in_a.md)\n- [n](INDEX-nested.md)\n- [gone](feedback_gone.md)\n")
+        (store / "INDEX-b.md").write_text((store / "INDEX-b.md").read_text() + "- [y](feedback_in_b.md)\n")
+        (store / "INDEX-nested.md").write_text(
+            (store / "INDEX-nested.md").read_text() + "- [z](feedback_in_nested.md)\n")
+        (store / "MEMORY.md").write_text("- [A](INDEX-a.md)\n- [Missing](INDEX-missing.md)\n")
+        return store
+
+    def test_ac1_linked_from_a_linked_overflow_index_is_not_an_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            orphans = lint.check_orphans(self._store(tmp))
+        self.assertFalse(any(o.startswith("feedback_in_a.md") for o in orphans), orphans)
+
+    def test_ac2_an_unlinked_overflow_index_and_its_children_stay_orphans(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            orphans = lint.check_orphans(self._store(tmp))
+        self.assertTrue(any(o.startswith("INDEX-b.md") for o in orphans), orphans)
+        self.assertTrue(any(o.startswith("feedback_in_b.md") for o in orphans), orphans)
+
+    def test_nested_overflow_index_is_not_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            orphans = lint.check_orphans(self._store(tmp))
+        self.assertFalse(any(o.startswith("INDEX-nested.md") for o in orphans), orphans)
+        self.assertTrue(any(o.startswith("feedback_in_nested.md") for o in orphans), orphans)
+
+    def test_ac3_dead_link_inside_a_linked_overflow_index_names_its_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dead = lint.check_dead_links(self._store(tmp))
+        self.assertIn("INDEX-a.md → (feedback_gone.md): file does not exist", dead)
+
+    def test_dead_overflow_index_link_is_reported_once_and_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dead = lint.check_dead_links(self._store(tmp))
+        self.assertEqual([d for d in dead if "INDEX-missing.md" in d],
+                         ["MEMORY.md → (INDEX-missing.md): file does not exist"])
+
+    def test_index_cap_still_measures_memory_md_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            self.assertEqual(lint.index_size(store)[0],
+                             len((store / "MEMORY.md").read_text().splitlines()))
+
+
 class IssueReferences(unittest.TestCase):
     """TC5 — `[[hrse#1303]]` is not a broken memory link."""
 
