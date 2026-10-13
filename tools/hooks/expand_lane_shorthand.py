@@ -486,15 +486,27 @@ def directive_lines(prompt: str):
     harmonic-forge#659) so the two directives cannot disagree about what counts
     as quoting. A courtesy, not the trust boundary -- `_provenance_refusal` is.
     """
-    fenced = False
+    # CommonMark fences (harmonic-forge#895): opened by >=3 backticks or
+    # tildes after up to 3 spaces; closed only by the SAME character, at least
+    # the opener's length, followed by nothing but whitespace.
+    opener: str | None = None
     for index, line in enumerate(prompt.splitlines()):
-        # `~~~` opens a fence as surely as ``` (harmonic-forge#895 preclose).
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
+        match = _FENCE_RE.match(line)
+        if opener is None:
+            if match:
+                opener = match.group(1)
+                continue
+        else:
+            if (match and match.group(1)[0] == opener[0]
+                    and len(match.group(1)) >= len(opener) and not match.group(2).strip()):
+                opener = None
             continue
-        if fenced or _QUOTE_PREFIX_RE.match(line):
+        if _QUOTE_PREFIX_RE.match(line):
             continue
         yield index, line
+
+
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:

@@ -311,17 +311,19 @@ run) only for an operator-typed line passing BATCH's filter and R-0117,
 `LANE=1`, a `vitalharmony` key, and a `tooling-exception` label read; each
 refusal is named in its receipt and never touches the BATCH grant. The run
 cuts `feat|fix/<N>-…`, runs `python3 tools/gh/imc_waiver.py record --key
-<K>` (posts and refetches `## IMC waiver — <K>`, then writes the receipt),
+<K>` (writes a pending receipt, posts and refetches `## IMC waiver — <K>`,
+then marks the receipt recorded; a retry completes a crashed run),
 then kill checks, `preclose-check`, the `preclose-inspected` label, a PR
 titled `… (<repo-slug>#<N>)` with no closing keyword, merge, deploy. While
-the receipt exists, `preclose_check.py` forces cross-family and refuses
+the receipt exists (an unparseable one counts), `preclose_check.py` forces cross-family and refuses
 `--force`, `--allow-dirty`, `--reforge`, `--cluster-verdict --force`,
 `--not-triggered` and the in-family fallback; `--plan` refuses a live record
 with no receipt. A refusal, survivors at the pass limit, a failed
 cross-family call, red CI, a conflict or an open dependency is an IMC stop:
 end the turn with the operator's decision. R-0229 is waived, never claimed
-satisfied. Only the hook and `record` write that directory
-(`guard_imc_state.py`).
+satisfied. Like BATCH, IMC trusts the operator-typed line and the session:
+the receipt and the public `## IMC waiver` comment are an audit trail, not
+proof against a session that can write files.
 <!-- /R-0384 -->
 
 ## Operator → lane triggers

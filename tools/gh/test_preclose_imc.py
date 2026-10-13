@@ -42,6 +42,25 @@ class ImcPrecloseTests(base.ScratchRepo):
         (self.state / f"{KEY}.waiver.json").write_text(json.dumps(
             {"key": KEY, "granted_at": _iso(granted), "comment_url": "u", "branch": "fix/1208-x"}))
 
+    # fail closed / crash-safe (harmonic-forge#895 reforge) ----------------
+    def test_unreadable_receipt_still_refuses(self) -> None:
+        for content in ('{"key": "H12', '[1, 2]'):
+            (self.state / f"{KEY}.waiver.json").write_text(content)
+            with self.assertRaises(SystemExit) as refused:
+                self.plan(tier="fast", force=True)
+            self.assertIn("--force", str(refused.exception))
+            self.assertTrue(preclose.imc_forced("vitalharmony/hrse", 1208))
+
+    def test_pending_receipt_from_a_crash_still_refuses(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.hook_record(now)
+        (self.state / f"{KEY}.waiver.json").write_text(json.dumps(
+            {"key": KEY, "granted_at": _iso(now), "comment_url": None, "status": "pending"}))
+        with self.assertRaises(SystemExit) as refused:
+            self.plan(tier="fast", allow_dirty=True)
+        self.assertIn("--allow-dirty", str(refused.exception))
+        self.assertTrue(preclose.imc_forced("vitalharmony/hrse", 1208))
+
     # --plan ---------------------------------------------------------------
     def test_plan_refuses_live_hook_record_without_receipt(self) -> None:
         self.hook_record(datetime.now(timezone.utc))

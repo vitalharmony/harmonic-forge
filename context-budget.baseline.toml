@@ -133,7 +133,7 @@ then the session has already interrupted or queued.
 [[increase]]
 date = "2026-10-13"
 files = [".claude/rules/lane-shorthand.md"]
-bytes = 1939
+bytes = 2147
 why = """
 harmonic-forge#895: the `IMC` directive and its rule R-0384, plus the R-0341
 merges-only sentence and R-0343's IMC trigger. IMC arrives in the operator's

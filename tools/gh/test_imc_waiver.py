@@ -142,24 +142,71 @@ class RecordTests(unittest.TestCase):
         saved = json.loads((self.state / f"{KEY}.waiver.json").read_text())
         self.assertEqual(saved, receipt)
         self.assertEqual(saved["comment_url"], URL)
+        self.assertEqual(saved["status"], "recorded")
         self.assertEqual(saved["branch"], "feat/892-imc")
         hook = json.loads((self.state / f"{KEY}.json").read_text())
         self.assertEqual(saved["granted_at"], hook["granted_at"])
 
-    def test_no_receipt_when_refetch_does_not_find_comment(self) -> None:
+    def saved(self) -> dict:
+        return json.loads((self.state / f"{KEY}.waiver.json").read_text())
+
+    def test_receipt_stays_pending_when_refetch_does_not_find_comment(self) -> None:
         self.hook_record()
         self.grant()
         with self.assertRaises(SystemExit) as refused:
             self.record(gh=FakeGh(fetched="something else"))
         self.assertIn("refetch", str(refused.exception))
-        self.assertFalse(self.receipt_exists())
+        self.assertEqual(self.saved()["status"], "pending")
+        self.assertIsNone(self.saved()["comment_url"])
 
-    def test_no_receipt_when_post_fails(self) -> None:
+    def test_receipt_stays_pending_when_post_fails(self) -> None:
         self.hook_record()
         self.grant()
         with self.assertRaises(SystemExit):
             self.record(gh=FakeGh(post_ok=False))
-        self.assertFalse(self.receipt_exists())
+        self.assertEqual(self.saved()["status"], "pending")
+
+    def test_pending_receipt_is_written_before_the_post(self) -> None:
+        self.hook_record()
+        self.grant()
+        seen: list = []
+
+        class Crash(FakeGh):
+            def __call__(inner, argv, **kw):
+                seen.append(imc_waiver.waiver_receipt("vitalharmony/harmonic-forge", 892))
+                raise KeyboardInterrupt("crash mid-post")
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.record(gh=Crash())
+        self.assertEqual(seen[0]["status"], "pending")
+        self.assertIsNotNone(imc_waiver.waiver_receipt("vitalharmony/harmonic-forge", 892))
+
+    def test_crash_after_post_keeps_receipt_and_retry_completes(self) -> None:
+        self.hook_record()
+        self.grant()
+
+        class CrashOnRefetch(FakeGh):
+            def __call__(inner, argv, **kw):
+                if "--method" not in argv:
+                    raise KeyboardInterrupt("crash after post")
+                return super().__call__(argv, **kw)
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.record(gh=CrashOnRefetch())
+        self.assertEqual(self.saved()["status"], "pending")
+        receipt = self.record()
+        self.assertEqual(receipt["status"], "recorded")
+        self.assertEqual(self.saved()["comment_url"], URL)
+
+    def test_unreadable_receipt_counts_as_present(self) -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        path = self.state / f"{KEY}.waiver.json"
+        for content in ('{"key": "F89', '["a list"]', ""):
+            path.write_text(content)
+            self.assertEqual(imc_waiver.waiver_receipt("vitalharmony/harmonic-forge", 892),
+                             {"unreadable": True}, content)
+        path.unlink()
+        self.assertIsNone(imc_waiver.waiver_receipt("vitalharmony/harmonic-forge", 892))
 
     def test_cross_account_key_refused(self) -> None:
         with self.assertRaises(SystemExit) as refused:

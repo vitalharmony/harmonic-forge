@@ -10,17 +10,22 @@ authority: the merge grant stays BATCH's. Three files carry it, all under
 - `<KEY>.json` -- the HOOK RECORD. Written only by `expand_lane_shorthand.py`
   on `UserPromptSubmit`, when the line passed every check. It expires with
   BATCH's TTL, and only for *starting* a run.
-- `<KEY>.waiver.json` -- the RECEIPT. Written only by `record` below, after
-  the fixed-format `## IMC waiver — <KEY>` comment is posted AND refetched.
+- `<KEY>.waiver.json` -- the RECEIPT. Written by `record` below BEFORE the
+  irreversible post (`status: "pending"`, no comment URL), so preclose
+  enforcement starts at once; rewritten with the comment URL and
+  `status: "recorded"` once the fixed-format `## IMC waiver — <KEY>` comment
+  is posted AND refetched. A crash between the two leaves the pending receipt,
+  and a retry for the same `granted_at` re-posts and completes it.
   Once it exists, `preclose_check.py` keys every IMC refusal on its presence,
   never on the hook record's or the grant's liveness (keying on liveness
   inverts at expiry: `--complete` would then demand `--not-triggered` for a
-  check `--plan` had required).
+  check `--plan` had required). A receipt file that exists but does not parse
+  as a JSON object counts as PRESENT (fail closed).
 
-`guard_imc_state.py` denies any tool call naming this directory, except the
-exact `python3 tools/gh/imc_waiver.py record --key <K>` command. Like the
-auto-AE guard it is a mistake-detector, not a boundary: every lane runs as the
-same user.
+Like BATCH, IMC trusts the operator-typed line and the session. Nothing guards
+this directory: every lane runs as the same user, so the receipt and the
+public `## IMC waiver` comment are an audit trail, not proof against a session
+that can write files.
 
 Run:
     python3 tools/gh/imc_waiver.py record --key F892
@@ -142,14 +147,23 @@ def live_hook_record(key: str, now: datetime | None = None) -> dict | None:
     return record
 
 
+#: Returned for a receipt FILE that exists but is not a JSON object, so every
+#: IMC refusal stays active (fail closed).
+UNREADABLE_RECEIPT = {"unreadable": True}
+
+
 def waiver_receipt(repo: str, issue: int) -> dict | None:
     """The receipt for this issue, if one exists. Presence is the whole test:
     an expired hook record or BATCH grant never removes a waiver already
-    recorded on the issue."""
+    recorded on the issue, and an unparseable receipt file is still present."""
     key = issue_key(repo, issue)
     if key is None:
         return None
-    return read_json(receipt_path(key))
+    path = receipt_path(key)
+    if not path.exists():
+        return None
+    data = read_json(path)
+    return data if data is not None else dict(UNREADABLE_RECEIPT)
 
 
 def unmatched_hook_record(repo: str, issue: int, now: datetime | None = None) -> dict | None:
@@ -232,14 +246,16 @@ def post_and_confirm(repo: str, issue: int, body: str, runner=subprocess.run) ->
                      capture_output=True, text=True, check=False)
     if fetched.returncode != 0 or (fetched.stdout or "").rstrip("\n") != body.rstrip("\n"):
         raise SystemExit(f"imc-waiver: the refetch did not find the waiver comment as written "
-                         f"({url}). No receipt was written; check the issue thread.")
+                         f"({url}). The receipt stays pending; check the issue thread and retry.")
     return url
 
 
 def record(key: str, *, branch: str | None = None, now: datetime | None = None,
            batch_state_path: Path | None = None, runner=subprocess.run) -> dict:
-    """AC5: refuse unless every precondition holds; then post, refetch, and
-    only then write the receipt. Returns the receipt."""
+    """AC5: refuse unless every precondition holds; then write a PENDING
+    receipt (preclose enforcement starts here), post and refetch, and rewrite
+    the receipt as recorded. A pending receipt from a crashed run for the same
+    `granted_at` is simply overwritten by the retry. Returns the receipt."""
     key = key.strip().upper()
     lane = os.environ.get("LANE", "")
     if lane != "1":
@@ -270,10 +286,15 @@ def record(key: str, *, branch: str | None = None, now: datetime | None = None,
     if not branch_matches(branch, issue):
         raise SystemExit(f"imc-waiver: branch {branch!r} does not match ^(feat|fix)/{issue}- . "
                          "The merge hook resolves only that shape, and fails open on any other.")
+    pending = {"key": key, "repo": repo, "issue": issue,
+               "granted_at": record_data.get("granted_at"), "comment_url": None,
+               "branch": branch, "recorded_at": _iso(moment), "rule": RULE_ID,
+               "status": "pending"}
+    # Before the irreversible post: a crash after this line still leaves the
+    # receipt, so preclose's refusals hold (harmonic-forge#895 reforge).
+    write_json_atomic(receipt_path(key), pending)
     url = post_and_confirm(repo, issue, comment_body(key, repo, issue, record_data, branch), runner)
-    receipt = {"key": key, "repo": repo, "issue": issue,
-               "granted_at": record_data.get("granted_at"), "comment_url": url,
-               "branch": branch, "recorded_at": _iso(moment), "rule": RULE_ID}
+    receipt = {**pending, "comment_url": url, "status": "recorded"}
     write_json_atomic(receipt_path(key), receipt)
     return receipt
 
