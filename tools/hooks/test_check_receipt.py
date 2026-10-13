@@ -98,6 +98,21 @@ class Main(Base):
         self.assertIn("WARNING", self.stderr.getvalue())
 
 
+    def test_an_error_on_one_ref_keeps_another_refs_refusal(self):
+        real = C.receipt_path
+
+        def flaky(slug, sha):
+            if sha == OTHER:
+                raise PermissionError("denied")
+            return real(slug, sha)
+
+        refs = [line("fix/975-x"), line("fix/975-y", OTHER)]
+        with mock.patch.object(C, "labels", return_value=["tooling-exception"]), \
+                mock.patch.object(C, "receipt_path", side_effect=flaky):
+            self.assertEqual(C.verify(SSH, refs), 1)
+        self.assertIn("WARNING", self.stderr.getvalue())
+
+
 class Record(Base):
     def _repo(self, root: Path):
         run = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731

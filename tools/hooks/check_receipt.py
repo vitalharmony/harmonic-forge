@@ -120,7 +120,13 @@ def verify(remote_url: str, lines: list[str]) -> int:
             continue
         if "tooling-exception" not in found:
             continue
-        if not receipt_path(slug, local_sha).exists():
+        try:
+            has_receipt = receipt_path(slug, local_sha).exists()
+        except OSError as exc:  # per ref, so it never erases another ref's refusal
+            print(f"pre-push: WARNING could not read the receipt store ({exc}); "
+                  f"{branch} is pushed unchecked (mistake-detector, fails open)", file=sys.stderr)
+            continue
+        if not has_receipt:
             print(f"pre-push: {branch}@{local_sha[:12]} is a Tooling Exception branch with no "
                   "passing 'mise run check' receipt; run it, then push", file=sys.stderr)
             refused = True
