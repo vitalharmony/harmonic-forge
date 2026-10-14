@@ -268,11 +268,13 @@ def validate_lead(kind: str, lead: dict[str, str]) -> None:
 #: line only, never a substring, so a narrative that quotes the marker cannot
 #: pass for one (`reject_reserved_marker` already refuses Lane 2 forging it).
 _HANDOFF_FOOTER = re.compile(r"^<!--\s*l1-post\s+v1;\s*kind=handoff\b.*-->\s*$", re.I)
-_LIVE_PROBE = re.compile(r"(?ms)^###\s+Live Probe\s*$\n(?P<text>.*?)(?=^###\s|\Z)")
-_REAL_RUN = re.compile(r"(?ms)^###\s+Real run\s*$\n(?P<text>.*?)(?=^###\s|\Z)")
+_LIVE_PROBE = re.compile(r"(?ms)^###\s+Live Probe\s*$\n(?P<text>.*?)(?=^#{1,3}\s|\Z)")
+_REAL_RUN = re.compile(r"(?ms)^###\s+Real run\s*$\n(?P<text>.*?)(?=^#{1,3}\s|\Z)")
 #: `none`, `none -- git grep ...`, `none new: ...` all say "no call" (the
 #: template requires "none" plus the search that found it).
-_NONE_FIRST = re.compile(r"^\W*none\b", re.I)
+#: Read from the first line only, and only as a standalone token: `none`, `none -- ...`,
+#: `none: ...`, `none.`, `none new: ...`. "None of the existing calls ... adds `claude -p`" is a call.
+_NONE_FIRST = re.compile(r"^\W*none\s*(?:$|[-\u2013\u2014:(.,;]|new\b)", re.I)
 
 
 def _pages(text: str) -> list[dict]:
@@ -314,6 +316,8 @@ def require_real_run(repo: str, issue: int, narrative: str) -> None:
     result = _gh_api("--paginate", f"repos/{repo}/issues/{issue}/comments")
     if result.returncode != 0:
         raise SystemExit(f"real-run check: cannot read the issue thread: {result.stderr}")
+    if not (result.stdout or "").strip():
+        raise SystemExit("real-run check: empty issue-thread read")
     try:
         comments = _pages(result.stdout)
     except ValueError as exc:
@@ -323,7 +327,7 @@ def require_real_run(repo: str, issue: int, narrative: str) -> None:
     if section is None:
         return
     probe = section.group("text").strip()
-    if not probe or _NONE_FIRST.match(probe):
+    if not probe or _NONE_FIRST.match(probe.splitlines()[0].strip()):
         return
     run = _REAL_RUN.search(narrative or "")
     if run is None or not run.group("text").strip():

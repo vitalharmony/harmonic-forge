@@ -436,11 +436,33 @@ class TestRealRun(unittest.TestCase):
             self._check("", "n", rc=1, stderr="rate limited")
         self.assertIn("cannot read the issue thread", str(caught.exception))
 
-    def test_concatenated_pages_are_read(self):
-        page_one = json.dumps([{"id": 1, "body": self._handoff("a call ran")}])
-        page_two = json.dumps([{"id": 2, "body": "later discussion"}])
-        with self.assertRaises(SystemExit):
+    def test_a_handoff_on_a_later_page_is_read(self):
+        """Preclose pass 1: the handoff sits on page TWO, so a parser that read only the first
+        page, or json.loads over the joined pages, cannot pass this for the right reason."""
+        page_one = json.dumps([{"id": 1, "body": "early discussion"}])
+        page_two = json.dumps([{"id": 2, "body": self._handoff("a call ran")}])
+        with self.assertRaises(SystemExit) as caught:
             self._check(page_one + page_two, "n")
+        self.assertIn("### Real run", str(caught.exception))
+        self.assertNotIn("unreadable", str(caught.exception))
+
+    def test_none_followed_by_a_named_call_is_a_call(self):
+        probe = "None of the existing calls change; this adds `claude -p`, ran once: output ..."
+        with self.assertRaises(SystemExit) as caught:
+            self._check(self._thread(self._handoff(probe)), "no real run section")
+        self.assertIn("### Real run", str(caught.exception))
+
+    def test_an_empty_real_run_before_a_higher_level_heading_is_refused(self):
+        for heading in ("## Verification", "# Notes", "### Other"):
+            with self.subTest(heading=heading), self.assertRaises(SystemExit):
+                self._check(self._thread(self._handoff("a fetch ran once")),
+                            f"### Real run\n\n{heading}\ncontent that is not the run")
+
+    def test_an_empty_successful_read_refuses(self):
+        for out in ("", "  \n"):
+            with self.subTest(out=repr(out)), self.assertRaises(SystemExit) as caught:
+                self._check(out, "n")
+            self.assertIn("empty issue-thread read", str(caught.exception))
 
 
 class TestSnapshot(unittest.TestCase):
