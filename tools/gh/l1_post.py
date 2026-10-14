@@ -128,11 +128,16 @@ SWEEP_TC_ENTRY_SUFFIXED = re.compile(
     r"(?m)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?(\d+[a-z]?)\b\**[ \t]*[-\u2014:.]?[ \t]*(.*)$",
     re.I,
 )
+#: harmonic-forge#1000: the fabricated-outcome check for the footer path, which
+#: alone accepts suffixed ids; the shared pattern above stays as it was (AC3).
+SWEEP_FABRICATED_OUTCOME_SUFFIXED = re.compile(
+    r"(?mi)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?\d+[a-z]?\b\**[ \t]*[-\u2014:.]?[ \t]*(pass|passed|fail|failed)\b"
+)
 SWEEP_LIST_ENTRY = re.compile(r"(?m)^[ \t]*\d+\.[ \t]*\**[ \t]*(.*)$")
 # Only `pass`/`fail` are fabrications at sweep time. `ready` and `blocked` are
 # both knowable before execution and stay legal.
 SWEEP_FABRICATED_OUTCOME = re.compile(
-    r"(?mi)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?\d+[a-z]?\b\**[ \t]*[-\u2014:.]?[ \t]*(pass|passed|fail|failed)\b"
+    r"(?mi)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?\d+\b\**[ \t]*[-\u2014:.]?[ \t]*(pass|passed|fail|failed)\b"
 )
 
 # a private-repo incident: Lane 3 specs number their cases as an ordinary markdown list at
@@ -857,7 +862,7 @@ def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
     those ids, one line-anchored TC entry each. Same refusals as the body path:
     a fabricated outcome, no write tier, a missing or extra entry, an empty one."""
     sweep_section, _ = _case_section(body)
-    if SWEEP_FABRICATED_OUTCOME.search(sweep_section):
+    if SWEEP_FABRICATED_OUTCOME_SUFFIXED.search(sweep_section):
         fail(
             "sweep states a test outcome (`pass`/`fail`), but a gate-readiness "
             "sweep is posted BEFORE the gate runs -- no case has an outcome yet. "
@@ -866,8 +871,12 @@ def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
     if parse_write_tier(body) is None:
         fail(f"sweep {NO_TIER_MESSAGE}")
     entries = SWEEP_TC_ENTRY_SUFFIXED.findall(sweep_section)
-    named = {number.lower() for number, _ in entries}
+    named_list = [number.lower() for number, _ in entries]
+    named = set(named_list)
     want = {case.lower() for case in expected}
+    repeated = sorted({n for n in named_list if named_list.count(n) > 1}, key=_case_sort_key)
+    if repeated:
+        fail(f"sweep needs exactly one line per case; repeated: TC{', TC'.join(repeated)}")
     if named != want:
         fail(
             "sweep case IDs must exactly match the spec's classes= footer, one "

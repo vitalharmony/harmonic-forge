@@ -466,5 +466,15 @@ class FooterCaseIdsTests(unittest.TestCase):
                     self._validate(self._sweep(ids), spec)
                 self._validate(self._sweep(ids + ["10"]), spec)
 
+    def test_a_repeated_case_line_is_refused(self):
+        ids = ["1", "2", "3"]
+        with self.assertRaises(SystemExit) as caught:
+            self._validate(self._sweep(["1", "1", "2", "3"]), self._spec(ids, ids))
+        self.assertIn("repeated", str(caught.exception))
+
+    def test_the_shared_outcome_pattern_is_unchanged_without_a_footer(self):
+        self.assertIsNone(L.SWEEP_FABRICATED_OUTCOME.search("- TC2a passed"))
+        self.assertIsNotNone(L.SWEEP_FABRICATED_OUTCOME_SUFFIXED.search("- TC2a passed"))
+
     def test_mixed_ids_sort_without_crashing(self):
         self.assertEqual(sorted({"10", "7b", "7", "2"}, key=L._case_sort_key), ["2", "7", "7b", "10"])
