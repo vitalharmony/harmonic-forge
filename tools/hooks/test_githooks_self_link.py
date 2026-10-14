@@ -40,7 +40,7 @@ class SelfLink(unittest.TestCase):
                        check=True, capture_output=True, timeout=120)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
                               text=True, check=True).stdout.strip()
-        git("checkout", "-q", "-b", "base", head, cwd=self.clone)
+        git("checkout", "-q", "-b", "selflink-base", head, cwd=self.clone)
         # The hooks under test are this checkout's, not whatever HEAD carries.
         for name in ("post-checkout", "post-merge"):
             (self.clone / ".githooks" / name).write_text((REPO / ".githooks" / name).read_text())
@@ -63,16 +63,16 @@ class SelfLink(unittest.TestCase):
 
     def test_ac1_a_new_worktree_links_to_itself(self) -> None:
         wt = self.tmp / "wt"
-        git("worktree", "add", "-q", "-b", "feat", str(wt), cwd=self.clone, env=self.env)
+        git("worktree", "add", "-q", "-b", "selflink-feat", str(wt), cwd=self.clone, env=self.env)
         self.assert_self_linked(wt)
 
     def test_ac1_post_merge_relinks_to_itself(self) -> None:
-        git("checkout", "-q", "-b", "side", cwd=self.clone, env=self.env)
+        git("checkout", "-q", "-b", "selflink-side", cwd=self.clone, env=self.env)
         git("commit", "-q", "--allow-empty", "-m", "side", cwd=self.clone, env=self.env)
-        git("checkout", "-q", "base", cwd=self.clone, env=self.env)
+        git("checkout", "-q", "selflink-base", cwd=self.clone, env=self.env)
         for link in links(self.clone):
             link.unlink()
-        git("merge", "-q", "--no-ff", "--no-edit", "side", cwd=self.clone, env=self.env)
+        git("merge", "-q", "--no-ff", "--no-edit", "selflink-side", cwd=self.clone, env=self.env)
         self.assert_self_linked(self.clone)
 
     def test_ac2_a_consuming_repo_links_to_the_installed_forge(self) -> None:
