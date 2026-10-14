@@ -423,6 +423,7 @@ class RepoTargetTests(unittest.TestCase):
              patch.object(post, "world_checks", return_value=(["world"], [])), \
              patch.object(post, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.object(post, "write_receipt"), \
+             patch.object(post, "validate_sticky_wicket"), \
              patch.object(sys, "argv", [
                  "l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "123",
                  # a private-repo incident: a handoff must now declare Plan-First. This
