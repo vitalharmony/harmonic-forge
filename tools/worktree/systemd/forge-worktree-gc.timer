@@ -1,0 +1,9 @@
+[Unit]
+Description=Sweep closed-issue implementation worktrees hourly (harmonic-forge#1004)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
