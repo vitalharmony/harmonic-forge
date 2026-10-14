@@ -20,7 +20,6 @@ number or prose, so the display string stays free to be reworded.
 | Key | Display string | Meaning |
 |---|---|---|
 | `blocked.no-tier` | `blocked: no Tier` | the board `Tier` field is unset, so `l1_post.py` will refuse the handoff |
-| `blocked.no-fields` | `blocked: no board fields: <names>` | no handoff yet, and the board `Theme` or `Venture` is unset, so `l1_post.py` will refuse the handoff (harmonic-forge#989). Replaces only `no-handoff`: an issue past its handoff keeps its real state |
 | `blocked.dependency` | `blocked on <target>` | an open dependency |
 | `blocked.lane` | `blocked: L<N>B, see thread` | a lane reported BLOCKED |
 | `no-handoff` | `no handoff` | nothing posted yet |

@@ -179,11 +179,6 @@ _DECLARES_PLAN_FIRST = re.compile(
 _SECTION_IS_NONE = re.compile(r"^\s*(none|n/?a|—|-)\b", re.I)
 
 BLOCKED_NO_TIER = "blocked: no Tier"
-#: harmonic-forge#989. `l1_post.validate_board_fields_set` also refuses a
-#: handoff missing Theme or Venture. Rendered with the missing names appended.
-#: A separate state from `BLOCKED_NO_TIER` rather than a widening of it: that
-#: key is stable and already read, so its meaning does not change.
-BLOCKED_NO_FIELDS = "blocked: no board fields"
 NO_HANDOFF = "no handoff"
 PLAN_POSTED = "plan posted, awaiting L1"
 SPEC_POSTED = "spec posted, awaiting L1"
@@ -238,7 +233,6 @@ KEY_GATE_FAIL = "gate.fail"
 KEY_BLOCKED_LANE = "blocked.lane"
 
 KEY_BLOCKED_NO_TIER = "blocked.no-tier"
-KEY_BLOCKED_NO_FIELDS = "blocked.no-fields"
 KEY_BLOCKED_DEP = "blocked.dependency"
 KEY_NO_HANDOFF = "no-handoff"
 KEY_READY_PLAN = "ready.plan"
@@ -684,20 +678,6 @@ class LaneState(NamedTuple):
     at: str = ""
 
 
-#: The board fields beyond Tier that the handoff gate requires (harmonic-forge#989).
-_HANDOFF_FIELDS = ("Theme", "Venture")
-
-
-def _no_handoff(record: dict, at: str = "") -> LaneState:
-    """`no-handoff`, unless the handoff that is owed cannot post (harmonic-forge#989)."""
-    fields = record.get("fields") or {}
-    missing = [name for name in _HANDOFF_FIELDS if not fields.get(name)]
-    if missing:
-        return LaneState(f"{BLOCKED_NO_FIELDS}: {', '.join(missing)}", None,
-                         KEY_BLOCKED_NO_FIELDS, at)
-    return LaneState(NO_HANDOFF, None, KEY_NO_HANDOFF, at)
-
-
 def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
     """`(state, literal_next_trigger_or_None, stable_key)` for one issue.
 
@@ -708,10 +688,7 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
     1. **No board Tier** beats everything — `l1_post.validate_board_fields_set`
        refuses the handoff, so the issue cannot move regardless of what else
        is true, and that condition was previously invisible until a post was
-       rejected. A missing Theme or Venture (harmonic-forge#989) refuses the
-       same handoff but does NOT take this precedence: it replaces only a
-       `no-handoff` result, because an issue already past its handoff is not
-       gated again and keeps its real state.
+       rejected.
     2. **An unmet dependency**, computed by the caller from the summary's
        existing `deps` and open-key set. Never a second detection mechanism.
     3. **The latest lane marker wins.** An issue carrying both a handoff and
@@ -725,7 +702,7 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
 
     comments = record.get("comments") or []
     if not comments:
-        return _no_handoff(record)
+        return LaneState(NO_HANDOFF, None, KEY_NO_HANDOFF)
 
     markers = _Markers(comments)
     # harmonic-forge#134: the newest transition's timestamp, taken from the
@@ -738,7 +715,7 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
     newest = markers.newest()
     if newest is None:
         return LaneState(UNKNOWN, None, KEY_UNKNOWN, at) if markers.unrecognized \
-            else _no_handoff(record, at)
+            else LaneState(NO_HANDOFF, None, KEY_NO_HANDOFF, at)
 
     ref = record.get("key", "")
     name, index = newest
