@@ -220,6 +220,11 @@ class Marker(Base):
         self.assertEqual(code, 1)
         self.assertFalse(self.marker.exists())
 
+    def test_record_cli_exits_1_when_store_resolution_fails(self) -> None:
+        with mock.patch.object(fold_due.memory_lint, "resolve_store", side_effect=OSError("boom")):
+            code = fold_due.main(["--record", "--repo", str(self.repo), "--marker", str(self.marker)])
+        self.assertEqual(code, 1)
+
     def test_record_refuses_when_git_cannot_name_the_main_checkout(self) -> None:
         (self.repo / ".git").mkdir()
         with mock.patch.object(fold_due, "main_checkout_known", return_value=False):

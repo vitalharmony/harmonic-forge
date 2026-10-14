@@ -278,8 +278,9 @@ def main(argv: list[str] | None = None) -> int:
         if fired:
             print(f"memory-fold owed: {fired[0][1]}")
             print(f"kinds: {','.join(kind for kind, _m in fired)}")
-    except Exception as exc:  # noqa: BLE001 -- always exit 0
+    except Exception as exc:  # noqa: BLE001 -- the check always exits 0; --record does not
         print(f"fold_due: internal error ({exc!r})", file=sys.stderr)
+        return 1 if args.record else 0
     return 0
 
 
