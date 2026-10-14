@@ -225,6 +225,14 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str], ttl: float = 0):
     else:
         def run(cmd):
             return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
+    # harmonic-forge#992: the read matches the board owner. Without one from the manifest, only a
+    # hinted target's owner is known (its repo's own owner owns its board); any other board's owner
+    # is unknown, and guessing the repo's owner is wrong for a #820 cross-owner board.
+    if not owner:
+        hinted = {r.lower() for r, _n in model_tier_gate.HINTED_TARGETS.values()}
+        if repo.lower() not in hinted:
+            return model_tier_gate.LOOKUP_FAILED, f"no board owner resolved for {repo}"
+        owner = repo.split("/", 1)[0]
     return model_tier_gate.read_tier(repo.lower(), number, board, run=run, ttl=ttl, owner=owner)
 
 

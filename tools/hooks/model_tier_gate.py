@@ -415,7 +415,7 @@ def is_not_an_issue_error(message: str) -> bool:
 
 
 def read_tier(repo: str, issue_number: int, project_number: str, run=None,
-              ttl: float = _CACHE_TTL, owner: str | None = None):
+              ttl: float = _CACHE_TTL, *, owner: str):
     """`(tier, error)` for one issue on one board.
 
     `tier` is a Tier string, None (no Tier set, or the shared module is not
@@ -467,6 +467,9 @@ def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None,
     hinted_target = HINTED_TARGETS.get(repo_hint or "")
     if hinted_target:
         repo, number = hinted_target
+        # Both hinted boards are owned by their repo's owner (harmonic-forge#992:
+        # the per-issue read matches the board owner as well as its number).
+        owner = repo.split("/", 1)[0]
     else:
         board = resolve_project_board(cwd)
         if board is None:
@@ -474,8 +477,8 @@ def resolve_tier(cwd: str, issue_number: int, repo_hint: str | None = None,
         repo = resolve_repo(cwd)
         if repo is None:
             return None
-        _owner, number = board
-    tier = read_tier(repo, issue_number, number, run=timed_run, ttl=ttl)[0]
+        owner, number = board
+    tier = read_tier(repo, issue_number, number, run=timed_run, ttl=ttl, owner=owner)[0]
     # A branch naming a number GitHub has no issue for carries no Tier: the
     # same allow as "no Tier set", never a LOOKUP_FAILED deny.
     return None if tier is NOT_AN_ISSUE else tier

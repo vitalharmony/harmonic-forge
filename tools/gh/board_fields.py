@@ -149,7 +149,7 @@ def cmd_set(args: argparse.Namespace) -> int:
         try:
             actual = item_list_cache.fetch_issue_field(
                 repo, args.issue, number, field=name, run=lambda cmd: gh_issue._run(cmd, check=False),
-                ttl=0)
+                ttl=0, owner=owner)
         except item_list_cache.GhItemListError as exc:
             print(f"[board-fields] cannot re-read {name}: {exc}", file=sys.stderr)
             ok = False

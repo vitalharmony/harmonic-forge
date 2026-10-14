@@ -325,12 +325,12 @@ class RealLookupPathTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, cache_dir, ignore_errors=True)
 
         def payload(tier):
-            node = {"project": {"number": 1}, "value": {"name": tier} if tier else None}
+            node = {"project": {"number": 1, "owner": {"login": "vitalharmony"}}, "value": {"name": tier} if tier else None}
             return subprocess.CompletedProcess([], 0, json.dumps({"data": {"repository": {
                 "issue": {"projectItems": {"nodes": [node]}}}}}), "")
 
         with patch.object(model_tier_gate, "_CACHE_DIR", cache_dir):
-            self.assertEqual(model_tier_gate.read_tier(HRSE, 1830, "1",
+            self.assertEqual(model_tier_gate.read_tier(HRSE, 1830, "1", owner="vitalharmony",
                                                        run=lambda cmd: payload(None)), (None, None))
             with patch.object(model_tier_gate, "timed_run", lambda cmd, timeout=None, env=None: payload("deep")):
                 self.assertEqual(t.lookup_tier(HRSE, 1830, {HRSE: "1"}), ("deep", None))
@@ -352,6 +352,22 @@ class RealLookupPathTests(unittest.TestCase):
             tier, error = t.lookup_tier(HRSE, 1810, {HRSE: "1"})
         self.assertIs(tier, model_tier_gate.LOOKUP_FAILED)
         self.assertIn("timed out", error)
+
+    def test_an_unresolved_owner_for_a_non_hinted_board_fails_closed(self):
+        """harmonic-forge#992 preclose (cross-family): without the manifest's owner, guessing the
+        repo's owner is wrong for a cross-owner board, so the lookup fails rather than allowing."""
+        with patch.object(t, "_board_owners", return_value={}), \
+             patch.object(t.model_tier_gate, "read_tier") as read:
+            tier, error = t.lookup_tier("kenekted/kenekted-ai", 7, {"kenekted/kenekted-ai": "1"})
+        self.assertIs(tier, t.model_tier_gate.LOOKUP_FAILED)
+        self.assertIn("no board owner", error)
+        read.assert_not_called()
+
+    def test_an_unresolved_owner_for_a_hinted_board_uses_its_repo_owner(self):
+        with patch.object(t, "_board_owners", return_value={}), \
+             patch.object(t.model_tier_gate, "read_tier", return_value=("fast", None)) as read:
+            self.assertEqual(t.lookup_tier(HRSE, 7, {HRSE: "1"}), ("fast", None))
+        self.assertEqual(read.call_args.kwargs["owner"], "vitalharmony")
 
     def test_unknown_repo_is_not_read(self):
         with patch.object(model_tier_gate._item_list_cache, "fetch_issue_tier") as fetch:

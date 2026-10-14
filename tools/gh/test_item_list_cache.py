@@ -81,9 +81,9 @@ class FetchIssueTierTests(unittest.TestCase):
         payload = {"data": {"repository": {"issue": {"projectItems": {"nodes": nodes}}}}}
         return MagicMock(return_value=MagicMock(returncode=0, stdout=json.dumps(payload), stderr=""))
 
-    def _node(self, project_number, tier=None):
+    def _node(self, project_number, tier=None, owner="a"):
         return {
-            "project": {"number": project_number},
+            "project": {"number": project_number, "owner": {"login": owner}},
             # harmonic-forge#468: the query aliases the field value as `value`
             # now that it reads any field, not only Tier.
             "value": None if tier is None else {"name": tier},
@@ -91,11 +91,11 @@ class FetchIssueTierTests(unittest.TestCase):
 
     def test_tier_is_read(self):
         run = self._run_returning([self._node(1, tier="fast")])
-        self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run), "fast")
+        self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run, owner="a"), "fast")
 
     def test_unset_tier_is_none(self):
         run = self._run_returning([self._node(1)])
-        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run))
+        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run, owner="a"))
 
     def test_query_no_longer_requests_estimate(self):
         """The field is deleted from both boards; asking for it would be a
@@ -117,13 +117,29 @@ class FetchIssueTierTests(unittest.TestCase):
 
     def test_wrong_board_ignored(self):
         run = self._run_returning([self._node(3, tier="deep")])
-        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run))
+        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run, owner="a"))
+
+    def test_another_owners_same_numbered_board_is_ignored_in_either_order(self):
+        """harmonic-forge#992 AC2: board #1 under another owner must not answer for ours."""
+        ours, theirs = self._node(1, tier="fast", owner="a"), self._node(1, tier="deep", owner="Other")
+        for nodes in ([theirs, ours], [ours, theirs]):
+            with self.subTest(order=[n["project"]["owner"]["login"] for n in nodes]):
+                run = self._run_returning(nodes)
+                self.assertEqual(cache.fetch_issue_tier("a/b", 1, "1", run=run, owner="A"), "fast")
+        run = self._run_returning([theirs])
+        self.assertIsNone(cache.fetch_issue_tier("a/b", 1, "1", run=run, owner="a"))
+
+    def test_the_cache_key_carries_the_board_owner(self):
+        key_a = cache._issue_cache_file("a/b", 1, "1", Path("/c"), "Tier", "a")
+        key_other = cache._issue_cache_file("a/b", 1, "1", Path("/c"), "Tier", "other")
+        self.assertNotEqual(key_a, key_other)
+        self.assertTrue(key_a.name.startswith("field__"))
 
     def test_graphql_errors_raise(self):
         run = MagicMock(return_value=MagicMock(
             returncode=0, stdout=json.dumps({"data": None, "errors": [{"message": "nope"}]}), stderr=""))
         with self.assertRaises(cache.GhItemListError):
-            cache.fetch_issue_tier("a/b", 1, "1", run=run)
+            cache.fetch_issue_tier("a/b", 1, "1", run=run, owner="a")
 
 
 
@@ -161,7 +177,7 @@ class OwnerScanFallbackTests(unittest.TestCase):
         self.assertIn("harmonicarchitect", calls[-1])
 
     def test_an_unset_tier_on_a_visible_board_is_not_scanned(self) -> None:
-        node = {"project": {"number": 1}, "value": None}
+        node = {"project": {"number": 1, "owner": {"login": "harmonicarchitect"}}, "value": None}
         run, calls = self._run([node])
         self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
                                                  owner="harmonicarchitect"))
@@ -186,10 +202,23 @@ class OwnerScanFallbackTests(unittest.TestCase):
                 owner="harmonicarchitect"), "standard")
         self.assertEqual(len([c for c in calls if c[:3] == ["gh", "api", "graphql"]]), 2)
 
-    def test_without_an_owner_a_blind_read_is_not_scanned(self) -> None:
-        run, calls = self._run([])
-        self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run))
-        self.assertEqual(len(calls), 1)
+    def test_a_visible_other_owners_same_numbered_board_still_scans_the_target(self) -> None:
+        """harmonic-forge#992 preclose: an org board #1 is visible, the user board #1 is not. The
+        owner filter rejects the visible item, and the read must still scan the target board."""
+        visible = [{"project": {"number": 1, "owner": {"login": "kenekted"}}, "value": {"name": "fast"}}]
+        run, calls = self._run(visible, [{"content": {"number": 59, "repository": self.REPO},
+                                          "tier": "deep"}])
+        self.assertEqual(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
+                                                owner="harmonicarchitect"), "deep")
+        self.assertEqual(len(calls), 2, "the per-issue read, then the board scan")
+
+    def test_owner_is_required(self) -> None:
+        """harmonic-forge#992: a caller that forgets the board owner fails at the call."""
+        run, _ = self._run([])
+        with self.assertRaises(TypeError):
+            cache.fetch_issue_tier(self.REPO, 59, "1", run=run)
+        with self.assertRaises(TypeError):
+            cache.fetch_issue_field(self.REPO, 59, "1", run=run)
 
     def test_a_same_numbered_issue_from_another_repo_is_not_matched(self) -> None:
         run, _ = self._run([], [{"content": {"number": 59, "repository": "kenekted/kenekted-ai"},

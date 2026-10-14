@@ -398,7 +398,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
       projectItems(first: 10) {
-        nodes { id project { number } }
+        nodes { id project { number owner { ... on User { login } ... on Organization { login } } } }
       }
     }
   }
@@ -438,7 +438,12 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return None
     for node in nodes:
-        if str((node.get("project") or {}).get("number")) == str(project_number):
+        project = node.get("project") or {}
+        owner = str((project.get("owner") or {}).get("login") or "")
+        # harmonic-forge#992: a board number is unique only within its owner, so
+        # another owner's same-numbered item must not receive this board's writes.
+        if (str(project.get("number")) == str(project_number)
+                and owner.lower() == project_owner.lower()):
             return node.get("id")
     return None
 

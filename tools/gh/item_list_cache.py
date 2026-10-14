@@ -83,7 +83,7 @@ def _owner_number_glob(owner: str, number: str) -> str:
 
 def _issue_cache_file(
     repo: str, issue_number: int, project_number: str, cache_dir: Path,
-    field: str = "Tier",
+    field: str = "Tier", board_owner: str = "",
 ) -> Path:
     """Cache path for one issue's FIELD on one board (harmonic-forge#250/#468).
 
@@ -103,7 +103,12 @@ def _issue_cache_file(
     safe_repo = _SAFE.sub("_", repo)
     safe_project = _SAFE.sub("_", str(project_number))
     safe_field = _SAFE.sub("_", field).lower()
-    return cache_dir / f"field__{safe_field}__{safe_repo}_{int(issue_number)}_{safe_project}.json"
+    # harmonic-forge#992: the board's owner is part of the key, so a value read
+    # before the owner match existed (or for another owner's same-numbered
+    # board) is never served for this one.
+    safe_owner = _SAFE.sub("_", board_owner).lower()
+    return (cache_dir / f"field__{safe_field}__{safe_owner}__{safe_repo}_{int(issue_number)}_"
+            f"{safe_project}.json")
 
 
 # hrse#800: this default was 500 when introduced by harmonic-forge#219's
@@ -466,7 +471,7 @@ query($owner: String!, $repo: String!, $number: Int!, $field: String!) {
     issue(number: $number) {
       projectItems(first: 10) {
         nodes {
-          project { number }
+          project { number owner { ... on User { login } ... on Organization { login } } }
           value: fieldValueByName(name: $field) {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
             ... on ProjectV2ItemFieldTextValue { text }
@@ -499,6 +504,8 @@ def _fetch_issue_field_targeted(
     ttl: float = DEFAULT_TTL_SECONDS,
     cache_dir: Path = None,
     _blind: dict | None = None,
+    *,
+    board_owner: str,
 ) -> str | None:
     """**The documented answer to "what is field X on issue N"** (AC4).
 
@@ -533,7 +540,8 @@ def _fetch_issue_field_targeted(
     """
     resolved_cache_dir = cache_dir if cache_dir is not None else _CACHE_DIR
     cache_file = (
-        _issue_cache_file(repo, issue_number, project_number, resolved_cache_dir, field)
+        _issue_cache_file(repo, issue_number, project_number, resolved_cache_dir, field,
+                          board_owner)
         if ttl > 0 else None
     )
     if cache_file is not None:
@@ -544,7 +552,8 @@ def _fetch_issue_field_targeted(
         except (OSError, json.JSONDecodeError, AttributeError):
             pass  # unreadable cache is a miss, never an error
 
-    value = _fetch_issue_field_live(repo, issue_number, project_number, field, run, _blind)
+    value = _fetch_issue_field_live(repo, issue_number, project_number, field, run, _blind,
+                                    board_owner=board_owner)
 
     # Written only on a successful read. A GhItemListError propagates out of
     # the call above without touching the cache, so a transient failure is
@@ -606,13 +615,15 @@ def fetch_issue_field(
     run=None,
     ttl: float = DEFAULT_TTL_SECONDS,
     cache_dir: Path = None,
-    owner: str | None = None,
+    *,
+    owner: str,
 ) -> str | None:
     """`_fetch_issue_field_targeted`, plus a board scan when the caller names the board `owner`.
 
     A `None` from the cheap per-issue read is ambiguous (harmonic-forge#820): no value, not on the
     board, or a board the per-issue query cannot see. With `owner` given, that `None` is confirmed
-    against the board itself. Without it the behavior is unchanged.
+    against the board itself. `owner` is required (harmonic-forge#992): the per-issue read
+    matches it as well as the board number.
     """
     # The per-issue read is blind ONLY when the board's owner is not the repo's owner (a user-owned
     # board on an organization repo). For a repo whose owner owns its board the per-issue read sees
@@ -623,7 +634,7 @@ def fetch_issue_field(
     blind: dict = {}
     value = _fetch_issue_field_targeted(
         repo, issue_number, project_number, field=field, run=run, ttl=ttl, cache_dir=cache_dir,
-        _blind=blind)
+        _blind=blind, board_owner=owner)
     # Scan only when the per-issue read was BLIND (no project items visible), never merely because
     # the field is unset: an unset Tier on an ordinary board must stay one cheap query, not an
     # uncached full-board scan on every prompt that names the issue.
@@ -644,7 +655,8 @@ def fetch_issue_tier(
     run=None,
     ttl: float = 0,
     cache_dir: Path = None,
-    owner: str | None = None,
+    *,
+    owner: str,
 ) -> str | None:
     """One issue's Tier (harmonic-forge#257). Thin wrapper over
     `fetch_issue_field`.
@@ -676,6 +688,8 @@ def _fetch_issue_field_live(
     field: str = "Tier",
     run=None,
     _blind: dict | None = None,
+    *,
+    board_owner: str,
 ) -> str | None:
     """The uncached targeted read. Split out so the caching wrapper has exactly
     one place to write the cache, rather than one per return path.
@@ -722,14 +736,26 @@ def _fetch_issue_field_live(
         return None
 
     nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
-    if not nodes and _blind is not None:
-        # The issue has NO visible project items at all: either it is on no board, or the query
-        # cannot see its board (a user-owned board on an organization repo). The caller decides.
+    if _blind is not None and not any(
+            isinstance(node, dict)
+            and str((node.get("project") or {}).get("number")) == str(project_number)
+            and str(((node.get("project") or {}).get("owner") or {}).get("login") or "").lower()
+            == board_owner.lower()
+            for node in nodes):
+        # No visible item is THIS board's (owner and number, harmonic-forge#992): either the
+        # issue is not on it, or the query cannot see it (a user-owned board on an organization
+        # repo, #820), even when other boards' items are visible. The caller decides.
         _blind["blind"] = True
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        if str((node.get("project") or {}).get("number")) != str(project_number):
+        project = node.get("project") or {}
+        if str(project.get("number")) != str(project_number):
+            continue
+        # harmonic-forge#992: a board number is unique only within its owner. An
+        # issue can sit on another owner's board with the same number; that
+        # item's value is not this board's.
+        if str((project.get("owner") or {}).get("login") or "").lower() != board_owner.lower():
             continue
         value = node.get("value") or {}
         # One of `name` (single-select), `text`, `number`, `date` — whichever

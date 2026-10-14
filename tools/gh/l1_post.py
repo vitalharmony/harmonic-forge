@@ -953,7 +953,7 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
     if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_issue_tier"):
         try:
             tier = _item_list_cache.fetch_issue_tier(
-                repo, issue_number, number, run=lambda cmd: run(*cmd),
+                repo, issue_number, number, run=lambda cmd: run(*cmd), owner=owner,
             )
         except _item_list_cache.GhItemListError as exc:
             fail(f"cannot read Tier for {repo}#{issue_number} on board {owner}/{number}: {exc}")
@@ -1090,7 +1090,8 @@ def read_board_fields(repo: str, owner: str, number: str, issue: int,
         for name in names:
             try:
                 value = _item_list_cache.fetch_issue_field(
-                    repo, issue, number, field=name, run=lambda cmd: run(*cmd), ttl=0)
+                    repo, issue, number, field=name, run=lambda cmd: run(*cmd), ttl=0,
+                    owner=owner)
             except _item_list_cache.GhItemListError as exc:
                 fail(f"cannot read {name} for {repo}#{issue} on board {owner}/{number}: {exc}")
             values[name] = value.strip() if isinstance(value, str) and value.strip() else None
