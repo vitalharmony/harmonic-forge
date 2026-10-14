@@ -130,6 +130,7 @@ class WiredAtTheFinishLines(unittest.TestCase):
         with m.patch.object(sys, "argv", argv), \
              m.patch.object(lp, "lock_blocks", return_value=False), \
              m.patch.object(lp, "load_receipts", return_value=[]), \
+             m.patch.object(lp, "require_real_run"), \
              m.patch.object(lp, "post", return_value={"comment_id": 1, "url": "u"}), \
              m.patch.object(lp.belt_candidates, "record_candidate"), \
              m.patch.object(lp.orphan_report, "report") as report:

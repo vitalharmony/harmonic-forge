@@ -264,6 +264,99 @@ def validate_lead(kind: str, lead: dict[str, str]) -> None:
         )
 
 
+#: harmonic-forge#996. The handoff's own last line is its footer; match that
+#: line only, never a substring, so a narrative that quotes the marker cannot
+#: pass for one (`reject_reserved_marker` already refuses Lane 2 forging it).
+_HANDOFF_FOOTER = re.compile(r"^<!--\s*l1-post\s+v1;\s*kind=handoff\b.*-->\s*$", re.I)
+_LIVE_PROBE = re.compile(r"(?m)^###\s+Live Probe\s*$")
+_REAL_RUN = re.compile(r"(?m)^###\s+Real run\s*$")
+#: A section ends at the next level-2 or level-3 heading. Level 1 and 4-6 are
+#: pasted-output shapes and belong to the section.
+_SECTION_END = re.compile(r"^#{2,3}\s")
+
+
+def real_run_has_content(narrative: str) -> bool:
+    """True when an unfenced `### Real run` heading is followed by at least one
+    non-blank line that is not itself a heading, before the next unfenced
+    level-2 or level-3 heading. Fence state is tracked from the first line, so
+    a heading quoted inside a fence is not the section, and a fence left open
+    at the end fails closed: nothing after an unclosed fence counts.
+    Structure only: that the run happened is Lane 3's check."""
+    fenced, inside, content = False, False, False
+    for line in (narrative or "").splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            if inside and line.strip():
+                content = True
+            continue
+        if inside and _SECTION_END.match(line):
+            break
+        if not inside and _REAL_RUN.match(line):
+            inside = True
+            continue
+        if inside and line.strip() and not line.lstrip().startswith("#"):
+            return True
+    return content and not fenced
+
+
+def _pages(text: str) -> list[dict]:
+    """Every comment from `gh api --paginate` output, which may be several
+    concatenated JSON arrays."""
+    decoder, index, comments = json.JSONDecoder(), 0, []
+    text = text or ""
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        page, index = decoder.raw_decode(text, index)
+        comments.extend(page if isinstance(page, list) else [page])
+    return comments
+
+
+def latest_handoff_body(comments: list[dict]) -> str | None:
+    """The newest comment whose trailing footer says `kind=handoff`.
+    `rework`, `discussion` and every other kind are ignored."""
+    for comment in reversed(comments):
+        lines = [line.strip() for line in (comment.get("body") or "").splitlines() if line.strip()]
+        if lines and _HANDOFF_FOOTER.match(lines[-1]):
+            return comment["body"]
+    return None
+
+
+def require_real_run(repo: str, issue: int, narrative: str) -> None:
+    """harmonic-forge#996: a completion whose handoff names an external call
+    must carry a non-empty `### Real run` section. Structure only (as
+    `Consumers and Equivalents` is, harmonic-forge#838): that the run happened
+    is not in the text, and Lane 3's gate checks its content.
+
+    A handoff with no `### Live Probe` heading (one that predates
+    harmonic-forge#994) passes; any Live Probe, `none` included, needs a Real run. A thread
+    that cannot be read refuses, as `snapshot()` does, rather than skipping.
+    Known gap, not closed here: a `rework` that adds an external call never
+    turns this on, because only `kind=handoff` is read."""
+    result = _gh_api("--paginate", f"repos/{repo}/issues/{issue}/comments")
+    if result.returncode != 0:
+        raise SystemExit(f"real-run check: cannot read the issue thread: {result.stderr}")
+    if not (result.stdout or "").strip():
+        raise SystemExit("real-run check: empty issue-thread read")
+    try:
+        comments = _pages(result.stdout)
+    except ValueError as exc:
+        raise SystemExit(f"real-run check: unreadable issue thread: {exc}") from exc
+    handoff = latest_handoff_body(comments)
+    if handoff is None or not _LIVE_PROBE.search(handoff):
+        return
+    if not real_run_has_content(narrative):
+        raise SystemExit(
+            "real-run check (harmonic-forge#996): the latest handoff has a `### Live Probe` "
+            "section, so a completion needs a non-empty `### Real run` section in the narrative: "
+            "the output of one real run of each call the probe names, or one line saying why none "
+            "applies (read-only or scratch), so Lane 3 is not the first run.")
+
+
 def post(repo: str, issue: int, body: str) -> dict:
     result = _gh_api("--method", "POST", f"repos/{repo}/issues/{issue}/comments",
                       "-f", f"body={body}")
@@ -424,6 +517,8 @@ def main() -> int:
     narrative = args.narrative_file.read_text()
     lead = {"Status": args.status, "Change": args.change, "Next": args.next_action}
     validate_lead(args.kind, lead)
+    if args.kind == "completion":
+        require_real_run(args.repo, args.issue, narrative)
     body = compose_body(args.kind, receipts, narrative, lead)
     if args.kind == "completion":
         # hrse#2218: a completion is Lane 2's finish line; name any orphaned test graph. Report
