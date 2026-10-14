@@ -106,6 +106,7 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "validate_ae"), \
              unittest.mock.patch.object(L, "validate_lead"), \
              unittest.mock.patch.object(L, "validate_sweep"), \
+             unittest.mock.patch.object(L, "validate_sticky_wicket"), \
              unittest.mock.patch.object(L, "run", return_value=unittest.mock.Mock(
                  returncode=0, stdout="## Lane 3 Test Spec")), \
              unittest.mock.patch.object(

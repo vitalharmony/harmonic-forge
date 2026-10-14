@@ -1217,12 +1217,7 @@ def discover_queue(repo: str, lane: str,
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
             continue
-        if lane == "l1" and _sticky_wicket_owed(repo, issue, comments):
-            # harmonic-forge#997: two consecutive non-PASS gate results with no
-            # sticky-wicket receipt through the newer. Stateless: re-emitted on
-            # every tick until a receipt covers it, like any queued line.
-            queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
-            continue
+        sticky = lane == "l1" and _sticky_wicket_owed(repo, issue, comments)
         for comment in comments:
             # harmonic-forge#579 introduced the `None` (failed) vs `[]`
             # (genuinely zero) distinction this loop now depends on; #602
@@ -1235,6 +1230,8 @@ def discover_queue(repo: str, lane: str,
                 last_kind = classified
                 last_body = comment.get("body", "")
         if not last_kind:
+            if sticky:
+                queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
             continue
         poster, kind = last_kind
         if _is_gate_report(kind, last_body):
@@ -1242,9 +1239,13 @@ def discover_queue(repo: str, lane: str,
             # footer says: markerless, or footered kind=discussion (the shared
             # `_is_gate_report`, so both channels recognize the same comments).
             kind = "gate-result"
-        if kind not in kinds:
-            continue
-        if poster not in posters and kind not in any_poster:
+        if kind not in kinds or (poster not in posters and kind not in any_poster):
+            # harmonic-forge#997: the newest comment owes Lane 1 nothing, but an
+            # uncovered sticky-wicket trigger still does. Stateless: re-emitted on
+            # every tick until a receipt covers it. Owed plan/spec reviews win, so
+            # the trigger never hides them.
+            if sticky:
+                queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
             continue
         if kind == "gate-result" and not _gate_result_owes_fix(last_body):
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.

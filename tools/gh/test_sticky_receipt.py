@@ -80,11 +80,13 @@ class OwedTests(ReceiptHome):
 
 
 class RecordTests(ReceiptHome):
+    report_body = "## Sticky-wicket verdict: PATCH\n\nnarrow fix"
     def _gh(self, comments, comment_issue=ISSUE):
         def fake(path):
             if path.endswith("/comments"):
                 return comments
-            return {"issue_url": f"https://api.github.com/repos/{REPO}/issues/{comment_issue}",
+            return {"id": 99, "body": self.report_body,
+                    "issue_url": f"https://api.github.com/repos/{REPO}/issues/{comment_issue}",
                     "html_url": f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-99"}
         return mock.patch.object(sr, "_gh_json", side_effect=fake)
 
@@ -95,6 +97,15 @@ class RecordTests(ReceiptHome):
     def test_record_requires_the_report_on_the_same_issue(self):
         with self._gh([gate(1, "FAIL")], comment_issue=ISSUE + 1), self.assertRaises(SystemExit):
             sr.record(REPO, ISSUE, "PATCH", 1, "https://github.com/x#issuecomment-99")
+
+    def test_record_refuses_a_report_that_is_not_a_sticky_wicket_verdict(self):
+        self.report_body = "## Discussion\n\nnothing about the approach"
+        with self._gh([gate(1, "FAIL"), gate(3, "FAIL")]), self.assertRaises(SystemExit):
+            sr.record(REPO, ISSUE, "PATCH", 3, "https://github.com/x#issuecomment-99")
+
+    def test_record_refuses_a_report_older_than_the_gate_result(self):
+        with self._gh([gate(1, "FAIL"), gate(150, "FAIL")]), self.assertRaises(SystemExit):
+            sr.record(REPO, ISSUE, "PATCH", 150, "https://github.com/x#issuecomment-99")
 
     def test_record_writes_a_receipt_that_covers(self):
         with self._gh([gate(1, "FAIL"), gate(3, "FAIL")]):
@@ -121,13 +132,32 @@ class ReworkRefusalTests(ReceiptHome):
         with self._run([], rc=1), self.assertRaises(SystemExit):
             l1_post.validate_sticky_wicket(REPO, ISSUE)
 
-    def test_main_runs_the_check_only_for_a_rework(self):
-        source = Path(l1_post.__file__).read_text()
-        self.assertIn('if args.kind == "rework":\n        validate_sticky_wicket(repo, args.issue)',
-                      source)
+    def test_every_kind_that_hands_work_forward_is_checked(self):
+        self.assertEqual(set(l1_post.STICKY_CHECKED_KINDS),
+                         {"rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-and-sweep"})
 
 
 class BeltEventTests(ReceiptHome):
+    def _queue(self, comments):
+        with mock.patch.object(belt, "_fetch_all_comments", return_value=comments), \
+                mock.patch.object(belt, "_issue_meta", return_value=("open", set(), None)), \
+                mock.patch.object(belt, "_active_milestones", return_value=None):
+            return belt.discover_queue(REPO, "l1", {ISSUE})[0]
+
+    def test_discover_queue_emits_the_event_for_lane_1(self):
+        """The call site, not just the helper."""
+        self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL")]),
+                         {ISSUE: "gate-result owes=sticky-wicket"})
+
+    def test_an_owed_plan_review_is_not_hidden_by_the_trigger(self):
+        plan = {"id": 3, "body": "## Plan\n\n<!-- l1-post v1; kind=plan; posted-by=LANE2 -->"}
+        self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL"), plan]),
+                         {ISSUE: "plan owes=plan-review"})
+
+    def test_a_covered_trigger_emits_nothing(self):
+        self.write_receipt(through=2)
+        self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL")]), {})
+
     def test_owed_and_uncovered_is_a_lane_1_event(self):
         comments = [gate(1, "FAIL"), gate(2, "FAIL")]
         self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))

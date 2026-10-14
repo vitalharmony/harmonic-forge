@@ -140,13 +140,20 @@ def refusal(repo: str, issue: int, comments: list[dict]) -> str | None:
             "--comment-url <the posted verdict's URL>")
 
 
-def _verify_comment(repo: str, issue: int, url: str) -> str:
+def _verify_comment(repo: str, issue: int, url: str, through: int, verdict: str) -> str:
+    """The report must be a comment on this issue, posted after the gate result it
+    covers, that names sticky-wicket and states the recorded verdict."""
     match = re.search(r"(?:issuecomment-|/issues/comments/)(\d+)", url or "")
     if not match:
         raise SystemExit("sticky-receipt: --comment-url must name an issue comment")
     data = _gh_json(f"repos/{repo}/issues/comments/{match.group(1)}")
     if not isinstance(data, dict) or not str(data.get("issue_url", "")).endswith(f"/issues/{issue}"):
         raise SystemExit(f"sticky-receipt: {url} is not a comment on {repo}#{issue}")
+    if int(data.get("id") or 0) <= through:
+        raise SystemExit(f"sticky-receipt: {url} predates gate result issuecomment-{through}")
+    body = str(data.get("body") or "")
+    if not re.search(r"sticky[- ]wicket", body, re.I) or not re.search(rf"\b{verdict}\b", body):
+        raise SystemExit(f"sticky-receipt: {url} does not name sticky-wicket and the verdict {verdict}")
     return str(data.get("html_url") or url)
 
 
@@ -156,7 +163,7 @@ def record(repo: str, issue: int, verdict: str, through: int, comment_url: str) 
     comments = _gh_json(f"repos/{repo}/issues/{issue}/comments")
     if through not in {cid for cid, _ in gate_results(comments if isinstance(comments, list) else [])}:
         raise SystemExit(f"sticky-receipt: issuecomment-{through} is not a gate result on {repo}#{issue}")
-    canonical = _verify_comment(repo, issue, comment_url)
+    canonical = _verify_comment(repo, issue, comment_url, through, verdict)
     directory = receipt_dir()
     directory.mkdir(parents=True, exist_ok=True)
     payload = {"repo": repo, "issue": issue, "verdict": verdict, "through": through,

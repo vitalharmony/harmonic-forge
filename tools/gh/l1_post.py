@@ -1355,6 +1355,12 @@ def issue_labels(repo: str, issue: int) -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+#: harmonic-forge#997: every Lane 1 post that hands work forward after a gate
+#: result. A handoff, a ready-for-l3 or an AE starts the next round as surely as
+#: a rework does.
+STICKY_CHECKED_KINDS = ("rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-and-sweep")
+
+
 def validate_sticky_wicket(repo: str, issue: int) -> None:
     """harmonic-forge#997: a rework after two consecutive non-PASS gate results
     needs a sticky-wicket receipt through the newer one. The thread is read in
@@ -2632,6 +2638,8 @@ def main() -> None:
     sha = resolve_sha(args.sha)
 
     if args.kind == "ae-and-sweep":
+        validate_sticky_wicket(repo, args.issue)  # harmonic-forge#997
+    if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic
         # action -- four recorded incidents (a private-repo incident, a private-repo incident, H306/H308,
         # H231/H1221) of AE posted with the sweep never landing in the same
@@ -2720,7 +2728,7 @@ def main() -> None:
         validate_milestone_set(repo, args.issue)
         validate_tooling_exception_labelled(body, repo, args.issue)
         validate_pitch_inspected(repo, args.issue)
-    if args.kind == "rework":
+    if args.kind in STICKY_CHECKED_KINDS:
         validate_sticky_wicket(repo, args.issue)
     validate_lead(args.kind, body)
     if args.kind == "sweep":
