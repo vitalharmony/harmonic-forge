@@ -402,5 +402,99 @@ class OtherPatternAuditTests(unittest.TestCase):
             self.assertTrue(L._source_repo_is_hrse(Path(".")))
 
 
+
+class FooterCaseIdsTests(unittest.TestCase):
+    """harmonic-forge#1000: a spec's `classes=` footer names its cases; prose never does."""
+
+    REPO, ISSUE = "vitalharmony/openclaw-projects", 40
+
+    @staticmethod
+    def _spec(rows, footer_ids, prose=""):
+        table = "\n".join(f"| TC{c} | ac | x | y | z |" for c in rows)
+        footer = ("<!-- l1-post v1; kind=spec; posted-by=LANE3; classes="
+                  + ",".join(f"{c}:ac" for c in footer_ids) + " -->") if footer_ids is not None else ""
+        return f"## Lane 3 Test Spec — O40\n\n{prose}\n\n### Cases\n{table}\n\n{footer}"
+
+    @staticmethod
+    def _sweep(ids, numbered=False):
+        lines = "\n".join(
+            (f"{i}. step {i} ready" if numbered else f"- TC{c}: ready — offline fixtures")
+            for i, c in enumerate(ids, 1))
+        return f"## Gate-readiness sweep — O40\n\nWrite tier: R\n\n### Per-case readiness\n{lines}\n"
+
+    def _validate(self, sweep, spec):
+        L.validate_sweep(sweep, spec, self.REPO, self.ISSUE)
+
+    def test_a_prose_tc_mention_is_not_a_case_when_the_footer_names_them(self):
+        """O40's spec: TC5's text cites "the O35 TC10 digest"; nine cases."""
+        ids = [str(i) for i in range(1, 10)]
+        spec = self._spec(ids, ids, prose="TC5 replays the O35 TC10 digest.")
+        self._validate(self._sweep(ids), spec)
+
+    def test_a_suffixed_case_id_from_the_footer_validates(self):
+        """O38's spec issuecomment-6170246608: footer `...,9:existing,7b:ac`."""
+        ids = [str(i) for i in range(1, 10)] + ["7b"]
+        spec = self._spec(ids, ids)
+        self.assertIn("7b", L.footer_case_ids(spec))
+        self._validate(self._sweep(ids), spec)
+
+    def test_a_missing_case_is_still_refused(self):
+        ids = [str(i) for i in range(1, 10)] + ["7b"]
+        with self.assertRaises(SystemExit):
+            self._validate(self._sweep([i for i in ids if i != "7b"]), self._spec(ids, ids))
+
+    def test_an_extra_prose_case_in_the_sweep_is_refused(self):
+        ids = [str(i) for i in range(1, 10)]
+        with self.assertRaises(SystemExit):
+            self._validate(self._sweep(ids + ["10"]), self._spec(ids, ids, prose="the O35 TC10 digest"))
+
+    def test_a_numbered_list_sweep_against_a_footer_spec_is_refused(self):
+        ids = ["1", "2", "3"]
+        with self.assertRaises(SystemExit):
+            self._validate(self._sweep(ids, numbered=True), self._spec(ids, ids))
+
+    def test_an_absent_or_missing_footer_takes_todays_path(self):
+        """Without a usable footer the prose `TC10` still counts, exactly as before."""
+        ids = [str(i) for i in range(1, 10)]
+        for footer in (None, ["absent"]):
+            with self.subTest(footer=footer):
+                spec = self._spec(ids, None, prose="the O35 TC10 digest")
+                if footer:
+                    spec += "\n<!-- l1-post v1; kind=spec; classes=absent -->"
+                with self.assertRaises(SystemExit):
+                    self._validate(self._sweep(ids), spec)
+                self._validate(self._sweep(ids + ["10"]), spec)
+
+    def test_a_repeated_case_line_is_refused(self):
+        ids = ["1", "2", "3"]
+        with self.assertRaises(SystemExit) as caught:
+            self._validate(self._sweep(["1", "1", "2", "3"]), self._spec(ids, ids))
+        self.assertIn("repeated", str(caught.exception))
+
+    def test_the_shared_outcome_pattern_is_unchanged_without_a_footer(self):
+        self.assertIsNone(L.SWEEP_FABRICATED_OUTCOME.search("- TC2a passed"))
+        self.assertIsNotNone(L.SWEEP_FABRICATED_OUTCOME_SUFFIXED.search("- TC2a passed"))
+
+    def test_a_bold_outcome_word_is_refused_and_readiness_prose_is_not(self):
+        ids = ["1", "2"]
+        ok = self._sweep(ids).replace("- TC1: ready — offline fixtures",
+                                      "- TC1: ready — the gate will fail closed if the fetch fails")
+        self._validate(ok, self._spec(ids, ids))
+        for line in ("- TC1: **passed**", "- TC1: Passed."):
+            with self.subTest(line=line), self.assertRaises(SystemExit):
+                sweep = self._sweep(ids).replace("- TC1: ready — offline fixtures", line)
+                self._validate(sweep, self._spec(ids, ids))
+
+    def test_an_unbulleted_extra_or_repeated_case_line_is_refused(self):
+        ids = ["1", "2"]
+        for extra in ("TC3: ready", "TC1: ready again"):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                self._validate(self._sweep(ids) + extra + "\n", self._spec(ids, ids))
+
+    def test_mixed_ids_sort_without_crashing(self):
+        self.assertEqual(sorted({"10", "7b", "7", "2"}, key=L._case_sort_key), ["2", "7", "7b", "10"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

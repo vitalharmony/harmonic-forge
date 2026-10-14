@@ -37,6 +37,11 @@ except ImportError:
 # gate uses, so the readiness-marker snapshot can never diverge from what
 # Lane 3's own CI-outrun guard already considers authoritative.
 import gate_ci
+sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "telemetry"))
+try:
+    import eras as _eras  # harmonic-forge#1000: the one reader of a spec's classes= footer
+except ImportError:  # pragma: no cover - platform checkout absent
+    _eras = None
 
 # harmonic-forge#691 (AC1'). The shared belt-candidate recorder -- this is
 # the one place every `l1-post v1` marker gets written, so it is also the
@@ -115,6 +120,18 @@ TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
 SWEEP_TC_ENTRY = re.compile(
     r"(?m)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?(\d+)\b\**[ \t]*[-\u2014:.]?[ \t]*(.*)$",
     re.I,
+)
+#: harmonic-forge#1000: the same entry with a suffixed case id (`TC7b`). Used only
+#: when the spec's `classes=` footer names the cases, so a spec without one is
+#: validated exactly as before.
+SWEEP_TC_ENTRY_SUFFIXED = re.compile(
+    r"(?m)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)?\**[ \t]*TC[- ]?(\d+[a-z]?)\b\**[ \t]*[-\u2014:.]?[ \t]*(.*)$",
+    re.I,
+)
+#: harmonic-forge#1000: the fabricated-outcome check for the footer path, which
+#: alone accepts suffixed ids; the shared pattern above stays as it was (AC3).
+SWEEP_FABRICATED_OUTCOME_SUFFIXED = re.compile(
+    r"(?mi)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?\d+[a-z]?\b\**[ \t]*[-\u2014:.]?[ \t]*(pass|passed|fail|failed)\b"
 )
 SWEEP_LIST_ENTRY = re.compile(r"(?m)^[ \t]*\d+\.[ \t]*\**[ \t]*(.*)$")
 # Only `pass`/`fail` are fabrications at sweep time. `ready` and `blocked` are
@@ -240,6 +257,22 @@ def _classify_case_ids(body: str) -> tuple[set[str], bool]:
     if list_ids:
         return list_ids, False
     return set(TC_ID.findall(section)), bool(TC_ID.findall(section))
+
+
+def _case_sort_key(case: str) -> tuple[int, str]:
+    """`7` before `7b` before `8` (harmonic-forge#1000); `key=int` crashes on `7b`."""
+    match = re.match(r"(\d+)(.*)", case)
+    return (int(match.group(1)), match.group(2)) if match else (sys.maxsize, case)
+
+
+def footer_case_ids(spec_body: str) -> set[str]:
+    """harmonic-forge#1000: the case ids a Lane 3 spec's footer names in its
+    `classes=` field (harmonic-forge#893), or an empty set when the field is
+    missing, `absent` or empty. The footer is the spec's own record of its
+    cases; a prose mention of another issue's `TC<n>` is never one."""
+    lines = [line.strip() for line in (spec_body or "").splitlines() if line.strip()]
+    footer = lines[-1] if lines and lines[-1].startswith("<!--") else ""
+    return set(_eras.parse_case_map(footer, "classes")) if _eras is not None else set()
 
 
 def case_ids(body: str) -> set[str]:
@@ -824,6 +857,49 @@ def validate_ae(body: str, repo: str, issue: int) -> None:
 SWEEP_HEADING = re.compile(r"(?im)^#{1,4}\s*Gate-readiness sweep\b")
 
 
+def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
+    """harmonic-forge#1000: a spec whose footer names its cases is checked against
+    those ids, one line-anchored TC entry each. Same refusals as the body path:
+    a fabricated outcome, no write tier, a missing or extra entry, an empty one."""
+    sweep_section, _ = _case_section(body)
+    if SWEEP_FABRICATED_OUTCOME_SUFFIXED.search(sweep_section):
+        fail(
+            "sweep states a test outcome (`pass`/`fail`), but a gate-readiness "
+            "sweep is posted BEFORE the gate runs -- no case has an outcome yet. "
+            "Describe readiness instead (`ready`, or `blocked` and why)."
+        )
+    if parse_write_tier(body) is None:
+        fail(f"sweep {NO_TIER_MESSAGE}")
+    entries = SWEEP_TC_ENTRY_SUFFIXED.findall(sweep_section)
+    named_list = [number.lower() for number, _ in entries]
+    named = set(named_list)
+    want = {case.lower() for case in expected}
+    repeated = sorted({n for n in named_list if named_list.count(n) > 1}, key=_case_sort_key)
+    if repeated:
+        fail(f"sweep needs exactly one line per case; repeated: TC{', TC'.join(repeated)}")
+    if named != want:
+        fail(
+            "sweep case IDs must exactly match the spec's classes= footer, one "
+            f"`TC<id>` line per case (expected {sorted(want, key=_case_sort_key)}, "
+            f"got {sorted(named, key=_case_sort_key) or 'none'})"
+        )
+    empty = [number for number, text in entries if not is_substantive(text.strip())]
+    if empty:
+        fail(f"sweep entries carry no text: TC{', TC'.join(sorted(set(empty), key=_case_sort_key))}")
+    # A fabricated leading outcome, bold or not (sticky-wicket PATCH, pass 2): the
+    # shared pattern does not see `**passed**`.
+    claimed = sorted({number for number, text in entries
+                      if _OUTCOME_WORD.search(text.replace("*", ""))}, key=_case_sort_key)
+    if claimed:
+        fail(f"sweep states a test outcome (`pass`/`fail`) for TC{', TC'.join(claimed)}, but a "
+             "gate-readiness sweep is posted BEFORE the gate runs. Describe readiness instead.")
+
+
+#: Only a LEADING outcome word, bold stripped: readiness text may say a check
+#: "will fail closed" or that "pass/fail assertions" exist (post-verdict check).
+_OUTCOME_WORD = re.compile(r"^\W*(pass|passed|fail|failed)\b", re.I)
+
+
 def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     """a private-repo incident: `harmonic-forge/rules/testing-gate.md` (a private-repo incident) makes the
     `## Gate-readiness sweep -- <PREFIX><N>` heading mechanically required --
@@ -845,6 +921,10 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
             "fine) -- Lane 3's own readiness check refuses anything looser "
             "(a private-repo incident)"
         )
+    footer_ids = footer_case_ids(spec_body)
+    if footer_ids:
+        _validate_sweep_against_footer(body, footer_ids)
+        return
     expected = case_ids(spec_body)
     actual = case_ids(body)
     if not expected:
