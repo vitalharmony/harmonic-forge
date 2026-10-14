@@ -9,7 +9,8 @@ This sweeps every such directory under the implementation roots
 
 A registered worktree is removed only when, in this order:
   1. its issue resolves (`issue_for_worktree`, or the directory's number when
-     a single-digit branch carries it) and the directory number agrees;
+     a single-digit branch carries it), the directory number agrees, and HEAD
+     is on a branch (a detached HEAD may hold commits nothing else reaches);
   2. `git status --porcelain` is empty;
   3. every ignored file is regenerable (`regenerable()`);
   4. the issue reads `closed` under the repo's own gh slot;
@@ -76,6 +77,8 @@ def regenerable(root: Path, rel: str, main: Path | None) -> bool:
     mine, theirs = root / rel, main / rel
     if theirs.is_symlink() or not theirs.is_file() or not mine.is_file():
         return False
+    if os.path.samefile(mine, theirs):
+        return False  # the same file through an alias is not a second copy
     return (mine.stat().st_size == theirs.stat().st_size
             and filecmp.cmp(mine, theirs, shallow=False))
 
@@ -127,6 +130,10 @@ def sweep_registered(path: Path, execute: bool) -> str:
     if isinstance(resolved, str):
         return f"skipped: {resolved}"
     repo, issue = resolved
+    if _git(path, "symbolic-ref", "-q", "HEAD").returncode != 0:
+        # A detached HEAD (a checkout of a SHA, a stopped rebase) may hold
+        # commits no branch reaches; removal would orphan them.
+        return "skipped: detached HEAD"
     status = _git(path, "status", "--porcelain")
     if status.returncode != 0:
         return f"skipped: git status: {status.stderr.strip()[:120]}"

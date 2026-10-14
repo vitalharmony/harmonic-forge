@@ -170,6 +170,17 @@ class RegisteredTests(Fixture):
         self.assertIn("widgets-13-impl: removed", out)
         self.assertTrue(first.exists())
 
+    def test_detached_head_with_unbranched_commit_is_skipped(self):
+        """Preclose pass 1: commits on no branch would be orphaned by removal."""
+        path = self.worktree()
+        git(path, "config", "user.email", "t@example.test")
+        git(path, "config", "user.name", "t")
+        git(path, "checkout", "-q", "--detach")
+        (path / "app.py").write_text("x = 2\n")
+        git(path, "commit", "-qam", "unbranched work")
+        self.assertIn("skipped: detached HEAD", self.run_sweep())
+        self.assertTrue(path.exists())
+
     def test_no_flag_removes_nothing(self):
         """Kill check 11: report-only is the default."""
         path = self.worktree()
@@ -229,6 +240,16 @@ class LeftoverTests(Fixture):
 
 
 class RegenerableTests(unittest.TestCase):
+    def test_the_same_file_through_an_alias_is_not_a_copy(self):
+        """Preclose pass 1 (cross-family): main aliasing the worktree file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "w"
+            root.mkdir()
+            (root / "only.txt").write_text("the only copy")
+            alias = Path(tmp) / "m"
+            os.symlink(root, alias)
+            self.assertFalse(gc.regenerable(root, "only.txt", alias))
+
     def test_definition(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, main = Path(tmp) / "w", Path(tmp) / "m"
