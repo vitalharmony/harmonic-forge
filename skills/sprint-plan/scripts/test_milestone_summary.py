@@ -879,7 +879,7 @@ class LaneStateTests(unittest.TestCase):
         self.assertIsNone(trigger)
 
     def test_no_tier_beats_every_other_marker(self) -> None:
-        """TC5 -- `l1_post.validate_tier_set` refuses the handoff, so the
+        """TC5 -- `l1_post.validate_board_fields_set` refuses the handoff, so the
         issue cannot move however far along its thread reads. forge#468 was
         in exactly this state on 2026-09-04."""
         self.assertEqual(self.state(self.HANDOFF, self.L2D, self.PASS, tier=None),

@@ -685,7 +685,7 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
 
     Precedence is strongest-blocker-first, then latest-marker-wins:
 
-    1. **No board Tier** beats everything — `l1_post.validate_tier_set`
+    1. **No board Tier** beats everything — `l1_post.validate_board_fields_set`
        refuses the handoff, so the issue cannot move regardless of what else
        is true, and that condition was previously invisible until a post was
        rejected.
