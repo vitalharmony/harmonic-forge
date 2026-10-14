@@ -125,7 +125,7 @@ SWEEP_TC_ENTRY = re.compile(
 #: when the spec's `classes=` footer names the cases, so a spec without one is
 #: validated exactly as before.
 SWEEP_TC_ENTRY_SUFFIXED = re.compile(
-    r"(?m)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)\**[ \t]*TC[- ]?(\d+[a-z]?)\b\**[ \t]*[-\u2014:.]?[ \t]*(.*)$",
+    r"(?m)^[ \t]*(?:[-*][ \t]+|\d+\.[ \t]*)?\**[ \t]*TC[- ]?(\d+[a-z]?)\b\**[ \t]*[-\u2014:.]?[ \t]*(.*)$",
     re.I,
 )
 #: harmonic-forge#1000: the fabricated-outcome check for the footer path, which
@@ -886,6 +886,16 @@ def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
     empty = [number for number, text in entries if not is_substantive(text.strip())]
     if empty:
         fail(f"sweep entries carry no text: TC{', TC'.join(sorted(set(empty), key=_case_sort_key))}")
+    # A fabricated outcome anywhere in an entry's text, bold or not (sticky-wicket
+    # PATCH, pass 2): the shared pattern only sees a bare leading word.
+    claimed = sorted({number for number, text in entries
+                      if _OUTCOME_WORD.search(text.replace("*", ""))}, key=_case_sort_key)
+    if claimed:
+        fail(f"sweep states a test outcome (`pass`/`fail`) for TC{', TC'.join(claimed)}, but a "
+             "gate-readiness sweep is posted BEFORE the gate runs. Describe readiness instead.")
+
+
+_OUTCOME_WORD = re.compile(r"\b(pass|passed|fail|failed)\b", re.I)
 
 
 def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:

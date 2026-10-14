@@ -402,9 +402,6 @@ class OtherPatternAuditTests(unittest.TestCase):
             self.assertTrue(L._source_repo_is_hrse(Path(".")))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class FooterCaseIdsTests(unittest.TestCase):
     """harmonic-forge#1000: a spec's `classes=` footer names its cases; prose never does."""
@@ -437,7 +434,9 @@ class FooterCaseIdsTests(unittest.TestCase):
     def test_a_suffixed_case_id_from_the_footer_validates(self):
         """O38's spec issuecomment-6170246608: footer `...,9:existing,7b:ac`."""
         ids = [str(i) for i in range(1, 10)] + ["7b"]
-        self._validate(self._sweep(ids), self._spec(ids, ids))
+        spec = self._spec(ids, ids)
+        self.assertIn("7b", L.footer_case_ids(spec))
+        self._validate(self._sweep(ids), spec)
 
     def test_a_missing_case_is_still_refused(self):
         ids = [str(i) for i in range(1, 10)] + ["7b"]
@@ -476,5 +475,23 @@ class FooterCaseIdsTests(unittest.TestCase):
         self.assertIsNone(L.SWEEP_FABRICATED_OUTCOME.search("- TC2a passed"))
         self.assertIsNotNone(L.SWEEP_FABRICATED_OUTCOME_SUFFIXED.search("- TC2a passed"))
 
+    def test_a_bold_or_late_outcome_word_is_refused(self):
+        ids = ["1", "2"]
+        for line in ("- TC1: **passed**", "- TC1: ready, then passed"):
+            with self.subTest(line=line), self.assertRaises(SystemExit):
+                sweep = self._sweep(ids).replace("- TC1: ready — offline fixtures", line)
+                self._validate(sweep, self._spec(ids, ids))
+
+    def test_an_unbulleted_extra_or_repeated_case_line_is_refused(self):
+        ids = ["1", "2"]
+        for extra in ("TC3: ready", "TC1: ready again"):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                self._validate(self._sweep(ids) + extra + "\n", self._spec(ids, ids))
+
     def test_mixed_ids_sort_without_crashing(self):
         self.assertEqual(sorted({"10", "7b", "7", "2"}, key=L._case_sort_key), ["2", "7", "7b", "10"])
+
+
+
+if __name__ == "__main__":
+    unittest.main()
