@@ -41,6 +41,12 @@ class SelfLink(unittest.TestCase):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
                               text=True, check=True).stdout.strip()
         git("checkout", "-q", "-b", "selflink-base", head, cwd=self.clone)
+        # Every lane branch is feat/<N>-... or fix/<N>-..., and the clone
+        # carries whichever one REPO has checked out. Hold both families here
+        # on any checkout, so a scratch name that collides with them fails on
+        # main too, not only on a feat/* branch (harmonic-forge#990).
+        for family in ("feat", "fix"):
+            git("branch", f"{family}/selflink-guard", head, cwd=self.clone)
         # The hooks under test are this checkout's, not whatever HEAD carries.
         for name in ("post-checkout", "post-merge"):
             (self.clone / ".githooks" / name).write_text((REPO / ".githooks" / name).read_text())
