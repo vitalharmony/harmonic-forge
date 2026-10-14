@@ -470,6 +470,31 @@ class TestRealRun(unittest.TestCase):
                 self._check(thread, narrative)
         self._check(thread, "### Real run\n~~~\nout\n~~~\n### Other\nx")
 
+    def test_a_fence_closes_only_on_a_matching_fence(self):
+        """harmonic-forge#999: CommonMark 4.5, the issue's three rows plus the edges."""
+        thread = self._thread(self._handoff("a fetch ran once"))
+        refused = (
+            "```\n~~~\n### Real run\noutput\n```",          # the heading is inside the backtick fence
+            "````\n```\n### Real run\noutput\n````",         # a shorter fence does not close a longer one
+            "### Real run\n```\n~~~\n",                       # still unclosed: fails closed
+        )
+        for narrative in refused:
+            with self.subTest(narrative=narrative), self.assertRaises(SystemExit):
+                self._check(thread, narrative)
+        posts = (
+            "### Real run\n```\n~~~\n```\n### Other\nx",    # a tilde line is content inside backticks
+            "````\n```\n````\n### Real run\noutput",         # the four-backtick fence closes on four
+            "### Real run\n```\nout\n```\t \n### Other\nx",   # spaces or tabs after the closer
+            "### Real run\n    ```\nout",                      # four-space indent is not a fence
+        )
+        for narrative in posts:
+            with self.subTest(narrative=narrative):
+                self._check(thread, narrative)
+
+    def test_a_backtick_info_string_with_a_backtick_does_not_open_a_fence(self):
+        thread = self._thread(self._handoff("a fetch ran once"))
+        self._check(thread, "``` a`b\n### Real run\noutput")
+
     def test_main_calls_the_check_for_a_completion_and_only_a_completion(self):
         """The call site: a helper that is never reached refuses nothing."""
         tmp = tempfile.TemporaryDirectory()

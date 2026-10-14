@@ -275,21 +275,56 @@ _REAL_RUN = re.compile(r"(?m)^###\s+Real run\s*$")
 _SECTION_END = re.compile(r"^#{2,3}\s")
 
 
+#: A CommonMark fence line (harmonic-forge#999): up to three spaces of indent, then
+#: three or more backticks or tildes, then the rest of the line.
+_FENCE = re.compile(r"^ {0,3}(?P<run>`{3,}|~{3,})(?P<rest>.*)$")
+
+
+def _fence_opener(line: str) -> tuple[str, int] | None:
+    """`(char, length)` when LINE opens a fence. A backtick fence's info string
+    may not contain a backtick (CommonMark 4.5)."""
+    match = _FENCE.match(line)
+    if not match:
+        return None
+    run = match.group("run")
+    if run[0] == "`" and "`" in match.group("rest"):
+        return None
+    return run[0], len(run)
+
+
+def _closes(line: str, opener: tuple[str, int]) -> bool:
+    """True when LINE closes the fence OPENER opened: the same character, at
+    least as long, followed by nothing but spaces or tabs (CommonMark 4.5)."""
+    match = _FENCE.match(line)
+    if not match:
+        return False
+    run = match.group("run")
+    return (run[0] == opener[0] and len(run) >= opener[1]
+            and not match.group("rest").strip(" \t"))
+
+
 def real_run_has_content(narrative: str) -> bool:
     """True when an unfenced `### Real run` heading is followed by at least one
     non-blank line that is not itself a heading, before the next unfenced
-    level-2 or level-3 heading. Fence state is tracked from the first line, so
-    a heading quoted inside a fence is not the section, and a fence left open
-    at the end fails closed: nothing after an unclosed fence counts.
-    Structure only: that the run happened is Lane 3's check."""
-    fenced, inside, content = False, False, False
+    level-2 or level-3 heading. Fences follow CommonMark (harmonic-forge#999):
+    a fence closes only on the same character at least as long as its opener,
+    and a fence-like line that does not close it is content. A heading quoted
+    inside a fence is not the section, and a fence left open at the end fails
+    closed: nothing after an unclosed fence counts. A fence line indented four
+    or more spaces is ordinary text. Structure only: that the run happened is
+    Lane 3's check."""
+    opener: tuple[str, int] | None = None
+    inside, content = False, False
     for line in (narrative or "").splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if fenced:
-            if inside and line.strip():
+        if opener is not None:
+            if _closes(line, opener):
+                opener = None
+            elif inside and line.strip():
                 content = True
+            continue
+        found = _fence_opener(line)
+        if found is not None:
+            opener = found
             continue
         if inside and _SECTION_END.match(line):
             break
@@ -298,7 +333,7 @@ def real_run_has_content(narrative: str) -> bool:
             continue
         if inside and line.strip() and not line.lstrip().startswith("#"):
             return True
-    return content and not fenced
+    return content and opener is None
 
 
 def _pages(text: str) -> list[dict]:
