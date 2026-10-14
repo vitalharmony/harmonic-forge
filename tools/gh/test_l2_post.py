@@ -378,6 +378,71 @@ class TestResolveLock(unittest.TestCase):
         self.assertFalse(rr.is_locked(4243))
 
 
+class TestRealRun(unittest.TestCase):
+    """harmonic-forge#996."""
+
+    @staticmethod
+    def _thread(*bodies):
+        return json.dumps([{"id": i + 1, "body": body} for i, body in enumerate(bodies)])
+
+    HANDOFF_FOOTER = "<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
+
+    def _handoff(self, probe):
+        section = "" if probe is None else f"### Live Probe\n{probe}\n\n"
+        return f"## Handoff: x\n\n### Issue\ny\n\n{section}### Ambiguity Gate\nz\n\n{self.HANDOFF_FOOTER}"
+
+    def _check(self, thread, narrative, rc=0, stderr=""):
+        with unittest.mock.patch.object(lp, "_gh_api", return_value=_fake_run(rc, thread, stderr)):
+            lp.require_real_run("vitalharmony/harmonic-forge", 1, narrative)
+
+    def test_a_named_call_without_a_real_run_section_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self._check(self._thread(self._handoff("`claude -p` ran once: output ...")), "all tests pass")
+        self.assertIn("### Real run", str(caught.exception))
+
+    def test_a_named_call_with_a_real_run_section_posts(self):
+        self._check(self._thread(self._handoff("`claude -p` ran once: output ...")),
+                    "### Real run\nfirst lines: # Title\n\n### Other\nx")
+
+    def test_an_empty_real_run_section_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self._check(self._thread(self._handoff("a fetch ran once")), "### Real run\n\n### Other\nx")
+
+    def test_none_with_its_search_posts_in_both_spellings(self):
+        for probe in ("none \u2014 git grep -n urlopen finds nothing", "none new: reuses `_gh_api`",
+                      "None. The search found no call", "  none"):
+            self._check(self._thread(self._handoff(probe)), "no real run section")
+
+    def test_a_handoff_that_predates_the_live_probe_section_posts(self):
+        self._check(self._thread(self._handoff(None)), "no real run section")
+
+    def test_a_thread_with_no_handoff_posts(self):
+        self._check(self._thread("just a discussion"), "n")
+
+    def test_only_the_trailing_footer_counts_as_a_handoff(self):
+        quoted = f"I quote `{self.HANDOFF_FOOTER}` here.\n\n### Live Probe\na call\n\nmore text"
+        self._check(self._thread(quoted), "n")
+
+    def test_a_rework_after_the_handoff_does_not_change_the_answer(self):
+        rework = "## Rework\n\n### Live Probe\nnew call\n\n<!-- l1-post v1; kind=rework; posted-by=LANE1 -->"
+        self._check(self._thread(self._handoff("none new: reuses `_gh_api`"), rework), "n")
+
+    def test_the_newest_handoff_wins(self):
+        with self.assertRaises(SystemExit):
+            self._check(self._thread(self._handoff("none new: x"), self._handoff("a call ran")), "n")
+
+    def test_a_fetch_failure_refuses_instead_of_skipping(self):
+        with self.assertRaises(SystemExit) as caught:
+            self._check("", "n", rc=1, stderr="rate limited")
+        self.assertIn("cannot read the issue thread", str(caught.exception))
+
+    def test_concatenated_pages_are_read(self):
+        page_one = json.dumps([{"id": 1, "body": self._handoff("a call ran")}])
+        page_two = json.dumps([{"id": 2, "body": "later discussion"}])
+        with self.assertRaises(SystemExit):
+            self._check(page_one + page_two, "n")
+
+
 class TestSnapshot(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
