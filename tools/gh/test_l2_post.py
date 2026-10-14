@@ -491,6 +491,19 @@ class TestRealRun(unittest.TestCase):
             with self.subTest(narrative=narrative):
                 self._check(thread, narrative)
 
+    def test_only_commonmark_line_endings_split_lines(self):
+        """Preclose pass 1: a vertical tab is not a line ending, so `\\x0b junk` keeps a closer open."""
+        thread = self._thread(self._handoff("a fetch ran once"))
+        with self.assertRaises(SystemExit):
+            self._check(thread, "```\n### Real run\noutput\n```\x0bjunk\n")
+        self._check(thread, "### Real run\r\noutput\r\n")
+
+    def test_an_indented_heading_ends_the_section(self):
+        thread = self._thread(self._handoff("a fetch ran once"))
+        for indent in (" ", "  ", "   "):
+            with self.subTest(indent=repr(indent)), self.assertRaises(SystemExit):
+                self._check(thread, f"### Real run\n\n{indent}### Other\nprose that is not the run")
+
     def test_a_backtick_info_string_with_a_backtick_does_not_open_a_fence(self):
         thread = self._thread(self._handoff("a fetch ran once"))
         self._check(thread, "``` a`b\n### Real run\noutput")

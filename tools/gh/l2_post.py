@@ -272,7 +272,7 @@ _LIVE_PROBE = re.compile(r"(?m)^###\s+Live Probe\s*$")
 _REAL_RUN = re.compile(r"(?m)^###\s+Real run\s*$")
 #: A section ends at the next level-2 or level-3 heading. Level 1 and 4-6 are
 #: pasted-output shapes and belong to the section.
-_SECTION_END = re.compile(r"^#{2,3}\s")
+_SECTION_END = re.compile(r"^ {0,3}#{2,3}\s")  # up to three spaces of indent (CommonMark 4.2)
 
 
 #: A CommonMark fence line (harmonic-forge#999): up to three spaces of indent, then
@@ -315,7 +315,10 @@ def real_run_has_content(narrative: str) -> bool:
     Lane 3's check."""
     opener: tuple[str, int] | None = None
     inside, content = False, False
-    for line in (narrative or "").splitlines():
+    # CommonMark line endings only (LF, CR, CRLF): `str.splitlines` also splits on
+    # \v, \f and Unicode separators, which would turn trailing text into a clean
+    # closing fence (harmonic-forge#999 preclose pass 1).
+    for line in (narrative or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if opener is not None:
             if _closes(line, opener):
                 opener = None
