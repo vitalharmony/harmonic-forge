@@ -101,7 +101,8 @@ class L1PostTests(unittest.TestCase):
         with patch.object(post, "world_checks", return_value=([], [])), \
                 patch.object(post, "comment_body", return_value=("https://example.test/c/2", 2)), \
                 patch.object(post, "write_receipt"), \
-                patch.object(post, "_discharge_handoff_owed"):
+                patch.object(post, "_discharge_handoff_owed"), \
+                patch.object(post, "validate_sticky_wicket"):
             post.post_kind(REPO, ISSUE, "handoff", "body", "a" * 40, "b", plan_first=False)
         self.assertEqual(pitch_receipt.read(REPO, ISSUE)["consumed_by"], "https://example.test/c/2")
 
