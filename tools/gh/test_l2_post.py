@@ -396,7 +396,7 @@ class TestRealRun(unittest.TestCase):
             lp.require_real_run("vitalharmony/harmonic-forge", 1, real_run)
 
     def test_a_live_probe_without_real_run_is_refused(self):
-        for real_run in (None, "", "  \n\t\n"):
+        for real_run in (None, "", "  \n\t\n", "\x1b[0m\n\x1b[31m\x1b[0m"):
             with self.subTest(real_run=repr(real_run)), self.assertRaises(SystemExit) as caught:
                 self._check(self._thread(self._handoff("`claude -p` ran once")), real_run)
             self.assertIn("--real-run", str(caught.exception))

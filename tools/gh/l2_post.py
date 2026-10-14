@@ -323,7 +323,9 @@ def require_real_run(repo: str, issue: int, real_run: str | None) -> None:
     handoff = latest_handoff_body(comments)
     if handoff is None or not _LIVE_PROBE.search(handoff):
         return
-    if not (real_run or "").strip():
+    # Judged on the text that will be posted: `compose_body` strips ANSI colour,
+    # so a file of colour codes alone would post an empty section (reforge pass 1).
+    if not strip_ansi(real_run or "").strip():
         raise SystemExit(
             "real-run check (harmonic-forge#996/#999): the latest handoff has a `### Live Probe` "
             "section, so a completion needs `--real-run <file>` with non-blank text: the output "
