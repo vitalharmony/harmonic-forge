@@ -338,7 +338,11 @@ def with_real_run(narrative: str, real_run: str | None) -> str:
     tool writes (harmonic-forge#999), or unchanged when there is none."""
     if not (real_run or "").strip():
         return narrative
-    return f"{narrative.rstrip()}\n\n{REAL_RUN_HEADING}\n{real_run.strip()}\n"
+    # Each part is sanitized on its own before joining, so an escape sequence the
+    # narrative leaves open cannot swallow the appended section when
+    # `compose_body` strips ANSI again (reforge pass 2).
+    return (f"{strip_ansi(narrative).rstrip()}\n\n{REAL_RUN_HEADING}\n"
+            f"{strip_ansi(real_run).strip()}\n")
 
 
 def post(repo: str, issue: int, body: str) -> dict:

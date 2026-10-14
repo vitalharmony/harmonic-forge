@@ -456,6 +456,11 @@ class TestRealRun(unittest.TestCase):
         self.assertEqual(body, "narrative\n\n### Real run\nline 1\nline 2\n")
         self.assertEqual(lp.with_real_run("narrative", None), "narrative")
 
+    def test_an_open_escape_in_the_narrative_cannot_swallow_the_section(self):
+        body = lp.compose_body("completion", [], lp.with_real_run("text\x1b]0;open", "ran once\x07after"),
+                               {"Status": "s", "Change": "c", "Next": "n"})
+        self.assertIn("### Real run\nran once", body)
+
     def test_main_reads_the_flag_and_checks_only_a_completion(self):
         """The call site: the flag's text reaches the check and the posted body."""
         tmp = tempfile.TemporaryDirectory()
