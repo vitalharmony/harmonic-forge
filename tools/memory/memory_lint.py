@@ -91,7 +91,7 @@ def memory_files(store: Path) -> list[Path]:
 
 #: Top-level frontmatter keys this lint reads. `first_seen`/`instances`/
 #: `promoted` were added by harmonic-forge#500 for the aging check.
-_TOP_LEVEL_KEYS = ("name", "description", "first_seen", "instances", "promoted")
+_TOP_LEVEL_KEYS = ("name", "description", "first_seen", "instances", "promoted", "rule_check")
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
@@ -442,6 +442,164 @@ def _allow_unpromoted() -> dict[str, str]:
     return allowed
 
 
+_GATE_KEYS = ("type", "rule_check")
+RULE_CHECK_FORM = re.compile(r"^(?:R-\d{4}|none\s*\(\s*searched:\s*[^)\s][^)]*\))$", re.IGNORECASE)
+
+
+class GateFrontmatter:
+    """The two fields the #981 gate decides on, read by a strict grammar.
+
+    Reforged twice (sticky-wicket, harmonic-forge#981): regex readers let
+    through every form they did not recognize, and a scope-blind reader read a
+    nested key as the gate's. Frontmatter is now accepted only in the two-level
+    `key: value` shape every memory in the store already uses (verified against
+    all 367 on 2026-10-13): a top-level `key:` or `key: value` line, or a
+    two-space-indented `key: value` under a top-level `key:` with no value.
+    Anything else (a quoted key, a list item, deeper indentation, a block
+    scalar, unclosed frontmatter) is an error, and so is a key seen twice in
+    the same scope.
+
+    `type` is read at the top level or directly under `metadata:`, with an
+    inline ` #` comment and surrounding quotes stripped. `rule_check` is read at
+    the top level only, verbatim but for surrounding quotes, and must be
+    `R-NNNN` or `none (searched: <terms>)`.
+    """
+
+    _TOP = re.compile(r"^([A-Za-z_]+):(?: (.*))?$")
+    _CHILD = re.compile(r"^  ([A-Za-z_]+):(?: (.*))?$")
+
+    def __init__(self, text: str) -> None:
+        self.values: dict[str, str] = {}
+        self.errors: list[str] = []
+        self.has_frontmatter = False
+        self.frontmatter_lines = 0
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return
+        body: list[str] = []
+        for line in lines[1:]:
+            if line.strip() == "---":
+                self.has_frontmatter = True
+                break
+            body.append(line)
+        if not self.has_frontmatter:
+            self.errors.append("frontmatter opened with `---` is never closed")
+            return
+        self.frontmatter_lines = len(body) + 2
+        seen: set[tuple[str, str]] = set()
+        parent: str | None = None
+        for line in body:
+            if not line.strip():
+                continue
+            top, child = self._TOP.match(line), self._CHILD.match(line)
+            if top:
+                key, raw = top.group(1), (top.group(2) or "").strip()
+                parent = key if not raw else None
+                scope = ""
+            elif child and parent is not None:
+                key, raw = child.group(1), (child.group(2) or "").strip()
+                scope = parent
+            else:
+                self.errors.append(f"frontmatter line {line.strip()[:40]!r} is outside the `key: value` grammar")
+                continue
+            if (scope, key) in seen:
+                self.errors.append(f"`{key}:` appears more than once")
+                continue
+            seen.add((scope, key))
+            if key == "type" and scope in ("", "metadata"):
+                value = re.sub(r"\s+#.*$", "", raw).strip().strip("\"'").strip()
+                if not value or value.startswith("["):
+                    self.errors.append(f"`type:` has no single value ({raw!r})")
+                elif "type" in self.values:
+                    self.errors.append("`type:` appears more than once")
+                else:
+                    self.values["type"] = value
+            elif key == "rule_check" and scope == "":
+                value = raw.strip().strip("\"'").strip()
+                if not RULE_CHECK_FORM.match(value):
+                    self.errors.append(f"`rule_check: {value}` is neither `R-NNNN` nor `none (searched: <terms>)`")
+                else:
+                    self.values["rule_check"] = value
+
+    @property
+    def rule_check(self) -> str | None:
+        return self.values.get("rule_check")
+
+    @property
+    def is_feedback_type(self) -> bool:
+        return self.values.get("type", "").lower() == "feedback"
+
+
+def may_be_feedback(name: str, text: str) -> bool:
+    """Whether the gate's strict grammar applies to this file (operator ruling,
+    harmonic-forge#981, option A: the gate targets good-faith sessions).
+
+    True for a `feedback_*.md` filename, or when the word "feedback" appears
+    anywhere in the frontmatter. A non-feedback memory whose valid YAML falls
+    outside the strict grammar (a folded description, a list) is then left
+    alone (AC3). Known limit, stated rather than chased: YAML escapes or tags
+    that spell "feedback" without the literal word are not caught; that is
+    deliberate evasion, which this gate does not claim to stop.
+    """
+    if name.startswith("feedback_") and name.endswith(".md"):
+        return True
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    head: list[str] = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        head.append(line)
+    return "feedback" in "\n".join(head).lower()
+
+
+def is_feedback_memory(name: str, text: str) -> bool:
+    """harmonic-forge#981: a `feedback_*.md` filename, or a frontmatter `type`
+    of feedback (read by `GateFrontmatter`)."""
+    if name.startswith("feedback_") and name.endswith(".md"):
+        return True
+    return GateFrontmatter(text).is_feedback_type
+
+
+#: harmonic-forge#981: the feedback memories that predate the `rule_check:` gate.
+FEEDBACK_ALLOWLIST = Path(__file__).resolve().parent / "feedback_allowlist.txt"
+
+
+def _allowlisted() -> set[str]:
+    try:
+        lines = FEEDBACK_ALLOWLIST.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    return {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
+
+
+def check_rule_check(store: Path) -> list[str]:
+    """Check 9 (report-only, harmonic-forge#981): a feedback memory with no
+    `rule_check:` that is not in the committed allowlist.
+
+    `gate_feedback_memory_write.py` refuses such a file at a Write/Edit; this
+    catches what that hook cannot see: a Bash or Codex write, a type flipped
+    after creation, or a write from a repo that does not wire the hook.
+    """
+    allowed = _allowlisted()
+    findings: list[str] = []
+    for f in memory_files(store):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if f.name in allowed:
+            continue
+        gate = GateFrontmatter(text)
+        if gate.errors and may_be_feedback(f.name, text):
+            findings.append(f"{f.name}: malformed gate frontmatter: {'; '.join(gate.errors)}")
+        elif is_feedback_memory(f.name, text) and not gate.rule_check:
+            findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "
+                            "feedback_allowlist.txt (written around the #981 gate?)")
+    return findings
+
+
 def check_aging(store: Path, today: date | None = None) -> list[str]:
     """Feedback memories that are due for promotion, or cannot be assessed.
 
@@ -548,6 +706,7 @@ def run(store: Path, gate: bool, today: date | None = None) -> int:
         ("Check 6 — index load cap (warning)", cap_warnings),
         ("Check 4 — issue references (report-only)", issue_refs),
         ("Check 7 — staleness (report-only)", check_staleness(store)),
+        ("Check 9 — feedback without rule_check (report-only)", check_rule_check(store)),
     ]
 
     for tag, group in (("FAIL", gating), ("note", advisory)):
