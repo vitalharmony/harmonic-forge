@@ -615,6 +615,32 @@ class EstimateGateTests(unittest.TestCase):
                 returncode=0, stdout=payload, stderr="")):
             self.assertEqual(post.board_field_names("vitalharmony", "1"), {"Tier", "Theme"})
 
+    def test_board_field_names_reads_past_the_default_page(self) -> None:
+        """Preclose pass 2: gh's default page is 30 fields; the read names its limit."""
+        payload = json.dumps({"fields": [{"name": "Tier"}]})
+        with patch.object(post, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=payload, stderr="")) as run_call:
+            post.board_field_names("vitalharmony", "1")
+        argv = run_call.call_args.args
+        self.assertEqual(argv[argv.index("--limit") + 1], str(post.FIELD_LIST_LIMIT))
+
+    def test_an_empty_field_list_fails_the_gate(self) -> None:
+        """Preclose pass 2: an empty list is a bad read, never "nothing to gate"."""
+        with patch.object(post, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps({"fields": []}), stderr="")):
+            with self.assertRaises(SystemExit) as raised:
+                post.board_field_names("vitalharmony", "1")
+        self.assertIn("empty field list", str(raised.exception))
+
+    def test_a_field_list_at_the_read_limit_fails_the_gate(self) -> None:
+        """A full page may have cut a field off, so it is refused rather than trusted."""
+        fields = [{"name": f"F{i}"} for i in range(post.FIELD_LIST_LIMIT)]
+        with patch.object(post, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps({"fields": fields}), stderr="")):
+            with self.assertRaises(SystemExit) as raised:
+                post.board_field_names("vitalharmony", "1")
+        self.assertIn("read limit", str(raised.exception))
+
     def test_same_owner_board_reads_each_field_fresh(self) -> None:
         values = {"Tier": "deep", "Theme": "Ops", "Venture": None}
         with patch.object(post._item_list_cache, "fetch_issue_field", create=True,

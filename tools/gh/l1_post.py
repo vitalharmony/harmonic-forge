@@ -1031,6 +1031,8 @@ def validate_plan_first_declared(value: str | None) -> None:
 #: issue" (hrse docs/BOARD-FIELDS.md) but were only ever written at filing.
 #: Order is the order the refusal names them in.
 BOARD_FIELDS_REQUIRED = ("Tier", "Theme", "Venture")
+#: `gh project field-list` page size. A board at the limit fails the gate.
+FIELD_LIST_LIMIT = 100
 
 
 def board_field_names(owner: str, number: str) -> set[str]:
@@ -1039,13 +1041,25 @@ def board_field_names(owner: str, number: str) -> set[str]:
     harmonic-forge#989 AC2: a failed read fails the gate. It is never read as
     "this board defines no fields", which would silently pass every handoff.
     """
-    result = run("gh", "project", "field-list", number, "--owner", owner, "--format", "json")
+    # --limit: the default page is 30 fields, and a field past it would read as
+    # undefined and go ungated (harmonic-forge#989 preclose pass 2).
+    result = run("gh", "project", "field-list", number, "--owner", owner, "--format", "json",
+                 "--limit", str(FIELD_LIST_LIMIT))
     if result.returncode != 0:
         fail(f"cannot read the field list of project {owner}#{number}: {result.stderr.strip()}")
     try:
-        return {str(field["name"]) for field in json.loads(result.stdout)["fields"]}
+        fields = json.loads(result.stdout)["fields"]
+        names = {str(field["name"]) for field in fields}
     except (json.JSONDecodeError, KeyError, TypeError):
         fail(f"unexpected field-list response shape from project {owner}#{number}")
+    # Every board defines at least Title, so an empty list is a bad read, never
+    # "this board defines nothing to gate" (harmonic-forge#989 preclose pass 2).
+    if not names:
+        fail(f"project {owner}#{number} returned an empty field list")
+    if len(fields) >= FIELD_LIST_LIMIT:
+        fail(f"project {owner}#{number} returned {len(fields)} fields, the read limit; "
+             "a field past it would go ungated")
+    return names
 
 
 def read_board_fields(repo: str, owner: str, number: str, issue: int,
