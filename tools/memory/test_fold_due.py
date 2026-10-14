@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -149,6 +150,22 @@ class Triggers(Base):
         self.assertEqual(self.owed(marker), [])
 
 
+class MainWorktree(unittest.TestCase):
+    def test_a_feature_worktree_keys_and_measures_the_main_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Path(tmp) / "main"
+            main.mkdir()
+            run = lambda *a, cwd=main: subprocess.run(["git", *a], cwd=cwd, check=True,  # noqa: E731
+                                                      capture_output=True)
+            run("init", "-q")
+            run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x")
+            run("worktree", "add", "-q", "-b", "feat", str(Path(tmp) / "wt"))
+            k_main, top_main = fold_due.repo_key(main)
+            k_wt, top_wt = fold_due.repo_key(Path(tmp) / "wt")
+        self.assertEqual(k_main, k_wt)
+        self.assertEqual(top_wt.resolve(), main.resolve())
+
+
 class Marker(Base):
     """AC2: --record quiets every trigger; a missing or corrupt marker is 'no marker'."""
 
@@ -183,6 +200,17 @@ class Marker(Base):
             broken = {**data, field: bad}
             self.marker.write_text(json.dumps(broken))
             self.assertIsNone(fold_due.read_marker(self.marker), field)
+
+    def test_record_refuses_on_a_failed_measurement_and_writes_nothing(self) -> None:
+        self.surface_mock.return_value = None
+        with self.assertRaises(fold_due.MeasurementError):
+            fold_due.record(self.store, self.repo, NOW, self.marker)
+        self.assertFalse(self.marker.exists())
+        self.surface_mock.return_value = 1000
+        (self.store / "MEMORY.md").unlink()
+        with self.assertRaises(fold_due.MeasurementError):
+            fold_due.record(self.store, self.repo, NOW, self.marker)
+        self.assertFalse(self.marker.exists())
 
     def test_record_is_atomic_and_leaves_no_temp_file(self) -> None:
         self.record(NOW)

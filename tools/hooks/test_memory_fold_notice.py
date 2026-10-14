@@ -68,9 +68,15 @@ class Decide(unittest.TestCase):
         self.assertIsNotNone(self.run_decide({"prompt": "a"}, now=1000.0))
         self.assertIsNotNone(self.run_decide({"prompt": "b"}, now=1001.0, kinds="recurrence,fallback"))
 
-    def test_another_session_is_not_suppressed(self) -> None:
+    def test_suppression_spans_sessions(self) -> None:
         self.assertIsNotNone(self.run_decide({"prompt": "a", "session_id": "s1"}))
-        self.assertIsNotNone(self.run_decide({"prompt": "a", "session_id": "s2"}, now=1001.0))
+        self.assertIsNone(self.run_decide({"prompt": "a", "session_id": "s2"}, now=1001.0))
+
+    def test_compaction_start_delivers_despite_suppression(self) -> None:
+        self.assertIsNotNone(self.run_decide({"prompt": "a", "session_id": "s1"}))
+        out = self.run_decide({"hook_event_name": "SessionStart", "source": "compact",
+                               "session_id": "s1"}, now=1001.0)
+        self.assertIsNotNone(out)
 
     def test_undelivered_notice_is_not_suppressed(self) -> None:
         self.assertIsNotNone(self.run_decide({"prompt": "a"}, deliver=False))
@@ -83,6 +89,31 @@ class Decide(unittest.TestCase):
 
     def test_nothing_owed_is_silent(self) -> None:
         self.assertIsNone(self.run_decide({"prompt": "a"}, line=""))
+
+
+class MainEndToEnd(unittest.TestCase):
+    """main() for real: fold_due runs against a temp store and cache, the first
+    tick delivers and records, the second is suppressed."""
+
+    def test_second_tick_is_suppressed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store, config, cache = root / "store", root / "config", root / "cache"
+            store.mkdir()
+            config.mkdir()
+            (store / "MEMORY.md").write_text("# Memory Index\n")
+            (config / "settings.json").write_text(json.dumps({"autoMemoryDirectory": str(store)}))
+            env = {**os.environ, "LANE": "1", "CLAUDE_CONFIG_DIR": str(config),
+                   "XDG_CACHE_HOME": str(cache)}
+            payload = json.dumps({"prompt": "proactively find work to do", "cwd": tmp})
+            outs = [subprocess.run([sys.executable, str(HERE / "memory_fold_notice.py")],
+                                   input=payload, capture_output=True, text=True, env=env,
+                                   timeout=60).stdout for _ in range(2)]
+            self.assertTrue((cache / "harmonic-forge" / "memory_fold" / "notice.json").exists())
+        first = json.loads(outs[0])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("memory-fold owed: no marker", first)
+        self.assertNotIn("could not be written", first)
+        self.assertEqual(outs[1], "")
 
 
 class Main(unittest.TestCase):

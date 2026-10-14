@@ -64,11 +64,12 @@ def fold_line(cwd: str) -> tuple[str, str]:
     return lines[0], kinds
 
 
-def _key(session: str, kinds: str) -> str:
-    """Suppression is per session and per SET OF TRIGGER KINDS, never per line
-    text: a count in the line ("16 new ...") must not re-send it (preclose
-    pass 1), and one session's notice must not silence another's."""
-    return hashlib.sha256(f"{session}\0{kinds}".encode()).hexdigest()[:16]
+def _key(kinds: str) -> str:
+    """Suppression is per SET OF TRIGGER KINDS, never per line text (a count in
+    the line must not re-send it) and never per session: compaction keeps the
+    session id, so a session key hid an owed fold for 24h (sticky-wicket).
+    A SessionStart, compaction included, always delivers."""
+    return hashlib.sha256(kinds.encode()).hexdigest()[:16]
 
 
 def _load(path: Path) -> dict:
@@ -114,8 +115,8 @@ def decide(payload: dict, env: dict, now: float, line_fn=fold_line,
     if not line:
         return None, None
     path = suppress_path or _suppress_path()
-    key = _key(str(payload.get("session_id") or ""), kinds)
-    # A session start (new context, /clear, resume) always gets the line.
+    key = _key(kinds)
+    # A session start (new context, /clear, resume, compact) always gets the line.
     if event == "UserPromptSubmit" and is_suppressed(key, now, path):
         return None, None
     text = f"{line}. {PROCEDURE}"
@@ -130,15 +131,13 @@ def main() -> int:
         result, key = decide(payload if isinstance(payload, dict) else {}, os.environ, now,
                              suppress_path=path)
         if result and key:
-            # Recorded only after the line is written out, so a failed delivery
-            # is not suppressed. An unwritable state is said, not hidden.
-            ctx = result["hookSpecificOutput"]
-            if not os.access(path.parent if path.parent.exists() else path.parent.parent, os.W_OK):
-                ctx["additionalContext"] += (f" (Suppression state at {path} is not writable, "
-                                             "so this line repeats on every prompt until it is.)")
+            # Recorded first, so an unwritable state is known before the line
+            # goes out and is said only when the write really failed.
+            if not mark_sent(key, now, path):
+                result["hookSpecificOutput"]["additionalContext"] += (
+                    f" (Suppression state at {path} could not be written, so this line "
+                    "repeats on every prompt until it can.)")
             print(json.dumps(result))
-            sys.stdout.flush()
-            mark_sent(key, now, path)
     except Exception:  # noqa: BLE001 -- always exit 0
         return 0
     return 0

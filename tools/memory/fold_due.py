@@ -17,8 +17,9 @@ snapshot `--record` writes after each fold. Any one trigger is enough:
 
 A missing or unreadable marker means "owed: no marker". It prints one line,
 `memory-fold owed: <trigger>`, for the first trigger that fires, and nothing
-otherwise. It always exits 0: a check that tells Lane 1 about owed work must
-never break the hook that runs it.
+otherwise. The check always exits 0: a check that tells Lane 1 about owed work must
+never break the hook that runs it. `--record` exits 1 and writes nothing when
+a measurement fails.
 """
 from __future__ import annotations
 
@@ -64,18 +65,18 @@ def _failure_lines(store: Path) -> list[str]:
         return []
 
 
-def _memory_md_bytes(store: Path) -> int:
+def _memory_md_bytes(store: Path) -> int | None:
     try:
         return len((store / "MEMORY.md").read_bytes())
     except OSError:
-        return 0
+        return None
 
 
-def _surface_bytes(repo: Path) -> int:
+def _surface_bytes(repo: Path) -> int | None:
     try:
         return sum(size for _c, _p, size in context_budget.surface(repo))
-    except Exception:  # noqa: BLE001 -- a surface we cannot measure is not growth
-        return 0
+    except Exception:  # noqa: BLE001 -- None: unmeasured, never a 0 baseline
+        return None
 
 
 def _feedback_names(store: Path) -> set[str]:
@@ -100,9 +101,15 @@ def repo_key(repo: Path) -> tuple[str, Path]:
     every worktree and subdirectory of one repo shares a baseline."""
     try:
         common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute",
-                                 "--git-common-dir", "--show-toplevel"],
-                                capture_output=True, text=True, timeout=5, check=True).stdout.split()
-        return str(Path(common[0]).resolve()), Path(common[1])
+                                 "--git-common-dir"],
+                                capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+        listing = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+                                 capture_output=True, text=True, timeout=5, check=True).stdout
+        # The main worktree is listed first. Every checkout of the repo shares
+        # one baseline, so it is always measured from that one (sticky-wicket):
+        # a feature worktree's branch must never become main's baseline.
+        main_tree = listing.splitlines()[0].split(" ", 1)[1]
+        return str(Path(common).resolve()), Path(main_tree)
     except (OSError, subprocess.SubprocessError, IndexError):
         return str(repo.resolve()), repo.resolve()
 
@@ -116,6 +123,11 @@ def _head_hash(lines: list[str], n: int) -> str:
     return hashlib.sha256("\n".join(lines[:n]).encode()).hexdigest()[:16]
 
 
+class MeasurementError(RuntimeError):
+    """A --record measurement failed; nothing is written (sticky-wicket: a
+    failed measurement must never become a 0 baseline)."""
+
+
 def snapshot(store: Path, repo: Path, now: datetime, known: dict | None = None) -> dict:
     lines = _failure_lines(store)
     surfaces: dict[str, dict] = {}
@@ -124,14 +136,20 @@ def snapshot(store: Path, repo: Path, now: datetime, known: dict | None = None) 
     for root in [*roots, *DEFAULT_REPOS, repo]:
         if root.is_dir():
             key, top = repo_key(root)
-            surfaces[key] = {"path": str(top), "bytes": _surface_bytes(top)}
+            size = _surface_bytes(top)
+            if size is None:
+                raise MeasurementError(f"could not measure the always-loaded surface of {top}")
+            surfaces[key] = {"path": str(top), "bytes": size}
+    md = _memory_md_bytes(store)
+    if md is None:
+        raise MeasurementError(f"could not read {store / 'MEMORY.md'}")
     return {
         "ts": now.isoformat(),
         "date": now.date().isoformat(),
         "feedback_names": sorted(_feedback_names(store)),
         "failures_offset": len(lines),
         "failures_head": _head_hash(lines, len(lines)),
-        "memory_md_bytes": _memory_md_bytes(store),
+        "memory_md_bytes": md,
         "surface_bytes": surfaces,
     }
 
@@ -212,11 +230,11 @@ def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[tu
 
     key, top = repo_key(repo)
     base = marker["surface_bytes"].get(key)
-    if _grew(_memory_md_bytes(store), marker["memory_md_bytes"]):
+    if _grew(_memory_md_bytes(store) or 0, marker["memory_md_bytes"]):
         fired.append(("growth", "MEMORY.md grew 10% or more since the last fold"))
     elif base is None:
         fired.append(("growth", f"no surface baseline for {top}; run the fold from here"))
-    elif _grew(_surface_bytes(top), base["bytes"]):
+    elif _grew(_surface_bytes(top) or 0, base["bytes"]):
         fired.append(("growth", "the always-loaded surface grew 10% or more since the last fold"))
 
     if now - marker_ts >= timedelta(days=FALLBACK_DAYS):
@@ -238,7 +256,11 @@ def main(argv: list[str] | None = None) -> int:
         store = args.store or memory_lint.resolve_store(repo_key(repo)[1])
         now = datetime.now(timezone.utc)
         if args.record:
-            print(f"memory-fold recorded: {record(store, repo, now, args.marker)}")
+            try:
+                print(f"memory-fold recorded: {record(store, repo, now, args.marker)}")
+            except MeasurementError as exc:
+                print(f"fold_due: not recorded: {exc}", file=sys.stderr)
+                return 1
             return 0
         fired = owed(store, repo, now, read_marker(args.marker))
         if fired:
