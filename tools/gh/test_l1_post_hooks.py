@@ -632,6 +632,15 @@ class EstimateGateTests(unittest.TestCase):
                 post.board_field_names("vitalharmony", "1")
         self.assertIn("empty field list", str(raised.exception))
 
+    def test_a_field_list_shorter_than_its_total_fails_the_gate(self) -> None:
+        """Post-verdict check: a short page that reports a larger totalCount omitted fields."""
+        payload = json.dumps({"fields": [{"name": "Tier"}], "totalCount": 3})
+        with patch.object(post, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=payload, stderr="")):
+            with self.assertRaises(SystemExit) as raised:
+                post.board_field_names("vitalharmony", "1")
+        self.assertIn("1 of 3 fields", str(raised.exception))
+
     def test_a_field_list_at_the_read_limit_fails_the_gate(self) -> None:
         """A full page may have cut a field off, so it is refused rather than trusted."""
         fields = [{"name": f"F{i}"} for i in range(post.FIELD_LIST_LIMIT)]

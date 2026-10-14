@@ -1048,14 +1048,20 @@ def board_field_names(owner: str, number: str) -> set[str]:
     if result.returncode != 0:
         fail(f"cannot read the field list of project {owner}#{number}: {result.stderr.strip()}")
     try:
-        fields = json.loads(result.stdout)["fields"]
+        payload = json.loads(result.stdout)
+        fields = payload["fields"]
         names = {str(field["name"]) for field in fields}
+        total = payload.get("totalCount")
     except (json.JSONDecodeError, KeyError, TypeError):
         fail(f"unexpected field-list response shape from project {owner}#{number}")
     # Every board defines at least Title, so an empty list is a bad read, never
     # "this board defines nothing to gate" (harmonic-forge#989 preclose pass 2).
     if not names:
         fail(f"project {owner}#{number} returned an empty field list")
+    # A short page that reports a larger total omitted fields (preclose
+    # post-verdict check): refuse it rather than gate on part of the list.
+    if total is not None and total != len(fields):
+        fail(f"project {owner}#{number} returned {len(fields)} of {total} fields")
     if len(fields) >= FIELD_LIST_LIMIT:
         fail(f"project {owner}#{number} returned {len(fields)} fields, the read limit; "
              "a field past it would go ungated")
