@@ -7,7 +7,14 @@
 #
 # Must NEVER fail the git operation it is attached to: this hook's exit status
 # becomes `git checkout`'s.
-FORGE="${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"
+# harmonic-forge#987: a harmonic-forge checkout (a worktree included) links to
+# ITSELF, with its own sync_rules.py, because check's platform-links step
+# expects exactly that; every other repo links to the installed forge.
+if [ -f ./sync_rules.py ]; then
+  FORGE="$PWD"
+else
+  FORGE="${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"
+fi
 [ "$3" = "1" ] || exit 0   # file-level checkout, not a branch switch — skip
 [ -f "$FORGE/sync_rules.py" ] || exit 0
 python3 "$FORGE/sync_rules.py" --project . >/dev/null 2>&1
