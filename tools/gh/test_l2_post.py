@@ -379,7 +379,7 @@ class TestResolveLock(unittest.TestCase):
 
 
 class TestRealRun(unittest.TestCase):
-    """harmonic-forge#996."""
+    """harmonic-forge#996, reforged in #999: `--real-run <file>`, never a parsed section."""
 
     @staticmethod
     def _thread(*bodies):
@@ -391,152 +391,98 @@ class TestRealRun(unittest.TestCase):
         section = "" if probe is None else f"### Live Probe\n{probe}\n\n"
         return f"## Handoff: x\n\n### Issue\ny\n\n{section}### Ambiguity Gate\nz\n\n{self.HANDOFF_FOOTER}"
 
-    def _check(self, thread, narrative, rc=0, stderr=""):
+    def _check(self, thread, real_run, rc=0, stderr=""):
         with unittest.mock.patch.object(lp, "_gh_api", return_value=_fake_run(rc, thread, stderr)):
-            lp.require_real_run("vitalharmony/harmonic-forge", 1, narrative)
+            lp.require_real_run("vitalharmony/harmonic-forge", 1, real_run)
 
-    def test_a_named_call_without_a_real_run_section_is_refused(self):
-        with self.assertRaises(SystemExit) as caught:
-            self._check(self._thread(self._handoff("`claude -p` ran once: output ...")), "all tests pass")
-        self.assertIn("### Real run", str(caught.exception))
+    def test_a_live_probe_without_real_run_is_refused(self):
+        for real_run in (None, "", "  \n\t\n"):
+            with self.subTest(real_run=repr(real_run)), self.assertRaises(SystemExit) as caught:
+                self._check(self._thread(self._handoff("`claude -p` ran once")), real_run)
+            self.assertIn("--real-run", str(caught.exception))
 
-    def test_a_named_call_with_a_real_run_section_posts(self):
-        self._check(self._thread(self._handoff("`claude -p` ran once: output ...")),
-                    "### Real run\nfirst lines: # Title\n\n### Other\nx")
-
-    def test_an_empty_real_run_section_is_refused(self):
+    def test_a_none_probe_still_needs_a_real_run(self):
+        thread = self._thread(self._handoff("none: no external call"))
         with self.assertRaises(SystemExit):
-            self._check(self._thread(self._handoff("a fetch ran once")), "### Real run\n\n### Other\nx")
+            self._check(thread, None)
+        self._check(thread, "none: no external call added")
 
-    def test_a_none_probe_needs_a_one_line_real_run_and_is_never_read_as_prose(self):
-        for probe in ("none \u2014 git grep -n urlopen finds nothing", "None of the calls change; adds `claude -p`",
-                      "**none** \u2014 x", "  none"):
-            with self.subTest(probe=probe):
-                with self.assertRaises(SystemExit):
-                    self._check(self._thread(self._handoff(probe)), "no real run section")
-                self._check(self._thread(self._handoff(probe)), "### Real run\nnone: no external call added")
+    def test_any_non_blank_text_posts_whatever_its_markdown(self):
+        """The reforge's point: the file's Markdown is never parsed."""
+        thread = self._thread(self._handoff("a fetch ran once"))
+        for text in ("output", "```\n### Other\n", "## not a section end\n# x", "~~~\x0bjunk"):
+            with self.subTest(text=text):
+                self._check(thread, text)
 
     def test_a_handoff_that_predates_the_live_probe_section_posts(self):
-        self._check(self._thread(self._handoff(None)), "no real run section")
+        self._check(self._thread(self._handoff(None)), None)
 
     def test_a_thread_with_no_handoff_posts(self):
-        self._check(self._thread("just a discussion"), "n")
+        self._check(self._thread("just a discussion"), None)
 
     def test_only_the_trailing_footer_counts_as_a_handoff(self):
         quoted = f"I quote `{self.HANDOFF_FOOTER}` here.\n\n### Live Probe\na call\n\nmore text"
-        self._check(self._thread(quoted), "n")
+        self._check(self._thread(quoted), None)
 
     def test_a_rework_after_the_handoff_does_not_change_the_answer(self):
         rework = "## Rework\n\n### Live Probe\nnew call\n\n<!-- l1-post v1; kind=rework; posted-by=LANE1 -->"
-        self._check(self._thread(self._handoff(None), rework), "n")  # known gap, R-0380
+        self._check(self._thread(self._handoff(None), rework), None)  # known gap, R-0380
 
     def test_the_newest_handoff_wins(self):
         with self.assertRaises(SystemExit):
-            self._check(self._thread(self._handoff(None), self._handoff("a call ran")), "n")
-        self._check(self._thread(self._handoff("a call ran"), self._handoff(None)), "n")
+            self._check(self._thread(self._handoff(None), self._handoff("a call ran")), None)
+        self._check(self._thread(self._handoff("a call ran"), self._handoff(None)), None)
 
     def test_a_fetch_failure_refuses_instead_of_skipping(self):
         with self.assertRaises(SystemExit) as caught:
-            self._check("", "n", rc=1, stderr="rate limited")
+            self._check("", None, rc=1, stderr="rate limited")
         self.assertIn("cannot read the issue thread", str(caught.exception))
 
+    def test_an_empty_successful_read_refuses(self):
+        for out in ("", "  \n"):
+            with self.subTest(out=repr(out)), self.assertRaises(SystemExit) as caught:
+                self._check(out, None)
+            self.assertIn("empty issue-thread read", str(caught.exception))
+
     def test_a_handoff_on_a_later_page_is_read(self):
-        """Preclose pass 1: the handoff sits on page TWO, so a parser that read only the first
-        page, or json.loads over the joined pages, cannot pass this for the right reason."""
         page_one = json.dumps([{"id": 1, "body": "early discussion"}])
         page_two = json.dumps([{"id": 2, "body": self._handoff("a call ran")}])
         with self.assertRaises(SystemExit) as caught:
-            self._check(page_one + page_two, "n")
-        self.assertIn("### Real run", str(caught.exception))
-        self.assertNotIn("unreadable", str(caught.exception))
+            self._check(page_one + page_two, None)
+        self.assertIn("--real-run", str(caught.exception))
 
-    def test_the_section_ends_only_at_a_level_two_or_three_heading(self):
-        thread = self._thread(self._handoff("a fetch ran once"))
-        for heading in ("## Verification", "### Other"):
-            with self.subTest(heading=heading), self.assertRaises(SystemExit):
-                self._check(thread, f"### Real run\n\n{heading}\ncontent that is not the run")
-        for heading in ("# Notes", "#### Detail", "##### Deeper"):
-            with self.subTest(heading=heading), self.assertRaises(SystemExit):
-                self._check(thread, f"### Real run\n{heading}\n\n### Other\nx")  # heading only: empty
-        self._check(thread, "### Real run\n#### Detail\noutput line\n### Other\nx")
-        self._check(thread, "### Real run\n```\n# Title\n## not a section\n```\n### Other\nx")
+    def test_the_tool_writes_the_heading_and_appends_the_text(self):
+        body = lp.with_real_run("narrative", "line 1\nline 2\n")
+        self.assertEqual(body, "narrative\n\n### Real run\nline 1\nline 2\n")
+        self.assertEqual(lp.with_real_run("narrative", None), "narrative")
 
-    def test_fences_are_tracked_from_the_first_line(self):
-        thread = self._thread(self._handoff("a fetch ran once"))
-        for narrative in ("### Real run\n```\n### Verification\nall tests pass",
-                          "```\n### Real run\n```\nAll tests pass.\n### Verification\nok",
-                          "### Real run\n~~~\n"):
-            with self.subTest(narrative=narrative), self.assertRaises(SystemExit):
-                self._check(thread, narrative)
-        self._check(thread, "### Real run\n~~~\nout\n~~~\n### Other\nx")
-
-    def test_a_fence_closes_only_on_a_matching_fence(self):
-        """harmonic-forge#999: CommonMark 4.5, the issue's three rows plus the edges."""
-        thread = self._thread(self._handoff("a fetch ran once"))
-        refused = (
-            "```\n~~~\n### Real run\noutput\n```",          # the heading is inside the backtick fence
-            "````\n```\n### Real run\noutput\n````",         # a shorter fence does not close a longer one
-            "### Real run\n```\n~~~\n",                       # still unclosed: fails closed
-        )
-        for narrative in refused:
-            with self.subTest(narrative=narrative), self.assertRaises(SystemExit):
-                self._check(thread, narrative)
-        posts = (
-            "### Real run\n```\n~~~\n```\n### Other\nx",    # a tilde line is content inside backticks
-            "````\n```\n````\n### Real run\noutput",         # the four-backtick fence closes on four
-            "### Real run\n```\nout\n```\t \n### Other\nx",   # spaces or tabs after the closer
-            "### Real run\n    ```\nout",                      # four-space indent is not a fence
-        )
-        for narrative in posts:
-            with self.subTest(narrative=narrative):
-                self._check(thread, narrative)
-
-    def test_only_commonmark_line_endings_split_lines(self):
-        """Preclose pass 1: a vertical tab is not a line ending, so `\\x0b junk` keeps a closer open."""
-        thread = self._thread(self._handoff("a fetch ran once"))
-        with self.assertRaises(SystemExit):
-            self._check(thread, "```\n### Real run\noutput\n```\x0bjunk\n")
-        self._check(thread, "### Real run\r\noutput\r\n")
-
-    def test_an_indented_heading_ends_the_section(self):
-        thread = self._thread(self._handoff("a fetch ran once"))
-        for indent in (" ", "  ", "   "):
-            with self.subTest(indent=repr(indent)), self.assertRaises(SystemExit):
-                self._check(thread, f"### Real run\n\n{indent}### Other\nprose that is not the run")
-
-    def test_a_backtick_info_string_with_a_backtick_does_not_open_a_fence(self):
-        thread = self._thread(self._handoff("a fetch ran once"))
-        self._check(thread, "``` a`b\n### Real run\noutput")
-
-    def test_main_calls_the_check_for_a_completion_and_only_a_completion(self):
-        """The call site: a helper that is never reached refuses nothing."""
+    def test_main_reads_the_flag_and_checks_only_a_completion(self):
+        """The call site: the flag's text reaches the check and the posted body."""
         tmp = tempfile.TemporaryDirectory()
         try:
             narrative = Path(tmp.name) / "narrative.md"
             narrative.write_text("n")
+            real_run = Path(tmp.name) / "real-run.txt"
+            real_run.write_text("ran once")
             for kind, expected_calls in (("completion", 1), ("blocked", 0)):
                 argv = ["l2_post.py", "post", "--kind", kind,
                         "--repo", "vitalharmony/harmonic-forge", "--issue", "9301",
-                        "--narrative-file", str(narrative),
+                        "--narrative-file", str(narrative), "--real-run", str(real_run),
                         "--status", "s", "--change", "c", "--next", "n"]
                 with self.subTest(kind=kind), \
                         unittest.mock.patch.object(sys, "argv", argv), \
                         unittest.mock.patch.object(lp, "lock_blocks", return_value=False), \
                         unittest.mock.patch.object(lp, "validate_lead"), \
-                        unittest.mock.patch.object(lp, "post", side_effect=SystemExit("stop")), \
-                        unittest.mock.patch.object(lp, "require_real_run",
-                                                   side_effect=SystemExit("refused")) as check:
+                        unittest.mock.patch.object(lp, "post", side_effect=SystemExit("stop")) as post, \
+                        unittest.mock.patch.object(lp, "require_real_run") as check:
                     with self.assertRaises(SystemExit):
                         lp.main()
                     self.assertEqual(check.call_count, expected_calls)
+                    if expected_calls:
+                        self.assertEqual(check.call_args.args[2], "ran once")
+                        self.assertIn("### Real run\nran once", post.call_args.args[2])
         finally:
             tmp.cleanup()
-
-    def test_an_empty_successful_read_refuses(self):
-        for out in ("", "  \n"):
-            with self.subTest(out=repr(out)), self.assertRaises(SystemExit) as caught:
-                self._check(out, "n")
-            self.assertIn("empty issue-thread read", str(caught.exception))
 
 
 class TestSnapshot(unittest.TestCase):

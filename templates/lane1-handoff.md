@@ -107,7 +107,10 @@ valid only with the search that found no such call, e.g.
 3's gate: openclaw-projects#35 took five reworks because the arXiv queries
 and `claude -p … --tools ""` first ran there. `l1_post.py` checks only that
 the section is filled in, and a bare "none" posts; pitch-inspection re-runs
-one probe and checks the "none".
+one probe and checks the "none". When this section is present, Lane 2's completion
+must pass `l2_post.py post --kind completion --real-run <file>` with the
+output of one real run (or one line saying why none applies);
+`l2_post.py` writes the `### Real run` heading (harmonic-forge#996/#999).
 
 ### Delegated Judgment Calls
 {none | list each design decision this spec deliberately leaves to Lane 2
