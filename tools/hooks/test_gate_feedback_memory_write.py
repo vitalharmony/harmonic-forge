@@ -215,6 +215,25 @@ class SharedReader(unittest.TestCase):
                 self.assertIn(name, reported)
 
 
+class NonFeedbackYaml(Decide):
+    """AC3 under option A: valid YAML outside the strict grammar in a memory
+    that is not feedback passes; the same shape mentioning feedback is denied."""
+
+    CASES = (
+        "---\nname: x\ndescription: >\n  folded text\nmetadata:\n  type: project\n---\nbody\n",
+        "---\nname: x\ntags:\n  - lane\nmetadata:\n  type: reference\n---\nbody\n",
+        "---\nname: x\nsource-url: http://a\nmetadata:\n  type: reference\n---\nbody\n",
+    )
+
+    def test_non_feedback_yaml_outside_the_grammar_passes(self) -> None:
+        for i, text in enumerate(self.CASES):
+            self.assertIsNone(self.write(f"project_{i}.md", text), text)
+
+    def test_the_same_shape_mentioning_feedback_is_denied(self) -> None:
+        text = "---\nname: x\ndescription: >\n  folded\ntype: feedback\n---\nbody\n"
+        self.assertIsNotNone(self.write("lesson.md", text))
+
+
 class Registry(unittest.TestCase):
     def test_real_registry_resolves_a_known_rule(self) -> None:
         self.assertIn("R-0039", gate.rule_ids())

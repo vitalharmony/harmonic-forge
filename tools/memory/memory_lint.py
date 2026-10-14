@@ -530,6 +530,30 @@ class GateFrontmatter:
         return self.values.get("type", "").lower() == "feedback"
 
 
+def may_be_feedback(name: str, text: str) -> bool:
+    """Whether the gate's strict grammar applies to this file (operator ruling,
+    harmonic-forge#981, option A: the gate targets good-faith sessions).
+
+    True for a `feedback_*.md` filename, or when the word "feedback" appears
+    anywhere in the frontmatter. A non-feedback memory whose valid YAML falls
+    outside the strict grammar (a folded description, a list) is then left
+    alone (AC3). Known limit, stated rather than chased: YAML escapes or tags
+    that spell "feedback" without the literal word are not caught; that is
+    deliberate evasion, which this gate does not claim to stop.
+    """
+    if name.startswith("feedback_") and name.endswith(".md"):
+        return True
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    head: list[str] = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        head.append(line)
+    return "feedback" in "\n".join(head).lower()
+
+
 def is_feedback_memory(name: str, text: str) -> bool:
     """harmonic-forge#981: a `feedback_*.md` filename, or a frontmatter `type`
     of feedback (read by `GateFrontmatter`)."""
@@ -568,7 +592,7 @@ def check_rule_check(store: Path) -> list[str]:
         if f.name in allowed:
             continue
         gate = GateFrontmatter(text)
-        if gate.errors:
+        if gate.errors and may_be_feedback(f.name, text):
             findings.append(f"{f.name}: malformed gate frontmatter: {'; '.join(gate.errors)}")
         elif is_feedback_memory(f.name, text) and not gate.rule_check:
             findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "

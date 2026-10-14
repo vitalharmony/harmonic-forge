@@ -15,7 +15,8 @@ gates the CREATION of a feedback memory under the configured store on a
   R-ID that resolves anywhere but its `rule_check:` line, the description
   included (operator ruling 2, 2026-10-13; widened by the sticky-wicket reforge).
 * ambiguous frontmatter (a key twice, a list or commented-out value, a bare
-  `none`) -> deny. One strict reader, `memory_lint.GateFrontmatter`, decides
+  `none`) in a file that may be a feedback memory (a `feedback_*` name, or the
+  word "feedback" in its frontmatter) -> deny. One strict reader, `memory_lint.GateFrontmatter`, decides
   for both this hook and Check 9.
 * a MultiEdit that creates a file is replayed edit by edit, so the text
   checked is the text written.
@@ -28,7 +29,9 @@ memory pass, and so do `user`/`project`/`reference` memories. Any parse or
 resolution failure exits silently: this hook gates an agent convenience, and a
 crash here must never block an unrelated write.
 
-A Bash heredoc into the store is not seen here. `memory_lint.py`'s rule_check
+Threat model (operator ruling, option A): good-faith sessions. Deliberate
+evasion, such as YAML escapes or tags that spell "feedback" without the word,
+is not caught. A Bash heredoc into the store is not seen here. `memory_lint.py`'s rule_check
 check (AC6) reports such a file afterwards.
 """
 from __future__ import annotations
@@ -161,9 +164,9 @@ def decide(tool: str, tool_input: dict, store: Path, ids: set[str]) -> str | Non
     if text is None:
         return None
     gate = memory_lint.GateFrontmatter(text)
-    if gate.errors:
-        # A new memory in the store must be readable by the strict grammar,
-        # whatever its type: an unreadable line could be hiding one.
+    if gate.errors and memory_lint.may_be_feedback(path.name, text):
+        # A file that may be a feedback memory must be readable by the strict
+        # grammar; any other memory's YAML is its own business (AC3).
         return _missing("its frontmatter is ambiguous: " + "; ".join(gate.errors))
     if not is_feedback(path, text):
         return None
