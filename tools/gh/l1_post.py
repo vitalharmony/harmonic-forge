@@ -1000,7 +1000,7 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
 def validate_plan_first_declared(value: str | None) -> None:
     """a private-repo incident: a handoff must DECLARE Plan-First; it may not be inferred.
 
-    A hard refusal rather than a default, on `validate_tier_set`'s precedent
+    A hard refusal rather than a default, on `validate_board_fields_set`'s precedent
     directly above: an optional field silently falls back to the legacy
     body-parsing path forever, which is the drift this design exists to close.
     Every handoff author answering the question is the intended cost.
@@ -1026,13 +1026,97 @@ def validate_plan_first_declared(value: str | None) -> None:
     )
 
 
-def validate_tier_set(repo: str, issue: int) -> None:
+#: harmonic-forge#989: the board fields a handoff requires. Tier is the
+#: model-routing signal (#257); Theme and Venture are "required on every open
+#: issue" (hrse docs/BOARD-FIELDS.md) but were only ever written at filing.
+#: Order is the order the refusal names them in.
+BOARD_FIELDS_REQUIRED = ("Tier", "Theme", "Venture")
+
+
+def board_field_names(owner: str, number: str) -> set[str]:
+    """Every field name the board defines, read live.
+
+    harmonic-forge#989 AC2: a failed read fails the gate. It is never read as
+    "this board defines no fields", which would silently pass every handoff.
+    """
+    result = run("gh", "project", "field-list", number, "--owner", owner, "--format", "json")
+    if result.returncode != 0:
+        fail(f"cannot read the field list of project {owner}#{number}: {result.stderr.strip()}")
+    try:
+        return {str(field["name"]) for field in json.loads(result.stdout)["fields"]}
+    except (json.JSONDecodeError, KeyError, TypeError):
+        fail(f"unexpected field-list response shape from project {owner}#{number}")
+
+
+def read_board_fields(repo: str, owner: str, number: str, issue: int,
+                      names: Iterable[str]) -> dict[str, str | None]:
+    """Each named field's value on the issue's board item, read fresh (`ttl=0`).
+
+    A same-owner board is read per field through the targeted per-issue query.
+    A cross-owner board (#820: user-owned board, org repo) is blind to that
+    query, so it is read from ONE board scan for every field, never one scan
+    per field. Scanned items carry lowercased field keys.
+    """
+    names = list(names)
+    cross_owner = owner.lower() != repo.split("/", 1)[0].lower()
+    if (not cross_owner and _item_list_cache is not None
+            and hasattr(_item_list_cache, "fetch_issue_field")):
+        values: dict[str, str | None] = {}
+        for name in names:
+            try:
+                value = _item_list_cache.fetch_issue_field(
+                    repo, issue, number, field=name, run=lambda cmd: run(*cmd), ttl=0)
+            except _item_list_cache.GhItemListError as exc:
+                fail(f"cannot read {name} for {repo}#{issue} on board {owner}/{number}: {exc}")
+            values[name] = value.strip() if isinstance(value, str) and value.strip() else None
+        return values
+    # Cross-owner, or a sibling predating #802: the board scan, through the
+    # shim-sanctioned reader when it is importable (#964), as resolve_board_tier does.
+    if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_full_board"):
+        try:
+            items = _item_list_cache.fetch_full_board(
+                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: run(*cmd))
+        except _item_list_cache.GhItemListError as exc:
+            fail(f"cannot fetch project board {owner}/{number} to verify board fields: {exc}")
+    else:
+        result = run("gh", "project", "item-list", number, "--owner", owner,
+                     "--limit", "1000", "--format", "json")
+        if result.returncode != 0:
+            fail(f"cannot fetch project board {owner}/{number} to verify board fields: "
+                 + result.stderr.strip())
+        try:
+            items = json.loads(result.stdout)["items"]
+        except (json.JSONDecodeError, KeyError):
+            fail(f"unexpected response shape from project board {owner}/{number}")
+    item: dict = {}
+    for candidate in items:
+        content = candidate.get("content") or {}
+        if content.get("repository") and str(content["repository"]).lower() != repo.lower():
+            continue
+        if content.get("number") == issue:
+            item = candidate
+            break
+    values = {}
+    for name in names:
+        value = item.get(name.lower())
+        values[name] = str(value).strip() if value not in (None, "") and str(value).strip() else None
+    return values
+
+
+def validate_board_fields_set(repo: str, issue: int) -> None:
     """a private-repo incident: a handoff must not post if the target issue's board
     Tier field is unset (harmonic-forge#257 — was Estimate) -- .claude/rules/planning.md already requires
     it in prose, but harmonic-forge#202's model-tier gate silently no-ops
     without it (a missing estimate reads identically to "below 8 points").
     Found live 2026-08-09: a private-repo incident and a private-repo incident both had handoffs posted
     with a stated point estimate that was never written to the board.
+
+    harmonic-forge#989 widened it from Tier to Tier, Theme and Venture, and
+    its refusal now names a command that works on an existing issue
+    (`board_fields.py set`), where the old one named `gh_issue.py`, which
+    can only file a new issue. A field the board does not define is not
+    gated; a field-list read that errors fails closed.
+
     No-ops entirely on a repo with no project board configured (e.g.
     vitalharmony/openclaw-projects today) -- this gate only applies where
     a board exists to enforce against."""
@@ -1040,17 +1124,25 @@ def validate_tier_set(repo: str, issue: int) -> None:
     if board is None:
         return
     owner, number = board
-    tier = resolve_board_tier(repo, owner, number, issue)
-    if tier is None:
-        fail(
-            f"{repo}#{issue} has no board Tier set on project {owner}#{number} -- "
-            "required before a handoff can post (.claude/rules/planning.md; "
-            "harmonic-forge#202's model-tier gate silently no-ops without it, "
-            "and a missing Tier reads identically to 'does not escalate'). "
-            "Set it with `gh_issue.py --tier fast|standard|deep`, or via the "
-            "board UI. fast = 1-3 pts, standard = 5, deep = 8+ (deep is the "
-            "only tier that requires the high-tier model)."
-        )
+    defined = board_field_names(owner, number)
+    gated = [name for name in BOARD_FIELDS_REQUIRED if name in defined]
+    if not gated:
+        return
+    values = read_board_fields(repo, owner, number, issue, gated)
+    missing = [name for name in gated if values.get(name) is None]
+    if not missing:
+        return
+    flags = " ".join(f"--{name.lower()} <{name}>" for name in missing)
+    fail(
+        f"{repo}#{issue} has no board {', '.join(missing)} set on project {owner}#{number} -- "
+        "required before a handoff can post (.claude/rules/planning.md; hrse "
+        "docs/BOARD-FIELDS.md; harmonic-forge#202's model-tier gate silently "
+        "no-ops without a Tier). Set them with:\n"
+        f"  mise run board-fields -- set --repo {repo} --issue {issue} {flags}\n"
+        "Options are read live from the board. Tier: fast = 1-3 pts, "
+        "standard = 5, deep = 8+ (deep is the only tier that requires the "
+        "high-tier model)."
+    )
 
 
 def repo_milestone_titles(repo: str) -> list[str]:
@@ -1082,7 +1174,7 @@ def validate_milestone_set(repo: str, issue: int) -> None:
     milestone -- the field is release membership, and an unset one is
     indistinguishable from a deliberate "not in any release."
 
-    Structurally mirrors validate_tier_set() above, including its graceful
+    Structurally mirrors validate_board_fields_set() above, including its graceful
     no-op: a repo with no milestones at all (harmonic-forge, openclaw-projects)
     is not gated, because there is nothing to enforce against. Requiredness is
     derived from live state rather than a hardcoded per-repo list.
@@ -2501,7 +2593,7 @@ def main() -> None:
         # `args.plan_first` as a real answer rather than a tri-state.
         validate_plan_first_declared(args.plan_first)
         validate_plan_first_spec(body, args.plan_first == "true")
-        validate_tier_set(repo, args.issue)
+        validate_board_fields_set(repo, args.issue)
         validate_milestone_set(repo, args.issue)
         validate_tooling_exception_labelled(body, repo, args.issue)
         validate_pitch_inspected(repo, args.issue)

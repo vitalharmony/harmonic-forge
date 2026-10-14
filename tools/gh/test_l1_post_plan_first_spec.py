@@ -185,7 +185,7 @@ class WiredIntoMain(unittest.TestCase):
                     "--plan-first", plan_first]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.object(L, "resolve_sha", return_value="a" * 40), \
-                 mock.patch.object(L, "validate_tier_set"), \
+                 mock.patch.object(L, "validate_board_fields_set"), \
                  mock.patch.object(L, "validate_milestone_set"), \
                  mock.patch.object(L, "issue_labels", return_value=set()), \
                  mock.patch.object(L, "post_kind",

@@ -32,7 +32,7 @@ l1_post = load("l1_post")
 
 class PlanFirstDeclarationTests(unittest.TestCase):
     def test_a_missing_declaration_is_a_hard_refusal(self):
-        """L1-confirmed: matching `validate_tier_set`'s precedent. An optional
+        """L1-confirmed: matching `validate_board_fields_set`'s precedent. An optional
         field is one every author skips, and then `lane_state` falls back to
         the legacy path forever — the drift this design exists to close."""
         with self.assertRaises(SystemExit):

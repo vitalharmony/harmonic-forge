@@ -417,7 +417,7 @@ class RepoTargetTests(unittest.TestCase):
         )
         with patch.object(post, "regular_body", return_value=body), \
              patch.object(post, "resolve_sha", return_value="a" * 40), \
-             patch.object(post, "validate_tier_set"), \
+             patch.object(post, "validate_board_fields_set"), \
              patch.object(post, "validate_milestone_set"), \
              patch.object(post, "issue_labels", return_value=set()), \
              patch.object(post, "world_checks", return_value=(["world"], [])), \
@@ -543,22 +543,106 @@ class EstimateGateTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 post.resolve_board_tier("vitalharmony/hrse", "vitalharmony", "1", 627)
 
-    def test_validate_tier_set_noops_without_a_board(self) -> None:
+    def test_validate_board_fields_set_noops_without_a_board(self) -> None:
         with patch.object(post, "resolve_project_board", return_value=None), \
-             patch.object(post, "resolve_board_tier") as estimate_call:
-            post.validate_tier_set("vitalharmony/openclaw-projects", 2)
-        estimate_call.assert_not_called()
+             patch.object(post, "read_board_fields") as read_call:
+            post.validate_board_fields_set("vitalharmony/openclaw-projects", 2)
+        read_call.assert_not_called()
 
-    def test_validate_tier_set_passes_when_estimate_present(self) -> None:
-        with patch.object(post, "resolve_project_board", return_value=("vitalharmony", "1")), \
-             patch.object(post, "resolve_board_tier", return_value="deep"):
-            post.validate_tier_set("vitalharmony/hrse", 627)  # must not raise
+    # --- harmonic-forge#989: Tier, Theme and Venture -------------------------
 
-    def test_validate_tier_set_fails_when_unset(self) -> None:
+    ALL_FIELDS = {"Tier", "Theme", "Venture", "Status"}
+
+    def _gate(self, values, defined=None, issue=627):
         with patch.object(post, "resolve_project_board", return_value=("vitalharmony", "1")), \
-             patch.object(post, "resolve_board_tier", return_value=None):
+             patch.object(post, "board_field_names",
+                          return_value=self.ALL_FIELDS if defined is None else defined), \
+             patch.object(post, "read_board_fields", return_value=values) as read_call:
+            post.validate_board_fields_set("vitalharmony/hrse", issue)
+        return read_call
+
+    def test_all_three_set_posts(self) -> None:
+        """AC1: an issue with all three posts as today."""
+        self._gate({"Tier": "deep", "Theme": "Ops", "Venture": "CymaGraph"})  # must not raise
+
+    def test_validate_board_fields_set_fails_when_tier_unset(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self._gate({"Tier": None, "Theme": "Ops", "Venture": "CymaGraph"}, issue=671)
+        self.assertIn("--tier <Tier>", str(raised.exception))
+
+    def test_a_missing_theme_alone_refuses(self) -> None:
+        """AC1, and the AC5 kill check's target: drop Theme from the gate's
+        field tuple and this case posts."""
+        with self.assertRaises(SystemExit) as raised:
+            self._gate({"Tier": "fast", "Theme": None, "Venture": "CymaGraph"})
+        message = str(raised.exception)
+        self.assertIn("Theme", message)
+        self.assertIn("mise run board-fields -- set --repo vitalharmony/hrse --issue 627 "
+                      "--theme <Theme>", message)
+        self.assertNotIn("--tier", message)
+        self.assertNotIn("--venture", message)
+
+    def test_one_refusal_names_every_missing_field(self) -> None:
+        """AC1: one message, every missing field, the literal command."""
+        with self.assertRaises(SystemExit) as raised:
+            self._gate({"Tier": None, "Theme": None, "Venture": None})
+        message = str(raised.exception)
+        self.assertIn("Tier, Theme, Venture", message)
+        self.assertIn("mise run board-fields -- set --repo vitalharmony/hrse --issue 627 "
+                      "--tier <Tier> --theme <Theme> --venture <Venture>", message)
+        self.assertNotIn("gh_issue.py --tier", message)  # the fix that never worked
+
+    def test_a_field_the_board_does_not_define_is_not_gated(self) -> None:
+        """AC2: a board with no Venture field gates Tier and Theme only."""
+        read_call = self._gate({"Tier": "fast", "Theme": "Ops"},
+                               defined={"Tier", "Theme", "Status"})
+        self.assertEqual(list(read_call.call_args[0][4]), ["Tier", "Theme"])
+
+    def test_a_field_list_read_error_fails_the_gate(self) -> None:
+        """AC2: an errored field-list read is never "this board defines no fields"."""
+        with patch.object(post, "resolve_project_board", return_value=("vitalharmony", "1")), \
+             patch.object(post, "run", return_value=SimpleNamespace(
+                 returncode=1, stdout="", stderr="rate limited")), \
+             patch.object(post, "read_board_fields") as read_call:
+            with self.assertRaises(SystemExit) as raised:
+                post.validate_board_fields_set("vitalharmony/hrse", 627)
+        self.assertIn("field list", str(raised.exception))
+        read_call.assert_not_called()
+
+    def test_board_field_names_parses_the_live_list(self) -> None:
+        payload = json.dumps({"fields": [{"name": "Tier"}, {"name": "Theme"}]})
+        with patch.object(post, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=payload, stderr="")):
+            self.assertEqual(post.board_field_names("vitalharmony", "1"), {"Tier", "Theme"})
+
+    def test_same_owner_board_reads_each_field_fresh(self) -> None:
+        values = {"Tier": "deep", "Theme": "Ops", "Venture": None}
+        with patch.object(post._item_list_cache, "fetch_issue_field", create=True,
+                          side_effect=lambda repo, issue, number, field, run, ttl: values[field]) as read, \
+             patch.object(post._item_list_cache, "fetch_full_board", create=True) as board:
+            got = post.read_board_fields("vitalharmony/hrse", "vitalharmony", "1", 627,
+                                         ["Tier", "Theme", "Venture"])
+        self.assertEqual(got, values)
+        self.assertEqual({call.kwargs["ttl"] for call in read.call_args_list}, {0})
+        board.assert_not_called()
+
+    def test_a_field_read_error_fails_loud(self) -> None:
+        err = post._item_list_cache.GhItemListError("rate limited")
+        with patch.object(post._item_list_cache, "fetch_issue_field", side_effect=err, create=True):
             with self.assertRaises(SystemExit):
-                post.validate_tier_set("vitalharmony/hrse", 671)
+                post.read_board_fields("vitalharmony/hrse", "vitalharmony", "1", 627, ["Theme"])
+
+    def test_cross_owner_board_is_scanned_once_for_all_fields(self) -> None:
+        """#820: a user-owned board on an org repo is read from ONE scan."""
+        items = [{"content": {"number": 59}, "tier": "standard", "theme": "Ops"}]
+        with patch.object(post._item_list_cache, "fetch_full_board", return_value=items,
+                          create=True) as board, \
+             patch.object(post._item_list_cache, "fetch_issue_field", create=True) as read:
+            got = post.read_board_fields("kenekted/kenekted-platform", "harmonicarchitect", "1", 59,
+                                         ["Tier", "Theme", "Venture"])
+        self.assertEqual(got, {"Tier": "standard", "Theme": "Ops", "Venture": None})
+        board.assert_called_once()
+        read.assert_not_called()
 
 
 class RestMigrationTests(unittest.TestCase):

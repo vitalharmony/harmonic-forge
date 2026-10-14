@@ -275,6 +275,18 @@ python3 tools/gh/gh_issue.py \
   ${usage_venture:+--venture "$usage_venture"}
 """
 
+[tasks.board-fields]
+description = "Set Tier, Theme or Venture on an issue already on its board (tools/gh/board_fields.py, harmonic-forge#989). Writes only the named fields, never Status, and re-reads each one. The fix l1-post names when it refuses a handoff missing a board field. The script owns the flag surface, so pass its arguments after `--`."
+usage = '''
+arg "args" var=#true help="tools/gh/board_fields.py arguments verbatim, e.g. set --repo vitalharmony/hrse --issue 123 --tier standard --theme <Theme> --venture <Venture>"
+'''
+run = """
+# eval, not a bare expansion: a Theme or Venture option can contain spaces,
+# and mise single-quotes a multi-word `var=#true` value (see l1-post below,
+# harmonic-forge#568).
+eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/board_fields.py" $usage_args
+"""
+
 [tasks.post-comment]
 description = "Post a GitHub issue comment via --body-file with a mandatory self-check (tools/gh/post_comment.py, ADR-004/ADR-005)"
 usage = '''

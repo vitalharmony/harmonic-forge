@@ -468,8 +468,8 @@ class IntersectionTests(unittest.TestCase):
 
 class RenderTests(unittest.TestCase):
     def record(self, key, theme="Ops", seq="1", tooling=None, deps=(), scope=(),
-               repo="vitalharmony/hrse", tier="fast"):
-        fields = {"Theme": theme, "Sequence": seq, "Status": "Todo"}
+               repo="vitalharmony/hrse", tier="fast", venture="CymaGraph"):
+        fields = {"Theme": theme, "Venture": venture, "Sequence": seq, "Status": "Todo"}
         if tier is not None:
             fields["Tier"] = tier
         return {"key": key, "number": int(key[1:]), "title": f"title {key}", "repo": repo,
@@ -690,9 +690,13 @@ class LaneStateTests(unittest.TestCase):
     FAIL = ("## Lane 3 Gate Results -- hrse#1 -- FAIL (migration executed "
             "successfully; one write site missed)")
 
-    def record(self, *bodies, tier="standard", deps=()):
+    def record(self, *bodies, tier="standard", deps=(), theme="Ops", venture="CymaGraph"):
+        # harmonic-forge#989: Theme and Venture default to set, so a case about
+        # the thread is not turned into `blocked.no-fields` by an absent field.
+        fields = {name: value for name, value in
+                  (("Tier", tier), ("Theme", theme), ("Venture", venture)) if value}
         return {"key": "H1", "number": 1, "title": "t", "repo": "vitalharmony/hrse",
-                "fields": {"Tier": tier} if tier else {},
+                "fields": fields,
                 "deps": list(deps), "scope": [], "tooling": None,
                 "comments": [{"body": body} for body in bodies]}
 
@@ -879,11 +883,41 @@ class LaneStateTests(unittest.TestCase):
         self.assertIsNone(trigger)
 
     def test_no_tier_beats_every_other_marker(self) -> None:
-        """TC5 -- `l1_post.validate_tier_set` refuses the handoff, so the
+        """TC5 -- `l1_post.validate_board_fields_set` refuses the handoff, so the
         issue cannot move however far along its thread reads. forge#468 was
         in exactly this state on 2026-09-04."""
         self.assertEqual(self.state(self.HANDOFF, self.L2D, self.PASS, tier=None),
                          (lane_state.BLOCKED_NO_TIER, None))
+
+    # --- harmonic-forge#989: Theme and Venture -----------------------------
+
+    def test_no_handoff_missing_theme_is_blocked_no_fields(self) -> None:
+        """AC4: the handoff this issue owes cannot post, so say so."""
+        self.assertEqual(self.state(theme=None),
+                         (f"{lane_state.BLOCKED_NO_FIELDS}: Theme", None))
+        self.assertEqual(self.full(theme=None).key, lane_state.KEY_BLOCKED_NO_FIELDS)
+
+    def test_blocked_no_fields_lists_every_missing_name(self) -> None:
+        self.assertEqual(self.state(theme=None, venture=None),
+                         (f"{lane_state.BLOCKED_NO_FIELDS}: Theme, Venture", None))
+
+    def test_chatter_with_no_handoff_missing_venture_is_blocked_no_fields(self) -> None:
+        """The second no-handoff return (comments, none a marker) as well."""
+        self.assertEqual(self.full("just a note", venture=None).key,
+                         lane_state.KEY_BLOCKED_NO_FIELDS)
+
+    def test_tier_only_missing_stays_blocked_no_tier(self) -> None:
+        """AC4: the existing stable key keeps its meaning."""
+        full = self.full(tier=None, theme=None)
+        self.assertEqual((full.state, full.key),
+                         (lane_state.BLOCKED_NO_TIER, lane_state.KEY_BLOCKED_NO_TIER))
+
+    def test_past_handoff_missing_theme_keeps_its_real_state(self) -> None:
+        """AC4: an issue past its handoff is not gated again."""
+        self.assertEqual(self.state(self.HANDOFF, theme=None),
+                         ("ready: Implement H1", "Implement H1"))
+        self.assertEqual(self.state(self.HANDOFF, self.L2D, theme=None, venture=None),
+                         (lane_state.AWAITING_GATE, None))
 
     def test_unmet_dependency_blocks_and_names_the_target(self) -> None:
         """TC6 -- hrse#199 is blocked on open hrse#192."""
@@ -1817,8 +1851,8 @@ class StaleAgeTests(unittest.TestCase):
 
     def test_blocked_gated_and_unknown_never_go_stale(self) -> None:
         for key in (lane_state.KEY_BLOCKED_LANE, lane_state.KEY_BLOCKED_DEP,
-                    lane_state.KEY_BLOCKED_NO_TIER, lane_state.KEY_GATE_PASS,
-                    lane_state.KEY_UNKNOWN):
+                    lane_state.KEY_BLOCKED_NO_TIER, lane_state.KEY_BLOCKED_NO_FIELDS,
+                    lane_state.KEY_GATE_PASS, lane_state.KEY_UNKNOWN):
             with self.subTest(key=key):
                 self.assertIsNone(lane_state.stale_label(self.state(key, 750), self.NOW))
 
@@ -1831,7 +1865,8 @@ class StaleAgeTests(unittest.TestCase):
         """A key in neither set is a state nobody decided about."""
         never = {lane_state.KEY_NO_HANDOFF, lane_state.KEY_BLOCKED_LANE,
                  lane_state.KEY_BLOCKED_DEP, lane_state.KEY_BLOCKED_NO_TIER,
-                 lane_state.KEY_GATE_PASS, lane_state.KEY_UNKNOWN}
+                 lane_state.KEY_BLOCKED_NO_FIELDS, lane_state.KEY_GATE_PASS,
+                 lane_state.KEY_UNKNOWN}
         self.assertEqual(lane_state.STALE_STATES & never, frozenset())
 
     # --- missing timestamp ------------------------------------------------
