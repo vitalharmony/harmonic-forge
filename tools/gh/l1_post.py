@@ -886,8 +886,8 @@ def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
     empty = [number for number, text in entries if not is_substantive(text.strip())]
     if empty:
         fail(f"sweep entries carry no text: TC{', TC'.join(sorted(set(empty), key=_case_sort_key))}")
-    # A fabricated outcome anywhere in an entry's text, bold or not (sticky-wicket
-    # PATCH, pass 2): the shared pattern only sees a bare leading word.
+    # A fabricated leading outcome, bold or not (sticky-wicket PATCH, pass 2): the
+    # shared pattern does not see `**passed**`.
     claimed = sorted({number for number, text in entries
                       if _OUTCOME_WORD.search(text.replace("*", ""))}, key=_case_sort_key)
     if claimed:
@@ -895,7 +895,9 @@ def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
              "gate-readiness sweep is posted BEFORE the gate runs. Describe readiness instead.")
 
 
-_OUTCOME_WORD = re.compile(r"\b(pass|passed|fail|failed)\b", re.I)
+#: Only a LEADING outcome word, bold stripped: readiness text may say a check
+#: "will fail closed" or that "pass/fail assertions" exist (post-verdict check).
+_OUTCOME_WORD = re.compile(r"^\W*(pass|passed|fail|failed)\b", re.I)
 
 
 def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:

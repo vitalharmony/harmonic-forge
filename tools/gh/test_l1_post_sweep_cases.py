@@ -475,9 +475,12 @@ class FooterCaseIdsTests(unittest.TestCase):
         self.assertIsNone(L.SWEEP_FABRICATED_OUTCOME.search("- TC2a passed"))
         self.assertIsNotNone(L.SWEEP_FABRICATED_OUTCOME_SUFFIXED.search("- TC2a passed"))
 
-    def test_a_bold_or_late_outcome_word_is_refused(self):
+    def test_a_bold_outcome_word_is_refused_and_readiness_prose_is_not(self):
         ids = ["1", "2"]
-        for line in ("- TC1: **passed**", "- TC1: ready, then passed"):
+        ok = self._sweep(ids).replace("- TC1: ready — offline fixtures",
+                                      "- TC1: ready — the gate will fail closed if the fetch fails")
+        self._validate(ok, self._spec(ids, ids))
+        for line in ("- TC1: **passed**", "- TC1: Passed."):
             with self.subTest(line=line), self.assertRaises(SystemExit):
                 sweep = self._sweep(ids).replace("- TC1: ready — offline fixtures", line)
                 self._validate(sweep, self._spec(ids, ids))
