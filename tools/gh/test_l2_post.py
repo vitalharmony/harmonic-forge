@@ -408,10 +408,13 @@ class TestRealRun(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._check(self._thread(self._handoff("a fetch ran once")), "### Real run\n\n### Other\nx")
 
-    def test_none_with_its_search_posts_in_both_spellings(self):
-        for probe in ("none \u2014 git grep -n urlopen finds nothing", "none new: reuses `_gh_api`",
-                      "None. The search found no call", "  none"):
-            self._check(self._thread(self._handoff(probe)), "no real run section")
+    def test_a_none_probe_needs_a_one_line_real_run_and_is_never_read_as_prose(self):
+        for probe in ("none \u2014 git grep -n urlopen finds nothing", "None of the calls change; adds `claude -p`",
+                      "**none** \u2014 x", "  none"):
+            with self.subTest(probe=probe):
+                with self.assertRaises(SystemExit):
+                    self._check(self._thread(self._handoff(probe)), "no real run section")
+                self._check(self._thread(self._handoff(probe)), "### Real run\nnone: no external call added")
 
     def test_a_handoff_that_predates_the_live_probe_section_posts(self):
         self._check(self._thread(self._handoff(None)), "no real run section")
@@ -425,7 +428,7 @@ class TestRealRun(unittest.TestCase):
 
     def test_a_rework_after_the_handoff_does_not_change_the_answer(self):
         rework = "## Rework\n\n### Live Probe\nnew call\n\n<!-- l1-post v1; kind=rework; posted-by=LANE1 -->"
-        self._check(self._thread(self._handoff("none new: reuses `_gh_api`"), rework), "n")
+        self._check(self._thread(self._handoff(None), rework), "n")  # known gap, R-0380
 
     def test_the_newest_handoff_wins(self):
         with self.assertRaises(SystemExit):
@@ -446,17 +449,40 @@ class TestRealRun(unittest.TestCase):
         self.assertIn("### Real run", str(caught.exception))
         self.assertNotIn("unreadable", str(caught.exception))
 
-    def test_none_followed_by_a_named_call_is_a_call(self):
-        probe = "None of the existing calls change; this adds `claude -p`, ran once: output ..."
-        with self.assertRaises(SystemExit) as caught:
-            self._check(self._thread(self._handoff(probe)), "no real run section")
-        self.assertIn("### Real run", str(caught.exception))
-
-    def test_an_empty_real_run_before_a_higher_level_heading_is_refused(self):
-        for heading in ("## Verification", "# Notes", "### Other"):
+    def test_the_section_ends_only_at_a_level_two_or_three_heading(self):
+        thread = self._thread(self._handoff("a fetch ran once"))
+        for heading in ("## Verification", "### Other"):
             with self.subTest(heading=heading), self.assertRaises(SystemExit):
-                self._check(self._thread(self._handoff("a fetch ran once")),
-                            f"### Real run\n\n{heading}\ncontent that is not the run")
+                self._check(thread, f"### Real run\n\n{heading}\ncontent that is not the run")
+        for heading in ("# Notes", "#### Detail", "##### Deeper"):
+            with self.subTest(heading=heading), self.assertRaises(SystemExit):
+                self._check(thread, f"### Real run\n{heading}\n\n### Other\nx")  # heading only: empty
+        self._check(thread, "### Real run\n#### Detail\noutput line\n### Other\nx")
+        self._check(thread, "### Real run\n```\n# Title\n## not a section\n```\n### Other\nx")
+
+    def test_main_calls_the_check_for_a_completion_and_only_a_completion(self):
+        """The call site: a helper that is never reached refuses nothing."""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            narrative = Path(tmp.name) / "narrative.md"
+            narrative.write_text("n")
+            for kind, expected_calls in (("completion", 1), ("blocked", 0)):
+                argv = ["l2_post.py", "post", "--kind", kind,
+                        "--repo", "vitalharmony/harmonic-forge", "--issue", "9301",
+                        "--narrative-file", str(narrative),
+                        "--status", "s", "--change", "c", "--next", "n"]
+                with self.subTest(kind=kind), \
+                        unittest.mock.patch.object(sys, "argv", argv), \
+                        unittest.mock.patch.object(lp, "lock_blocks", return_value=False), \
+                        unittest.mock.patch.object(lp, "validate_lead"), \
+                        unittest.mock.patch.object(lp, "post", side_effect=SystemExit("stop")), \
+                        unittest.mock.patch.object(lp, "require_real_run",
+                                                   side_effect=SystemExit("refused")) as check:
+                    with self.assertRaises(SystemExit):
+                        lp.main()
+                    self.assertEqual(check.call_count, expected_calls)
+        finally:
+            tmp.cleanup()
 
     def test_an_empty_successful_read_refuses(self):
         for out in ("", "  \n"):

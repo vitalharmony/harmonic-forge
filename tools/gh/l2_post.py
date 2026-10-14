@@ -268,13 +268,31 @@ def validate_lead(kind: str, lead: dict[str, str]) -> None:
 #: line only, never a substring, so a narrative that quotes the marker cannot
 #: pass for one (`reject_reserved_marker` already refuses Lane 2 forging it).
 _HANDOFF_FOOTER = re.compile(r"^<!--\s*l1-post\s+v1;\s*kind=handoff\b.*-->\s*$", re.I)
-_LIVE_PROBE = re.compile(r"(?ms)^###\s+Live Probe\s*$\n(?P<text>.*?)(?=^#{1,3}\s|\Z)")
-_REAL_RUN = re.compile(r"(?ms)^###\s+Real run\s*$\n(?P<text>.*?)(?=^#{1,3}\s|\Z)")
-#: `none`, `none -- git grep ...`, `none new: ...` all say "no call" (the
-#: template requires "none" plus the search that found it).
-#: Read from the first line only, and only as a standalone token: `none`, `none -- ...`,
-#: `none: ...`, `none.`, `none new: ...`. "None of the existing calls ... adds `claude -p`" is a call.
-_NONE_FIRST = re.compile(r"^\W*none\s*(?:$|[-\u2013\u2014:(.,;]|new\b)", re.I)
+_LIVE_PROBE = re.compile(r"(?m)^###\s+Live Probe\s*$")
+_REAL_RUN = re.compile(r"(?m)^###\s+Real run\s*$")
+#: A section ends at the next level-2 or level-3 heading. Level 1 and 4-6 are
+#: pasted-output shapes and belong to the section.
+_SECTION_END = re.compile(r"^#{2,3}\s")
+
+
+def real_run_has_content(narrative: str) -> bool:
+    """True when the `### Real run` section holds at least one non-blank line
+    that is not itself a heading. Lines inside a code fence always count.
+    Structure only: that the run happened is Lane 3's check."""
+    lines = (narrative or "").splitlines()
+    start = next((i for i, line in enumerate(lines) if _REAL_RUN.match(line)), None)
+    if start is None:
+        return False
+    fenced = False
+    for line in lines[start + 1:]:
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced and _SECTION_END.match(line):
+            return False
+        if line.strip() and (fenced or not line.lstrip().startswith("#")):
+            return True
+    return False
 
 
 def _pages(text: str) -> list[dict]:
@@ -323,19 +341,14 @@ def require_real_run(repo: str, issue: int, narrative: str) -> None:
     except ValueError as exc:
         raise SystemExit(f"real-run check: unreadable issue thread: {exc}") from exc
     handoff = latest_handoff_body(comments)
-    section = _LIVE_PROBE.search(handoff) if handoff else None
-    if section is None:
+    if handoff is None or not _LIVE_PROBE.search(handoff):
         return
-    probe = section.group("text").strip()
-    if not probe or _NONE_FIRST.match(probe.splitlines()[0].strip()):
-        return
-    run = _REAL_RUN.search(narrative or "")
-    if run is None or not run.group("text").strip():
+    if not real_run_has_content(narrative):
         raise SystemExit(
-            "real-run check (harmonic-forge#996): the handoff's Live Probe names an external call:\n"
-            f"  {probe.splitlines()[0][:200]}\n"
-            "a completion needs a non-empty `### Real run` section in the narrative with the output "
-            "of one real run of it (read-only or scratch), so Lane 3 is not the first run.")
+            "real-run check (harmonic-forge#996): the latest handoff has a `### Live Probe` "
+            "section, so a completion needs a non-empty `### Real run` section in the narrative: "
+            "the output of one real run of each call the probe names, or one line saying why none "
+            "applies (read-only or scratch), so Lane 3 is not the first run.")
 
 
 def post(repo: str, issue: int, body: str) -> dict:
