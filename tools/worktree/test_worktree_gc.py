@@ -148,7 +148,7 @@ class RegisteredTests(Fixture):
             return "closed"
         with mock.patch.object(gc, "issue_state", side_effect=state):
             out = self.run_sweep()
-        self.assertIn("widgets-12-impl: skipped", out)
+        self.assertIn("widgets-12-impl: skipped: acme/widgets#12: unregistered repo", out)
         self.assertIn("widgets-13-impl: removed", out)
         self.assertTrue(first.exists())
         self.assertFalse(second.exists())
