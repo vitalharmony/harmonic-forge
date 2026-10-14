@@ -153,6 +153,23 @@ class RegisteredTests(Fixture):
         self.assertTrue(first.exists())
         self.assertFalse(second.exists())
 
+    def test_a_crashing_candidate_is_skipped_and_the_sweep_continues(self):
+        """Kill check 10 (AC2): an unexpected error in one candidate (a git
+        failure inside `issue_for_worktree`, say) never ends the sweep."""
+        first = self.worktree(name="widgets-12-impl", branch="fix/12-a")
+        second = self.worktree(name="widgets-13-impl", branch="fix/13-b")
+        real = gc.resolve
+
+        def resolve(path):
+            if path.name == "widgets-12-impl":
+                raise ValueError("git exploded")
+            return real(path)
+        with mock.patch.object(gc, "resolve", side_effect=resolve):
+            out = self.run_sweep()
+        self.assertIn("widgets-12-impl: skipped: ValueError: git exploded", out)
+        self.assertIn("widgets-13-impl: removed", out)
+        self.assertTrue(first.exists())
+
     def test_no_flag_removes_nothing(self):
         """Kill check 11: report-only is the default."""
         path = self.worktree()
