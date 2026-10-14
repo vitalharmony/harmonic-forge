@@ -149,6 +149,13 @@ the call gets no retry budget of its own and does not extend it.
      included; re-run one of them. `l1_post.py` checks only that the section
      is filled in, because whether a search ran is not in the text
      (harmonic-forge#838 sticky-wicket PATCH).
+   - **The handoff's own Live Probe section** (harmonic-forge#994). Re-run
+     one named probe: its output must match what the handoff states. If the
+     Affected Files add or change an external call (a network fetch, an LLM
+     or CLI call, an API or Drive write, a subprocess to an installed tool)
+     and the section says "none", that is a finding; "none" needs the search
+     that found no such call. `l1_post.py` checks only structure, and a bare
+     "none" posts.
    - **Existing equivalents.** Does the repo already implement this
      behavior, or a guard for it? #836 specified a HEAD-is-main
      precondition that `tools/lane/_lane_refresh.sh` already implemented.

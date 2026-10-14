@@ -211,6 +211,24 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             post.validate_handoff(body, requires_preflight=False)
 
+    def test_live_probe_heading_is_required(self) -> None:
+        """harmonic-forge#994 AC2: a handoff without `### Live Probe` is refused by name."""
+        self.assertIn("Live Probe", post.HANDOFF_HEADINGS)
+        body = "\n".join(f"### {h}\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live."
+                         for h in post.HANDOFF_HEADINGS if h != "Live Probe")
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(body, requires_preflight=False)
+        self.assertIn("Live Probe", str(caught.exception))
+
+    def test_live_probe_placeholder_is_refused(self) -> None:
+        """AC2: the template's own placeholder never posts."""
+        body = "\n".join(
+            f"### {h}\n{'{none | for each external call this handoff adds or changes}' if h == 'Live Probe' else 'A documented value, per `git grep -n value` (l1_post.py:94), verified-live.'}"
+            for h in post.HANDOFF_HEADINGS)
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(body, requires_preflight=False)
+        self.assertIn("Live Probe", str(caught.exception))
+
     def test_consumers_placeholder_is_refused(self) -> None:
         """AC4 is structural: the template's own placeholder never posts."""
         with self.assertRaises(SystemExit):

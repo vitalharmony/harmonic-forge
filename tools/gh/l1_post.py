@@ -96,7 +96,8 @@ import _scratch  # noqa: E402  (harmonic-forge#949)
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
     "Scenario Trace", "Design Alternatives Considered", "Load-Bearing Assumptions",
-    "Consumers and Equivalents", "Delegated Judgment Calls", "Pre-Flight Preconditions", "Implementation Spec",
+    "Consumers and Equivalents", "Live Probe", "Delegated Judgment Calls", "Pre-Flight Preconditions",
+    "Implementation Spec",
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
@@ -548,6 +549,10 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
     # question about what was run, which is not in the text; two preclose
     # passes showed a regex fails both ways (sticky-wicket PATCH), so that
     # check is pitch-inspection's (agents/pitch-inspection.md, check 6).
+    # harmonic-forge#994: `Live Probe` is structure-only for the same reason,
+    # and a bare "none" passes `is_substantive` (as it does for `Delegated
+    # Judgment Calls`), so "none only with the search" is likewise checked by
+    # pitch-inspection (check 6), not here.
 
 
 #: harmonic-forge#472. Per-artifact lead blocks, NOT one universal
