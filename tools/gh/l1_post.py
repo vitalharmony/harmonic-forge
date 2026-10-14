@@ -93,6 +93,7 @@ except ImportError:
 # however this file is loaded (tests load it by file location).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pitch_receipt  # noqa: E402
+import sticky_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
@@ -1352,6 +1353,22 @@ def issue_labels(repo: str, issue: int) -> set[str]:
     if result.returncode:
         fail(f"cannot read labels on {repo}#{issue}")
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def validate_sticky_wicket(repo: str, issue: int) -> None:
+    """harmonic-forge#997: a rework after two consecutive non-PASS gate results
+    needs a sticky-wicket receipt through the newer one. The thread is read in
+    full (paginated); a thread that cannot be read refuses rather than skips."""
+    result = run("gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments")
+    if result.returncode:
+        fail(f"cannot read the comments on {repo}#{issue} for the sticky-wicket check")
+    try:
+        comments = sticky_receipt.parse_pages(result.stdout)
+    except ValueError:
+        fail(f"unreadable comment thread on {repo}#{issue}")
+    reason = sticky_receipt.refusal(repo, issue, comments)
+    if reason:
+        fail(reason)
 
 
 def validate_pitch_inspected(repo: str, issue: int) -> None:
@@ -2703,6 +2720,8 @@ def main() -> None:
         validate_milestone_set(repo, args.issue)
         validate_tooling_exception_labelled(body, repo, args.issue)
         validate_pitch_inspected(repo, args.issue)
+    if args.kind == "rework":
+        validate_sticky_wicket(repo, args.issue)
     validate_lead(args.kind, body)
     if args.kind == "sweep":
         spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")

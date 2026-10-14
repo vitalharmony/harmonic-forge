@@ -499,10 +499,18 @@ OWES: dict[str, dict[str, str]] = {
     "l3": {"ready-for-l3": "spec", "sweep": "gate", "ae-and-sweep": "gate",
            "ae": "sweep-missing"},
     "l2": {"handoff": "implement", "rework": "fix", "gate-result": "fix"},
-    "l1": {"plan": "plan-review", "spec": "spec-review"},
+    "l1": {"plan": "plan-review", "spec": "spec-review", "gate-result": "sticky-wicket"},
 }
 #: The one value a Lane 2 `handoff` renders instead of `OWES["l2"]["handoff"]`.
 PLAN_FIRST_OWES = "plan"
+
+
+def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
+    """harmonic-forge#997: the countable sticky-wicket trigger, uncovered."""
+    import sticky_receipt  # noqa: PLC0415 -- imports this module; deferred to break the cycle
+
+    pair = sticky_receipt.owed(comments)
+    return bool(pair) and not sticky_receipt.covered(repo, issue, pair[1])
 
 
 def _owed_to(self_lane: str | None, detail: str) -> bool:
@@ -1208,6 +1216,12 @@ def discover_queue(repo: str, lane: str,
             # harmonic-forge#854: the loop still finishes, so a closed issue
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
+            continue
+        if lane == "l1" and _sticky_wicket_owed(repo, issue, comments):
+            # harmonic-forge#997: two consecutive non-PASS gate results with no
+            # sticky-wicket receipt through the newer. Stateless: re-emitted on
+            # every tick until a receipt covers it, like any queued line.
+            queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
             continue
         for comment in comments:
             # harmonic-forge#579 introduced the `None` (failed) vs `[]`

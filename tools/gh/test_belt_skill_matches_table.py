@@ -228,6 +228,7 @@ class ObligationsTableMatchesOwesTests(unittest.TestCase):
         ("l2", "fix"): "do the work on the branch",
         ("l1", "plan-review"): "Implementation Spec",
         ("l1", "spec-review"): "Review Lane 3's spec",
+        ("l1", "sticky-wicket"): "sticky_receipt.py record",
     }
     _FULL_ROW_RE = re.compile(r"^\s*\|\s*(l[123])\s*\|\s*`([\w-]+)`\s*\|(.*)\|\s*$", re.MULTILINE)
 

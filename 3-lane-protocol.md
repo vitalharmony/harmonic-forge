@@ -1694,6 +1694,10 @@ accumulated — to read the full issue thread and diagnose whether the
 underlying *approach* is structurally wrong, not just the latest bug. This
 is the cross-lane analog of a software circuit breaker: after N failures,
 stop retrying the same thing and ask whether the thing itself is broken.
+The trigger is mechanical (harmonic-forge#997): two consecutive non-PASS Lane 3
+gate results, blocked and failed alike, make `l1_post.py --kind rework` refuse
+and the Lane 1 belt emit `owes=sticky-wicket` until `sticky_receipt.py record`
+holds the verdict through the newer result.
 <!-- /R-0236 -->
 
 <!-- R-0237 -->
