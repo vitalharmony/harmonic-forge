@@ -325,7 +325,7 @@ def require_real_run(repo: str, issue: int, real_run: str | None) -> None:
         return
     # Judged on the text that will be posted: `compose_body` strips ANSI colour,
     # so a file of colour codes alone would post an empty section (reforge pass 1).
-    if not strip_ansi(real_run or "").strip():
+    if not _inert(real_run or "").strip():
         raise SystemExit(
             "real-run check (harmonic-forge#996/#999): the latest handoff has a `### Live Probe` "
             "section, so a completion needs `--real-run <file>` with non-blank text: the output "
@@ -341,8 +341,18 @@ def with_real_run(narrative: str, real_run: str | None) -> str:
     # Each part is sanitized on its own before joining, so an escape sequence the
     # narrative leaves open cannot swallow the appended section when
     # `compose_body` strips ANSI again (reforge pass 2).
-    return (f"{strip_ansi(narrative).rstrip()}\n\n{REAL_RUN_HEADING}\n"
-            f"{strip_ansi(real_run).strip()}\n")
+    return (f"{_inert(narrative).rstrip()}\n\n{REAL_RUN_HEADING}\n"
+            f"{_inert(real_run).strip()}\n")
+
+
+def _inert(text: str) -> str:
+    """TEXT with no escape sequence left to act on: `strip_ansi` repeated until
+    it changes nothing (one pass can expose a new sequence), then any stray ESC
+    removed, so `compose_body`'s own strip cannot reach across a boundary."""
+    previous = None
+    while text != previous:
+        previous, text = text, strip_ansi(text)
+    return text.replace("\x1b", "")
 
 
 def post(repo: str, issue: int, body: str) -> dict:

@@ -461,6 +461,17 @@ class TestRealRun(unittest.TestCase):
                                {"Status": "s", "Change": "c", "Next": "n"})
         self.assertIn("### Real run\nran once", body)
 
+    def test_nested_escapes_cannot_swallow_the_section_or_pass_as_text(self):
+        """Post-verdict check: one strip pass can expose a new sequence."""
+        nested = "\x1b[\x1b[0m31m"
+        body = lp.compose_body("completion", [], lp.with_real_run("text" + nested + "\x1b]0;x", "ran once"),
+                               {"Status": "s", "Change": "c", "Next": "n"})
+        self.assertIn("### Real run\nran once", body)
+        self.assertEqual(lp.compose_body("completion", [], lp.with_real_run("n", "ran once"),
+                                         {"Status": "s", "Change": "c", "Next": "n"}).count("ran once"), 1)
+        with self.assertRaises(SystemExit):
+            self._check(self._thread(self._handoff("a call")), "\x1b[0m\x1b[31m\x1b")
+
     def test_main_reads_the_flag_and_checks_only_a_completion(self):
         """The call site: the flag's text reaches the check and the posted body."""
         tmp = tempfile.TemporaryDirectory()
