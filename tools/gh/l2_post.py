@@ -276,23 +276,29 @@ _SECTION_END = re.compile(r"^#{2,3}\s")
 
 
 def real_run_has_content(narrative: str) -> bool:
-    """True when the `### Real run` section holds at least one non-blank line
-    that is not itself a heading. Lines inside a code fence always count.
+    """True when an unfenced `### Real run` heading is followed by at least one
+    non-blank line that is not itself a heading, before the next unfenced
+    level-2 or level-3 heading. Fence state is tracked from the first line, so
+    a heading quoted inside a fence is not the section, and a fence left open
+    at the end fails closed: nothing after an unclosed fence counts.
     Structure only: that the run happened is Lane 3's check."""
-    lines = (narrative or "").splitlines()
-    start = next((i for i, line in enumerate(lines) if _REAL_RUN.match(line)), None)
-    if start is None:
-        return False
-    fenced = False
-    for line in lines[start + 1:]:
-        if line.lstrip().startswith("```"):
+    fenced, inside, content = False, False, False
+    for line in (narrative or "").splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
             continue
-        if not fenced and _SECTION_END.match(line):
-            return False
-        if line.strip() and (fenced or not line.lstrip().startswith("#")):
+        if fenced:
+            if inside and line.strip():
+                content = True
+            continue
+        if inside and _SECTION_END.match(line):
+            break
+        if not inside and _REAL_RUN.match(line):
+            inside = True
+            continue
+        if inside and line.strip() and not line.lstrip().startswith("#"):
             return True
-    return False
+    return content and not fenced
 
 
 def _pages(text: str) -> list[dict]:
@@ -326,8 +332,8 @@ def require_real_run(repo: str, issue: int, narrative: str) -> None:
     `Consumers and Equivalents` is, harmonic-forge#838): that the run happened
     is not in the text, and Lane 3's gate checks its content.
 
-    A handoff with no `### Live Probe` section (one that predates
-    harmonic-forge#994) or one whose section starts `none` passes. A thread
+    A handoff with no `### Live Probe` heading (one that predates
+    harmonic-forge#994) passes; any Live Probe, `none` included, needs a Real run. A thread
     that cannot be read refuses, as `snapshot()` does, rather than skipping.
     Known gap, not closed here: a `rework` that adds an external call never
     turns this on, because only `kind=handoff` is read."""

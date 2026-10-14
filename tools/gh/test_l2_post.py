@@ -432,7 +432,8 @@ class TestRealRun(unittest.TestCase):
 
     def test_the_newest_handoff_wins(self):
         with self.assertRaises(SystemExit):
-            self._check(self._thread(self._handoff("none new: x"), self._handoff("a call ran")), "n")
+            self._check(self._thread(self._handoff(None), self._handoff("a call ran")), "n")
+        self._check(self._thread(self._handoff("a call ran"), self._handoff(None)), "n")
 
     def test_a_fetch_failure_refuses_instead_of_skipping(self):
         with self.assertRaises(SystemExit) as caught:
@@ -459,6 +460,15 @@ class TestRealRun(unittest.TestCase):
                 self._check(thread, f"### Real run\n{heading}\n\n### Other\nx")  # heading only: empty
         self._check(thread, "### Real run\n#### Detail\noutput line\n### Other\nx")
         self._check(thread, "### Real run\n```\n# Title\n## not a section\n```\n### Other\nx")
+
+    def test_fences_are_tracked_from_the_first_line(self):
+        thread = self._thread(self._handoff("a fetch ran once"))
+        for narrative in ("### Real run\n```\n### Verification\nall tests pass",
+                          "```\n### Real run\n```\nAll tests pass.\n### Verification\nok",
+                          "### Real run\n~~~\n"):
+            with self.subTest(narrative=narrative), self.assertRaises(SystemExit):
+                self._check(thread, narrative)
+        self._check(thread, "### Real run\n~~~\nout\n~~~\n### Other\nx")
 
     def test_main_calls_the_check_for_a_completion_and_only_a_completion(self):
         """The call site: a helper that is never reached refuses nothing."""
