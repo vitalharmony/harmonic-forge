@@ -212,6 +212,21 @@ class Marker(Base):
             fold_due.record(self.store, self.repo, NOW, self.marker)
         self.assertFalse(self.marker.exists())
 
+    def test_record_cli_exits_1_on_any_failure(self) -> None:
+        (self.store / "protocol-failures.jsonl").write_bytes(b"\xff\xfe bad")
+        with mock.patch.object(fold_due, "snapshot", side_effect=OSError("boom")):
+            code = fold_due.main(["--record", "--store", str(self.store), "--repo", str(self.repo),
+                                  "--marker", str(self.marker)])
+        self.assertEqual(code, 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_record_refuses_when_git_cannot_name_the_main_checkout(self) -> None:
+        (self.repo / ".git").mkdir()
+        with mock.patch.object(fold_due, "main_checkout_known", return_value=False):
+            with self.assertRaises(fold_due.MeasurementError):
+                fold_due.record(self.store, self.repo, NOW, self.marker)
+        self.assertFalse(self.marker.exists())
+
     def test_record_is_atomic_and_leaves_no_temp_file(self) -> None:
         self.record(NOW)
         self.assertEqual([p.name for p in self.marker.parent.iterdir()], ["marker.json"])

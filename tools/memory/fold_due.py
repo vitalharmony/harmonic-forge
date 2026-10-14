@@ -60,7 +60,7 @@ def _failures_path(store: Path) -> Path:
 
 def _failure_lines(store: Path) -> list[str]:
     try:
-        return _failures_path(store).read_text(encoding="utf-8").splitlines()
+        return _failures_path(store).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
 
@@ -94,6 +94,16 @@ def _feedback_names(store: Path) -> set[str]:
         if f.name.startswith("feedback_") or fm.get("metadata.type", "").strip() == "feedback":
             names.add(f.name)
     return names
+
+
+def main_checkout_known(repo: Path) -> bool:
+    """True when git can name the repo's main worktree (--record requires it)."""
+    try:
+        subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+                       capture_output=True, text=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
 
 
 def repo_key(repo: Path) -> tuple[str, Path]:
@@ -135,6 +145,8 @@ def snapshot(store: Path, repo: Path, now: datetime, known: dict | None = None) 
              if isinstance(v, dict) and isinstance(v.get("path"), str)]
     for root in [*roots, *DEFAULT_REPOS, repo]:
         if root.is_dir():
+            if (root / ".git").exists() and not main_checkout_known(root):
+                raise MeasurementError(f"git cannot name the main checkout of {root}")
             key, top = repo_key(root)
             size = _surface_bytes(top)
             if size is None:
@@ -258,8 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.record:
             try:
                 print(f"memory-fold recorded: {record(store, repo, now, args.marker)}")
-            except MeasurementError as exc:
-                print(f"fold_due: not recorded: {exc}", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 -- any failure: nothing written, exit 1
+                print(f"fold_due: not recorded: {exc!r}", file=sys.stderr)
                 return 1
             return 0
         fired = owed(store, repo, now, read_marker(args.marker))
