@@ -67,6 +67,7 @@ class SetTests(unittest.TestCase):
 
         def fake_read(repo, issue, number, field, run, ttl, owner):
             self.assertEqual(ttl, 0)
+            self.assertEqual(owner, board[0], "the re-read must name the resolved board owner")
             return reread(field) if reread else stored.get(field)
 
         def record_write(item_id, project_id, fields, name, value):

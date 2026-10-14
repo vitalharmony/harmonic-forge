@@ -658,6 +658,7 @@ class EstimateGateTests(unittest.TestCase):
             got = post.read_board_fields("vitalharmony/hrse", "vitalharmony", "1", 627,
                                          ["Tier", "Theme", "Venture"])
         self.assertEqual(got, values)
+        self.assertEqual({c.kwargs["owner"] for c in read.call_args_list}, {"vitalharmony"})
         self.assertEqual({call.kwargs["ttl"] for call in read.call_args_list}, {0})
         board.assert_not_called()
 
