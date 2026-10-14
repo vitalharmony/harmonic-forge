@@ -225,7 +225,10 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str], ttl: float = 0):
     else:
         def run(cmd):
             return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
-    return model_tier_gate.read_tier(repo.lower(), number, board, run=run, ttl=ttl, owner=owner)
+    # harmonic-forge#992: the read matches the board owner. With no manifest entry the repo's own
+    # owner is the board owner, which is every board outside the #820 cross-owner case.
+    return model_tier_gate.read_tier(repo.lower(), number, board, run=run, ttl=ttl,
+                                     owner=owner or repo.split("/", 1)[0])
 
 
 def decide(refs: list[tuple[str, int]], model: str | None, lookup,

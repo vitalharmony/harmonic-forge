@@ -325,12 +325,12 @@ class RealLookupPathTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, cache_dir, ignore_errors=True)
 
         def payload(tier):
-            node = {"project": {"number": 1}, "value": {"name": tier} if tier else None}
+            node = {"project": {"number": 1, "owner": {"login": "vitalharmony"}}, "value": {"name": tier} if tier else None}
             return subprocess.CompletedProcess([], 0, json.dumps({"data": {"repository": {
                 "issue": {"projectItems": {"nodes": [node]}}}}}), "")
 
         with patch.object(model_tier_gate, "_CACHE_DIR", cache_dir):
-            self.assertEqual(model_tier_gate.read_tier(HRSE, 1830, "1",
+            self.assertEqual(model_tier_gate.read_tier(HRSE, 1830, "1", owner="vitalharmony",
                                                        run=lambda cmd: payload(None)), (None, None))
             with patch.object(model_tier_gate, "timed_run", lambda cmd, timeout=None, env=None: payload("deep")):
                 self.assertEqual(t.lookup_tier(HRSE, 1830, {HRSE: "1"}), ("deep", None))

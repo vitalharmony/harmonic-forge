@@ -32,7 +32,7 @@ def _completed(stdout="", returncode=0):
 # `deep` is the escalating tier, so this payload exercises the branch that
 # actually gates work.
 TIER_QUERY_JSON = json.dumps({"data": {"repository": {"issue": {"projectItems": {
-    "nodes": [{"project": {"number": 3}, "value": {"name": "deep"}}],
+    "nodes": [{"project": {"number": 3, "owner": {"login": "o"}}, "value": {"name": "deep"}}],
 }}}}})
 
 
@@ -65,7 +65,7 @@ class TestCachedItemList(unittest.TestCase):
         with patch("model_tier_gate.timed_run", side_effect=fake_run), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
-             patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
+             patch("model_tier_gate.resolve_project_board", return_value=("o", "3")):
             e1 = m.resolve_tier("/some/cwd", 999)
             e2 = m.resolve_tier("/some/cwd", 999)
 
@@ -84,7 +84,7 @@ class TestCachedItemList(unittest.TestCase):
         with patch("model_tier_gate.timed_run", side_effect=fake_run), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
-             patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
+             patch("model_tier_gate.resolve_project_board", return_value=("o", "3")):
             m.resolve_tier("/some/cwd", 999)
 
         self.assertFalse(
@@ -99,7 +99,7 @@ class TestCachedItemList(unittest.TestCase):
         with patch("model_tier_gate.timed_run", return_value=_completed("", returncode=1)), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
-             patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
+             patch("model_tier_gate.resolve_project_board", return_value=("o", "3")):
             # harmonic-forge#656 AC6: a failed read is LOOKUP_FAILED, not None.
             self.assertIs(m.resolve_tier("/some/cwd", 999), m.LOOKUP_FAILED)
         self.assertEqual(list(self.cache_dir.glob("tier__*.json")), [])
@@ -112,7 +112,7 @@ class TestCachedItemList(unittest.TestCase):
         with patch("model_tier_gate.timed_run", side_effect=fake_run), \
              patch("model_tier_gate._CACHE_DIR", self.cache_dir), \
              patch("model_tier_gate.resolve_repo", return_value="o/r"), \
-             patch("model_tier_gate.resolve_project_board", return_value=("owner", "3")):
+             patch("model_tier_gate.resolve_project_board", return_value=("o", "3")):
             m.resolve_tier("/some/cwd", 999)
             m.resolve_tier("/some/cwd", 1000)
 
@@ -155,7 +155,7 @@ class TierResolutionTests(unittest.TestCase):
     def _payload(self, tier=None, project=3):
         # harmonic-forge#468: the query aliases the field value as `value` now
         # that it reads any field, not only Tier.
-        node = {"project": {"number": project},
+        node = {"project": {"number": project, "owner": {"login": "owner"}},
                 "value": {"name": tier} if tier else None}
         return json.dumps({"data": {"repository": {"issue": {
             "projectItems": {"nodes": [node]}}}}})
@@ -213,7 +213,7 @@ class TierResolutionTests(unittest.TestCase):
              patch.object(m, "resolve_repo", return_value="o/r"), \
              patch.object(m, "resolve_project_board", return_value=("owner", "3")):
             self.assertIs(m.resolve_tier("/cwd", 999), m.LOOKUP_FAILED)
-            self.assertEqual(m.read_tier("o/r", 999, "3"),
+            self.assertEqual(m.read_tier("o/r", 999, "3", owner="o"),
                              (m.LOOKUP_FAILED, "HTTP 403: rate limit"))
 
     def test_not_an_issue_is_distinct_from_a_failed_read(self):
@@ -227,7 +227,7 @@ class TierResolutionTests(unittest.TestCase):
         with patch.object(m._item_list_cache, "fetch_issue_tier", not_found), \
              patch.object(m, "resolve_repo", return_value="o/r"), \
              patch.object(m, "resolve_project_board", return_value=("owner", "3")):
-            self.assertIs(m.read_tier("o/r", 1833, "3")[0], m.NOT_AN_ISSUE)
+            self.assertIs(m.read_tier("o/r", 1833, "3", owner="o")[0], m.NOT_AN_ISSUE)
             self.assertIsNone(m.resolve_tier("/cwd", 1833))
 
     def test_not_an_issue_classifier_is_narrow(self):
@@ -243,7 +243,7 @@ class TierResolutionTests(unittest.TestCase):
         """Preclose fix 5: an untimed read hung until the registration timeout
         killed the hook, which let the edit through. Simulated: only a call
         carrying a timeout can time out; an untimed one "succeeds" with deep."""
-        node = {"project": {"number": 3}, "value": {"name": "deep"}}
+        node = {"project": {"number": 3, "owner": {"login": "owner"}}, "value": {"name": "deep"}}
         body = json.dumps({"data": {"repository": {"issue": {"projectItems": {"nodes": [node]}}}}})
 
         def fake_subprocess_run(cmd, **kw):

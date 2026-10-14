@@ -653,7 +653,7 @@ class EstimateGateTests(unittest.TestCase):
     def test_same_owner_board_reads_each_field_fresh(self) -> None:
         values = {"Tier": "deep", "Theme": "Ops", "Venture": None}
         with patch.object(post._item_list_cache, "fetch_issue_field", create=True,
-                          side_effect=lambda repo, issue, number, field, run, ttl: values[field]) as read, \
+                          side_effect=lambda repo, issue, number, field, run, ttl, owner: values[field]) as read, \
              patch.object(post._item_list_cache, "fetch_full_board", create=True) as board:
             got = post.read_board_fields("vitalharmony/hrse", "vitalharmony", "1", 627,
                                          ["Tier", "Theme", "Venture"])

@@ -65,7 +65,7 @@ class SetTests(unittest.TestCase):
         gh = gh or FakeGh()
         stored = {}
 
-        def fake_read(repo, issue, number, field, run, ttl):
+        def fake_read(repo, issue, number, field, run, ttl, owner):
             self.assertEqual(ttl, 0)
             return reread(field) if reread else stored.get(field)
 

@@ -131,9 +131,32 @@ class TestStandaloneSetTier(unittest.TestCase):
 # — so the fixture is the GraphQL response shape, and the "wrong board" row is
 # what the board-number filter has to reject.
 ITEM_LOOKUP_JSON = json.dumps({"data": {"repository": {"issue": {"projectItems": {"nodes": [
-    {"id": "PVTI_other", "project": {"number": 3}},
-    {"id": "PVTI_target", "project": {"number": 1}},
+    {"id": "PVTI_other", "project": {"number": 3, "owner": {"login": "o"}}},
+    {"id": "PVTI_other_owner", "project": {"number": 1, "owner": {"login": "someone-else"}}},
+    {"id": "PVTI_target", "project": {"number": 1, "owner": {"login": "o"}}},
 ]}}}}})
+
+
+class TestFindExistingItemMatchesOwner(unittest.TestCase):
+    """harmonic-forge#992: board #1 under another owner must never receive this board's writes."""
+
+    def _nodes(self, *nodes):
+        return json.dumps({"data": {"repository": {"issue": {"projectItems": {"nodes": list(nodes)}}}}})
+
+    def test_the_target_owners_item_wins_in_either_order(self):
+        ours = {"id": "PVTI_ours", "project": {"number": 1, "owner": {"login": "Owner"}}}
+        theirs = {"id": "PVTI_theirs", "project": {"number": 1, "owner": {"login": "other"}}}
+        for nodes in ((theirs, ours), (ours, theirs)):
+            with self.subTest(first=nodes[0]["id"]), \
+                    patch.object(gh_issue, "_run", return_value=_completed(self._nodes(*nodes))):
+                self.assertEqual(gh_issue._find_existing_item(
+                    "https://github.com/o/r/issues/42", "owner", "1"), "PVTI_ours")
+
+    def test_only_another_owners_item_is_none(self):
+        theirs = {"id": "PVTI_theirs", "project": {"number": 1, "owner": {"login": "other"}}}
+        with patch.object(gh_issue, "_run", return_value=_completed(self._nodes(theirs))):
+            self.assertIsNone(gh_issue._find_existing_item(
+                "https://github.com/o/r/issues/42", "owner", "1"))
 
 
 class TestMissingTierFieldFailsLoudly(unittest.TestCase):
