@@ -269,36 +269,9 @@ def validate_lead(kind: str, lead: dict[str, str]) -> None:
 #: pass for one (`reject_reserved_marker` already refuses Lane 2 forging it).
 _HANDOFF_FOOTER = re.compile(r"^<!--\s*l1-post\s+v1;\s*kind=handoff\b.*-->\s*$", re.I)
 _LIVE_PROBE = re.compile(r"(?m)^###\s+Live Probe\s*$")
-_REAL_RUN = re.compile(r"(?m)^###\s+Real run\s*$")
-#: A section ends at the next level-2 or level-3 heading. Level 1 and 4-6 are
-#: pasted-output shapes and belong to the section.
-_SECTION_END = re.compile(r"^#{2,3}\s")
-
-
-def real_run_has_content(narrative: str) -> bool:
-    """True when an unfenced `### Real run` heading is followed by at least one
-    non-blank line that is not itself a heading, before the next unfenced
-    level-2 or level-3 heading. Fence state is tracked from the first line, so
-    a heading quoted inside a fence is not the section, and a fence left open
-    at the end fails closed: nothing after an unclosed fence counts.
-    Structure only: that the run happened is Lane 3's check."""
-    fenced, inside, content = False, False, False
-    for line in (narrative or "").splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if fenced:
-            if inside and line.strip():
-                content = True
-            continue
-        if inside and _SECTION_END.match(line):
-            break
-        if not inside and _REAL_RUN.match(line):
-            inside = True
-            continue
-        if inside and line.strip() and not line.lstrip().startswith("#"):
-            return True
-    return content and not fenced
+#: harmonic-forge#999 reforge: the Real run section is written by this tool from
+#: `--real-run`, never found by parsing the narrative's Markdown.
+REAL_RUN_HEADING = "### Real run"
 
 
 def _pages(text: str) -> list[dict]:
@@ -326,17 +299,18 @@ def latest_handoff_body(comments: list[dict]) -> str | None:
     return None
 
 
-def require_real_run(repo: str, issue: int, narrative: str) -> None:
-    """harmonic-forge#996: a completion whose handoff names an external call
-    must carry a non-empty `### Real run` section. Structure only (as
-    `Consumers and Equivalents` is, harmonic-forge#838): that the run happened
-    is not in the text, and Lane 3's gate checks its content.
+def require_real_run(repo: str, issue: int, real_run: str | None) -> None:
+    """harmonic-forge#996, reforged in #999: a completion whose latest handoff has a
+    `### Live Probe` heading must carry `--real-run <file>` with non-blank text.
+    This tool writes the `### Real run` heading itself, so the narrative's
+    Markdown is never parsed. Structure only (harmonic-forge#838): that the run
+    happened is not in the text, and Lane 3's gate checks its content.
 
     A handoff with no `### Live Probe` heading (one that predates
-    harmonic-forge#994) passes; any Live Probe, `none` included, needs a Real run. A thread
-    that cannot be read refuses, as `snapshot()` does, rather than skipping.
-    Known gap, not closed here: a `rework` that adds an external call never
-    turns this on, because only `kind=handoff` is read."""
+    harmonic-forge#994) passes. A thread that cannot be read refuses, as
+    `snapshot()` does, rather than skipping. Known gap, not closed here: a
+    `rework` that adds an external call never turns this on, because only
+    `kind=handoff` is read."""
     result = _gh_api("--paginate", f"repos/{repo}/issues/{issue}/comments")
     if result.returncode != 0:
         raise SystemExit(f"real-run check: cannot read the issue thread: {result.stderr}")
@@ -349,12 +323,36 @@ def require_real_run(repo: str, issue: int, narrative: str) -> None:
     handoff = latest_handoff_body(comments)
     if handoff is None or not _LIVE_PROBE.search(handoff):
         return
-    if not real_run_has_content(narrative):
+    # Judged on the text that will be posted: `compose_body` strips ANSI colour,
+    # so a file of colour codes alone would post an empty section (reforge pass 1).
+    if not _inert(real_run or "").strip():
         raise SystemExit(
-            "real-run check (harmonic-forge#996): the latest handoff has a `### Live Probe` "
-            "section, so a completion needs a non-empty `### Real run` section in the narrative: "
-            "the output of one real run of each call the probe names, or one line saying why none "
-            "applies (read-only or scratch), so Lane 3 is not the first run.")
+            "real-run check (harmonic-forge#996/#999): the latest handoff has a `### Live Probe` "
+            "section, so a completion needs `--real-run <file>` with non-blank text: the output "
+            "of one real run of each call the probe names, or one line saying why none applies "
+            "(read-only or scratch), so Lane 3 is not the first run.")
+
+
+def with_real_run(narrative: str, real_run: str | None) -> str:
+    """The narrative with the `--real-run` text appended under a heading this
+    tool writes (harmonic-forge#999), or unchanged when there is none."""
+    if not (real_run or "").strip():
+        return narrative
+    # Each part is sanitized on its own before joining, so an escape sequence the
+    # narrative leaves open cannot swallow the appended section when
+    # `compose_body` strips ANSI again (reforge pass 2).
+    return (f"{_inert(narrative).rstrip()}\n\n{REAL_RUN_HEADING}\n"
+            f"{_inert(real_run).strip()}\n")
+
+
+def _inert(text: str) -> str:
+    """TEXT with no escape sequence left to act on: `strip_ansi` repeated until
+    it changes nothing (one pass can expose a new sequence), then any stray ESC
+    removed, so `compose_body`'s own strip cannot reach across a boundary."""
+    previous = None
+    while text != previous:
+        previous, text = text, strip_ansi(text)
+    return text.replace("\x1b", "")
 
 
 def post(repo: str, issue: int, body: str) -> dict:
@@ -459,6 +457,11 @@ def main() -> int:
     post_p.add_argument("--issue", type=int, required=True)
     post_p.add_argument("--receipts", nargs="*", default=[])
     post_p.add_argument("--narrative-file", type=Path, required=True)
+    post_p.add_argument("--real-run", dest="real_run_file", type=Path, default=None,
+                        help="harmonic-forge#999: the output of one real run of each call the "
+                             "handoff's Live Probe names (or one line saying why none applies). "
+                             "Required on a completion when the handoff has a Live Probe; this "
+                             "tool writes the `### Real run` heading.")
     post_p.add_argument("--status", default="",
                         help="Lead block: where this issue now stands. Required "
                              "for --kind completion/blocked (harmonic-forge#472).")
@@ -518,7 +521,9 @@ def main() -> int:
     lead = {"Status": args.status, "Change": args.change, "Next": args.next_action}
     validate_lead(args.kind, lead)
     if args.kind == "completion":
-        require_real_run(args.repo, args.issue, narrative)
+        real_run = args.real_run_file.read_text() if args.real_run_file else None
+        require_real_run(args.repo, args.issue, real_run)
+        narrative = with_real_run(narrative, real_run)
     body = compose_body(args.kind, receipts, narrative, lead)
     if args.kind == "completion":
         # hrse#2218: a completion is Lane 2's finish line; name any orphaned test graph. Report
