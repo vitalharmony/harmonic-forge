@@ -128,5 +128,19 @@ class FooterFieldTests(unittest.TestCase):
             self.assertIn(fragment, body)
 
 
+
+# harmonic-forge#997: `_post_kind` re-reads the thread for the sticky-wicket
+# check; these tests stub `run()` strictly, so the check is stubbed here.
+import unittest.mock as _sticky_mock  # noqa: E402
+_STICKY_PATCH = _sticky_mock.patch.object(l1_post, "validate_sticky_wicket")
+
+
+def setUpModule():  # noqa: N802
+    _STICKY_PATCH.start()
+
+
+def tearDownModule():  # noqa: N802
+    _STICKY_PATCH.stop()
+
 if __name__ == "__main__":
     unittest.main()

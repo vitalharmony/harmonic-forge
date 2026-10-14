@@ -93,6 +93,7 @@ except ImportError:
 # however this file is loaded (tests load it by file location).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pitch_receipt  # noqa: E402
+import sticky_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
@@ -1354,6 +1355,28 @@ def issue_labels(repo: str, issue: int) -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+#: harmonic-forge#997: every Lane 1 post that hands work forward after a gate
+#: result. A handoff, a ready-for-l3 or an AE starts the next round as surely as
+#: a rework does.
+STICKY_CHECKED_KINDS = ("rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-and-sweep")
+
+
+def validate_sticky_wicket(repo: str, issue: int) -> None:
+    """harmonic-forge#997: a rework after two consecutive non-PASS gate results
+    needs a sticky-wicket receipt through the newer one. The thread is read in
+    full (paginated); a thread that cannot be read refuses rather than skips."""
+    result = run("gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments")
+    if result.returncode:
+        fail(f"cannot read the comments on {repo}#{issue} for the sticky-wicket check")
+    try:
+        comments = sticky_receipt.parse_pages(result.stdout)
+    except ValueError:
+        fail(f"unreadable comment thread on {repo}#{issue}")
+    reason = sticky_receipt.refusal(repo, issue, comments)
+    if reason:
+        fail(reason)
+
+
 def validate_pitch_inspected(repo: str, issue: int) -> None:
     """harmonic-forge#838 AC3: R-0238 trigger 4. Unconditional, unlike the
     Next-field check above: the labels are read live at post time, so a label
@@ -2458,6 +2481,12 @@ def _post_kind(
     prod_run_field = f" {prod_run_token};" if prod_run_token else ""
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
+    if kind in STICKY_CHECKED_KINDS:
+        # harmonic-forge#997 sticky-wicket PATCH: re-checked last, after the long
+        # world checks, so a gate result that landed meanwhile is seen. A result
+        # landing between this read and the post is the same gap every pre-post
+        # gate here has; no lock is taken.
+        validate_sticky_wicket(repo, issue)
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
@@ -2615,6 +2644,8 @@ def main() -> None:
     sha = resolve_sha(args.sha)
 
     if args.kind == "ae-and-sweep":
+        validate_sticky_wicket(repo, args.issue)  # harmonic-forge#997
+    if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic
         # action -- four recorded incidents (a private-repo incident, a private-repo incident, H306/H308,
         # H231/H1221) of AE posted with the sweep never landing in the same
@@ -2703,6 +2734,8 @@ def main() -> None:
         validate_milestone_set(repo, args.issue)
         validate_tooling_exception_labelled(body, repo, args.issue)
         validate_pitch_inspected(repo, args.issue)
+    if args.kind in STICKY_CHECKED_KINDS:
+        validate_sticky_wicket(repo, args.issue)
     validate_lead(args.kind, body)
     if args.kind == "sweep":
         spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")

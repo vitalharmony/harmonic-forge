@@ -499,10 +499,18 @@ OWES: dict[str, dict[str, str]] = {
     "l3": {"ready-for-l3": "spec", "sweep": "gate", "ae-and-sweep": "gate",
            "ae": "sweep-missing"},
     "l2": {"handoff": "implement", "rework": "fix", "gate-result": "fix"},
-    "l1": {"plan": "plan-review", "spec": "spec-review"},
+    "l1": {"plan": "plan-review", "spec": "spec-review", "gate-result": "sticky-wicket"},
 }
 #: The one value a Lane 2 `handoff` renders instead of `OWES["l2"]["handoff"]`.
 PLAN_FIRST_OWES = "plan"
+
+
+def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
+    """harmonic-forge#997: the countable sticky-wicket trigger, uncovered."""
+    import sticky_receipt  # noqa: PLC0415 -- imports this module; deferred to break the cycle
+
+    pair = sticky_receipt.owed(comments)
+    return bool(pair) and not sticky_receipt.covered(repo, issue, pair[1])
 
 
 def _owed_to(self_lane: str | None, detail: str) -> bool:
@@ -1209,6 +1217,7 @@ def discover_queue(repo: str, lane: str,
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
             continue
+        sticky = lane == "l1" and _sticky_wicket_owed(repo, issue, comments)
         for comment in comments:
             # harmonic-forge#579 introduced the `None` (failed) vs `[]`
             # (genuinely zero) distinction this loop now depends on; #602
@@ -1221,6 +1230,8 @@ def discover_queue(repo: str, lane: str,
                 last_kind = classified
                 last_body = comment.get("body", "")
         if not last_kind:
+            if sticky:
+                queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
             continue
         poster, kind = last_kind
         if _is_gate_report(kind, last_body):
@@ -1228,9 +1239,13 @@ def discover_queue(repo: str, lane: str,
             # footer says: markerless, or footered kind=discussion (the shared
             # `_is_gate_report`, so both channels recognize the same comments).
             kind = "gate-result"
-        if kind not in kinds:
-            continue
-        if poster not in posters and kind not in any_poster:
+        if kind not in kinds or (poster not in posters and kind not in any_poster):
+            # harmonic-forge#997: the newest comment owes Lane 1 nothing, but an
+            # uncovered sticky-wicket trigger still does. Stateless: re-emitted on
+            # every tick until a receipt covers it. Owed plan/spec reviews win, so
+            # the trigger never hides them.
+            if sticky:
+                queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
             continue
         if kind == "gate-result" and not _gate_result_owes_fix(last_body):
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.

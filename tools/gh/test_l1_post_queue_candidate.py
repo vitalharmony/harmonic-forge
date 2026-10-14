@@ -86,6 +86,7 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "regular_body", return_value="body"), \
              unittest.mock.patch.object(L, "reject_reserved_marker"), \
              unittest.mock.patch.object(L, "validate_lead"), \
+             unittest.mock.patch.object(L, "validate_sticky_wicket"), \
              unittest.mock.patch.object(
                  L, "post_kind", return_value=("https://example/1", 1)), \
              unittest.mock.patch.object(L, "record_queue_candidate") as recorder:
@@ -106,6 +107,7 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "validate_ae"), \
              unittest.mock.patch.object(L, "validate_lead"), \
              unittest.mock.patch.object(L, "validate_sweep"), \
+             unittest.mock.patch.object(L, "validate_sticky_wicket"), \
              unittest.mock.patch.object(L, "run", return_value=unittest.mock.Mock(
                  returncode=0, stdout="## Lane 3 Test Spec")), \
              unittest.mock.patch.object(
