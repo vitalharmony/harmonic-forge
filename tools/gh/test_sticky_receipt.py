@@ -137,6 +137,51 @@ class ReworkRefusalTests(ReceiptHome):
                          {"rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-and-sweep"})
 
 
+class MainCallSiteTests(ReceiptHome):
+    """Sticky-wicket PATCH: drive `l1_post.main()` itself, so a check removed from
+    the call site turns these red."""
+
+    def _main(self, kind, comments):
+        argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", kind,
+                "--sha", "deadbeef", "--branch", "feat/35-x", "--file", "/dev/null"]
+        result = mock.Mock(returncode=0, stdout=json.dumps(comments), stderr="")
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(l1_post, "resolve_sha", return_value="deadbeef"), \
+                mock.patch.object(l1_post, "regular_body", return_value="body"), \
+                mock.patch.object(l1_post, "reject_reserved_marker"), \
+                mock.patch.object(l1_post, "validate_lead"), \
+                mock.patch.object(l1_post, "run", return_value=result), \
+                mock.patch.object(l1_post, "post_kind",
+                                  return_value=("https://example/1", 1)) as post, \
+                mock.patch.object(l1_post, "record_queue_candidate"):
+            try:
+                l1_post.main()
+            except SystemExit:
+                return post, True
+        return post, False
+
+    def test_rework_and_ready_for_l3_are_refused_before_posting(self):
+        for kind in ("rework", "ready-for-l3"):
+            with self.subTest(kind=kind):
+                post, refused = self._main(kind, [gate(1, "FAIL"), gate(2, "BLOCKED")])
+                self.assertTrue(refused)
+                post.assert_not_called()
+
+    def test_a_covering_receipt_lets_the_post_through(self):
+        self.write_receipt(through=2)
+        post, refused = self._main("rework", [gate(1, "FAIL"), gate(2, "BLOCKED")])
+        self.assertFalse(refused)
+        post.assert_called_once()
+
+    def test_the_late_recheck_sits_immediately_before_the_post(self):
+        """The world checks inside `_post_kind` are long; a result landing meanwhile
+        must be seen, so the check is repeated right before `comment_body`."""
+        source = Path(l1_post.__file__).read_text()
+        late = source.index("        validate_sticky_wicket(repo, issue)\n")
+        self.assertLess(late, source.index("    url, comment_id = comment_body(repo, issue"))
+        self.assertGreater(late, source.index("def _post_kind("))
+
+
 class BeltEventTests(ReceiptHome):
     def _queue(self, comments):
         with mock.patch.object(belt, "_fetch_all_comments", return_value=comments), \

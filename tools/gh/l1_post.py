@@ -2481,6 +2481,12 @@ def _post_kind(
     prod_run_field = f" {prod_run_token};" if prod_run_token else ""
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
+    if kind in STICKY_CHECKED_KINDS:
+        # harmonic-forge#997 sticky-wicket PATCH: re-checked last, after the long
+        # world checks, so a gate result that landed meanwhile is seen. A result
+        # landing between this read and the post is the same gap every pre-post
+        # gate here has; no lock is taken.
+        validate_sticky_wicket(repo, issue)
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
