@@ -577,7 +577,7 @@ class EstimateGateTests(unittest.TestCase):
             self._gate({"Tier": "fast", "Theme": None, "Venture": "CymaGraph"})
         message = str(raised.exception)
         self.assertIn("Theme", message)
-        self.assertIn("mise run board-fields -- set --repo vitalharmony/hrse --issue 627 "
+        self.assertIn("python3 ~/harmonic-forge/tools/gh/board_fields.py set --repo vitalharmony/hrse --issue 627 "
                       "--theme <Theme>", message)
         self.assertNotIn("--tier", message)
         self.assertNotIn("--venture", message)
@@ -588,7 +588,7 @@ class EstimateGateTests(unittest.TestCase):
             self._gate({"Tier": None, "Theme": None, "Venture": None})
         message = str(raised.exception)
         self.assertIn("Tier, Theme, Venture", message)
-        self.assertIn("mise run board-fields -- set --repo vitalharmony/hrse --issue 627 "
+        self.assertIn("python3 ~/harmonic-forge/tools/gh/board_fields.py set --repo vitalharmony/hrse --issue 627 "
                       "--tier <Tier> --theme <Theme> --venture <Venture>", message)
         self.assertNotIn("gh_issue.py --tier", message)  # the fix that never worked
 

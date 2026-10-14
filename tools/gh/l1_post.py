@@ -1138,7 +1138,7 @@ def validate_board_fields_set(repo: str, issue: int) -> None:
         "required before a handoff can post (.claude/rules/planning.md; hrse "
         "docs/BOARD-FIELDS.md; harmonic-forge#202's model-tier gate silently "
         "no-ops without a Tier). Set them with:\n"
-        f"  mise run board-fields -- set --repo {repo} --issue {issue} {flags}\n"
+        f"  python3 ~/harmonic-forge/tools/gh/board_fields.py set --repo {repo} --issue {issue} {flags}\n"
         "Options are read live from the board. Tier: fast = 1-3 pts, "
         "standard = 5, deep = 8+ (deep is the only tier that requires the "
         "high-tier model)."
