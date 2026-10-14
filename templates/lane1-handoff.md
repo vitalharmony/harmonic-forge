@@ -96,6 +96,19 @@ only that the section is filled in; pitch-inspection checks the searches. Load-B
 states; this field finds what it forgot to state, which is where most
 handoff-origin defects came from.
 
+### Live Probe
+{none | for each external call this handoff adds or changes (a network
+fetch, an LLM or CLI call, an API or Drive write, a subprocess to an
+installed tool): the exact call, run once by Lane 1 this session in a
+read-only or scratch posture, with its output pasted or linked} — "none" is
+valid only with the search that found no such call, e.g.
+`git grep -n -E 'urlopen|subprocess|claude -p'` over the Affected Files
+(harmonic-forge#994). The first run of a new external call must not be Lane
+3's gate: openclaw-projects#35 took five reworks because the arXiv queries
+and `claude -p … --tools ""` first ran there. `l1_post.py` checks only that
+the section is filled in, and a bare "none" posts; pitch-inspection re-runs
+one probe and checks the "none".
+
 ### Delegated Judgment Calls
 {none | list each design decision this spec deliberately leaves to Lane 2
 rather than resolving here} — "none" is the common, zero-cost answer. A
