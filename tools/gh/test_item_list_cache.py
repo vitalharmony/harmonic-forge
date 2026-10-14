@@ -177,7 +177,7 @@ class OwnerScanFallbackTests(unittest.TestCase):
         self.assertIn("harmonicarchitect", calls[-1])
 
     def test_an_unset_tier_on_a_visible_board_is_not_scanned(self) -> None:
-        node = {"project": {"number": 1}, "value": None}
+        node = {"project": {"number": 1, "owner": {"login": "harmonicarchitect"}}, "value": None}
         run, calls = self._run([node])
         self.assertIsNone(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
                                                  owner="harmonicarchitect"))
@@ -201,6 +201,16 @@ class OwnerScanFallbackTests(unittest.TestCase):
                 self.REPO, 59, "1", run=run, ttl=120, cache_dir=cache_dir,
                 owner="harmonicarchitect"), "standard")
         self.assertEqual(len([c for c in calls if c[:3] == ["gh", "api", "graphql"]]), 2)
+
+    def test_a_visible_other_owners_same_numbered_board_still_scans_the_target(self) -> None:
+        """harmonic-forge#992 preclose: an org board #1 is visible, the user board #1 is not. The
+        owner filter rejects the visible item, and the read must still scan the target board."""
+        visible = [{"project": {"number": 1, "owner": {"login": "kenekted"}}, "value": {"name": "fast"}}]
+        run, calls = self._run(visible, [{"content": {"number": 59, "repository": self.REPO},
+                                          "tier": "deep"}])
+        self.assertEqual(cache.fetch_issue_tier(self.REPO, 59, "1", run=run,
+                                                owner="harmonicarchitect"), "deep")
+        self.assertEqual(len(calls), 2, "the per-issue read, then the board scan")
 
     def test_owner_is_required(self) -> None:
         """harmonic-forge#992: a caller that forgets the board owner fails at the call."""

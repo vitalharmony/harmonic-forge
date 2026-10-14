@@ -736,9 +736,15 @@ def _fetch_issue_field_live(
         return None
 
     nodes = ((issue.get("projectItems") or {}).get("nodes")) or []
-    if not nodes and _blind is not None:
-        # The issue has NO visible project items at all: either it is on no board, or the query
-        # cannot see its board (a user-owned board on an organization repo). The caller decides.
+    if _blind is not None and not any(
+            isinstance(node, dict)
+            and str((node.get("project") or {}).get("number")) == str(project_number)
+            and str(((node.get("project") or {}).get("owner") or {}).get("login") or "").lower()
+            == board_owner.lower()
+            for node in nodes):
+        # No visible item is THIS board's (owner and number, harmonic-forge#992): either the
+        # issue is not on it, or the query cannot see it (a user-owned board on an organization
+        # repo, #820), even when other boards' items are visible. The caller decides.
         _blind["blind"] = True
     for node in nodes:
         if not isinstance(node, dict):
