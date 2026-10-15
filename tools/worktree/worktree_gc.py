@@ -141,7 +141,8 @@ def sweep_registered(path: Path, execute: bool) -> str:
         # commits no branch reaches; removal would orphan them.
         return "skipped: detached HEAD"
     status = _git(path, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
-    if status.returncode != 0:
+    if status.returncode != 0 or status.stderr.strip():
+        # git exits 0 with only a warning when it cannot read a directory
         return f"skipped: git status: {status.stderr.strip()[:120]}"
     if status.stdout.strip():
         return f"reported: uncommitted ({len(status.stdout.splitlines())} paths)"
@@ -157,7 +158,7 @@ def sweep_registered(path: Path, execute: bool) -> str:
         return f"skipped: git common dir: {common.stderr.strip()[:120]}"
     main = Path(common.stdout.strip()).parent
     ignored = _git(path, "ls-files", "--others", "--ignored", "--exclude-standard")
-    if ignored.returncode != 0:
+    if ignored.returncode != 0 or ignored.stderr.strip():
         return f"skipped: git ls-files: {ignored.stderr.strip()[:120]}"
     keep = [rel for rel in ignored.stdout.splitlines() if not regenerable(path, rel, main)]
     if keep:

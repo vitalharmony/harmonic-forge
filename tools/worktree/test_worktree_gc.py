@@ -197,6 +197,17 @@ class RegisteredTests(Fixture):
         self.assertIn("reported: assume-unchanged or skip-worktree: app.py", self.run_sweep())
         self.assertTrue(path.exists())
 
+    def test_unreadable_directory_inside_a_worktree_is_skipped(self):
+        """Post-verdict (cross-family): git exits 0 with a warning, so the read is incomplete."""
+        path = self.worktree()
+        locked = path / "scratch"
+        locked.mkdir()
+        (locked / "work.txt").write_text("x")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        self.assertIn("skipped: git status", self.run_sweep())
+        self.assertTrue(path.exists())
+
     def test_no_flag_removes_nothing(self):
         """Kill check 11: report-only is the default."""
         path = self.worktree()
