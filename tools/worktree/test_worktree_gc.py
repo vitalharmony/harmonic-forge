@@ -181,6 +181,22 @@ class RegisteredTests(Fixture):
         self.assertIn("skipped: detached HEAD", self.run_sweep())
         self.assertTrue(path.exists())
 
+    def test_untracked_file_is_seen_whatever_the_user_config(self):
+        """Preclose pass 2: status.showUntrackedFiles=no must not hide work."""
+        path = self.worktree()
+        git(self.main, "config", "status.showUntrackedFiles", "no")
+        (path / "precious.txt").write_text("unique\n")
+        self.assertIn("reported: uncommitted", self.run_sweep())
+        self.assertTrue((path / "precious.txt").exists())
+
+    def test_skip_worktree_file_is_reported(self):
+        """Sticky-wicket: a skip-worktree edit reads clean but removal deletes it."""
+        path = self.worktree()
+        git(path, "update-index", "--skip-worktree", "app.py")
+        (path / "app.py").write_text("local edit\n")
+        self.assertIn("reported: assume-unchanged or skip-worktree: app.py", self.run_sweep())
+        self.assertTrue(path.exists())
+
     def test_no_flag_removes_nothing(self):
         """Kill check 11: report-only is the default."""
         path = self.worktree()
@@ -218,6 +234,20 @@ class LeftoverTests(Fixture):
         os.utime(path, (old, old))
         self.assertIn("reported: non-regenerable: app.py", self.run_sweep())
         self.assertTrue((path / "app.py").exists())
+
+    def test_unreadable_subdirectory_is_skipped(self):
+        """Preclose pass 2: a walk error is undecidable, never 'nothing to keep'."""
+        path = self.leftover()
+        locked = path / "secret"
+        locked.mkdir()
+        (locked / "notes.txt").write_text("x")
+        old = time.time() - 2 * 3600
+        for p in (locked / "notes.txt", locked, path):
+            os.utime(p, (old, old))
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        self.assertIn("skipped: unreadable", self.run_sweep())
+        self.assertTrue(path.exists())
 
     def test_young_leftover_is_kept(self):
         """Kill check 8: drop the age guard."""

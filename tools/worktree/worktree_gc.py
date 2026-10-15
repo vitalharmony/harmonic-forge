@@ -54,8 +54,14 @@ LEFTOVER_MIN_AGE_SECONDS = 3600
 GH_TIMEOUT_SECONDS = 30
 
 
+# Pinned so a user's `status.showUntrackedFiles=no` cannot hide untracked work
+# from the porcelain read or from `git worktree remove`'s own refusal.
+_PIN = ("-c", "status.showUntrackedFiles=all")
+
+
 def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=False)
+    return subprocess.run(["git", *_PIN, "-C", str(path), *args], capture_output=True, text=True,
+                          check=False)
 
 
 def regenerable(root: Path, rel: str, main: Path | None) -> bool:
@@ -134,11 +140,18 @@ def sweep_registered(path: Path, execute: bool) -> str:
         # A detached HEAD (a checkout of a SHA, a stopped rebase) may hold
         # commits no branch reaches; removal would orphan them.
         return "skipped: detached HEAD"
-    status = _git(path, "status", "--porcelain")
+    status = _git(path, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
     if status.returncode != 0:
         return f"skipped: git status: {status.stderr.strip()[:120]}"
     if status.stdout.strip():
         return f"reported: uncommitted ({len(status.stdout.splitlines())} paths)"
+    flags = _git(path, "ls-files", "-v")
+    if flags.returncode != 0:
+        return f"skipped: git ls-files -v: {flags.stderr.strip()[:120]}"
+    hidden = [line[2:] for line in flags.stdout.splitlines() if line[:1].islower() or line[:1] == "S"]
+    if hidden:
+        # assume-unchanged / skip-worktree files read clean but removal deletes them
+        return f"reported: assume-unchanged or skip-worktree: {_summary(hidden)}"
     common = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if common.returncode != 0:
         return f"skipped: git common dir: {common.stderr.strip()[:120]}"
@@ -184,7 +197,8 @@ def sweep_leftover(path: Path, execute: bool, now: float | None = None) -> str:
         main = None
     newest = path.lstat().st_mtime
     keep: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+    errors: list[OSError] = []
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=errors.append):
         here = Path(dirpath)
         newest = max(newest, here.lstat().st_mtime)
         for name in dirnames + filenames:
@@ -194,6 +208,8 @@ def sweep_leftover(path: Path, execute: bool, now: float | None = None) -> str:
                 rel = str(entry.relative_to(path))
                 if not regenerable(path, rel, main):
                     keep.append(rel)
+    if errors:
+        return f"skipped: unreadable: {errors[0].filename}"
     if (now if now is not None else time.time()) - newest <= LEFTOVER_MIN_AGE_SECONDS:
         return "kept: younger than 1h"
     if keep:
