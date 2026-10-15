@@ -56,6 +56,22 @@ class InstalledLaneSourceTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("lane3: DRIFT", stderr)
 
+    def test_lanes_claude_resolving_outside_canonical_root_fails(self) -> None:
+        # harmonic-forge#1009: lanes-claude is a guarded lane command; a link
+        # still pointing at a product repo (e.g. HRSE2 research/) is drift.
+        alternate = self.root / "HRSE2" / "research"
+        alternate.mkdir(parents=True)
+        target = alternate / "tmux_lanes_claude.sh"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        target.chmod(0o755)
+        link = self.bin_dir / "lanes-claude"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(target)
+        code, stderr = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("lanes-claude: DRIFT", stderr)
+
     def test_non_symlink_fails(self) -> None:
         (self.bin_dir / "lane1").unlink()
         (self.bin_dir / "lane1").write_text("#!/bin/sh\n", encoding="utf-8")
