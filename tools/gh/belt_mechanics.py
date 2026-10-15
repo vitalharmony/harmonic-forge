@@ -494,7 +494,8 @@ class OfferState:
         out = []
         for k in self.entries:
             repo, _, num = k.rpartition("#")
-            if repo and num.isdigit():
+            # isascii(): `isdigit()` admits non-ASCII digits `int()` rejects.
+            if repo and num.isascii() and num.isdigit():
                 out.append((repo, int(num)))
         return out
 

@@ -3908,6 +3908,23 @@ class OfferStateTest(unittest.TestCase):
         _, lines3, _ = self._cycle(c, now_ts=self.T0 + 120, session=unknown)
         self.assertEqual(len(self._queued(lines3)), 1)
 
+    def test_pass2_unknown_session_new_same_kind_comment_reoffers(self):
+        unknown = (None, None)
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        queue, _, _ = self._cycle({1530: [{"id": 11, "body": self.BODY}]},
+                                  now_ts=self.T0, session=unknown, offers=offers)
+        _, lines, _ = self._cycle(
+            {1530: [{"id": 11, "body": self.BODY}, {"id": 12, "body": self.BODY}]},
+            now_ts=self.T0 + 60, session=unknown, last_queue=queue, offers=offers)
+        self.assertEqual(len(self._queued(lines)), 1,
+                         "same process, new comment id: a new offer")
+
+    def test_pass2_non_ascii_digit_key_is_skipped(self):
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        offers.entries["o/r#٣"] = {"marker": "m", "comment_id": 1}
+        offers.entries[f"{self.REPO}#7"] = {"marker": "m", "comment_id": 1}
+        self.assertEqual(offers.keys(), [(self.REPO, 7)])
+
     def test_pc2_save_oserror_does_not_kill_belt(self):
         offers = watch_lane_posts.OfferState(self.path, now=self.T0)
         offers.record((self.REPO, 1530), "m", 1, self.SESSION, self.T0)

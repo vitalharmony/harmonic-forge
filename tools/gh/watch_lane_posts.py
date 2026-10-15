@@ -2090,10 +2090,13 @@ def queue_cycle(
                 continue
         else:
             if (session[0] is None or session[1] is None) \
-                    and last_queue.get(key) == marker:
+                    and last_queue.get(key) == marker \
+                    and (offers.get(key) or {}).get("comment_id") == fresh_ids[key]:
                 # Session unknown: the persisted state never suppresses, so
                 # fall back to the same-process dedup -- printed once per
-                # process, not every tick.
+                # process, not every tick. Keyed on (marker, comment id), the
+                # identity `suppresses` uses: a new same-kind comment is a new
+                # offer (harmonic-forge#1007 pass-2).
                 continue
             if offers.suppresses(key, marker, fresh_ids[key], session, when,
                                 REOFFER_INTERVAL_S):
