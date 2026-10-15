@@ -457,10 +457,16 @@ class OfferState:
         except (TypeError, ValueError):
             return None
 
+    #: An `offered_at` more than this many seconds in the future (the clock
+    #: stepped back) is undecidable: pruned on load, never suppresses.
+    FUTURE_SKEW_S = 300.0
+
     def load(self) -> dict[str, dict[str, Any]]:
-        if not self.path.exists():
-            return {}
         try:
+            # The existence check sits inside the handler: a stat that raises
+            # (permission denied) loads empty and re-offers (AC4).
+            if not self.path.exists():
+                return {}
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("not a JSON object")
@@ -475,7 +481,7 @@ class OfferState:
             if not isinstance(entry, dict):
                 continue
             ts = self._ts(entry.get("offered_at"))
-            if ts is None or ts < cutoff:
+            if ts is None or ts < cutoff or ts > self._now + self.FUTURE_SKEW_S:
                 continue
             out[str(key)] = entry
         return out
@@ -512,7 +518,8 @@ class OfferState:
         if (entry.get("session_pid"), entry.get("session_start")) != (pid, start):
             return False
         ts = self._ts(entry.get("offered_at"))
-        if ts is None or now - ts >= interval:
+        if ts is None or ts > now or now - ts >= interval:
+            # A future offered_at (clock stepped back) is undecidable: re-offer.
             return False
         return True
 

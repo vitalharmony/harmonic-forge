@@ -2089,6 +2089,12 @@ def queue_cycle(
             if last_queue.get(key) == marker:
                 continue
         else:
+            if (session[0] is None or session[1] is None) \
+                    and last_queue.get(key) == marker:
+                # Session unknown: the persisted state never suppresses, so
+                # fall back to the same-process dedup -- printed once per
+                # process, not every tick.
+                continue
             if offers.suppresses(key, marker, fresh_ids[key], session, when,
                                 REOFFER_INTERVAL_S):
                 if tick is not None:
@@ -2290,7 +2296,13 @@ def deliver_queue_lines(lines: list[str], offers: "OfferState | None") -> None:
         print(line)
         sys.stdout.flush()
     if offers is not None:
-        offers.save()
+        try:
+            offers.save()
+        except OSError as exc:
+            # Never kill the belt over suppression state: the lines are
+            # already out, and the next save retries (AC4).
+            print(f"[belt] offer state save failed ({exc}); continuing",
+                  file=sys.stderr)
 
 
 def _nearest_session_pid(start_pid: int | None = None) -> int | None:

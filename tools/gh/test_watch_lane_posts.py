@@ -3870,7 +3870,7 @@ class OfferStateTest(unittest.TestCase):
                        {"id": 12, "body": self.SUPERSEDED}]}
         _, lines, offers = self._cycle(gone, now_ts=self.T0 + 1800)
         self.assertEqual(lines, [f"{self.REPO}#1530 left-queue-for-l3"])
-        self.assertIsNone(watch_lane_posts.OfferState(self.path).get((self.REPO, 1530)))
+        self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 3600).get((self.REPO, 1530)))
         _, lines3, _ = self._cycle(gone, now_ts=self.T0 + 3600)
         self.assertEqual(lines3, [])
 
@@ -3893,6 +3893,51 @@ class OfferStateTest(unittest.TestCase):
         self._cycle(c, now_ts=self.T0 + 120, session=(None, None))
         _, lines, _ = self._cycle(c, now_ts=self.T0 + 180)
         self.assertEqual(len(self._queued(lines)), 1, "a null-session entry re-offers")
+
+    def test_pc1_unknown_session_prints_once_per_process(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        unknown = (None, None)
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        queue, lines1, _ = self._cycle(c, now_ts=self.T0, session=unknown,
+                                       offers=offers)
+        self.assertEqual(len(self._queued(lines1)), 1, "first tick offers")
+        _, lines2, _ = self._cycle(c, now_ts=self.T0 + 60, session=unknown,
+                                   last_queue=queue, offers=offers)
+        self.assertEqual(self._queued(lines2), [], "same process: printed once")
+        # A new process (empty last_queue) re-offers to the unknown session.
+        _, lines3, _ = self._cycle(c, now_ts=self.T0 + 120, session=unknown)
+        self.assertEqual(len(self._queued(lines3)), 1)
+
+    def test_pc2_save_oserror_does_not_kill_belt(self):
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        offers.record((self.REPO, 1530), "m", 1, self.SESSION, self.T0)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(watch_lane_posts.OfferState, "save",
+                          side_effect=OSError(28, "No space left on device")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            watch_lane_posts.deliver_queue_lines(["x queued-for-l3 kind=m"], offers)
+        self.assertIn("queued-for-l3", out.getvalue())
+        self.assertIn("save failed", err.getvalue())
+        self.assertIsNotNone(offers.get((self.REPO, 1530)), "in-memory state kept")
+
+    def test_pc3_future_offered_at_never_suppresses_and_is_pruned(self):
+        future = self.T0 + 86400
+        state = watch_lane_posts.OfferState(self.path, now=future)
+        state.record((self.REPO, 1530), "m", 11, self.SESSION, future)
+        self.assertFalse(state.suppresses((self.REPO, 1530), "m", 11, self.SESSION,
+                                          self.T0, watch_lane_posts.REOFFER_INTERVAL_S))
+        state.save()
+        loaded = watch_lane_posts.OfferState(self.path, now=self.T0)
+        self.assertIsNone(loaded.get((self.REPO, 1530)))
+
+    def test_pc4_unstattable_state_file_loads_empty(self):
+        self.path.write_text("{}", encoding="utf-8")
+        err = io.StringIO()
+        with patch.object(Path, "exists", side_effect=PermissionError(13, "denied")), \
+             contextlib.redirect_stderr(err):
+            state = watch_lane_posts.OfferState(self.path, now=self.T0)
+        self.assertEqual(state.entries, {})
+        self.assertIn("unreadable", err.getvalue())
 
     def test_ac5a_persisted_entry_never_drives_carry_forward(self):
         self._cycle({1600: [{"id": 21, "body": self.BODY}]}, now_ts=self.T0,
@@ -3930,4 +3975,4 @@ class OfferStateTest(unittest.TestCase):
         with patch("builtins.print", side_effect=boom):
             with self.assertRaises(BrokenPipeError):
                 watch_lane_posts.deliver_queue_lines(lines, offers)
-        self.assertIsNone(watch_lane_posts.OfferState(self.path).get((self.REPO, 1530)))
+        self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 3600).get((self.REPO, 1530)))
