@@ -3275,7 +3275,10 @@ class ClosedIssueRetirementTests(unittest.TestCase):
             self._discover({5})
         marked = belt_candidates._parse_iso(self._entry(
             belt_candidates._candidate_path(self.dir, self.REPO, 5))["closed_at"])
-        kw = dict(queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)}, base_dir=self.dir)
+        # The closed mark is wall-clock, the fixture post is pinned to 2026-10-01:
+        # without a wide age window this went red once the post aged past 14 days.
+        kw = dict(queue_kinds={"l2": ("handoff",)}, queue_posters={"l2": ("l1",)}, base_dir=self.dir,
+                  max_age_days=36500)
         soon = marked + dt.timedelta(minutes=30)
         later = marked + belt_candidates.CLOSED_RECHECK + dt.timedelta(minutes=1)
         self.assertEqual(belt_candidates.read_candidates([self.REPO], "l2", now=soon, **kw), set())

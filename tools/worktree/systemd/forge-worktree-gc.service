@@ -1,0 +1,8 @@
+[Unit]
+Description=Harmonic Forge: remove implementation worktrees whose issue has closed (harmonic-forge#1004)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/worktree/worktree_gc.py --execute
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-worktree-gc.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-worktree-gc.log

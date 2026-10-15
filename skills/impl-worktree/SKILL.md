@@ -27,7 +27,7 @@ git -C <repo>-lane2 worktree add --no-track ~/Harmonic_Projects/.worktrees/<repo
   on the host that every `git` discovery under `/tmp` walks into. The lane
   launcher grants Codex Lane 2 `~/Harmonic_Projects/.worktrees` as a writable root instead. Legacy
   `/tmp/<repo>-<issue>-impl` worktrees are still recognized by the hooks and
-  by `worktree-gc`, but a Codex lane cannot write them — finish one in a
+  by the `forge-worktree-gc` timer, but a Codex lane cannot write them — finish one in a
   Claude lane, or recreate it under `~/Harmonic_Projects/.worktrees`.
 - Base the new branch off `origin/main` (fetch first if stale), not off
   whatever the shared `<repo>-lane2/` worktree happens to have checked out.
@@ -144,10 +144,14 @@ git -C <repo>-lane2 worktree prune
 ```
 
 The worktree lives on persistent disk, so uncommitted work survives a
-reboot — and nothing removes a forgotten one for you. Remove it here, or
-let the repo's `worktree-gc` task (where it has one, e.g. HRSE2's `mise run
-worktree-gc`) list and reclaim eligible ones from both the current root and
-the legacy `/tmp` root. `worktree prune` reconciles `.git/worktrees/`'s
+reboot. Remove it here. A forgotten one is caught by the hourly
+`forge-worktree-gc` user timer (`tools/worktree/worktree_gc.py --execute`,
+log `~/Harmonic_Projects/logs/forge-worktree-gc.log`, harmonic-forge#1004).
+It removes a worktree in every repo, under both the current root and the
+legacy `/tmp` root, once its issue is closed. It never removes one with
+uncommitted work, a non-regenerable ignored file such as a run receipt, or a
+live process inside: those it reports. Run it without `--execute` for the
+same report with nothing removed. `worktree prune` reconciles `.git/worktrees/`'s
 administrative record for any worktree whose directory is already gone.
 An impl worktree is disposable by design: never a place to leave unpushed,
 uncommitted, or unreported work long-term.
