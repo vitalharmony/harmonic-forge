@@ -424,6 +424,118 @@ class SeenSet:
         return n
 
 
+class OfferState:
+    """Which queued markers a belt has offered, to which lane session
+    (harmonic-forge#1007).
+
+    File `offered-<belt_id>.json`: `{"<repo>#<issue>": {"marker", "comment_id",
+    "offered_at", "session_pid", "session_start"}}`. It can only SUPPRESS an
+    offer, never lose one (AC4): a missing, unreadable or corrupt file loads
+    empty, and any session mismatch re-offers. Entries older than
+    `max_age_days` (`belt_candidates.DEFAULT_MAX_AGE_DAYS`) are pruned on load (AC5a). Written
+    atomically (temp file + `os.replace`), and only by `save()`, which the
+    caller runs after the lines are printed and flushed.
+    """
+
+    def __init__(self, path: Path, now: Optional[float] = None,
+                 max_age_days: float = 14) -> None:
+        # `max_age_days` is `belt_candidates.DEFAULT_MAX_AGE_DAYS`, passed in by
+        # the caller: importing belt_candidates here would mark this module a
+        # marker-posting tool (test_belt_candidate_registry).
+        self.path = Path(path)
+        self._now = time.time() if now is None else now
+        self._max_age_days = max_age_days
+        self.entries: dict[str, dict[str, Any]] = self.load()
+
+    def _max_age_s(self) -> float:
+        return self._max_age_days * 86400.0
+
+    @staticmethod
+    def _ts(value: Any) -> Optional[float]:
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return None
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not a JSON object")
+        except (OSError, ValueError) as exc:
+            print(f"[belt] offer state {self.path} unreadable ({exc}); "
+                  "treating as empty -- every queued item is re-offered",
+                  file=sys.stderr)
+            return {}
+        cutoff = self._now - self._max_age_s()
+        out: dict[str, dict[str, Any]] = {}
+        for key, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            ts = self._ts(entry.get("offered_at"))
+            if ts is None or ts < cutoff:
+                continue
+            out[str(key)] = entry
+        return out
+
+    @staticmethod
+    def _key(key: tuple[str, int]) -> str:
+        return f"{key[0]}#{key[1]}"
+
+    def keys(self) -> list[tuple[str, int]]:
+        out = []
+        for k in self.entries:
+            repo, _, num = k.rpartition("#")
+            if repo and num.isdigit():
+                out.append((repo, int(num)))
+        return out
+
+    def get(self, key: tuple[str, int]) -> Optional[dict[str, Any]]:
+        return self.entries.get(self._key(key))
+
+    def suppresses(self, key: tuple[str, int], marker: str, comment_id: Any,
+                   session: tuple[Optional[int], Optional[int]], now: float,
+                   interval: float) -> bool:
+        """True only for an exact repeat: same marker AND comment id, same
+        known session, offered less than `interval` seconds ago (the caller
+        passes `watch_lane_posts.REOFFER_INTERVAL_S`)."""
+        entry = self.get(key)
+        if entry is None:
+            return False
+        if entry.get("marker") != marker or entry.get("comment_id") != comment_id:
+            return False
+        pid, start = session
+        if pid is None or start is None:
+            return False
+        if (entry.get("session_pid"), entry.get("session_start")) != (pid, start):
+            return False
+        ts = self._ts(entry.get("offered_at"))
+        if ts is None or now - ts >= interval:
+            return False
+        return True
+
+    def record(self, key: tuple[str, int], marker: str, comment_id: Any,
+               session: tuple[Optional[int], Optional[int]], now: float) -> None:
+        self.entries[self._key(key)] = {
+            "marker": marker,
+            "comment_id": comment_id,
+            "offered_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "session_pid": session[0],
+            "session_start": session[1],
+        }
+
+    def remove(self, key: tuple[str, int]) -> None:
+        self.entries.pop(self._key(key), None)
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + f".tmp{os.getpid()}")
+        tmp.write_text(json.dumps(self.entries, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+
 #: The element format for `matched`/`emitted`/`owed_found` in a tick record.
 #: `ref` is `"<repo>#<number>"` — `"hrse#1725"`, `"harmonic-forge#518"` — and
 #: the repo half is what the reader groups per-repo counts by.
@@ -477,6 +589,9 @@ class TickLog:
     owed_found: list[Any] = field(default_factory=list)
     lock: str = "acquired"
     actions_taken: list[str] = field(default_factory=list)
+    #: harmonic-forge#1007 AC6: queued items NOT re-printed because this lane
+    #: session was already offered the same marker.
+    reoffer_suppressed: int = 0
     started: float = field(default_factory=time.time)
 
     def repo_result(self, account: str, repo: str, ok: bool, error: str = "") -> None:
@@ -530,6 +645,7 @@ class TickLog:
             "owed_found": [_entry(e) for e in self.owed_found],
             "lock": self.lock,
             "actions_taken": self.actions_taken,
+            "reoffer_suppressed": self.reoffer_suppressed,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as fh:

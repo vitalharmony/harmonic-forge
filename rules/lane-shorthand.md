@@ -170,11 +170,11 @@ checkout, which R-0376 fences), not its attention. The waiting task resumes
 ahead of the picked-up item the moment its wait completes. Handing another
 lane work on a second item during a wait is intended.
 
-Deferring a `queued-for-<lane>` line on another issue is safe because the
-belt re-emits it on every re-arm while its marker is still the newest
-classified comment, retracting it with `left-queue-for-<lane>` only once it
-clears. That holds for Lane 2's and Lane 3's inbound, whose markers Lane 1
-posts. It does not hold for Lane 1's own waits (see R-0376's recovery line),
+A deferred `queued-for-<lane>` line on another issue is an open task entry
+(as R-0376's recovery is) for the finish line. The belt re-offers it to a new
+session at once, else every 4 hours if unchanged, and retracts it
+(`left-queue-for-<lane>`) once it clears. That holds for Lane 2/3 inbound,
+whose markers Lane 1 posts. It does not hold for Lane 1's own waits (R-0376),
 nor for a same-issue event. A comment-watch line is emitted once against a
 persistent watermark, so a lane handles one carrying owed work as it does
 today: for Lane 1, every owed kind except `plan` and `spec`; for Lane 2, the

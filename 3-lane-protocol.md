@@ -954,7 +954,9 @@ the belt.** Before backgrounding, the lane writes the wait as an open task
 entry naming the issue and what is being waited on (the session's task list),
 and the entry stays open until the wait is consumed. The belt's
 `queued-for-<lane>` re-offer is a second chance over part of this, not the
-mechanism: it fires only where the waiting issue's newest classified comment
+mechanism: it re-offers every queued item at once to a new lane session, and
+an unchanged item within one session only every 4 hours, as a backstop
+(harmonic-forge#1007). It fires only where the waiting issue's newest classified comment
 is a `QUEUE_KINDS[<lane>]` kind from a `QUEUE_POSTERS[<lane>]` poster. Lane 1's
 own Tooling Exception waits have no re-offer at all: `QUEUE_KINDS["l1"]` is
 `plan`/`spec` only and `QUEUE_POSTERS["l1"]` excludes Lane 1's own markers, so
