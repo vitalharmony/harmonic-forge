@@ -402,7 +402,7 @@ printf '  L1 source: %s\n' "$lane1_dir"
 printf '  L2 source: %s\n' "$lane2_dir"
 printf '  L3 source: %s\n' "$lane3_dir"
 printf 'advisor session: %s\n' "$advisor_session"
-printf '  Advisor:   %s (Opus, high effort, plan mode)\n' "$advisor_dir"
+printf '  Advisor:   %s (Opus, medium effort, plan mode)\n' "$advisor_dir"
 if { [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; } && command -v konsole >/dev/null 2>&1; then
   printf '  Advisor window: a separate Konsole window (--separate), attached to %s\n' "$advisor_session"
 else
@@ -568,7 +568,7 @@ if tmux has-session -t "=$session" 2>/dev/null; then
     # this happens now (AC2), not a failure state to report and leave be.
     advisor_pane="$(tmux new-session -d -P -F '#{pane_id}' \
       -s "$advisor_session" -n advisor -c "$advisor_dir" \
-      "claude --model opus --effort high --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+      "claude --model opus --effort medium --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
     tmux select-pane -t "$advisor_pane" -T "Advisor · Opus · Plan"
   fi
   install_workspace_cleanup_hooks
@@ -646,7 +646,7 @@ tmux set-option -t "$session" mouse on
 
 advisor_pane="$(tmux new-session -d -P -F '#{pane_id}' \
   -s "$advisor_session" -n advisor -c "$advisor_dir" \
-  "claude --model opus --effort high --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+  "claude --model opus --effort medium --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
 created_advisor=1
 tmux select-pane -t "$advisor_pane" -T "Advisor · Opus · Plan"
 tmux set-option -t "$advisor_session" mouse on 2>/dev/null || true

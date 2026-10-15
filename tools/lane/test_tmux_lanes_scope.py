@@ -120,6 +120,18 @@ class TmuxLanesScopeTests(unittest.TestCase):
             assert f"  {directory}\n" in done.stdout
         assert not (self.tmp_path / "home" / ".cache" / "lanes-claude").exists()
 
+    def test_the_advisor_launches_at_opus_medium_effort(self):
+        """harmonic-forge#1010: both Advisor launch strings and the banner say medium,
+        so the first-launch and re-create copies cannot drift apart."""
+        text = SCRIPT.read_text()
+        launch = "claude --model opus --effort medium --permission-mode plan --name 'Advisor'"
+        assert text.count(launch) == 2
+        assert "--effort high" not in text
+        done = _run(self.tmp_path, "--session", "t9", "--project", str(_repo(self.tmp_path, "proj")),
+                    "--dry-run")
+        assert done.returncode == 0, done.stderr
+        assert "(Opus, medium effort, plan mode)" in done.stdout
+
 
     def test_a_lane_worktree_source_derives_its_main_checkout_base(self):
         main, lane2 = _repo(self.tmp_path, "proj"), _repo(self.tmp_path, "proj-lane2")
