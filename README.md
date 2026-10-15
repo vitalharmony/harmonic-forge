@@ -264,7 +264,8 @@ that `forge-onboard --apply` writes and `forge-onboard` checks. The mechanism li
 shortcut are superseded by the `gh-as` slots above; `tools/gh/gha` is a thin alias to `gh-as`.
 The repo copy is not installed by itself: after merge, replace the old keyring-backed
 file with `ln -sf ~/harmonic-forge/tools/gh/gha ~/.local/bin/gha` (`gh-as` is installed
-the same way). The two directories are left in place, unused, and are removed by the
+the same way). The tmux lanes workspace launcher is installed the same way:
+`ln -sf ~/harmonic-forge/tools/lane/lanes-claude ~/.local/bin/lanes-claude`. The two directories are left in place, unused, and are removed by the
 operator after one clean week. The lane launchers export the slot directory, and nothing
 in lane tooling reads the retired ones.
 

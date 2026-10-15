@@ -1,0 +1,667 @@
+#!/usr/bin/env bash
+# Claude-only tmux workspace for the three-lane workflow.
+set -euo pipefail
+
+session="lanes"
+script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+stop_mode=""
+lane1_dir="$PWD"
+lane2_dir=""
+lane3_dir=""
+advisor_dir=""
+advisor_session=""
+dry_run=0
+
+usage() {
+  cat <<'EOF'
+Usage: tmux_lanes_claude.sh [options]
+
+Options:
+  --session NAME       tmux session name (default: lanes)
+  --project DIR        use DIR as the source project for all three lanes
+  --lane1-dir DIR      source project for lane1
+  --lane2-dir DIR      source project for lane2 (default: lane1 source)
+  --lane3-dir DIR      source project for lane3 (default: lane1 source)
+  --advisor-dir DIR    advisor working directory (default: lane1 source)
+  --dry-run            validate and print the plan without starting tmux
+  --stop-lanes         stop this workspace's Claude sessions and orphaned belt
+                       watchers (run by the detach hook; safe to run by hand)
+  --stop-advisor       stop only the advisor's Claude session, never the lane
+                       sessions (run by the advisor's own detach hook)
+  -h, --help           show this help
+
+Claude Code hosts sessions in its own background daemon, so killing a tmux pane
+does not end the Claude session inside it. The workspace records each lane's
+session id and stops those sessions on teardown, and refuses to launch while a
+previous workspace's lane session is still alive.
+
+Each lane wrapper resolves its source project to the correct main, -lane2, or
+-lane3 checkout. Directories may therefore belong to different repo families.
+
+Every workspace's lanes carry the same names (Lane 1..3, Advisor), so teardown
+scopes its name fallback to this workspace's directories (hrse#2258): derived at
+teardown from where the live tmux panes are (each pane's git repository, with its
+-lane2/-lane3 worktrees), and at launch from the directories being launched.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --session)
+      session="${2:?--session needs a name}"
+      shift 2
+      ;;
+    --project)
+      lane1_dir="${2:?--project needs a directory}"
+      lane2_dir="$lane1_dir"
+      lane3_dir="$lane1_dir"
+      advisor_dir="$lane1_dir"
+      shift 2
+      ;;
+    --lane1-dir)
+      lane1_dir="${2:?--lane1-dir needs a directory}"
+      shift 2
+      ;;
+    --lane2-dir)
+      lane2_dir="${2:?--lane2-dir needs a directory}"
+      shift 2
+      ;;
+    --lane3-dir)
+      lane3_dir="${2:?--lane3-dir needs a directory}"
+      shift 2
+      ;;
+    --advisor-dir)
+      advisor_dir="${2:?--advisor-dir needs a directory}"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --stop-lanes)
+      stop_mode="stop"
+      shift
+      ;;
+    --stop-advisor)
+      stop_mode="advisor"
+      shift
+      ;;
+    --record-lanes)
+      stop_mode="record"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+lane2_dir="${lane2_dir:-$lane1_dir}"
+lane3_dir="${lane3_dir:-$lane1_dir}"
+advisor_dir="${advisor_dir:-$lane1_dir}"
+advisor_session="${session}-advisor"
+
+if [[ ! "$session" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "Session name may contain only letters, digits, underscore, and hyphen." >&2
+  exit 2
+fi
+
+# lane_sessions MODE: record | stop | guard | advisor
+#   record   append the Claude session ids running under this workspace's panes
+#   stop     stop every recorded/pane/lane-named session and orphaned watchers
+#   guard    like stop, then exit 1 if any lane session is still alive
+#   advisor  stop only the advisor's own Claude session (hrse#2081) -- never
+#            the tracked-session state file, never the lane-name fallback,
+#            never a lane pid. The caller kills the advisor's tmux session
+#            itself afterward (see --stop-advisor below); this only stops
+#            the Claude process(es) under it.
+lane_sessions() {
+  python3 - "$1" "$session" "$advisor_session" "$(dirname "$script_path")" "${2:-}" <<'PY'
+import json, os, signal, subprocess, sys, time
+
+mode, session, advisor, script_dir, launch_dirs = sys.argv[1:6]
+sys.path.insert(0, script_dir)
+from lane_targets import in_workspace, select_targets, workspace_dirs_from_paths
+
+state_dir = os.path.expanduser("~/.cache/lanes-claude")
+state = os.path.join(state_dir, f"{session}.sessions")
+LANE_NAMES = {"Lane 1", "Lane 2", "Lane 3", "Advisor", "Lane Advisor"}
+me = {os.getpid(), os.getppid()}
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, TypeError):
+        return False
+
+def cmdline(pid):
+    try:
+        return open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return ""
+
+def ppid(pid):
+    try:
+        for line in open(f"/proc/{pid}/status"):
+            if line.startswith("PPid:"):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
+
+def ancestors(pid):
+    out, p = [], ppid(pid)
+    while p > 1:
+        out.append(p)
+        p = ppid(p)
+    return out
+
+def all_pids():
+    return [int(d) for d in os.listdir("/proc") if d.isdigit()]
+
+def agents():
+    try:
+        r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30)
+        return json.loads(r.stdout or "[]")
+    except Exception as exc:
+        print(f"lanes: could not list Claude sessions ({exc})", file=sys.stderr)
+        return []
+
+def pane_descendants(sessions):
+    roots = set()
+    for s in sessions:
+        r = subprocess.run(["tmux", "list-panes", "-s", "-t", "=" + s, "-F", "#{pane_pid}"],
+                           capture_output=True, text=True)
+        roots |= {int(x) for x in r.stdout.split() if x.isdigit()}
+    if not roots:
+        return set()
+    return {p for p in all_pids() if p in roots or roots & set(ancestors(p))}
+
+def pane_paths(sessions):
+    """The current path of every pane of the given tmux sessions."""
+    paths = set()
+    for s in sessions:
+        # `=NAME` is tmux's exact-match target; a bare name prefix-matches (see the has-session
+        # note below), which would read another workspace's panes as this one's scope.
+        r = subprocess.run(["tmux", "list-panes", "-s", "-t", "=" + s, "-F", "#{pane_current_path}"],
+                           capture_output=True, text=True)
+        paths |= {x.strip() for x in r.stdout.splitlines() if x.strip()}
+    return paths
+
+def scope(sessions):
+    """The workspace directories the name fallback may match (hrse#2258), or None. At launch
+    (`guard`) it is the directories being launched, passed in; at teardown it is derived from
+    where the live panes are, so a workspace launched before this fix is scoped too."""
+    if mode == "guard":
+        dirs = {d for d in launch_dirs.split("\n") if d}
+    else:
+        dirs = workspace_dirs_from_paths(pane_paths(sessions))
+    if not dirs:
+        print("lanes: no repository under this workspace's panes; skipping the name fallback",
+              file=sys.stderr)
+        return None
+    return dirs
+
+def report_left(workspace_dirs):
+    """Name the lane-named background sessions the SCOPE excluded (hrse#2258): one whose cwd
+    cannot be placed (a deleted per-issue worktree) or that belongs to another workspace
+    would otherwise vanish from the run's output without a trace. A session inside the scope
+    that this mode simply does not target (an in-scope Lane in --stop-advisor) is not "left
+    outside"."""
+    cache = {}
+    left = [a for a in listing if a.get("kind") == "background" and a.get("name") in LANE_NAMES
+            and a.get("sessionId") and not in_workspace(a, workspace_dirs, cache)]
+    if left:
+        where = sorted({os.path.basename((a.get("cwd") or "?").rstrip("/")) for a in left})
+        print(f"lanes: left {len(left)} lane-named background session(s) outside this workspace's "
+              f"scope: {', '.join(where)}", file=sys.stderr)
+
+def read_state():
+    try:
+        return {l.strip() for l in open(state) if l.strip()}
+    except OSError:
+        return set()
+
+listing = agents()
+
+if mode == "advisor":
+    workspace_dirs = scope((advisor,))
+    panes = pane_descendants((advisor,))
+    targets = select_targets("advisor", listing, panes, set(), LANE_NAMES, me,
+                             workspace_dirs=workspace_dirs)
+    report_left(workspace_dirs)
+    victims = {a["pid"] for a in targets if a.get("pid") and alive(a["pid"])}
+    for a in targets:
+        if a.get("kind") == "background" and a.get("id"):
+            subprocess.run(["claude", "stop", a["id"]], capture_output=True, text=True, timeout=30)
+    for p in victims:
+        try:
+            os.kill(p, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.time() + 5
+    while time.time() < deadline and any(alive(p) for p in victims):
+        time.sleep(0.25)
+    for p in victims:
+        if alive(p):
+            os.kill(p, signal.SIGKILL)
+    if victims:
+        print(f"lanes: stopped {len(victims)} advisor process(es)", file=sys.stderr)
+    sys.exit(0)
+
+panes = pane_descendants((session, advisor))
+
+if mode == "record":
+    sids = read_state() | {a["sessionId"] for a in listing
+                            if a.get("sessionId") and a.get("pid") in panes}
+    os.makedirs(state_dir, exist_ok=True)
+    with open(state, "w") as f:
+        f.write("".join(s + "\n" for s in sorted(sids)))
+    sys.exit(0)
+
+tracked = read_state()
+workspace_dirs = scope((session, advisor))
+targets = select_targets("stop", listing, panes, tracked, LANE_NAMES, me,
+                         workspace_dirs=workspace_dirs)
+report_left(workspace_dirs)
+sids = {a["sessionId"] for a in targets} | tracked
+
+# Every process belonging to a target session: interactive pids, and daemon
+# hosts carrying --session-id <sid> on their command line.
+victims = {a["pid"] for a in targets if a.get("pid") and alive(a["pid"])}
+for p in all_pids():
+    if p in me:
+        continue
+    c = cmdline(p)
+    if any(f"--session-id {sid}" in c for sid in sids):
+        victims.add(p)
+
+for a in targets:
+    if a.get("kind") == "background" and a.get("id"):
+        subprocess.run(["claude", "stop", a["id"]], capture_output=True, text=True, timeout=30)
+
+for p in victims:
+    try:
+        os.kill(p, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+deadline = time.time() + 5
+while time.time() < deadline and any(alive(p) for p in victims):
+    time.sleep(0.25)
+for p in victims:
+    if alive(p):
+        os.kill(p, signal.SIGKILL)
+
+# Belt watchers whose Claude session is gone (or was just stopped).
+for p in all_pids():
+    c = cmdline(p)
+    if "watch_lane_posts.py" not in c or p in me:
+        continue
+    chain = ancestors(p)
+    owned = any(("/claude/versions/" in cmdline(q) or cmdline(q).startswith("claude "))
+                and alive(q) for q in chain)
+    if not owned or set(chain) & victims:
+        try:
+            os.kill(p, signal.SIGTERM)
+            print(f"lanes: stopped orphaned belt watcher {p}", file=sys.stderr)
+        except ProcessLookupError:
+            pass
+
+time.sleep(1)
+survivors = sorted(p for p in victims if alive(p))
+for p in all_pids():
+    if p not in me and any(f"--session-id {sid}" in cmdline(p) for sid in sids) and alive(p):
+        survivors.append(p)
+survivors = sorted(set(survivors))
+
+if survivors:
+    print("lanes: lane sessions still alive: "
+          + ", ".join(f"{p} ({cmdline(p)[:60]})" for p in survivors), file=sys.stderr)
+    sys.exit(1 if mode == "guard" else 0)
+
+if sids or victims:
+    print(f"lanes: stopped {len(victims)} lane process(es) across {len(sids)} session(s)", file=sys.stderr)
+try:
+    os.remove(state)
+except OSError:
+    pass
+PY
+}
+
+if [[ "$stop_mode" == "record" ]]; then
+  lane_sessions record
+  exit $?
+fi
+if [[ "$stop_mode" == "stop" ]]; then
+  lane_sessions stop
+  exit $?
+fi
+if [[ "$stop_mode" == "advisor" ]]; then
+  # Idempotent by construction: safe to run twice, or concurrently with
+  # --stop-lanes (closing the lanes window kills the advisor's tmux
+  # session too, which detaches its own client and fires this same hook --
+  # a benign race, and both write to the same log).
+  #
+  # The tmux session is only killed when `lane_sessions advisor` itself
+  # reports success (preclose-inspection finding, hrse#2081): the prior
+  # unconditional `; ... || true; exit 0` killed the advisor's tmux session
+  # -- the only remaining handle on a daemon-hosted advisor Claude session
+  # -- even when the python step crashed (a missing `lane_targets.py`
+  # neighbor, or `claude agents --json` failing outright), silently
+  # orphaning that Claude session with no way to find it again.
+  if lane_sessions advisor; then
+    tmux kill-session -t "=$advisor_session" 2>/dev/null || true
+    exit 0
+  fi
+  echo "lanes: --stop-advisor failed; leaving $advisor_session in place for a retry" >&2
+  exit 1
+fi
+
+for command_name in tmux git lane1 lane2 lane3 claude; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Required command not found: $command_name" >&2
+    exit 1
+  fi
+done
+
+git_root() {
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null || {
+    echo "Not inside a Git checkout: $1" >&2
+    return 1
+  }
+}
+
+lane1_dir="$(git_root "$lane1_dir")"
+lane2_dir="$(git_root "$lane2_dir")"
+lane3_dir="$(git_root "$lane3_dir")"
+advisor_dir="$(git_root "$advisor_dir")"
+
+# hrse#2258: this launch's directories, which scope the launch-time guard's name fallback.
+# The lane wrappers strip a trailing -laneN to find the main checkout (harmonic-forge
+# tools/lane/lane1:25-30), so this is the main checkout and both lane worktrees of every
+# source, absolute, one per line. (Teardown derives its scope from the live panes instead.)
+workspace_dirs=()
+while IFS= read -r workspace_dir; do
+  workspace_dirs+=("$workspace_dir")
+done < <(
+  for source_dir in "$lane1_dir" "$lane2_dir" "$lane3_dir" "$advisor_dir"; do
+    base="$(printf '%s' "$source_dir" | sed -E 's/-lane[0-9]+$//')"
+    printf '%s\n%s\n%s\n' "$base" "$base-lane2" "$base-lane3"
+  done | sort -u
+)
+
+printf 'tmux session: %s\n' "$session"
+printf '  L1 source: %s\n' "$lane1_dir"
+printf '  L2 source: %s\n' "$lane2_dir"
+printf '  L3 source: %s\n' "$lane3_dir"
+printf 'advisor session: %s\n' "$advisor_session"
+printf '  Advisor:   %s (Opus, high effort, plan mode)\n' "$advisor_dir"
+if { [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; } && command -v konsole >/dev/null 2>&1; then
+  printf '  Advisor window: a separate Konsole window (--separate), attached to %s\n' "$advisor_session"
+else
+  printf '  Advisor window: no graphical session/konsole detected; printing the attach hint instead\n'
+fi
+
+printf 'workspace dirs (hrse#2258):\n'
+printf '  %s\n' "${workspace_dirs[@]}"
+
+if ((dry_run)); then
+  exit 0
+fi
+
+attach_or_switch() {
+  tmux select-window -t "$session:lanes"
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "$session"
+  else
+    tmux attach-session -t "$session"
+  fi
+}
+
+# hrse#2081 AC1: open the advisor in its own, separate window so the
+# operator actually sees it, instead of a detached session nobody ever
+# attaches to. Best-effort by design -- a failed launch must never trip
+# `set -e` or the ERR trap (a missing/misbehaving `konsole` is not a reason
+# to tear down the workspace this function is called from), so it always
+# prints the attach hint too, whether or not the window opened.
+launch_advisor_window() {
+  echo "Advisor is available from another terminal: tmux attach -t $advisor_session"
+  if { [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; } && command -v konsole >/dev/null 2>&1; then
+    # `env -u TMUX`: this script may itself run inside tmux, and tmux
+    # refuses to attach a session from inside an existing client.
+    # `--separate`: without it, Konsole reuses a running instance over
+    # DBus and may open a tab in the existing window rather than the
+    # separate window AC1 requires.
+    # --desktopfile: gives this window a distinct app id (lanes-claude-advisor.desktop,
+    # ~/.local/share/applications/) so a KWin Window Rule can target it separately
+    # from the lanes window, which Konsole's own class (org.kde.konsole) can't do.
+    # hrse#2261: Konsole's default tab format (`%d : %n`) ignores the title tmux sends via
+    # `set-titles`; `-p tabtitle=%w` makes this window's caption the title the program sets.
+    ( env -u TMUX konsole --desktopfile lanes-claude-advisor --separate -p tabtitle=%w \
+        --workdir "$advisor_dir" -e tmux attach-session -t "$advisor_session" \
+        >/dev/null 2>&1 & disown ) || true
+  fi
+}
+
+reap_stale_belt_locks() {
+  # ~/.cache/harmonic-forge/*.lock outlives its holder the same way a killed
+  # tmux server outlives its socket (see reap_stale_tmux_socket above): the
+  # holder's flock is released by the kernel the instant that process dies,
+  # however it dies, but the JSON payload describing it is left on disk with
+  # nothing to remove it (hrse#2017). Logic lives in lanes_reap.py, not
+  # inline here, so it can be unit-tested (see tools/lane/test_lanes_reap.py)
+  # -- unlike lane_sessions() above, which never got that and stays
+  # untested as a result.
+  python3 "$(dirname "$script_path")/lanes_reap.py" reap-belt-locks \
+    "$HOME/.cache/harmonic-forge"
+}
+
+reap_orphaned_lane_worktree_servers() {
+  # Lane 2/3 worktree dev-server stacks (pc-up/mise, outside the tmux pane
+  # tree) carry no --session-id and are invisible to lane_sessions()'s own
+  # selector by construction (hrse#2017). Call this after `lane_sessions
+  # guard` has confirmed every previous lane Claude session is dead -- that
+  # rules out a Claude session still owning the worktree, but NOT a Codex
+  # one (also a documented Lane 2/3 actor here), so lanes_reap.py itself
+  # checks for any other live occupant of the worktree before touching
+  # anything, and skips it if one is found. When it does act, it stops the
+  # worktree's own "hrse-process-compose-<port>.service" systemd unit
+  # (mise.toml's pc-down mechanism) rather than signalling the uvicorn/vite
+  # pid directly -- process-compose restarts a SIGTERMed backend on its own
+  # (exit_on_failure), so killing the child alone never actually frees the
+  # port. Never touches the main checkout: its command line has no
+  # "-lane2"/"-lane3" segment.
+  python3 "$(dirname "$script_path")/lanes_reap.py" reap-worktree-servers
+}
+
+reap_stale_tmux_socket() {
+  # A tmux server killed outright — closing the terminal window, `kill -9`, a
+  # session crash — never gets to remove its own socket file. The file survives
+  # with nothing listening behind it, and every later `tmux new-session` fails
+  # against it. That is what makes this launcher "come up and immediately die":
+  # the workspace is built and then cannot attach.
+  #
+  # The `client-detached` hook below handles the *graceful* path, and cannot
+  # help here by construction: a killed server runs no hooks.
+  #
+  # The socket path is read out of tmux's own error message rather than guessed
+  # — it varies with TMUX_TMPDIR, the uid, and the -L socket name, and a wrong
+  # guess here would delete the wrong file.
+  local err sock
+  if err="$(tmux ls 2>&1)"; then
+    return 0   # a server is alive and answering; nothing to reap
+  fi
+  case "$err" in
+    *"no server running on"*)
+      sock="${err##*no server running on }"
+      sock="${sock%%[[:space:]]*}"
+      if [[ -S "$sock" ]]; then
+        rm -f -- "$sock" && printf 'lanes: removed stale tmux socket %s\n' "$sock"
+      fi
+      ;;
+    *)
+      # "error connecting to ... (No such file or directory)" is the healthy
+      # cold start — no socket, nothing to do. Anything else is left alone
+      # rather than guessed at.
+      :
+      ;;
+  esac
+  return 0
+}
+
+install_workspace_cleanup_hooks() {
+  local cleanup_shell cleanup_hook advisor_shell advisor_hook
+  # Stop the Claude sessions first (they outlive their panes), then the tmux sessions.
+  # Paths here must not contain spaces or quotes (checked at launch).
+  mkdir -p "$HOME/.cache/lanes-claude"
+  # hrse#2081: the lanes session keeps the full-workspace teardown --
+  # closing it ends everything, advisor included.
+  cleanup_shell="$script_path --session $session --stop-lanes >>$HOME/.cache/lanes-claude/$session.log 2>&1; tmux kill-session -t =$advisor_session 2>/dev/null || true; tmux kill-session -t =$session 2>/dev/null || true"
+  cleanup_hook="if-shell -F '#{==:#{session_attached},0}' \"run-shell -b '$cleanup_shell'\""
+  tmux set-hook -t "=$session:" client-detached "$cleanup_hook"
+  # hrse#2081 AC2: the advisor session gets its OWN, narrower hook --
+  # closing only the advisor must never touch the lane sessions. Both
+  # sessions previously carried the same full-teardown hook, which is the
+  # second defect this issue exists to fix (latent until the advisor was
+  # ever attached to at all).
+  advisor_shell="$script_path --session $session --stop-advisor >>$HOME/.cache/lanes-claude/$session.log 2>&1"
+  advisor_hook="if-shell -F '#{==:#{session_attached},0}' \"run-shell -b '$advisor_shell'\""
+  tmux set-hook -t "=$advisor_session:" client-detached "$advisor_hook"
+}
+
+# hrse#2261: tell Konsole what to call each window. tmux forwards `set-titles-string` to the
+# terminal only when `set-titles` is on, and both are SESSION options, so they are set on the
+# lanes session and on the advisor session separately. Called on the fresh-launch path and on
+# the re-attach path, so a relaunch relabels an already-running workspace too.
+# Cosmetic, so every call is guarded: under `set -e` (and the launch's ERR trap, which kills both
+# sessions) a failed title option must never cost the operator the workspace or the attach.
+set_window_titles() {
+  tmux set-option -t "=$session:" set-titles on 2>/dev/null || true
+  tmux set-option -t "=$session:" set-titles-string "Harmonic Forge - 3-Lane Protocol" 2>/dev/null || true
+  tmux set-option -t "=$advisor_session:" set-titles on 2>/dev/null || true
+  tmux set-option -t "=$advisor_session:" set-titles-string "Harmonic Forge - Advisor" 2>/dev/null || true
+}
+
+reap_stale_tmux_socket
+reap_stale_belt_locks
+
+if tmux has-session -t "=$session" 2>/dev/null; then
+  # `=$session`: an unanchored `has-session -t "$session"` prefix-matches
+  # ANY session whose name starts with it (preclose-inspection finding,
+  # hrse#2081, verified live: with only `lanes-advisor` alive, unanchored
+  # `has-session -t lanes` still exits 0). Once the advisor is its own
+  # independent session (this diff's whole point), "lanes gone, only
+  # lanes-advisor alive" is a real reachable state, and the unanchored form
+  # would misread it as "lanes is up", skip every lane-pane/guard step
+  # below, and rewrite the advisor's OWN hook to the full-teardown one at
+  # line ~444 (`-t "$session"` there needs the same anchor -- see below).
+  if ! tmux has-session -t "=$advisor_session" 2>/dev/null; then
+    # hrse#2081 AC3: re-create the advisor instead of just warning it is
+    # gone -- the operator closing the advisor window is the normal way
+    # this happens now (AC2), not a failure state to report and leave be.
+    advisor_pane="$(tmux new-session -d -P -F '#{pane_id}' \
+      -s "$advisor_session" -n advisor -c "$advisor_dir" \
+      "claude --model opus --effort high --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+    tmux select-pane -t "$advisor_pane" -T "Advisor · Opus · Plan"
+  fi
+  install_workspace_cleanup_hooks
+  set_window_titles
+  tmux set-option -t "$session" mouse on 2>/dev/null || true
+  tmux set-option -t "$advisor_session" mouse on 2>/dev/null || true
+  echo "Session '$session' already exists; attaching without relaunching agents."
+  # preclose-inspection finding, hrse#2081: launch_advisor_window used to run
+  # unconditionally here, so re-running the shortcut while the advisor
+  # window was already open attached a SECOND client to $advisor_session.
+  # That leaves #{session_attached} at 2, so closing one window never drops
+  # it to 0 -- the client-detached hook's own guard never fires, and
+  # closing "the advisor window" silently stops nothing, contradicting the
+  # message this script prints. Only launch when nothing is attached yet.
+  if [[ -z "$(tmux list-clients -t "=$advisor_session" 2>/dev/null)" ]]; then
+    launch_advisor_window
+  fi
+  attach_or_switch
+  exit 0
+fi
+
+if [[ "$script_path$HOME" =~ [[:space:]\'\"] ]]; then
+  echo "Script path and HOME must not contain spaces or quotes (the detach hook embeds them)." >&2
+  exit 1
+fi
+
+# Guard: a previous workspace's lane sessions can survive in Claude's daemon
+# after their panes are gone, still running belts. Stop them; refuse to launch
+# over any that will not die. Scoped to THIS launch's directories (hrse#2258): a leftover
+# from a different repo family under a reused session name is not matched here.
+if ! lane_sessions guard "$(printf '%s\n' "${workspace_dirs[@]}")"; then
+  echo "Refusing to launch: stop the sessions above (claude stop <id> / kill <pid>) and retry." >&2
+  exit 1
+fi
+
+# lane_sessions guard just confirmed every previous lane Claude session is
+# dead, so any lane2/lane3 worktree dev server still bound to a port this
+# launch needs is orphaned by construction -- reap it now, before claiming
+# those ports (hrse#2017).
+reap_orphaned_lane_worktree_servers
+
+created_lanes=0
+created_advisor=0
+cleanup_failed_launch() {
+  if ((created_lanes)) && tmux has-session -t "=$session" 2>/dev/null; then
+    tmux kill-session -t "=$session"
+  fi
+  if ((created_advisor)) && tmux has-session -t "=$advisor_session" 2>/dev/null; then
+    tmux kill-session -t "=$advisor_session"
+  fi
+}
+trap cleanup_failed_launch ERR
+
+lane1_pane="$(tmux new-session -d -P -F '#{pane_id}' \
+  -s "$session" -n lanes -c "$lane1_dir" \
+  "lane1 --agent claude -- --name 'Lane 1'; rc=\$?; echo; echo \"Lane 1 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+created_lanes=1
+
+lane2_pane="$(tmux split-window -d -h -P -F '#{pane_id}' \
+  -t "$lane1_pane" -c "$lane2_dir" \
+  "lane2 --agent claude -- --name 'Lane 2'; rc=\$?; echo; echo \"Lane 2 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+
+lane3_pane="$(tmux split-window -d -h -P -F '#{pane_id}' \
+  -t "$lane2_pane" -c "$lane3_dir" \
+  "lane3 --agent claude -- --name 'Lane 3'; rc=\$?; echo; echo \"Lane 3 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+
+tmux select-layout -t "$session:lanes" even-horizontal >/dev/null
+tmux select-pane -t "$lane1_pane" -T "L1 · Claude"
+tmux select-pane -t "$lane2_pane" -T "L2 · Claude"
+tmux select-pane -t "$lane3_pane" -T "L3 · Claude"
+tmux set-option -t "$session" pane-border-status top
+tmux set-option -t "$session" pane-border-format ' #[bold]#{pane_title}#[default] '
+# Click a pane to activate it (also enables wheel scrollback and border drag-resize).
+tmux set-option -t "$session" mouse on
+
+advisor_pane="$(tmux new-session -d -P -F '#{pane_id}' \
+  -s "$advisor_session" -n advisor -c "$advisor_dir" \
+  "claude --model opus --effort high --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+created_advisor=1
+tmux select-pane -t "$advisor_pane" -T "Advisor · Opus · Plan"
+tmux set-option -t "$advisor_session" mouse on 2>/dev/null || true
+install_workspace_cleanup_hooks
+set_window_titles
+launch_advisor_window
+
+# Record each lane's Claude session id once the agents have registered, so
+# teardown can find them even after a pane is gone or a lane renames itself.
+nohup bash -c "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do sleep 10; '$script_path' --session '$session' --record-lanes; done" \
+  >>"$HOME/.cache/lanes-claude/$session.log" 2>&1 </dev/null &
+disown
+
+tmux select-window -t "$session:lanes"
+tmux select-pane -t "$lane1_pane"
+trap - ERR
+echo "Closing the advisor window ends only the advisor. Closing the lanes window ends the entire workspace, advisor included."
+attach_or_switch
