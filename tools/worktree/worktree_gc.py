@@ -147,7 +147,7 @@ def sweep_registered(path: Path, execute: bool) -> str:
     if status.stdout.strip():
         return f"reported: uncommitted ({len(status.stdout.splitlines())} paths)"
     flags = _git(path, "ls-files", "-v")
-    if flags.returncode != 0:
+    if flags.returncode != 0 or flags.stderr.strip():
         return f"skipped: git ls-files -v: {flags.stderr.strip()[:120]}"
     hidden = [line[2:] for line in flags.stdout.splitlines() if line[:1].islower() or line[:1] == "S"]
     if hidden:
