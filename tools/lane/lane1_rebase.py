@@ -16,7 +16,22 @@ Exit codes:
   0  `refs/heads/<branch>` (local) and `origin/<branch>` both end at the new
      SHA, printed as `new=<sha>`. Post `ready-for-l3` on it (R-0338).
   1  any other failure (fetch, a lease mismatch, a busy stale prep worktree).
-  2  the rebase conflicts; aborted, nothing pushed, conflicting paths listed.
+  2  the rebase conflicts beyond a `package.json` version line; aborted,
+     nothing pushed, conflicting paths listed.
+
+A conflict confined to a `package.json`'s top-level `"version"` (both sides
+equal as JSON, type-strictly, once that key is removed) is resolved, not
+exit 2 (harmonic-forge#1035): the value becomes `origin/main`'s version plus
+one patch, `T`, computed once before the rebase, and exit 0 then prints
+`version-resolved=<T>` after `new=<sha>`. A branch version whose MAJOR or
+MINOR differs from `origin/main`'s is exit 2, so a minor or major bump is
+never discarded. The resolved commit keeps its old message (e.g. "Auto-bump
+to v2.9.44") while carrying `T`. A resolved commit is not patch-equivalent
+to the local one, so a second receipt `{issue, pre_shas, rebased_sha,
+resolved}` is written before that push; the local-ref step skips its cherry
+check only when the local branch is exactly a recorded pre-rebase origin SHA
+and origin is exactly the recorded rebased SHA, which makes a crash re-run
+complete (and print `version-resolved=`) rather than exit 3.
   3  the local branch cannot be moved (dirty impl worktree, missing ref, or
      local commits origin does not carry); both SHAs printed.
   4  a precondition failed (newest lane marker is neither `l2.done` nor a
@@ -61,9 +76,10 @@ class Exit(Exception):
         self.message = message
 
 
-def git(cwd: str | Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def git(cwd: str | Path, *args: str, check: bool = True,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     proc = subprocess.run(["git", "-C", str(cwd), *args],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=env)
     if check and proc.returncode:
         raise Exit(1, f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc
@@ -216,6 +232,38 @@ def write_receipt(repo_dir: str, issue: int, passed: str, old: str, rebased: str
 
 def drop_receipt(repo_dir: str, issue: int) -> None:
     receipt_path(repo_dir, issue).unlink(missing_ok=True)
+    version_receipt_path(repo_dir, issue).unlink(missing_ok=True)
+
+
+def version_receipt_path(repo_dir: str, issue: int) -> Path:
+    """harmonic-forge#1035: separate from the PASS receipt, whose presence
+    and contents the PASS path reads."""
+    return receipt_path(repo_dir, issue).with_name(f"lane1-rebase-{issue}-version.json")
+
+
+def read_version_receipt(repo_dir: str, issue: int) -> dict | None:
+    try:
+        data = json.loads(version_receipt_path(repo_dir, issue).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("issue") == issue else None
+
+
+def write_version_receipt(repo_dir: str, issue: int, old: str, new: str,
+                          resolved: str | None) -> None:
+    """Record, before the push, that `old` (origin's head) was rebased to
+    `new`. Chains when `old` is the prior receipt's rebased SHA (a re-rebase
+    after a crash and a main move), so the local branch still at the first
+    pre-rebase SHA stays covered. Written only when a version line was
+    resolved now or by a chained earlier run; nothing otherwise."""
+    prior = read_version_receipt(repo_dir, issue)
+    chained = bool(prior) and prior.get("rebased_sha") == old
+    if not resolved and not chained:
+        return
+    pre = (prior.get("pre_shas", []) if chained else []) + [old]
+    version_receipt_path(repo_dir, issue).write_text(json.dumps(
+        {"issue": issue, "pre_shas": pre, "rebased_sha": new,
+         "resolved": resolved or prior.get("resolved")}))
 
 
 def _pass_covers(repo_dir: str, issue: int, old: str, passed: str) -> bool:
@@ -306,33 +354,131 @@ def push(prep: Path, branch: str, old: str) -> None:
     raise Exit(1, f"push failed:\n{err}")
 
 
+_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_TOP_VERSION = re.compile(r'^(\s*"version"\s*:\s*")([^"\\]*)(")', re.MULTILINE)
+
+
+def _json(text: str):
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _canonical(obj: dict) -> str:
+    """Type-strict equality key (preclose F1035 pass 1 #2): Python compares
+    `True == 1` and `1.0 == 1`; their JSON serializations differ."""
+    return json.dumps({k: v for k, v in obj.items() if k != "version"}, sort_keys=True)
+
+
+def version_target(repo_dir: str, old: str) -> tuple[str | None, dict[str, str]]:
+    """`T` (origin/main's `package.json` version plus one patch) and
+    origin/main's version per `package.json` the branch touches. No `T` when
+    those files disagree or none carries a MAJOR.MINOR.PATCH version."""
+    base = git(repo_dir, "merge-base", "refs/remotes/origin/main", old).stdout.strip()
+    touched = git(repo_dir, "diff", "--name-only", base, old).stdout.split()
+    mains: dict[str, str] = {}
+    for path in touched:
+        if Path(path).name != "package.json":
+            continue
+        shown = git(repo_dir, "show", f"refs/remotes/origin/main:{path}", check=False)
+        data = _json(shown.stdout) if shown.returncode == 0 else None
+        version = data.get("version") if data else None
+        if isinstance(version, str) and _SEMVER.match(version):
+            mains[path] = version
+    if len(set(mains.values())) != 1:
+        return None, mains
+    major, minor, patch = _SEMVER.match(next(iter(mains.values()))).groups()
+    return f"{major}.{minor}.{int(patch) + 1}", mains
+
+
+def _resolve_versions(prep: Path, paths: list[str], target: str | None,
+                      mains: dict[str, str]) -> str | None:
+    """Resolve every unmerged path as a version-only `package.json` conflict
+    and stage it; return None on success, else why not (nothing staged is
+    pushed: the caller aborts)."""
+    if not target or not paths:
+        return "not confined to a package.json version line"
+    if any(Path(p).name != "package.json" for p in paths):
+        return "not confined to a package.json version line"
+    staged: list[tuple[str, str]] = []
+    for path in paths:
+        ours = git(prep, "show", f":2:{path}", check=False)
+        theirs = git(prep, "show", f":3:{path}", check=False)
+        if ours.returncode or theirs.returncode:
+            return f"{path}: not a two-sided content conflict"
+        upstream, branch_side = _json(ours.stdout), _json(theirs.stdout)
+        if upstream is None or branch_side is None:
+            return f"{path}: not parseable as a JSON object"
+        if _canonical(upstream) != _canonical(branch_side):
+            return f"{path}: differs beyond the top-level version"
+        branch_version = branch_side.get("version")
+        main_version = mains.get(path)
+        found = _SEMVER.match(branch_version) if isinstance(branch_version, str) else None
+        if not found or not main_version:
+            return f"{path}: version {branch_version!r} is not MAJOR.MINOR.PATCH"
+        # Operator ruling on #1035: a MAJOR or MINOR bump is never discarded.
+        if found.groups()[:2] != _SEMVER.match(main_version).groups()[:2]:
+            return (f"{path}: branch version {branch_version} differs from "
+                    f"origin/main's {main_version} in MAJOR or MINOR")
+        text, count = _TOP_VERSION.subn(lambda m: f"{m.group(1)}{target}{m.group(3)}",
+                                        ours.stdout)
+        result = _json(text) if count == 1 else None
+        if (result is None or result.get("version") != target
+                or _canonical(result) != _canonical(upstream)):
+            return f"{path}: the top-level version could not be replaced alone"
+        staged.append((path, text))
+    for path, text in staged:
+        (prep / path).write_text(text)
+        git(prep, "add", "--", path)
+    return None
+
+
 def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
-                    passed: str | None = None) -> str:
+                    passed: str | None = None) -> tuple[str, str | None]:
     prep = prep_path(repo_dir, issue)
     prune_stale_prep(repo_dir, prep)
     prep.parent.mkdir(parents=True, exist_ok=True)
+    target, mains = version_target(repo_dir, old)
     git(repo_dir, "worktree", "add", "--detach", str(prep), old)
+    resolved = None
     try:
-        proc = git(prep, "rebase", "origin/main", check=False)
-        if proc.returncode:
-            paths = git(prep, "diff", "--name-only", "--diff-filter=U",
-                        check=False).stdout.split()
+        try:
+            proc = git(prep, "rebase", "origin/main", check=False)
+            # Never `git rebase --skip`: a resolution that empties a commit
+            # is dropped by --continue itself, so a failed --continue is the
+            # next commit's conflict, re-read here.
+            while proc.returncode:
+                paths = git(prep, "diff", "--name-only", "--diff-filter=U",
+                            check=False).stdout.split()
+                why = _resolve_versions(prep, paths, target, mains)
+                if why:
+                    listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
+                    raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n"
+                                  f"{listed}\n  ({why})")
+                resolved = target
+                proc = git(prep, "rebase", "--continue", check=False,
+                           env={**os.environ, "GIT_EDITOR": "true"})
+        except BaseException:
             git(prep, "rebase", "--abort", check=False)
-            listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
-            raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n{listed}")
+            raise
         new = rev(prep, "HEAD")
         # sticky-wicket reforge F1034: record the crash state before it can
         # exist, so a re-run never has to infer it from history.
         # No receipt on the l2.done path: there is no PASS to carry.
         if passed:
             write_receipt(repo_dir, issue, passed, old, new)
+        # harmonic-forge#1035: the same, for a resolved version line.
+        write_version_receipt(repo_dir, issue, old, new, resolved)
         push(prep, branch, old)
-        return new
+        return new, resolved
     finally:
         remove_prep(repo_dir, prep)
 
 
-def move_local_ref(repo_dir: str, branch: str, new: str) -> None:
+def move_local_ref(repo_dir: str, branch: str, new: str,
+                   rebased_from: list[str] | None = None) -> None:
     local = rev(repo_dir, f"refs/heads/{branch}")
     if local == new:
         return
@@ -349,7 +495,14 @@ def move_local_ref(repo_dir: str, branch: str, new: str) -> None:
                       "The operator finishes the local move by hand.")
     # Every local commit origin lacks must be patch-equivalent to one in
     # `new`; otherwise moving the ref would drop unpushed Lane 2 work.
-    cherry = git(repo_dir, "cherry", new, local).stdout.splitlines()
+    # harmonic-forge#1035: a resolved version line makes the rebased commit
+    # non-equivalent. `rebased_from` is the version receipt's recorded
+    # pre-rebase origin SHAs, passed only when it records `new` as pushed; a
+    # local branch exactly at one of them carries nothing origin lacked.
+    if rebased_from and local in rebased_from:
+        cherry = []
+    else:
+        cherry = git(repo_dir, "cherry", new, local).stdout.splitlines()
     if any(line.startswith("+") for line in cherry):
         raise Exit(3, f"local {branch} is at {local}; origin is at {new} "
                       "(local carries commits origin does not)")
@@ -367,7 +520,7 @@ def move_local_ref(repo_dir: str, branch: str, new: str) -> None:
                       f"origin is at {new}")
 
 
-def run(repo_dir: str, issue: int, branch: str) -> str:
+def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None]:
     # preclose F1018-3: one run per issue at a time. The stale-prep busy check
     # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
     lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
@@ -380,7 +533,7 @@ def run(repo_dir: str, issue: int, branch: str) -> str:
         return _run_locked(repo_dir, issue, branch)
 
 
-def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
+def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None]:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
@@ -388,12 +541,17 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
     passed = check_preconditions(repo_dir, issue, branch, old)
     if git(repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode == 0:
-        new = old  # already on current main (incl. a re-run after a crash)
+        new, resolved = old, None  # already on current main (incl. a crash re-run)
     else:
-        new = rebase_and_push(repo_dir, issue, branch, old, passed)
-    move_local_ref(repo_dir, branch, new)
+        new, resolved = rebase_and_push(repo_dir, issue, branch, old, passed)
+    version = read_version_receipt(repo_dir, issue)
+    rebased_from = None
+    if version and version.get("rebased_sha") == new:
+        rebased_from = version.get("pre_shas") or None
+        resolved = resolved or version.get("resolved")
+    move_local_ref(repo_dir, branch, new, rebased_from)
     drop_receipt(repo_dir, issue)
-    return new
+    return new, resolved
 
 
 def main(argv: list[str]) -> int:
@@ -401,11 +559,13 @@ def main(argv: list[str]) -> int:
         print("usage: lane1-rebase <repo-dir> <issue> <branch>", file=sys.stderr)
         return 1
     try:
-        new = run(argv[0], int(argv[1]), argv[2])
+        new, resolved = run(argv[0], int(argv[1]), argv[2])
     except Exit as exc:
         print(f"[lane1-rebase] exit {exc.code}: {exc.message}", file=sys.stderr)
         return exc.code
     print(f"new={new}")
+    if resolved:
+        print(f"version-resolved={resolved}")
     return 0
 
 

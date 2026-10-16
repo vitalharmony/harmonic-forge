@@ -3,6 +3,8 @@
 Every case runs against a temporary bare origin plus clones; nothing touches
 a real repo. The two network reads (newest lane marker, issue labels) are
 stubbed."""
+import contextlib
+import io
 import json
 import os
 import fcntl
@@ -544,6 +546,197 @@ class PassPreconditionTests(_Fixture):
                 self.run_main()
         receipt = lane1_rebase.read_receipt(str(self.repo), ISSUE)
         self.assertEqual(receipt["rebased_shas"], [self.origin_branch()])
+
+
+PKG = "frontend/package.json"
+
+
+def pkg(version, dep="1.0.0", private="true"):
+    return ('{\n  "name": "app",\n'
+            f'  "private": {private},\n'
+            f'  "version": "{version}",\n  "type": "module",\n'
+            '  "scripts": {\n    "dev": "vite",\n    "build": "vite build",\n'
+            '    "lint": "eslint ."\n  },\n'
+            f'  "dependencies": {{\n    "a": "{dep}"\n  }}\n}}\n')
+
+
+class VersionConflictTests(_Fixture):
+    """harmonic-forge#1035: a conflict confined to package.json's top-level
+    version resolves to origin/main's version plus one patch."""
+
+    def setUp(self):
+        super().setUp()
+        # Put package.json on main, then rebuild the branch on top of it.
+        sh(self.other, "checkout", "-q", "main")
+        sh(self.other, "pull", "-q", "origin", "main")
+        self.write(self.other, {PKG: pkg("2.9.40")}, "add package.json")
+        sh(self.other, "push", "-q", "origin", "main")
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+
+    def write(self, cwd, files, msg):
+        for name, content in files.items():
+            path = Path(cwd, name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            sh(cwd, "add", name)
+        sh(cwd, "commit", "-q", "-m", msg)
+        return sh(cwd, "rev-parse", "HEAD")
+
+    def on_branch(self, files, msg):
+        sha = self.write(self.impl, files, msg)
+        sh(self.impl, "push", "-q", "origin", f"HEAD:{BRANCH}")
+        self.branch_sha = sha
+        return sha
+
+    def on_main(self, files):
+        sh(self.other, "pull", "-q", "origin", "main")
+        self.write(self.other, files, "main moves")
+        sh(self.other, "push", "-q", "origin", "main")
+
+    def run_captured(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.run_main()
+        return code, out.getvalue(), err.getvalue()
+
+    def head_version(self):
+        return json.loads(sh(self.origin, "show", f"refs/heads/{BRANCH}:{PKG}"))["version"]
+
+    def assert_refused(self, code, err):
+        self.assertEqual(code, 2, err)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+        self.assertFalse(self.prep_left())
+
+    def test_a_version_only_conflict_resolves_and_pushes(self):
+        self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41")}, "feature + Auto-bump")
+        self.on_main({"main.txt": "m\n", PKG: pkg("2.9.42")})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.head_version(), "2.9.43")
+        self.assertEqual(sh(self.origin, "show", f"refs/heads/{BRANCH}:code.py"), "x = 1")
+        self.assertEqual(out.splitlines()[-1], "version-resolved=2.9.43")
+        self.assertTrue(out.splitlines()[-2].startswith("new="))
+        self.assertEqual(self.local_branch(), self.origin_branch())
+
+    def test_b_two_bumps_resolve_to_same_target_second_dropped(self):
+        self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41")}, "feature + bump")
+        self.on_branch({PKG: pkg("2.9.42")}, "second bump")
+        self.on_main({PKG: pkg("2.9.42")})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.head_version(), "2.9.43")
+        own = sh(self.origin, "rev-list", "--count", f"main..refs/heads/{BRANCH}")
+        self.assertEqual(own, "1")
+        self.assertIn("version-resolved=2.9.43", out)
+
+    def test_c_dependency_change_exits_2(self):
+        self.on_branch({PKG: pkg("2.9.41", dep="2.0.0")}, "bump + dep")
+        self.on_main({PKG: pkg("2.9.42")})
+        self.assert_refused(*self.run_captured()[::2])
+
+    def test_d_second_conflicting_path_exits_2(self):
+        self.on_branch({"feature.txt": "branch\n", PKG: pkg("2.9.41")}, "bump + feature")
+        self.on_main({"feature.txt": "main\n", PKG: pkg("2.9.42")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("feature.txt", err)
+
+    def test_d2_second_version_only_json_not_named_package_json_exits_2(self):
+        self.on_main({"app.json": pkg("2.9.40")})
+        sh(self.impl, "pull", "-q", "--rebase", "origin", "main")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        self.on_branch({"app.json": pkg("2.9.41"), PKG: pkg("2.9.41")}, "bump both")
+        self.on_main({"app.json": pkg("2.9.42"), PKG: pkg("2.9.42")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("app.json", err)
+
+    def test_e_non_semver_version_exits_2(self):
+        self.on_branch({PKG: pkg("next")}, "bump")
+        self.on_main({PKG: pkg("2.9.42")})
+        self.assert_refused(*self.run_captured()[::2])
+
+    def test_f_clean_rebase_prints_no_version_line(self):
+        self.on_branch({"code.py": "x = 1\n"}, "feature")
+        self.on_main({"main.txt": "m\n"})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("version-resolved=", out)
+
+    def test_g_bump_then_other_conflict_exits_2(self):
+        self.on_branch({PKG: pkg("2.9.41")}, "bump only")
+        self.on_branch({"feature.txt": "branch\n"}, "feature")
+        self.on_main({"feature.txt": "main\n", PKG: pkg("2.9.42")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("feature.txt", err)
+
+    def test_h_minor_bump_on_branch_exits_2(self):
+        self.on_main({PKG: pkg("2.9.46")})
+        sh(self.impl, "fetch", "-q", "origin")
+        self.on_branch({PKG: pkg("2.10.0")}, "minor bump")
+        # Base the conflict: main moves again after the branch forked.
+        self.on_main({PKG: pkg("2.9.47")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("2.10.0", err)
+        self.assertIn("2.9.47", err)
+
+
+    def test_c2_bool_vs_int_is_a_difference_exits_2(self):
+        # preclose F1035 pass 1 #2: Python's `True == 1` must not resolve.
+        self.on_branch({PKG: pkg("2.9.41", private="1")}, "bump + private=1")
+        self.on_main({PKG: pkg("2.9.42")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("differs beyond the top-level version", err)
+
+    def _resolve_then_crash(self):
+        self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41")}, "feature + bump")
+        self.on_main({PKG: pkg("2.9.42")})
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash after push")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        pushed = self.origin_branch()
+        self.assertNotEqual(pushed, self.branch_sha)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+        return pushed
+
+    def test_i_crash_rerun_after_resolution_completes(self):
+        # preclose F1035 pass 1 #1: the resolved commit is not
+        # patch-equivalent to the local one; the version receipt covers it.
+        pushed = self._resolve_then_crash()
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.local_branch(), pushed)
+        self.assertEqual(sh(self.impl, "rev-parse", "HEAD"), pushed)
+        self.assertIn("version-resolved=2.9.43", out)
+        self.assertIsNone(lane1_rebase.read_version_receipt(str(self.repo), ISSUE))
+
+    def test_i2_double_crash_then_clean_rebase_completes(self):
+        self._resolve_then_crash()
+        self.on_main({"main2.txt": "again\n"})
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash again")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        second = self.origin_branch()
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.local_branch(), second)
+        self.assertEqual(self.head_version(), "2.9.43")
+
+    def test_i3_rerun_with_unpushed_local_commit_exits_3(self):
+        pushed = self._resolve_then_crash()
+        third = commit(self.impl, "local-only.txt", "x\n", "local only")
+        code, _, err = self.run_captured()
+        self.assertEqual(code, 3, err)
+        self.assertEqual(self.origin_branch(), pushed)
+        self.assertEqual(self.local_branch(), third)
 
 
 if __name__ == "__main__":
