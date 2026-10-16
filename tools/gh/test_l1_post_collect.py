@@ -67,16 +67,18 @@ class MainCollectTests(unittest.TestCase):
                    mock.patch.object(l1_post, "regular_body", return_value=body),
                    mock.patch.object(l1_post, "reject_reserved_marker"),
                    mock.patch.object(l1_post, "run", return_value=result),
-                   mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1)),
                    mock.patch.object(l1_post, "record_queue_candidate"),
                    mock.patch.object(l1_post, "apply_project_identity"),
                    mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
                    *extra]
-        for patch in patches:
+        post = mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1))
+        for patch in [*patches, post]:
             patch.start()
             self.addCleanup(patch.stop)
         with self.assertRaises(SystemExit) as caught:
             l1_post.main()
+        # A refusal posts nothing: post_kind (which runs static_checks) is never reached.
+        l1_post.post_kind.assert_not_called()
         return str(caught.exception)
 
     def test_two_defects_one_refusal(self):
