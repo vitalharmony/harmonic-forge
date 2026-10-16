@@ -31,6 +31,11 @@ harmonic-forge#1026: HRSE2's runner starts a script with every inherited
 `script=` AE is refused unless the named script reads its graph through
 `_migration_env.ensure_env()`, never calls `load_dotenv()`, defines `--apply`,
 and has no required or positional argument (`script_contract_violations`).
+This is a best-effort front-runner, not the safety check: static reading
+cannot see every argparse shape (an aliased `add_argument`, several parsers,
+a `default` that fails its `type=`), and the runner's own guard stays
+authoritative, refusing such a script after the grant is spent (sticky-wicket
+ACCEPT-AS-IS, harmonic-forge#1026).
 """
 from __future__ import annotations
 
