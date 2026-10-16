@@ -4,6 +4,7 @@ Every case runs against a temporary bare origin plus clones; nothing touches
 a real repo. The two network reads (newest lane marker, issue labels) are
 stubbed."""
 import os
+import fcntl
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,32 @@ class Lane1RebaseTest(unittest.TestCase):
         Path(sh(gate, "rev-parse", "--absolute-git-dir"), "LANE3_ACTIVE").touch()
         self.assertEqual(self.run_main(), 4)
         self.assertEqual(self.origin_branch(), self.branch_sha)
+
+
+class PrecloseFixTests(unittest.TestCase):
+    """harmonic-forge#1018 preclose pass 1: real markers, branch ownership, one run per issue."""
+
+    def test_real_l2_completion_marker_is_l2_done(self):
+        body = "## L2D\n\n<!-- l1-post v1; kind=completion; posted-by=LANE2 -->"
+        watch = lane1_rebase._watch()
+        with mock.patch.object(watch, "_fetch_all_comments", return_value=[{"body": body}]), \
+                mock.patch.object(lane1_rebase, "repo_slug", return_value="o/r"):
+            self.assertEqual(lane1_rebase.newest_lane_marker("/x", 7), "l2.done")
+
+    def test_branch_of_another_issue_exits_4(self):
+        with self.assertRaises(lane1_rebase.Exit) as caught:
+            lane1_rebase.check_preconditions("/x", 7, "feat/1016-other", "a" * 40)
+        self.assertEqual(caught.exception.code, 4)
+
+    def test_concurrent_run_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(lane1_rebase, "prep_path", return_value=Path(tmp) / "r-7-prep"):
+                lock = open(Path(tmp) / "r-7-prep.lock", "w")
+                self.addCleanup(lock.close)
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(lane1_rebase.Exit) as caught:
+                    lane1_rebase.run("/x", 7, "feat/7-thing")
+                self.assertEqual(caught.exception.code, 1)
 
 
 if __name__ == "__main__":

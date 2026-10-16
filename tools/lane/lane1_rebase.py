@@ -31,6 +31,7 @@ step.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import subprocess
@@ -92,8 +93,12 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
         found = watch._classify(comment.get("body") or "")
         if found:
             lane, detail = found
-            if lane == "l2" and detail.startswith("L2D"):
-                detail = "done"  # markerless legacy `## L2D` heading
+            # preclose F1018-1: l2_post stamps `kind=completion`, and a legacy
+            # heading classifies as `## L2D ...`; both are the belt's own
+            # completion test, so the two cannot drift.
+            if watch._is_l2_completion(lane, detail) or (
+                    lane == "l2" and detail.lstrip("# ").startswith("L2D")):
+                detail = "done"
             newest = f"{lane}.{detail}"
     return newest
 
@@ -134,7 +139,11 @@ def lane3_open_on(repo_dir: str, sha: str) -> str | None:
     return None
 
 
-def check_preconditions(repo_dir: str, issue: int, old: str) -> None:
+def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:
+    # preclose F1018-2: the checks below read #issue, so the branch pushed
+    # must be #issue's own (`feat|fix/<issue>-...`), never another issue's.
+    if not re.match(rf"(?:feat|fix)/{issue}-", branch):
+        raise Exit(4, f"{branch} is not #{issue}'s branch (expected feat/{issue}-... or fix/{issue}-...)")
     marker = newest_lane_marker(repo_dir, issue)
     if marker != "l2.done":
         raise Exit(4, f"newest lane marker on #{issue} is {marker!r}, not 'l2.done'")
@@ -239,12 +248,25 @@ def move_local_ref(repo_dir: str, branch: str, new: str) -> None:
 
 
 def run(repo_dir: str, issue: int, branch: str) -> str:
+    # preclose F1018-3: one run per issue at a time. The stale-prep busy check
+    # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
+    lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Exit(1, f"another lane1-rebase run holds {lock_path}; nothing done") from None
+        return _run_locked(repo_dir, issue, branch)
+
+
+def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
     if not old or not main:
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
-    check_preconditions(repo_dir, issue, old)
+    check_preconditions(repo_dir, issue, branch, old)
     if git(repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode == 0:
         new = old  # already on current main (incl. a re-run after a crash)
     else:
