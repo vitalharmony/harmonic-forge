@@ -530,7 +530,3 @@ unset _lane_agent _lane_command _lane_dir _lane_env_prefix \
 if ! timeout 30 python3 "$HOME/harmonic-forge/sync_rules.py" --pull >&2; then
   echo "${_lane_name:-lane launcher}: sync_rules.py --pull failed or timed out -- continuing with the current ~/harmonic-forge checkout" >&2
 fi
-
-# harmonic-forge#1014: pin the pane title only now, after every refusal above,
-# so a refused launch leaves the pane as it was. Best-effort, never refuses.
-if declare -F lane_pin_title >/dev/null; then lane_pin_title; fi

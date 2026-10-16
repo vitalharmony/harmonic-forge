@@ -259,6 +259,9 @@ fi
 # shellcheck source=_lane_cleanup.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_cleanup.sh"
 
+# harmonic-forge#1014: pin the pane title only here, after every refusal in
+# this wrapper and in _cli_launch.sh, immediately before the launch.
+lane_pin_title
 lane_run_with_cleanup systemd-inhibit \
   --what=sleep:idle \
   --who="lane3" \

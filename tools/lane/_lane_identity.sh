@@ -10,8 +10,8 @@
 # own identity rather than inherit this one. _cli_launch.sh reads it to append
 # the agent's name flag, and prints LANE_LABEL_NOTE (why a label is bare).
 #
-# lane_pin_title (below) is called by _cli_launch.sh after its last refusal,
-# immediately before the exec: a refused launch never retitles the pane.
+# lane_pin_title (below) is called by each wrapper after its last refusal,
+# immediately before the launch: a refused launch never retitles the pane.
 lane_identity() {
   local lane="lane$1" resolver out="" reason=""
   # An exported LANE_LABEL inherited from a parent lane's shell keeps its

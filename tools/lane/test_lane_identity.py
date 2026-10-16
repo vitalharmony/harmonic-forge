@@ -220,6 +220,16 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("Nothing was launched", cell["stderr"])
         self.assertEqual(self._tmux_calls(), [])
 
+    def test_each_wrapper_pins_only_immediately_before_launch(self):
+        # Post-verdict finding: lane3 refuses a Gemini launch after
+        # _cli_launch.sh returns, so the pin lives in each wrapper, last.
+        for name in ("lane1", "lane2", "lane3"):
+            with self.subTest(wrapper=name):
+                text = (LANE_DIR / name).read_text()
+                self.assertIn("lane_pin_title\nlane_run_with_cleanup systemd-inhibit", text)
+                self.assertEqual(text.count("lane_pin_title"), 1)
+        self.assertNotIn("lane_pin_title", (LANE_DIR / "_cli_launch.sh").read_text())
+
     def test_label_is_never_exported(self):
         # Executed, not a text search: an inherited export must not survive.
         import subprocess
