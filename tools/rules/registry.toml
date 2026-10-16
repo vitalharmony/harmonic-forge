@@ -75,7 +75,7 @@ id = "R-0003"
 file = "rules/universal-agent.md"
 anchor = "service-lifecycle-git"
 statement = "Push to the remote only when the human operator explicitly asks."
-text_sha = "0a5b2b376e42501b"
+text_sha = "a68bda84dfd8227a"
 hooks = []
 
 [[rule]]
@@ -2611,4 +2611,180 @@ file = "rules/universal-lane1.md"
 anchor = "doc-only-merges-wait"
 statement = "A clean rebase of a Lane 2 branch onto current origin/main is Lane 1's own action via mise run lane1-rebase; exit 0 means ready-for-l3 on the printed SHA in the same action, exit 2 or 3 a --kind rework, 4 or 5 the named reason, never --no-verify; an auto-AE or standing-grant AE on the old SHA needs a fresh one."
 text_sha = "754b154ae02b2131"
+hooks = []
+
+[[rule]]
+id = "R-0391"
+file = "rules/universal-lane1.md"
+anchor = "apq-protocol"
+statement = "A turn that asks the operator a genuine question ends at that question. Work that depends on the answer is not started in that turn, and answer-independent ready work is started before it. An offer (\"want me to launch it?\") is not a yes."
+text_sha = "fda56630eb02bc94"
+hooks = []
+
+[[rule]]
+id = "R-0392"
+file = "rules/universal-lane1.md"
+anchor = "apq-protocol"
+statement = "Filing an issue, even one this session diagnosed itself, never authorizes implementing it. Implementation starts only on an operator instruction that names the issue (hard form of R-0092)."
+text_sha = "c296e5723a582eb2"
+hooks = []
+
+[[rule]]
+id = "R-0393"
+file = "rules/universal-lane1.md"
+anchor = "apq-protocol"
+statement = "A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits or the worktree."
+text_sha = "c6cce77baf6bb219"
+hooks = []
+
+[[rule]]
+id = "R-0395"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "A session reports its own work only. It never surveys, tracks, relays or reminds about another lane's owed work unless the operator asks in that message. The lanes monitor each other."
+text_sha = "a6c6e81f67278f56"
+hooks = []
+
+[[rule]]
+id = "R-0396"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session."
+text_sha = "4fa97b23b938a58c"
+hooks = []
+
+[[rule]]
+id = "R-0397"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "Before filing, search open and closed issues for an existing owner of the same artifact (an epic and its children, a BACKLOG-NNN, an ADR). If one exists, fold the work into it and do not file."
+text_sha = "adb2356c41f8d554"
+hooks = []
+
+[[rule]]
+id = "R-0398"
+file = "rules/universal-agent.md"
+anchor = "live-versioned-values"
+statement = "Credentials or env vars handed to the operator for a tool run are enumerated per component (backend and provider separately) from that tool's docs, never from what the last error named."
+text_sha = "da7f5a929fa77ea9"
+hooks = []
+
+[[rule]]
+id = "R-0399"
+file = "3-lane-protocol.md"
+anchor = "HITL Gate Language"
+statement = "Before naming any lane trigger as an operator action, check `git worktree list` and `git branch -a --list \"*<N>*\"`. If a worktree or branch exists, the trigger was already sent and is not repeated."
+text_sha = "143072e1c7938d07"
+hooks = []
+
+[[rule]]
+id = "R-0400"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "Before composing any lane artifact (handoff, review, ready-for-l3, sweep, AE), list the issue's comments and derive the state from them (`lane_state.py`), never from the triggering message."
+text_sha = "8962769140948864"
+hooks = []
+
+[[rule]]
+id = "R-0401"
+file = "rules/universal-lane1.md"
+anchor = "post-merge-deploy"
+statement = "After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes, opens the PR and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16)."
+text_sha = "e70b3056f0ecf92b"
+hooks = []
+
+[[rule]]
+id = "R-0402"
+file = "rules/universal-lane1.md"
+anchor = "post-merge-deploy"
+statement = "`/sprint-plan`, `milestone_summary`, `drift_check` and `publish` run only when the operator asks in that message. No protocol step requires them."
+text_sha = "129d1a3ba9b7d43d"
+hooks = []
+
+[[rule]]
+id = "R-0404"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "A handoff or rework is posted only for an issue in the current release milestone, because the belt ignores milestones. A Later issue never appears as a next action or as \"waiting on\"."
+text_sha = "5fd4a6907a0c69ae"
+hooks = []
+
+[[rule]]
+id = "R-0405"
+file = "rules/testing-gate.md"
+anchor = "rules"
+statement = "A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_FIELDS`, with per-case evidence. It is never copied from a prior post or scratch file."
+text_sha = "92d136c6f9d47f09"
+hooks = []
+
+[[rule]]
+id = "R-0406"
+file = "3-lane-protocol.md"
+anchor = "lane-2-muscle"
+statement = "Lane 2's `--next` names Lane 1's review. Lane 2 never declares work \"ready for Lane 3\" or \"ready for gate\", because readiness is Lane 1's call."
+text_sha = "ec612e77c33aa3d4"
+hooks = []
+
+[[rule]]
+id = "R-0407"
+file = "3-lane-protocol.md"
+anchor = "header"
+statement = "Every lane session reads this file in full, and `universal-lane1/claude/agent.md`, before its first protocol action. A protocol question is never answered from a pointer or from memory."
+text_sha = "43674eefa8f761b3"
+hooks = []
+
+[[rule]]
+id = "R-0408"
+file = "rules/lane-shorthand.md"
+anchor = "operator-lane-triggers"
+statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions."
+text_sha = "d56cad0d85f19aa9"
+hooks = []
+
+[[rule]]
+id = "R-0409"
+file = "rules/lane-shorthand.md"
+anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
+statement = "A belt or suspenders tick with nothing owed to this lane produces no text. An owed relay is named once, never on every tick."
+text_sha = "3138f587bc8fc53b"
+hooks = []
+
+[[rule]]
+id = "R-0410"
+file = "rules/universal-claude.md"
+anchor = "tool-use-safeguards"
+statement = "A `CronCreate`/`ScheduleWakeup` job armed for a scoped purpose is deleted in the turn that purpose ends, the same unit of work R-0086 sets for `Monitor`."
+text_sha = "eab12c6574c82d58"
+hooks = []
+
+[[rule]]
+id = "R-0411"
+file = "rules/universal-claude.md"
+anchor = "tool-use-safeguards"
+statement = "When the auto-mode classifier blocks an unattended-agent launcher (a `claude -p` job, its timer), tighten the design once if it deserves it, then hand the install command to the operator. Never route around the block."
+text_sha = "159cfa72f48a559e"
+hooks = []
+
+[[rule]]
+id = "R-0412"
+file = "rules/universal-claude.md"
+anchor = "tool-use-safeguards"
+statement = "An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open."
+text_sha = "6ecc8df73967b2e9"
+hooks = []
+
+[[rule]]
+id = "R-0413"
+file = "3-lane-protocol.md"
+anchor = "Long waits run in the background"
+statement = "The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix."
+text_sha = "4434a71143ff4da4"
+hooks = []
+
+[[rule]]
+id = "R-0414"
+file = "rules/lane-shorthand.md"
+anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
+statement = "After an hour idle (waiting on another lane counts), the belt Monitor and its loop or cron are stopped. This is an operator override of \"never stops\" (operator ruling 2026-10-16)."
+text_sha = "98ecfae5017824c4"
 hooks = []

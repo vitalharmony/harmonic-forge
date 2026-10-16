@@ -157,6 +157,15 @@ before acting:
    can decide, then wait unless autonomous continuation was explicitly
    authorized.
 <!-- /R-0092 -->
+<!-- R-0391 -->
+A turn that asks the operator a genuine question ends at that question. Work that depends on the answer is not started in that turn, and answer-independent ready work is started before it. An offer ("want me to launch it?") is not a yes.
+<!-- /R-0391 -->
+<!-- R-0392 -->
+Filing an issue, even one this session diagnosed itself, never authorizes implementing it. Implementation starts only on an operator instruction that names the issue (hard form of R-0092).
+<!-- /R-0392 -->
+<!-- R-0393 -->
+A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits or the worktree.
+<!-- /R-0393 -->
 
 <!-- R-0093 -->
 Simple lookups do not need ceremony. Do not start a multi-step write
@@ -215,6 +224,12 @@ in `.claude/settings.json` stays inert in every already-running session, Lane
 new hook (as opposed to editing one already registered), say so in the close
 comment and restart the affected sessions; do not report the hook as deployed.
 <!-- /R-0369 -->
+<!-- R-0401 -->
+After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes, opens the PR and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16).
+<!-- /R-0401 -->
+<!-- R-0402 -->
+`/sprint-plan`, `milestone_summary`, `drift_check` and `publish` run only when the operator asks in that message. No protocol step requires them.
+<!-- /R-0402 -->
 
 Lane 1 never opens a worktree by hand to post from: HRSE2's posting tasks
 (`l1-post`, `lane-comment`, `l1-issue`) run from two fixed `origin/main`
@@ -316,6 +331,12 @@ sets rather than file existence, run any live harness once yourself, and state
 what you verified.
 <!-- /R-0346 -->
 
+<!-- R-0400 -->
+Before composing any lane artifact (handoff, review, ready-for-l3, sweep, AE), list the issue's comments and derive the state from them (`lane_state.py`), never from the triggering message.
+<!-- /R-0400 -->
+<!-- R-0404 -->
+A handoff or rework is posted only for an issue in the current release milestone, because the belt ignores milestones. A Later issue never appears as a next action or as "waiting on".
+<!-- /R-0404 -->
 <!-- R-0099 -->
 Use `templates/lane1-handoff.md`. Read it in full when writing a
 handoff; do not reconstruct its section list from memory or this

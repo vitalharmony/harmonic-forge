@@ -2,6 +2,9 @@
 
 Condensed operational directives. For philosophy/rationale, see
 `harmonic-forge.md`. This file is what agents load — no narrative prose.
+<!-- R-0407 -->
+Every lane session reads this file in full, and `universal-lane1/claude/agent.md`, before its first protocol action. A protocol question is never answered from a pointer or from memory.
+<!-- /R-0407 -->
 
 ```
 [GitHub Issue] → Dev pulls ticket → [Local 3-Lane Loop] → GitHub PR
@@ -223,6 +226,9 @@ triggered and scoped.*
   plan, correction, rebase — chat is not the record), via `l2_post.py`,
   which also closes the raw-transport hole above (harmonic-forge#371).
 <!-- /R-0160 -->
+<!-- R-0406 -->
+Lane 2's `--next` names Lane 1's review. Lane 2 never declares work "ready for Lane 3" or "ready for gate", because readiness is Lane 1's call.
+<!-- /R-0406 -->
 
 ## Lane 3 — Control Gate (qualified agents: see ADR-007 § 8 — Codex's Lane 3 cells are *unqualified*, meaning no suite has been run, not that it is unsafe)
 
@@ -964,6 +970,9 @@ a backgrounded preclose panel, `kill-check` or CI run on an issue whose newest
 marker is a PASS or Lane 1's own post is never re-announced. There the task
 entry is the only record. This rule adds no shared state.
 <!-- /R-0376 -->
+<!-- R-0413 -->
+The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix.
+<!-- /R-0413 -->
 
 ## HITL Gate Language
 
@@ -1097,6 +1106,9 @@ operator. A Claude Code Lane 3 belt prints the posted pair as
 `queued-for-l3 kind=sweep owes=gate` (harmonic-forge#851); that event is this
 trigger, not a new authority.
 <!-- /R-0208 -->
+<!-- R-0399 -->
+Before naming any lane trigger as an operator action, check `git worktree list` and `git branch -a --list "*<N>*"`. If a worktree or branch exists, the trigger was already sent and is not repeated.
+<!-- /R-0399 -->
 
 <!-- R-0374 -->
 **The operator's standing production AE grant** (harmonic-forge#858; granted
