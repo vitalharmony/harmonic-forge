@@ -92,11 +92,14 @@ class FromCaptureTests(unittest.TestCase):
 
 class AnchorTests(unittest.TestCase):
     def write(self, text: str) -> Path:
-        tmp = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False)
-        tmp.write(text)
-        tmp.close()
-        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
-        return Path(tmp.name)
+        # A private directory per fixture (harmonic-forge#1041): the temp-file
+        # test globs `path.parent`, and in the shared system temp dir that
+        # matched unrelated tools' `*.tmp` files (a lark parser cache).
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        path = Path(tmpdir.name) / "doc.md"
+        path.write_text(text)
+        return path
 
     def test_reads_the_current_release_heading(self) -> None:
         path = self.write("intro\n\n## Current release — 2.8, Ops & Parity\n\nbody\n")
