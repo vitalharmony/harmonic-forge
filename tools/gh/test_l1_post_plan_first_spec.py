@@ -187,6 +187,7 @@ class WiredIntoMain(unittest.TestCase):
                  mock.patch.object(L, "resolve_sha", return_value="a" * 40), \
                  mock.patch.object(L, "validate_board_fields_set"), \
                  mock.patch.object(L, "validate_milestone_set"), \
+                 mock.patch.object(L, "validate_milestone_current"), \
                  mock.patch.object(L, "issue_labels", return_value=set()), \
                  mock.patch.object(L, "validate_sticky_wicket"), \
                  mock.patch.object(L, "post_kind",

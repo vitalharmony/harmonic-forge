@@ -70,6 +70,7 @@ class MainCollectTests(unittest.TestCase):
                    mock.patch.object(l1_post, "record_queue_candidate"),
                    mock.patch.object(l1_post, "apply_project_identity"),
                    mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
+                   mock.patch.object(l1_post, "validate_milestone_current"),
                    *extra]
         post = mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1))
         for patch in [*patches, post]:
@@ -112,9 +113,9 @@ class MainCollectTests(unittest.TestCase):
 ORDER = {
     "handoff": ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
                 "validate_board_fields_set", "validate_milestone_set",
-                "validate_tooling_exception_labelled", "validate_pitch_inspected",
+                "validate_milestone_current", "validate_tooling_exception_labelled", "validate_pitch_inspected",
                 "validate_sticky_wicket", "validate_lead"],
-    "rework": ["validate_sticky_wicket", "validate_lead"],
+    "rework": ["validate_milestone_current", "validate_sticky_wicket", "validate_lead"],
     "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
     "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep"],
     "ae": ["validate_sticky_wicket", "validate_lead", "validate_ae", "validate_grant_ae",
