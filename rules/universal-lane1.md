@@ -310,7 +310,9 @@ the ordering above actually removes it.
 <!-- R-0390 -->
 **A clean rebase of a Lane 2 branch onto current `origin/main` is Lane 1's own
 action** (harmonic-forge#1018): run `mise run lane1-rebase -- <repo-dir>
-<issue> <branch>`. On exit 0, post `ready-for-l3` on the printed SHA in the
+<issue> <branch>`. It also applies to a branch whose newest lane comment is
+a Lane 3 PASS on its current head (harmonic-forge#1034); any other gate
+result exits 4. On exit 0, post `ready-for-l3` on the printed SHA in the
 same action (R-0338). On exit 2 or 3, post `--kind rework` naming the
 conflicting paths or the two SHAs. On 4 or 5, act on the named reason; never
 `--no-verify`. An AE on the old SHA carries forward under R-0209, except an

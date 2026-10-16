@@ -19,19 +19,27 @@ Exit codes:
   2  the rebase conflicts; aborted, nothing pushed, conflicting paths listed.
   3  the local branch cannot be moved (dirty impl worktree, missing ref, or
      local commits origin does not carry); both SHAs printed.
-  4  a precondition failed (newest lane marker is not `l2.done`, a Lane 3
-     gate is open on the old SHA, or the issue is `tooling-exception`).
+  4  a precondition failed (newest lane marker is neither `l2.done` nor a
+     Lane 3 PASS on the branch head, a Lane 3 gate is open on the old SHA, or
+     the issue is `tooling-exception`).
   5  the pre-push hook refused the push. Never retried with `--no-verify`.
 
 Safe to re-run: a stale prep worktree is pruned at start and the prep
 worktree is removed in a `finally`; if `origin/<branch>` already contains
 `origin/main` (a crash after the push), it skips straight to the local-ref
-step.
+step. That holds on the Lane 3 PASS path too (harmonic-forge#1034): before
+the push a receipt `{issue, passed_sha, rebased_sha}` is written in the git
+dir, and after a crash the PASS (which names the pre-rebase SHA) is accepted
+only when that receipt names it, the local branch still sits on it, and
+`origin/<branch>` is exactly the receipt's rebased SHA. The receipt is
+deleted once the local ref moves. The crash state is recorded, never
+inferred from history (sticky-wicket reforge, F1034).
 """
 
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import subprocess
@@ -81,18 +89,41 @@ def _watch():
     return watch_lane_posts
 
 
+def _gate_ci():
+    sys.path.insert(0, str(_GH))
+    import gate_ci  # noqa: PLC0415 -- lazy, beside watch_lane_posts
+    return gate_ci
+
+
 def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
     """`lane.detail` of the issue's newest classified comment, e.g.
-    `l2.done`, read with the belt's own classifier so the two cannot drift."""
+    `l2.done`, read with the belt's own classifier so the two cannot drift.
+    A Lane 3 gate report (`_classify` == `('l3', 'gate-result')`: footer
+    `kind=gate-result` + `posted-by=LANE3`) whose verdict is PASS is
+    `l3.pass:<gated sha>` (harmonic-forge#1034), read with gate_ci's own
+    `verdict_of`/`gated_sha`."""
     watch = _watch()
+    gate_ci = _gate_ci()
     comments = watch._fetch_all_comments(repo_slug(repo_dir), issue)
     if comments is None:
         raise Exit(4, f"cannot read the comments of #{issue}")
     newest = None
     for comment in comments:
-        found = watch._classify(comment.get("body") or "")
+        body = comment.get("body") or ""
+        found = watch._classify(body)
         if found:
             lane, detail = found
+            # harmonic-forge#1034 (reforge r2, operator ruling): a gate
+            # report is recognized by ALLOWLIST only -- the belt's own
+            # classifier reading a `kind=gate-result` footer stamped
+            # `posted-by=LANE3`. No heading fallback, no kind denylist: a
+            # quoted heading in any other comment is never a verdict.
+            if found == ("l3", "gate-result"):
+                if gate_ci.verdict_of(body) == "PASS":
+                    newest = f"l3.pass:{gate_ci.gated_sha(body) or ''}"
+                else:
+                    newest = f"l3.{detail}"
+                continue
             # sticky-wicket PATCH (F1018 pass 2): Lane 1's own posts after the
             # L2D (ready-for-l3, AE, sweep, discussion) do not change the
             # branch's state -- an AE on the old SHA carries forward (R-0209,
@@ -145,14 +176,65 @@ def lane3_open_on(repo_dir: str, sha: str) -> str | None:
     return None
 
 
+def _same_sha(a: str | None, b: str | None) -> bool:
+    sys.path.insert(0, str(_GH))
+    import check_lane3_ready  # noqa: PLC0415
+    return check_lane3_ready.same_sha(a, b)
+
+
+def receipt_path(repo_dir: str, issue: int) -> Path:
+    common = git(repo_dir, "rev-parse", "--git-common-dir").stdout.strip()
+    base = Path(common) if Path(common).is_absolute() else Path(repo_dir) / common
+    return base / f"lane1-rebase-{issue}.json"
+
+
+def read_receipt(repo_dir: str, issue: int) -> dict | None:
+    try:
+        data = json.loads(receipt_path(repo_dir, issue).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_receipt(repo_dir: str, issue: int, passed: str, rebased: str) -> None:
+    receipt_path(repo_dir, issue).write_text(json.dumps(
+        {"issue": issue, "passed_sha": passed, "rebased_sha": rebased}))
+
+
+def drop_receipt(repo_dir: str, issue: int) -> None:
+    receipt_path(repo_dir, issue).unlink(missing_ok=True)
+
+
+def _pass_covers(repo_dir: str, issue: int, branch: str, old: str, passed: str) -> bool:
+    """A PASS covers the branch when it names the head, or (operator ruling
+    on #1034) the crash-after-push state -- recorded, never inferred
+    (sticky-wicket reforge): this tool's own receipt names the passed SHA,
+    the local branch still sits on it, and origin is exactly the SHA the
+    receipt says was pushed. Fails closed (exit 4) otherwise."""
+    if _same_sha(passed, old):
+        return True
+    receipt = read_receipt(repo_dir, issue)
+    local = rev(repo_dir, f"refs/heads/{branch}")
+    if not receipt or receipt.get("issue") != issue or not local:
+        return False
+    return (receipt.get("passed_sha") == local and _same_sha(passed, local)
+            and receipt.get("rebased_sha") == old)
+
+
 def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:
     # preclose F1018-2: the checks below read #issue, so the branch pushed
     # must be #issue's own (`feat|fix/<issue>-...`), never another issue's.
     if not re.match(rf"(?:feat|fix)/{issue}-", branch):
         raise Exit(4, f"{branch} is not #{issue}'s branch (expected feat/{issue}-... or fix/{issue}-...)")
     marker = newest_lane_marker(repo_dir, issue)
-    if marker != "l2.done":
-        raise Exit(4, f"newest lane marker on #{issue} is {marker!r}, not 'l2.done'")
+    if marker and marker.startswith("l3.pass:"):
+        passed = marker.split(":", 1)[1]
+        if not _pass_covers(repo_dir, issue, branch, old, passed):
+            raise Exit(4, f"the Lane 3 PASS on #{issue} names {passed[:12] or 'no SHA'}, "
+                          f"not the branch head {old[:12]}")
+    elif marker != "l2.done":
+        raise Exit(4, f"newest lane marker on #{issue} is {marker!r}, "
+                      "neither 'l2.done' nor a Lane 3 PASS on the branch head")
     if "tooling-exception" in issue_labels(repo_dir, issue):
         raise Exit(4, f"#{issue} is tooling-exception; Lane 2 branches only")
     gate = lane3_open_on(repo_dir, old)
@@ -221,6 +303,9 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str) -> str:
             listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
             raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n{listed}")
         new = rev(prep, "HEAD")
+        # sticky-wicket reforge F1034: record the crash state before it can
+        # exist, so a re-run never has to infer it from history.
+        write_receipt(repo_dir, issue, old, new)
         push(prep, branch, old)
         return new
     finally:
@@ -278,6 +363,7 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
     else:
         new = rebase_and_push(repo_dir, issue, branch, old)
     move_local_ref(repo_dir, branch, new)
+    drop_receipt(repo_dir, issue)
     return new
 
 
