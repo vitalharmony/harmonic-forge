@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Lane 1 rebases a clean Lane 2 branch onto origin/main itself
+# (harmonic-forge#1018). Usage: lane1-rebase <repo-dir> <issue> <branch>
+# Exit codes and behavior: tools/lane/lane1_rebase.py's docstring.
+set -euo pipefail
+exec python3 "$(dirname "$(readlink -f "$0")")/lane1_rebase.py" "$@"

@@ -358,6 +358,15 @@ python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane1_issue.
 description = "Run the platform-owned Lane 1 posting transport suite; wired into the full tools test runner and invocable directly."
 run = "python3 tools/gh/run_lane1_transport_tests.py"
 
+[tasks.lane1-rebase]
+description = "Lane 1: rebase a clean Lane 2 branch onto origin/main in a disposable prep worktree, push with a lease, and move the local branch (harmonic-forge#1018, R-0390). Exit 0 prints new=<sha> for ready-for-l3; 2 conflict, 3 local ref not movable, 4 precondition, 5 pre-push hook refused."
+usage = '''
+arg "<repo_dir>" help="The repo's main checkout"
+arg "<issue>" help="Issue number"
+arg "<branch>" help="The Lane 2 branch"
+'''
+run = 'python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/lane/lane1_rebase.py" "$usage_repo_dir" "$usage_issue" "$usage_branch"'
+
 [tasks.l2-post]
 description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py."
 usage = '''
