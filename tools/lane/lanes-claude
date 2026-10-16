@@ -127,21 +127,16 @@ import json, os, signal, subprocess, sys, time
 
 mode, session, advisor, script_dir, launch_dirs = sys.argv[1:6]
 sys.path.insert(0, script_dir)
-from lane_targets import advisor_names, in_workspace, select_targets, workspace_dirs_from_paths
+from lane_targets import advisor_names, in_workspace, lane_names, select_targets, workspace_dirs_from_paths
 
 state_dir = os.path.expanduser("~/.cache/lanes-claude")
 state = os.path.join(state_dir, f"{session}.sessions")
 # harmonic-forge#1014: the legacy literals still match sessions started before
 # it; the wrappers now name lanes `<label>:laneN` (or bare `laneN`) and the
-# Advisor `<label>:advisor`, from projects.toml's [workspace_labels].
+# Advisor `<label>:advisor` (or bare `advisor`). Matched by pattern, never by
+# re-reading projects.toml, so teardown cannot fail on the manifest.
 ADVISOR_SET = advisor_names()
-try:
-    sys.path.insert(0, os.path.join(script_dir, "..", "onboard"))
-    from manifest_labels import lane_label_names
-    _LABELLED = lane_label_names()
-except Exception:  # noqa: BLE001 -- teardown must never fail on a label
-    _LABELLED = {"lane1", "lane2", "lane3"}
-LANE_NAMES = {"Lane 1", "Lane 2", "Lane 3"} | _LABELLED | ADVISOR_SET
+LANE_NAMES = lane_names()
 me = {os.getpid(), os.getppid()}
 
 def alive(pid):
@@ -397,7 +392,9 @@ advisor_dir="$(git_root "$advisor_dir")"
 # resolver the lane wrappers use; its pane title is pinned the same way.
 advisor_label="$(python3 "$(dirname "$script_path")/../onboard/manifest_labels.py" label "$advisor_dir" advisor 2>/dev/null)" \
   || advisor_label=""
-advisor_label="${advisor_label:-advisor}"
+# Spliced into a single-quoted pane command below: anything outside the label
+# alphabet falls back to the bare name rather than breaking the launch.
+case "$advisor_label" in ""|*[!A-Za-z0-9_.:-]*) advisor_label=advisor ;; esac
 pin_advisor_title() {
   tmux set-option -p -t "$advisor_pane" allow-set-title off >/dev/null 2>&1 || true
   tmux select-pane -t "$advisor_pane" -T "$advisor_label" >/dev/null 2>&1 || true

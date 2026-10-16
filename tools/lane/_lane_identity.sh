@@ -14,6 +14,9 @@
 # Both tmux calls are `|| true`: a title must never block a launch.
 lane_identity() {
   local lane="lane$1" resolver out="" reason=""
+  # An exported LANE_LABEL inherited from a parent lane's shell keeps its
+  # export attribute through a plain assignment; unset drops it first.
+  unset LANE_LABEL LANE_LABEL_NOTE
   resolver="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../onboard/manifest_labels.py"
   LANE_LABEL="$lane"
   if [ -f "$resolver" ]; then
@@ -23,7 +26,7 @@ lane_identity() {
     out="$(python3 "$resolver" label "$PWD" "$lane" 2>&1)" || out=""
     LANE_LABEL="${out##*$'\n'}"
     [ "$LANE_LABEL" = "$out" ] || reason="${out%$'\n'*}"
-    case "$LANE_LABEL" in ""|*" "*) reason="${reason:-$out}"; LANE_LABEL="$lane" ;; esac
+    case "$LANE_LABEL" in ""|*[!A-Za-z0-9_.:-]*) reason="${reason:-$out}"; LANE_LABEL="$lane" ;; esac
   else
     reason="$resolver not found"
   fi

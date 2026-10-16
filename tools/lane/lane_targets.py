@@ -30,22 +30,43 @@ ADVISOR = "advisor"
 ADVISOR_NAMES = {"Advisor", "Lane Advisor"}
 
 
-def advisor_names() -> set[str]:
-    """`ADVISOR_NAMES` plus every `<label>:advisor` (harmonic-forge#1014).
+# harmonic-forge#1014: the wrappers name a lane `<label>:laneN` and the Advisor
+# `<label>:advisor`, or the bare role for an unregistered checkout. Teardown
+# matches that shape rather than re-reading projects.toml, so a manifest that is
+# broken or edited between launch and teardown cannot hide a labelled session.
+# The label alphabet is manifest_labels.LABEL_RE's.
+LABELLED = re.compile(r"(?:[A-Za-z0-9_.-]+:)?(lane[123]|advisor)")
 
-    Lazy: nothing reads projects.toml at import time, so this module's tests
-    never touch the real manifest. Any failure (a missing tools/onboard, an
-    unreadable or colliding manifest) falls back to the legacy literal set.
+
+class Names:
+    """Literal names, plus every `LABELLED` name whose role is in `roles`.
+
+    Supports `in` and `|`, which is all `select_targets` and lanes-claude use.
     """
-    import sys
-    onboard = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "onboard")
-    try:
-        if onboard not in sys.path:
-            sys.path.insert(0, onboard)
-        from manifest_labels import advisor_label_names
-        return set(ADVISOR_NAMES) | advisor_label_names()
-    except Exception:  # noqa: BLE001 -- teardown must never fail on a label
-        return set(ADVISOR_NAMES)
+
+    def __init__(self, literals, roles=()):
+        self.literals, self.roles = frozenset(literals), frozenset(roles)
+
+    def __contains__(self, name) -> bool:
+        if name in self.literals:
+            return True
+        m = LABELLED.fullmatch(name) if isinstance(name, str) else None
+        return bool(m) and m.group(1) in self.roles
+
+    def __or__(self, other):
+        if isinstance(other, Names):
+            return Names(self.literals | other.literals, self.roles | other.roles)
+        return Names(self.literals | frozenset(other), self.roles)
+
+
+def advisor_names() -> Names:
+    """`ADVISOR_NAMES` plus `advisor` and every `<label>:advisor`."""
+    return Names(ADVISOR_NAMES, {ADVISOR})
+
+
+def lane_names() -> Names:
+    """Full teardown's names: the legacy `Lane N`, every lane label, and the Advisor's."""
+    return Names({"Lane 1", "Lane 2", "Lane 3"}, {"lane1", "lane2", "lane3"}) | advisor_names()
 
 
 def _git_common_dir(path: str) -> str | None:

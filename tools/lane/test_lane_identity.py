@@ -96,23 +96,38 @@ class LabelTests(unittest.TestCase):
         self.assertLessEqual(set(manifest_identity.workspaces(REAL_MANIFEST)), set(table))
         self.assertEqual(table, {"vh": "vh", "leasepal": "lp", "kenekted": "k"})
 
-    def test_teardown_names_include_labels(self):
-        names = ml.lane_label_names(self.manifest)
-        self.assertLessEqual({"vh:lane1", "lp:lane2", "k:lane3", "lane1", "lane2", "lane3"}, names)
-        self.assertEqual(ml.advisor_label_names(self.manifest), {"vh:advisor", "lp:advisor", "k:advisor"})
-        with mock.patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(self.manifest)}):
-            self.assertEqual(lt.advisor_names(),
-                             {"Advisor", "Lane Advisor", "vh:advisor", "lp:advisor", "k:advisor"})
-        # lanes-claude's teardown set is the legacy names plus both label sets.
-        text = (LANE_DIR / "lanes-claude").read_text()
-        self.assertIn("_LABELLED = lane_label_names()", text)
-        self.assertIn('LANE_NAMES = {"Lane 1", "Lane 2", "Lane 3"} | _LABELLED | ADVISOR_SET', text)
-        self.assertIn("ADVISOR_SET = advisor_names()", text)
-        self.assertIn("advisor_name_set=ADVISOR_SET", text)
+    def test_label_outside_the_alphabet_is_a_manifest_error(self):
+        # A quote in a label would break the Advisor's quoted pane command.
+        self.manifest.write_text(self.manifest.read_text().replace('leasepal = "lp"', 'leasepal = "l\'p"'))
+        label, reason = ml.session_label(self.dirs["leasepal"], "advisor", self.manifest)
+        self.assertEqual(label, "advisor")
+        self.assertIn("label", reason)
 
-    def test_advisor_names_falls_back_to_the_literal(self):
+    def test_teardown_names_match_by_pattern(self):
+        lanes, advisor = lt.lane_names(), lt.advisor_names()
+        for name in ("vh:lane1", "lp:lane2", "k:lane3", "renamed:lane2",
+                     "lane1", "lane2", "lane3", "Lane 1", "Lane 3"):
+            with self.subTest(name=name):
+                self.assertIn(name, lanes)
+                self.assertNotIn(name, advisor)
+        # The bare `advisor` an unregistered checkout gets is the Advisor's too.
+        for name in ("advisor", "vh:advisor", "k:advisor", "Advisor", "Lane Advisor"):
+            with self.subTest(name=name):
+                self.assertIn(name, advisor)
+                self.assertIn(name, lanes)
+        for name in ("lane4", "vh:lane", "a b:lane1", "vh:lane1x", None, "Lane 4"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, lanes)
+
+    def test_teardown_names_never_read_the_manifest(self):
         with mock.patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(self.root / "absent.toml")}):
-            self.assertEqual(lt.advisor_names(), {"Advisor", "Lane Advisor"})
+            self.assertIn("vh:advisor", lt.advisor_names())
+            self.assertIn("vh:lane2", lt.lane_names())
+        text = (LANE_DIR / "lanes-claude").read_text()
+        self.assertIn("ADVISOR_SET = advisor_names()", text)
+        self.assertIn("LANE_NAMES = lane_names()", text)
+        self.assertIn("advisor_name_set=ADVISOR_SET", text)
+        self.assertNotIn("manifest_labels import", text)
 
     def test_cli_prints_label_and_exits_zero(self):
         import subprocess
@@ -197,8 +212,16 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self._tmux_calls(), [])
 
     def test_label_is_never_exported(self):
-        text = (LANE_DIR / "_lane_identity.sh").read_text()
-        self.assertNotIn("export LANE_LABEL", text)
+        # Executed, not a text search: an inherited export must not survive.
+        import subprocess
+        script = (f'source "{LANE_DIR / "_lane_identity.sh"}"; lane_identity 2; '
+                  'echo "own=$LANE_LABEL"; bash -c \'echo "child=${LANE_LABEL-unset}"\'')
+        env = {k: v for k, v in os.environ.items() if k != "TMUX_PANE"}
+        env["LANE_LABEL"] = "leaked:lane9"
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              env=env, cwd=self.tree.root)
+        self.assertIn("child=unset", done.stdout, done.stderr)
+        self.assertNotIn("leaked:lane9", done.stdout)
 
 
 class LanesClaudeTests(unittest.TestCase):
@@ -211,6 +234,7 @@ class LanesClaudeTests(unittest.TestCase):
         self.assertNotIn("--name 'Advisor'", text)
         self.assertEqual(text.count("--name '$advisor_label'"), 2)
         self.assertEqual(text.count("pin_advisor_title\n"), 2)
+        self.assertIn('case "$advisor_label" in ""|*[!A-Za-z0-9_.:-]*) advisor_label=advisor', text)
         self.assertIn('allow-set-title off', text)
 
 

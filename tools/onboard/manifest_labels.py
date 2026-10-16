@@ -4,8 +4,9 @@
 `lane1`/`lane2`/`lane3` and `lanes-claude` name a session `<ws>:<lane>` (for
 example `vh:lane2`), where `<ws>` is the short label `projects.toml`'s
 `[workspace_labels]` table gives the checkout's `workspace`. One resolver feeds
-three readers: the Claude session name, the pinned tmux pane title, and the
-teardown name sets in `lanes-claude`/`lane_targets.py`.
+two readers: the Claude session name and the pinned tmux pane title. Teardown
+matches these names by pattern (`lane_targets.LABELLED`), never by re-reading
+the manifest, so a broken manifest at teardown cannot hide a labelled session.
 
 Lives beside `manifest_identity.py`, not in it: that file is near R-0006's
 300-line cap. An unregistered checkout never refuses a launch: it gets the bare
@@ -16,6 +17,7 @@ reason (if any) on stderr, and always exits 0.
 """
 from __future__ import annotations
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -25,6 +27,9 @@ from manifest_identity import workspace_for, workspaces
 
 LANES = ("lane1", "lane2", "lane3")
 ADVISOR = "advisor"
+# A label is spliced into a quoted tmux pane command and matched by teardown's
+# name pattern (lane_targets.LABELLED), so its alphabet is closed.
+LABEL_RE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 def workspace_labels(manifest: Path | None = None) -> dict[str, str]:
@@ -32,7 +37,7 @@ def workspace_labels(manifest: Path | None = None) -> dict[str, str]:
 
     A workspace missing from `[workspace_labels]` falls back to its own name, so
     one missing entry never degrades the other ventures. Raises `ManifestError`
-    only when two workspaces resolve to the same label.
+    when two workspaces resolve to the same label, or a label leaves `LABEL_RE`.
     """
     target = manifest or manifest_path()
     try:
@@ -45,6 +50,8 @@ def workspace_labels(manifest: Path | None = None) -> dict[str, str]:
     labels = {ws: str(table.get(ws) or ws) for ws in workspaces(manifest)}
     seen: dict[str, str] = {}
     for ws, label in labels.items():
+        if not LABEL_RE.fullmatch(label):
+            raise ManifestError(f"{target}: workspace {ws!r} label {label!r} is not [A-Za-z0-9_.-]+")
         if label in seen:
             raise ManifestError(
                 f"{target}: workspaces {seen[label]!r} and {ws!r} share label {label!r}")
@@ -60,17 +67,6 @@ def session_label(path: str | Path, lane: str,
         return f"{labels[workspace_for(path, manifest)]}:{lane}", ""
     except (ManifestError, KeyError, OSError) as exc:
         return lane, f"{path}: not in projects.toml ({exc})"
-
-
-def lane_label_names(manifest: Path | None = None) -> set[str]:
-    """Every `<label>:lane1..3`, plus the bare `lane1..3` an unregistered checkout gets."""
-    labels = workspace_labels(manifest).values()
-    return {f"{label}:{lane}" for label in labels for lane in LANES} | set(LANES)
-
-
-def advisor_label_names(manifest: Path | None = None) -> set[str]:
-    """Every `<label>:advisor`."""
-    return {f"{label}:{ADVISOR}" for label in workspace_labels(manifest).values()}
 
 
 def main(argv: list[str]) -> int:
