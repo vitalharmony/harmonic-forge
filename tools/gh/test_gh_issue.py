@@ -1045,17 +1045,19 @@ class TestPriorOwnerSearch(unittest.TestCase):
     def _main(self, extra=(), search=None):
         """Run main() with a scripted search; returns (exit, created, searches, stderr)."""
         searches = []
+        self.all_calls = []
         responses = list(search or [""])
 
         def fake_run(cmd, check=True, env=None):
+            self.all_calls.append(cmd)
             if cmd[:5] == ["gh", "api", "-X", "GET", "search/issues"]:
                 searches.append((cmd, env))
                 out = responses.pop(0)
                 if isinstance(out, int):
                     return _completed("", returncode=out)
-                return _completed(out)
-            if cmd[:3] == ["gh", "api", "rate_limit"]:
-                return _completed("0\t1700000000\n")
+                if out.startswith("RAW:"):
+                    return _completed(out[4:])
+                return _completed("incomplete\tfalse\n" + out)
             raise AssertionError(f"unexpected call {cmd}")
 
         argv = ["gh_issue.py", "--repo", "o/r", "--title", self.TITLE, *extra]
@@ -1104,11 +1106,24 @@ class TestPriorOwnerSearch(unittest.TestCase):
         self.assertNotIn("candidate prior owner", err)
 
     def test_exactly_one_added_call(self):
-        """AC3: one search per filing -- candidates or none, override or not."""
-        for extra, search in (((), [self.HIT]), (("--no-prior-owner", "r"), [self.HIT]),
-                              ((), [""])):
-            _, _, searches, _ = self._main(extra=extra, search=search + [""] * 3)
-            self.assertEqual(len(searches), 1, (extra, search))
+        """AC3: exactly one added `_run` call on every path (create is stubbed)."""
+        cases = (((), [self.HIT]), (("--no-prior-owner", "r"), [self.HIT]),
+                 ((), [""]), (("--no-prior-owner", "r"), [1]),
+                 (("--no-prior-owner", "r"), ["RAW:incomplete\ttrue\n"]))
+        for extra, search in cases:
+            self._main(extra=extra, search=search + [""] * 3)
+            self.assertEqual(len(self.all_calls), 1, (extra, search))
+
+    def test_degraded_search_states_fail_closed(self):
+        """Each untrusted result refuses without the override and files with it."""
+        for bad in (1, "RAW:incomplete\ttrue\n", "RAW:", "RAW:garbage\n",
+                    "not-a-row\n"):
+            code, created, _, _ = self._main(search=[bad])
+            self.assertIn("refusing to file", str(code), bad)
+            created.assert_not_called()
+            _, created, _, _ = self._main(
+                extra=["--no-prior-owner", "search unavailable: x"], search=[bad])
+            created.assert_called_once()
 
     def test_and_query_never_or(self):
         for search in ([self.HIT], [""]):
@@ -1146,7 +1161,7 @@ class TestPriorOwnerSearch(unittest.TestCase):
         code, created, _, _ = self._main(search=[1])
         created.assert_not_called()
         self.assertIn("30 requests/minute", str(code))
-        self.assertIn("resets at", str(code))
+        self.assertIn("resets within 60 seconds", str(code))
         self.assertIn("search unavailable", str(code))
 
     def test_title_keywords_drop_short_and_stopwords(self):

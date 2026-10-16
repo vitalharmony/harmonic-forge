@@ -97,41 +97,44 @@ def title_keywords(title: str) -> list[str]:
     return seen
 
 
-def _search_reset_hint() -> str:
-    """Best-effort reset time for the REST `search` resource (30/min)."""
-    try:
-        result = _run(["gh", "api", "rate_limit", "--jq",
-                       ".resources.search | [.remaining, .reset] | @tsv"],
-                      check=False)
-        remaining, reset = result.stdout.strip().split("\t")
-        import datetime  # noqa: PLC0415
-        when = datetime.datetime.fromtimestamp(int(reset)).strftime("%H:%M:%S")
-        return f"{remaining} left, resets at {when}"
-    except Exception:  # noqa: BLE001 -- a hint, never a second failure
-        return "reset time unknown"
+_SEARCH_JQ = ('"incomplete\\t\\(.incomplete_results)", '
+              '(.items[] | [.number, .state, .title] | @tsv)')
+
+
+def _search_refusal(repo: str, why: str) -> SystemExit:
+    return SystemExit(
+        f"[GH] prior-owner search failed for {repo}: {why}\n"
+        "[GH] refusing to file -- R-0397 needs that search (harmonic-forge#1032). "
+        "GitHub's REST search limit is 30 requests/minute and resets within "
+        "60 seconds; retry then, or pass "
+        '--no-prior-owner "search unavailable: <why>".'
+    )
 
 
 def _search_titles(repo: str, query: str) -> list[tuple[int, str, str]]:
+    """Exactly one REST call. Any result that cannot be trusted -- a non-zero
+    exit, `incomplete_results` true, or output that does not parse -- fails
+    closed, never reads as "no owner" (preclose passes 1-2, sticky-wicket)."""
     result = _run(
         ["gh", "api", "-X", "GET", "search/issues",
          "-f", f"q=repo:{repo} is:issue in:title {query}", "-f", "per_page=5",
-         "--jq", ".items[] | [.number, .state, .title] | @tsv"],
+         "--jq", _SEARCH_JQ],
         check=False,
         env={**os.environ, "GH_SHIM_CALLER": "gh_issue"},
     )
     if result.returncode != 0:
-        raise SystemExit(
-            f"[GH] prior-owner search failed for {repo}: {result.stderr.strip()}\n"
-            "[GH] refusing to file -- R-0397 needs that search (harmonic-forge#1032). "
-            "GitHub's REST search limit is 30 requests/minute "
-            f"({_search_reset_hint()}); retry after the reset, or pass "
-            '--no-prior-owner "search unavailable: <why>".'
-        )
+        raise _search_refusal(repo, result.stderr.strip())
+    lines = result.stdout.splitlines()
+    if not lines or lines[0] not in ("incomplete\tfalse", "incomplete\ttrue"):
+        raise _search_refusal(repo, "unparseable search output")
+    if lines[0] == "incomplete\ttrue":
+        raise _search_refusal(repo, "GitHub returned incomplete_results (search timed out)")
     found: list[tuple[int, str, str]] = []
-    for line in result.stdout.splitlines():
+    for line in lines[1:]:
         parts = line.split("\t", 2)
-        if len(parts) == 3 and parts[0].isdigit():
-            found.append((int(parts[0]), parts[1], parts[2]))
+        if len(parts) != 3 or not parts[0].isdigit():
+            raise _search_refusal(repo, f"unparseable search row: {line!r}")
+        found.append((int(parts[0]), parts[1], parts[2]))
     return found
 
 
