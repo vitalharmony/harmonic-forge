@@ -290,5 +290,28 @@ class SameShaRetryTests(ReceiptHome):
                                      attested_sha="abcdef0" + "1" * 33))
 
 
+    def test_undecidable_third_newest_refused(self):
+        for third in (gate(1, "who knows", "3f4747e2742fa83f"),
+                      gate(1, "BLOCKED (`L3B`)", "3F4747E2742FA83F"),
+                      gate(1, "BLOCKED (`L3B`)", "3f47")):
+            with self.subTest(third=third["body"][:60]):
+                comments = [third, self.blocked(2), self.blocked(3)]
+                self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                                attested_sha="3f4747e2742fa83f"))
+                self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+
+    def test_decidably_other_third_newest_stays_exempt(self):
+        for third in (gate(1, "PASS (`L3P`)", "3f4747e2742fa83f"), gate(1, "FAIL (`L3F`)", "3f4747e2742fa83f"),
+                      gate(1, "BLOCKED (`L3B`)", "aaaa1111")):
+            with self.subTest(third=third["body"][:60]):
+                comments = [third, self.blocked(2), self.blocked(3)]
+                self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                             attested_sha="3f4747e2742fa83f"))
+
+    def test_uppercase_attested_sha_matches(self):
+        self.assertIsNone(sr.refusal(REPO, ISSUE, [self.blocked(1), self.blocked(2)], kind="ae",
+                                     attested_sha="3F4747E2742FA83F"))
+
+
 if __name__ == "__main__":
     unittest.main()

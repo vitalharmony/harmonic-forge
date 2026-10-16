@@ -140,19 +140,25 @@ def _same_sha(a: str, b: str) -> bool:
 
 def same_sha_retry(details: list[tuple[int, str | None, str | None]]) -> str | None:
     """harmonic-forge#1019: the SHA when the last two gate results are both BLOCKED
-    at one non-empty Head-SHA and the third-newest is not also BLOCKED there.
-    A third-newest BLOCKED with no readable SHA counts as BLOCKED there (fails closed)."""
+    at one readable Head-SHA and the third-newest is decidably not another block
+    there: a PASS or FAIL, or BLOCKED at a readable different SHA. Anything that
+    cannot be decided (an unreadable verdict or SHA, CONFLICT) refuses, which is
+    sticky-wicket as before (preclose sticky-wicket PATCH)."""
     if len(details) < 2:
         return None
-    (_, v1, s1), (_, v2, s2) = details[-2], details[-1]
+    # A SHA is readable only as 7-40 hex digits, compared in lower case.
+    readable = [(v, x if re.fullmatch(r"[0-9a-f]{7,40}", x := (s or "").lower()) else None)
+                for _, v, s in details[-3:]]
+    (v1, s1), (v2, s2) = readable[-2], readable[-1]
     if v1 != "BLOCKED" or v2 != "BLOCKED" or not s1 or not s2 or not _same_sha(s1, s2):
         return None
     # The longer of the two, so a short SHA cannot bridge two different full ones.
     sha = max(s1, s2, key=len)
     if len(details) >= 3:
-        _, v0, s0 = details[-3]
-        # A third block at this SHA, or one whose SHA cannot be read, is owed as before.
-        if v0 == "BLOCKED" and (not s0 or _same_sha(s0, sha)):
+        v0, s0 = readable[-3]
+        decidably_other = v0 in ("PASS", "FAIL") or (
+            v0 == "BLOCKED" and s0 is not None and not _same_sha(s0, sha))
+        if not decidably_other:
             return None
     return sha
 
@@ -186,7 +192,7 @@ def refusal(repo: str, issue: int, comments: list[dict], *, kind: str | None = N
         return None
     if kind in RETRY_EXEMPT_KINDS and attested_sha:
         retry = same_sha_retry(gate_details(comments))
-        if retry and _same_sha(retry, attested_sha):
+        if retry and _same_sha(retry, attested_sha.lower()):
             return None
     older, newer = pair
     return (f"{repo}#{issue}: the last two Lane 3 gate results (issuecomment-{older}, "
