@@ -15,6 +15,19 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 import gh_issue
 
+#: harmonic-forge#1032: every main()-level test predating the prior-owner
+#: search stubs it to "no candidates"; the tests for it use the original.
+_ORIGINAL_FIND_PRIOR_OWNERS = gh_issue.find_prior_owners
+_FIND_PATCHER = patch("gh_issue.find_prior_owners", return_value=[])
+
+
+def setUpModule():
+    _FIND_PATCHER.start()
+
+
+def tearDownModule():
+    _FIND_PATCHER.stop()
+
 
 def _completed(stdout="", returncode=0):
     class R:
@@ -1021,3 +1034,105 @@ class ToolingExceptionRequiresTheLabelTests(unittest.TestCase):
         self.assertIsInstance(result, SystemExit)
         self.assertIn("tooling-exception", stderr)
         created.assert_not_called()
+
+
+class TestPriorOwnerSearch(unittest.TestCase):
+    """harmonic-forge#1032 (R-0397): one title search before filing."""
+
+    TITLE = "gh_issue.py prints candidate prior owners before filing"
+    HIT = "172\topen\tgh_issue.py: support parent/child filing\n"
+
+    def _main(self, extra=(), search=None):
+        """Run main() with a scripted search; returns (exit, created, searches, stderr)."""
+        searches = []
+        responses = list(search or [""])
+
+        def fake_run(cmd, check=True, env=None):
+            if cmd[:5] == ["gh", "api", "-X", "GET", "search/issues"]:
+                searches.append((cmd, env))
+                out = responses.pop(0)
+                if isinstance(out, int):
+                    return _completed("", returncode=out)
+                return _completed(out)
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                return _completed("0\t1700000000\n")
+            raise AssertionError(f"unexpected call {cmd}")
+
+        argv = ["gh_issue.py", "--repo", "o/r", "--title", self.TITLE, *extra]
+        err = io.StringIO()
+        with patch.object(sys, "argv", argv), \
+             patch("gh_issue.find_prior_owners", _ORIGINAL_FIND_PRIOR_OWNERS), \
+             patch("gh_issue._run", side_effect=fake_run), \
+             patch("gh_issue.fetch_milestones", return_value={}), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue", return_value=None) as created, \
+             contextlib.redirect_stderr(err):
+            try:
+                code = gh_issue.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, created, searches, err.getvalue()
+
+    def test_candidates_printed_before_create(self):
+        _, created, searches, err = self._main(search=[self.HIT])
+        self.assertIn("candidate prior owner: o/r#172 (open)", err)
+        created.assert_not_called()
+        self.assertEqual(searches[0][1]["GH_SHIM_CALLER"], "gh_issue")
+
+    def test_candidates_without_override_refuses_and_files_nothing(self):
+        code, created, _, err = self._main(search=[self.HIT])
+        self.assertEqual(code, 2)
+        self.assertIn("R-0397", err)
+        self.assertIn("--no-prior-owner", err)
+        created.assert_not_called()
+
+    def test_override_with_reason_files(self):
+        _, created, _, err = self._main(
+            extra=["--no-prior-owner", "#172 is epic filing, not this"], search=[self.HIT])
+        created.assert_called_once()
+        self.assertIn("R-0397 override: #172 is epic filing, not this", err)
+
+    def test_override_blank_reason_is_parser_error(self):
+        code, created, searches, _ = self._main(extra=["--no-prior-owner", "  "])
+        self.assertEqual(code, 2)
+        self.assertEqual(searches, [])
+        created.assert_not_called()
+
+    def test_none_found_files_without_override(self):
+        _, created, _, err = self._main(search=["", ""])
+        created.assert_called_once()
+        self.assertNotIn("candidate prior owner", err)
+
+    def test_exactly_one_added_call(self):
+        """AC3: one search when AND finds candidates, override or not."""
+        for extra in ((), ("--no-prior-owner", "reason")):
+            _, _, searches, _ = self._main(extra=extra, search=[self.HIT, self.HIT])
+            self.assertEqual(len(searches), 1, extra)
+
+    def test_and_query_default_or_fallback_only_on_zero(self):
+        _, _, searches, _ = self._main(search=[self.HIT, self.HIT])
+        q = [a for a in searches[0][0] if a.startswith("q=")][0]
+        self.assertNotIn(" OR ", q)
+        self.assertIn("in:title gh_issue.py candidate prior owners filing", q)
+        _, _, searches, _ = self._main(search=["", self.HIT])
+        self.assertEqual(len(searches), 2)
+        q2 = [a for a in searches[1][0] if a.startswith("q=")][0]
+        self.assertIn("candidate OR prior", q2)
+
+    def test_novel_title_zero_candidates(self):
+        _, created, searches, err = self._main(search=["", ""])
+        self.assertEqual(len(searches), 2)
+        self.assertNotIn("candidate prior owner", err)
+        created.assert_called_once()
+
+    def test_search_failure_refuses(self):
+        code, created, _, _ = self._main(search=[1])
+        created.assert_not_called()
+        self.assertIn("30 requests/minute", str(code))
+        self.assertIn("resets at", str(code))
+        self.assertIn("search unavailable", str(code))
+
+    def test_title_keywords_drop_short_and_stopwords(self):
+        self.assertEqual(gh_issue.title_keywords("Fix the bug in a thing when it breaks"),
+                         ["thing", "breaks"])
+        self.assertEqual(gh_issue.title_keywords("a b c"), [])

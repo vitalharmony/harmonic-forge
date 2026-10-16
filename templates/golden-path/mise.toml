@@ -139,6 +139,7 @@ usage = '''
 flag "--title <title>" help="Issue title" required=#true
 flag "--body <body>" help="Issue body" default="*Created via mise gh-new-issue*"
 flag "--labels <labels>" help="Comma-separated labels" default="feature"
+flag "--no-prior-owner <reason>" help="R-0397 (harmonic-forge#1032): file even though the pre-create title search printed candidate prior owners; the reason says why none of them owns this work."
 '''
 run = """
 set -e
@@ -146,7 +147,8 @@ python3 ~/harmonic-forge/tools/gh/gh_issue.py \
   --repo "$GH_REPO" \
   --title "$usage_title" \
   --body "$usage_body" \
-  --labels "$usage_labels"
+  --labels "$usage_labels" \
+  ${usage_no_prior_owner:+--no-prior-owner "$usage_no_prior_owner"}
 """
 
 [tasks.post-comment]
