@@ -33,9 +33,10 @@ harmonic-forge#1026: HRSE2's runner starts a script with every inherited
 and has no required or positional argument (`script_contract_violations`).
 This is a best-effort front-runner, not the safety check: static reading
 cannot see every argparse shape (an aliased `add_argument`, several parsers,
-a `default` that fails its `type=`), and the runner's own guard stays
-authoritative, refusing such a script after the grant is spent (sticky-wicket
-ACCEPT-AS-IS, harmonic-forge#1026).
+a `default` that fails its `type=`). Such a script still fails when the
+runner starts it: argparse exits on the argument shape, and the runner's
+driver guard refuses a graph other than the one it authorized. Either way the
+grant is spent first (sticky-wicket ACCEPT-AS-IS, harmonic-forge#1026).
 """
 from __future__ import annotations
 
