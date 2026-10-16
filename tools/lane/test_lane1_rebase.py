@@ -205,6 +205,20 @@ class PrecloseFixTests(unittest.TestCase):
                 mock.patch.object(lane1_rebase, "repo_slug", return_value="o/r"):
             self.assertEqual(lane1_rebase.newest_lane_marker("/x", 7), "l2.done")
 
+    def _marker_after(self, *footers):
+        bodies = [{"body": "## L2D\n\n<!-- l1-post v1; kind=completion; posted-by=LANE2 -->"}]
+        bodies += [{"body": f"## x\n\n<!-- l1-post v1; kind={k}; sha=a; body-sha256=b -->"} for k in footers]
+        watch = lane1_rebase._watch()
+        with mock.patch.object(watch, "_fetch_all_comments", return_value=bodies), \
+                mock.patch.object(lane1_rebase, "repo_slug", return_value="o/r"):
+            return lane1_rebase.newest_lane_marker("/x", 7)
+
+    def test_lane1_ready_and_ae_after_l2d_keep_it_rebaseable(self):
+        self.assertEqual(self._marker_after("ready-for-l3", "ae", "sweep"), "l2.done")
+
+    def test_lane1_rework_after_l2d_blocks(self):
+        self.assertNotEqual(self._marker_after("ready-for-l3", "rework"), "l2.done")
+
     def test_branch_of_another_issue_exits_4(self):
         with self.assertRaises(lane1_rebase.Exit) as caught:
             lane1_rebase.check_preconditions("/x", 7, "feat/1016-other", "a" * 40)

@@ -93,6 +93,12 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
         found = watch._classify(comment.get("body") or "")
         if found:
             lane, detail = found
+            # sticky-wicket PATCH (F1018 pass 2): Lane 1's own posts after the
+            # L2D (ready-for-l3, AE, sweep, discussion) do not change the
+            # branch's state -- an AE on the old SHA carries forward (R-0209,
+            # R-0390). Only a Lane 1 rework sends the branch back to Lane 2.
+            if lane == "l1" and detail != "rework":
+                continue
             # preclose F1018-1: l2_post stamps `kind=completion`, and a legacy
             # heading classifies as `## L2D ...`; both are the belt's own
             # completion test, so the two cannot drift.
