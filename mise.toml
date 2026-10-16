@@ -249,6 +249,9 @@ flag "--labels <labels>" help="Comma-separated labels" default="feature"
 flag "--tier <tier>" help="Board Tier field: fast | standard | deep. The model-routing signal (harmonic-forge#257) - set it at filing time."
 flag "--theme <theme>" help="Board Theme field (hrse#966) - what capability this issue is about. Required on every open issue; options are read live from the board."
 flag "--venture <venture>" help="Board Venture field (hrse#966) - whose work this is. Required on every open issue; options are read live from the board."
+flag "--no-prior-owner <reason>" help="R-0397 (harmonic-forge#1032): file even though the pre-create title search printed candidate prior owners; the reason says why none of them owns this work."
+flag "--handoff-exception <exception>" help="Claim one of R-0039's filing-bar exceptions (harmonic-forge#687); requires --handoff-exception-reason."
+flag "--handoff-exception-reason <text>" help="Why the R-0039 exception applies; posted to the issue."
 '''
 run = """
 set -e
@@ -272,7 +275,10 @@ python3 tools/gh/gh_issue.py \
   ${usage_body:+--body "$usage_body"} \
   ${usage_tier:+--tier "$usage_tier"} \
   ${usage_theme:+--theme "$usage_theme"} \
-  ${usage_venture:+--venture "$usage_venture"}
+  ${usage_venture:+--venture "$usage_venture"} \
+  ${usage_no_prior_owner:+--no-prior-owner "$usage_no_prior_owner"} \
+  ${usage_handoff_exception:+--handoff-exception "$usage_handoff_exception"} \
+  ${usage_handoff_exception_reason:+--handoff-exception-reason "$usage_handoff_exception_reason"}
 """
 
 [tasks.board-fields]

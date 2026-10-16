@@ -65,8 +65,93 @@ from item_list_cache import BOARD_ITEM_SCAN_LIMIT  # noqa: E402
 STATUS_OPTION_NAME = "Todo"
 
 
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+def _run(cmd: list[str], check: bool = True,
+         env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    if env is None:
+        return subprocess.run(cmd, capture_output=True, text=True, check=check)
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, env=env)
+
+
+#: harmonic-forge#1032 (R-0397). Words too common in issue titles to identify
+#: an artifact's owner. Kept short on purpose: the AND-joined query already
+#: does most of the precision work.
+PRIOR_OWNER_STOPWORDS = frozenset({
+    "about", "after", "before", "from", "have", "into", "never", "only",
+    "over", "prints", "that", "then", "there", "this", "when", "with",
+    "without", "should", "must", "does", "each", "every", "make", "makes",
+})
+_PRIOR_OWNER_MAX_KEYWORDS = 5
+_TITLE_TOKEN_RE = re.compile(r"[\w.\-]+")
+
+
+def title_keywords(title: str) -> list[str]:
+    """Up to five distinctive lowercase title tokens, in title order."""
+    seen: list[str] = []
+    for token in _TITLE_TOKEN_RE.findall(title.lower()):
+        token = token.strip(".-_")
+        if len(token) < 4 or token in PRIOR_OWNER_STOPWORDS or token in seen:
+            continue
+        seen.append(token)
+        if len(seen) == _PRIOR_OWNER_MAX_KEYWORDS:
+            break
+    return seen
+
+
+_SEARCH_JQ = ('"incomplete\\t\\(.incomplete_results)", '
+              '(.items[] | [.number, .state, .title] | @tsv)')
+
+
+def _search_refusal(repo: str, why: str) -> SystemExit:
+    return SystemExit(
+        f"[GH] prior-owner search failed for {repo}: {why}\n"
+        "[GH] refusing to file -- R-0397 needs that search (harmonic-forge#1032). "
+        "GitHub's REST search limit is 30 requests/minute and resets within "
+        "60 seconds; retry then, or pass "
+        '--no-prior-owner "search unavailable: <why>".'
+    )
+
+
+def _search_titles(repo: str, query: str) -> list[tuple[int, str, str]]:
+    """Exactly one REST call. Any result that cannot be trusted -- a non-zero
+    exit, `incomplete_results` true, or output that does not parse -- fails
+    closed, never reads as "no owner" (preclose passes 1-2, sticky-wicket)."""
+    result = _run(
+        ["gh", "api", "-X", "GET", "search/issues",
+         "-f", f"q=repo:{repo} is:issue in:title {query}", "-f", "per_page=5",
+         "--jq", _SEARCH_JQ],
+        check=False,
+        env={**os.environ, "GH_SHIM_CALLER": "gh_issue"},
+    )
+    if result.returncode != 0:
+        raise _search_refusal(repo, result.stderr.strip())
+    lines = result.stdout.splitlines()
+    if not lines or lines[0] not in ("incomplete\tfalse", "incomplete\ttrue"):
+        raise _search_refusal(repo, "unparseable search output")
+    if lines[0] == "incomplete\ttrue":
+        raise _search_refusal(repo, "GitHub returned incomplete_results (search timed out)")
+    found: list[tuple[int, str, str]] = []
+    for line in lines[1:]:
+        parts = line.split("\t", 2)
+        if len(parts) != 3 or not parts[0].isdigit():
+            raise _search_refusal(repo, f"unparseable search row: {line!r}")
+        found.append((int(parts[0]), parts[1], parts[2]))
+    return found
+
+
+def find_prior_owners(repo: str, title: str) -> list[tuple[int, str, str]] | None:
+    """Open or closed issues whose titles share this title's keywords (R-0397).
+
+    harmonic-forge#1032. One AND-joined query (GitHub search's default) --
+    an OR query matched nearly every filing (pitch-inspection finding 2),
+    and an OR retry would be a second call (AC3). A failed search fails
+    LOUD, like fetch_milestones: a query error must not read as "no owner".
+    Returns None when the title has no searchable keyword: no search ran,
+    which main() treats like a candidate, never as "no owner".
+    """
+    keywords = title_keywords(title)
+    if not keywords:
+        return None
+    return _search_titles(repo, " ".join(keywords))
 
 
 def fetch_milestones(repo: str) -> dict[str, int]:
@@ -595,7 +680,15 @@ def main() -> int:
              "Stricter than --tier, which is optional: an unset milestone reads "
              "identically to a deliberate 'in no release'.",
     )
+    parser.add_argument(
+        "--no-prior-owner", default=None, metavar="REASON",
+        help="R-0397 (harmonic-forge#1032): file even though the pre-create "
+             "title search printed candidate prior owners. The reason says "
+             "why none of them owns this work. Never skips the search.",
+    )
     args = parser.parse_args()
+    if args.no_prior_owner is not None and not args.no_prior_owner.strip():
+        parser.error("--no-prior-owner needs a non-empty reason (R-0397).")
 
     # harmonic-forge#687 AC3. A reasonless exception is refused at the parser,
     # BEFORE the issue is created -- so the run fails without having filed
@@ -701,6 +794,36 @@ def main() -> int:
             "--labels tooling-exception (plus whatever else you already "
             "passed); that label is what arms the pre-close merge gate."
         )
+
+    # harmonic-forge#1032 (R-0397): before filing, look for an existing owner.
+    # Last pre-create check, so a refusal leaves nothing filed.
+    try:
+        candidates = find_prior_owners(args.repo, args.title)
+    except SystemExit as exc:
+        # The refusal names --no-prior-owner as the way through a search
+        # outage, so the override must be honoured here (preclose finding).
+        if args.no_prior_owner is None:
+            raise
+        print(f"{exc.code}\n[GH] search failed; proceeding on --no-prior-owner.",
+              file=sys.stderr)
+        candidates = []
+    if candidates is None:
+        if args.no_prior_owner is None:
+            parser.error(
+                "R-0397: the title has no searchable keyword (4+ characters, "
+                "not a stopword), so no prior-owner search could run. Use a "
+                'more specific title, or pass --no-prior-owner "<reason>".')
+        candidates = []
+    for number, state, title in candidates:
+        print(f"[GH] candidate prior owner: {args.repo}#{number} ({state}) {title}",
+              file=sys.stderr)
+    if candidates and args.no_prior_owner is None:
+        parser.error(
+            "R-0397: the candidates above may already own this work. Fold it "
+            "into the owner and do not file, or pass "
+            '--no-prior-owner "<why none of them owns it>".')
+    if args.no_prior_owner is not None:
+        print(f"[GH] R-0397 override: {args.no_prior_owner.strip()}", file=sys.stderr)
 
     print(f"[GH] Creating issue in {args.repo}")
 
