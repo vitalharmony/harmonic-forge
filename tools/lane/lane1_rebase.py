@@ -110,7 +110,9 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
             # harmonic-forge#1034: a gate report is a lane marker whoever
             # posted it -- checked before the Lane 1 skip, so a FAIL stamped
             # `posted-by=LANE-unset` (classified l1) is never skipped.
-            if watch._is_gate_report(detail, body):
+            # preclose F1034 pass 1: also gate_ci's own heading reader, so a
+            # report with a preamble line before its heading is not skipped.
+            if watch._is_gate_report(detail, body) or gate_ci.GATE_HEADING.search(body):
                 if gate_ci.verdict_of(body) == "PASS":
                     newest = f"l3.pass:{gate_ci.gated_sha(body) or ''}"
                 else:
@@ -182,9 +184,19 @@ def _pass_covers(repo_dir: str, branch: str, old: str, passed: str) -> bool:
     if _same_sha(passed, old):
         return True
     main = rev(repo_dir, "refs/remotes/origin/main")
-    return bool(main) and git(repo_dir, "merge-base", "--is-ancestor", main, old,
-                              check=False).returncode == 0 \
-        and _same_sha(passed, rev(repo_dir, f"refs/heads/{branch}"))
+    local = rev(repo_dir, f"refs/heads/{branch}")
+    if not main or not _same_sha(passed, local) or git(
+            repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode:
+        return False
+    # preclose F1034 pass 1: origin's own commits must be exactly the passed
+    # SHA's, rebased -- same count, each patch-equivalent -- or the PASS would
+    # cover commits Lane 3 never gated. Fails closed (exit 4) otherwise.
+    own = [c for c in git(repo_dir, "cherry", main, old).stdout.splitlines() if c.startswith("+")]
+    passed_own = [c for c in git(repo_dir, "cherry", main, local).stdout.splitlines()
+                  if c.startswith("+")]
+    unmatched = [c for c in git(repo_dir, "cherry", old, local).stdout.splitlines()
+                 if c.startswith("+")]
+    return len(own) == len(passed_own) and not unmatched
 
 
 def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:

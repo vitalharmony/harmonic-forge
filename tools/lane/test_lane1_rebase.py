@@ -318,6 +318,26 @@ class PassPreconditionTests(_Fixture):
         self.assertEqual(self.local_branch(), pushed)
         self.assertEqual(sh(self.impl, "rev-parse", "HEAD"), pushed)
 
+    def test_f3_rerun_with_unpassed_commit_on_origin_exits_4(self):
+        # preclose F1034 pass 1: origin carries the rebase of the PASS plus an
+        # extra commit; the crash branch must not cover it.
+        pushed = self._crash_after_push()
+        sh(self.other, "fetch", "-q", "origin", BRANCH)
+        sh(self.other, "checkout", "-q", "-B", "extra", f"origin/{BRANCH}")
+        extra = commit(self.other, "unpassed.txt", "x\n", "not gated")
+        sh(self.other, "push", "-q", "origin", f"extra:{BRANCH}")
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), extra)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+        self.assertNotEqual(extra, pushed)
+
+    def test_e2_fail_with_preamble_line_exits_4(self):
+        self.bodies = [L2D, "Context first.\n\n" + gate(
+            "FAIL", self.branch_sha, footer="kind=discussion; posted-by=LANE-unset")]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+
     def test_f2_rerun_with_local_at_third_sha_exits_4(self):
         pushed = self._crash_after_push()
         third = commit(self.impl, "extra.txt", "extra\n", "lane 2 local work")
