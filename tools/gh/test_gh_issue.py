@@ -1054,7 +1054,9 @@ class TestPriorOwnerSearch(unittest.TestCase):
                 searches.append((cmd, env))
                 out = responses.pop(0)
                 if isinstance(out, int):
-                    return _completed("", returncode=out)
+                    failed = _completed("", returncode=out)
+                    failed.stderr = "HTTP 403: API rate limit exceeded"
+                    return failed
                 if out.startswith("RAW:"):
                     return _completed(out[4:])
                 return _completed("incomplete\tfalse\n" + out)
@@ -1162,6 +1164,7 @@ class TestPriorOwnerSearch(unittest.TestCase):
         created.assert_not_called()
         self.assertIn("30 requests/minute", str(code))
         self.assertIn("resets within 60 seconds", str(code))
+        self.assertIn("HTTP 403", str(code))
         self.assertIn("search unavailable", str(code))
 
     def test_title_keywords_drop_short_and_stopwords(self):
