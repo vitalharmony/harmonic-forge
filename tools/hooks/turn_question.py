@@ -40,9 +40,14 @@ _TAIL_RECORDS = 40
 #: `*`/`_`, the second takes `?` followed by whitespace and more text. Table
 #: rows, inline code and the excluded line kinds below are removed first, so
 #: neither branch reads a cell or a code example.
+#: Post-verdict check survivor 1: `Is it done? Yes, it is.` is a question the
+#: session answered itself on the same line -- not asking. Pre-patch it read
+#: False; the trailing-prose branch must not change that, so a `?` followed by
+#: an answer word does not count.
+_SELF_ANSWER = r"(?i:(?:yes|no|yeah|yep|nope|nah)\b)"
 _QUESTION_RES = tuple(re.compile(pattern, flags) for pattern, flags in (
     (r"\?[*_]*\s*$", re.M),
-    (r"\?[*_]*[ \t]+\S", re.M),
+    (r"\?[*_]*[ \t]+(?!" + _SELF_ANSWER + r")\S", re.M),
     (r"^\s*\d+\.\s+.*\?", re.M),
 ))
 
@@ -51,7 +56,11 @@ _QUESTION_RES = tuple(re.compile(pattern, flags) for pattern, flags in (
 #: section, a blockquote quotes someone else, a table row is data. Syntax-level
 #: exclusions only -- no vocabulary (see the keyword-branch note above).
 _NOT_ASKING_LINE_RE = re.compile(r"^\s*(?:#{1,6}\s|>|\|)")
-_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+#: Post-verdict check survivor 2: per CommonMark, a fence opens with 3+ of
+#: one char and closes only on a line of the SAME char, at least as long, with
+#: nothing else after it. A plain toggle let `~~~` or a shorter run inside a
+#: fence close it, hiding the trailing question.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _LIST_MARKER_RE = re.compile(r"^(?:[-+*]|\d+[.)])\s+")
 
@@ -130,12 +139,20 @@ def _prose_lines(text: str) -> str:
     with inline code spans removed -- what remains is the session's own
     prose, the only place it can ask."""
     kept: list[str] = []
-    in_fence = False
+    fence: str | None = None   # the opening run, e.g. "````" or "~~~"
     for line in text.splitlines():
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
+        match = _FENCE_RE.match(line)
+        if fence is None:
+            if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
+                fence = match.group(1)
+                continue
+        else:
+            if (match and match.group(1)[0] == fence[0]
+                    and len(match.group(1)) >= len(fence)
+                    and not match.group(2).strip()):
+                fence = None
             continue
-        if in_fence or _NOT_ASKING_LINE_RE.match(line):
+        if _NOT_ASKING_LINE_RE.match(line):
             continue
         kept.append(_INLINE_CODE_RE.sub("", line))
     return "\n".join(kept)

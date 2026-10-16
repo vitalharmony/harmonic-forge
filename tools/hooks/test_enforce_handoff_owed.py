@@ -250,6 +250,18 @@ class F1031QuestionEndsTurn(_TempStore):
             with self.subTest(text=text):
                 self.assertEqual(self._verdict(text), "allow")
 
+    def test_a_self_answered_question_does_not_escape(self):
+        """Post-verdict survivor 1: a question answered on its own line."""
+        self.assertEqual(self._verdict("Is it done? Yes, it is."), "block")
+
+    def test_a_question_after_mixed_fences_escapes(self):
+        """Post-verdict survivor 2: a fence closes only on the same char and
+        a run at least as long (CommonMark)."""
+        for text in ("```markdown\n~~~\n```\n\nProceed?",
+                     "````markdown\n```\n````\n\nProceed?"):
+            with self.subTest(text=text):
+                self.assertEqual(self._verdict(text), "allow")
+
     def test_an_unreadable_transcript_keeps_the_block(self):
         self._owe("s")
         verdict, _ = hook.decide(
