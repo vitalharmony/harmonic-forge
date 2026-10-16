@@ -68,7 +68,10 @@ class MainCollectTests(unittest.TestCase):
                    mock.patch.object(l1_post, "reject_reserved_marker"),
                    mock.patch.object(l1_post, "run", return_value=result),
                    mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1)),
-                   mock.patch.object(l1_post, "record_queue_candidate"), *extra]
+                   mock.patch.object(l1_post, "record_queue_candidate"),
+                   mock.patch.object(l1_post, "apply_project_identity"),
+                   mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
+                   *extra]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -97,8 +100,64 @@ class MainCollectTests(unittest.TestCase):
 
     def test_one_defect_keeps_todays_text(self):
         message = self._main("rework", NO_LEAD)
-        self.assertNotIn("problems:", message)
-        self.assertIn("must lead with its summary block", message)
+        with self.assertRaises(SystemExit) as direct:
+            l1_post.validate_lead("rework", NO_LEAD)
+        self.assertEqual(message, str(direct.exception))
+
+
+#: The fast-stage validators per kind, in the order `main()` ran them before
+#: harmonic-forge#1017 (AC2: none added, removed or reordered).
+ORDER = {
+    "handoff": ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
+                "validate_board_fields_set", "validate_milestone_set",
+                "validate_tooling_exception_labelled", "validate_pitch_inspected",
+                "validate_sticky_wicket", "validate_lead"],
+    "rework": ["validate_sticky_wicket", "validate_lead"],
+    "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
+    "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep"],
+    "ae": ["validate_sticky_wicket", "validate_lead", "validate_ae", "validate_grant_ae",
+           "validate_auto_ae"],
+    "ae-and-sweep": ["validate_sticky_wicket", "validate_ae", "validate_grant_ae",
+                     "validate_auto_ae", "validate_lead", "validate_lead", "_spec_body",
+                     "validate_sweep"],
+}
+
+
+class ValidatorOrderTests(unittest.TestCase):
+    """AC2: every kind runs the same validators, in the same order, as before."""
+
+    def _calls(self, kind):
+        calls = []
+        argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", kind,
+                "--sha", "deadbeef", "--branch", "feat/35-x", "--spec-comment", "9"]
+        argv += (["--ae-file", "/dev/null", "--sweep-file", "/dev/null"] if kind == "ae-and-sweep"
+                 else ["--file", "/dev/null"])
+        if kind == "handoff":
+            argv += ["--plan-first", "false"]
+        if kind not in ("sweep", "ae-and-sweep"):
+            argv.remove("--spec-comment"), argv.remove("9")
+        patches = [mock.patch.object(sys, "argv", argv),
+                   mock.patch.object(l1_post, "resolve_sha", return_value="deadbeef"),
+                   mock.patch.object(l1_post, "regular_body", return_value="body"),
+                   mock.patch.object(l1_post, "reject_reserved_marker"),
+                   mock.patch.object(l1_post, "apply_project_identity"),
+                   mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
+                   mock.patch.object(l1_post, "grant_on_main", return_value=False),
+                   mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1)),
+                   mock.patch.object(l1_post, "record_queue_candidate")]
+        for name in {n for names in ORDER.values() for n in names}:
+            patches.append(mock.patch.object(
+                l1_post, name, side_effect=lambda *a, _n=name, **k: calls.append(_n) or "spec"))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        l1_post.main()
+        return calls
+
+    def test_each_kind_runs_its_validators_in_order(self):
+        for kind, expected in ORDER.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(self._calls(kind), expected)
 
 
 if __name__ == "__main__":
