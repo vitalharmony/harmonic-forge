@@ -340,7 +340,11 @@ class PassPreconditionTests(_Fixture):
 
     def test_f2_rerun_with_local_at_third_sha_exits_4(self):
         pushed = self._crash_after_push()
-        third = commit(self.impl, "extra.txt", "extra\n", "lane 2 local work")
+        # Patch-equivalent to the PASS (reworded), so only the local-equals-
+        # PASS condition can refuse it, not the cherry check.
+        sh(self.impl, "commit", "-q", "--amend", "-m", "reworded")
+        third = sh(self.impl, "rev-parse", "HEAD")
+        self.assertNotEqual(third, self.branch_sha)
         self.assertEqual(self.run_main(), 4)
         self.assertEqual(self.origin_branch(), pushed)
         self.assertEqual(self.local_branch(), third)
