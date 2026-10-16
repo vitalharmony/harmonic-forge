@@ -220,6 +220,36 @@ class F1031QuestionEndsTurn(_TempStore):
             {"session_id": "s", "transcript_path": self._transcript(text)})
         self.assertEqual(verdict, "block")
 
+    def _verdict(self, text: str) -> str:
+        self._owe("s")
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript(text)})
+        return verdict
+
+    def test_a_heading_ending_in_a_question_mark_does_not_escape(self):
+        """Survivors 1/2 (sticky-wicket PATCH 6222366002)."""
+        text = "### What changed?\nFiled it.\n\n## DECISIONS NEEDED\nNone\n"
+        self.assertEqual(self._verdict(text), "block")
+
+    def test_a_quoted_question_does_not_escape(self):
+        self.assertEqual(self._verdict("> did you mean X?\n\nFiled it."), "block")
+
+    def test_a_question_in_a_code_fence_does_not_escape(self):
+        text = "Filed.\n```sql\nSELECT * FROM t WHERE id = ?\n```\nDone."
+        self.assertEqual(self._verdict(text), "block")
+
+    def test_a_list_marker_none_decisions_section_does_not_escape(self):
+        """Survivor 4: `- None` read as a live decision."""
+        self.assertEqual(
+            self._verdict("Filed.\n\n## DECISIONS NEEDED\n- None\n"), "block")
+
+    def test_real_question_shapes_escape(self):
+        """Survivor 5 plus the sticky-wicket positive cases."""
+        for text in ("Filed it.\n\nProceed?", "1. Merge now?",
+                     "**Merge now?**", "Merge now? I need your answer."):
+            with self.subTest(text=text):
+                self.assertEqual(self._verdict(text), "allow")
+
     def test_an_unreadable_transcript_keeps_the_block(self):
         self._owe("s")
         verdict, _ = hook.decide(

@@ -34,10 +34,26 @@ _TAIL_RECORDS = 40
 #: What is left is question SYNTAX, not question vocabulary: a `?` ending a
 #: line, or a numbered line containing one. Combined with `_DECISIONS_RE`
 #: below, that covers how a session actually asks.
+#: harmonic-forge#1031 survivor 5: a `?` followed by closing emphasis
+#: (`**Merge now?**`) or by more prose on the same line (`Merge now? I need
+#: your answer.`) is still a question -- the first branch tolerates trailing
+#: `*`/`_`, the second takes `?` followed by whitespace and more text. Table
+#: rows, inline code and the excluded line kinds below are removed first, so
+#: neither branch reads a cell or a code example.
 _QUESTION_RES = tuple(re.compile(pattern, flags) for pattern, flags in (
-    (r"\?\s*$", re.M),
+    (r"\?[*_]*\s*$", re.M),
+    (r"\?[*_]*[ \t]+\S", re.M),
     (r"^\s*\d+\.\s+.*\?", re.M),
 ))
+
+#: harmonic-forge#1031 sticky-wicket PATCH (survivors 1/2): lines that are not
+#: the session asking anything. A heading (`### What changed?`) titles a
+#: section, a blockquote quotes someone else, a table row is data. Syntax-level
+#: exclusions only -- no vocabulary (see the keyword-branch note above).
+_NOT_ASKING_LINE_RE = re.compile(r"^\s*(?:#{1,6}\s|>|\|)")
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_LIST_MARKER_RE = re.compile(r"^(?:[-+*]|\d+[.)])\s+")
 
 #: A `DECISIONS NEEDED` heading counts as asking ONLY when it has content. The
 #: batch turn that must be blocked has exactly that heading followed by "None",
@@ -68,7 +84,7 @@ def _decisions_section_has_content(text: str) -> bool:
     if not match:
         return False
     for line in text[match.end():].splitlines():
-        stripped = line.strip().strip("*_ \t")
+        stripped = _LIST_MARKER_RE.sub("", line.strip()).strip("*_ \t")
         if not stripped:
             continue
         if stripped.startswith("#"):
@@ -105,4 +121,21 @@ def asks_a_question(text: str) -> bool:
         return False
     if _decisions_section_has_content(text):
         return True
-    return any(pattern.search(text) for pattern in _QUESTION_RES)
+    prose = _prose_lines(text)
+    return any(pattern.search(prose) for pattern in _QUESTION_RES)
+
+
+def _prose_lines(text: str) -> str:
+    """The message minus fenced code, headings, blockquotes and table rows,
+    with inline code spans removed -- what remains is the session's own
+    prose, the only place it can ask."""
+    kept: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or _NOT_ASKING_LINE_RE.match(line):
+            continue
+        kept.append(_INLINE_CODE_RE.sub("", line))
+    return "\n".join(kept)
