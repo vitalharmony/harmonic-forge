@@ -228,6 +228,52 @@ def _case_section(body: str) -> tuple[str, bool]:
     return (rest[:following.start()] if following else rest), True
 
 
+# harmonic-forge#1022: a Lane 3 Tier P spec numbers its cases P1..Pn in a
+# table under a bare "### Cases" heading. That is the TC scheme with another
+# letter, so it is rewritten into the TC shape -- heading and line-leading ids,
+# inside that one section only -- and then validated by the unchanged TC path.
+# Prose P<n> is never rewritten, so it can never become a case.
+BARE_CASES_HEADING = re.compile(r"(?im)^(#{2,4})[ \t]*cases[ \t]*$")
+LEADING_P_ID = re.compile(
+    r"(?m)^([ \t]*(?:[-*][ \t]+|\d+\.[ \t]*|\|[ \t]*)?\**[ \t]*)P(\d+)\b")
+
+
+def _tier_p_ids(spec_body: str) -> set[str]:
+    """The line-leading `P<n>` ids under a spec's bare `Cases` heading, up to
+    the next heading of the same or higher level; empty when there are none."""
+    # Only a spec that declares Write tier P: a P<n> under a stray "Cases"
+    # heading in any other spec is never a case. Other headings do not matter,
+    # so an incidental "Test case ..." heading cannot switch the check off.
+    if parse_write_tier(spec_body) != "P":
+        return set()
+    match = BARE_CASES_HEADING.search(spec_body)
+    if not match:
+        return set()
+    rest = spec_body[match.end():]
+    following = re.compile(rf"(?m)^#{{1,{len(match.group(1))}}}\s").search(rest)
+    section = rest[:following.start()] if following else rest
+    return {m.group(2) for m in LEADING_P_ID.finditer(section)}
+
+
+def _canonicalize_tier_p(body: str, sweep: bool = False) -> tuple[str, bool]:
+    """(body, rewritten). A spec is rewritten only under a bare `Cases`
+    heading; a sweep under that heading or its usual case heading."""
+    match = BARE_CASES_HEADING.search(body)
+    if match:
+        level = len(match.group(1))
+        heading = ("#" * level) + (" Per-case readiness" if sweep else " Test cases")
+        start, end = match.start(), match.end()
+    elif sweep and (case := CASE_HEADING.search(body)):
+        level = len(case.group(0)) - len(case.group(0).lstrip("#"))
+        heading, start, end = case.group(0), case.start(), case.end()
+    else:
+        return body, False
+    rest = body[end:]
+    following = re.compile(rf"(?m)^#{{1,{level}}}\s").search(rest)
+    section, tail = (rest[:following.start()], rest[following.start():]) if following else (rest, "")
+    return body[:start] + heading + LEADING_P_ID.sub(r"\1TC\2", section) + tail, True
+
+
 def _classify_case_ids(body: str) -> tuple[set[str], bool]:
     """Case identifiers plus whether they came from TC<n> markers (vs. a plain
     numbered list) -- both branches return plain digit strings, so the caller
@@ -922,6 +968,15 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
             "fine) -- Lane 3's own readiness check refuses anything looser "
             "(a private-repo incident)"
         )
+    # harmonic-forge#1022: a Tier P spec is detected first, by its own case
+    # table, so no footer, numbered list or stray TC<n> can route it elsewhere.
+    # Its ids are checked exactly as footer-named ids are: one line-anchored
+    # TC entry each, with the same outcome, tier and empty-entry refusals.
+    tier_p_ids = _tier_p_ids(spec_body)
+    if tier_p_ids:
+        body, _ = _canonicalize_tier_p(body, sweep=True)
+        _validate_sweep_against_footer(body, tier_p_ids)
+        return
     footer_ids = footer_case_ids(spec_body)
     if footer_ids:
         _validate_sweep_against_footer(body, footer_ids)

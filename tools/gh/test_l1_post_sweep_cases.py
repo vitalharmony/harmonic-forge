@@ -496,5 +496,88 @@ class FooterCaseIdsTests(unittest.TestCase):
 
 
 
+# harmonic-forge#1022: the shape of hrse#1896's Tier P spec (6206077379):
+# cases P1..P3 in a table under a bare "### Cases" heading, then a later
+# section with its own numbered list and a stray "P2".
+SPEC_TIER_P = (
+    "## Lane 3 Test Spec — H1896 (Tier P production run, R-0377)\n\n"
+    "**Cases:** 3, Tier P through the runner only.\n\nWrite tier: P\n\n"
+    "### Cases\n| # | Class | Action | Command | Pass when |\n|---|---|---|---|---|\n"
+    "| P1 | ac | Dry run | `run` | totals reported |\n"
+    "| P2 | ac | Apply | `run --mode apply` | moved equals P1's count |\n"
+    "| P3 | ac | Dry run again | the P1 command | 0 re-anchor |\n\n"
+    "### Preconditions for Lane 1's sweep\n1. CI green.\n2. backup verified before P2.\n"
+    "3. grant minted.\n4. runner installed.\n"
+)
+HEAD_P = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n"
+
+
+class TierPCaseIdTests(unittest.TestCase):
+    def _ok(self, sweep, spec=SPEC_TIER_P):
+        try:
+            with mock.patch.object(L, "footer_case_ids", return_value=set()):
+                L.validate_sweep(sweep, spec, "vitalharmony/hrse", 1896)
+            return True
+        except SystemExit:
+            return False
+
+    def test_numbered_p_sweep_validates(self):
+        self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — ready: grant minted.\n"
+                                 "2. P2 — not authorized by this AE.\n3. P3 — not authorized by this AE.\n"))
+
+    def test_bulleted_p_sweep_validates(self):
+        self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n- P1 — ready\n- P2 — later\n- P3 — later\n"))
+
+    def test_sweep_under_a_cases_heading_validates(self):
+        self.assertTrue(self._ok(HEAD_P + "### Cases\n1. P1 — ready\n2. P2 — later\n3. P3 — later\n"))
+
+    def test_prose_p_mentions_are_not_entries(self):
+        self.assertFalse(self._ok(HEAD_P + "### Cases\nP1, P2 and P3 are all fine.\n"))
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\nP1, P2 and P3 are all fine.\n"))
+
+    def test_p_outcomes_are_refused_in_every_entry_shape(self):
+        for entry in ("- P{n}: pass", "{n}. P{n}: pass", "{n}. P{n} — passed."):
+            with self.subTest(entry=entry):
+                lines = "\n".join(entry.format(n=n) for n in (1, 2, 3))
+                self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n" + lines + "\n"))
+
+    def test_a_repeated_or_missing_p_entry_is_refused(self):
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P1 — r\n3. P1 — r\n"))
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n- P1 — ready\n- P2 — later\n"))
+
+    def test_stray_p_outside_the_case_section_adds_nothing(self):
+        spec = SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n- P7 deferred to a later issue.\n| P8 | not a case |\n"
+        self.assertEqual(L._tier_p_ids(spec), {"1", "2", "3"})
+
+    def test_numbered_list_in_the_cases_section_cannot_drop_a_case(self):
+        spec = SPEC_TIER_P.replace("| P3 |", "Order:\n1. Back up before P2.\n2. Mint grant.\n\n| P3 |")
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready a\n2. ready b\n", spec))
+        self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n", spec))
+
+    def test_a_non_tier_p_spec_with_a_stray_cases_section_is_not_rerouted(self):
+        spec = "Write tier: R\n\n### Test cases\n- TC1: read the file\n- TC2: verify output\n\n### Cases\n- P1 prerequisite from another issue.\n"
+        self.assertEqual(L._tier_p_ids(spec), set())
+        sweep = "## Gate-readiness sweep — H1896\n\nWrite tier: R\n\n### Per-case readiness\n- TC1: ready\n"
+        self.assertFalse(self._ok(sweep, spec))
+
+    def test_an_incidental_test_case_heading_keeps_tier_p_detection(self):
+        spec = SPEC_TIER_P + "\n### Test case prerequisites\n1. backup\n2. grant\n"
+        self.assertEqual(L._tier_p_ids(spec), {"1", "2", "3"})
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready\n2. ready\n", spec))
+
+    def test_footer_or_stray_tc_does_not_reroute_a_tier_p_spec(self):
+        sweep = HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n"
+        footer = SPEC_TIER_P + "\n<!-- l1-post v1; kind=spec; classes=P1:ac,P2:ac,P3:ac -->"
+        stray = SPEC_TIER_P.replace("| P2 | ac | Apply |", "| P2 | ac | Apply (cf. H44 TC5) |")
+        for spec in (footer, stray):
+            with self.subTest(spec=spec[-60:]):
+                with mock.patch.object(L, "footer_case_ids", wraps=L.footer_case_ids):
+                    L.validate_sweep(sweep, spec, "vitalharmony/hrse", 1896)
+
+    def test_specs_that_parsed_before_are_untouched(self):
+        self.assertEqual(L._classify_case_ids(SPEC_TC), ({"1", "2"}, True))
+        self.assertEqual(L._canonicalize_tier_p(SPEC_TC), (SPEC_TC, False))
+        self.assertFalse(L._case_section("### Edge cases\n1. x\n")[1])
+
 if __name__ == "__main__":
     unittest.main()
