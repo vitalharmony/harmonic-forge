@@ -1396,6 +1396,57 @@ def validate_milestone_set(repo: str, issue: int) -> None:
     )
 
 
+#: harmonic-forge#1033 (operator ruling 2026-10-16): per repo, milestones R-0404
+#: never refuses, like a repo with no milestones. hrse's `Platform` holds
+#: tooling work that is never in a product release. Keyed by repo: the ruling
+#: names hrse's Platform, not any repo's milestone of that title.
+EXEMPT_MILESTONES = {"vitalharmony/hrse": frozenset({"Platform"})}
+
+_RELEASE_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def current_release_milestone(titles: list[str]) -> str | None:
+    """harmonic-forge#1033: the current release is the open milestone with the
+    lowest version-shaped title, compared numerically (`3.9` < `3.10`).
+
+    Only a bare number matches: `v3.0`, `3.0-rc` and `3.0 hotfix` are never a
+    release. Turnover is closing the milestone; until 3.0 closes, 3.1 is not
+    current. None when no open title is version-shaped."""
+    releases = [t for t in titles if _RELEASE_TITLE.match(t)]
+    if not releases:
+        return None
+    return min(releases, key=lambda t: tuple(int(part) for part in t.split(".")))
+
+
+def validate_milestone_current(repo: str, issue: int, kind: str, ack: str | None) -> None:
+    """harmonic-forge#1033 / R-0404: a handoff or rework posts only for an issue
+    in the current release milestone, because the belt ignores milestones and
+    a posted handoff queues a lane whatever release the issue is in.
+
+    A repo with no open milestones is exempt, as is an `EXEMPT_MILESTONES`
+    title. `--milestone-ack` overrides; `_post_kind` writes the reason into
+    the posted body. An unset milestone on a handoff is also
+    `validate_milestone_set`'s refusal; on a rework only this one reports it."""
+    titles = repo_milestone_titles(repo)
+    if not titles:
+        return
+    if ack:
+        return
+    milestone = issue_milestone_title(repo, issue)
+    if milestone in EXEMPT_MILESTONES.get(repo.lower(), frozenset()):
+        return
+    current = current_release_milestone(titles)
+    if milestone is not None and milestone == current:
+        return
+    fail(
+        f"{repo}#{issue} is in milestone {milestone or '(none)'}, not the current "
+        f"release ({current or 'none version-shaped'}) -- R-0404: a {kind} posts "
+        f"only for current-release work, because the belt queues a lane whatever "
+        f"the milestone. Move the issue, or override with "
+        f"--milestone-ack \"<reason>\"."
+    )
+
+
 def issue_is_open(repo: str, issue: int) -> None:
     # harmonic-forge#220: REST migration off GraphQL-backed `gh issue view`.
     # REST's `.state` is lowercase ("open"/"closed"), unlike GraphQL's
@@ -2493,6 +2544,7 @@ def _post_kind(
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
     grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
+    milestone_ack: str | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -2567,6 +2619,10 @@ def _post_kind(
         body = body.rstrip("\n") + "\n\n### Sibling-overlap override (operator-acknowledged)\n" + "\n".join(overlap_warnings) + "\n"
     if pr_warnings:
         body = body.rstrip("\n") + "\n\n### No-open-PR override (operator-acknowledged)\n" + "\n".join(pr_warnings) + "\n"
+    if milestone_ack:
+        # harmonic-forge#1033: before the digest, so the digest covers it.
+        body = (body.rstrip("\n") + "\n\n### Milestone override (operator-acknowledged)\n"
+                f"- R-0404 milestone ack: {milestone_ack}\n")
     if pr_opened:
         # harmonic-forge#942: its own heading -- this PR was opened by the
         # transport, not waived by the operator.
@@ -2724,6 +2780,12 @@ def main() -> None:
              "explicit human judgment to invoke, so no further per-kind gating.",
     )
     parser.add_argument(
+        "--milestone-ack", default=None, metavar="REASON",
+        help="Non-empty justification to post a handoff/rework for an issue "
+             "outside the current release milestone (R-0404, harmonic-forge#1033). "
+             "Written into the posted comment as a durable override.",
+    )
+    parser.add_argument(
         "--ack-no-pr-required", default=None, metavar="REASON",
         help="Non-empty human justification to downgrade the missing-open-PR "
              "refusal (a private-repo incident) from a hard fail to a durable warning "
@@ -2756,6 +2818,14 @@ def main() -> None:
         fail("--spec-comment is valid only for sweep / ae-and-sweep")
     if args.ack_overlap is not None and not args.ack_overlap.strip():
         fail("--ack-overlap requires a non-empty reason")
+    if args.milestone_ack is not None:
+        if not args.milestone_ack.strip():
+            fail("--milestone-ack requires a non-empty reason")
+        if args.kind not in ("handoff", "rework"):
+            fail("--milestone-ack is valid only for --kind handoff / rework")
+        # preclose pass 1: the ack is written into the posted body after the
+        # body's own reserved-marker check, so it gets the same check.
+        reject_reserved_marker(args.milestone_ack)
     if args.kind == "ae-and-sweep":
         if args.file or not (args.ae_file and args.sweep_file):
             fail("--kind ae-and-sweep requires --ae-file and --sweep-file, not --file")
@@ -2868,9 +2938,12 @@ def main() -> None:
             lambda: validate_plan_first_spec(body, args.plan_first == "true"),
             lambda: validate_board_fields_set(repo, args.issue),
             lambda: validate_milestone_set(repo, args.issue),
+            lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack),
             lambda: validate_tooling_exception_labelled(body, repo, args.issue),
             lambda: validate_pitch_inspected(repo, args.issue),
         ]
+    if args.kind == "rework":
+        steps.append(lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack))
     if args.kind in STICKY_CHECKED_KINDS:
         steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha))
     steps.append(lambda: validate_lead(args.kind, body))
@@ -2890,6 +2963,7 @@ def main() -> None:
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
         grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)), prod_run=prod_run,
+        milestone_ack=args.milestone_ack,
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

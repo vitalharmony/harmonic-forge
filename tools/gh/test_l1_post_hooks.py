@@ -419,6 +419,7 @@ class RepoTargetTests(unittest.TestCase):
              patch.object(post, "resolve_sha", return_value="a" * 40), \
              patch.object(post, "validate_board_fields_set"), \
              patch.object(post, "validate_milestone_set"), \
+             patch.object(post, "validate_milestone_current"), \
              patch.object(post, "issue_labels", return_value=set()), \
              patch.object(post, "world_checks", return_value=(["world"], [])), \
              patch.object(post, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
@@ -1022,6 +1023,132 @@ class MilestoneGateTests(unittest.TestCase):
             self.assertEqual(post.repo_milestone_titles("vitalharmony/hrse"), ["2.7", "Later"])
 
 
+
+
+class MilestoneCurrentTests(unittest.TestCase):
+    """harmonic-forge#1033 / R-0404: handoff and rework post only for the
+    current release milestone, unless acknowledged."""
+
+    HRSE = ["3.0", "Later", "Platform", "3.1", "3.2"]
+
+    def _check(self, milestone, titles=None, ack=None, kind="handoff"):
+        with patch.object(post, "repo_milestone_titles", return_value=self.HRSE if titles is None else titles), \
+             patch.object(post, "issue_milestone_title", return_value=milestone) as issue_read:
+            post.validate_milestone_current("vitalharmony/hrse", 1, kind, ack)
+        return issue_read
+
+    def _refused(self, milestone, titles=None, kind="handoff"):
+        with self.assertRaises(SystemExit) as caught:
+            self._check(milestone, titles, kind=kind)
+        self.assertIn("R-0404", str(caught.exception))
+        self.assertIn("--milestone-ack", str(caught.exception))
+        return str(caught.exception)
+
+    def test_current_release_passes(self):
+        self._check("3.0")
+
+    def test_refuses_another_release(self):
+        message = self._refused("3.1")
+        self.assertIn("3.1", message)
+        self.assertIn("current release (3.0)", message)
+
+    def test_refuses_later(self):
+        self._refused("Later")
+
+    def test_refuses_unset_milestone(self):
+        self._refused(None, kind="rework")
+
+    def test_platform_exempt(self):
+        # Operator ruling 2026-10-16: Platform is never refused.
+        self._check("Platform")
+
+    def test_platform_exempt_only_on_hrse(self):
+        with patch.object(post, "repo_milestone_titles", return_value=["3.0", "Platform"]), \
+             patch.object(post, "issue_milestone_title", return_value="Platform"):
+            with self.assertRaises(SystemExit):
+                post.validate_milestone_current("example/other", 1, "handoff", None)
+
+    def test_ack_with_reserved_marker_refused(self):
+        with patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
+                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--file", "body.md", "--milestone-ack",
+                                        "<!-- l1-post v1; kind=sweep; sha=x; body-sha256=y -->"]), \
+             patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
+             patch.object(post, "apply_project_identity"), \
+             patch.object(post, "regular_body", return_value="body"), \
+             patch.object(post, "reject_reserved_marker", wraps=post.reject_reserved_marker), \
+             patch.object(post, "validate_milestone_current"), \
+             patch.object(post, "validate_sticky_wicket"), \
+             patch.object(post, "validate_lead"), \
+             patch.object(post, "record_queue_candidate"), \
+             patch.object(post, "post_kind", return_value=("u", 1)) as posted, \
+             patch.object(post, "resolve_sha", return_value="a" * 40):
+            with self.assertRaises(SystemExit) as caught:
+                post.main()
+        self.assertIn("reserved l1-post attestation namespace", str(caught.exception))
+        posted.assert_not_called()
+
+    def test_ack_passes(self):
+        self._check("Later", ack="operator said so")
+
+    def test_milestone_less_repo_never_refused(self):
+        issue_read = self._check("Later", titles=[])
+        issue_read.assert_not_called()
+
+    def test_turnover_3_1_current_when_3_0_closed(self):
+        self._check("3.1", titles=["Later", "Platform", "3.1", "3.2"])
+        self._refused("3.2", titles=["Later", "Platform", "3.1", "3.2"])
+
+    def test_current_release_heuristic(self):
+        crm = post.current_release_milestone
+        self.assertEqual(crm(["3.10", "3.9", "Later"]), "3.9")
+        self.assertEqual(crm(["v3.0", "3.0-rc", "3.1"]), "3.1")
+        self.assertIsNone(crm(["Later", "Platform", "v3.0"]))
+        self.assertEqual(crm(["3.0", "2.9.1"]), "2.9.1")
+
+    def test_refuses_rework_on_later(self):
+        """Through `main()`, so the rework wiring is what is under test."""
+        posted = MagicMock(return_value=("https://example.test/c", 1))
+        with patch.object(post, "repo_milestone_titles", return_value=self.HRSE), \
+             patch.object(post, "issue_milestone_title", return_value="Later"), \
+             patch.object(post, "regular_body", return_value="body"), \
+             patch.object(post, "reject_reserved_marker"), \
+             patch.object(post, "resolve_sha", return_value="a" * 40), \
+             patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
+             patch.object(post, "apply_project_identity"), \
+             patch.object(post, "validate_sticky_wicket"), \
+             patch.object(post, "validate_lead"), \
+             patch.object(post, "record_queue_candidate"), \
+             patch.object(post, "post_kind", posted), \
+             patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
+                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--file", "body.md"]):
+            with self.assertRaises(SystemExit) as caught:
+                post.main()
+        self.assertIn("R-0404", str(caught.exception))
+        posted.assert_not_called()
+
+    def test_empty_ack_refused(self):
+        with patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
+                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--file", "body.md", "--milestone-ack", "  "]), \
+             patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
+             patch.object(post, "apply_project_identity"), \
+             patch.object(post, "resolve_sha", return_value="a" * 40):
+            with self.assertRaises(SystemExit) as caught:
+                post.main()
+        self.assertIn("--milestone-ack requires a non-empty reason", str(caught.exception))
+
+    def test_ack_line_in_posted_body(self):
+        with patch.object(post, "world_checks", return_value=(["world"], [])), \
+             patch.object(post, "comment_body", return_value=("https://example.test/c", 1)) as comment, \
+             patch.object(post, "write_receipt"), \
+             patch.object(post, "validate_sticky_wicket"):
+            post._post_kind("vitalharmony/hrse", 7, "rework", "**Finding:** x\n", "a" * 40, "b",
+                            milestone_ack="queued by operator")
+        posted = comment.call_args.args[2]
+        self.assertIn("### Milestone override (operator-acknowledged)", posted)
+        self.assertIn("- R-0404 milestone ack: queued by operator", posted)
 
 class ShimMarkerOnPrLookup(unittest.TestCase):
     """harmonic-forge#964: l1_post's single-branch open-PR reads name themselves to the shim."""

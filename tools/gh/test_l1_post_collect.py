@@ -70,6 +70,7 @@ class MainCollectTests(unittest.TestCase):
                    mock.patch.object(l1_post, "record_queue_candidate"),
                    mock.patch.object(l1_post, "apply_project_identity"),
                    mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
+                   mock.patch.object(l1_post, "validate_milestone_current"),
                    *extra]
         post = mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1))
         for patch in [*patches, post]:
@@ -80,6 +81,27 @@ class MainCollectTests(unittest.TestCase):
         # A refusal posts nothing: post_kind (which runs static_checks) is never reached.
         l1_post.post_kind.assert_not_called()
         return str(caught.exception)
+
+    def test_milestone_ack_reaches_posted_body(self):
+        """The main() -> post_kind hop carries --milestone-ack (harmonic-forge#1033)."""
+        argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", "rework",
+                "--sha", "deadbeef", "--branch", "feat/35-x", "--file", "/dev/null",
+                "--milestone-ack", "queued by operator"]
+        patches = [mock.patch.object(sys, "argv", argv),
+                   mock.patch.object(l1_post, "resolve_sha", return_value="deadbeef"),
+                   mock.patch.object(l1_post, "regular_body", return_value="body"),
+                   mock.patch.object(l1_post, "reject_reserved_marker"),
+                   mock.patch.object(l1_post, "record_queue_candidate"),
+                   mock.patch.object(l1_post, "apply_project_identity"),
+                   mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
+                   mock.patch.object(l1_post, "_collect")]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        with mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1)) as post:
+            l1_post.main()
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["milestone_ack"], "queued by operator")
 
     def test_two_defects_one_refusal(self):
         """A rework with no lead block, after two FAILs with no sticky-wicket receipt."""
@@ -112,9 +134,9 @@ class MainCollectTests(unittest.TestCase):
 ORDER = {
     "handoff": ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
                 "validate_board_fields_set", "validate_milestone_set",
-                "validate_tooling_exception_labelled", "validate_pitch_inspected",
+                "validate_milestone_current", "validate_tooling_exception_labelled", "validate_pitch_inspected",
                 "validate_sticky_wicket", "validate_lead"],
-    "rework": ["validate_sticky_wicket", "validate_lead"],
+    "rework": ["validate_milestone_current", "validate_sticky_wicket", "validate_lead"],
     "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
     "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep"],
     "ae": ["validate_sticky_wicket", "validate_lead", "validate_ae", "validate_grant_ae",

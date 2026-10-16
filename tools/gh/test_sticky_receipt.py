@@ -152,6 +152,7 @@ class MainCallSiteTests(ReceiptHome):
                 mock.patch.object(l1_post, "regular_body", return_value="body"), \
                 mock.patch.object(l1_post, "reject_reserved_marker"), \
                 mock.patch.object(l1_post, "validate_lead"), \
+                mock.patch.object(l1_post, "validate_milestone_current"), \
                 mock.patch.object(l1_post, "run", return_value=result), \
                 mock.patch.object(l1_post, "post_kind",
                                   return_value=("https://example/1", 1)) as post, \
