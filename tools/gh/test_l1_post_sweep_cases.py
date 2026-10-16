@@ -509,60 +509,50 @@ SPEC_TIER_P = (
     "### Preconditions for Lane 1's sweep\n1. CI green.\n2. backup verified before P2.\n"
     "3. grant minted.\n4. runner installed.\n"
 )
-SWEEP_TIER_P = (
-    "## Gate-readiness sweep — H1896\n\n**Readiness:** P1 now.\n**Blockers:** none.\n"
-    "**Next:** Lane 3 runs P1.\n\nWrite tier: P\n\n### Per-case readiness\n"
-    "1. P1 — ready: grant minted.\n2. P2 — not authorized by this AE.\n"
-    "3. P3 — not authorized by this AE.\n"
-)
+HEAD_P = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n"
 
 
 class TierPCaseIdTests(unittest.TestCase):
-    def test_tier_p_spec_case_ids(self):
-        self.assertEqual(L._classify_case_ids(SPEC_TIER_P, tier_p=True)[0], {"1", "2", "3"})
-
-    def test_stray_p_outside_the_case_section_adds_nothing(self):
-        spec = SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n"
-        self.assertEqual(L._classify_case_ids(spec, tier_p=True)[0], {"1", "2", "3"})
-
-    def test_list_sweep_validates_against_tier_p_spec(self):
-        with mock.patch.object(L, "footer_case_ids", return_value=set()):
-            L.validate_sweep(SWEEP_TIER_P, SPEC_TIER_P, "vitalharmony/hrse", 1896)
-
-    def _ok(self, sweep):
+    def _ok(self, sweep, spec=SPEC_TIER_P):
         try:
             with mock.patch.object(L, "footer_case_ids", return_value=set()):
-                L.validate_sweep(sweep, SPEC_TIER_P, "vitalharmony/hrse", 1896)
+                L.validate_sweep(sweep, spec, "vitalharmony/hrse", 1896)
             return True
         except SystemExit:
             return False
 
-    def test_p_entry_sweep_validates(self):
-        sweep = SWEEP_TIER_P.replace("1. P1", "- P1").replace("2. P2", "- P2").replace("3. P3", "- P3")
-        self.assertTrue(self._ok(sweep))
+    def test_numbered_p_sweep_validates(self):
+        self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — ready: grant minted.\n"
+                                 "2. P2 — not authorized by this AE.\n3. P3 — not authorized by this AE.\n"))
+
+    def test_bulleted_p_sweep_validates(self):
+        self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n- P1 — ready\n- P2 — later\n- P3 — later\n"))
+
+    def test_sweep_under_a_cases_heading_validates(self):
+        self.assertTrue(self._ok(HEAD_P + "### Cases\n1. P1 — ready\n2. P2 — later\n3. P3 — later\n"))
 
     def test_prose_p_mentions_are_not_entries(self):
-        head = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n"
-        self.assertFalse(self._ok(head + "### Cases\nP1, P2 and P3 are all fine.\n"))
-        self.assertFalse(self._ok(head + "### Per-case readiness\nP1, P2 and P3 are all fine.\n"))
+        self.assertFalse(self._ok(HEAD_P + "### Cases\nP1, P2 and P3 are all fine.\n"))
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\nP1, P2 and P3 are all fine.\n"))
 
-    def test_a_sweep_never_reads_the_spec_fallback(self):
-        self.assertEqual(L.case_ids("## Sweep\n\n### Cases\n- P1 x\n- P2 y\n"), set())
+    def test_p_outcomes_are_refused_in_every_entry_shape(self):
+        for entry in ("- P{n}: pass", "{n}. P{n}: pass", "{n}. P{n} — passed."):
+            with self.subTest(entry=entry):
+                lines = "\n".join(entry.format(n=n) for n in (1, 2, 3))
+                self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n" + lines + "\n"))
 
-    def test_p_entry_outcome_is_refused(self):
-        head = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n### Per-case readiness\n"
-        self.assertFalse(self._ok(head + "- P1: pass\n- P2: fail\n- P3: pass\n"))
+    def test_a_repeated_or_missing_p_entry_is_refused(self):
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P1 — r\n3. P1 — r\n"))
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n- P1 — ready\n- P2 — later\n"))
 
-    def test_a_missing_p_entry_is_refused(self):
-        head = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n### Per-case readiness\n"
-        self.assertFalse(self._ok(head + "- P1 — ready\n- P2 — later\n"))
+    def test_stray_p_outside_the_case_section_adds_nothing(self):
+        spec, _ = L._canonicalize_tier_p(SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n")
+        self.assertEqual(L.case_ids(spec), {"1", "2", "3"})
 
-    def test_edge_cases_heading_still_not_a_case_heading(self):
-        self.assertFalse(L._case_section("### Edge cases\n1. x\n")[1])
-
-    def test_tc_spec_unchanged(self):
+    def test_specs_that_parsed_before_are_untouched(self):
         self.assertEqual(L._classify_case_ids(SPEC_TC), ({"1", "2"}, True))
-
+        self.assertEqual(L._canonicalize_tier_p(SPEC_TC), (SPEC_TC, False))
+        self.assertFalse(L._case_section("### Edge cases\n1. x\n")[1])
 
 if __name__ == "__main__":
     unittest.main()

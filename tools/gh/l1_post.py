@@ -107,14 +107,6 @@ HANDOFF_HEADINGS = [
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
-# harmonic-forge#1022: a Tier P case id (`P1`). Read only inside an isolated
-# case section, as the last fallback -- never whole-body, where "Tier P" or a
-# priority label would add phantom cases.
-P_ID = re.compile(r"\bP(\d+)\b")
-# A sweep's Tier P entry: a line that LEADS with `P<n>` (optionally after a
-# bullet), so a prose mention of P1..Pn is never an entry.
-SWEEP_P_ENTRY = re.compile(r"(?m)^\s*(?:[-*]\s*)?P(\d+)\b[^\S\n]*(.*)$")
-SWEEP_P_OUTCOME = re.compile(r"(?im)^\s*(?:[-*]\s*)?P\d+\b\W{0,4}(?:pass(?:ed)?|fail(?:ed)?)\b")
 
 # a private-repo incident (pre-close panel): a sweep entry must be a LINE, must name its own
 # case, and must carry text. The deleted TC_STATUS pattern enforced all three
@@ -161,10 +153,6 @@ SWEEP_FABRICATED_OUTCOME = re.compile(
 # also catch "### Edge cases" and count the wrong list.
 CASE_HEADING = re.compile(
     r"(?im)^#{2,4}\s*.*\b(?:test\s+cases?|per-case|case\s+readiness)\b")
-# harmonic-forge#1022: a heading that is exactly "Cases" (a Lane 3 Tier P
-# spec's shape). Consulted only when a body has no case heading and no TC<n>
-# at all, so every spec that parsed before parses the same way.
-BARE_CASES_HEADING = re.compile(r"(?im)^(#{2,4})\s*cases\s*$")
 LIST_ITEM = re.compile(r"(?m)^\s*(\d+)\.\s")
 
 
@@ -240,20 +228,36 @@ def _case_section(body: str) -> tuple[str, bool]:
     return (rest[:following.start()] if following else rest), True
 
 
-def _tier_p_case_ids(body: str) -> set[str]:
-    """harmonic-forge#1022: `P<n>` ids under a bare "### Cases" heading, up to
-    the next heading of the same or higher level; empty when there is none.
-    Flagged as a list scheme by the caller, so the sweep is checked against
-    its own numbered `1.`..`n.` entries."""
+# harmonic-forge#1022: a Lane 3 Tier P spec numbers its cases P1..Pn in a
+# table under a bare "### Cases" heading. That is the TC scheme with another
+# letter, so it is rewritten into the TC shape -- heading and line-leading ids,
+# inside that one section only -- and then validated by the unchanged TC path.
+# Prose P<n> is never rewritten, so it can never become a case.
+BARE_CASES_HEADING = re.compile(r"(?im)^(#{2,4})[ \t]*cases[ \t]*$")
+LEADING_P_ID = re.compile(
+    r"(?m)^([ \t]*(?:[-*][ \t]+|\d+\.[ \t]*|\|[ \t]*)?\**[ \t]*)P(\d+)\b")
+
+
+def _canonicalize_tier_p(body: str, sweep: bool = False) -> tuple[str, bool]:
+    """(body, rewritten). A spec is rewritten only under a bare `Cases`
+    heading; a sweep under that heading or its usual case heading."""
     match = BARE_CASES_HEADING.search(body)
-    if not match:
-        return set()
-    rest = body[match.end():]
-    following = re.compile(rf"(?m)^#{{1,{len(match.group(1))}}}\s").search(rest)
-    return set(P_ID.findall(rest[:following.start()] if following else rest))
+    if match:
+        level = len(match.group(1))
+        heading = ("#" * level) + (" Per-case readiness" if sweep else " Test cases")
+        start, end = match.start(), match.end()
+    elif sweep and (case := CASE_HEADING.search(body)):
+        level = len(case.group(0)) - len(case.group(0).lstrip("#"))
+        heading, start, end = case.group(0), case.start(), case.end()
+    else:
+        return body, False
+    rest = body[end:]
+    following = re.compile(rf"(?m)^#{{1,{level}}}\s").search(rest)
+    section, tail = (rest[:following.start()], rest[following.start():]) if following else (rest, "")
+    return body[:start] + heading + LEADING_P_ID.sub(r"\1TC\2", section) + tail, True
 
 
-def _classify_case_ids(body: str, tier_p: bool = False) -> tuple[set[str], bool]:
+def _classify_case_ids(body: str) -> tuple[set[str], bool]:
     """Case identifiers plus whether they came from TC<n> markers (vs. a plain
     numbered list) -- both branches return plain digit strings, so the caller
     cannot tell which scheme was used from the ids alone; validate_sweep needs
@@ -272,12 +276,7 @@ def _classify_case_ids(body: str, tier_p: bool = False) -> tuple[set[str], bool]
     section, has_case_heading = _case_section(body)
     if not has_case_heading:
         ids = set(TC_ID.findall(section))
-        if ids:
-            return ids, True
-        # harmonic-forge#1022: only a SPEC is read this way (validate_sweep
-        # passes tier_p=True for the spec body alone); a sweep's P<n> entries
-        # are line-anchored, in validate_sweep.
-        return (_tier_p_case_ids(body) if tier_p else set()), False
+        return ids, bool(ids)
     # a private-repo incident follow-up 2: a numbered-list case (e.g. "12. ... TC4 ...") can
     # cross-reference an earlier case by its number *inside* the section
     # itself, not just in prose outside it -- observed live on a private-repo incident's
@@ -956,17 +955,12 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     if footer_ids:
         _validate_sweep_against_footer(body, footer_ids)
         return
+    if not case_ids(spec_body):
+        spec_body, tier_p = _canonicalize_tier_p(spec_body)
+        if tier_p:
+            body, _ = _canonicalize_tier_p(body, sweep=True)
     expected = case_ids(spec_body)
-    spec_tier_p = not expected and bool(_tier_p_case_ids(spec_body))
-    if spec_tier_p:
-        expected = _tier_p_case_ids(spec_body)
     actual = case_ids(body)
-    sweep_p_entries: list[tuple[str, str]] = []
-    if spec_tier_p and not actual:
-        # harmonic-forge#1022: a Tier P sweep may name its entries P1..Pn,
-        # one line each; prose mentions never count.
-        sweep_p_entries = SWEEP_P_ENTRY.findall(_case_section(body)[0])
-        actual = {number for number, _ in sweep_p_entries}
     if not expected:
         # a private-repo incident: the error used to assert "no identifiable test cases"
         # even when the parser had isolated a real section and simply found
@@ -1003,8 +997,7 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     spec_uses_tc_scheme = _classify_case_ids(spec_body)[1]
     sweep_section, _ = _case_section(body)
 
-    fabricated = SWEEP_FABRICATED_OUTCOME.search(sweep_section) or (
-        spec_tier_p and SWEEP_P_OUTCOME.search(sweep_section))
+    fabricated = SWEEP_FABRICATED_OUTCOME.search(sweep_section)
     if fabricated:
         fail(
             "sweep states a test outcome (`pass`/`fail`), but a gate-readiness "
@@ -1018,11 +1011,7 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     if parse_write_tier(body) is None:
         fail(f"sweep {NO_TIER_MESSAGE}")
 
-    if sweep_p_entries:
-        empty = [number for number, text in sweep_p_entries if not is_substantive(text.strip(" —-:"))]
-        if empty:
-            fail(f"sweep entries carry no text: P{', P'.join(sorted(set(empty), key=int))}")
-    elif spec_uses_tc_scheme:
+    if spec_uses_tc_scheme:
         entries = SWEEP_TC_ENTRY.findall(sweep_section)
         named = {number for number, _ in entries}
         if named != expected:
