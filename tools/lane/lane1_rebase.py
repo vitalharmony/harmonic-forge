@@ -30,8 +30,9 @@ worktree is removed in a `finally`; if `origin/<branch>` already contains
 step. That holds on the Lane 3 PASS path too (harmonic-forge#1034): before
 the push a receipt `{issue, passed_sha, rebased_shas}` is written in the git
 dir, and after a crash the PASS (which names the pre-rebase SHA) is accepted
-only when that receipt names it, the local branch still sits on it, and
-`origin/<branch>` is exactly one of the receipt's recorded rebased SHAs. The receipt is
+only when that receipt names it and `origin/<branch>` is exactly one of the
+receipt's recorded rebased SHAs; the local branch is left to the cherry check
+in the local-ref step (operator ruling amending 6219927415). The receipt is
 deleted once the local ref moves. The crash state is recorded, never
 inferred from history (sticky-wicket reforge, F1034).
 """
@@ -196,16 +197,19 @@ def read_receipt(repo_dir: str, issue: int) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_receipt(repo_dir: str, issue: int, old: str, rebased: str) -> None:
-    """Record `{issue, passed_sha, rebased_shas}` before a push. When `old`
-    is itself a SHA this receipt says was pushed (a re-rebase after a crash
-    and a main move), the passed SHA carries forward and the new SHA is
-    appended -- never overwritten (preclose F1034 reforge pass 1 #1)."""
+def write_receipt(repo_dir: str, issue: int, passed: str, old: str, rebased: str) -> None:
+    """Record `{issue, passed_sha, rebased_shas}` before a push, `passed`
+    being the Lane 3 PASS Head-SHA (never guessed). The rebased SHAs carry
+    forward only when the prior receipt names this same PASS and `old` is
+    one it says was pushed (a re-rebase after a crash and a main move);
+    otherwise the receipt is fresh (sticky-wicket PATCH, F1034)."""
     prior = read_receipt(repo_dir, issue)
-    if prior and prior.get("issue") == issue and old in prior.get("rebased_shas", []):
-        passed, shas = prior.get("passed_sha"), prior["rebased_shas"] + [rebased]
+    if (prior and prior.get("issue") == issue
+            and _same_sha(passed, prior.get("passed_sha"))
+            and old in prior.get("rebased_shas", [])):
+        shas = prior["rebased_shas"] + [rebased]
     else:
-        passed, shas = old, [rebased]
+        shas = [rebased]
     receipt_path(repo_dir, issue).write_text(json.dumps(
         {"issue": issue, "passed_sha": passed, "rebased_shas": shas}))
 
@@ -214,31 +218,34 @@ def drop_receipt(repo_dir: str, issue: int) -> None:
     receipt_path(repo_dir, issue).unlink(missing_ok=True)
 
 
-def _pass_covers(repo_dir: str, issue: int, branch: str, old: str, passed: str) -> bool:
+def _pass_covers(repo_dir: str, issue: int, old: str, passed: str) -> bool:
     """A PASS covers the branch when it names the head, or (operator ruling
     on #1034) the crash-after-push state -- recorded, never inferred
-    (sticky-wicket reforge): this tool's own receipt names the passed SHA,
-    the local branch still sits on it, and origin is exactly the SHA the
-    receipt says was pushed. Fails closed (exit 4) otherwise."""
+    (sticky-wicket reforge): this tool's own receipt names this PASS and
+    origin is exactly a SHA the receipt says was pushed. The local branch
+    is not consulted (operator ruling amending 6219927415): unpushed local
+    work is guarded by move_local_ref's cherry check. Fails closed (exit 4)
+    otherwise."""
     if _same_sha(passed, old):
         return True
     receipt = read_receipt(repo_dir, issue)
-    local = rev(repo_dir, f"refs/heads/{branch}")
-    if not receipt or receipt.get("issue") != issue or not local:
+    if not receipt or receipt.get("issue") != issue:
         return False
-    return (receipt.get("passed_sha") == local and _same_sha(passed, local)
+    return (_same_sha(passed, receipt.get("passed_sha"))
             and old in receipt.get("rebased_shas", []))
 
 
-def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:
+def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> str | None:
+    """Return the Lane 3 PASS Head-SHA, or None on the l2.done path."""
     # preclose F1018-2: the checks below read #issue, so the branch pushed
     # must be #issue's own (`feat|fix/<issue>-...`), never another issue's.
     if not re.match(rf"(?:feat|fix)/{issue}-", branch):
         raise Exit(4, f"{branch} is not #{issue}'s branch (expected feat/{issue}-... or fix/{issue}-...)")
     marker = newest_lane_marker(repo_dir, issue)
+    passed = None
     if marker and marker.startswith("l3.pass:"):
         passed = marker.split(":", 1)[1]
-        if not _pass_covers(repo_dir, issue, branch, old, passed):
+        if not _pass_covers(repo_dir, issue, old, passed):
             raise Exit(4, f"the Lane 3 PASS on #{issue} names {passed[:12] or 'no SHA'}, "
                           f"not the branch head {old[:12]}")
     elif marker != "l2.done":
@@ -249,6 +256,7 @@ def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> Non
     gate = lane3_open_on(repo_dir, old)
     if gate:
         raise Exit(4, f"a Lane 3 gate is open on {old[:12]} in {gate}")
+    return passed
 
 
 # ---------------------------------------------------------------- git steps
@@ -298,7 +306,8 @@ def push(prep: Path, branch: str, old: str) -> None:
     raise Exit(1, f"push failed:\n{err}")
 
 
-def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str) -> str:
+def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
+                    passed: str | None = None) -> str:
     prep = prep_path(repo_dir, issue)
     prune_stale_prep(repo_dir, prep)
     prep.parent.mkdir(parents=True, exist_ok=True)
@@ -314,7 +323,9 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str) -> str:
         new = rev(prep, "HEAD")
         # sticky-wicket reforge F1034: record the crash state before it can
         # exist, so a re-run never has to infer it from history.
-        write_receipt(repo_dir, issue, old, new)
+        # No receipt on the l2.done path: there is no PASS to carry.
+        if passed:
+            write_receipt(repo_dir, issue, passed, old, new)
         push(prep, branch, old)
         return new
     finally:
@@ -366,11 +377,11 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
     main = rev(repo_dir, "refs/remotes/origin/main")
     if not old or not main:
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
-    check_preconditions(repo_dir, issue, branch, old)
+    passed = check_preconditions(repo_dir, issue, branch, old)
     if git(repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode == 0:
         new = old  # already on current main (incl. a re-run after a crash)
     else:
-        new = rebase_and_push(repo_dir, issue, branch, old)
+        new = rebase_and_push(repo_dir, issue, branch, old, passed)
     move_local_ref(repo_dir, branch, new)
     drop_receipt(repo_dir, issue)
     return new

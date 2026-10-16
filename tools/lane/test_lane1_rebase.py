@@ -325,14 +325,14 @@ class PassPreconditionTests(_Fixture):
         self.assertEqual(self.local_branch(), self.branch_sha)
         self.assertNotEqual(extra, pushed)
 
-    def test_f2_rerun_with_local_at_third_sha_exits_4(self):
+    def test_f2_rerun_with_local_at_third_sha_exits_3(self):
+        # Operator ruling amending 6219927415 (sticky-wicket PATCH): the
+        # local branch is no longer a PASS condition, so the receipt covers
+        # the re-run and move_local_ref decides. A third local commit that
+        # origin lacks is unpushed work: exit 3, both refs untouched.
         pushed = self._crash_after_push()
-        # Patch-equivalent to the PASS (reworded), so only the local-equals-
-        # PASS condition can refuse it, not the receipt match.
-        sh(self.impl, "commit", "-q", "--amend", "-m", "reworded")
-        third = sh(self.impl, "rev-parse", "HEAD")
-        self.assertNotEqual(third, self.branch_sha)
-        self.assertEqual(self.run_main(), 4)
+        third = commit(self.impl, "local-only.txt", "x\n", "local only")
+        self.assertEqual(self.run_main(), 3)
         self.assertEqual(self.origin_branch(), pushed)
         self.assertEqual(self.local_branch(), third)
 
@@ -466,6 +466,55 @@ class PassPreconditionTests(_Fixture):
         self._crash_after_push()
         self.assertIsNotNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
         self.assertEqual(self.run_main(), 0)
+        self.assertIsNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
+
+    # Sticky-wicket PATCH (F1034): receipt keyed by the PASS Head-SHA.
+
+    def test_f9_new_pass_on_recorded_rebased_head_then_crash_completes(self):
+        first = self._crash_after_push()  # stale receipt {A, [first]}
+        self.bodies = [L2D, gate("PASS", first)]
+        self.advance_main("main3.txt", "three\n")
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash on new PASS")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        second = self.origin_branch()
+        self.assertNotEqual(second, first)
+        receipt = lane1_rebase.read_receipt(str(self.repo), ISSUE)
+        self.assertEqual(receipt["passed_sha"], first)
+        self.assertEqual(receipt["rebased_shas"], [second])
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.local_branch(), second)
+
+    def test_f10_crash_between_local_move_and_receipt_drop_completes(self):
+        self.bodies = [L2D, gate("PASS", self.branch_sha)]
+        self.advance_main()
+        with mock.patch.object(lane1_rebase, "drop_receipt",
+                               side_effect=RuntimeError("crash before drop")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        pushed = self.origin_branch()
+        self.assertEqual(self.local_branch(), pushed)
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.local_branch(), pushed)
+        self.assertIsNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
+
+    def test_f11_receipt_names_other_passed_sha_exits_4(self):
+        pushed = self._crash_after_push()
+        path = lane1_rebase.receipt_path(str(self.repo), ISSUE)
+        data = json.loads(path.read_text())
+        data["passed_sha"] = "0123456789abcdef0123456789abcdef01234567"
+        path.write_text(json.dumps(data))
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), pushed)
+
+    def test_f12_l2_done_rebase_writes_no_receipt(self):
+        self.bodies = [L2D]
+        self.advance_main()
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
         self.assertIsNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
 
 
