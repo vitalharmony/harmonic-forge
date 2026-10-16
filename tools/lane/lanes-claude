@@ -127,11 +127,16 @@ import json, os, signal, subprocess, sys, time
 
 mode, session, advisor, script_dir, launch_dirs = sys.argv[1:6]
 sys.path.insert(0, script_dir)
-from lane_targets import in_workspace, select_targets, workspace_dirs_from_paths
+from lane_targets import advisor_names, in_workspace, lane_names, select_targets, workspace_dirs_from_paths
 
 state_dir = os.path.expanduser("~/.cache/lanes-claude")
 state = os.path.join(state_dir, f"{session}.sessions")
-LANE_NAMES = {"Lane 1", "Lane 2", "Lane 3", "Advisor", "Lane Advisor"}
+# harmonic-forge#1014: the legacy literals still match sessions started before
+# it; the wrappers now name lanes `<label>:laneN` (or bare `laneN`) and the
+# Advisor `<label>:advisor` (or bare `advisor`). Matched by pattern, never by
+# re-reading projects.toml, so teardown cannot fail on the manifest.
+ADVISOR_SET = advisor_names()
+LANE_NAMES = lane_names()
 me = {os.getpid(), os.getppid()}
 
 def alive(pid):
@@ -235,7 +240,7 @@ if mode == "advisor":
     workspace_dirs = scope((advisor,))
     panes = pane_descendants((advisor,))
     targets = select_targets("advisor", listing, panes, set(), LANE_NAMES, me,
-                             workspace_dirs=workspace_dirs)
+                             workspace_dirs=workspace_dirs, advisor_name_set=ADVISOR_SET)
     report_left(workspace_dirs)
     victims = {a["pid"] for a in targets if a.get("pid") and alive(a["pid"])}
     for a in targets:
@@ -382,6 +387,18 @@ lane1_dir="$(git_root "$lane1_dir")"
 lane2_dir="$(git_root "$lane2_dir")"
 lane3_dir="$(git_root "$lane3_dir")"
 advisor_dir="$(git_root "$advisor_dir")"
+
+# harmonic-forge#1014: the Advisor's identity, `<label>:advisor`, from the same
+# resolver the lane wrappers use; its pane title is pinned the same way.
+advisor_label="$(python3 "$(dirname "$script_path")/../onboard/manifest_labels.py" label "$advisor_dir" advisor 2>/dev/null)" \
+  || advisor_label=""
+# Spliced into a single-quoted pane command below: anything outside the label
+# alphabet falls back to the bare name rather than breaking the launch.
+case "$advisor_label" in ""|*[!A-Za-z0-9_.:-]*) advisor_label=advisor ;; esac
+pin_advisor_title() {
+  tmux set-option -p -t "$advisor_pane" allow-set-title off >/dev/null 2>&1 || true
+  tmux select-pane -t "$advisor_pane" -T "$advisor_label" >/dev/null 2>&1 || true
+}
 
 # hrse#2258: this launch's directories, which scope the launch-time guard's name fallback.
 # The lane wrappers strip a trailing -laneN to find the main checkout (harmonic-forge
@@ -568,8 +585,8 @@ if tmux has-session -t "=$session" 2>/dev/null; then
     # this happens now (AC2), not a failure state to report and leave be.
     advisor_pane="$(tmux new-session -d -P -F '#{pane_id}' \
       -s "$advisor_session" -n advisor -c "$advisor_dir" \
-      "claude --model opus --effort medium --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
-    tmux select-pane -t "$advisor_pane" -T "Advisor · Opus · Plan"
+      "claude --model opus --effort medium --permission-mode plan --name '$advisor_label'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+    pin_advisor_title
   fi
   install_workspace_cleanup_hooks
   set_window_titles
@@ -624,21 +641,21 @@ trap cleanup_failed_launch ERR
 
 lane1_pane="$(tmux new-session -d -P -F '#{pane_id}' \
   -s "$session" -n lanes -c "$lane1_dir" \
-  "lane1 --agent claude -- --name 'Lane 1'; rc=\$?; echo; echo \"Lane 1 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+  "lane1 --agent claude; rc=\$?; echo; echo \"Lane 1 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
 created_lanes=1
 
 lane2_pane="$(tmux split-window -d -h -P -F '#{pane_id}' \
   -t "$lane1_pane" -c "$lane2_dir" \
-  "lane2 --agent claude -- --name 'Lane 2'; rc=\$?; echo; echo \"Lane 2 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+  "lane2 --agent claude; rc=\$?; echo; echo \"Lane 2 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
 
 lane3_pane="$(tmux split-window -d -h -P -F '#{pane_id}' \
   -t "$lane2_pane" -c "$lane3_dir" \
-  "lane3 --agent claude -- --name 'Lane 3'; rc=\$?; echo; echo \"Lane 3 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+  "lane3 --agent claude; rc=\$?; echo; echo \"Lane 3 exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
 
 tmux select-layout -t "$session:lanes" even-horizontal >/dev/null
-tmux select-pane -t "$lane1_pane" -T "L1 · Claude"
-tmux select-pane -t "$lane2_pane" -T "L2 · Claude"
-tmux select-pane -t "$lane3_pane" -T "L3 · Claude"
+# harmonic-forge#1014: no select-pane -T for the lanes -- each wrapper pins its
+# own pane title (and session name) from its repo, so a lane restarted by hand
+# in its pane gets the same identity as one started here.
 tmux set-option -t "$session" pane-border-status top
 tmux set-option -t "$session" pane-border-format ' #[bold]#{pane_title}#[default] '
 # Click a pane to activate it (also enables wheel scrollback and border drag-resize).
@@ -646,9 +663,9 @@ tmux set-option -t "$session" mouse on
 
 advisor_pane="$(tmux new-session -d -P -F '#{pane_id}' \
   -s "$advisor_session" -n advisor -c "$advisor_dir" \
-  "claude --model opus --effort medium --permission-mode plan --name 'Advisor'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
+  "claude --model opus --effort medium --permission-mode plan --name '$advisor_label'; rc=\$?; echo; echo \"Advisor exited (status \$rc). Press Enter for a shell.\"; read -r; exec bash")"
 created_advisor=1
-tmux select-pane -t "$advisor_pane" -T "Advisor · Opus · Plan"
+pin_advisor_title
 tmux set-option -t "$advisor_session" mouse on 2>/dev/null || true
 install_workspace_cleanup_hooks
 set_window_titles

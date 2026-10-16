@@ -62,6 +62,15 @@
 # onboarded       Whether the 3-lane apparatus is installed. A projected repo is
 #                 false; a real repo that is false is a backlog item.
 # protocol        Repo-specific scalar inputs to the portable lane procedure.
+#
+# ## [workspace_labels] (harmonic-forge#1014)
+#
+# The short venture label for lane identity, one per workspace: `lane2` run
+# from any vh checkout is named `vh:lane2`, its Advisor `vh:advisor`. The
+# label is the Claude session name (what Remote Control shows on the phone)
+# and the pinned tmux pane title. Keyed by workspace so the fact lives once,
+# not repeated on every project. A workspace with no entry falls back to its
+# own name; two workspaces sharing a label is a ManifestError.
 #   worktree_name       Basename shape under `worktree_dir`; `{checkout}` and
 #                       `{lane}` are the only placeholders. This cannot be
 #                       derived because HRSE2's checkout basename differs from
@@ -114,6 +123,11 @@
 # create. Its gate-appropriate exercise surface already exists and is
 # read/validate shaped: `test`, `validate-tenants`, `test-control-plane`,
 # `verify-restore`.
+
+[workspace_labels]
+vh = "vh"
+leasepal = "lp"
+kenekted = "k"
 
 [[project]]
 name = "hrse"

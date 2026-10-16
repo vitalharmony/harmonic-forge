@@ -496,6 +496,20 @@ for _word in $_lane_session_flags; do
 done
 unset _lane_session_flags _word
 
+# 4d. The session name (harmonic-forge#1014): the lane's LANE_LABEL from
+#     _lane_identity.sh, before the passthrough. A caller's own --name/-n wins.
+[ -z "${LANE_LABEL_NOTE:-}" ] || echo "$LANE_LABEL_NOTE" >&2
+_lane_name_flag="$(registry_lookup AGENT_NAME_FLAG "$_lane_agent")"
+if [ -n "$_lane_name_flag" ] && [ -n "${LANE_LABEL:-}" ]; then
+  _lane_has_name=0
+  for _arg in "${lane_passthrough[@]}"; do
+    case "$_arg" in --name|--name=*|-n) _lane_has_name=1 ;; esac
+  done
+  [ "$_lane_has_name" = 1 ] || cli_args+=("$_lane_name_flag" "$LANE_LABEL")
+  unset _lane_has_name
+fi
+unset _lane_name_flag
+
 # 5. The caller's own arguments, last.
 cli_args+=("${lane_passthrough[@]}")
 

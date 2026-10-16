@@ -30,6 +30,45 @@ ADVISOR = "advisor"
 ADVISOR_NAMES = {"Advisor", "Lane Advisor"}
 
 
+# harmonic-forge#1014: the wrappers name a lane `<label>:laneN` and the Advisor
+# `<label>:advisor`, or the bare role for an unregistered checkout. Teardown
+# matches that shape rather than re-reading projects.toml, so a manifest that is
+# broken or edited between launch and teardown cannot hide a labelled session.
+# The label alphabet is manifest_labels.LABEL_RE's.
+LABELLED = re.compile(r"(?:[A-Za-z0-9_.-]+:)?(lane[123]|advisor)")
+
+
+class Names:
+    """Literal names, plus every `LABELLED` name whose role is in `roles`.
+
+    Supports `in` and `|`, which is all `select_targets` and lanes-claude use.
+    """
+
+    def __init__(self, literals, roles=()):
+        self.literals, self.roles = frozenset(literals), frozenset(roles)
+
+    def __contains__(self, name) -> bool:
+        if name in self.literals:
+            return True
+        m = LABELLED.fullmatch(name) if isinstance(name, str) else None
+        return bool(m) and m.group(1) in self.roles
+
+    def __or__(self, other):
+        if isinstance(other, Names):
+            return Names(self.literals | other.literals, self.roles | other.roles)
+        return Names(self.literals | frozenset(other), self.roles)
+
+
+def advisor_names() -> Names:
+    """`ADVISOR_NAMES` plus `advisor` and every `<label>:advisor`."""
+    return Names(ADVISOR_NAMES, {ADVISOR})
+
+
+def lane_names() -> Names:
+    """Full teardown's names: the legacy `Lane N`, every lane label, and the Advisor's."""
+    return Names({"Lane 1", "Lane 2", "Lane 3"}, {"lane1", "lane2", "lane3"}) | advisor_names()
+
+
 def _git_common_dir(path: str) -> str | None:
     """The absolute git common dir of `path`, or None on any failure (a stale
     worktree, a non-repo, a timeout). The ONE subprocess in this module, isolated
@@ -113,6 +152,7 @@ def select_targets(
     lane_names: set[str],
     me: set[int],
     workspace_dirs: set[str] | None = None,
+    advisor_name_set: set[str] | None = None,
 ) -> list[dict]:
     """The `agents --json` entries `lane_sessions()` should stop.
 
@@ -142,6 +182,7 @@ def select_targets(
     pane pids only.
     """
     cache: dict = {}
+    names = ADVISOR_NAMES if advisor_name_set is None else advisor_name_set
     if mode == ADVISOR:
         return [
             a for a in listing
@@ -149,7 +190,7 @@ def select_targets(
             and a.get("pid") not in me
             and (
                 a.get("pid") in panes
-                or (a.get("kind") == "background" and a.get("name") in ADVISOR_NAMES
+                or (a.get("kind") == "background" and a.get("name") in names
                     and in_workspace(a, workspace_dirs, cache))
             )
         ]

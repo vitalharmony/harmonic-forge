@@ -124,7 +124,7 @@ class TmuxLanesScopeTests(unittest.TestCase):
         """harmonic-forge#1010: both Advisor launch strings and the banner say medium,
         so the first-launch and re-create copies cannot drift apart."""
         text = SCRIPT.read_text()
-        launch = "claude --model opus --effort medium --permission-mode plan --name 'Advisor'"
+        launch = "claude --model opus --effort medium --permission-mode plan --name '$advisor_label'"
         assert text.count(launch) == 2
         assert "--effort high" not in text
         done = _run(self.tmp_path, "--session", "t9", "--project", str(_repo(self.tmp_path, "proj")),

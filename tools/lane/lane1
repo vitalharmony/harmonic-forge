@@ -51,11 +51,19 @@ export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
 # have no SessionStart hook, so this terminal line is their only carrier).
 echo "lane1: after the session starts, run \`mise run restart --no-bump --no-git\` ($LANE_REFRESH_STATUS: $LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
 
+# harmonic-forge#1014: the session name and pinned pane title, from the repo.
+# shellcheck source=_lane_identity.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_identity.sh"
+lane_identity 1
+
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 # shellcheck source=_lane_cleanup.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_cleanup.sh"
 
+# harmonic-forge#1014: pin the pane title only here, after every refusal in
+# this wrapper and in _cli_launch.sh, immediately before the launch.
+lane_pin_title
 lane_run_with_cleanup systemd-inhibit \
   --what=sleep:idle \
   --who="lane1" \
