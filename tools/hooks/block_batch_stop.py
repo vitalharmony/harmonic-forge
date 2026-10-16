@@ -46,75 +46,21 @@ occasionally misses a stop.
 from __future__ import annotations
 
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-#: How many trailing transcript records to scan for the last assistant message.
-#: The last turn's text is within a few records of the end; reading the whole
-#: file on every Stop would make the hook's cost grow with session length.
-_TAIL_RECORDS = 40
-
-#: Question-shaped signals in the final message. Generous on purpose -- see the
-#: module docstring on why false positives here are the expensive direction.
-#: Compiled separately rather than joined with `|`: inline `(?im)` flags are
-#: only legal at the start of a pattern, so an alternation of flagged and
-#: unflagged branches raises at import -- which, in a hook, would be silent.
-#: **The keyword branch is deliberately gone.** It matched a bare "which" or
-#: "confirm" anywhere in the message, and measured against 776 real turn-final
-#: messages in this project's transcripts it let through 5 of 5 turns whose
-#: `DECISIONS NEEDED` section literally said "None" — the exact shape this hook
-#: exists to block — four of them on the word "which" appearing in an unrelated
-#: table. A detector that passes 100% of its primary target is not generous,
-#: it is off.
-#:
-#: What is left is question SYNTAX, not question vocabulary: a `?` ending a
-#: line, or a numbered line containing one. Combined with `_DECISIONS_RE`
-#: below, that covers how a session actually asks.
-_QUESTION_RES = tuple(re.compile(pattern, flags) for pattern, flags in (
-    (r"\?\s*$", re.M),
-    (r"^\s*\d+\.\s+.*\?", re.M),
-))
-
-#: A `DECISIONS NEEDED` heading counts as asking ONLY when it has content. The
-#: batch turn that must be blocked has exactly that heading followed by "None",
-#: so treating the heading alone as a question would disable the hook on its
-#: own primary case.
-#: `[*_ \t]*` before the lookahead so markdown emphasis does not defeat it:
-#: `**None**` matched as a live decision and allowed the stop, and 25 real
-#: messages in this project use exactly that bolded form.
-_DECISIONS_HEADING_RE = re.compile(
-    r"^[ \t]*#{1,4}[ \t]*DECISIONS NEEDED[ \t]*$", re.I | re.M)
-
-#: Leading markdown emphasis is stripped before this is tested, so `**None**`
-#: and `*None*` read the same as `None`. Both flipped the wrong way before —
-#: the lookahead saw `*`, not `N` — and 25 real messages use the bolded form.
-_NO_DECISION_RE = re.compile(
-    r"^(?:none|no decisions?\b|nothing\b|n/?a\b)", re.I)
-
-
-def _decisions_section_has_content(text: str) -> bool:
-    """True when a `DECISIONS NEEDED` heading is followed by a real decision.
-
-    Scoped to the FIRST non-empty line under the heading. A regex spanning
-    further matched content from a later section entirely — which is how
-    `*None*` was read as a live decision while `**None**` was the case being
-    fixed.
-    """
-    match = _DECISIONS_HEADING_RE.search(text)
-    if not match:
-        return False
-    for line in text[match.end():].splitlines():
-        stripped = line.strip().strip("*_ \t")
-        if not stripped:
-            continue
-        if stripped.startswith("#"):
-            return False   # next heading; the section was empty
-        return not _NO_DECISION_RE.match(stripped)
-    return False
+from turn_question import (  # noqa: E402,F401 -- moved to share with enforce_handoff_owed (harmonic-forge#1031)
+    _DECISIONS_HEADING_RE,
+    _NO_DECISION_RE,
+    _QUESTION_RES,
+    _TAIL_RECORDS,
+    _decisions_section_has_content,
+    asks_a_question,
+    last_assistant_text,
+)
 
 
 def live_pending(state: dict, now: datetime) -> list[str]:
@@ -169,37 +115,6 @@ def live_pending(state: dict, now: datetime) -> list[str]:
         if linked_unconsumed:
             pending.append(key)
     return sorted(pending)
-
-
-def last_assistant_text(transcript: Path) -> str:
-    try:
-        lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    for line in reversed(lines[-_TAIL_RECORDS:]):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if record.get("type") != "assistant":
-            continue
-        content = (record.get("message") or {}).get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = [b.get("text", "") for b in content
-                     if isinstance(b, dict) and b.get("type") == "text"]
-            if any(parts):
-                return "\n".join(parts)
-    return ""
-
-
-def asks_a_question(text: str) -> bool:
-    if not text:
-        return False
-    if _decisions_section_has_content(text):
-        return True
-    return any(pattern.search(text) for pattern in _QUESTION_RES)
 
 
 def decide(payload: dict, state: dict, now: datetime | None = None) -> tuple[str, str]:

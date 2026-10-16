@@ -162,6 +162,22 @@ class QuestionDetectionTests(unittest.TestCase):
                 self.assertTrue(bbs.asks_a_question(
                     f"## DECISIONS NEEDED\n{content}\n"), content)
 
+    def test_non_prose_lines_ending_in_a_question_mark_are_not_questions(self) -> None:
+        """harmonic-forge#1031 regression: the shared detector now skips
+        headings, blockquotes and fenced code, for this hook too."""
+        for text in ("### What changed?\nMerged.\n\n## DECISIONS NEEDED\nNone\n",
+                     "> did you mean X?\n\nMerged.",
+                     "```\nWHERE id = ?\n```\nMerged."):
+            with self.subTest(text=text[:20]):
+                self.assertFalse(bbs.asks_a_question(text), text)
+
+    def test_list_marker_none_and_emphasised_questions(self) -> None:
+        self.assertFalse(bbs.asks_a_question("## DECISIONS NEEDED\n- None\n"))
+        for text in ("**Merge now?**", "Merge now? I need your answer.",
+                     "Proceed?", "1. Merge now?"):
+            with self.subTest(text=text):
+                self.assertTrue(bbs.asks_a_question(text), text)
+
     def test_empty_text_is_not_a_question(self) -> None:
         self.assertFalse(bbs.asks_a_question(""))
 

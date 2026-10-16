@@ -182,6 +182,93 @@ class AC1Blocking(_TempStore):
         printed.assert_not_called()
 
 
+class F1031QuestionEndsTurn(_TempStore):
+    """harmonic-forge#1031 AC2/AC3: refused, allowed, question-ends-turn."""
+
+    def _transcript(self, text: str) -> str:
+        path = Path(self._tmp.name) / "t.jsonl"
+        record = {"type": "assistant",
+                  "message": {"content": [{"type": "text", "text": text}]}}
+        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        return str(path)
+
+    def _owe(self, session: str) -> None:
+        handoff_owed.record(REPO, 1031, "u", key=session)
+
+    def test_refused_when_the_turn_ends_with_a_statement(self):
+        self._owe("s")
+        verdict, reason = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript("Filed it. Done.")})
+        self.assertEqual(verdict, "block")
+        self.assertIn("#1031", reason)
+
+    def test_allowed_with_nothing_owed(self):
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript("Done.")})
+        self.assertEqual(verdict, "allow")
+
+    def test_allowed_when_the_turn_ends_with_a_question(self):
+        self._owe("s")
+        verdict, _ = hook.decide({"session_id": "s", "transcript_path":
+                                  self._transcript("Should this be a parent epic?")})
+        self.assertEqual(verdict, "allow")
+
+    def test_decisions_needed_none_is_not_a_question(self):
+        self._owe("s")
+        text = "Filed.\n\n## DECISIONS NEEDED\n\n**None**\n"
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript(text)})
+        self.assertEqual(verdict, "block")
+
+    def _verdict(self, text: str) -> str:
+        self._owe("s")
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript(text)})
+        return verdict
+
+    def test_a_heading_ending_in_a_question_mark_does_not_escape(self):
+        """Survivors 1/2 (sticky-wicket PATCH 6222366002)."""
+        text = "### What changed?\nFiled it.\n\n## DECISIONS NEEDED\nNone\n"
+        self.assertEqual(self._verdict(text), "block")
+
+    def test_a_quoted_question_does_not_escape(self):
+        self.assertEqual(self._verdict("> did you mean X?\n\nFiled it."), "block")
+
+    def test_a_question_in_a_code_fence_does_not_escape(self):
+        text = "Filed.\n```sql\nSELECT * FROM t WHERE id = ?\n```\nDone."
+        self.assertEqual(self._verdict(text), "block")
+
+    def test_a_list_marker_none_decisions_section_does_not_escape(self):
+        """Survivor 4: `- None` read as a live decision."""
+        self.assertEqual(
+            self._verdict("Filed.\n\n## DECISIONS NEEDED\n- None\n"), "block")
+
+    def test_real_question_shapes_escape(self):
+        """Survivor 5 plus the sticky-wicket positive cases."""
+        for text in ("Filed it.\n\nProceed?", "1. Merge now?",
+                     "**Merge now?**", "Merge now? I need your answer."):
+            with self.subTest(text=text):
+                self.assertEqual(self._verdict(text), "allow")
+
+    def test_a_self_answered_question_does_not_escape(self):
+        """Post-verdict survivor 1: a question answered on its own line."""
+        self.assertEqual(self._verdict("Is it done? Yes, it is."), "block")
+
+    def test_a_question_after_mixed_fences_escapes(self):
+        """Post-verdict survivor 2: a fence closes only on the same char and
+        a run at least as long (CommonMark)."""
+        for text in ("```markdown\n~~~\n```\n\nProceed?",
+                     "````markdown\n```\n````\n\nProceed?"):
+            with self.subTest(text=text):
+                self.assertEqual(self._verdict(text), "allow")
+
+    def test_an_unreadable_transcript_keeps_the_block(self):
+        self._owe("s")
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": "/nonexistent/t.jsonl"})
+        self.assertEqual(verdict, "block")
+
+
 class AC6PositiveSignalOnly(_TempStore):
     def test_an_issue_created_by_another_route_produces_no_obligation(self):
         """The obligation exists only because `gh_issue.py` wrote it. This

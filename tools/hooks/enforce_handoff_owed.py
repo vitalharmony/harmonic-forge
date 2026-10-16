@@ -52,6 +52,14 @@ with the escape hatch available but unmentioned at the one moment it is
 needed. AC1 requires the `l1-post` command; naming the other two routes as
 well is treating that as a floor, not a ceiling.
 
+## A turn that ends with a question may end (harmonic-forge#1031)
+
+R-0039's atomicity yields to "ask, then stop": a session that needs the
+operator's answer before it can write the handoff must be able to ask. The
+detector is `turn_question.asks_a_question`, shared with
+`block_batch_stop.py`, so a `DECISIONS NEEDED` section reading "None" still
+blocks here exactly as it does there.
+
 ## It cannot wedge a session
 
 `stop_hook_active` is honoured first: this hook's condition IS clearable
@@ -70,6 +78,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from handoff_owed import discharge_command, outstanding  # noqa: E402
+from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
 
 def _describe(entry: dict) -> str:
@@ -94,6 +103,14 @@ def decide(payload: dict) -> tuple[str, str]:
         return "allow", ""
     owed = [e for e in outstanding(key) if e.get("repo") and e.get("issue")]
     if not owed:
+        return "allow", ""
+    # AC2 (harmonic-forge#1031): a turn that ends with a genuine question is
+    # allowed to end, using block_batch_stop's detector (shared via
+    # turn_question so the two cannot drift). Unreadable text keeps the
+    # block: unlike block_batch_stop's, this obligation is clearable within
+    # the turn, and stop_hook_active still guarantees the session can end.
+    transcript = payload.get("transcript_path") or ""
+    if transcript and asks_a_question(last_assistant_text(Path(transcript))):
         return "allow", ""
     plural = "issue" if len(owed) == 1 else "issues"
     listing = "\n".join(_describe(e) for e in owed)
