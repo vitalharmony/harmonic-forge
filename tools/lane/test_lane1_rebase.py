@@ -33,7 +33,7 @@ def commit(cwd, name, content, msg):
     return sh(cwd, "rev-parse", "HEAD")
 
 
-class Lane1RebaseTest(unittest.TestCase):
+class _Fixture(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -89,6 +89,7 @@ class Lane1RebaseTest(unittest.TestCase):
     def prep_left(self):
         return lane1_rebase.prep_path(str(self.repo), ISSUE).exists()
 
+class Lane1RebaseTest(_Fixture):
     def test_clean_rebase_pushes_and_moves_impl_worktree(self):
         main_sha = self.advance_main()
         self.assertEqual(self.run_main(), 0)
@@ -236,6 +237,93 @@ class PrecloseFixTests(unittest.TestCase):
                 with self.assertRaises(lane1_rebase.Exit) as caught:
                     lane1_rebase.run("/x", 7, "feat/7-thing")
                 self.assertEqual(caught.exception.code, 1)
+
+
+L2D = "## L2D\n\n<!-- l1-post v1; kind=completion; posted-by=LANE2 -->"
+
+
+def gate(verdict, sha, footer="kind=gate-result; posted-by=LANE3", in_heading=False):
+    head = f"## Lane 3 Gate Results \u2014 {verdict}"
+    if in_heading:
+        return f"{head} at `{sha}`\n\nTCs ran.\n\n<!-- l1-post v1; {footer} -->"
+    return f"{head}\n\nHead-SHA: `{sha}`\n\n<!-- l1-post v1; {footer} -->"
+
+
+REWORK = "## x\n\n<!-- l1-post v1; kind=rework; sha=a; body-sha256=b -->"
+
+
+class PassPreconditionTests(_Fixture):
+    """harmonic-forge#1034: a Lane 3 PASS on the branch head is rebaseable.
+    The setUp marker stub is lifted; real bodies run the verdict/SHA readers."""
+
+    def setUp(self):
+        super().setUp()
+        self.marker.stop()
+        self.bodies = []
+        watch = lane1_rebase._watch()
+        for patcher in (mock.patch.object(watch, "_fetch_all_comments",
+                                          side_effect=lambda *a: [{"body": b} for b in self.bodies]),
+                        mock.patch.object(lane1_rebase, "repo_slug", return_value="o/r")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_pass_on_head_rebases_and_pushes(self):
+        self.bodies = [L2D, gate("PASS", self.branch_sha[:8], in_heading=True)]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 0)
+        self.assertNotEqual(self.origin_branch(), self.branch_sha)
+        self.assertEqual(self.local_branch(), self.origin_branch())
+
+    def test_b_fail_exits_4(self):
+        self.bodies = [L2D, gate("FAIL", self.branch_sha)]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+
+    def test_c_pass_on_other_sha_exits_4(self):
+        self.bodies = [L2D, gate("PASS", "0123456789abcdef0123456789abcdef01234567")]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+
+    def test_d_pass_then_rework_exits_4(self):
+        self.bodies = [L2D, gate("PASS", self.branch_sha), REWORK]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+
+    def test_e_l2d_then_lane_unset_fail_exits_4(self):
+        self.bodies = [L2D, gate("FAIL", self.branch_sha,
+                                 footer="kind=discussion; posted-by=LANE-unset")]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+
+    def _crash_after_push(self):
+        self.bodies = [L2D, gate("PASS", self.branch_sha)]
+        self.advance_main()
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash after push")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        pushed = self.origin_branch()
+        self.assertNotEqual(pushed, self.branch_sha)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+        return pushed
+
+    def test_f_rerun_after_crash_on_pass_path_completes(self):
+        pushed = self._crash_after_push()
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.origin_branch(), pushed)
+        self.assertEqual(self.local_branch(), pushed)
+        self.assertEqual(sh(self.impl, "rev-parse", "HEAD"), pushed)
+
+    def test_f2_rerun_with_local_at_third_sha_exits_4(self):
+        pushed = self._crash_after_push()
+        third = commit(self.impl, "extra.txt", "extra\n", "lane 2 local work")
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), pushed)
+        self.assertEqual(self.local_branch(), third)
 
 
 if __name__ == "__main__":
