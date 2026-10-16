@@ -111,6 +111,10 @@ TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
 # case section, as the last fallback -- never whole-body, where "Tier P" or a
 # priority label would add phantom cases.
 P_ID = re.compile(r"\bP(\d+)\b")
+# A sweep's Tier P entry: a line that LEADS with `P<n>` (optionally after a
+# bullet), so a prose mention of P1..Pn is never an entry.
+SWEEP_P_ENTRY = re.compile(r"(?m)^\s*(?:[-*]\s*)?P(\d+)\b[^\S\n]*(.*)$")
+SWEEP_P_OUTCOME = re.compile(r"(?im)^\s*(?:[-*]\s*)?P\d+\b\W{0,4}(?:pass(?:ed)?|fail(?:ed)?)\b")
 
 # a private-repo incident (pre-close panel): a sweep entry must be a LINE, must name its own
 # case, and must carry text. The deleted TC_STATUS pattern enforced all three
@@ -249,7 +253,7 @@ def _tier_p_case_ids(body: str) -> set[str]:
     return set(P_ID.findall(rest[:following.start()] if following else rest))
 
 
-def _classify_case_ids(body: str) -> tuple[set[str], bool]:
+def _classify_case_ids(body: str, tier_p: bool = False) -> tuple[set[str], bool]:
     """Case identifiers plus whether they came from TC<n> markers (vs. a plain
     numbered list) -- both branches return plain digit strings, so the caller
     cannot tell which scheme was used from the ids alone; validate_sweep needs
@@ -270,7 +274,10 @@ def _classify_case_ids(body: str) -> tuple[set[str], bool]:
         ids = set(TC_ID.findall(section))
         if ids:
             return ids, True
-        return _tier_p_case_ids(body), False
+        # harmonic-forge#1022: only a SPEC is read this way (validate_sweep
+        # passes tier_p=True for the spec body alone); a sweep's P<n> entries
+        # are line-anchored, in validate_sweep.
+        return (_tier_p_case_ids(body) if tier_p else set()), False
     # a private-repo incident follow-up 2: a numbered-list case (e.g. "12. ... TC4 ...") can
     # cross-reference an earlier case by its number *inside* the section
     # itself, not just in prose outside it -- observed live on a private-repo incident's
@@ -950,7 +957,16 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
         _validate_sweep_against_footer(body, footer_ids)
         return
     expected = case_ids(spec_body)
+    spec_tier_p = not expected and bool(_tier_p_case_ids(spec_body))
+    if spec_tier_p:
+        expected = _tier_p_case_ids(spec_body)
     actual = case_ids(body)
+    sweep_p_entries: list[tuple[str, str]] = []
+    if spec_tier_p and not actual:
+        # harmonic-forge#1022: a Tier P sweep may name its entries P1..Pn,
+        # one line each; prose mentions never count.
+        sweep_p_entries = SWEEP_P_ENTRY.findall(_case_section(body)[0])
+        actual = {number for number, _ in sweep_p_entries}
     if not expected:
         # a private-repo incident: the error used to assert "no identifiable test cases"
         # even when the parser had isolated a real section and simply found
@@ -987,7 +1003,8 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     spec_uses_tc_scheme = _classify_case_ids(spec_body)[1]
     sweep_section, _ = _case_section(body)
 
-    fabricated = SWEEP_FABRICATED_OUTCOME.search(sweep_section)
+    fabricated = SWEEP_FABRICATED_OUTCOME.search(sweep_section) or (
+        spec_tier_p and SWEEP_P_OUTCOME.search(sweep_section))
     if fabricated:
         fail(
             "sweep states a test outcome (`pass`/`fail`), but a gate-readiness "
@@ -1001,7 +1018,11 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     if parse_write_tier(body) is None:
         fail(f"sweep {NO_TIER_MESSAGE}")
 
-    if spec_uses_tc_scheme:
+    if sweep_p_entries:
+        empty = [number for number, text in sweep_p_entries if not is_substantive(text.strip(" —-:"))]
+        if empty:
+            fail(f"sweep entries carry no text: P{', P'.join(sorted(set(empty), key=int))}")
+    elif spec_uses_tc_scheme:
         entries = SWEEP_TC_ENTRY.findall(sweep_section)
         named = {number for number, _ in entries}
         if named != expected:

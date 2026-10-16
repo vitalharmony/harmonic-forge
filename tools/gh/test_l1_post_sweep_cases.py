@@ -519,15 +519,43 @@ SWEEP_TIER_P = (
 
 class TierPCaseIdTests(unittest.TestCase):
     def test_tier_p_spec_case_ids(self):
-        self.assertEqual(L.case_ids(SPEC_TIER_P), {"1", "2", "3"})
+        self.assertEqual(L._classify_case_ids(SPEC_TIER_P, tier_p=True)[0], {"1", "2", "3"})
 
     def test_stray_p_outside_the_case_section_adds_nothing(self):
         spec = SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n"
-        self.assertEqual(L.case_ids(spec), {"1", "2", "3"})
+        self.assertEqual(L._classify_case_ids(spec, tier_p=True)[0], {"1", "2", "3"})
 
     def test_list_sweep_validates_against_tier_p_spec(self):
         with mock.patch.object(L, "footer_case_ids", return_value=set()):
             L.validate_sweep(SWEEP_TIER_P, SPEC_TIER_P, "vitalharmony/hrse", 1896)
+
+    def _ok(self, sweep):
+        try:
+            with mock.patch.object(L, "footer_case_ids", return_value=set()):
+                L.validate_sweep(sweep, SPEC_TIER_P, "vitalharmony/hrse", 1896)
+            return True
+        except SystemExit:
+            return False
+
+    def test_p_entry_sweep_validates(self):
+        sweep = SWEEP_TIER_P.replace("1. P1", "- P1").replace("2. P2", "- P2").replace("3. P3", "- P3")
+        self.assertTrue(self._ok(sweep))
+
+    def test_prose_p_mentions_are_not_entries(self):
+        head = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n"
+        self.assertFalse(self._ok(head + "### Cases\nP1, P2 and P3 are all fine.\n"))
+        self.assertFalse(self._ok(head + "### Per-case readiness\nP1, P2 and P3 are all fine.\n"))
+
+    def test_a_sweep_never_reads_the_spec_fallback(self):
+        self.assertEqual(L.case_ids("## Sweep\n\n### Cases\n- P1 x\n- P2 y\n"), set())
+
+    def test_p_entry_outcome_is_refused(self):
+        head = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n### Per-case readiness\n"
+        self.assertFalse(self._ok(head + "- P1: pass\n- P2: fail\n- P3: pass\n"))
+
+    def test_a_missing_p_entry_is_refused(self):
+        head = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n### Per-case readiness\n"
+        self.assertFalse(self._ok(head + "- P1 — ready\n- P2 — later\n"))
 
     def test_edge_cases_heading_still_not_a_case_heading(self):
         self.assertFalse(L._case_section("### Edge cases\n1. x\n")[1])
