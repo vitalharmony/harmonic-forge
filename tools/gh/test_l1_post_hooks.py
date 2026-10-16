@@ -1076,10 +1076,16 @@ class MilestoneCurrentTests(unittest.TestCase):
              patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
              patch.object(post, "apply_project_identity"), \
              patch.object(post, "regular_body", return_value="body"), \
-             patch.object(post, "post_kind") as posted, \
+             patch.object(post, "reject_reserved_marker", wraps=post.reject_reserved_marker), \
+             patch.object(post, "validate_milestone_current"), \
+             patch.object(post, "validate_sticky_wicket"), \
+             patch.object(post, "validate_lead"), \
+             patch.object(post, "record_queue_candidate"), \
+             patch.object(post, "post_kind", return_value=("u", 1)) as posted, \
              patch.object(post, "resolve_sha", return_value="a" * 40):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as caught:
                 post.main()
+        self.assertIn("reserved l1-post attestation namespace", str(caught.exception))
         posted.assert_not_called()
 
     def test_ack_passes(self):
