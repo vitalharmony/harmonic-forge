@@ -2409,6 +2409,21 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None) -> 
          "— the full local check was not started")
 
 
+def _refuse_script_contract(script: str, sha: str) -> None:
+    """harmonic-forge#1026: read the named script at the attested SHA and refuse
+    the AE, before anything posts, when it breaks the production runner's
+    contract. An unreadable source refuses; it never passes."""
+    shown = run("git", "show", f"{sha}:{script}")
+    if shown.returncode != 0:
+        fail(f"--prod-run: cannot read {script} at {sha[:8]}: {shown.stderr.strip()}")
+    violations = _prod_run.script_contract_violations(shown.stdout)
+    if violations:
+        fail(f"--prod-run: {script} at {sha[:8]} breaks the production runner's contract: "
+             f"{'; '.join(violations)}. Read the graph through "
+             "`_migration_env.ensure_env()` and accept only `--apply`, as "
+             "`scripts/1-2396-reembed-unknown-persons.py` does.")
+
+
 def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str, **kwargs,
 ) -> tuple[str, int]:
@@ -2725,6 +2740,8 @@ def main() -> None:
     # login refuses before anything is written.
     apply_project_identity(repo)
     sha = resolve_sha(args.sha)
+    if prod_run and "script" in prod_run:
+        _refuse_script_contract(prod_run["script"], sha)
 
     if args.kind == "ae-and-sweep":
         validate_sticky_wicket(repo, args.issue)  # harmonic-forge#997

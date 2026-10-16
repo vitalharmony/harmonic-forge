@@ -68,5 +68,45 @@ class DeclaredTests(unittest.TestCase):
             p.footer_field(1, "abc1234", {"count_label": "A"})
 
 
+class ScriptContractTests(unittest.TestCase):
+    """harmonic-forge#1026: the runner's contract, checked statically."""
+    GOOD = ("import argparse\nfrom _migration_env import ensure_env\n"
+            "p = argparse.ArgumentParser()\np.add_argument('--apply', action='store_true')\nensure_env()\n")
+
+    def v(self, src):
+        return p.script_contract_violations(src)
+
+    def test_the_2396_shape_passes(self):
+        self.assertEqual(self.v(self.GOOD), [])
+
+    def test_the_1896_shape_names_both_env_violations(self):
+        src = "from dotenv import load_dotenv\nimport argparse\np=argparse.ArgumentParser()\np.add_argument('--apply')\nload_dotenv('x')\n"
+        self.assertEqual(self.v(src), ["no ensure_env() call", "calls load_dotenv()"])
+
+    def test_each_rule_alone(self):
+        self.assertEqual(self.v(self.GOOD.replace("ensure_env()\n", "")), ["no ensure_env() call"])
+        self.assertEqual(self.v(self.GOOD + "from dotenv import load_dotenv\nload_dotenv()\n"), ["calls load_dotenv()"])
+        self.assertEqual(self.v(self.GOOD.replace("'--apply'", "'--execute'")), ["no --apply option"])
+        self.assertEqual(self.v(self.GOOD + "p.add_argument('--owner', required=True)\n"), ["required argument --owner"])
+        self.assertEqual(self.v(self.GOOD + "p.add_argument('target')\n"), ["required argument target"])
+
+    def test_optional_positionals_pass(self):
+        self.assertEqual(self.v(self.GOOD + "p.add_argument('t', nargs='?')\np.add_argument('u', default='x')\n"), [])
+
+    def test_apply_with_an_alias_passes(self):
+        self.assertEqual(self.v(self.GOOD.replace("'--apply'", "'--apply', '--execute', dest='apply'")), [])
+
+    def test_a_docstring_mention_is_not_a_call(self):
+        src = '"""Use ensure_env() here."""\n' + self.GOOD.replace("ensure_env()\n", "# ensure_env()\n")
+        self.assertIn("no ensure_env() call", self.v(src))
+
+    def test_an_aliased_call_counts(self):
+        src = self.GOOD.replace("import ensure_env", "import ensure_env as load_env").replace("ensure_env()\n", "load_env()\n")
+        self.assertEqual(self.v(src), [])
+
+    def test_a_syntax_error_is_a_violation(self):
+        self.assertTrue(self.v("def (:\n")[0].startswith("not parseable Python"))
+
+
 if __name__ == "__main__":
     unittest.main()

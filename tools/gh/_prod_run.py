@@ -25,8 +25,16 @@ Command-line spec (`l1_post.py --prod-run`, `check_lane3_ready.py
     script=scripts/1-<name>.py          (a dry run)
     script=scripts/1-<name>.py,apply    (with --apply)
     count-label=<Label>
+
+harmonic-forge#1026: HRSE2's runner starts a script with every inherited
+`NEO4J_*` cleared and `HRSE_ENV_FILE` set, passing `--apply` or nothing. So a
+`script=` AE is refused unless the named script reads its graph through
+`_migration_env.ensure_env()`, never calls `load_dotenv()`, defines `--apply`,
+and has no required or positional argument (`script_contract_violations`).
 """
 from __future__ import annotations
+
+import ast
 
 import re
 
@@ -141,3 +149,58 @@ def describe(action: dict) -> str:
     if "script" in action:
         return f"script={action['script']}{',apply' if action['apply'] else ''}"
     return f"count-label={action['count_label']}"
+
+
+def _call_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def script_contract_violations(source: str) -> list[str]:
+    """harmonic-forge#1026: how `source` breaks the production runner's
+    contract, in a fixed order; empty when it holds. Static (`ast`), so a
+    docstring or comment that only mentions `ensure_env` never counts."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [f"not parseable Python ({exc.msg}, line {exc.lineno})"]
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in ("ensure_env", "load_dotenv") and alias.asname:
+                    aliases[alias.asname] = alias.name
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    names = [aliases.get(n, n) for n in (_call_name(c.func) for c in calls) if n]
+    violations: list[str] = []
+    if "ensure_env" not in names:
+        violations.append("no ensure_env() call")
+    if "load_dotenv" in names:
+        violations.append("calls load_dotenv()")
+    add_args = [c for c in calls if _call_name(c.func) == "add_argument"]
+
+    def flags(call: ast.Call) -> list[str]:
+        return [a.value for a in call.args
+                if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+
+    if not any("--apply" in flags(c) for c in add_args):
+        violations.append("no --apply option")
+    for call in add_args:
+        strs = flags(call)
+        if not strs:
+            continue
+        kw = {k.arg: k.value for k in call.keywords if k.arg}
+        required = kw.get("required")
+        if isinstance(required, ast.Constant) and required.value is True:
+            violations.append(f"required argument {strs[0]}")
+            continue
+        if not strs[0].startswith("-"):
+            nargs = kw.get("nargs")
+            optional = (isinstance(nargs, ast.Constant) and nargs.value in ("?", "*")) \
+                or "default" in kw
+            if not optional:
+                violations.append(f"required argument {strs[0]}")
+    return violations
