@@ -2296,7 +2296,7 @@ id = "R-0350"
 file = "3-lane-protocol.md"
 anchor = "lane2-never-pushes"
 statement = "Lane 2 never pushes: it stops at a committed branch in its own worktree and reports its name and SHA; push, PR, merge and close are all categorically Lane 1's."
-text_sha = "97b5919c7002837a"
+text_sha = "f2c97759369cbd24"
 hooks = [{ script = "block_lane2_status_claims.py", events = ["PreToolUse:Bash"], wired_in = ".claude/settings.json, .codex/hooks.json" }]
 
 [[rule]]
@@ -2673,8 +2673,8 @@ hooks = []
 id = "R-0399"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "Before naming any lane trigger as an operator action, check `git worktree list` and `git branch -a --list \"*<N>*\"`. If a worktree or branch exists, the trigger was already sent and is not repeated."
-text_sha = "143072e1c7938d07"
+statement = "Before naming any lane trigger as an operator action, check `git worktree list` and `git branch -a --list \"*/<N>-*\"` in that issue's repo (anchored, so `<N>` never matches `<N>0` or `x<N>`). If a worktree or branch exists, the trigger was already sent and is not repeated."
+text_sha = "30465e95e06ba432"
 hooks = []
 
 [[rule]]
@@ -2689,8 +2689,8 @@ hooks = []
 id = "R-0401"
 file = "rules/universal-lane1.md"
 anchor = "post-merge-deploy"
-statement = "After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes the reviewed L2D's SHA, opens the PR for it and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16)."
-text_sha = "6d58737c5364d77f"
+statement = "After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed (a conflict-free rebase only; a conflicted one goes to R-0390's rework), pushes the reviewed L2D's SHA or that clean rebase of it, opens the PR for it and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16)."
+text_sha = "403276185dd977e2"
 hooks = []
 
 [[rule]]
@@ -2705,7 +2705,7 @@ hooks = []
 id = "R-0404"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
-statement = "A handoff or rework is posted only for an issue in the current release milestone, because the belt ignores milestones. A Later issue never appears as a next action or as \"waiting on\"."
+statement = "A handoff or rework is posted only for an issue in the current release milestone (a repo with no milestones, such as harmonic-forge, is exempt), because the belt ignores milestones. A Later issue never appears as a next action or as \"waiting on\"."
 text_sha = "a4ac0ef3f88f964a"
 hooks = []
 

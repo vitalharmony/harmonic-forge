@@ -35,7 +35,7 @@ Two known limits, so silence is not mistaken for health:
 
 - The **inverse** direction — an open issue described in past tense — is
   still not checked. Cross-reference the doc's blocked-on notes by hand for
-  anything the reactive trigger (step 3) didn't already cover.
+  anything an operator-asked reconcile (step 3) didn't already cover.
 - Retrospective narrative in `Settled` / `Dependencies that bite` is often
   classified as a live claim, so expect some rows there to be honest
   history. That is a role-classification gap in

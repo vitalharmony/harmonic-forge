@@ -140,7 +140,7 @@ restart --push`, and `git -C <dir> push`.
 **This rule previously said the opposite** — *"Lane 2 pushes its own
 branches and does not narrate the push"* — which contradicted the hook
 above, R-0003 (*"Push to the remote only when the human operator explicitly
-asks"*), and HRSE2's own `.claude/rules/hrse2-extended/lane-protocol.md`.
+asks"*; it now carries R-0401's standing Lane 1 grant), and HRSE2's own `.claude/rules/hrse2-extended/lane-protocol.md`.
 A Lane 2 session followed this file, attempted the push, and got the hook's
 denial instead (2026-09-08). Three independent statements agreed with each
 other and this one did not, so this one was the outlier. Recorded rather
@@ -1107,7 +1107,7 @@ operator. A Claude Code Lane 3 belt prints the posted pair as
 trigger, not a new authority.
 <!-- /R-0208 -->
 <!-- R-0399 -->
-Before naming any lane trigger as an operator action, check `git worktree list` and `git branch -a --list "*<N>*"`. If a worktree or branch exists, the trigger was already sent and is not repeated.
+Before naming any lane trigger as an operator action, check `git worktree list` and `git branch -a --list "*/<N>-*"` in that issue's repo (anchored, so `<N>` never matches `<N>0` or `x<N>`). If a worktree or branch exists, the trigger was already sent and is not repeated.
 <!-- /R-0399 -->
 
 <!-- R-0374 -->
