@@ -336,6 +336,19 @@ class PassPreconditionTests(_Fixture):
         self.assertEqual(self.origin_branch(), pushed)
         self.assertEqual(self.local_branch(), third)
 
+    def test_f14_rerun_with_local_merge_commit_exits_3(self):
+        # Operator ruling F1034 option A: `git cherry` skips merges, so a
+        # local merge with unique edits must be refused, not reset away.
+        self._crash_after_push()
+        sh(self.impl, "fetch", "-q", "origin", "main")
+        sh(self.impl, "merge", "-q", "--no-ff", "--no-commit", "FETCH_HEAD")
+        (self.impl / "merge-edit.txt").write_text("unique\n")
+        sh(self.impl, "add", "merge-edit.txt")
+        sh(self.impl, "commit", "-q", "-m", "merge main with unique edit")
+        merge = self.local_branch()
+        self.assertEqual(self.run_main(), 3)
+        self.assertEqual(self.local_branch(), merge)
+
     # Reforge r2 (operator ruling, F1034): a gate report is recognized by
     # ALLOWLIST only -- footer kind=gate-result AND posted-by=LANE3.
 

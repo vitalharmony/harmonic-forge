@@ -338,6 +338,15 @@ def move_local_ref(repo_dir: str, branch: str, new: str) -> None:
         return
     if local is None:
         raise Exit(3, f"local {branch} does not exist; origin is at {new}")
+    # Operator ruling F1034 (option A): `git cherry` skips merge commits, so
+    # a local merge carrying unique edits would pass the check below and be
+    # reset away. Refuse any local merge commit origin lacks.
+    merges = git(repo_dir, "rev-list", "--merges",
+                 f"refs/remotes/origin/{branch}..refs/heads/{branch}").stdout.split()
+    if merges:
+        raise Exit(3, f"local {branch} carries merge commit(s) origin lacks: "
+                      f"{', '.join(m[:12] for m in merges)}; origin is at {new}. "
+                      "The operator finishes the local move by hand.")
     # Every local commit origin lacks must be patch-equivalent to one in
     # `new`; otherwise moving the ref would drop unpushed Lane 2 work.
     cherry = git(repo_dir, "cherry", new, local).stdout.splitlines()
