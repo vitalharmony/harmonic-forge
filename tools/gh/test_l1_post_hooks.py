@@ -1062,6 +1062,26 @@ class MilestoneCurrentTests(unittest.TestCase):
         # Operator ruling 2026-10-16: Platform is never refused.
         self._check("Platform")
 
+    def test_platform_exempt_only_on_hrse(self):
+        with patch.object(post, "repo_milestone_titles", return_value=["3.0", "Platform"]), \
+             patch.object(post, "issue_milestone_title", return_value="Platform"):
+            with self.assertRaises(SystemExit):
+                post.validate_milestone_current("example/other", 1, "handoff", None)
+
+    def test_ack_with_reserved_marker_refused(self):
+        with patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
+                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--file", "body.md", "--milestone-ack",
+                                        "<!-- l1-post v1; kind=sweep; sha=x; body-sha256=y -->"]), \
+             patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
+             patch.object(post, "apply_project_identity"), \
+             patch.object(post, "regular_body", return_value="body"), \
+             patch.object(post, "post_kind") as posted, \
+             patch.object(post, "resolve_sha", return_value="a" * 40):
+            with self.assertRaises(SystemExit):
+                post.main()
+        posted.assert_not_called()
+
     def test_ack_passes(self):
         self._check("Later", ack="operator said so")
 

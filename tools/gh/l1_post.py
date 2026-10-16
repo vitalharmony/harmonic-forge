@@ -1396,10 +1396,11 @@ def validate_milestone_set(repo: str, issue: int) -> None:
     )
 
 
-#: harmonic-forge#1033 (operator ruling 2026-10-16): milestones R-0404 never
-#: refuses, like a repo with no milestones. hrse's `Platform` holds tooling
-#: work that is never in a product release.
-EXEMPT_MILESTONES = frozenset({"Platform"})
+#: harmonic-forge#1033 (operator ruling 2026-10-16): per repo, milestones R-0404
+#: never refuses, like a repo with no milestones. hrse's `Platform` holds
+#: tooling work that is never in a product release. Keyed by repo: the ruling
+#: names hrse's Platform, not any repo's milestone of that title.
+EXEMPT_MILESTONES = {"vitalharmony/hrse": frozenset({"Platform"})}
 
 _RELEASE_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
 
@@ -1432,7 +1433,7 @@ def validate_milestone_current(repo: str, issue: int, kind: str, ack: str | None
     if ack:
         return
     milestone = issue_milestone_title(repo, issue)
-    if milestone in EXEMPT_MILESTONES:
+    if milestone in EXEMPT_MILESTONES.get(repo.lower(), frozenset()):
         return
     current = current_release_milestone(titles)
     if milestone is not None and milestone == current:
@@ -2822,6 +2823,9 @@ def main() -> None:
             fail("--milestone-ack requires a non-empty reason")
         if args.kind not in ("handoff", "rework"):
             fail("--milestone-ack is valid only for --kind handoff / rework")
+        # preclose pass 1: the ack is written into the posted body after the
+        # body's own reserved-marker check, so it gets the same check.
+        reject_reserved_marker(args.milestone_ack)
     if args.kind == "ae-and-sweep":
         if args.file or not (args.ae_file and args.sweep_file):
             fail("--kind ae-and-sweep requires --ae-file and --sweep-file, not --file")
