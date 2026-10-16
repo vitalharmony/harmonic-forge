@@ -211,6 +211,15 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("refusing to start", cell["stderr"])
         self.assertEqual(self._tmux_calls(), [])
 
+    def test_cli_launch_refusal_never_pins(self):
+        # A refusal inside _cli_launch.sh (after lane_identity has run) must
+        # leave the pane untouched: pinning happens only after the last refusal.
+        cell = self.tree.run("2", [], LANE_CLI="claude", TMUX_PANE="%96",
+                             TMUX="/tmp/x,1,0", ANTHROPIC_MODEL="claude-x")
+        self.assertFalse(cell["launched"])
+        self.assertIn("Nothing was launched", cell["stderr"])
+        self.assertEqual(self._tmux_calls(), [])
+
     def test_label_is_never_exported(self):
         # Executed, not a text search: an inherited export must not survive.
         import subprocess

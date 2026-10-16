@@ -1,17 +1,17 @@
 # shellcheck shell=bash
 # lane_identity <N> -- a lane's name and pane title from its repo (harmonic-forge#1014).
 #
-# Sourced by lane1/lane2/lane3 after argument parsing and every refusal, so a
-# `--help` or a refused launch never retitles the pane. Sets LANE_LABEL
+# Sourced by lane1/lane2/lane3 after argument parsing and the wrapper's own
+# refusals. lane_identity only resolves the label and touches no tmux state, so
+# nothing it does survives a launch that _cli_launch.sh then refuses. Sets LANE_LABEL
 # (`vh:lane2`, or the bare `lane2` for an unregistered checkout) from $PWD via
 # tools/onboard/manifest_labels.py. LANE_LABEL is a plain shell variable and is
 # NEVER exported: a nested launch (run_canary.py, a test harness) must derive its
 # own identity rather than inherit this one. _cli_launch.sh reads it to append
 # the agent's name flag, and prints LANE_LABEL_NOTE (why a label is bare).
 #
-# Under tmux ($TMUX_PANE set) it turns the pane's allow-set-title off and sets
-# the title to the label, so the agent's own title escapes cannot overwrite it.
-# Both tmux calls are `|| true`: a title must never block a launch.
+# lane_pin_title (below) is called by _cli_launch.sh after its last refusal,
+# immediately before the exec: a refused launch never retitles the pane.
 lane_identity() {
   local lane="lane$1" resolver out="" reason=""
   # An exported LANE_LABEL inherited from a parent lane's shell keeps its
@@ -36,8 +36,13 @@ lane_identity() {
   if [ -n "$reason" ]; then
     LANE_LABEL_NOTE="$lane: session label '$LANE_LABEL' -- ${reason%%$'\n'*}"
   fi
-  if [ -n "${TMUX_PANE:-}" ]; then
-    tmux set-option -p -t "$TMUX_PANE" allow-set-title off >/dev/null 2>&1 || true
-    tmux select-pane -t "$TMUX_PANE" -T "$LANE_LABEL" >/dev/null 2>&1 || true
-  fi
+}
+
+# lane_pin_title -- under tmux ($TMUX_PANE set), turn the pane's allow-set-title
+# off and set its title to LANE_LABEL, so the agent's own title escapes cannot
+# overwrite it. Both tmux calls are `|| true`: a title must never block a launch.
+lane_pin_title() {
+  [ -n "${TMUX_PANE:-}" ] && [ -n "${LANE_LABEL:-}" ] || return 0
+  tmux set-option -p -t "$TMUX_PANE" allow-set-title off >/dev/null 2>&1 || true
+  tmux select-pane -t "$TMUX_PANE" -T "$LANE_LABEL" >/dev/null 2>&1 || true
 }
