@@ -20,18 +20,18 @@ Exit codes:
      nothing pushed, conflicting paths listed.
 
 A conflict confined to a `package.json`'s top-level `"version"` (both sides
-equal as JSON, type-strictly, once that key is removed) is resolved, not
+equal as JSON, numbers compared by literal text, once that key is removed) is resolved, not
 exit 2 (harmonic-forge#1035): the value becomes `origin/main`'s version plus
 one patch, `T`, computed once before the rebase, and exit 0 then prints
 `version-resolved=<T>` after `new=<sha>`. A branch version whose MAJOR or
 MINOR differs from `origin/main`'s is exit 2, so a minor or major bump is
 never discarded. The resolved commit keeps its old message (e.g. "Auto-bump
 to v2.9.44") while carrying `T`. A resolved commit is not patch-equivalent
-to the local one, so a second receipt `{issue, pre_shas, rebased_sha,
-resolved}` is written before that push; the local-ref step skips its cherry
-check only when the local branch is exactly a recorded pre-rebase origin SHA
-and origin is exactly the recorded rebased SHA, which makes a crash re-run
-complete (and print `version-resolved=`) rather than exit 3.
+to the local one, so in the same run the local-ref step skips its cherry
+check only when the local branch is exactly this run's pre-rebase origin SHA.
+Nothing of that is persisted: a re-run after a crash that followed a
+resolution exits 3 (fail-closed); recover by resetting the local branch to
+`origin/<branch>`.
   3  the local branch cannot be moved (dirty impl worktree, missing ref, or
      local commits origin does not carry); both SHAs printed.
   4  a precondition failed (newest lane marker is neither `l2.done` nor a
@@ -232,38 +232,6 @@ def write_receipt(repo_dir: str, issue: int, passed: str, old: str, rebased: str
 
 def drop_receipt(repo_dir: str, issue: int) -> None:
     receipt_path(repo_dir, issue).unlink(missing_ok=True)
-    version_receipt_path(repo_dir, issue).unlink(missing_ok=True)
-
-
-def version_receipt_path(repo_dir: str, issue: int) -> Path:
-    """harmonic-forge#1035: separate from the PASS receipt, whose presence
-    and contents the PASS path reads."""
-    return receipt_path(repo_dir, issue).with_name(f"lane1-rebase-{issue}-version.json")
-
-
-def read_version_receipt(repo_dir: str, issue: int) -> dict | None:
-    try:
-        data = json.loads(version_receipt_path(repo_dir, issue).read_text())
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) and data.get("issue") == issue else None
-
-
-def write_version_receipt(repo_dir: str, issue: int, old: str, new: str,
-                          resolved: str | None) -> None:
-    """Record, before the push, that `old` (origin's head) was rebased to
-    `new`. Chains when `old` is the prior receipt's rebased SHA (a re-rebase
-    after a crash and a main move), so the local branch still at the first
-    pre-rebase SHA stays covered. Written only when a version line was
-    resolved now or by a chained earlier run; nothing otherwise."""
-    prior = read_version_receipt(repo_dir, issue)
-    chained = bool(prior) and prior.get("rebased_sha") == old
-    if not resolved and not chained:
-        return
-    pre = (prior.get("pre_shas", []) if chained else []) + [old]
-    version_receipt_path(repo_dir, issue).write_text(json.dumps(
-        {"issue": issue, "pre_shas": pre, "rebased_sha": new,
-         "resolved": resolved or prior.get("resolved")}))
 
 
 def _pass_covers(repo_dir: str, issue: int, old: str, passed: str) -> bool:
@@ -360,15 +328,18 @@ _TOP_VERSION = re.compile(r'^(\s*"version"\s*:\s*")([^"\\]*)(")', re.MULTILINE)
 
 def _json(text: str):
     try:
-        value = json.loads(text)
+        # Numbers and constants kept as their literal text (sticky-wicket
+        # PATCH, F1035): parsed floats conflate 1e400/1e401 and 1.0/1.00.
+        value = json.loads(text, parse_int=str, parse_float=str, parse_constant=str)
     except ValueError:
         return None
     return value if isinstance(value, dict) else None
 
 
 def _canonical(obj: dict) -> str:
-    """Type-strict equality key (preclose F1035 pass 1 #2): Python compares
-    `True == 1` and `1.0 == 1`; their JSON serializations differ."""
+    """Equality key over values `_json` loaded with numbers as literal text
+    (preclose F1035 passes 1-2): `true`/`1`, `1.0`/`1` and `1e400`/`1e401`
+    all differ."""
     return json.dumps({k: v for k, v in obj.items() if k != "version"}, sort_keys=True)
 
 
@@ -469,8 +440,6 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
         # No receipt on the l2.done path: there is no PASS to carry.
         if passed:
             write_receipt(repo_dir, issue, passed, old, new)
-        # harmonic-forge#1035: the same, for a resolved version line.
-        write_version_receipt(repo_dir, issue, old, new, resolved)
         push(prep, branch, old)
         return new, resolved
     finally:
@@ -478,7 +447,7 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
 
 
 def move_local_ref(repo_dir: str, branch: str, new: str,
-                   rebased_from: list[str] | None = None) -> None:
+                   rebased_from: str | None = None) -> None:
     local = rev(repo_dir, f"refs/heads/{branch}")
     if local == new:
         return
@@ -496,10 +465,11 @@ def move_local_ref(repo_dir: str, branch: str, new: str,
     # Every local commit origin lacks must be patch-equivalent to one in
     # `new`; otherwise moving the ref would drop unpushed Lane 2 work.
     # harmonic-forge#1035: a resolved version line makes the rebased commit
-    # non-equivalent. `rebased_from` is the version receipt's recorded
-    # pre-rebase origin SHAs, passed only when it records `new` as pushed; a
-    # local branch exactly at one of them carries nothing origin lacked.
-    if rebased_from and local in rebased_from:
+    # non-equivalent. `rebased_from` is this run's own pre-rebase origin SHA,
+    # passed only when this run resolved a version and pushed `new`; a local
+    # branch exactly at it carries nothing origin lacked. In-process only: a
+    # crash re-run after a resolution exits 3 (sticky-wicket PATCH, R-0381).
+    if rebased_from and local == rebased_from:
         cherry = []
     else:
         cherry = git(repo_dir, "cherry", new, local).stdout.splitlines()
@@ -544,12 +514,7 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None
         new, resolved = old, None  # already on current main (incl. a crash re-run)
     else:
         new, resolved = rebase_and_push(repo_dir, issue, branch, old, passed)
-    version = read_version_receipt(repo_dir, issue)
-    rebased_from = None
-    if version and version.get("rebased_sha") == new:
-        rebased_from = version.get("pre_shas") or None
-        resolved = resolved or version.get("resolved")
-    move_local_ref(repo_dir, branch, new, rebased_from)
+    move_local_ref(repo_dir, branch, new, old if resolved else None)
     drop_receipt(repo_dir, issue)
     return new, resolved
 

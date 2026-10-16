@@ -317,7 +317,8 @@ same action (R-0338). On exit 2 or 3, post `--kind rework` naming the
 conflicting paths or the two SHAs. A conflict confined to `package.json`'s
 top-level `"version"` is not exit 2: the tool sets it to `origin/main`'s
 version plus one patch and prints `version-resolved=` (harmonic-forge#1035);
-a MAJOR or MINOR difference is still exit 2. On 4 or 5, act on the named reason; never
+a MAJOR or MINOR difference is still exit 2, and a re-run after a crash that
+followed a resolution exits 3 (reset the local branch to `origin/<branch>`). On 4 or 5, act on the named reason; never
 `--no-verify`. An AE on the old SHA carries forward under R-0209, except an
 auto-AE or standing-grant AE, which needs a fresh one.
 <!-- /R-0390 -->

@@ -694,6 +694,14 @@ class VersionConflictTests(_Fixture):
         self.assert_refused(code, err)
         self.assertIn("differs beyond the top-level version", err)
 
+    def test_c3_out_of_range_numbers_differ_exits_2(self):
+        # preclose F1035 pass 2 #1: 1e400 and 1e401 both parse to Infinity.
+        self.on_branch({PKG: pkg("2.9.41", private="1e401")}, "bump + 1e401")
+        self.on_main({PKG: pkg("2.9.42", private="1e400")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("differs beyond the top-level version", err)
+
     def _resolve_then_crash(self):
         self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41")}, "feature + bump")
         self.on_main({PKG: pkg("2.9.42")})
@@ -706,37 +714,14 @@ class VersionConflictTests(_Fixture):
         self.assertEqual(self.local_branch(), self.branch_sha)
         return pushed
 
-    def test_i_crash_rerun_after_resolution_completes(self):
-        # preclose F1035 pass 1 #1: the resolved commit is not
-        # patch-equivalent to the local one; the version receipt covers it.
+    def test_i_crash_rerun_after_resolution_exits_3(self):
+        # Sticky-wicket PATCH (F1035): nothing persists across runs, so the
+        # resolved commit is not patch-equivalent to local: fail closed.
         pushed = self._resolve_then_crash()
-        code, out, err = self.run_captured()
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.local_branch(), pushed)
-        self.assertEqual(sh(self.impl, "rev-parse", "HEAD"), pushed)
-        self.assertIn("version-resolved=2.9.43", out)
-        self.assertIsNone(lane1_rebase.read_version_receipt(str(self.repo), ISSUE))
-
-    def test_i2_double_crash_then_clean_rebase_completes(self):
-        self._resolve_then_crash()
-        self.on_main({"main2.txt": "again\n"})
-        with mock.patch.object(lane1_rebase, "move_local_ref",
-                               side_effect=RuntimeError("crash again")):
-            with self.assertRaises(RuntimeError):
-                self.run_main()
-        second = self.origin_branch()
-        code, out, err = self.run_captured()
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.local_branch(), second)
-        self.assertEqual(self.head_version(), "2.9.43")
-
-    def test_i3_rerun_with_unpushed_local_commit_exits_3(self):
-        pushed = self._resolve_then_crash()
-        third = commit(self.impl, "local-only.txt", "x\n", "local only")
         code, _, err = self.run_captured()
         self.assertEqual(code, 3, err)
         self.assertEqual(self.origin_branch(), pushed)
-        self.assertEqual(self.local_branch(), third)
+        self.assertEqual(self.local_branch(), self.branch_sha)
 
 
 if __name__ == "__main__":
