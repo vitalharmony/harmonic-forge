@@ -2002,7 +2002,7 @@ id = "R-0236"
 file = "3-lane-protocol.md"
 anchor = "Cross-lane thrashing — the \"sticky wicket\" circuit breaker"
 statement = "Two consecutive FAIL/declined-completion verdicts on the same issue trigger the sticky-wicket subagent — countable, not a vibe check."
-text_sha = "cc00e82edfd170ed"
+text_sha = "3a0189c0d91c3755"
 hooks = []
 
 [[rule]]

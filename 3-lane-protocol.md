@@ -1699,7 +1699,10 @@ stop retrying the same thing and ask whether the thing itself is broken.
 The trigger is mechanical (harmonic-forge#997): two consecutive non-PASS Lane 3
 gate results, blocked and failed alike, make `l1_post.py --kind rework` refuse
 and the Lane 1 belt emit `owes=sticky-wicket` until `sticky_receipt.py record`
-holds the verdict through the newer result.
+holds the verdict through the newer result. One exemption (harmonic-forge#1019):
+two BLOCKED results at one Head-SHA, the third-newest not also BLOCKED there, do
+not refuse an AE or sweep on that same SHA and do not wake the belt; a rework,
+handoff or ready-for-l3 after them still refuses.
 <!-- /R-0236 -->
 
 <!-- R-0237 -->

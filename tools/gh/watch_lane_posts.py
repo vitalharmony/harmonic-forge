@@ -511,7 +511,10 @@ def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
     import sticky_receipt  # noqa: PLC0415 -- imports this module; deferred to break the cycle
 
     pair = sticky_receipt.owed(comments)
-    return bool(pair) and not sticky_receipt.covered(repo, issue, pair[1])
+    if not pair or sticky_receipt.covered(repo, issue, pair[1]):
+        return False
+    # harmonic-forge#1019: a same-SHA blocked retry owes an AE re-post, not a verdict.
+    return sticky_receipt.same_sha_retry(sticky_receipt.gate_details(comments)) is None
 
 
 def _owed_to(self_lane: str | None, detail: str) -> bool:
