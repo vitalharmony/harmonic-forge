@@ -69,3 +69,19 @@
 # in harmonic-forge#496's completion comment for the operator to paste.
 
 "feedback_bluf_discipline_recurring.md" = "audit row 5 — promotion target is ~/.claude/CLAUDE.md (operator-applied, outside any repo); amendment drafted in harmonic-forge#496"
+
+# --- harmonic-forge#1030 (AC5, Scope C) ---
+# Not promotable: no predicate, operator style/fact, already hook-enforced, or
+# dropped by operator ruling. Existing entries above for verify_time,
+# always_include_scheduling_link, red_hat_credential_accuracy,
+# expanded_summary_format and dont_narrate_known_protocol already cover their C rows.
+
+"feedback_close_te_after_merge_no_ask.md" = "operator-dropped: R-0403 ruled out 2026-10-16 ('1 no'); closing stays the operator's explicit close, no second close exception beside R-0351"
+"feedback_shutdown_belt_after_idle_hour.md" = "operator-dropped: R-0414 ruled out 2026-10-16 ('1 yes', harmonic-forge#1030); memory is marked superseded, belt SKILL.md rule 4 governs"
+"feedback_bluf_actions_go_last.md" = "operator output shape, held as a hard rule in ~/.claude/CLAUDE.md (operator-applied, outside any repo)"
+"feedback_number_every_ask.md" = "operator output shape, held in ~/.claude/CLAUDE.md (operator-applied, outside any repo)"
+"feedback_never_send_email_only_draft.md" = "already enforced mechanically by ~/.claude/hooks/deny_outbound_send.py"
+"feedback_cc_leasepal_address_on_leasepal_emails.md" = "client-email fact (LeasePAL recipients), operator reference data, not a protocol rule"
+"feedback_review_queue_keep_criterion.md" = "product criterion in the HRSE2 domain, not protocol"
+"feedback_never_blockquote_copyable_drafts.md" = "operator chat-paste preference, no rule predicate"
+"feedback_token_efficiency.md" = "a judgment with no predicate; the predicate half is R-0364"
