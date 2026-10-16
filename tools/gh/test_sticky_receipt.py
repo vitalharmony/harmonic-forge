@@ -313,5 +313,11 @@ class SameShaRetryTests(ReceiptHome):
                                      attested_sha="3F4747E2742FA83F"))
 
 
+    def test_an_uppercase_pair_is_read_as_the_same_sha(self):
+        comments = [self.blocked(1, "3F4747E2742FA83F"), self.blocked(2, "3F4747E2742FA83F")]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                     attested_sha="3f4747e2742fa83f"))
+
+
 if __name__ == "__main__":
     unittest.main()
