@@ -365,6 +365,38 @@ def fail(message: str) -> None:
     raise SystemExit(f"[l1-post] {message}")
 
 
+def _collect(steps: list) -> list:
+    """harmonic-forge#1017: run every fast-stage validator and refuse once.
+
+    Each step is a zero-argument callable. A `SystemExit` raised by `fail()`
+    (its text starts `[l1-post] `) is caught and the next step still runs; any
+    other exception propagates. One failure re-raises that exact exit, so its
+    text is byte-identical to before; two or more refuse with a numbered list.
+    Returns the step results when every step passed."""
+    results, failures = [], []
+    for step in steps:
+        try:
+            results.append(step())
+        except SystemExit as exc:
+            if not str(exc).startswith("[l1-post] "):
+                raise
+            failures.append(exc)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        fail(f"{len(failures)} problems:\n" + "\n".join(
+            f"{n}. {str(exc)[len('[l1-post] '):]}" for n, exc in enumerate(failures, 1)))
+    return results
+
+
+def _spec_body(repo: str, spec_comment) -> str:
+    """The referenced Lane 3 spec's body, or `fail()`."""
+    spec = run("gh", "api", f"repos/{repo}/issues/comments/{spec_comment}", "--jq", ".body")
+    if spec.returncode:
+        fail("cannot fetch referenced Lane 3 spec")
+    return spec.stdout
+
+
 def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
     """Resolve an explicit repo or the invoking checkout through projects.toml."""
     candidate = value
@@ -2745,8 +2777,6 @@ def main() -> None:
         _refuse_script_contract(prod_run["script"], sha)
 
     if args.kind == "ae-and-sweep":
-        validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha)  # harmonic-forge#997
-    if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic
         # action -- four recorded incidents (a private-repo incident, a private-repo incident, H306/H308,
         # H231/H1221) of AE posted with the sweep never landing in the same
@@ -2757,20 +2787,21 @@ def main() -> None:
         sweep_body = regular_body(args.sweep_file)
         reject_reserved_marker(ae_body)
         reject_reserved_marker(sweep_body)
-        validate_ae(ae_body, repo, args.issue)
-        validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required)
-        validate_auto_ae(ae_body, sweep_body, repo, args.issue, sha, args.spec_comment,
-                         bool(prod_run), args.ack_no_pr_required)
+        # harmonic-forge#1017: every fast-stage validator runs and refuses once.
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
         # landed leaves the bare AE this branch exists to prevent.
-        validate_lead("ae", ae_body)
-        validate_lead("sweep", sweep_body)
-        spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")
-        if spec.returncode:
-            fail("cannot fetch referenced Lane 3 spec")
-        validate_sweep(sweep_body, spec.stdout, repo, args.issue)
+        _collect([
+            lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha),  # harmonic-forge#997
+            lambda: validate_ae(ae_body, repo, args.issue),
+            lambda: validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required),
+            lambda: validate_auto_ae(ae_body, sweep_body, repo, args.issue, sha, args.spec_comment,
+                                     bool(prod_run), args.ack_no_pr_required),
+            lambda: validate_lead("ae", ae_body),
+            lambda: validate_lead("sweep", sweep_body),
+            lambda: validate_sweep(sweep_body, _spec_body(repo, args.spec_comment), repo, args.issue),
+        ])
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
                               ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
@@ -2824,30 +2855,35 @@ def main() -> None:
 
     body = regular_body(args.file)
     reject_reserved_marker(body)
+    # harmonic-forge#1017: the same validators in the same order, every one run,
+    # one refusal naming all of them.
+    steps = []
     if args.kind == "handoff":
-        validate_handoff(body, args.mutates_live or args.cross_repo)
-        # Order matters: `validate_plan_first_declared` refuses a handoff with
-        # no declaration at all, so the cross-field rule below can treat
-        # `args.plan_first` as a real answer rather than a tri-state.
-        validate_plan_first_declared(args.plan_first)
-        validate_plan_first_spec(body, args.plan_first == "true")
-        validate_board_fields_set(repo, args.issue)
-        validate_milestone_set(repo, args.issue)
-        validate_tooling_exception_labelled(body, repo, args.issue)
-        validate_pitch_inspected(repo, args.issue)
+        steps += [
+            lambda: validate_handoff(body, args.mutates_live or args.cross_repo),
+            # Order matters: `validate_plan_first_declared` refuses a handoff with
+            # no declaration at all, so the cross-field rule below can treat
+            # `args.plan_first` as a real answer rather than a tri-state.
+            lambda: validate_plan_first_declared(args.plan_first),
+            lambda: validate_plan_first_spec(body, args.plan_first == "true"),
+            lambda: validate_board_fields_set(repo, args.issue),
+            lambda: validate_milestone_set(repo, args.issue),
+            lambda: validate_tooling_exception_labelled(body, repo, args.issue),
+            lambda: validate_pitch_inspected(repo, args.issue),
+        ]
     if args.kind in STICKY_CHECKED_KINDS:
-        validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha)
-    validate_lead(args.kind, body)
+        steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha))
+    steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
-        spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")
-        if spec.returncode:
-            fail("cannot fetch referenced Lane 3 spec")
-        validate_sweep(body, spec.stdout, repo, args.issue)
+        steps.append(lambda: validate_sweep(body, _spec_body(repo, args.spec_comment), repo, args.issue))
     if args.kind == "ae":
-        validate_ae(body, repo, args.issue)
-        validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required)
-        validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
-                         bool(prod_run), args.ack_no_pr_required)
+        steps += [
+            lambda: validate_ae(body, repo, args.issue),
+            lambda: validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required),
+            lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
+                                     bool(prod_run), args.ack_no_pr_required),
+        ]
+    _collect(steps)
 
     url, _ = post_kind(
         repo, args.issue, args.kind, body, sha, args.branch,
