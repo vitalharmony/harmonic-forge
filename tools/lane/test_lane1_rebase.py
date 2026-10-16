@@ -3,6 +3,7 @@
 Every case runs against a temporary bare origin plus clones; nothing touches
 a real repo. The two network reads (newest lane marker, issue labels) are
 stubbed."""
+import json
 import os
 import fcntl
 import subprocess
@@ -427,6 +428,39 @@ class PassPreconditionTests(_Fixture):
         self.assertEqual(self.run_main(), 4)
         self.assertEqual(self.origin_branch(), other)
         self.assertEqual(self.local_branch(), self.branch_sha)
+
+    # Preclose F1034 reforge pass 1 #2: each receipt-match term isolated.
+
+    def test_f6_rerun_pass_names_other_sha_than_receipt_exits_4(self):
+        pushed = self._crash_after_push()
+        self.bodies = [L2D, gate("PASS", "0123456789abcdef0123456789abcdef01234567")]
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), pushed)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+
+    def test_f7_rerun_receipt_for_another_issue_exits_4(self):
+        pushed = self._crash_after_push()
+        path = lane1_rebase.receipt_path(str(self.repo), ISSUE)
+        data = json.loads(path.read_text())
+        data["issue"] = ISSUE + 1
+        path.write_text(json.dumps(data))
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+        self.assertEqual(self.origin_branch(), pushed)
+
+    def test_f8_double_crash_after_main_moves_completes(self):
+        # Pass 1 #1: a re-rebase carries the passed SHA forward.
+        first = self._crash_after_push()
+        self.advance_main("main2.txt", "again\n")
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash again")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        second = self.origin_branch()
+        self.assertNotEqual(second, first)
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.local_branch(), second)
+        self.assertIsNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
 
     def test_receipt_dropped_after_local_move(self):
         self._crash_after_push()

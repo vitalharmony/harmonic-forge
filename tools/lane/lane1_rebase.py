@@ -28,10 +28,10 @@ Safe to re-run: a stale prep worktree is pruned at start and the prep
 worktree is removed in a `finally`; if `origin/<branch>` already contains
 `origin/main` (a crash after the push), it skips straight to the local-ref
 step. That holds on the Lane 3 PASS path too (harmonic-forge#1034): before
-the push a receipt `{issue, passed_sha, rebased_sha}` is written in the git
+the push a receipt `{issue, passed_sha, rebased_shas}` is written in the git
 dir, and after a crash the PASS (which names the pre-rebase SHA) is accepted
 only when that receipt names it, the local branch still sits on it, and
-`origin/<branch>` is exactly the receipt's rebased SHA. The receipt is
+`origin/<branch>` is exactly one of the receipt's recorded rebased SHAs. The receipt is
 deleted once the local ref moves. The crash state is recorded, never
 inferred from history (sticky-wicket reforge, F1034).
 """
@@ -196,9 +196,18 @@ def read_receipt(repo_dir: str, issue: int) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_receipt(repo_dir: str, issue: int, passed: str, rebased: str) -> None:
+def write_receipt(repo_dir: str, issue: int, old: str, rebased: str) -> None:
+    """Record `{issue, passed_sha, rebased_shas}` before a push. When `old`
+    is itself a SHA this receipt says was pushed (a re-rebase after a crash
+    and a main move), the passed SHA carries forward and the new SHA is
+    appended -- never overwritten (preclose F1034 reforge pass 1 #1)."""
+    prior = read_receipt(repo_dir, issue)
+    if prior and prior.get("issue") == issue and old in prior.get("rebased_shas", []):
+        passed, shas = prior.get("passed_sha"), prior["rebased_shas"] + [rebased]
+    else:
+        passed, shas = old, [rebased]
     receipt_path(repo_dir, issue).write_text(json.dumps(
-        {"issue": issue, "passed_sha": passed, "rebased_sha": rebased}))
+        {"issue": issue, "passed_sha": passed, "rebased_shas": shas}))
 
 
 def drop_receipt(repo_dir: str, issue: int) -> None:
@@ -218,7 +227,7 @@ def _pass_covers(repo_dir: str, issue: int, branch: str, old: str, passed: str) 
     if not receipt or receipt.get("issue") != issue or not local:
         return False
     return (receipt.get("passed_sha") == local and _same_sha(passed, local)
-            and receipt.get("rebased_sha") == old)
+            and old in receipt.get("rebased_shas", []))
 
 
 def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:
