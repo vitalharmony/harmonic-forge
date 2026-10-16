@@ -3,6 +3,7 @@
 logic only, no live gh/API calls. Fixtures are real comment bodies from
 hrse#1530 (trimmed), not invented shapes."""
 import argparse
+import contextlib
 import datetime as dt
 import io
 import json
@@ -3785,3 +3786,210 @@ class OneReadPerTickTests(unittest.TestCase):
             watch_lane_posts._reset_tick_reads()
             self.assertFalse(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
 
+
+
+class OfferStateTest(unittest.TestCase):
+    """harmonic-forge#1007: a re-armed belt does not re-offer an unchanged
+    queued item to the same lane session; a new marker, a new session, or the
+    4-hour backstop re-offers it. All state lives in a temp dir."""
+
+    REPO = "vitalharmony/hrse"
+    BODY = "body\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE-unset -->"
+    SUPERSEDED = "## Lane 3 Gate Results — PASS"
+    T0 = 1_800_000_000.0
+    SESSION = (4242, 987654)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "offered-test.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _comments(self, mapping):
+        def fake(repo, issue):
+            return mapping.get(issue, [])
+        return fake
+
+    def _cycle(self, comments, *, now_ts, session=SESSION, last_queue=None,
+               candidates=(1530,), recorded_only=False, tick=None, offers=None):
+        offers = offers or watch_lane_posts.OfferState(self.path, now=now_ts)
+        err = io.StringIO()
+        with patch("watch_lane_posts._fetch_all_comments",
+                   side_effect=self._comments(comments)), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
+             contextlib.redirect_stderr(err):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                [self.REPO], "l3", dict(last_queue or {}), "t",
+                candidate_pairs={(self.REPO, n) for n in candidates},
+                recorded_only=recorded_only, offers=offers, session=session,
+                tick=tick, now_ts=now_ts)
+        with contextlib.redirect_stdout(io.StringIO()):
+            watch_lane_posts.deliver_queue_lines(lines, offers)
+        return queue, lines, offers
+
+    def _tick(self):
+        return watch_lane_posts.TickLog(path=Path(self._tmp.name) / "ticks.jsonl",
+                                        lane="l3", trigger="belt")
+
+    def _queued(self, lines):
+        return [line for line in lines if "queued-for-" in line and "left-" not in line]
+
+    def test_ac1_same_session_new_process_does_not_reoffer(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        _, lines1, _ = self._cycle(c, now_ts=self.T0)
+        self.assertEqual(len(self._queued(lines1)), 1)
+        tick = self._tick()
+        _, lines2, _ = self._cycle(c, now_ts=self.T0 + 1800, tick=tick)
+        self.assertEqual(lines2, [])
+        self.assertEqual(tick.reoffer_suppressed, 1)
+
+    def test_ac2_new_comment_of_same_kind_reoffers(self):
+        self._cycle({1530: [{"id": 11, "body": self.BODY}]}, now_ts=self.T0)
+        _, lines, _ = self._cycle(
+            {1530: [{"id": 11, "body": self.BODY}, {"id": 12, "body": self.BODY}]},
+            now_ts=self.T0 + 1800)
+        self.assertEqual(len(self._queued(lines)), 1)
+
+    def test_ac3_backstop_reoffers_after_interval(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        self._cycle(c, now_ts=self.T0)
+        _, lines, _ = self._cycle(
+            c, now_ts=self.T0 + watch_lane_posts.REOFFER_INTERVAL_S)
+        self.assertEqual(len(self._queued(lines)), 1)
+
+    def test_ac4_corrupt_state_file_reoffers(self):
+        self.path.write_text("{not json", encoding="utf-8")
+        _, lines, _ = self._cycle({1530: [{"id": 11, "body": self.BODY}]},
+                                  now_ts=self.T0)
+        self.assertEqual(len(self._queued(lines)), 1)
+
+    def test_ac5_cleared_item_from_earlier_process_retracts_once(self):
+        self._cycle({1530: [{"id": 11, "body": self.BODY}]}, now_ts=self.T0)
+        gone = {1530: [{"id": 11, "body": self.BODY},
+                       {"id": 12, "body": self.SUPERSEDED}]}
+        _, lines, offers = self._cycle(gone, now_ts=self.T0 + 1800)
+        self.assertEqual(lines, [f"{self.REPO}#1530 left-queue-for-l3"])
+        self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 3600).get((self.REPO, 1530)))
+        _, lines3, _ = self._cycle(gone, now_ts=self.T0 + 3600)
+        self.assertEqual(lines3, [])
+
+    def test_ac6_tick_record_carries_reoffer_suppressed(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        self._cycle(c, now_ts=self.T0)
+        tick = self._tick()
+        self._cycle(c, now_ts=self.T0 + 1800, tick=tick)
+        record = tick.write()
+        self.assertEqual(record["reoffer_suppressed"], 1)
+        on_disk = json.loads(tick.path.read_text().splitlines()[-1])
+        self.assertEqual(on_disk["reoffer_suppressed"], 1)
+
+    def test_ac1_different_or_unknown_session_reoffers(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        self._cycle(c, now_ts=self.T0)
+        _, lines, _ = self._cycle(c, now_ts=self.T0 + 60, session=(5151, 111))
+        self.assertEqual(len(self._queued(lines)), 1, "a new session is re-offered")
+        # An entry whose session_pid is null: re-offered even to a known session.
+        self._cycle(c, now_ts=self.T0 + 120, session=(None, None))
+        _, lines, _ = self._cycle(c, now_ts=self.T0 + 180)
+        self.assertEqual(len(self._queued(lines)), 1, "a null-session entry re-offers")
+
+    def test_pc1_unknown_session_prints_once_per_process(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        unknown = (None, None)
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        queue, lines1, _ = self._cycle(c, now_ts=self.T0, session=unknown,
+                                       offers=offers)
+        self.assertEqual(len(self._queued(lines1)), 1, "first tick offers")
+        _, lines2, _ = self._cycle(c, now_ts=self.T0 + 60, session=unknown,
+                                   last_queue=queue, offers=offers)
+        self.assertEqual(self._queued(lines2), [], "same process: printed once")
+        # A new process (empty last_queue) re-offers to the unknown session.
+        _, lines3, _ = self._cycle(c, now_ts=self.T0 + 120, session=unknown)
+        self.assertEqual(len(self._queued(lines3)), 1)
+
+    def test_pass2_unknown_session_new_same_kind_comment_reoffers(self):
+        unknown = (None, None)
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        queue, _, _ = self._cycle({1530: [{"id": 11, "body": self.BODY}]},
+                                  now_ts=self.T0, session=unknown, offers=offers)
+        _, lines, _ = self._cycle(
+            {1530: [{"id": 11, "body": self.BODY}, {"id": 12, "body": self.BODY}]},
+            now_ts=self.T0 + 60, session=unknown, last_queue=queue, offers=offers)
+        self.assertEqual(len(self._queued(lines)), 1,
+                         "same process, new comment id: a new offer")
+
+    def test_pass2_non_ascii_digit_key_is_skipped(self):
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        offers.entries["o/r#٣"] = {"marker": "m", "comment_id": 1}
+        offers.entries[f"{self.REPO}#7"] = {"marker": "m", "comment_id": 1}
+        self.assertEqual(offers.keys(), [(self.REPO, 7)])
+
+    def test_pc2_save_oserror_does_not_kill_belt(self):
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        offers.record((self.REPO, 1530), "m", 1, self.SESSION, self.T0)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(watch_lane_posts.OfferState, "save",
+                          side_effect=OSError(28, "No space left on device")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            watch_lane_posts.deliver_queue_lines(["x queued-for-l3 kind=m"], offers)
+        self.assertIn("queued-for-l3", out.getvalue())
+        self.assertIn("save failed", err.getvalue())
+        self.assertIsNotNone(offers.get((self.REPO, 1530)), "in-memory state kept")
+
+    def test_pc3_future_offered_at_never_suppresses_and_is_pruned(self):
+        future = self.T0 + 86400
+        state = watch_lane_posts.OfferState(self.path, now=future)
+        state.record((self.REPO, 1530), "m", 11, self.SESSION, future)
+        self.assertFalse(state.suppresses((self.REPO, 1530), "m", 11, self.SESSION,
+                                          self.T0, watch_lane_posts.REOFFER_INTERVAL_S))
+        state.save()
+        loaded = watch_lane_posts.OfferState(self.path, now=self.T0)
+        self.assertIsNone(loaded.get((self.REPO, 1530)))
+
+    def test_pc4_unstattable_state_file_loads_empty(self):
+        self.path.write_text("{}", encoding="utf-8")
+        err = io.StringIO()
+        with patch.object(Path, "exists", side_effect=PermissionError(13, "denied")), \
+             contextlib.redirect_stderr(err):
+            state = watch_lane_posts.OfferState(self.path, now=self.T0)
+        self.assertEqual(state.entries, {})
+        self.assertIn("unreadable", err.getvalue())
+
+    def test_ac5a_persisted_entry_never_drives_carry_forward(self):
+        self._cycle({1600: [{"id": 21, "body": self.BODY}]}, now_ts=self.T0,
+                    candidates=(1600,))
+        # The 1600 worktree is gone: absent from candidates, new process.
+        for step in (1, 2):
+            queue, lines, _ = self._cycle({}, now_ts=self.T0 + 1800 * step,
+                                          candidates=())
+            self.assertNotIn((self.REPO, 1600), queue)
+            self.assertEqual(self._queued(lines), [])
+
+    def test_ac5a_entries_older_than_max_age_are_pruned_on_load(self):
+        old = self.T0 - (belt_candidates.DEFAULT_MAX_AGE_DAYS + 1) * 86400
+        state = watch_lane_posts.OfferState(self.path, now=old)
+        state.record((self.REPO, 1530), "m", 1, self.SESSION, old)
+        state.record((self.REPO, 1531), "m", 1, self.SESSION, self.T0)
+        state.save()
+        loaded = watch_lane_posts.OfferState(self.path, now=self.T0)
+        self.assertIsNone(loaded.get((self.REPO, 1530)))
+        self.assertIsNotNone(loaded.get((self.REPO, 1531)))
+
+    def test_ac4_state_saved_only_after_print(self):
+        offers = watch_lane_posts.OfferState(self.path, now=self.T0)
+        with patch("watch_lane_posts._fetch_all_comments",
+                   return_value=[{"id": 11, "body": self.BODY}]), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set())), \
+             contextlib.redirect_stderr(io.StringIO()):
+            _, lines, _ = watch_lane_posts.queue_cycle(
+                [self.REPO], "l3", {}, "t", candidate_pairs={(self.REPO, 1530)},
+                offers=offers, session=self.SESSION, now_ts=self.T0)
+
+        def boom(*a, **k):
+            if a and "queued-for-" in str(a[0]):
+                raise BrokenPipeError("print failed")
+        with patch("builtins.print", side_effect=boom):
+            with self.assertRaises(BrokenPipeError):
+                watch_lane_posts.deliver_queue_lines(lines, offers)
+        self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 3600).get((self.REPO, 1530)))

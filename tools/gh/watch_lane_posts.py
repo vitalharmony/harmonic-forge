@@ -229,6 +229,7 @@ from belt_mechanics import (  # noqa: E402
     CallCounter,
     GhAsError,
     IdentityMismatch,
+    OfferState,
     SeenSet,
     TickLog,
     Watermarks,
@@ -1116,7 +1117,9 @@ def _issue_is_open(repo: str, issue: int) -> bool:
 
 def discover_queue(repo: str, lane: str,
                    candidates_for_repo: set[int],
-                   store_read_at: "dt.datetime | None" = None) -> tuple[dict[int, str], bool]:
+                   store_read_at: "dt.datetime | None" = None,
+                   marker_ids: "dict[int, int | None] | None" = None,
+                   ) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
     LATEST classified comment on that issue. Self-clearing: once anything
@@ -1130,7 +1133,12 @@ def discover_queue(repo: str, lane: str,
     finding posted after a `ready-for-l3` marker made `last_kind` become
     `('l2', ...)`, which failed the `last_kind[0] == 'l1'` check below and
     silently dropped a genuinely queued issue out of Lane 3's belt -- the
-    exact live reproduction the issue's own AC1 names."""
+    exact live reproduction the issue's own AC1 names.
+
+    harmonic-forge#1007: when `marker_ids` is a dict, it is filled with each
+    queued issue's marker comment id -- the comment that set `last_kind`, or
+    the newest comment for a markerless sticky-wicket item -- so the offer
+    state can tell a new marker of the same kind from a repeat."""
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
     any_poster = QUEUE_ANY_POSTER_KINDS.get(lane, ())
@@ -1200,6 +1208,7 @@ def discover_queue(repo: str, lane: str,
             continue
         last_kind: tuple[str, str] | None = None
         last_body = ""
+        last_id: int | None = None
         comments = _fetch_all_comments(repo, issue)
         if comments is None:
             # harmonic-forge#602 (found by an out-of-family review). `None` is
@@ -1229,9 +1238,13 @@ def discover_queue(repo: str, lane: str,
             if classified is not None and not _is_l2_finding(*classified):
                 last_kind = classified
                 last_body = comment.get("body", "")
+                last_id = comment.get("id")
+        newest_id = comments[-1].get("id") if comments else None
         if not last_kind:
             if sticky:
                 queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
+                if marker_ids is not None:
+                    marker_ids[issue] = newest_id
             continue
         poster, kind = last_kind
         if _is_gate_report(kind, last_body):
@@ -1246,11 +1259,15 @@ def discover_queue(repo: str, lane: str,
             # the trigger never hides them.
             if sticky:
                 queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
+                if marker_ids is not None:
+                    marker_ids[issue] = newest_id
             continue
         if kind == "gate-result" and not _gate_result_owes_fix(last_body):
             # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
             continue
         queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"
+        if marker_ids is not None:
+            marker_ids[issue] = last_id
     if fetch_failed:
         return {}, False
     return queued, True
@@ -1807,6 +1824,15 @@ def comment_watch_cycle(
 #: be a circular import.
 MONITOR_LIFETIME_S = 1800
 
+#: harmonic-forge#1007 AC3. Within ONE lane session, an item still queued
+#: under the same marker is re-offered only this often, as a backstop for a
+#: lane that saw the offer and then dropped it. A new lane session is
+#: re-offered every queued item at once (AC1), so this is a reminder, not
+#: the delivery. Eight Monitor windows: repeat wakeups per stale item fall
+#: from two an hour to one per four hours, while a dropped item still
+#: resurfaces within one working block.
+REOFFER_INTERVAL_S = 14400
+
 _BACKOFF_FACTOR = 2.0
 _BACKOFF_CAP_MULTIPLIER = 10.0
 
@@ -1942,6 +1968,10 @@ def queue_cycle(
     candidate_pairs: set[tuple[str, int]] | None = None,
     recorded_only: bool = False,
     store_read_at: "dt.datetime | None" = None,
+    offers: "OfferState | None" = None,
+    session: "tuple[int | None, int | None]" = (None, None),
+    tick: "TickLog | None" = None,
+    now_ts: float | None = None,
 ) -> tuple[dict[tuple[str, int], str], list[str], set[str]]:
     """One `--queue-for` poll across every repo: `(queue, lines, ok_repos)`.
 
@@ -1962,6 +1992,15 @@ def queue_cycle(
       former may produce `left-queue-for-*`. Retracting a
       queued issue because a search hit a rate limit tells the lane the ball
       moved on when it did not.
+
+    harmonic-forge#1007: with `offers` (the belt's persisted `OfferState`),
+    a freshly discovered item is emitted unless the same lane `session`
+    already got the same marker (same comment id and marker string) less
+    than `REOFFER_INTERVAL_S` ago; a suppressed item counts into
+    `tick.reoffer_suppressed`. Persisted entries are used ONLY for
+    retraction -- never for the carry-forward, which reads `last_queue`
+    alone (AC5a). Entries are recorded in memory here; the caller saves them
+    only after printing (`deliver_queue_lines`).
     """
     #: harmonic-forge#686. The candidate set is now supplied by the caller
     #: from what it already holds, never discovered by a scan. `None` means
@@ -1971,10 +2010,17 @@ def queue_cycle(
     candidate_pairs = candidate_pairs or set()
     queue: dict[tuple[str, int], str] = {}
     ok_repos: set[str] = set()
+    fresh_ids: dict[tuple[str, int], int | None] = {}
+    checked_pairs: set[tuple[str, int]] = set()
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
         checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}
-        raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at)
+        ids: dict[int, int | None] = {}
+        if offers is None:
+            raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at)
+        else:
+            raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
+                                           marker_ids=ids)
         found = dict(raw)
         if not fetch_ok:
             # Carry this repo's previous queue forward untouched, and keep it
@@ -1987,8 +2033,10 @@ def queue_cycle(
             continue
         ok_repos.add(repo)
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
+        checked_pairs.update((repo, n) for n in (checked or ()))
         for issue, marker in found.items():
             queue[(repo, issue)] = marker
+            fresh_ids[(repo, issue)] = ids.get(issue)
         if checked is not None:
             #: harmonic-forge#686 preclose finding 2. `checked` is the
             #: candidate set `discover_queue` actually inspected this cycle
@@ -2032,13 +2080,47 @@ def queue_cycle(
                     queue[(repo, issue)] = marker
 
     lines: list[str] = []
+    when = time.time() if now_ts is None else now_ts
     for (repo, issue), marker in queue.items():
-        if last_queue.get((repo, issue)) == marker:
-            continue
+        key = (repo, issue)
+        if offers is None or key not in fresh_ids:
+            # No offer state, or carried forward without a fresh read: the
+            # in-process rule, unchanged.
+            if last_queue.get(key) == marker:
+                continue
+        else:
+            if (session[0] is None or session[1] is None) \
+                    and last_queue.get(key) == marker \
+                    and (offers.get(key) or {}).get("comment_id") == fresh_ids[key]:
+                # Session unknown: the persisted state never suppresses, so
+                # fall back to the same-process dedup -- printed once per
+                # process, not every tick. Keyed on (marker, comment id), the
+                # identity `suppresses` uses: a new same-kind comment is a new
+                # offer (harmonic-forge#1007 pass-2).
+                continue
+            if offers.suppresses(key, marker, fresh_ids[key], session, when,
+                                REOFFER_INTERVAL_S):
+                if tick is not None:
+                    tick.reoffer_suppressed += 1
+                continue
+            offers.record(key, marker, fresh_ids[key], session, when)
         lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
-    for repo, issue in set(last_queue) - set(queue):
-        if repo in ok_repos:
-            lines.append(f"{repo}#{issue} left-queue-for-{lane}")
+    retract = {k for k in set(last_queue) - set(queue) if k[0] in ok_repos}
+    if offers is not None:
+        # AC5: an item an EARLIER process offered that has since cleared
+        # retracts once. Only an item this cycle actually checked (or any
+        # absent item on a recorded-only belt, where absence is decisive) --
+        # an unchecked one is "unknown", the carry-forward's own rule, and
+        # its entry simply ages out (AC5a).
+        for key in offers.keys():
+            if key in queue or key[0] not in ok_repos:
+                continue
+            if recorded_only or key in checked_pairs:
+                retract.add(key)
+    for repo, issue in retract:
+        lines.append(f"{repo}#{issue} left-queue-for-{lane}")
+        if offers is not None:
+            offers.remove((repo, issue))
 
     # harmonic-forge#600 AC1. A belt event that lands during a live batch used
     # to arrive with nothing said about the batch at all, so a session either
@@ -2187,6 +2269,43 @@ def _proc_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _process_start_time(pid: int | None) -> int | None:
+    """Field 22 (starttime, clock ticks) of `/proc/<pid>/stat`, or None.
+    Pairs with a pid so a reused pid is not mistaken for the same session
+    (harmonic-forge#1007)."""
+    if not pid:
+        return None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return int(stat.rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def session_identity() -> tuple[int | None, int | None]:
+    """`(pid, starttime)` of this belt's lane session; either may be None,
+    which `OfferState` treats as a session mismatch (re-offer)."""
+    pid = _nearest_session_pid()
+    return pid, _process_start_time(pid)
+
+
+def deliver_queue_lines(lines: list[str], offers: "OfferState | None") -> None:
+    """Print and flush every queue line, THEN save the offer state
+    (harmonic-forge#1007 AC4): a crash between the two re-offers, never
+    loses."""
+    for line in lines:
+        print(line)
+        sys.stdout.flush()
+    if offers is not None:
+        try:
+            offers.save()
+        except OSError as exc:
+            # Never kill the belt over suppression state: the lines are
+            # already out, and the next save retries (AC4).
+            print(f"[belt] offer state save failed ({exc}); continuing",
+                  file=sys.stderr)
 
 
 def _nearest_session_pid(start_pid: int | None = None) -> int | None:
@@ -2621,6 +2740,11 @@ def _main() -> int:
         belt_id += f"@{args.workspace}"
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
+    #: harmonic-forge#1007: which queued markers this belt offered, to which
+    #: lane session -- so a re-arm does not re-offer an unchanged item.
+    offers = OfferState(_BELT_STATE / f"offered-{belt_id}.json",
+                        max_age_days=belt_candidates.DEFAULT_MAX_AGE_DAYS)
+    offer_session = session_identity()
     #: harmonic-forge#685. Keyed by `belt_id` for the same reason the seen-set
     #: is: two belts with different watch/queue arguments are different
     #: processes and their ticks must not interleave into one file.
@@ -2757,7 +2881,8 @@ def _main() -> int:
             queue, lines, ok_repos = queue_cycle(
                 repos, mode, last_queue, now,
                 candidate_pairs=discovered | static_pairs | posted_candidates,
-                recorded_only=recorded_only, store_read_at=store_read_at)
+                recorded_only=recorded_only, store_read_at=store_read_at,
+                offers=offers, session=offer_session, tick=tick)
             if first_queue_report:
                 # Reports repos that ACTUALLY REPORTED, not len(argv). A run
                 # where every search failed used to print a line byte-identical
@@ -2766,9 +2891,8 @@ def _main() -> int:
                       f"issue(s) queued now across {len(ok_repos)}/{len(repos)} "
                       f"repo(s) that reported", file=sys.stderr)
                 first_queue_report = False
-            for line in lines:
-                print(line)
-                sys.stdout.flush()
+            deliver_queue_lines(lines, offers)
+            if lines:
                 cycle_emitted = True
             _record_line_refs(tick, lines)
             last_queue = queue
