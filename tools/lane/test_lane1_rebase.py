@@ -702,6 +702,23 @@ class VersionConflictTests(_Fixture):
         self.assert_refused(code, err)
         self.assertIn("differs beyond the top-level version", err)
 
+    def test_c4_string_vs_number_differs_exits_2(self):
+        # post-verdict F1035 survivor: "1" and 1 must not compare equal.
+        self.on_branch({PKG: pkg("2.9.41", private='"1"')}, 'bump + "1"')
+        self.on_main({PKG: pkg("2.9.42", private="1")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("differs beyond the top-level version", err)
+
+    def test_c5_whitespace_only_difference_exits_2(self):
+        # Operator ruling on #1035: plain text compare, formatting included.
+        self.on_branch({PKG: pkg("2.9.41").replace('"name": "app"', '"name":  "app"')},
+                       "bump + reformat")
+        self.on_main({PKG: pkg("2.9.42")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("differs beyond the top-level version", err)
+
     def _resolve_then_crash(self):
         self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41")}, "feature + bump")
         self.on_main({PKG: pkg("2.9.42")})

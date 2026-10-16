@@ -336,11 +336,16 @@ def _json(text: str):
     return value if isinstance(value, dict) else None
 
 
-def _canonical(obj: dict) -> str:
-    """Equality key over values `_json` loaded with numbers as literal text
-    (preclose F1035 passes 1-2): `true`/`1`, `1.0`/`1` and `1e400`/`1e401`
-    all differ."""
-    return json.dumps({k: v for k, v in obj.items() if k != "version"}, sort_keys=True)
+def _blank_version(text: str) -> tuple[str, str] | None:
+    """The text with the top-level `"version"` value blanked, and that value;
+    None unless exactly one such line exists. Equality is then a plain byte
+    compare of the blanked texts (operator ruling on #1035): no JSON parse, so
+    `"1"`/`1`, `1e400`/`1e401` and whitespace-only differences all differ."""
+    found = _TOP_VERSION.findall(text)
+    if len(found) != 1:
+        return None
+    blanked, count = _TOP_VERSION.subn(lambda m: f"{m.group(1)}{m.group(3)}", text)
+    return (blanked, found[0][1]) if count == 1 else None
 
 
 def version_target(repo_dir: str, old: str) -> tuple[str | None, dict[str, str]]:
@@ -379,12 +384,12 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
         theirs = git(prep, "show", f":3:{path}", check=False)
         if ours.returncode or theirs.returncode:
             return f"{path}: not a two-sided content conflict"
-        upstream, branch_side = _json(ours.stdout), _json(theirs.stdout)
+        upstream, branch_side = _blank_version(ours.stdout), _blank_version(theirs.stdout)
         if upstream is None or branch_side is None:
-            return f"{path}: not parseable as a JSON object"
-        if _canonical(upstream) != _canonical(branch_side):
+            return f"{path}: not exactly one top-level version line per side"
+        if upstream[0] != branch_side[0]:
             return f"{path}: differs beyond the top-level version"
-        branch_version = branch_side.get("version")
+        branch_version = branch_side[1]
         main_version = mains.get(path)
         found = _SEMVER.match(branch_version) if isinstance(branch_version, str) else None
         if not found or not main_version:
@@ -395,9 +400,8 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
                     f"origin/main's {main_version} in MAJOR or MINOR")
         text, count = _TOP_VERSION.subn(lambda m: f"{m.group(1)}{target}{m.group(3)}",
                                         ours.stdout)
-        result = _json(text) if count == 1 else None
-        if (result is None or result.get("version") != target
-                or _canonical(result) != _canonical(upstream)):
+        result = _blank_version(text) if count == 1 else None
+        if result is None or result != (upstream[0], target):
             return f"{path}: the top-level version could not be replaced alone"
         staged.append((path, text))
     for path, text in staged:
