@@ -560,6 +560,11 @@ class TierPCaseIdTests(unittest.TestCase):
         sweep = "## Gate-readiness sweep — H1896\n\nWrite tier: R\n\n### Per-case readiness\n- TC1: ready\n"
         self.assertFalse(self._ok(sweep, spec))
 
+    def test_an_incidental_test_case_heading_keeps_tier_p_detection(self):
+        spec = SPEC_TIER_P + "\n### Test case prerequisites\n1. backup\n2. grant\n"
+        self.assertEqual(L._tier_p_ids(spec), {"1", "2", "3"})
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready\n2. ready\n", spec))
+
     def test_footer_or_stray_tc_does_not_reroute_a_tier_p_spec(self):
         sweep = HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n"
         footer = SPEC_TIER_P + "\n<!-- l1-post v1; kind=spec; classes=P1:ac,P2:ac,P3:ac -->"

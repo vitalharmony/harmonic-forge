@@ -241,9 +241,10 @@ LEADING_P_ID = re.compile(
 def _tier_p_ids(spec_body: str) -> set[str]:
     """The line-leading `P<n>` ids under a spec's bare `Cases` heading, up to
     the next heading of the same or higher level; empty when there are none."""
-    # Only a spec that declares Write tier P and has no regular case heading:
-    # a P<n> under a stray "Cases" heading in any other spec is never a case.
-    if parse_write_tier(spec_body) != "P" or _case_section(spec_body)[1]:
+    # Only a spec that declares Write tier P: a P<n> under a stray "Cases"
+    # heading in any other spec is never a case. Other headings do not matter,
+    # so an incidental "Test case ..." heading cannot switch the check off.
+    if parse_write_tier(spec_body) != "P":
         return set()
     match = BARE_CASES_HEADING.search(spec_body)
     if not match:
