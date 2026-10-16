@@ -27,15 +27,19 @@ Exit codes:
 Safe to re-run: a stale prep worktree is pruned at start and the prep
 worktree is removed in a `finally`; if `origin/<branch>` already contains
 `origin/main` (a crash after the push), it skips straight to the local-ref
-step. That holds on the Lane 3 PASS path too (harmonic-forge#1034): after a
-crash the PASS names the pre-rebase SHA, which is accepted only while the
-local branch still sits on it and `origin/<branch>` already contains
-`origin/main`.
+step. That holds on the Lane 3 PASS path too (harmonic-forge#1034): before
+the push a receipt `{issue, passed_sha, rebased_sha}` is written in the git
+dir, and after a crash the PASS (which names the pre-rebase SHA) is accepted
+only when that receipt names it, the local branch still sits on it, and
+`origin/<branch>` is exactly the receipt's rebased SHA. The receipt is
+deleted once the local ref moves. The crash state is recorded, never
+inferred from history (sticky-wicket reforge, F1034).
 """
 
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import subprocess
@@ -91,6 +95,13 @@ def _gate_ci():
     return gate_ci
 
 
+#: Footer kinds that are never a gate report, whatever their body quotes.
+#: `discussion` is not one: it is `lane-comment`'s default stamp, and most
+#: real gate reports carry it (watch_lane_posts._is_gate_report).
+NON_GATE_KINDS = frozenset({"rework", "handoff", "ready-for-l3", "ae", "sweep"})
+_GATE_LINE = re.compile(r"^## Lane 3 Gate Results\b", re.M)
+
+
 def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
     """`lane.detail` of the issue's newest classified comment, e.g.
     `l2.done`, read with the belt's own classifier so the two cannot drift.
@@ -110,9 +121,13 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
             # harmonic-forge#1034: a gate report is a lane marker whoever
             # posted it -- checked before the Lane 1 skip, so a FAIL stamped
             # `posted-by=LANE-unset` (classified l1) is never skipped.
-            # preclose F1034 pass 1: also gate_ci's own heading reader, so a
-            # report with a preamble line before its heading is not skipped.
-            if watch._is_gate_report(detail, body) or gate_ci.GATE_HEADING.search(body):
+            # preclose F1034 pass 1: also a gate heading anchored at a line
+            # start, so a report with a preamble line is not skipped -- but
+            # (sticky-wicket PATCH, F1034 pass 2) never for a comment whose
+            # footer names one of Lane 1's own kinds: a rework that pastes a
+            # PASS heading is still a rework.
+            if watch._is_gate_report(detail, body) or (
+                    detail not in NON_GATE_KINDS and _GATE_LINE.search(body)):
                 if gate_ci.verdict_of(body) == "PASS":
                     newest = f"l3.pass:{gate_ci.gated_sha(body) or ''}"
                 else:
@@ -176,27 +191,43 @@ def _same_sha(a: str | None, b: str | None) -> bool:
     return check_lane3_ready.same_sha(a, b)
 
 
-def _pass_covers(repo_dir: str, branch: str, old: str, passed: str) -> bool:
+def receipt_path(repo_dir: str, issue: int) -> Path:
+    common = git(repo_dir, "rev-parse", "--git-common-dir").stdout.strip()
+    base = Path(common) if Path(common).is_absolute() else Path(repo_dir) / common
+    return base / f"lane1-rebase-{issue}.json"
+
+
+def read_receipt(repo_dir: str, issue: int) -> dict | None:
+    try:
+        data = json.loads(receipt_path(repo_dir, issue).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_receipt(repo_dir: str, issue: int, passed: str, rebased: str) -> None:
+    receipt_path(repo_dir, issue).write_text(json.dumps(
+        {"issue": issue, "passed_sha": passed, "rebased_sha": rebased}))
+
+
+def drop_receipt(repo_dir: str, issue: int) -> None:
+    receipt_path(repo_dir, issue).unlink(missing_ok=True)
+
+
+def _pass_covers(repo_dir: str, issue: int, branch: str, old: str, passed: str) -> bool:
     """A PASS covers the branch when it names the head, or (operator ruling
-    on #1034) the crash-after-push state: origin already carries
-    `origin/main` and the local branch still sits on the passed SHA.
-    `move_local_ref`'s cherry check still guards unpushed work."""
+    on #1034) the crash-after-push state -- recorded, never inferred
+    (sticky-wicket reforge): this tool's own receipt names the passed SHA,
+    the local branch still sits on it, and origin is exactly the SHA the
+    receipt says was pushed. Fails closed (exit 4) otherwise."""
     if _same_sha(passed, old):
         return True
-    main = rev(repo_dir, "refs/remotes/origin/main")
+    receipt = read_receipt(repo_dir, issue)
     local = rev(repo_dir, f"refs/heads/{branch}")
-    if not main or not _same_sha(passed, local) or git(
-            repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode:
+    if not receipt or receipt.get("issue") != issue or not local:
         return False
-    # preclose F1034 pass 1: origin's own commits must be exactly the passed
-    # SHA's, rebased -- same count, each patch-equivalent -- or the PASS would
-    # cover commits Lane 3 never gated. Fails closed (exit 4) otherwise.
-    own = [c for c in git(repo_dir, "cherry", main, old).stdout.splitlines() if c.startswith("+")]
-    passed_own = [c for c in git(repo_dir, "cherry", main, local).stdout.splitlines()
-                  if c.startswith("+")]
-    unmatched = [c for c in git(repo_dir, "cherry", old, local).stdout.splitlines()
-                 if c.startswith("+")]
-    return len(own) == len(passed_own) and not unmatched
+    return (receipt.get("passed_sha") == local and _same_sha(passed, local)
+            and receipt.get("rebased_sha") == old)
 
 
 def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:
@@ -207,7 +238,7 @@ def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> Non
     marker = newest_lane_marker(repo_dir, issue)
     if marker and marker.startswith("l3.pass:"):
         passed = marker.split(":", 1)[1]
-        if not _pass_covers(repo_dir, branch, old, passed):
+        if not _pass_covers(repo_dir, issue, branch, old, passed):
             raise Exit(4, f"the Lane 3 PASS on #{issue} names {passed[:12] or 'no SHA'}, "
                           f"not the branch head {old[:12]}")
     elif marker != "l2.done":
@@ -281,6 +312,9 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str) -> str:
             listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
             raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n{listed}")
         new = rev(prep, "HEAD")
+        # sticky-wicket reforge F1034: record the crash state before it can
+        # exist, so a re-run never has to infer it from history.
+        write_receipt(repo_dir, issue, old, new)
         push(prep, branch, old)
         return new
     finally:
@@ -338,6 +372,7 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
     else:
         new = rebase_and_push(repo_dir, issue, branch, old)
     move_local_ref(repo_dir, branch, new)
+    drop_receipt(repo_dir, issue)
     return new
 
 

@@ -341,13 +341,64 @@ class PassPreconditionTests(_Fixture):
     def test_f2_rerun_with_local_at_third_sha_exits_4(self):
         pushed = self._crash_after_push()
         # Patch-equivalent to the PASS (reworded), so only the local-equals-
-        # PASS condition can refuse it, not the cherry check.
+        # PASS condition can refuse it, not the receipt match.
         sh(self.impl, "commit", "-q", "--amend", "-m", "reworded")
         third = sh(self.impl, "rev-parse", "HEAD")
         self.assertNotEqual(third, self.branch_sha)
         self.assertEqual(self.run_main(), 4)
         self.assertEqual(self.origin_branch(), pushed)
         self.assertEqual(self.local_branch(), third)
+
+    def test_g_rework_pasting_a_pass_heading_exits_4(self):
+        # sticky-wicket PATCH, F1034 pass 2 #1: a rework's footer wins over a
+        # PASS heading it quotes, so origin==X still exits 4 (AC2).
+        self.bodies = [L2D, gate("PASS", self.branch_sha), "Earlier:\n\n" + gate(
+            "PASS", self.branch_sha, footer="kind=rework; sha=a; body-sha256=b")]
+        self.advance_main()
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), self.branch_sha)
+
+    def _replace_origin(self, build):
+        sh(self.other, "fetch", "-q", "origin")
+        sha = build()
+        sh(self.other, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        return sha
+
+    def test_f4_rerun_with_merge_commit_on_origin_exits_4(self):
+        # F1034 pass 2 #2: origin is the PASS merged with main, and the merge
+        # resolution adds an ungated file; no receipt names that SHA.
+        self._crash_after_push()
+
+        def build():
+            sh(self.other, "checkout", "-q", "-B", "m", self.branch_sha)
+            sh(self.other, "merge", "-q", "--no-commit", "origin/main")
+            Path(self.other, "ungated.txt").write_text("x\n")
+            sh(self.other, "add", "ungated.txt")
+            sh(self.other, "commit", "-q", "-m", "merge")
+            return sh(self.other, "rev-parse", "HEAD")
+        merged = self._replace_origin(build)
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), merged)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+
+    def test_f5_rerun_same_count_different_content_exits_4(self):
+        # F1034 pass 2 #3: one commit on main, as the rebase would be, but
+        # with different content.
+        self._crash_after_push()
+
+        def build():
+            sh(self.other, "checkout", "-q", "-B", "s", "origin/main")
+            return commit(self.other, "feature.txt", "different\n", "feature")
+        other = self._replace_origin(build)
+        self.assertEqual(self.run_main(), 4)
+        self.assertEqual(self.origin_branch(), other)
+        self.assertEqual(self.local_branch(), self.branch_sha)
+
+    def test_receipt_dropped_after_local_move(self):
+        self._crash_after_push()
+        self.assertIsNotNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
+        self.assertEqual(self.run_main(), 0)
+        self.assertIsNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
 
 
 if __name__ == "__main__":
