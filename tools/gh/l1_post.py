@@ -2329,6 +2329,31 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) 
               file=sys.stderr)
 
 
+def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None) -> None:
+    """harmonic-forge#1016: read the attested SHA's required `verify`
+    conclusion once, before the full local check. `red` refuses and records
+    one `refused-ci` attempt; every other state proceeds unchanged, and
+    nothing waits or polls. Fails open: no source repo, or any error reading
+    CI, returns without refusing (as the refused-check snapshot does)."""
+    try:
+        source_repo = _cwd_repo_from_git(None)
+        if not source_repo:
+            return
+        state, detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
+    except Exception:  # noqa: BLE001 - fail open
+        return
+    if state != "red":
+        return
+    if attempt is not None:
+        # Set before emitting so post_kind's catch-all does not record a
+        # second `refused-other` event.
+        attempt["ci_state"] = "red"
+        attempt["emitted"] = True
+        _emit_attempt(repo, issue, sha, "refused-ci", attempt)
+    fail(f"CI on {sha[:12]} is red ({detail}); fix or re-run CI before posting "
+         "— the full local check was not started")
+
+
 def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str, **kwargs,
 ) -> tuple[str, int]:
@@ -2386,6 +2411,9 @@ def _post_kind(
         # origin/main (an unfetched ref hides an already-merged sibling).
         refresh_main()  # preclose F1: the pre-flight must read a fresh origin/main
         world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
+        # harmonic-forge#1016: a SHA whose CI is already red refuses here, in
+        # seconds, before the ~8 minute `mise run check` below.
+        _refuse_if_ci_red(repo, issue, sha, attempt)
         checks, local_check_timing, check = static_checks(sha, branch)
         if attempt is not None:
             attempt["local_check_result"] = check["result"]

@@ -135,12 +135,20 @@ import unittest.mock as _sticky_mock  # noqa: E402
 _STICKY_PATCH = _sticky_mock.patch.object(l1_post, "validate_sticky_wicket")
 
 
+# harmonic-forge#1016: shared ci_conclusion stub -- ready-for-l3 reads CI
+# before static_checks; never make a real `gh api` call from a test.
+import unittest.mock as _ci_mock  # noqa: E402
+_CI_PATCH = _ci_mock.patch.object(l1_post.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
+
+
 def setUpModule():  # noqa: N802
     _STICKY_PATCH.start()
+    _CI_PATCH.start()
 
 
 def tearDownModule():  # noqa: N802
     _STICKY_PATCH.stop()
+    _CI_PATCH.stop()
 
 if __name__ == "__main__":
     unittest.main()
