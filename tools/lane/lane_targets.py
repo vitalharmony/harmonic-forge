@@ -30,6 +30,24 @@ ADVISOR = "advisor"
 ADVISOR_NAMES = {"Advisor", "Lane Advisor"}
 
 
+def advisor_names() -> set[str]:
+    """`ADVISOR_NAMES` plus every `<label>:advisor` (harmonic-forge#1014).
+
+    Lazy: nothing reads projects.toml at import time, so this module's tests
+    never touch the real manifest. Any failure (a missing tools/onboard, an
+    unreadable or colliding manifest) falls back to the legacy literal set.
+    """
+    import sys
+    onboard = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "onboard")
+    try:
+        if onboard not in sys.path:
+            sys.path.insert(0, onboard)
+        from manifest_labels import advisor_label_names
+        return set(ADVISOR_NAMES) | advisor_label_names()
+    except Exception:  # noqa: BLE001 -- teardown must never fail on a label
+        return set(ADVISOR_NAMES)
+
+
 def _git_common_dir(path: str) -> str | None:
     """The absolute git common dir of `path`, or None on any failure (a stale
     worktree, a non-repo, a timeout). The ONE subprocess in this module, isolated
@@ -113,6 +131,7 @@ def select_targets(
     lane_names: set[str],
     me: set[int],
     workspace_dirs: set[str] | None = None,
+    advisor_name_set: set[str] | None = None,
 ) -> list[dict]:
     """The `agents --json` entries `lane_sessions()` should stop.
 
@@ -142,6 +161,7 @@ def select_targets(
     pane pids only.
     """
     cache: dict = {}
+    names = ADVISOR_NAMES if advisor_name_set is None else advisor_name_set
     if mode == ADVISOR:
         return [
             a for a in listing
@@ -149,7 +169,7 @@ def select_targets(
             and a.get("pid") not in me
             and (
                 a.get("pid") in panes
-                or (a.get("kind") == "background" and a.get("name") in ADVISOR_NAMES
+                or (a.get("kind") == "background" and a.get("name") in names
                     and in_workspace(a, workspace_dirs, cache))
             )
         ]

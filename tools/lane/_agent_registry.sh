@@ -283,6 +283,16 @@ declare -A AGENT_POLICY_REQUIRED_OWNER=(
   [gemini]=""
 )
 
+# AGENT_NAME_FLAG -- harmonic-forge#1014. The flag that sets the session's
+# display name (what Remote Control shows), given the lane's LANE_LABEL by
+# _cli_launch.sh unless the caller passed its own. Empty = the agent has no
+# such flag, and its launch tuple is unchanged.
+declare -A AGENT_NAME_FLAG=(
+  [claude]="--name"
+  [codex]=""
+  [gemini]=""
+)
+
 # Every agent x lane slot is declared, including the empty ones. An absent key
 # is a registry integrity failure (see registry_assert_integrity), never a
 # silently-unprotected lane.
@@ -388,6 +398,7 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
   AGENT_EFFORT_LEVELS AGENT_LAUNCH_REFUSED_ENV
   AGENT_SESSION_FLAGS AGENT_SESSION_DENIED AGENT_QUEUE_SANDBOX AGENT_NONINTERACTIVE_WORDS
+  AGENT_NAME_FLAG
 )
 
 _registry_die() {

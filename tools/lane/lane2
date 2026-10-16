@@ -81,6 +81,11 @@ if [ "$LANE_REFRESH_STATUS" != "current" ] && [ "$LANE_REFRESH_STATUS" != "skipp
   [ -n "$LANE_REFRESH_DETAIL" ] && echo "lane2: $LANE_REFRESH_DETAIL" >&2
 fi
 
+# harmonic-forge#1014: the session name and pinned pane title, from the repo.
+# shellcheck source=_lane_identity.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_identity.sh"
+lane_identity 2
+
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 

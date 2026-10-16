@@ -222,7 +222,9 @@ def capture_cell(
                     "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_MODEL",
                     "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                     "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "GH_CONFIG_DIR", "GOOGLE_CLOUD_PROJECT"):
+                    "GH_CONFIG_DIR", "GOOGLE_CLOUD_PROJECT",
+                    # harmonic-forge#1014: never retitle the operator's pane.
+                    "TMUX", "TMUX_PANE", "LANE_LABEL"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)
@@ -324,8 +326,13 @@ def capture_all(lane_dir: Path) -> dict:
 #      so every baseline cell records it as null.
 #   2. AC7 -- the systemd-inhibit --why string names the actual agent. Every
 #      baseline cell says "Claude Code" regardless of what is being launched.
+#   3. harmonic-forge#1014 -- a Claude lane carries its session name,
+#      `--name lane<N>`, just before the caller's own arguments. The capture
+#      repo is registered in no projects.toml, so the label is the bare lane.
+#      Declared here, never re-captured into the fixture.
 # ---------------------------------------------------------------------------
-DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why")
+DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why",
+                   "F1014:session-name")
 
 # Operator-facing display name per agent, mirroring AGENT_DISPLAY in
 # _agent_registry.sh. Duplicated here deliberately and minimally: the point of
@@ -346,8 +353,12 @@ def _load_lane3_additions(path: Path) -> list[str]:
     return tokens
 
 
-def _apply_declared_deltas(cell: dict, agent: str) -> dict:
-    """Rewrite a baseline cell to carry the two deltas AC2 and AC7 mandate."""
+def _apply_declared_deltas(cell: dict, agent: str, key: str | None = None) -> dict:
+    """Rewrite a baseline cell to carry the declared deltas.
+
+    `key` (`lane<N>/<agent>/<shape>`) enables F1014's session name, which needs
+    the lane and the argument shape; without it only AC2 and AC7 apply.
+    """
     updated = json.loads(json.dumps(cell))
     if not updated.get("launched"):
         return updated
@@ -357,6 +368,11 @@ def _apply_declared_deltas(cell: dict, agent: str) -> dict:
         if arg.startswith("--why=") else arg
         for arg in updated["argv"]
     ]
+    if key is not None and agent == "claude":
+        lane, _, shape = key.split("/")
+        argv = updated["argv"]
+        at = len(argv) - len(ARG_SHAPES[shape])
+        updated["argv"] = argv[:at] + ["--name", lane] + argv[at:]
     return updated
 
 
@@ -397,7 +413,7 @@ def compare(captured: dict, fixture: dict, lane3_additions: list[str]) -> list[s
         if key not in want:
             diffs.append(f"{key}: not present in baseline fixture")
             continue
-        expected = _apply_declared_deltas(want[key], agent)
+        expected = _apply_declared_deltas(want[key], agent, key)
         actual = got[key]
         # `stderr` is not part of the documented launch tuple (argv/cwd/env,
         # see this module's own docstring) -- it leaks into the cell dict as

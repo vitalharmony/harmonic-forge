@@ -223,6 +223,11 @@ export LANE_REFRESH_ENV
 lane_refresh_log_flush
 
 
+# harmonic-forge#1014: the session name and pinned pane title, from the repo.
+# shellcheck source=_lane_identity.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_identity.sh"
+lane_identity 3
+
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
 

@@ -193,7 +193,10 @@ exit 0
                     "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_MODEL",
                     "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                     "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "GH_CONFIG_DIR"):
+                    "GH_CONFIG_DIR",
+                    # harmonic-forge#1014: a run inside a lane pane must never
+                    # retitle it, nor inherit a label.
+                    "TMUX", "TMUX_PANE", "LANE_LABEL"):
             env.pop(key, None)
         env["PATH"] = f"{self.stub_bin}{os.pathsep}{env['PATH']}"
         env["HOME"] = str(self.home)
@@ -396,7 +399,7 @@ class RegistryIntegrity(unittest.TestCase):
         dest.mkdir()
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                     "_gh_config_dir.sh", "_lane_refresh.sh"):
+                     "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
             (dest / name).write_text((LANE_DIR / name).read_text())
         (dest / "policies").mkdir()
         for policy in (LANE_DIR / "policies").glob("*.toml"):
@@ -642,7 +645,8 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                     # deltas applied, so the agent-aware `--why` string is not
                     # mistaken for an undeclared Lane 3 safety addition.
                     expected = bc._apply_declared_deltas(
-                        baseline[f"lane3/{agent}/none"], agent)
+                        baseline[f"lane3/{agent}/none"], agent,
+                        f"lane3/{agent}/none")
                     was = set(expected["argv"])
                     now = set(cell["argv"])
                     undeclared = {a for a in now - was if a.startswith("-")}
@@ -875,7 +879,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir = tree.root / "lanedir"
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh", "_lane_refresh.sh"):
+                         "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             registry = (LANE_DIR / "_agent_registry.sh").read_text().replace(
                 '  [gemini:3]=""', '  [gemini:3]="gemini-lane3.toml"')
@@ -915,7 +919,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                          "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                         "_gh_config_dir.sh", "_lane_refresh.sh"):
+                         "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             (lane_dir / "policies").mkdir()  # deliberately empty
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
@@ -929,7 +933,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             lane_dir.mkdir()
             for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                          "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                         "_gh_config_dir.sh", "_lane_refresh.sh"):
+                         "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
                 (lane_dir / name).write_text((LANE_DIR / name).read_text())
             (lane_dir / "policies").mkdir()
             (lane_dir / "policies" / "gemini-lane1.toml").write_text(
@@ -958,7 +962,7 @@ class ClaudeLane3Settings(unittest.TestCase):
         lane_dir.mkdir()
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                     "_gh_config_dir.sh", "_lane_refresh.sh"):
+                     "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
             (lane_dir / name).write_text((LANE_DIR / name).read_text())
         (lane_dir / "policies").mkdir()
         reg = lane_dir / "_agent_registry.sh"
