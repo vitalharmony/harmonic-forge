@@ -140,17 +140,21 @@ def _same_sha(a: str, b: str) -> bool:
 
 def same_sha_retry(details: list[tuple[int, str | None, str | None]]) -> str | None:
     """harmonic-forge#1019: the SHA when the last two gate results are both BLOCKED
-    at one non-empty Head-SHA and the third-newest is not also BLOCKED there."""
+    at one non-empty Head-SHA and the third-newest is not also BLOCKED there.
+    A third-newest BLOCKED with no readable SHA counts as BLOCKED there (fails closed)."""
     if len(details) < 2:
         return None
     (_, v1, s1), (_, v2, s2) = details[-2], details[-1]
     if v1 != "BLOCKED" or v2 != "BLOCKED" or not s1 or not s2 or not _same_sha(s1, s2):
         return None
+    # The longer of the two, so a short SHA cannot bridge two different full ones.
+    sha = max(s1, s2, key=len)
     if len(details) >= 3:
         _, v0, s0 = details[-3]
-        if v0 == "BLOCKED" and s0 and _same_sha(s0, s2):
+        # A third block at this SHA, or one whose SHA cannot be read, is owed as before.
+        if v0 == "BLOCKED" and (not s0 or _same_sha(s0, sha)):
             return None
-    return s2
+    return sha
 
 
 #: The posts that change no code, so a same-SHA blocked retry may precede them.

@@ -215,9 +215,6 @@ class BeltEventTests(ReceiptHome):
         self.assertEqual(belt.OWES["l1"]["gate-result"], "sticky-wicket")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class SameShaRetryTests(ReceiptHome):
     """harmonic-forge#1019: a BLOCKED pair at one SHA exempts an AE/sweep on that SHA."""
@@ -278,3 +275,20 @@ class SameShaRetryTests(ReceiptHome):
     def test_belt_emits_for_a_third_same_sha_block(self):
         self.assertTrue(belt._sticky_wicket_owed(
             REPO, ISSUE, [self.blocked(1), self.blocked(2), self.blocked(3)]))
+
+    def test_third_block_with_unreadable_sha_refused(self):
+        comments = [gate(1, "BLOCKED (`L3B`)", sha=None), self.blocked(2), self.blocked(3)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="3f4747e2742fa83f"))
+        self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+
+    def test_a_short_sha_cannot_bridge_two_full_shas(self):
+        comments = [self.blocked(1, "abcdef0" + "1" * 33), self.blocked(2, "abcdef0")]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="abcdef0" + "2" * 33))
+        self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                     attested_sha="abcdef0" + "1" * 33))
+
+
+if __name__ == "__main__":
+    unittest.main()
