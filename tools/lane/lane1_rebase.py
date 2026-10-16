@@ -323,7 +323,9 @@ def push(prep: Path, branch: str, old: str) -> None:
 
 
 _SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-_TOP_VERSION = re.compile(r'^(\s*"version"\s*:\s*")([^"\\]*)(")', re.MULTILINE)
+_TOP_VERSION = re.compile(rb'^(\s*"version"\s*:\s*")([^"\\]*)(")', re.MULTILINE)
+# Every `"version":` key anywhere in the file, nested or inline (F1035 post-verdict).
+_ANY_VERSION = re.compile(rb'"version"\s*:')
 
 
 def _json(text: str):
@@ -336,16 +338,32 @@ def _json(text: str):
     return value if isinstance(value, dict) else None
 
 
-def _blank_version(text: str) -> tuple[str, str] | None:
-    """The text with the top-level `"version"` value blanked, and that value;
-    None unless exactly one such line exists. Equality is then a plain byte
-    compare of the blanked texts (operator ruling on #1035): no JSON parse, so
-    `"1"`/`1`, `1e400`/`1e401` and whitespace-only differences all differ."""
-    found = _TOP_VERSION.findall(text)
+def _blank_version(raw: bytes) -> tuple[bytes, str] | None:
+    """The raw bytes with the top-level `"version"` value blanked, and that
+    value; None unless the file holds exactly one `"version":` key anywhere,
+    on its own line, and `json.loads` agrees it is the top-level value.
+    Equality is then a plain byte compare of the blanked bytes (operator ruling
+    on #1035): no newline translation, so CRLF vs LF differs too."""
+    if len(_ANY_VERSION.findall(raw)) != 1:
+        return None
+    found = _TOP_VERSION.findall(raw)
     if len(found) != 1:
         return None
-    blanked, count = _TOP_VERSION.subn(lambda m: f"{m.group(1)}{m.group(3)}", text)
-    return (blanked, found[0][1]) if count == 1 else None
+    try:
+        value = found[0][1].decode("utf-8")
+        data = _json(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+    if not data or data.get("version") != value:
+        return None
+    blanked, count = _TOP_VERSION.subn(lambda m: m.group(1) + m.group(3), raw)
+    return (blanked, value) if count == 1 else None
+
+
+def _show_raw(prep: Path, spec: str) -> bytes | None:
+    """`git show` as raw bytes: text mode would translate CRLF (F1035)."""
+    proc = subprocess.run(["git", "-C", str(prep), "show", spec], capture_output=True)
+    return None if proc.returncode else proc.stdout
 
 
 def version_target(repo_dir: str, old: str) -> tuple[str | None, dict[str, str]]:
@@ -378,13 +396,12 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
         return "not confined to a package.json version line"
     if any(Path(p).name != "package.json" for p in paths):
         return "not confined to a package.json version line"
-    staged: list[tuple[str, str]] = []
+    staged: list[tuple[str, bytes]] = []
     for path in paths:
-        ours = git(prep, "show", f":2:{path}", check=False)
-        theirs = git(prep, "show", f":3:{path}", check=False)
-        if ours.returncode or theirs.returncode:
+        ours, theirs = _show_raw(prep, f":2:{path}"), _show_raw(prep, f":3:{path}")
+        if ours is None or theirs is None:
             return f"{path}: not a two-sided content conflict"
-        upstream, branch_side = _blank_version(ours.stdout), _blank_version(theirs.stdout)
+        upstream, branch_side = _blank_version(ours), _blank_version(theirs)
         if upstream is None or branch_side is None:
             return f"{path}: not exactly one top-level version line per side"
         if upstream[0] != branch_side[0]:
@@ -398,14 +415,14 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
         if found.groups()[:2] != _SEMVER.match(main_version).groups()[:2]:
             return (f"{path}: branch version {branch_version} differs from "
                     f"origin/main's {main_version} in MAJOR or MINOR")
-        text, count = _TOP_VERSION.subn(lambda m: f"{m.group(1)}{target}{m.group(3)}",
-                                        ours.stdout)
+        text, count = _TOP_VERSION.subn(
+            lambda m: m.group(1) + target.encode() + m.group(3), ours)
         result = _blank_version(text) if count == 1 else None
         if result is None or result != (upstream[0], target):
             return f"{path}: the top-level version could not be replaced alone"
         staged.append((path, text))
     for path, text in staged:
-        (prep / path).write_text(text)
+        (prep / path).write_bytes(text)
         git(prep, "add", "--", path)
     return None
 

@@ -719,6 +719,29 @@ class VersionConflictTests(_Fixture):
         self.assert_refused(code, err)
         self.assertIn("differs beyond the top-level version", err)
 
+    def test_c6_inline_top_version_plus_nested_version_exits_2(self):
+        # post-verdict F1035 survivor 1: the line regex finds the nested
+        # "version", not the inline top-level one; T must never land there.
+        def nested(top, inner):
+            return (f'{{"name": "app", "version": "{top}",\n  "engines": {{\n'
+                    f'    "version": "{inner}"\n  }}\n}}\n')
+        self.on_main({PKG: nested("2.9.40", "1.0.0")})
+        sh(self.impl, "pull", "-q", "--rebase", "origin", "main")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        self.on_branch({PKG: nested("2.9.40", "1.0.1")}, "nested bump")
+        self.on_main({PKG: nested("2.9.40", "1.0.2")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("not exactly one top-level version line per side", err)
+
+    def test_c7_crlf_vs_lf_differs_exits_2(self):
+        # post-verdict F1035 survivor 2: text mode translated CRLF away.
+        self.on_branch({PKG: pkg("2.9.41").replace("\n", "\r\n")}, "bump + CRLF")
+        self.on_main({PKG: pkg("2.9.42")})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("differs beyond the top-level version", err)
+
     def _resolve_then_crash(self):
         self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41")}, "feature + bump")
         self.on_main({PKG: pkg("2.9.42")})
