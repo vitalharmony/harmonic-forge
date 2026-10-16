@@ -16,9 +16,11 @@ import watch_lane_posts as belt  # noqa: E402
 REPO, ISSUE = "vitalharmony/openclaw-projects", 35
 
 
-def gate(cid, verdict):
-    body = (f"## Lane 3 Gate Results — O35\n\n**Verdict:** {verdict} at `abc1234`, Tier R.\n"
-            "**Finding:** x\n**Next:** y\n\n<!-- l1-post v1; kind=gate-result; posted-by=LANE3 -->")
+def gate(cid, verdict, sha="abc1234"):
+    at = f" at `{sha}`" if sha else ""
+    body = (f"## Lane 3 Gate Results — O35\n\n**Verdict:** {verdict}{at}, Tier R.\n"
+            "**Finding:** x\n**Next:** y\n\n" + (f"Head-SHA: {sha}\n\n" if sha else "")
+            + "<!-- l1-post v1; kind=gate-result; posted-by=LANE3 -->")
     return {"id": cid, "body": body}
 
 
@@ -177,7 +179,7 @@ class MainCallSiteTests(ReceiptHome):
         """The world checks inside `_post_kind` are long; a result landing meanwhile
         must be seen, so the check is repeated right before `comment_body`."""
         source = Path(l1_post.__file__).read_text()
-        late = source.index("        validate_sticky_wicket(repo, issue)\n")
+        late = source.index("        validate_sticky_wicket(repo, issue, kind=kind, sha=sha)\n")
         self.assertLess(late, source.index("    url, comment_id = comment_body(repo, issue"))
         self.assertGreater(late, source.index("def _post_kind("))
 
@@ -211,6 +213,110 @@ class BeltEventTests(ReceiptHome):
 
     def test_the_event_owes_sticky_wicket(self):
         self.assertEqual(belt.OWES["l1"]["gate-result"], "sticky-wicket")
+
+
+
+class SameShaRetryTests(ReceiptHome):
+    """harmonic-forge#1019: a BLOCKED pair at one SHA exempts an AE/sweep on that SHA."""
+
+    def blocked(self, cid, sha="3f4747e2742fa83f"):
+        return gate(cid, "BLOCKED (`L3B`)", sha)
+
+    def test_ae_same_sha_retry_posts(self):
+        comments = [self.blocked(1), self.blocked(2)]
+        for kind in ("ae", "sweep", "ae-and-sweep"):
+            with self.subTest(kind=kind):
+                self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind=kind,
+                                             attested_sha="3f4747e2742fa83f82645561584060a4501f60bc"))
+
+    def test_third_same_sha_block_refused(self):
+        comments = [self.blocked(1), self.blocked(2), self.blocked(3)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="3f4747e2742fa83f"))
+
+    def test_ae_different_sha_refused(self):
+        comments = [self.blocked(1), self.blocked(2)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae", attested_sha="deadbeef"))
+
+    def test_blocked_pair_at_different_shas_refused(self):
+        comments = [self.blocked(1, "aaaa111"), self.blocked(2, "bbbb222")]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae", attested_sha="bbbb222"))
+
+    def test_missing_sha_pair_refused(self):
+        comments = [gate(1, "BLOCKED (`L3B`)", sha=None), self.blocked(2)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="3f4747e2742fa83f"))
+
+    def test_rework_after_blocked_pair_refused(self):
+        comments = [self.blocked(1), self.blocked(2)]
+        for kind in ("rework", "handoff", "ready-for-l3"):
+            with self.subTest(kind=kind):
+                self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind=kind,
+                                                attested_sha="3f4747e2742fa83f"))
+
+    def test_fail_blocked_pair_refused(self):
+        comments = [gate(1, "FAIL (`L3F`)", "3f4747e2742fa83f"), self.blocked(2)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="3f4747e2742fa83f"))
+
+    def test_the_call_site_passes_kind_and_sha(self):
+        result = mock.Mock(returncode=0, stdout=json.dumps([self.blocked(1), self.blocked(2)]), stderr="")
+        with mock.patch.object(l1_post, "run", return_value=result):
+            l1_post.validate_sticky_wicket(REPO, ISSUE, kind="ae", sha="3f4747e2742fa83f")
+            with self.assertRaises(SystemExit):
+                l1_post.validate_sticky_wicket(REPO, ISSUE, kind="rework", sha="3f4747e2742fa83f")
+
+    def test_belt_silent_for_same_sha_retry(self):
+        self.assertFalse(belt._sticky_wicket_owed(REPO, ISSUE, [self.blocked(1), self.blocked(2)]))
+
+    def test_belt_emits_for_a_fail_pair(self):
+        self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, [gate(1, "FAIL"), gate(2, "FAIL")]))
+
+    def test_belt_emits_for_a_third_same_sha_block(self):
+        self.assertTrue(belt._sticky_wicket_owed(
+            REPO, ISSUE, [self.blocked(1), self.blocked(2), self.blocked(3)]))
+
+    def test_third_block_with_unreadable_sha_refused(self):
+        comments = [gate(1, "BLOCKED (`L3B`)", sha=None), self.blocked(2), self.blocked(3)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="3f4747e2742fa83f"))
+        self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+
+    def test_a_short_sha_cannot_bridge_two_full_shas(self):
+        comments = [self.blocked(1, "abcdef0" + "1" * 33), self.blocked(2, "abcdef0")]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                        attested_sha="abcdef0" + "2" * 33))
+        self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                     attested_sha="abcdef0" + "1" * 33))
+
+
+    def test_undecidable_third_newest_refused(self):
+        for third in (gate(1, "who knows", "3f4747e2742fa83f"),
+                      gate(1, "BLOCKED (`L3B`)", "3F4747E2742FA83F"),
+                      gate(1, "BLOCKED (`L3B`)", "3f47")):
+            with self.subTest(third=third["body"][:60]):
+                comments = [third, self.blocked(2), self.blocked(3)]
+                self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                                attested_sha="3f4747e2742fa83f"))
+                self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+
+    def test_decidably_other_third_newest_stays_exempt(self):
+        for third in (gate(1, "PASS (`L3P`)", "3f4747e2742fa83f"), gate(1, "FAIL (`L3F`)", "3f4747e2742fa83f"),
+                      gate(1, "BLOCKED (`L3B`)", "aaaa1111")):
+            with self.subTest(third=third["body"][:60]):
+                comments = [third, self.blocked(2), self.blocked(3)]
+                self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                             attested_sha="3f4747e2742fa83f"))
+
+    def test_uppercase_attested_sha_matches(self):
+        self.assertIsNone(sr.refusal(REPO, ISSUE, [self.blocked(1), self.blocked(2)], kind="ae",
+                                     attested_sha="3F4747E2742FA83F"))
+
+
+    def test_an_uppercase_pair_is_read_as_the_same_sha(self):
+        comments = [self.blocked(1, "3F4747E2742FA83F"), self.blocked(2, "3F4747E2742FA83F")]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="ae",
+                                     attested_sha="3f4747e2742fa83f"))
 
 
 if __name__ == "__main__":

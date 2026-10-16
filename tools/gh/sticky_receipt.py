@@ -19,6 +19,12 @@ verified through the API to be a comment on the same issue. PATCH is also the
 exit when both results were environment blocks (an outage, say): the receipt
 says sticky-wicket looked, not that the approach changed.
 
+One exemption (harmonic-forge#1019): two BLOCKED results at one Head-SHA, with
+the third-newest not also BLOCKED there, do not refuse an AE or sweep attesting
+that same SHA, and do not wake the belt. Nothing was patched between them, so
+there is no approach to judge (hrse#2379). A rework, handoff or ready-for-l3
+after the pair still refuses, and a third block at that SHA is owed as before.
+
     sticky_receipt.py record --repo OWNER/REPO --issue N --verdict PATCH \\
         --through <gate-result comment id> --comment-url <sticky-wicket report URL>
 """
@@ -109,6 +115,58 @@ def gate_results(comments: list[dict]) -> list[tuple[int, bool]]:
     return found
 
 
+def gate_details(comments: list[dict]) -> list[tuple[int, str | None, str | None]]:
+    """`(comment id, verdict, gated SHA)` for every Lane 3 gate result, oldest first.
+
+    The same classification as `gate_results`; `verdict` is `gate_ci.verdict_of`
+    and the SHA is `gate_ci.gated_sha` (None when the report names none)."""
+    import gate_ci  # noqa: PLC0415
+    import watch_lane_posts as belt  # noqa: PLC0415
+
+    found = []
+    for comment in comments:
+        body = comment.get("body") or ""
+        classified = belt._classify(body)
+        detail = classified[1] if classified else ""
+        if belt._is_gate_report(detail, body):
+            found.append((int(comment["id"]), gate_ci.verdict_of(body), gate_ci.gated_sha(body)))
+    return found
+
+
+def _same_sha(a: str, b: str) -> bool:
+    """A gate result may carry a short SHA; compare by prefix both ways."""
+    return a.startswith(b) or b.startswith(a)
+
+
+def same_sha_retry(details: list[tuple[int, str | None, str | None]]) -> str | None:
+    """harmonic-forge#1019: the SHA when the last two gate results are both BLOCKED
+    at one readable Head-SHA and the third-newest is decidably not another block
+    there: a PASS or FAIL, or BLOCKED at a readable different SHA. Anything that
+    cannot be decided (an unreadable verdict or SHA, CONFLICT) refuses, which is
+    sticky-wicket as before (preclose sticky-wicket PATCH)."""
+    if len(details) < 2:
+        return None
+    # A SHA is readable only as 7-40 hex digits, compared in lower case.
+    readable = [(v, x if re.fullmatch(r"[0-9a-f]{7,40}", x := (s or "").lower()) else None)
+                for _, v, s in details[-3:]]
+    (v1, s1), (v2, s2) = readable[-2], readable[-1]
+    if v1 != "BLOCKED" or v2 != "BLOCKED" or not s1 or not s2 or not _same_sha(s1, s2):
+        return None
+    # The longer of the two, so a short SHA cannot bridge two different full ones.
+    sha = max(s1, s2, key=len)
+    if len(details) >= 3:
+        v0, s0 = readable[-3]
+        decidably_other = v0 in ("PASS", "FAIL") or (
+            v0 == "BLOCKED" and s0 is not None and not _same_sha(s0, sha))
+        if not decidably_other:
+            return None
+    return sha
+
+
+#: The posts that change no code, so a same-SHA blocked retry may precede them.
+RETRY_EXEMPT_KINDS = ("ae", "sweep", "ae-and-sweep")
+
+
 def owed(comments: list[dict]) -> tuple[int, int] | None:
     """`(older, newer)` gate-result ids when the last two are both non-PASS."""
     results = gate_results(comments)
@@ -126,11 +184,16 @@ def covered(repo: str, issue: int, newer: int) -> bool:
                 and int(receipt.get("through") or 0) >= newer)
 
 
-def refusal(repo: str, issue: int, comments: list[dict]) -> str | None:
+def refusal(repo: str, issue: int, comments: list[dict], *, kind: str | None = None,
+            attested_sha: str | None = None) -> str | None:
     """Why a rework on this issue must not post yet, or None."""
     pair = owed(comments)
     if pair is None or covered(repo, issue, pair[1]):
         return None
+    if kind in RETRY_EXEMPT_KINDS and attested_sha:
+        retry = same_sha_retry(gate_details(comments))
+        if retry and _same_sha(retry, attested_sha.lower()):
+            return None
     older, newer = pair
     return (f"{repo}#{issue}: the last two Lane 3 gate results (issuecomment-{older}, "
             f"issuecomment-{newer}) are both non-PASS, so sticky-wicket is owed before another "

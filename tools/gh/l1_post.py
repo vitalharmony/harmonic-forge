@@ -1416,7 +1416,8 @@ def issue_labels(repo: str, issue: int) -> set[str]:
 STICKY_CHECKED_KINDS = ("rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-and-sweep")
 
 
-def validate_sticky_wicket(repo: str, issue: int) -> None:
+def validate_sticky_wicket(repo: str, issue: int, *, kind: str | None = None,
+                           sha: str | None = None) -> None:
     """harmonic-forge#997: a rework after two consecutive non-PASS gate results
     needs a sticky-wicket receipt through the newer one. The thread is read in
     full (paginated); a thread that cannot be read refuses rather than skips."""
@@ -1427,7 +1428,7 @@ def validate_sticky_wicket(repo: str, issue: int) -> None:
         comments = sticky_receipt.parse_pages(result.stdout)
     except ValueError:
         fail(f"unreadable comment thread on {repo}#{issue}")
-    reason = sticky_receipt.refusal(repo, issue, comments)
+    reason = sticky_receipt.refusal(repo, issue, comments, kind=kind, attested_sha=sha)
     if reason:
         fail(reason)
 
@@ -2584,7 +2585,7 @@ def _post_kind(
         # world checks, so a gate result that landed meanwhile is seen. A result
         # landing between this read and the post is the same gap every pre-post
         # gate here has; no lock is taken.
-        validate_sticky_wicket(repo, issue)
+        validate_sticky_wicket(repo, issue, kind=kind, sha=sha)
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
@@ -2744,7 +2745,7 @@ def main() -> None:
         _refuse_script_contract(prod_run["script"], sha)
 
     if args.kind == "ae-and-sweep":
-        validate_sticky_wicket(repo, args.issue)  # harmonic-forge#997
+        validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha)  # harmonic-forge#997
     if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic
         # action -- four recorded incidents (a private-repo incident, a private-repo incident, H306/H308,
@@ -2835,7 +2836,7 @@ def main() -> None:
         validate_tooling_exception_labelled(body, repo, args.issue)
         validate_pitch_inspected(repo, args.issue)
     if args.kind in STICKY_CHECKED_KINDS:
-        validate_sticky_wicket(repo, args.issue)
+        validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha)
     validate_lead(args.kind, body)
     if args.kind == "sweep":
         spec = run("gh", "api", f"repos/{repo}/issues/comments/{args.spec_comment}", "--jq", ".body")
