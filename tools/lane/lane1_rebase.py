@@ -19,19 +19,28 @@ Exit codes:
   2  the rebase conflicts; aborted, nothing pushed, conflicting paths listed.
   3  the local branch cannot be moved (dirty impl worktree, missing ref, or
      local commits origin does not carry); both SHAs printed.
-  4  a precondition failed (newest lane marker is not `l2.done`, a Lane 3
-     gate is open on the old SHA, or the issue is `tooling-exception`).
+  4  a precondition failed (newest lane marker is neither `l2.done` nor a
+     Lane 3 PASS on the branch head, a Lane 3 gate is open on the old SHA, or
+     the issue is `tooling-exception`).
   5  the pre-push hook refused the push. Never retried with `--no-verify`.
 
 Safe to re-run: a stale prep worktree is pruned at start and the prep
 worktree is removed in a `finally`; if `origin/<branch>` already contains
 `origin/main` (a crash after the push), it skips straight to the local-ref
-step.
+step. That holds on the Lane 3 PASS path too (harmonic-forge#1034): before
+the push a receipt `{issue, passed_sha, rebased_shas}` is written in the git
+dir, and after a crash the PASS (which names the pre-rebase SHA) is accepted
+only when that receipt names it and `origin/<branch>` is exactly one of the
+receipt's recorded rebased SHAs; the local branch is left to the cherry check
+in the local-ref step (operator ruling amending 6219927415). The receipt is
+deleted once the local ref moves. The crash state is recorded, never
+inferred from history (sticky-wicket reforge, F1034).
 """
 
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import subprocess
@@ -81,18 +90,41 @@ def _watch():
     return watch_lane_posts
 
 
+def _gate_ci():
+    sys.path.insert(0, str(_GH))
+    import gate_ci  # noqa: PLC0415 -- lazy, beside watch_lane_posts
+    return gate_ci
+
+
 def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
     """`lane.detail` of the issue's newest classified comment, e.g.
-    `l2.done`, read with the belt's own classifier so the two cannot drift."""
+    `l2.done`, read with the belt's own classifier so the two cannot drift.
+    A Lane 3 gate report (`_classify` == `('l3', 'gate-result')`: footer
+    `kind=gate-result` + `posted-by=LANE3`) whose verdict is PASS is
+    `l3.pass:<gated sha>` (harmonic-forge#1034), read with gate_ci's own
+    `verdict_of`/`gated_sha`."""
     watch = _watch()
+    gate_ci = _gate_ci()
     comments = watch._fetch_all_comments(repo_slug(repo_dir), issue)
     if comments is None:
         raise Exit(4, f"cannot read the comments of #{issue}")
     newest = None
     for comment in comments:
-        found = watch._classify(comment.get("body") or "")
+        body = comment.get("body") or ""
+        found = watch._classify(body)
         if found:
             lane, detail = found
+            # harmonic-forge#1034 (reforge r2, operator ruling): a gate
+            # report is recognized by ALLOWLIST only -- the belt's own
+            # classifier reading a `kind=gate-result` footer stamped
+            # `posted-by=LANE3`. No heading fallback, no kind denylist: a
+            # quoted heading in any other comment is never a verdict.
+            if found == ("l3", "gate-result"):
+                if gate_ci.verdict_of(body) == "PASS":
+                    newest = f"l3.pass:{gate_ci.gated_sha(body) or ''}"
+                else:
+                    newest = f"l3.{detail}"
+                continue
             # sticky-wicket PATCH (F1018 pass 2): Lane 1's own posts after the
             # L2D (ready-for-l3, AE, sweep, discussion) do not change the
             # branch's state -- an AE on the old SHA carries forward (R-0209,
@@ -145,19 +177,86 @@ def lane3_open_on(repo_dir: str, sha: str) -> str | None:
     return None
 
 
-def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> None:
+def _same_sha(a: str | None, b: str | None) -> bool:
+    sys.path.insert(0, str(_GH))
+    import check_lane3_ready  # noqa: PLC0415
+    return check_lane3_ready.same_sha(a, b)
+
+
+def receipt_path(repo_dir: str, issue: int) -> Path:
+    common = git(repo_dir, "rev-parse", "--git-common-dir").stdout.strip()
+    base = Path(common) if Path(common).is_absolute() else Path(repo_dir) / common
+    return base / f"lane1-rebase-{issue}.json"
+
+
+def read_receipt(repo_dir: str, issue: int) -> dict | None:
+    try:
+        data = json.loads(receipt_path(repo_dir, issue).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_receipt(repo_dir: str, issue: int, passed: str, old: str, rebased: str) -> None:
+    """Record `{issue, passed_sha, rebased_shas}` before a push, `passed`
+    being the Lane 3 PASS Head-SHA (never guessed). The rebased SHAs carry
+    forward only when the prior receipt names this same PASS and `old` is
+    one it says was pushed (a re-rebase after a crash and a main move);
+    otherwise the receipt is fresh (sticky-wicket PATCH, F1034)."""
+    prior = read_receipt(repo_dir, issue)
+    if (prior and prior.get("issue") == issue
+            and _same_sha(passed, prior.get("passed_sha"))
+            and old in prior.get("rebased_shas", [])):
+        shas = prior["rebased_shas"] + [rebased]
+    else:
+        shas = [rebased]
+    receipt_path(repo_dir, issue).write_text(json.dumps(
+        {"issue": issue, "passed_sha": passed, "rebased_shas": shas}))
+
+
+def drop_receipt(repo_dir: str, issue: int) -> None:
+    receipt_path(repo_dir, issue).unlink(missing_ok=True)
+
+
+def _pass_covers(repo_dir: str, issue: int, old: str, passed: str) -> bool:
+    """A PASS covers the branch when it names the head, or (operator ruling
+    on #1034) the crash-after-push state -- recorded, never inferred
+    (sticky-wicket reforge): this tool's own receipt names this PASS and
+    origin is exactly a SHA the receipt says was pushed. The local branch
+    is not consulted (operator ruling amending 6219927415): unpushed local
+    work is guarded by move_local_ref's cherry check. Fails closed (exit 4)
+    otherwise."""
+    if _same_sha(passed, old):
+        return True
+    receipt = read_receipt(repo_dir, issue)
+    if not receipt or receipt.get("issue") != issue:
+        return False
+    return (_same_sha(passed, receipt.get("passed_sha"))
+            and old in receipt.get("rebased_shas", []))
+
+
+def check_preconditions(repo_dir: str, issue: int, branch: str, old: str) -> str | None:
+    """Return the Lane 3 PASS Head-SHA, or None on the l2.done path."""
     # preclose F1018-2: the checks below read #issue, so the branch pushed
     # must be #issue's own (`feat|fix/<issue>-...`), never another issue's.
     if not re.match(rf"(?:feat|fix)/{issue}-", branch):
         raise Exit(4, f"{branch} is not #{issue}'s branch (expected feat/{issue}-... or fix/{issue}-...)")
     marker = newest_lane_marker(repo_dir, issue)
-    if marker != "l2.done":
-        raise Exit(4, f"newest lane marker on #{issue} is {marker!r}, not 'l2.done'")
+    passed = None
+    if marker and marker.startswith("l3.pass:"):
+        passed = marker.split(":", 1)[1]
+        if not _pass_covers(repo_dir, issue, old, passed):
+            raise Exit(4, f"the Lane 3 PASS on #{issue} names {passed[:12] or 'no SHA'}, "
+                          f"not the branch head {old[:12]}")
+    elif marker != "l2.done":
+        raise Exit(4, f"newest lane marker on #{issue} is {marker!r}, "
+                      "neither 'l2.done' nor a Lane 3 PASS on the branch head")
     if "tooling-exception" in issue_labels(repo_dir, issue):
         raise Exit(4, f"#{issue} is tooling-exception; Lane 2 branches only")
     gate = lane3_open_on(repo_dir, old)
     if gate:
         raise Exit(4, f"a Lane 3 gate is open on {old[:12]} in {gate}")
+    return passed
 
 
 # ---------------------------------------------------------------- git steps
@@ -207,7 +306,8 @@ def push(prep: Path, branch: str, old: str) -> None:
     raise Exit(1, f"push failed:\n{err}")
 
 
-def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str) -> str:
+def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
+                    passed: str | None = None) -> str:
     prep = prep_path(repo_dir, issue)
     prune_stale_prep(repo_dir, prep)
     prep.parent.mkdir(parents=True, exist_ok=True)
@@ -221,6 +321,11 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str) -> str:
             listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
             raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n{listed}")
         new = rev(prep, "HEAD")
+        # sticky-wicket reforge F1034: record the crash state before it can
+        # exist, so a re-run never has to infer it from history.
+        # No receipt on the l2.done path: there is no PASS to carry.
+        if passed:
+            write_receipt(repo_dir, issue, passed, old, new)
         push(prep, branch, old)
         return new
     finally:
@@ -233,6 +338,15 @@ def move_local_ref(repo_dir: str, branch: str, new: str) -> None:
         return
     if local is None:
         raise Exit(3, f"local {branch} does not exist; origin is at {new}")
+    # Operator ruling F1034 (option A): `git cherry` skips merge commits, so
+    # a local merge carrying unique edits would pass the check below and be
+    # reset away. Refuse any local merge commit origin lacks.
+    merges = git(repo_dir, "rev-list", "--merges",
+                 f"refs/remotes/origin/{branch}..refs/heads/{branch}").stdout.split()
+    if merges:
+        raise Exit(3, f"local {branch} carries merge commit(s) origin lacks: "
+                      f"{', '.join(m[:12] for m in merges)}; origin is at {new}. "
+                      "The operator finishes the local move by hand.")
     # Every local commit origin lacks must be patch-equivalent to one in
     # `new`; otherwise moving the ref would drop unpushed Lane 2 work.
     cherry = git(repo_dir, "cherry", new, local).stdout.splitlines()
@@ -272,12 +386,13 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> str:
     main = rev(repo_dir, "refs/remotes/origin/main")
     if not old or not main:
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
-    check_preconditions(repo_dir, issue, branch, old)
+    passed = check_preconditions(repo_dir, issue, branch, old)
     if git(repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode == 0:
         new = old  # already on current main (incl. a re-run after a crash)
     else:
-        new = rebase_and_push(repo_dir, issue, branch, old)
+        new = rebase_and_push(repo_dir, issue, branch, old, passed)
     move_local_ref(repo_dir, branch, new)
+    drop_receipt(repo_dir, issue)
     return new
 
 
