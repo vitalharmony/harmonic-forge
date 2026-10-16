@@ -27,8 +27,9 @@ harmonic-forge/rules/universal-*.md
 <!-- /R-0002 -->
 <!-- R-0003 -->
 - Push to the remote only when the human operator explicitly asks. One
-  standing grant: Lane 1 pushes a branch after a clean review of its `L2D`
-  (R-0401, operator ruling 2026-10-16).
+  standing grant: after a clean Lane 1 review of an `L2D`, Lane 1 pushes
+  and opens the PR for the reviewed L2D's SHA (R-0401, operator ruling
+  2026-10-16).
 <!-- /R-0003 -->
 
 ## CITING GITHUB IDS (harmonic-forge#979)

@@ -36,7 +36,7 @@ git staleness refusal) — this list states them, it does not implement them.
 - **Never convert a sweep into a Monitor.** The retired account-wide belt
   sweep was the suspenders' one-shot backstop. Arming it as a persistent
   `Monitor` is harmonic-forge#590's regression, not a stronger belt.
-- **Never ask the operator whether to stop.** The belt never pauses, ever (except R-0414's idle stop) —
+- **Never ask the operator whether to stop.** The belt never pauses, ever —
   and since harmonic-forge#680 that is true in practice and not only as a
   claim: it polls at its armed interval for the whole window (see "The belt
   never pauses" below). It previously backed off past its own container's
@@ -354,7 +354,7 @@ duplicate because `TaskList` said "No tasks found" while an older, more capable
 monitor had been running the whole session and later fired from a task id Lane 1
 had never seen. Confirm through a real signal before re-arming.
 
-**The belt never pauses, ever (except R-0414's idle stop) — this is deliberate, not an oversight**
+**The belt never pauses, ever — this is deliberate, not an oversight**
 (harmonic-forge#638). It exists to catch work while the operator is not
 looking; a belt that sleeps until the operator issues a command removes its
 own reason to exist, precisely in the window it is the only thing watching.
@@ -422,7 +422,7 @@ and `tools/hooks/enforce_belt_arming.py` denies any other cadence, any other
 prompt, and a second arm in the same session (harmonic-forge#659). Back-off is
 therefore never a re-arm: on quiet ticks, back off with `ScheduleWakeup` (which
 the hook does not govern) toward its 3600s maximum, and reset to the 10m
-cadence on any activity. **Never call `stop`** (except R-0414's idle stop) — no re-arming is ever
+cadence on any activity. **Never call `stop`** — no re-arming is ever
 required, and no operator action is needed to resume, the identical
 guarantee the belt makes for itself above. The two halves therefore share
 one shape (back off, cap, reset on activity, never stop), differing only in

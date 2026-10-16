@@ -76,14 +76,14 @@ unless the escalation reveals the *whole* sequencing needs revisiting (say
 so explicitly if that's the case, don't silently do a full rewrite when a
 targeted edit was asked for).
 
-## Step 3 — the reactive trigger (part of every relevant session action, not a separate step)
+## Step 3 — reconcile only on the operator's ask (R-0402)
 
-Whenever *this session* creates, closes, or materially rescopes an issue
-on `vitalharmony/hrse` or `vitalharmony/harmonic-forge` — reconciling
-`docs/PRIORITIES.md` is the mandatory last step of that same action, the
-same way posting a `pitch-inspection` review is mandatory before a
-Plan-First handoff goes out. Don't defer it to the next `/sprint-plan`
-sweep if you're the one who just changed the issue set.
+When the operator asks for it — `/sprint-plan`, or an explicit request to
+reconcile `docs/PRIORITIES.md` — after this session creates, closes, or
+materially rescopes an issue on `vitalharmony/hrse` or
+`vitalharmony/harmonic-forge`, reconcile the doc as part of that request.
+Creating, closing or rescoping an issue does not by itself trigger this
+skill; no protocol rule requires it unasked.
 
 ## Step 3.5 — keep the doc to its job (hrse#808 Phase 3)
 

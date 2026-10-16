@@ -74,8 +74,8 @@ hooks = []
 id = "R-0003"
 file = "rules/universal-agent.md"
 anchor = "service-lifecycle-git"
-statement = "Push to the remote only when the human operator explicitly asks; Lane 1 pushes after a clean L2D review (R-0401)."
-text_sha = "a68bda84dfd8227a"
+statement = "Push to the remote only when the human operator explicitly asks; one standing grant: after a clean Lane 1 review of an L2D, Lane 1 pushes and opens the PR for the reviewed L2D's SHA (R-0401)."
+text_sha = "fe6a99f1199f53ee"
 hooks = []
 
 [[rule]]
@@ -2689,8 +2689,8 @@ hooks = []
 id = "R-0401"
 file = "rules/universal-lane1.md"
 anchor = "post-merge-deploy"
-statement = "After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes, opens the PR and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16)."
-text_sha = "e70b3056f0ecf92b"
+statement = "After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes the reviewed L2D's SHA, opens the PR for it and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16)."
+text_sha = "6d58737c5364d77f"
 hooks = []
 
 [[rule]]
@@ -2737,8 +2737,8 @@ hooks = []
 id = "R-0408"
 file = "rules/lane-shorthand.md"
 anchor = "operator-lane-triggers"
-statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions."
-text_sha = "d56cad0d85f19aa9"
+statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351), and a mid-task lane queues it per R-0375."
+text_sha = "19dcfb3d3fe6306a"
 hooks = []
 
 [[rule]]
@@ -2778,13 +2778,5 @@ id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
 statement = "The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix."
-text_sha = "9283cd2ad8f18fdc"
-hooks = []
-
-[[rule]]
-id = "R-0414"
-file = "rules/lane-shorthand.md"
-anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
-statement = "After an hour idle (waiting on another lane counts), the belt Monitor and its loop or cron are stopped. This is an operator override of \"never stops\" (operator ruling 2026-10-16)."
-text_sha = "300b0e93a82de607"
+text_sha = "4434a71143ff4da4"
 hooks = []

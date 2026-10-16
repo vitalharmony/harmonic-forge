@@ -141,3 +141,14 @@ first message on a BATCH line, so its grammar and the waiver's limits must be
 known before the first prompt (hrse#1730's criterion for staying unscoped);
 the rule text was condensed to the obligations and refusals only.
 """
+
+[[increase]]
+date = "2026-10-16"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 2694
+why = """
+harmonic-forge#1030 memory-fold rules R-0408/R-0409: a queued belt event is
+the lane's trigger (and authorizes only its owed step), and an idle tick
+produces no text. Both fire on a belt event before any file is consulted, so
+they stay always-loaded (hrse#1730's criterion).
+"""

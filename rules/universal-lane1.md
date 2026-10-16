@@ -225,7 +225,7 @@ new hook (as opposed to editing one already registered), say so in the close
 comment and restart the affected sessions; do not report the hook as deployed.
 <!-- /R-0369 -->
 <!-- R-0401 -->
-After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes, opens the PR and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16).
+After a clean Lane 1 review of an `L2D`, Lane 1 rebases if needed, pushes the reviewed L2D's SHA, opens the PR for it and posts `ready-for-l3` in one pass, with the PR number in the post. It never asks first (operator ruling 2026-10-16).
 <!-- /R-0401 -->
 <!-- R-0402 -->
 `/sprint-plan`, `milestone_summary`, `drift_check` and `publish` run only when the operator asks in that message. No protocol step requires them.

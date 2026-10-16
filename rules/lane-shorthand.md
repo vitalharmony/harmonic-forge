@@ -183,9 +183,6 @@ Plan-First ratification `discussion`.
 <!-- R-0409 -->
 A belt or suspenders tick with nothing owed to this lane produces no text. An owed relay is named once, never on every tick.
 <!-- /R-0409 -->
-<!-- R-0414 -->
-After an hour idle (waiting on another lane counts), the belt Monitor and its loop or cron are stopped and the stop is announced in one line. The operator re-arms with `/belt-and-suspenders`; owed work posted after the stop waits for that re-arm (operator ruling 2026-10-16, overriding "never stops").
-<!-- /R-0414 -->
 
 ## `NOW` — interrupt
 
@@ -345,7 +342,7 @@ owes=spec` belt event is `Spec H<N>`. One addition (harmonic-forge#895):
 always on a `BATCH` line (R-0384).
 <!-- /R-0343 -->
 <!-- R-0408 -->
-While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions.
+While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351), and a mid-task lane queues the event per R-0375.
 <!-- /R-0408 -->
 
 ## Repo prefixes

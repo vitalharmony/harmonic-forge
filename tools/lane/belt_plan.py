@@ -93,8 +93,7 @@ def canonical_calls(lane: str, workspace: str) -> dict[str, Any]:
         "report": (
             f"LANE={lane} armed: monitor task id <id from Monitor>, loop job id "
             "<id from /loop>. Then stop. When the Monitor expires, re-arm the "
-            "same Monitor call unchanged, unless R-0414's idle hour has elapsed. "
-            "Never ask the operator whether to stop."
+            "same Monitor call unchanged. Never ask the operator whether to stop."
         ),
     }
 
