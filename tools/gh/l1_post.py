@@ -107,6 +107,10 @@ HANDOFF_HEADINGS = [
     "Test Cases (for Lane 3)", "Read-Before-Edit Instruction", "Ambiguity Gate",
 ]
 TC_ID = re.compile(r"\bTC[- ]?(\d+)\b", re.I)
+# harmonic-forge#1022: a Tier P case id (`P1`). Read only inside an isolated
+# case section, as the last fallback -- never whole-body, where "Tier P" or a
+# priority label would add phantom cases.
+P_ID = re.compile(r"\bP(\d+)\b")
 
 # a private-repo incident (pre-close panel): a sweep entry must be a LINE, must name its own
 # case, and must carry text. The deleted TC_STATUS pattern enforced all three
@@ -153,6 +157,10 @@ SWEEP_FABRICATED_OUTCOME = re.compile(
 # also catch "### Edge cases" and count the wrong list.
 CASE_HEADING = re.compile(
     r"(?im)^#{2,4}\s*.*\b(?:test\s+cases?|per-case|case\s+readiness)\b")
+# harmonic-forge#1022: a heading that is exactly "Cases" (a Lane 3 Tier P
+# spec's shape). Consulted only when a body has no case heading and no TC<n>
+# at all, so every spec that parsed before parses the same way.
+BARE_CASES_HEADING = re.compile(r"(?im)^(#{2,4})\s*cases\s*$")
 LIST_ITEM = re.compile(r"(?m)^\s*(\d+)\.\s")
 
 
@@ -228,6 +236,19 @@ def _case_section(body: str) -> tuple[str, bool]:
     return (rest[:following.start()] if following else rest), True
 
 
+def _tier_p_case_ids(body: str) -> set[str]:
+    """harmonic-forge#1022: `P<n>` ids under a bare "### Cases" heading, up to
+    the next heading of the same or higher level; empty when there is none.
+    Flagged as a list scheme by the caller, so the sweep is checked against
+    its own numbered `1.`..`n.` entries."""
+    match = BARE_CASES_HEADING.search(body)
+    if not match:
+        return set()
+    rest = body[match.end():]
+    following = re.compile(rf"(?m)^#{{1,{len(match.group(1))}}}\s").search(rest)
+    return set(P_ID.findall(rest[:following.start()] if following else rest))
+
+
 def _classify_case_ids(body: str) -> tuple[set[str], bool]:
     """Case identifiers plus whether they came from TC<n> markers (vs. a plain
     numbered list) -- both branches return plain digit strings, so the caller
@@ -247,7 +268,9 @@ def _classify_case_ids(body: str) -> tuple[set[str], bool]:
     section, has_case_heading = _case_section(body)
     if not has_case_heading:
         ids = set(TC_ID.findall(section))
-        return ids, bool(ids)
+        if ids:
+            return ids, True
+        return _tier_p_case_ids(body), False
     # a private-repo incident follow-up 2: a numbered-list case (e.g. "12. ... TC4 ...") can
     # cross-reference an earlier case by its number *inside* the section
     # itself, not just in prose outside it -- observed live on a private-repo incident's

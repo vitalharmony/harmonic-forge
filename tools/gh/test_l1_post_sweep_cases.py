@@ -496,5 +496,45 @@ class FooterCaseIdsTests(unittest.TestCase):
 
 
 
+# harmonic-forge#1022: the shape of hrse#1896's Tier P spec (6206077379):
+# cases P1..P3 in a table under a bare "### Cases" heading, then a later
+# section with its own numbered list and a stray "P2".
+SPEC_TIER_P = (
+    "## Lane 3 Test Spec — H1896 (Tier P production run, R-0377)\n\n"
+    "**Cases:** 3, Tier P through the runner only.\n\nWrite tier: P\n\n"
+    "### Cases\n| # | Class | Action | Command | Pass when |\n|---|---|---|---|---|\n"
+    "| P1 | ac | Dry run | `run` | totals reported |\n"
+    "| P2 | ac | Apply | `run --mode apply` | moved equals P1's count |\n"
+    "| P3 | ac | Dry run again | the P1 command | 0 re-anchor |\n\n"
+    "### Preconditions for Lane 1's sweep\n1. CI green.\n2. backup verified before P2.\n"
+    "3. grant minted.\n4. runner installed.\n"
+)
+SWEEP_TIER_P = (
+    "## Gate-readiness sweep — H1896\n\n**Readiness:** P1 now.\n**Blockers:** none.\n"
+    "**Next:** Lane 3 runs P1.\n\nWrite tier: P\n\n### Per-case readiness\n"
+    "1. P1 — ready: grant minted.\n2. P2 — not authorized by this AE.\n"
+    "3. P3 — not authorized by this AE.\n"
+)
+
+
+class TierPCaseIdTests(unittest.TestCase):
+    def test_tier_p_spec_case_ids(self):
+        self.assertEqual(L.case_ids(SPEC_TIER_P), {"1", "2", "3"})
+
+    def test_stray_p_outside_the_case_section_adds_nothing(self):
+        spec = SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n"
+        self.assertEqual(L.case_ids(spec), {"1", "2", "3"})
+
+    def test_list_sweep_validates_against_tier_p_spec(self):
+        with mock.patch.object(L, "footer_case_ids", return_value=set()):
+            L.validate_sweep(SWEEP_TIER_P, SPEC_TIER_P, "vitalharmony/hrse", 1896)
+
+    def test_edge_cases_heading_still_not_a_case_heading(self):
+        self.assertFalse(L._case_section("### Edge cases\n1. x\n")[1])
+
+    def test_tc_spec_unchanged(self):
+        self.assertEqual(L._classify_case_ids(SPEC_TC), ({"1", "2"}, True))
+
+
 if __name__ == "__main__":
     unittest.main()
