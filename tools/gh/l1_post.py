@@ -238,6 +238,18 @@ LEADING_P_ID = re.compile(
     r"(?m)^([ \t]*(?:[-*][ \t]+|\d+\.[ \t]*|\|[ \t]*)?\**[ \t]*)P(\d+)\b")
 
 
+def _tier_p_ids(spec_body: str) -> set[str]:
+    """The line-leading `P<n>` ids under a spec's bare `Cases` heading, up to
+    the next heading of the same or higher level; empty when there are none."""
+    match = BARE_CASES_HEADING.search(spec_body)
+    if not match:
+        return set()
+    rest = spec_body[match.end():]
+    following = re.compile(rf"(?m)^#{{1,{len(match.group(1))}}}\s").search(rest)
+    section = rest[:following.start()] if following else rest
+    return {m.group(2) for m in LEADING_P_ID.finditer(section)}
+
+
 def _canonicalize_tier_p(body: str, sweep: bool = False) -> tuple[str, bool]:
     """(body, rewritten). A spec is rewritten only under a bare `Cases`
     heading; a sweep under that heading or its usual case heading."""
@@ -951,14 +963,19 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
             "fine) -- Lane 3's own readiness check refuses anything looser "
             "(a private-repo incident)"
         )
+    # harmonic-forge#1022: a Tier P spec is detected first, by its own case
+    # table, so no footer, numbered list or stray TC<n> can route it elsewhere.
+    # Its ids are checked exactly as footer-named ids are: one line-anchored
+    # TC entry each, with the same outcome, tier and empty-entry refusals.
+    tier_p_ids = _tier_p_ids(spec_body)
+    if tier_p_ids:
+        body, _ = _canonicalize_tier_p(body, sweep=True)
+        _validate_sweep_against_footer(body, tier_p_ids)
+        return
     footer_ids = footer_case_ids(spec_body)
     if footer_ids:
         _validate_sweep_against_footer(body, footer_ids)
         return
-    if not case_ids(spec_body):
-        spec_body, tier_p = _canonicalize_tier_p(spec_body)
-        if tier_p:
-            body, _ = _canonicalize_tier_p(body, sweep=True)
     expected = case_ids(spec_body)
     actual = case_ids(body)
     if not expected:

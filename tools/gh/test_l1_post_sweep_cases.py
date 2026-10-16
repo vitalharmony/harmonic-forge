@@ -546,8 +546,22 @@ class TierPCaseIdTests(unittest.TestCase):
         self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n- P1 — ready\n- P2 — later\n"))
 
     def test_stray_p_outside_the_case_section_adds_nothing(self):
-        spec, _ = L._canonicalize_tier_p(SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n")
-        self.assertEqual(L.case_ids(spec), {"1", "2", "3"})
+        spec = SPEC_TIER_P + "\n### Notes\nSee P7 and Tier P9.\n- P7 deferred to a later issue.\n| P8 | not a case |\n"
+        self.assertEqual(L._tier_p_ids(spec), {"1", "2", "3"})
+
+    def test_numbered_list_in_the_cases_section_cannot_drop_a_case(self):
+        spec = SPEC_TIER_P.replace("| P3 |", "Order:\n1. Back up before P2.\n2. Mint grant.\n\n| P3 |")
+        self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready a\n2. ready b\n", spec))
+        self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n", spec))
+
+    def test_footer_or_stray_tc_does_not_reroute_a_tier_p_spec(self):
+        sweep = HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n"
+        footer = SPEC_TIER_P + "\n<!-- l1-post v1; kind=spec; classes=P1:ac,P2:ac,P3:ac -->"
+        stray = SPEC_TIER_P.replace("| P2 | ac | Apply |", "| P2 | ac | Apply (cf. H44 TC5) |")
+        for spec in (footer, stray):
+            with self.subTest(spec=spec[-60:]):
+                with mock.patch.object(L, "footer_case_ids", wraps=L.footer_case_ids):
+                    L.validate_sweep(sweep, spec, "vitalharmony/hrse", 1896)
 
     def test_specs_that_parsed_before_are_untouched(self):
         self.assertEqual(L._classify_case_ids(SPEC_TC), ({"1", "2"}, True))
