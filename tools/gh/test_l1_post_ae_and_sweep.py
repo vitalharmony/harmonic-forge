@@ -29,6 +29,20 @@ def load(name: str):
 
 post = load("l1_post")
 
+
+# harmonic-forge#1016: shared ci_conclusion stub -- ready-for-l3 reads CI
+# before static_checks; never make a real `gh api` call from a test.
+import unittest.mock as _ci_mock  # noqa: E402
+_CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
+
+
+def setUpModule():  # noqa: N802
+    _CI_PATCH.start()
+
+
+def tearDownModule():  # noqa: N802
+    _CI_PATCH.stop()
+
 # harmonic-forge#472: every artifact in the ratified table now leads with
 # its own summary block, so these fixtures carry one. They are the shape a
 # real post must have, which is the point of using them here.

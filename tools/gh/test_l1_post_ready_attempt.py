@@ -54,6 +54,11 @@ class StoreCase(unittest.TestCase):
         fresh = mock.patch.object(L, "refresh_main", return_value="f" * 40)
         fresh.start()
         self.addCleanup(fresh.stop)
+        # harmonic-forge#1016: ready-for-l3 reads CI before static_checks.
+        # Default it to pending (proceeds) so no test makes a real gh call.
+        ci = mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
+        ci.start()
+        self.addCleanup(ci.stop)
 
     def events(self) -> list[dict]:
         return [json.loads(line) for part in self.store.glob("events/**/*.jsonl")
@@ -93,7 +98,8 @@ class RefusedCheckTests(StoreCase):
         self.assertEqual(attrs["local_check_ms"], 150000)
         self.assertNotIn("failing_step", attrs)  # dropped by the sticky-wicket PATCH
         self.assertFalse(attrs["ci_green_local_red"])
-        self.assertEqual(len(calls), 1, "one CI snapshot, taken after the check")
+        # harmonic-forge#1016: two reads -- the pre-check read, then the snapshot.
+        self.assertEqual(len(calls), 2, "a pre-check CI read, then the snapshot after the check")
         self.assertNotIn("rejected", err)
 
     def test_tc2_green_ci_with_a_failed_check_is_flagged(self):
@@ -102,7 +108,7 @@ class RefusedCheckTests(StoreCase):
 
     def test_tc3_the_refusal_snapshot_reads_the_checkout_repo_not_the_issue_repo(self):
         _, _, calls = self._run_failed()
-        self.assertEqual(calls, [("o/checkout", SHA)])
+        self.assertEqual(calls, [("o/checkout", SHA), ("o/checkout", SHA)])
 
     def test_a_snapshot_that_cannot_be_taken_reads_unknown(self):
         with mock.patch.object(L, "static_checks", side_effect=_failed_check()), \
@@ -240,9 +246,11 @@ class RefusedOtherTests(StoreCase):
         self.assertEqual(self.events(), [])
 
     def test_tc4_a_refused_check_is_not_also_recorded_as_refused_other(self):
+        # harmonic-forge#1016: pending at the pre-check read, red by the snapshot.
         with mock.patch.object(L, "static_checks", side_effect=_failed_check()), \
              mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
-             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("red", "x")):
+             mock.patch.object(L.gate_ci, "ci_conclusion",
+                               side_effect=[("pending", "x"), ("red", "x")]):
             self.refuse()
         self.assertEqual([e["attrs"]["outcome"] for e in self.events()], ["refused-check"])
 
