@@ -106,6 +106,9 @@ derivable from code or Git.
   notify on this session's own post, and `TaskStop` in the same turn the
   awaited event is handled.
 <!-- /R-0086 -->
+<!-- R-0410 -->
+A `CronCreate`/`ScheduleWakeup` job armed for a scoped purpose is deleted in the turn that purpose ends, the same unit of work R-0086 sets for `Monitor`.
+<!-- /R-0410 -->
 <!-- R-0087 -->
 - **Every merge silently closes a stacked child PR pointing at the merged
   branch** — not only `gh pr merge --delete-branch`. Every project repo
@@ -136,3 +139,9 @@ derivable from code or Git.
   the shared budget on aggregate volume alone — the guard cannot see that
   coming from inside any one subagent's own call.
 <!-- /R-0364 -->
+<!-- R-0411 -->
+When the auto-mode classifier blocks an unattended-agent launcher (a `claude -p` job, its timer), tighten the design once if it deserves it, then hand the install command to the operator. Never route around the block.
+<!-- /R-0411 -->
+<!-- R-0412 -->
+An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open.
+<!-- /R-0412 -->

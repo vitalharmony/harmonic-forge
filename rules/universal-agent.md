@@ -26,7 +26,10 @@ harmonic-forge/rules/universal-*.md
   it with manual commands.
 <!-- /R-0002 -->
 <!-- R-0003 -->
-- Push to the remote only when the human operator explicitly asks.
+- Push to the remote only when the human operator explicitly asks. One
+  standing grant: after a clean Lane 1 review of an `L2D`, Lane 1 pushes
+  and opens the PR for the reviewed L2D's SHA (R-0401, operator ruling
+  2026-10-16).
 <!-- /R-0003 -->
 
 ## CITING GITHUB IDS (harmonic-forge#979)
@@ -336,6 +339,9 @@ training data goes stale the moment a vendor ships a new version.
   authoritative reference), say so explicitly and flag the value as
   unverified rather than silently substituting a plausible-looking guess.
 <!-- /R-0028 -->
+<!-- R-0398 -->
+Credentials or env vars handed to the operator for a tool run are enumerated per component (backend and provider separately) from that tool's docs, never from what the last error named.
+<!-- /R-0398 -->
 
 ## API ABSTRACTION (FRONTEND)
 
@@ -626,6 +632,9 @@ remove." Rules, skills, help text, refusal messages, and memory describe a
 retired mechanism by its function and issue number, and never spell its
 invocation.
 <!-- /R-0365 -->
+<!-- R-0397 -->
+Before filing, search open and closed issues for an existing owner of the same artifact (an epic and its children, a BACKLOG-NNN, an ADR). If one exists, fold the work into it and do not file.
+<!-- /R-0397 -->
 
 ## STANDING-RULE VIOLATIONS ARE SURFACED AND FILED, NOT FIXED, NOT JUST MENTIONED
 
@@ -760,6 +769,12 @@ cases the test does not decide, resolved here rather than left open:
   output is available. Do not ask the operator to re-confirm a request they
   already made.
 <!-- /R-0357 -->
+<!-- R-0395 -->
+A session reports its own work only. It never surveys, tracks, relays or reminds about another lane's owed work unless the operator asks in that message. The lanes monitor each other.
+<!-- /R-0395 -->
+<!-- R-0396 -->
+Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session.
+<!-- /R-0396 -->
 
 ## SURGICAL CHANGES (KARPATHY PRINCIPLE)
 

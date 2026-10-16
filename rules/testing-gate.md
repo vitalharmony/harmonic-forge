@@ -89,6 +89,9 @@ for the UI-only variant.
      heading: confirm the byte-exact heading independently — "ready" from
      that tool is necessary, not sufficient.
 <!-- /R-0128 -->
+<!-- R-0405 -->
+A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_FIELDS`, with per-case evidence. It is never copied from a prior post or scratch file.
+<!-- /R-0405 -->
 <!-- R-0335 -->
    - **The sweep leads with its own summary block, above any evidence
      (harmonic-forge#472).** Three bold-labelled lines directly under the

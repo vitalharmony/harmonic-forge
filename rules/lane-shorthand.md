@@ -180,6 +180,9 @@ persistent watermark, so a lane handles one carrying owed work as it does
 today: for Lane 1, every owed kind except `plan` and `spec`; for Lane 2, the
 Plan-First ratification `discussion`.
 <!-- /R-0375 -->
+<!-- R-0409 -->
+A belt or suspenders tick with nothing owed to this lane produces no text. An owed relay is named once, never on every tick.
+<!-- /R-0409 -->
 
 ## `NOW` — interrupt
 
@@ -338,6 +341,9 @@ owes=spec` belt event is `Spec H<N>`. One addition (harmonic-forge#895):
 `IMC <keys>` is a Lane 1 trigger, for Tooling Exception issues only, and
 always on a `BATCH` line (R-0384).
 <!-- /R-0343 -->
+<!-- R-0408 -->
+While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351), and a mid-task lane queues the event per R-0375.
+<!-- /R-0408 -->
 
 ## Repo prefixes
 
