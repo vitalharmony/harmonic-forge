@@ -554,6 +554,12 @@ class TierPCaseIdTests(unittest.TestCase):
         self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready a\n2. ready b\n", spec))
         self.assertTrue(self._ok(HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n", spec))
 
+    def test_a_non_tier_p_spec_with_a_stray_cases_section_is_not_rerouted(self):
+        spec = "Write tier: R\n\n### Test cases\n- TC1: read the file\n- TC2: verify output\n\n### Cases\n- P1 prerequisite from another issue.\n"
+        self.assertEqual(L._tier_p_ids(spec), set())
+        sweep = "## Gate-readiness sweep — H1896\n\nWrite tier: R\n\n### Per-case readiness\n- TC1: ready\n"
+        self.assertFalse(self._ok(sweep, spec))
+
     def test_footer_or_stray_tc_does_not_reroute_a_tier_p_spec(self):
         sweep = HEAD_P + "### Per-case readiness\n1. P1 — r\n2. P2 — r\n3. P3 — r\n"
         footer = SPEC_TIER_P + "\n<!-- l1-post v1; kind=spec; classes=P1:ac,P2:ac,P3:ac -->"
