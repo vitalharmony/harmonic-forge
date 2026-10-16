@@ -59,6 +59,12 @@ MALFORMED_SWEEP_BODY = ("## Gate-readiness sweep — F1\n\n**Readiness:** one "
 FAKE_SHA = "a" * 40
 
 
+GOOD_PROD_SCRIPT = (
+    "import argparse\nfrom _migration_env import ensure_env\n"
+    "def main():\n    p = argparse.ArgumentParser()\n"
+    "    p.add_argument('--apply', action='store_true')\n    p.parse_args()\n    ensure_env()\n")
+
+
 def _fake_run(*args, **kwargs):
     """Stands in for every git/gh subprocess call main() makes on the
     ae-and-sweep path (resolve_sha, spec fetch, world_checks' git/gh
@@ -67,7 +73,11 @@ def _fake_run(*args, **kwargs):
     result = subprocess.CompletedProcess(args, 0, stdout="", stderr="")
     argv = args[0] if args and isinstance(args[0], (list, tuple)) else args
     joined = " ".join(str(a) for a in argv)
-    if "rev-parse" in joined:
+    if argv[:2] == ("git", "show") or list(argv[:2]) == ["git", "show"]:
+        # harmonic-forge#1026: a `--prod-run script=` AE reads the script at
+        # the SHA; this fixture's script meets the runner's contract.
+        result.stdout = GOOD_PROD_SCRIPT
+    elif "rev-parse" in joined:
         result.stdout = FAKE_SHA
     elif "issues/comments/" in joined and "--jq" in joined:
         result.stdout = SPEC_BODY
@@ -413,6 +423,53 @@ class ProdRunFooterTests(MainIntegrationTests):
     def test_no_prod_run_no_field(self) -> None:
         self._post()
         self.assertNotIn("prod-run", self.bodies[0])
+
+    def test_a_script_breaking_the_runner_contract_posts_nothing(self) -> None:
+        # harmonic-forge#1026: the H1896 shape at b86a207b, for both AE kinds.
+        bad = ("from dotenv import load_dotenv\nimport argparse\n"
+               "def main():\n    p = argparse.ArgumentParser()\n"
+               "    p.add_argument('--apply', action='store_true')\n    load_dotenv('backend/.env')\n")
+        def run_bad(*args, **kwargs):
+            if list(args[:2]) == ["git", "show"]:
+                return subprocess.CompletedProcess(args, 0, stdout=bad, stderr="")
+            return _fake_run(*args, **kwargs)
+        with patch.object(post, "run", side_effect=run_bad), \
+                patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+                patch.object(sys, "argv", self._argv() + ["--prod-run", "script=scripts/1-1896-x.py"]):
+            self.ae_file.write_text(AE_BODY)
+            self.sweep_file.write_text(SWEEP_BODY)
+            with self.assertRaises(SystemExit) as ctx:
+                post.main()
+        self.assertIn("no ensure_env() call", str(ctx.exception))
+        self.assertIn("calls load_dotenv()", str(ctx.exception))
+        self.assertEqual(self.bodies, [])
+
+    def test_an_unreadable_script_refuses(self) -> None:
+        def run_missing(*args, **kwargs):
+            if list(args[:2]) == ["git", "show"]:
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: path does not exist")
+            return _fake_run(*args, **kwargs)
+        with patch.object(post, "run", side_effect=run_missing), \
+                patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+                patch.object(sys, "argv", self._argv() + ["--prod-run", "script=scripts/1-x.py"]):
+            with self.assertRaises(SystemExit) as ctx:
+                post.main()
+        self.assertIn("cannot read scripts/1-x.py", str(ctx.exception))
+        self.assertEqual(self.bodies, [])
+
+    def test_count_label_never_reads_a_script(self) -> None:
+        seen = []
+        def run_spy(*args, **kwargs):
+            seen.append(list(args[:2]))
+            return _fake_run(*args, **kwargs)
+        self.ae_file.write_text(AE_BODY)
+        self.sweep_file.write_text(SWEEP_BODY)
+        with patch.object(post, "run", side_effect=run_spy), \
+                patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+                patch.object(post, "write_receipt"), \
+                patch.object(sys, "argv", self._argv() + ["--prod-run", "count-label=Interpretation"]):
+            post.main()
+        self.assertNotIn(["git", "show"], seen)
 
     def test_malformed_spec_refuses_before_anything_runs(self) -> None:
         for spec in ("script=scripts/check_lane3_ready.py", "script=scripts/1-x.py,force",

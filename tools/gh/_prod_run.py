@@ -25,8 +25,22 @@ Command-line spec (`l1_post.py --prod-run`, `check_lane3_ready.py
     script=scripts/1-<name>.py          (a dry run)
     script=scripts/1-<name>.py,apply    (with --apply)
     count-label=<Label>
+
+harmonic-forge#1026: HRSE2's runner starts a script with every inherited
+`NEO4J_*` cleared and `HRSE_ENV_FILE` set, passing `--apply` or nothing. So a
+`script=` AE is refused unless the named script reads its graph through
+`_migration_env.ensure_env()`, never calls `load_dotenv()`, defines `--apply`,
+and has no required or positional argument (`script_contract_violations`).
+This is a best-effort front-runner, not the safety check: static reading
+cannot see every argparse shape (an aliased `add_argument`, several parsers,
+a `default` that fails its `type=`). Such a script still fails when the
+runner starts it: argparse exits on the argument shape, and the runner's
+driver guard refuses a graph other than the one it authorized. Either way the
+grant is spent first (sticky-wicket ACCEPT-AS-IS, harmonic-forge#1026).
 """
 from __future__ import annotations
+
+import ast
 
 import re
 
@@ -141,3 +155,78 @@ def describe(action: dict) -> str:
     if "script" in action:
         return f"script={action['script']}{',apply' if action['apply'] else ''}"
     return f"count-label={action['count_label']}"
+
+
+def _call_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def script_contract_violations(source: str) -> list[str]:
+    """harmonic-forge#1026: how `source` breaks the production runner's
+    contract, in a fixed order; empty when it holds. Static (`ast`), so a
+    docstring or comment that only mentions `ensure_env` never counts."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [f"not parseable Python ({exc.msg}, line {exc.lineno})"]
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in ("ensure_env", "load_dotenv") and alias.asname:
+                    aliases[alias.asname] = alias.name
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    names = [aliases.get(n, n) for n in (_call_name(c.func) for c in calls) if n]
+    violations: list[str] = []
+    if "ensure_env" not in names:
+        violations.append("no ensure_env() call")
+    if "load_dotenv" in names:
+        violations.append("calls load_dotenv()")
+    add_args = [c for c in calls if _call_name(c.func) == "add_argument"]
+
+    def flags(call: ast.Call) -> list[str]:
+        return [a.value for a in call.args
+                if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+
+    # Sticky-wicket PATCH (F1026 pass 1): an allowlist. Anything this cannot
+    # prove safe for a no-argument or `--apply`-only run is refused, because a
+    # static reading of argparse can never enumerate every way to require one.
+    def is_true(node) -> bool:
+        return isinstance(node, ast.Constant) and node.value is True
+
+    apply_calls = [c for c in add_args if "--apply" in flags(c)]
+    if not apply_calls:
+        violations.append("no --apply option")
+    elif not any(isinstance(k.value, ast.Constant) and k.arg == "action"
+                 and k.value.value == "store_true" for c in apply_calls for k in c.keywords):
+        violations.append("--apply is not a literal action='store_true' flag")
+    for name in ("add_mutually_exclusive_group", "add_subparsers", "error"):
+        if any(_call_name(c.func) == name for c in calls):
+            violations.append(f"uses {name}() (the runner passes only --apply or nothing)")
+    for c in calls:
+        if _call_name(c.func) == "ArgumentParser" and any(k.arg == "parents" for k in c.keywords):
+            violations.append("ArgumentParser(parents=...) is not checkable")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and any(_call_name(b) == "ArgumentParser" for b in node.bases):
+            violations.append(f"subclasses ArgumentParser ({node.name})")
+    for call in add_args:
+        strs = flags(call)
+        label = strs[0] if strs else "<non-literal name>"
+        if not strs or any(isinstance(a, ast.Starred) for a in call.args) \
+                or any(k.arg is None for k in call.keywords):
+            violations.append(f"add_argument({label}) is not a literal declaration")
+            continue
+        kw = {k.arg: k.value for k in call.keywords}
+        if "required" in kw and not (isinstance(kw["required"], ast.Constant)
+                                     and kw["required"].value is False):
+            violations.append(f"required argument {label}")
+            continue
+        if not label.startswith("-"):
+            nargs = kw.get("nargs")
+            if not (isinstance(nargs, ast.Constant) and nargs.value in ("?", "*")):
+                violations.append(f"required argument {label}")
+    return violations
