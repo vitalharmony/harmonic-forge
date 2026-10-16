@@ -182,6 +182,51 @@ class AC1Blocking(_TempStore):
         printed.assert_not_called()
 
 
+class F1031QuestionEndsTurn(_TempStore):
+    """harmonic-forge#1031 AC2/AC3: refused, allowed, question-ends-turn."""
+
+    def _transcript(self, text: str) -> str:
+        path = Path(self._tmp.name) / "t.jsonl"
+        record = {"type": "assistant",
+                  "message": {"content": [{"type": "text", "text": text}]}}
+        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        return str(path)
+
+    def _owe(self, session: str) -> None:
+        handoff_owed.record(REPO, 1031, "u", key=session)
+
+    def test_refused_when_the_turn_ends_with_a_statement(self):
+        self._owe("s")
+        verdict, reason = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript("Filed it. Done.")})
+        self.assertEqual(verdict, "block")
+        self.assertIn("#1031", reason)
+
+    def test_allowed_with_nothing_owed(self):
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript("Done.")})
+        self.assertEqual(verdict, "allow")
+
+    def test_allowed_when_the_turn_ends_with_a_question(self):
+        self._owe("s")
+        verdict, _ = hook.decide({"session_id": "s", "transcript_path":
+                                  self._transcript("Should this be a parent epic?")})
+        self.assertEqual(verdict, "allow")
+
+    def test_decisions_needed_none_is_not_a_question(self):
+        self._owe("s")
+        text = "Filed.\n\n## DECISIONS NEEDED\n\n**None**\n"
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": self._transcript(text)})
+        self.assertEqual(verdict, "block")
+
+    def test_an_unreadable_transcript_keeps_the_block(self):
+        self._owe("s")
+        verdict, _ = hook.decide(
+            {"session_id": "s", "transcript_path": "/nonexistent/t.jsonl"})
+        self.assertEqual(verdict, "block")
+
+
 class AC6PositiveSignalOnly(_TempStore):
     def test_an_issue_created_by_another_route_produces_no_obligation(self):
         """The obligation exists only because `gh_issue.py` wrote it. This
