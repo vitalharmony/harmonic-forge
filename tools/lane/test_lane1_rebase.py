@@ -517,6 +517,21 @@ class PassPreconditionTests(_Fixture):
                 self.run_main()
         self.assertIsNone(lane1_rebase.read_receipt(str(self.repo), ISSUE))
 
+    def test_f13_same_pass_unrelated_old_writes_fresh_receipt(self):
+        # Carry-forward guard: the prior receipt names this PASS, but `old`
+        # is not a SHA it says was pushed, so the receipt starts fresh.
+        lane1_rebase.receipt_path(str(self.repo), ISSUE).write_text(json.dumps(
+            {"issue": ISSUE, "passed_sha": self.branch_sha,
+             "rebased_shas": ["0123456789abcdef0123456789abcdef01234567"]}))
+        self.bodies = [L2D, gate("PASS", self.branch_sha)]
+        self.advance_main()
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        receipt = lane1_rebase.read_receipt(str(self.repo), ISSUE)
+        self.assertEqual(receipt["rebased_shas"], [self.origin_branch()])
+
 
 if __name__ == "__main__":
     unittest.main()
