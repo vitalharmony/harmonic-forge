@@ -1099,31 +1099,48 @@ class TestPriorOwnerSearch(unittest.TestCase):
         created.assert_not_called()
 
     def test_none_found_files_without_override(self):
-        _, created, _, err = self._main(search=["", ""])
+        _, created, _, err = self._main(search=[""])
         created.assert_called_once()
         self.assertNotIn("candidate prior owner", err)
 
     def test_exactly_one_added_call(self):
-        """AC3: one search when AND finds candidates, override or not."""
-        for extra in ((), ("--no-prior-owner", "reason")):
-            _, _, searches, _ = self._main(extra=extra, search=[self.HIT, self.HIT])
-            self.assertEqual(len(searches), 1, extra)
+        """AC3: one search per filing -- candidates or none, override or not."""
+        for extra, search in (((), [self.HIT]), (("--no-prior-owner", "r"), [self.HIT]),
+                              ((), [""])):
+            _, _, searches, _ = self._main(extra=extra, search=search + [""] * 3)
+            self.assertEqual(len(searches), 1, (extra, search))
 
-    def test_and_query_default_or_fallback_only_on_zero(self):
-        _, _, searches, _ = self._main(search=[self.HIT, self.HIT])
-        q = [a for a in searches[0][0] if a.startswith("q=")][0]
-        self.assertNotIn(" OR ", q)
-        self.assertIn("in:title gh_issue.py candidate prior owners filing", q)
-        _, _, searches, _ = self._main(search=["", self.HIT])
-        self.assertEqual(len(searches), 2)
-        q2 = [a for a in searches[1][0] if a.startswith("q=")][0]
-        self.assertIn("candidate OR prior", q2)
+    def test_and_query_never_or(self):
+        for search in ([self.HIT], [""]):
+            _, _, searches, _ = self._main(search=search + [""] * 3)
+            q = [a for a in searches[0][0] if a.startswith("q=")][0]
+            self.assertNotIn(" OR ", q)
+            self.assertIn("in:title gh_issue.py candidate prior owners filing", q)
 
     def test_novel_title_zero_candidates(self):
         _, created, searches, err = self._main(search=["", ""])
-        self.assertEqual(len(searches), 2)
+        self.assertEqual(len(searches), 1)
         self.assertNotIn("candidate prior owner", err)
         created.assert_called_once()
+
+    def test_search_failure_override_files(self):
+        _, created, _, err = self._main(
+            extra=["--no-prior-owner", "search unavailable: rate limit"], search=[1])
+        created.assert_called_once()
+        self.assertIn("30 requests/minute", err)
+
+    def test_no_keyword_title_refuses_without_override(self):
+        self.TITLE = "Fix MCP SSO bug"
+        try:
+            code, created, searches, err = self._main()
+            self.assertEqual(code, 2)
+            self.assertEqual(searches, [])
+            self.assertIn("no searchable keyword", err)
+            created.assert_not_called()
+            _, created, _, _ = self._main(extra=["--no-prior-owner", "trivial title"])
+            created.assert_called_once()
+        finally:
+            del self.TITLE
 
     def test_search_failure_refuses(self):
         code, created, _, _ = self._main(search=[1])

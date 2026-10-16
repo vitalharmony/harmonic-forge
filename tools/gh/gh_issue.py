@@ -135,21 +135,20 @@ def _search_titles(repo: str, query: str) -> list[tuple[int, str, str]]:
     return found
 
 
-def find_prior_owners(repo: str, title: str) -> list[tuple[int, str, str]]:
+def find_prior_owners(repo: str, title: str) -> list[tuple[int, str, str]] | None:
     """Open or closed issues whose titles share this title's keywords (R-0397).
 
-    harmonic-forge#1032. AND-joined first (GitHub search's default); one
-    OR-joined retry only when AND finds nothing -- an OR default matched
-    nearly every filing (pitch-inspection finding 2). A failed search fails
+    harmonic-forge#1032. One AND-joined query (GitHub search's default) --
+    an OR query matched nearly every filing (pitch-inspection finding 2),
+    and an OR retry would be a second call (AC3). A failed search fails
     LOUD, like fetch_milestones: a query error must not read as "no owner".
+    Returns None when the title has no searchable keyword: no search ran,
+    which main() treats like a candidate, never as "no owner".
     """
     keywords = title_keywords(title)
     if not keywords:
-        return []
-    found = _search_titles(repo, " ".join(keywords))
-    if not found and len(keywords) > 1:
-        found = _search_titles(repo, " OR ".join(keywords))
-    return found
+        return None
+    return _search_titles(repo, " ".join(keywords))
 
 
 def fetch_milestones(repo: str) -> dict[str, int]:
@@ -795,7 +794,23 @@ def main() -> int:
 
     # harmonic-forge#1032 (R-0397): before filing, look for an existing owner.
     # Last pre-create check, so a refusal leaves nothing filed.
-    candidates = find_prior_owners(args.repo, args.title)
+    try:
+        candidates = find_prior_owners(args.repo, args.title)
+    except SystemExit as exc:
+        # The refusal names --no-prior-owner as the way through a search
+        # outage, so the override must be honoured here (preclose finding).
+        if args.no_prior_owner is None:
+            raise
+        print(f"{exc.code}\n[GH] search failed; proceeding on --no-prior-owner.",
+              file=sys.stderr)
+        candidates = []
+    if candidates is None:
+        if args.no_prior_owner is None:
+            parser.error(
+                "R-0397: the title has no searchable keyword (4+ characters, "
+                "not a stopword), so no prior-owner search could run. Use a "
+                'more specific title, or pass --no-prior-owner "<reason>".')
+        candidates = []
     for number, state, title in candidates:
         print(f"[GH] candidate prior owner: {args.repo}#{number} ({state}) {title}",
               file=sys.stderr)
