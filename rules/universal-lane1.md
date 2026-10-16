@@ -292,6 +292,16 @@ rather than silently accepted. That makes the tool honest about the race; only
 the ordering above actually removes it.
 <!-- /R-0338 -->
 
+<!-- R-0390 -->
+**A clean rebase of a Lane 2 branch onto current `origin/main` is Lane 1's own
+action** (harmonic-forge#1018): run `mise run lane1-rebase -- <repo-dir>
+<issue> <branch>`. On exit 0, post `ready-for-l3` on the printed SHA in the
+same action (R-0338). On exit 2 or 3, post `--kind rework` naming the
+conflicting paths or the two SHAs. On 4 or 5, act on the named reason; never
+`--no-verify`. An AE on the old SHA carries forward under R-0209, except an
+auto-AE or standing-grant AE, which needs a fresh one.
+<!-- /R-0390 -->
+
 The structural half of this belongs in the project — a generated schema block
 sharing a file with hand-written process notes guarantees the collision
 (hrse#892). This rule holds regardless of whether that is fixed, because a

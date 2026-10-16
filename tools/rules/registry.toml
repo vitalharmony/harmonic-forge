@@ -2604,3 +2604,11 @@ anchor = "tool-use-safeguards"
 statement = "A Tooling Exception branch is pushed only with a passing mise run check receipt at the pushed SHA; a refused push means running check at that SHA, never bypassing the hook unless the operator explicitly authorizes --no-verify for that push."
 text_sha = "6c4dee10a8fe18fd"
 hooks = []
+
+[[rule]]
+id = "R-0390"
+file = "rules/universal-lane1.md"
+anchor = "doc-only-merges-wait"
+statement = "A clean rebase of a Lane 2 branch onto current origin/main is Lane 1's own action via mise run lane1-rebase; exit 0 means ready-for-l3 on the printed SHA in the same action, exit 2 or 3 a --kind rework, 4 or 5 the named reason, never --no-verify; an auto-AE or standing-grant AE on the old SHA needs a fresh one."
+text_sha = "754b154ae02b2131"
+hooks = []
