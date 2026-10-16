@@ -186,21 +186,41 @@ def script_contract_violations(source: str) -> list[str]:
         return [a.value for a in call.args
                 if isinstance(a, ast.Constant) and isinstance(a.value, str)]
 
-    if not any("--apply" in flags(c) for c in add_args):
+    # Sticky-wicket PATCH (F1026 pass 1): an allowlist. Anything this cannot
+    # prove safe for a no-argument or `--apply`-only run is refused, because a
+    # static reading of argparse can never enumerate every way to require one.
+    def is_true(node) -> bool:
+        return isinstance(node, ast.Constant) and node.value is True
+
+    apply_calls = [c for c in add_args if "--apply" in flags(c)]
+    if not apply_calls:
         violations.append("no --apply option")
+    elif not any(isinstance(k.value, ast.Constant) and k.arg == "action"
+                 and k.value.value == "store_true" for c in apply_calls for k in c.keywords):
+        violations.append("--apply is not a literal action='store_true' flag")
+    for name in ("add_mutually_exclusive_group", "add_subparsers", "error"):
+        if any(_call_name(c.func) == name for c in calls):
+            violations.append(f"uses {name}() (the runner passes only --apply or nothing)")
+    for c in calls:
+        if _call_name(c.func) == "ArgumentParser" and any(k.arg == "parents" for k in c.keywords):
+            violations.append("ArgumentParser(parents=...) is not checkable")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and any(_call_name(b) == "ArgumentParser" for b in node.bases):
+            violations.append(f"subclasses ArgumentParser ({node.name})")
     for call in add_args:
         strs = flags(call)
-        if not strs:
+        label = strs[0] if strs else "<non-literal name>"
+        if not strs or any(isinstance(a, ast.Starred) for a in call.args) \
+                or any(k.arg is None for k in call.keywords):
+            violations.append(f"add_argument({label}) is not a literal declaration")
             continue
-        kw = {k.arg: k.value for k in call.keywords if k.arg}
-        required = kw.get("required")
-        if isinstance(required, ast.Constant) and required.value is True:
-            violations.append(f"required argument {strs[0]}")
+        kw = {k.arg: k.value for k in call.keywords}
+        if "required" in kw and not (isinstance(kw["required"], ast.Constant)
+                                     and kw["required"].value is False):
+            violations.append(f"required argument {label}")
             continue
-        if not strs[0].startswith("-"):
+        if not label.startswith("-"):
             nargs = kw.get("nargs")
-            optional = (isinstance(nargs, ast.Constant) and nargs.value in ("?", "*")) \
-                or "default" in kw
-            if not optional:
-                violations.append(f"required argument {strs[0]}")
+            if not (isinstance(nargs, ast.Constant) and nargs.value in ("?", "*")):
+                violations.append(f"required argument {label}")
     return violations

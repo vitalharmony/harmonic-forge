@@ -80,7 +80,7 @@ class ScriptContractTests(unittest.TestCase):
         self.assertEqual(self.v(self.GOOD), [])
 
     def test_the_1896_shape_names_both_env_violations(self):
-        src = "from dotenv import load_dotenv\nimport argparse\np=argparse.ArgumentParser()\np.add_argument('--apply')\nload_dotenv('x')\n"
+        src = "from dotenv import load_dotenv\nimport argparse\np=argparse.ArgumentParser()\np.add_argument('--apply', action='store_true')\nload_dotenv('x')\n"
         self.assertEqual(self.v(src), ["no ensure_env() call", "calls load_dotenv()"])
 
     def test_each_rule_alone(self):
@@ -91,7 +91,28 @@ class ScriptContractTests(unittest.TestCase):
         self.assertEqual(self.v(self.GOOD + "p.add_argument('target')\n"), ["required argument target"])
 
     def test_optional_positionals_pass(self):
-        self.assertEqual(self.v(self.GOOD + "p.add_argument('t', nargs='?')\np.add_argument('u', default='x')\n"), [])
+        self.assertEqual(self.v(self.GOOD + "p.add_argument('t', nargs='?')\np.add_argument('u', nargs='*')\n"), [])
+
+    def test_a_positional_with_only_a_default_is_required(self):
+        # argparse: default= alone never makes a positional optional.
+        self.assertEqual(self.v(self.GOOD + "p.add_argument('target', default='x')\n"), ["required argument target"])
+
+    def test_constructs_the_no_argument_run_cannot_satisfy_are_refused(self):
+        cases = {
+            "g = p.add_mutually_exclusive_group(required=True)\ng.add_argument('--owner')\n": "add_mutually_exclusive_group",
+            "s = p.add_subparsers(dest='cmd', required=True)\n": "add_subparsers",
+            "REQ = True\np.add_argument('--owner', required=REQ)\n": "required argument --owner",
+            "opts = {'required': True}\np.add_argument('--owner', **opts)\n": "not a literal declaration",
+        }
+        for extra, needle in cases.items():
+            with self.subTest(extra=extra):
+                self.assertTrue(any(needle in v for v in self.v(self.GOOD + extra)), self.v(self.GOOD + extra))
+
+    def test_a_value_taking_apply_is_refused(self):
+        for decl in ("'--apply', type=str", "'--apply', nargs=1", "'--apply'"):
+            with self.subTest(decl=decl):
+                src = self.GOOD.replace("'--apply', action='store_true'", decl)
+                self.assertIn("--apply is not a literal action='store_true' flag", self.v(src))
 
     def test_apply_with_an_alias_passes(self):
         self.assertEqual(self.v(self.GOOD.replace("'--apply'", "'--apply', '--execute', dest='apply'")), [])
