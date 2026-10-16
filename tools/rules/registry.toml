@@ -74,7 +74,7 @@ hooks = []
 id = "R-0003"
 file = "rules/universal-agent.md"
 anchor = "service-lifecycle-git"
-statement = "Push to the remote only when the human operator explicitly asks."
+statement = "Push to the remote only when the human operator explicitly asks; Lane 1 pushes after a clean L2D review (R-0401)."
 text_sha = "a68bda84dfd8227a"
 hooks = []
 
@@ -2706,7 +2706,7 @@ id = "R-0404"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
 statement = "A handoff or rework is posted only for an issue in the current release milestone, because the belt ignores milestones. A Later issue never appears as a next action or as \"waiting on\"."
-text_sha = "5fd4a6907a0c69ae"
+text_sha = "a4ac0ef3f88f964a"
 hooks = []
 
 [[rule]]
@@ -2778,7 +2778,7 @@ id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
 statement = "The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix."
-text_sha = "4434a71143ff4da4"
+text_sha = "9283cd2ad8f18fdc"
 hooks = []
 
 [[rule]]
@@ -2786,5 +2786,5 @@ id = "R-0414"
 file = "rules/lane-shorthand.md"
 anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
 statement = "After an hour idle (waiting on another lane counts), the belt Monitor and its loop or cron are stopped. This is an operator override of \"never stops\" (operator ruling 2026-10-16)."
-text_sha = "98ecfae5017824c4"
+text_sha = "300b0e93a82de607"
 hooks = []

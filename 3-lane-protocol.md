@@ -971,7 +971,7 @@ marker is a PASS or Lane 1's own post is never re-announced. There the task
 entry is the only record. This rule adds no shared state.
 <!-- /R-0376 -->
 <!-- R-0413 -->
-The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix.
+The task list has exactly one `in_progress` item at all times (the belt watch when idle, or a `YOU: re-arm belt` item once R-0414 has stopped it). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix.
 <!-- /R-0413 -->
 
 ## HITL Gate Language

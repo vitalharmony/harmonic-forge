@@ -184,7 +184,7 @@ Plan-First ratification `discussion`.
 A belt or suspenders tick with nothing owed to this lane produces no text. An owed relay is named once, never on every tick.
 <!-- /R-0409 -->
 <!-- R-0414 -->
-After an hour idle (waiting on another lane counts), the belt Monitor and its loop or cron are stopped. This is an operator override of "never stops" (operator ruling 2026-10-16).
+After an hour idle (waiting on another lane counts), the belt Monitor and its loop or cron are stopped and the stop is announced in one line. The operator re-arms with `/belt-and-suspenders`; owed work posted after the stop waits for that re-arm (operator ruling 2026-10-16, overriding "never stops").
 <!-- /R-0414 -->
 
 ## `NOW` — interrupt

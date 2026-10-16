@@ -335,7 +335,7 @@ what you verified.
 Before composing any lane artifact (handoff, review, ready-for-l3, sweep, AE), list the issue's comments and derive the state from them (`lane_state.py`), never from the triggering message.
 <!-- /R-0400 -->
 <!-- R-0404 -->
-A handoff or rework is posted only for an issue in the current release milestone, because the belt ignores milestones. A Later issue never appears as a next action or as "waiting on".
+A handoff or rework is posted only for an issue in the current release milestone (a repo that carries no milestones, such as harmonic-forge, is exempt), because the belt ignores milestones. A Later issue never appears as a next action or as "waiting on".
 <!-- /R-0404 -->
 <!-- R-0099 -->
 Use `templates/lane1-handoff.md`. Read it in full when writing a
