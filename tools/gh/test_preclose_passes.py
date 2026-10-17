@@ -717,6 +717,30 @@ class ChangeIdentityTests(ScratchRepo):
         self.commit("lib.py", "a\nB-feature\nc\n")  # the conflict, resolved to the PR side
         self.assertFalse(self.accepts(reviewed))
 
+    def test_head_committing_the_conflict_marker_tree_is_refused(self) -> None:
+        """AC3, preclose pass 1: the head commits merge-tree's conflicted
+        tree verbatim, so the tree comparison matches and only the replay's
+        nonzero exit refuses it."""
+        self.seed_base({"lib.py": "a\nb\nc\n"})
+        self.commit("lib.py", "a\nB-feature\nc\n")
+        reviewed = self.identity()
+        self.on_base("lib.py", "a\nB-main\nc\n")
+        # By SHA, as accepts() passes it: the markers embed the ref names.
+        base_sha = preclose.run("git", "rev-parse", "base").stdout.strip()
+        replay = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "--merge-base",
+             reviewed["merge_base_sha"], base_sha, reviewed["head_sha"]],
+            cwd=self.repo, capture_output=True, text=True, check=False)
+        self.assertNotEqual(replay.returncode, 0)
+        marker_tree = replay.stdout.split()[0]
+        head = preclose.run("git", "commit-tree", marker_tree, "-p", "base",
+                            "-m", "markers").stdout.strip()
+        git("reset", "-q", "--hard", head, cwd=self.repo)
+        self.assertIn("<<<<<<<", (self.repo / "lib.py").read_text())
+        self.assertEqual(preclose.run("git", "rev-parse", "HEAD^{tree}").stdout.strip(),
+                         marker_tree)
+        self.assertFalse(self.accepts(reviewed))
+
     def test_extra_change_after_a_rebase_is_refused(self) -> None:
         """AC3: any non-exempt tree difference."""
         self.commit("scripts/a.py")
@@ -731,8 +755,9 @@ class ChangeIdentityTests(ScratchRepo):
             "packages": {"": {"name": "x", "version": "1.0.0"},
                          "node_modules/a": {"version": "1"}}}
 
-    def reviewed_then_rebased(self) -> dict:
-        self.seed_base({"frontend/package.json": json.dumps(self.PACKAGE, indent=2) + "\n",
+    def reviewed_then_rebased(self, package: dict | None = None) -> dict:
+        package = self.PACKAGE if package is None else package
+        self.seed_base({"frontend/package.json": json.dumps(package, indent=2) + "\n",
                         "frontend/package-lock.json": json.dumps(self.LOCK, indent=2) + "\n",
                         "other.json": json.dumps({"version": "1.0.0"}) + "\n"})
         self.commit("scripts/a.py")
@@ -777,6 +802,24 @@ class ChangeIdentityTests(ScratchRepo):
         reviewed = self.reviewed_then_rebased()
         self.bump("frontend/package.json", {**self.PACKAGE, "version": "1.0.1", "private": True})
         self.assertFalse(self.accepts(reviewed))
+
+    TYPED = {**PACKAGE, "private": True, "weight": 1, "ratio": 1.5, "files": ["a", "b"]}
+
+    def test_json_exemption_is_type_strict(self) -> None:
+        """Preclose pass 1: Python == equates true, 1 and 1.0; the exemption
+        must not. Key sets and list order are exact too."""
+        for change in ({"private": 1}, {"weight": 1.0}, {"weight": True},
+                       {"files": ["b", "a"]}, {"extra": None}):
+            with self.subTest(change=change):
+                self.setUp()
+                reviewed = self.reviewed_then_rebased(self.TYPED)
+                self.bump("frontend/package.json", {**self.TYPED, "version": "1.0.1", **change})
+                self.assertFalse(self.accepts(reviewed))
+
+    def test_json_exemption_still_accepts_a_typed_document(self) -> None:
+        reviewed = self.reviewed_then_rebased(self.TYPED)
+        self.bump("frontend/package.json", {**self.TYPED, "version": "1.0.1"})
+        self.assertTrue(self.accepts(reviewed))
 
     def test_accepts_returns_false_on_every_error(self) -> None:
         """accepts never raises, so the preflight and the merge hook agree."""

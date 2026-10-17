@@ -274,9 +274,30 @@ class PrShaBindingTests(unittest.TestCase):
                         f"gh pr merge --match-head-commit ABC123 1486 -R {REPO}",
                         f"bash -c 'gh pr merge 1486 -R {REPO} --match-head-commit abc123'",
                         f"gh api -X PUT repos/{REPO}/pulls/1486/merge -f sha=abc123",
-                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge --field=sha=abc123"):
+                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge --field=sha=abc123",
+                        f"gh pr merge 1486 -R {REPO} --squash -b 'see --match-head-commit' "
+                        f"--match-head-commit abc123 -d",
+                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge -F sha=abc123 "
+                        f"-f merge_method=squash",
+                        f"gh api --method PUT repos/{REPO}/pulls/1486/merge -fsha=abc123"):
             with self.subTest(command=command):
                 self.assertFalse(self._denied(self._decide("abc123", True, command=command)))
+
+    def test_match_head_commit_inside_another_flags_value_denies(self):
+        """Preclose pass 1: a flag-shaped VALUE never binds the merge."""
+        for command in (
+                f"gh pr merge 1486 -R {REPO} --squash --body --match-head-commit=abc123",
+                f"gh pr merge 1486 -R {REPO} --squash -b --match-head-commit=abc123",
+                f"gh pr merge 1486 -R {REPO} --squash --subject --match-head-commit abc123",
+                f"gh pr merge 1486 -R {REPO} -t --match-head-commit=abc123",
+                f"gh pr merge 1486 -R {REPO} --body-file --match-head-commit=abc123",
+                f"gh pr merge 1486 -R {REPO} --body='x --match-head-commit=abc123'",
+                f"gh pr merge 1486 -R {REPO} --squash -- --match-head-commit=abc123",
+                f"gh pr merge 1486 -R {REPO} --squash --unknown --match-head-commit=abc123",
+                f"gh api -X PUT repos/{REPO}/pulls/1486/merge -f commit_message=-fsha=abc123",
+                f"gh api -X PUT repos/{REPO}/pulls/1486/merge -H -f -H sha=abc123"):
+            with self.subTest(command=command):
+                self.assertTrue(self._denied(self._decide("abc123", True, command=command)))
 
     def test_rest_merge_without_sha_denies(self):
         self.assertTrue(self._denied(self._decide(

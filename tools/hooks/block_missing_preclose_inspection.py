@@ -544,6 +544,65 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | Non
         return False
 
 
+#: harmonic-forge#1077 preclose pass 1: the flags of `gh pr merge` and of
+#: `gh api` that take a value. A value is never read as a flag, so text in a
+#: `--body`/`--subject` value cannot pose as `--match-head-commit`.
+PR_MERGE_VALUE_FLAGS = frozenset({"--body", "-b", "--body-file", "-F", "--subject", "-t",
+                                  "--match-head-commit", "--author-email", "--repo", "-R"})
+PR_MERGE_BOOL_FLAGS = frozenset({"--admin", "--auto", "--delete-branch", "-d",
+                                 "--disable-auto", "--merge", "-m", "--rebase", "-r",
+                                 "--squash", "-s"})
+API_VALUE_FLAGS = frozenset({"-X", "--method", "-H", "--header", "--input", "-q", "--jq",
+                             "-t", "--template", "--hostname", "-p", "--preview", "--cache",
+                             *API_FIELD_FLAGS})
+API_BOOL_FLAGS = frozenset({"-i", "--include", "--paginate", "--silent", "--verbose",
+                            "--slurp"})
+
+
+def _bound_sha(tokens: list[str], cli: bool) -> str | None:
+    """The head SHA a `gh pr merge` (cli) or `gh api` PUT merge binds to, read
+    only from real flag tokens. Any token this walk cannot classify, a flag
+    missing its value, or a `--` end-of-flags marker returns None (deny)."""
+    value_flags = PR_MERGE_VALUE_FLAGS if cli else API_VALUE_FLAGS
+    bool_flags = PR_MERGE_BOOL_FLAGS if cli else API_BOOL_FLAGS
+    value: str | None = None
+    i = 3 if cli else 2
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            return None
+        if not token.startswith("-") or token == "-":
+            i += 1
+            continue
+        name, eq, inline = token.partition("=")
+        if token.startswith("--") and eq:
+            if name not in value_flags:
+                return None
+            flag_value = inline
+            i += 1
+        elif token in value_flags:
+            if i + 1 >= len(tokens):
+                return None
+            name, flag_value = token, tokens[i + 1]
+            i += 2
+        elif token in bool_flags:
+            i += 1
+            continue
+        elif not cli and token[:2] in ("-f", "-F") and len(token) > 2:
+            name, flag_value = token[:2], token[2:]
+            i += 1
+        elif not cli and token.upper().startswith("-X") and len(token) > 2:
+            i += 1
+            continue
+        else:
+            return None
+        if cli and name == "--match-head-commit":
+            value = flag_value
+        elif not cli and name in API_FIELD_FLAGS and flag_value.startswith("sha="):
+            value = flag_value[len("sha="):]
+    return value
+
+
 def merge_head_commits(command: str, number: str) -> list[str | None]:
     """The `--match-head-commit` value (REST form: the `sha=` field) of every
     segment of `command` that merges PR `number`; None for a segment that
@@ -569,18 +628,7 @@ def merge_head_commits(command: str, number: str) -> list[str | None]:
         parsed = cli or api
         if not parsed or parsed[1] != number:
             continue
-        value: str | None = None
-        for i, token in enumerate(tokens):
-            if cli:
-                value = _flag_value(tokens, i, ("--match-head-commit",)) or value
-            elif token in API_FIELD_FLAGS and i + 1 < len(tokens) \
-                    and tokens[i + 1].startswith("sha="):
-                value = tokens[i + 1][len("sha="):]
-            else:
-                for prefix in API_FIELD_PREFIXES:
-                    if token.startswith(f"{prefix}sha="):
-                        value = token[len(prefix) + len("sha="):]
-        found.append(value)
+        found.append(_bound_sha(tokens, bool(cli)))
     return found or [None]
 
 

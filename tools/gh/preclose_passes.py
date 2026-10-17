@@ -161,6 +161,19 @@ def _without_exempt(document, paths: tuple[tuple[str, ...], ...]):
     return document
 
 
+def _strict_equal(a, b) -> bool:
+    """JSON equality with exact types (harmonic-forge#1077 preclose pass 1):
+    Python ``==`` equates ``true``, ``1`` and ``1.0``; this does not. Key
+    sets and list order must match exactly."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_strict_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_strict_equal(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 def _equal_but_exempt(repo_dir, replay_tree: str, head_tree: str) -> bool:
     """True when the two trees differ only in the exempt JSON keys."""
     raw = _git_out(repo_dir, "diff-tree", "-r", "-z", "--no-renames", replay_tree, head_tree)
@@ -174,7 +187,7 @@ def _equal_but_exempt(repo_dir, replay_tree: str, head_tree: str) -> bool:
             return False
         before = _strict_json(_git_out(repo_dir, "cat-file", "blob", f"{replay_tree}:{path}"))
         after = _strict_json(_git_out(repo_dir, "cat-file", "blob", f"{head_tree}:{path}"))
-        if _without_exempt(before, exempt) != _without_exempt(after, exempt):
+        if not _strict_equal(_without_exempt(before, exempt), _without_exempt(after, exempt)):
             return False
     return True
 
