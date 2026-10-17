@@ -18,6 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lane1_rebase  # noqa: E402
 
+real_run_task = lane1_rebase.run_task
+
 BRANCH = "feat/7-thing"
 ISSUE = 7
 
@@ -891,6 +893,35 @@ class RegenerateTests(VersionConflictTests):
         self.assertEqual(self.gen_on_origin(), "src1.txt\nsrc2.txt")
         self.assertIn("version-resolved=2.9.43", out)
 
+    def test_r11_branch_deletes_declared_file_main_modifies_exits_2(self):
+        self.on_main({"gen.txt": "v1\n"})
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        sh(self.impl, "rm", "-q", "gen.txt")
+        sh(self.impl, "commit", "-q", "-m", "branch deletes gen")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        self.branch_sha = sh(self.impl, "rev-parse", "HEAD")
+        self.on_main({"gen.txt": "v2\n"})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("delete/modify", err)
+
+    def test_r12_task_that_cannot_launch_exits_2(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        real_run = subprocess.run
+
+        def no_mise(argv, *args, **kwargs):
+            if argv and argv[0] == "mise":
+                raise FileNotFoundError("mise")
+            return real_run(argv, *args, **kwargs)
+
+        with mock.patch.object(lane1_rebase, "run_task", side_effect=real_run_task):
+            with mock.patch.object(lane1_rebase.subprocess, "run", side_effect=no_mise):
+                code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("exit 127", err)
+
     def test_r10_crash_after_regeneration_push_rerun_exits_3(self):
         self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
         self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
@@ -932,6 +963,21 @@ class LockVersionTests(VersionConflictTests):
         self.on_branch({PKG: pkg("2.9.41"), LOCK: lock("2.9.41", dep="2.0.0")}, "bump + dep")
         self.on_main({PKG: pkg("2.9.42"), LOCK: lock("2.9.42")})
         self.assert_refused(*self.run_captured()[::2])
+
+
+    def test_l4_lagging_lock_does_not_veto_a_package_json_resolution(self):
+        # hrse's real shape (F1057 preclose): the auto-bump never updates the lock.
+        self.on_main({LOCK: lock("2.9.28")})
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41"), LOCK: lock("2.9.28", dep="2.0.0")},
+                       "bump + dependency")
+        self.on_main({PKG: pkg("2.9.42")})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.head_version(), "2.9.43")
+        self.assertIn("version-resolved=2.9.43", out)
 
     def test_l3_lock_root_versions_disagree_exits_2(self):
         bad = lock("2.9.41").replace('"version": "2.9.41"\n    }', '"version": "2.9.39"\n    }')

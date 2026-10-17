@@ -151,8 +151,12 @@ def regenerate_config(repo_dir: str) -> tuple[dict[str, str], str | None]:
 
 def run_task(prep: Path, task: str) -> subprocess.CompletedProcess:
     """One declared mise task in the prep worktree (`task` may carry args)."""
-    return subprocess.run(["mise", "run", *shlex.split(task)], cwd=str(prep),
-                          capture_output=True, text=True)
+    try:
+        return subprocess.run(["mise", "run", *shlex.split(task)], cwd=str(prep),
+                              capture_output=True, text=True)
+    except OSError as exc:
+        # F1057 preclose: a task that cannot even launch is a failed task (exit 2).
+        return subprocess.CompletedProcess(["mise", "run", task], 127, "", str(exc))
 
 
 def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
@@ -459,9 +463,13 @@ def version_target(repo_dir: str, old: str) -> tuple[str | None, dict[str, str]]
         version = data.get("version") if data else None
         if isinstance(version, str) and _SEMVER.match(version):
             mains[path] = version
-    if len(set(mains.values())) != 1:
+    # `T` comes from package.json alone (F1057 preclose): hrse's auto-bump never
+    # updates the lock, so the lock's version lags and must not veto `T`. The
+    # lock's own main version stays in `mains` for its MAJOR/MINOR check.
+    packages = {v for p, v in mains.items() if Path(p).name == "package.json"}
+    if len(packages) != 1:
         return None, mains
-    major, minor, patch = _SEMVER.match(next(iter(mains.values()))).groups()
+    major, minor, patch = _SEMVER.match(next(iter(packages))).groups()
     return f"{major}.{minor}.{int(patch) + 1}", mains
 
 
@@ -508,8 +516,10 @@ def _take_upstream(prep: Path, paths: list[str]) -> None:
     """harmonic-forge#1057: resolve each declared generated path to stage :2
     (origin/main plus the commits already replayed); regenerated after."""
     for path in paths:
-        if _show_raw(prep, f":2:{path}") is None:
-            raise Exit(2, f"{path}: declared generated file has no origin/main side "
+        # Either side missing is a delete/modify conflict (F1057 preclose: a
+        # branch-side delete must not be silently undone by main's copy).
+        if _show_raw(prep, f":2:{path}") is None or _show_raw(prep, f":3:{path}") is None:
+            raise Exit(2, f"{path}: declared generated file was deleted on one side "
                           "(delete/modify conflict); not regenerated")
         git(prep, "checkout", "--ours", "--", path)
         git(prep, "add", "--", path)
