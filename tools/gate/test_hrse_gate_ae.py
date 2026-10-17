@@ -546,27 +546,21 @@ class SignalSafeMint(OutcomeReporting):
         self.assertEqual(code, b.EXIT_OK)
         self.assertIn(nonce, "".join(c.args[0] for c in out.write.call_args_list))
 
-    def test_signals_normal_while_waiting_and_ignored_once_locked(self):
-        """Sticky-wicket PATCH: the wait for the store lock stays interruptible;
-        signals are ignored only once the lock is held, before the write."""
+    def test_signals_are_ignored_before_the_bounded_lock_wait(self):
+        """Operator option B (post-verdict #2): no gap between taking the lock
+        and ignoring signals; the wait itself is bounded by LOCK_WAIT_SECONDS."""
         import signal as sg
-        at_mint, at_write = {}, {}
-        real_mint, real_write = b._mint, b._write_grant
+        seen = {}
+        real_mint = b._mint
 
-        def spy_mint(*args, **kwargs):
-            at_mint.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
+        def spy(*args, **kwargs):
+            seen.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
             return real_mint(*args, **kwargs)
 
-        def spy_write(*args, **kwargs):
-            at_write.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
-            return real_write(*args, **kwargs)
-
-        with mock.patch.object(b, "_mint", side_effect=spy_mint), \
-                mock.patch.object(b, "_write_grant", side_effect=spy_write):
+        with mock.patch.object(b, "_mint", side_effect=spy):
             self.mint()
-        self.assertNotIn(sg.SIG_IGN, set(at_mint.values()))
-        self.assertEqual(set(at_write.values()), {sg.SIG_IGN})
-        self.assertIn(sg.SIGTSTP, at_write)
+        self.assertEqual(set(seen.values()), {sg.SIG_IGN})
+        self.assertIn(sg.SIGTSTP, seen)
 
     def test_a_held_lock_times_out_with_nothing_minted(self):
         import fcntl

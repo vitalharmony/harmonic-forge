@@ -251,8 +251,7 @@ def confirm(text: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-#: Ignored from the moment the mint lock is held to exit (sticky-wicket): no handler
-#: can make the post-create report interrupt-proof. SIGKILL/power loss: `status`.
+#: Ignored from `y` to exit (lock wait bounded). SIGKILL/power loss: `status`.
 POST_CONFIRM_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT,
                         signal.SIGTSTP, signal.SIGTTIN, signal.SIGTTOU)
 
@@ -296,5 +295,6 @@ def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int,
     if not confirm(describe(action, where, ttl_minutes)):
         raise _refuse("not confirmed: nothing minted")
     key = broker._key(str(action["issue"]), action["sha"], action_text(action))
-    return broker._mint(key, ttl_minutes, minted, on_locked=ignore_signals)
+    ignore_signals()  # before the lock wait, which is bounded (LOCK_WAIT_SECONDS)
+    return broker._mint(key, ttl_minutes, minted)
 

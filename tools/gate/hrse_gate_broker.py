@@ -165,16 +165,10 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
     return _mint(_key(issue, sha, action), ttl_minutes)
 
 
-def _mint(key: dict, ttl_minutes: int, holder: list | None = None,
-          on_locked=None) -> str:
+def _mint(key: dict, ttl_minutes: int, holder: list | None = None) -> str:
     """The one write path for a grant: `grant` and `grant-from-ae` both end
-    here, so a grant minted from an AE is the record `grant` would write.
-    `on_locked` runs once the store lock is held, before any write:
-    grant-from-ae ignores signals there, so the wait for the lock stays
-    interruptible (harmonic-forge#1064 sticky-wicket PATCH)."""
+    here, so a grant minted from an AE is the record `grant` would write."""
     with _store_lock():
-        if on_locked is not None:
-            on_locked()
         now = _now()
         _prune_expired(now)
         # One approval, one live grant (sticky-wicket PATCH 2, item 3). The
