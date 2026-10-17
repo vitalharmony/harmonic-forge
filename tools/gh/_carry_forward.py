@@ -45,7 +45,14 @@ Lane 1 re-runs the checks immediately before `gh pr merge`:
 
 Exit codes: 0 every check holds; 1 a substantive refusal (the PASS does not
 cover the head: `ready-for-l3` and a fresh AE); 2 no carry-forward found or
-bad usage; 3 only CI-wait refusals.
+bad usage; 3 only CI-wait refusals; 4 the base moved -- `origin/main`
+advanced past the carried head while the branch's own code diff is still
+patch-identical to the gated one, so `lane1-rebase` then a new carry-forward,
+not `ready-for-l3`.
+
+The PASS comment must also be unedited by GitHub's own record: its REST
+`updated_at` must equal `created_at`. The body-sha256 marker is an unkeyed
+digest anyone editing the comment can recompute, so it proves nothing alone.
 """
 
 from __future__ import annotations
@@ -64,11 +71,14 @@ import check_lane3_ready as clr  # noqa: E402
 import gate_ci  # noqa: E402
 
 WAIT_EXIT = 3
+BASE_EXIT = 4
 REFUSE_EXIT = 1
 USAGE_EXIT = 2
 
 KIND = "carry-forward"
-_BODY_SHA_MARKER = re.compile(r"<!--\s*l1-post\s+v1;.*?\bbody-sha256=[0-9a-f]{64}\b", re.I | re.S)
+# Presence is checked with the verifier's OWN regex, so a marker the verifier
+# cannot find (e.g. on its own line: no DOTALL there) counts as absent.
+_BODY_SHA_MARKER = clr.FOOTER_BODY_SHA
 _REMOTE_URL = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
                          r"(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$")
 _FOOTER_FIELD = {
@@ -78,20 +88,25 @@ _FOOTER_FIELD = {
 }
 _DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--no-color")
 _SECTION = re.compile(r"^diff --git a/(?P<a>.*) b/(?P<b>.*)$")
-_VERSION_LINE = re.compile(r'^[+-]\s*"version"\s*:')
+# Exactly a version key/value line -- a line that also carries another key is kept.
+_VERSION_LINE = re.compile(r'^[+-]\s*"version"\s*:\s*"[^"]*"\s*,?\s*$')
+_HUNK_HEADING = re.compile(r"^@@ -\S+ \+\S+ @@ ?(?P<heading>.*)$")
 _KEY_OPEN = re.compile(r'^[ +-](\s*)"([^"]*)"\s*:\s*\{')
 
 GitRunner = Callable[..., subprocess.CompletedProcess]
 
 
 class Refusal(str):
-    """One failed check. `wait` marks a CI `pending`/`absent` refusal."""
+    """One failed check. `wait` marks a CI `pending`/`absent` refusal; `base`
+    marks a stale-base refusal (the head does not contain origin/main)."""
 
     wait: bool = False
+    base: bool = False
 
-    def __new__(cls, text: str, wait: bool = False) -> "Refusal":
+    def __new__(cls, text: str, wait: bool = False, base: bool = False) -> "Refusal":
         obj = super().__new__(cls, text)
         obj.wait = wait
+        obj.base = base
         return obj
 
 
@@ -137,7 +152,25 @@ def check_pass_comment(comments: list[dict], pass_comment_id: int, from_sha: str
     elif not clr.verify_body_sha256(comment):
         out.append(Refusal(f"comment {pass_comment_id} was edited after it was posted "
                            "(body-sha256 mismatch)"))
+    created, updated = _when(comment.get("created_at")), _when(comment.get("updated_at"))
+    if created is None or updated is None:
+        out.append(Refusal(f"comment {pass_comment_id} has no readable created_at/updated_at, "
+                           "so it cannot be shown unedited"))
+    elif updated > created:
+        out.append(Refusal(f"comment {pass_comment_id} was edited after it was posted "
+                           f"(updated_at {comment.get('updated_at')} is after created_at "
+                           f"{comment.get('created_at')})"))
     return out
+
+
+def _when(value):
+    from datetime import datetime  # noqa: PLC0415
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def check_no_newer_gate_report(comments: list[dict], pass_comment_id: int) -> list[Refusal]:
@@ -188,7 +221,7 @@ def check_head(branch: str, sha: str, git: GitRunner, cwd) -> list[Refusal]:
                            f"({(head or 'unresolved')[:12]})"))
     if not main or git("merge-base", "--is-ancestor", main, sha, cwd=cwd).returncode:
         out.append(Refusal(f"--sha {sha[:12]} does not contain origin/main "
-                           f"({(main or 'unresolved')[:12]})"))
+                           f"({(main or 'unresolved')[:12]})", base=bool(main)))
     return out
 
 
@@ -264,6 +297,20 @@ def _patch_id(text: str, cwd) -> str | None:
     return parts[0] if parts else None
 
 
+def hunk_headings(diff: str) -> list[tuple[str, str]]:
+    """(file, function-context heading) of every hunk, in order."""
+    out, name = [], ""
+    for line in diff.splitlines():
+        section = _SECTION.match(line)
+        if section:
+            name = section.group("b")
+            continue
+        hunk = _HUNK_HEADING.match(line)
+        if hunk:
+            out.append((name, hunk.group("heading").strip()))
+    return out
+
+
 def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
                          excluded: set[str] | frozenset[str] = frozenset()) -> list[Refusal]:
     """AC1 bullet 4 / AC4: the branch's own code diff is unchanged."""
@@ -271,7 +318,13 @@ def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
     if base.returncode or not base.stdout.strip():
         return [Refusal(f"cannot find the merge base of {from_sha[:12]} and origin/main")]
     old_base = base.stdout.strip()
-    pairs = ((old_base, from_sha), ("refs/remotes/origin/main", sha))
+    # The rebased side is diffed from ITS merge base with origin/main (equal to
+    # origin/main whenever --sha contains it), so a merely stale base does not
+    # read as a code change; check_head reports the stale base on its own.
+    new = git("merge-base", sha, "refs/remotes/origin/main", cwd=cwd)
+    if new.returncode or not new.stdout.strip():
+        return [Refusal(f"cannot find the merge base of {sha[:12]} and origin/main")]
+    pairs = ((old_base, from_sha), (new.stdout.strip(), sha))
     for lo, hi in pairs:
         numstat = git("diff", *_DIFF_FLAGS, "--numstat", lo, hi, cwd=cwd)
         if numstat.returncode:
@@ -279,12 +332,14 @@ def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
         if any(line.startswith("-\t-\t") and line.split("\t", 2)[2] not in excluded
                for line in numstat.stdout.splitlines()):
             return [Refusal(f"{lo[:12]}..{hi[:12]} carries a binary change, which patch-id cannot compare")]
-    ids = []
+    ids, headings = [], []
     for lo, hi in pairs:
         diff = git("diff", *_DIFF_FLAGS, lo, hi, cwd=cwd)
         if diff.returncode:
             return [Refusal(f"cannot diff {lo[:12]}..{hi[:12]}")]
-        ids.append(_patch_id(filter_diff(diff.stdout, excluded), cwd))
+        filtered = filter_diff(diff.stdout, excluded)
+        ids.append(_patch_id(filtered, cwd))
+        headings.append(hunk_headings(filtered))
     old_id, new_id = ids
     if not old_id or not new_id:
         return [Refusal(f"patch-id is empty for {'the gated diff' if not old_id else 'the rebased diff'} "
@@ -292,6 +347,11 @@ def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
     if old_id != new_id:
         return [Refusal(f"patch-id differs: the gated diff ({old_id[:12]}) and the rebased diff "
                         f"({new_id[:12]}) are not the same code change")]
+    if headings[0] != headings[1]:
+        # patch-id ignores hunk position: the same replacement moved into another
+        # function hashes the same, so the hunks' function contexts must match too.
+        return [Refusal("hunk function contexts differ: the gated diff "
+                        f"{headings[0]} and the rebased diff {headings[1]} change different places")]
     return []
 
 
@@ -389,6 +449,8 @@ def check(repo: str, issue: int, branch: str, run=None, git: GitRunner | None = 
                         run, git, cwd=cwd, comments=comments, labels=labels, excluded=excluded)
     if not refusals:
         return 0, []
+    if all(r.wait or r.base for r in refusals) and any(r.base for r in refusals):
+        return BASE_EXIT, list(refusals)
     return (WAIT_EXIT if all(r.wait for r in refusals) else REFUSE_EXIT), list(refusals)
 
 
@@ -409,7 +471,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 -- the read then fails loudly on its own
         print(f"[carry-forward] identity not applied: {exc}", file=sys.stderr)
     code, refusals = check(args.repo, args.issue, args.branch)
-    if code == 0:
+    if code == BASE_EXIT:
+        print(f"[carry-forward] {args.repo}#{args.issue}: origin/main moved past origin/{args.branch}; "
+              "the code is still patch-identical -- run lane1-rebase, then post a new carry-forward "
+              "(not ready-for-l3):\n" + "\n".join(f"{n}. {r}" for n, r in enumerate(refusals, 1)),
+              file=sys.stderr)
+    elif code == 0:
         print(f"[carry-forward] {args.repo}#{args.issue}: the carried PASS covers origin/{args.branch}")
     else:
         print(f"[carry-forward] {args.repo}#{args.issue}: the carried PASS does NOT cover "

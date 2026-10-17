@@ -108,8 +108,11 @@ matters:
     unless a carry-forward accepted by `l1_post.py` names the new head
     (harmonic-forge#1036) and `python3 tools/gh/_carry_forward.py check
     --repo R --issue N --branch B` exits 0 immediately before `gh pr merge`;
-    a non-zero exit means the PASS does not cover the head, and the branch
-    goes to Lane 3 via `ready-for-l3`.
+    exit 4 means only `origin/main` moved and the code is still
+    patch-identical, so Lane 1 runs `lane1-rebase` and posts a new
+    carry-forward, not `ready-for-l3`; exit 3 is a CI wait; any other non-zero
+    exit means the PASS does not cover the head, and the branch goes to Lane 3
+    via `ready-for-l3`.
   - Any test case's evidence is asserted rather than executed. That is an
     unverified AC, which routes to the operator per the PASS-only bullet
     above.
@@ -349,9 +352,11 @@ in the background (R-0376) and re-post. Any substantive refusal (patch-id
 differs, non-PASS, a newer gate report, red CI, a missing or edited body hash)
 sends it to Lane 3 through `ready-for-l3` and a fresh AE. Immediately before
 `gh pr merge` on a branch whose PASS was carried forward, run
-`python3 tools/gh/_carry_forward.py check --repo R --issue N --branch B`; a
-non-zero exit means the PASS does not cover the head, and the branch goes to
-Lane 3 through `ready-for-l3`.
+`python3 tools/gh/_carry_forward.py check --repo R --issue N --branch B`.
+Exit 4 means `origin/main` moved past the carried head while the code is still
+patch-identical: run `lane1-rebase`, then post a new carry-forward, never
+`ready-for-l3`. Exit 3 is a CI wait. Any other non-zero exit means the PASS
+does not cover the head, and the branch goes to Lane 3 through `ready-for-l3`.
 <!-- /R-0390 -->
 
 The structural half of this belongs in the project — a generated schema block

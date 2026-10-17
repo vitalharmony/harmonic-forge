@@ -151,8 +151,13 @@ class _Fixture(unittest.TestCase):
         sh(self.repo, "checkout", "-q", "main")
         return sha
 
-    def set_pass(self, body):
-        self.comments = [c for c in self.comments if c["id"] != PASS_ID] + [{"id": PASS_ID, "body": body}]
+    def set_pass(self, body, created="2026-10-17T10:00:00Z", updated="2026-10-17T10:00:00Z"):
+        comment = {"id": PASS_ID, "body": body}
+        if created is not None:
+            comment["created_at"] = created
+        if updated is not None:
+            comment["updated_at"] = updated
+        self.comments = [c for c in self.comments if c["id"] != PASS_ID] + [comment]
 
     def validate(self, sha, *, ci="green", excluded=frozenset(), git=None, from_sha=None, labels=None):
         return cf.validate(REPO, ISSUE, PASS_ID, from_sha or self.from_sha, sha, BRANCH,
@@ -210,6 +215,42 @@ class CarryForwardValidateTests(_Fixture):
     def test_edited_pass_body_is_refused(self):
         self.set_pass(gate_body("PASS", self.from_sha).replace("TCs ran.", "TCs ran, edited."))
         self.assertRefused(self.validate(self.rebase()), "edited after it was posted")
+
+    def test_body_sha_on_its_own_footer_line_is_refused(self):
+        """Fix 1: a marker the verifier cannot find (no DOTALL there) is absent."""
+        body = gate_body("PASS", self.from_sha).replace(" body-sha256=", "\nbody-sha256=")
+        self.set_pass(body.replace("TCs ran.", "TCs ran, edited."))
+        self.assertRefused(self.validate(self.rebase()), "no body-sha256 marker")
+
+    def test_pass_edited_after_posting_is_refused(self):
+        """Fix 6: the unkeyed hash is recomputable; GitHub's updated_at is not."""
+        self.set_pass(gate_body("PASS", self.from_sha), updated="2026-10-17T10:05:00Z")
+        self.assertRefused(self.validate(self.rebase()), "updated_at 2026-10-17T10:05:00Z is after")
+
+    def test_pass_with_equal_timestamps_is_accepted(self):
+        self.set_pass(gate_body("PASS", self.from_sha), updated="2026-10-17T10:00:00Z")
+        self.assertEqual(self.validate(self.rebase()), [])
+
+    def test_pass_without_timestamps_is_refused(self):
+        self.set_pass(gate_body("PASS", self.from_sha), created=None, updated=None)
+        self.assertRefused(self.validate(self.rebase()), "no readable created_at/updated_at")
+
+    def test_same_replacement_in_another_function_is_refused(self):
+        """Fix 5: patch-id ignores hunk position; the function context must match."""
+        block = "    x = 0\n    x = 0\n    x = 0\n    return 1\n    pass\n    pass\n    pass\n"
+        mod = f"def f():\n{block}\n\ndef g():\n{block}"
+        sh(self.repo, "checkout", "-q", "main")
+        start = self.commit({"mod.py": mod}, "mod")
+        sh(self.repo, "push", "-q", "origin", "main")
+        in_f = mod.replace("return 1", "return 2", 1)
+        in_g = "return 2".join(mod.rsplit("return 1", 1))
+        self.from_sha = self.branch_on(start, {"mod.py": in_f})
+        sh(self.repo, "checkout", "-q", "main")
+        self.main = self.commit({"other.txt": "z\n"}, "main moves again")
+        sh(self.repo, "push", "-q", "origin", "main")
+        self.set_pass(gate_body("PASS", self.from_sha))
+        self.assertEqual(self.validate(self.rebase({"mod.py": in_f})), [])
+        self.assertRefused(self.validate(self.rebase({"mod.py": in_g})), "function contexts differ")
 
     def test_markerless_pass_is_refused(self):
         self.set_pass(gate_body("PASS", self.from_sha, marker=False))
@@ -291,6 +332,26 @@ class CarryForwardValidateTests(_Fixture):
         self.assertEqual(refusals, [])
 
 
+class DeclaredGeneratedRebaseTests(_Fixture):
+    """Fix 2: the REBASED diff touches a declared generated file (plus a
+    regeneration commit), read through declared_generated(), not `excluded=`."""
+
+    def run_declared(self, app):
+        sha = self.rebase({"app.py": app, "frontend/package.json": PKG % "1.0.2",
+                           "design.toml": "gen 2 plus branch\n"},
+                          {"design.toml": "gen 3 regenerated\n"})
+        with mock.patch.object(lane1_rebase, "regenerate_config",
+                               return_value=({"design.toml": "gen"}, None)):
+            return cf.validate(REPO, ISSUE, PASS_ID, self.from_sha, sha, BRANCH, fake_ci(),
+                               stub_git(), cwd=self.repo, comments=self.comments, labels=self.labels)
+
+    def test_rebased_diff_touching_declared_file_is_accepted(self):
+        self.assertEqual(self.run_declared(APP.replace("1", "2")), [])
+
+    def test_rebased_diff_touching_declared_file_plus_code_line_is_refused(self):
+        self.assertRefused(self.run_declared(APP.replace("1", "3")), "patch-id differs")
+
+
 class RegenerationAmendmentTests(_Fixture):
     """6229366936: a rebase with a regeneration commit and a lock version
     resolution carries forward; the same plus one changed code line does not."""
@@ -343,6 +404,24 @@ class MergeTimeCheckTests(_Fixture):
         self.assertEqual(code, cf.REFUSE_EXIT)
         self.assertRefused(refusals, "is not origin/feat/7-thing's head")
 
+    def test_main_moved_after_carry_forward_exits_base(self):
+        """Fix 3: a stale base with patch-identical code is BASE_EXIT, not REFUSE_EXIT."""
+        carried = self.rebase()
+        self.comments.append({"id": PASS_ID + 1, "body": cf_body(carried, self.from_sha)})
+        self.main = self.commit({"other.txt": "w\n"}, "main moves after the carry-forward")
+        sh(self.repo, "push", "-q", "origin", "main")
+        code, refusals = self.check()
+        self.assertEqual(code, cf.BASE_EXIT)
+        self.assertEqual(cf.BASE_EXIT, 4)
+        self.assertRefused(refusals, "does not contain origin/main")
+
+    def test_main_moved_and_code_changed_is_refused(self):
+        carried = self.rebase({"app.py": APP.replace("1", "3"), "frontend/package.json": PKG % "1.0.2"})
+        self.comments.append({"id": PASS_ID + 1, "body": cf_body(carried, self.from_sha)})
+        self.main = self.commit({"other.txt": "w\n"}, "main moves after the carry-forward")
+        sh(self.repo, "push", "-q", "origin", "main")
+        self.assertEqual(self.check()[0], cf.REFUSE_EXIT)
+
     def test_pending_ci_exits_wait(self):
         sha = self.rebase()
         self.comments.append({"id": PASS_ID + 1, "body": cf_body(sha, self.from_sha)})
@@ -367,6 +446,25 @@ class FilterDiffTests(unittest.TestCase):
         self.assertNotIn('"version": "1"', out)
         self.assertIn('-"version": "a"', out)
         self.assertIn('+"version": "b"', out)
+
+
+    def test_package_json_version_line_with_another_key_survives(self):
+        """Fix 4: only a line that is exactly a version key/value is dropped."""
+        diff = ('diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n'
+                '@@ -1 +1 @@\n-  "version": "1", "scripts": {"x": "a"},\n'
+                '+  "version": "2", "scripts": {"x": "b"},\n')
+        out = cf.filter_diff(diff)
+        self.assertIn('"scripts": {"x": "b"}', out)
+
+    def test_lock_root_version_line_with_another_key_survives(self):
+        diff = ('diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n'
+                '+++ b/package-lock.json\n@@ -1 +1 @@\n-  "version": "1", "x": 1,\n+  "version": "2", "x": 2,\n')
+        self.assertIn('"x": 2', cf.filter_diff(diff))
+
+    def test_exact_version_lines_are_still_dropped(self):
+        diff = ('diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n'
+                '@@ -1 +1 @@\n-  "version": "1",\n+  "version": "2"\n')
+        self.assertEqual(cf.filter_diff(diff), "")
 
 
 class LaneOneOnlyAndArgsTests(unittest.TestCase):
