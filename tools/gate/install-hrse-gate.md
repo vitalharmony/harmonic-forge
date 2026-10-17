@@ -150,7 +150,11 @@ is an open PR's head (or `main`'s current head, for a post-merge step), shows
 the exact grant with **DRY RUN** or **APPLY (writes production)** on its own
 line, and mints only if you type `y`. It mints exactly what `grant` would.
 The AE is written by the account every lane also uses, so read the action
-before answering: your `y` is the authorization, not the comment. `apply` also
+before answering: your `y` is the authorization, not the comment. After your `y`,
+the verb ignores Ctrl-C (and SIGTERM, SIGHUP, SIGQUIT) until it exits, so it
+always reports the grant it created. A `kill -9` or a power loss mid-mint
+cannot be reported: run `status` for that issue, SHA and action to see
+whether a grant is live. `apply` also
 refuses unless a dry-run grant for the same issue, SHA and script has been
 spent. No sudoers rule names this verb, and none may: every lane runs as
 `mmangus`.

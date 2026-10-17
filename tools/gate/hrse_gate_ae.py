@@ -2,35 +2,24 @@
 """`hrse-gate grant-from-ae`: mint a production grant from the posted AE
 (harmonic-forge#1064).
 
-The operator used to copy the issue number, the 40-hex SHA, the script and the
-dry-run/apply flag out of a `--prod-run` AE by hand. Every value is already in
-the AE's reserved footer field (`tools/gh/_prod_run.py`):
+Reads the issue's newest `--prod-run` AE footer (`tools/gh/_prod_run.py`
+grammar), shows the exact grant, and mints it through the broker's own
+`_mint` only on the operator's `y`. Nothing read from GitHub is trusted: the
+AE is written by the account every lane uses, so the `y` at a root-password
+`sudo` prompt is the authorization, never the comment.
 
-    prod-run=issue:<N>,sha:<40 hex>,script:scripts/1-<name>.py,apply:true|false
-    prod-run=issue:<N>,sha:<40 hex>,count-label:<Label>
-
-**Nothing read from GitHub is trusted.** The AE is written by the operator's
-own account, which every lane also uses, and a lane posting through raw
-`gh api` can forge the footer. The authorization is the operator's `y`, typed
-at a root-password `sudo` prompt after reading the action shown here. This
-verb only saves the typing.
-
-Order of checks, each refusing with nothing minted: euid, TTY, token file,
-TTL, the issue's comments, the AE for the requested mode, the SHA (an open PR's
-head, or `main`'s current head for a post-merge step: operator ruling
-2026-10-17), an `apply`'s spent dry-run receipt, then the confirmation.
-
-Loaded only by `hrse_gate_broker.main` on this verb's branch, so the one
-NOPASSWD path (`consume`) never imports it. Stdlib only, like the broker, and
-installed root-owned beside it (`install-hrse-gate.md`). The footer grammar is
-restated here, not imported from the forge tree; `test_hrse_gate_ae.py` checks
-it against `_prod_run` on a fixture set.
+Checks, each refusing with nothing minted: euid, TTY, token file, TTL,
+comments, the AE for the mode, the SHA (an open PR's head or `main`'s head),
+an `apply`'s spent dry-run receipt, then the confirmation. Loaded only on this
+verb's branch, so `consume` (the NOPASSWD path) never imports it. Stdlib only;
+installed root-owned beside the broker (`install-hrse-gate.md`).
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import signal
 import stat
 import urllib.error
 import urllib.request
@@ -261,6 +250,18 @@ def confirm(text: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
+#: Ignored from the operator's `y` to exit (sticky-wicket REFORGE): no handler
+#: can make the post-create report interrupt-proof. SIGKILL/power loss: `status`.
+POST_CONFIRM_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+
+
+def ignore_signals() -> None:
+    """Never restored (the process exits next); never blocked-then-restored,
+    which would deliver a pending Ctrl-C after the print and hide the code."""
+    for sig in POST_CONFIRM_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+
+
 def describe(action: dict, where: str, ttl_minutes: int) -> str:
     target = f"script {action['script']}" if "script" in action else f"count-label {action['count_label']}"
     mode = ("APPLY (writes production)" if action.get("apply")
@@ -292,6 +293,7 @@ def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int,
                       f"{action['sha'][:12]}, {action['script']}; run the dry run first")
     if not confirm(describe(action, where, ttl_minutes)):
         raise _refuse("not confirmed: nothing minted")
+    ignore_signals()  # from here to exit, Ctrl-C cannot split create from report
     key = broker._key(str(action["issue"]), action["sha"], action_text(action))
     return broker._mint(key, ttl_minutes, minted)
 

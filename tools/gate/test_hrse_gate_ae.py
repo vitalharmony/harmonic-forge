@@ -73,6 +73,9 @@ class _Case(unittest.TestCase):
         for p in self._patches:
             p.start()
         ae.bind(b)  # never rely on an earlier test having bound it (pass 2)
+        import signal as _signal
+        saved = {sig: _signal.getsignal(sig) for sig in ae.POST_CONFIRM_SIGNALS}
+        self.addCleanup(lambda: [_signal.signal(sig, h) for sig, h in saved.items()])
         self.root, self.token = root, token
 
     def tearDown(self):
@@ -520,6 +523,50 @@ class MintedHolder(OutcomeReporting):
 
     def test_store_is_never_read_to_infer_the_outcome(self):
         self.assertFalse(hasattr(b, "_grant_nonces"))
+
+
+class SignalSafeMint(OutcomeReporting):
+    """Sticky-wicket REFORGE (epoch two): after `y`, a Ctrl-C cannot split the
+    grant's creation from its report."""
+
+    def test_ctrl_c_after_create_still_reports_the_nonce(self):
+        import signal as sg
+        real_open = b.os.open
+
+        def open_then_sigint(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if "/grants/" in str(path):
+                os.kill(os.getpid(), sg.SIGINT)  # a real Ctrl-C, mid-mint
+            return fd
+
+        with mock.patch.object(b.os, "open", side_effect=open_then_sigint), \
+                mock.patch("sys.stdout") as out, mock.patch("sys.stderr"):
+            code = b.main(["grant-from-ae", "1892", "dry-run"])
+        nonce = next((self.root / "grants").iterdir()).stem
+        self.assertEqual(code, b.EXIT_OK)
+        self.assertIn(nonce, "".join(c.args[0] for c in out.write.call_args_list))
+
+    def test_signals_are_ignored_before_mint_starts(self):
+        import signal as sg
+        seen = {}
+        real_mint = b._mint
+
+        def spy(*args, **kwargs):
+            seen.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
+            return real_mint(*args, **kwargs)
+
+        with mock.patch.object(b, "_mint", side_effect=spy):
+            self.mint()
+        self.assertEqual(set(seen.values()), {sg.SIG_IGN})
+        self.assertEqual(set(seen), set(ae.POST_CONFIRM_SIGNALS))
+
+    def test_ctrl_c_at_the_prompt_still_mints_nothing(self):
+        import signal as sg
+        with mock.patch.object(ae, "confirm", side_effect=KeyboardInterrupt()):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertEqual(list((self.root / "grants").iterdir()), [])
+        self.assertIsNot(sg.getsignal(sg.SIGINT), sg.SIG_IGN)
 
 
 class ReceiptKey(_Case):
