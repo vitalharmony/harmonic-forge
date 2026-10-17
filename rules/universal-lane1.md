@@ -206,8 +206,10 @@ them.
    `git merge-base --is-ancestor HEAD origin/main` and
    `git merge-base --is-ancestor main origin/main` return 0, so the detached
    commit and local `main` are both already in `origin/main`. Both checks run
-   before `git checkout main`, so a refusal leaves HEAD where it was; then
-   step 2 continues. If either check fails (a detached commit not in
+   before `git checkout main`, so a refusal leaves HEAD where it was. Step 2
+   continues only once `git symbolic-ref HEAD` prints `refs/heads/main`; a
+   refused or failed checkout stops and reports, naming its error. If either
+   check fails (a detached commit not in
    `origin/main`, or a local `main` ahead or diverged), stop and report,
    naming both SHAs.
 2. Fast-forward it to `origin/main` (`git fetch origin`, then
