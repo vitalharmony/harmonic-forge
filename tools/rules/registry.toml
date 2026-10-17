@@ -822,7 +822,7 @@ id = "R-0369"
 file = "rules/universal-lane1.md"
 anchor = "post-merge-deploy"
 statement = "After the last merge of a batch, Lane 1 deploys every repository the batch merged into: confirm a clean refs/heads/main, fast-forward to origin/main (never a merge commit or reset), restart through the lifecycle path where a stack exists, spot-check a changed behavior where there is one, and never report a newly registered hook as deployed until the affected sessions restart; it never lists these as operator actions."
-text_sha = "2d0771a52bef854f"
+text_sha = "0fd0bc336bd565e7"
 hooks = []
 
 [[rule]]
