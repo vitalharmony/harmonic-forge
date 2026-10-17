@@ -231,8 +231,11 @@ class EndGh(FakeGh):
 
 
 def sticky_receipt() -> dict:
+    """Two passes after the waiver's granted_at (2026-10-17T01:02:03Z), both
+    with the forced cross-family call -- the IMC stop (pass 1, F1042)."""
+    run = {"completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}
     return {"status": "complete", "pass_history": [
-        {"sha": "a", "surviving": 2}, {"sha": "b", "surviving": 1}]}
+        {"sha": "a", "surviving": 2, **run}, {"sha": "b", "surviving": 1, **run}]}
 
 
 class EndTests(unittest.TestCase):
@@ -259,7 +262,8 @@ class EndTests(unittest.TestCase):
         (self.state / f"{KEY}.json").write_text(json.dumps(
             {"key": KEY, "granted_at": imc_waiver._iso(self.now)}))
         (self.state / f"{KEY}.waiver.json").write_text(json.dumps(
-            {"key": KEY, "status": "recorded", "comment_url": URL}))
+            {"key": KEY, "status": "recorded", "comment_url": URL,
+             "granted_at": imc_waiver._iso(self.now)}))
         batch_auth.authorize([KEY], actions=["gh pr merge"], state_path=self.batch)
 
     def end(self, gh=None, now=None):
@@ -277,14 +281,17 @@ class EndTests(unittest.TestCase):
             def __call__(self, argv, **kw):
                 if "--method" in argv:
                     seen["at_post"] = json.loads(archive.read_text()) if archive.exists() else None
+                    live = archive.parent.parent / f"{KEY}.waiver.json"
+                    seen["live_at_post"] = json.loads(live.read_text()) if live.exists() else None
                 return super().__call__(argv, **kw)
 
         gh = Watch()
         final = self.end(gh)
-        # Archived (moved, original content kept) BEFORE the irreversible post.
-        self.assertIsNotNone(seen["at_post"])
-        self.assertEqual(seen["at_post"]["status"], "ending")
-        self.assertEqual(seen["at_post"]["comment_url"], URL)
+        # Pass 1 (fail-direction): IMC stays enforced -- the live receipt is
+        # still in place, marked `ending` -- until the post has succeeded.
+        self.assertIsNone(seen["at_post"])
+        self.assertEqual(seen["live_at_post"]["status"], "ending")
+        self.assertEqual(seen["live_at_post"]["comment_url"], URL)
         self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
         files = self.archived()
         self.assertEqual([p.name for p in files], [f"{KEY}.waiver.20261017T010203Z.json"])
@@ -328,9 +335,28 @@ class EndTests(unittest.TestCase):
             self.end()
 
     def test_end_accepts_a_current_epoch_cluster_verdict(self) -> None:
-        self.preclose = {"status": "complete", "pass_history": [{"sha": "a", "surviving": 2}],
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z",
+             "cross_family_ran": True}],
                          "mechanism_cluster": {"epoch": 0, "verdict": "patch"}}
         self.assertEqual(self.end()["status"], "ended")
+
+    def test_end_refuses_passes_from_before_the_waiver(self) -> None:
+        """Pass 1 (silent-bypass): two survivor passes recorded before
+        granted_at, or without the forced cross-family call, are no IMC stop."""
+        early = {"completed_at": "2026-10-17T00:00:00Z", "cross_family_ran": True}
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, **early}, {"sha": "b", "surviving": 1, **early}]}
+        with self.assertRaises(SystemExit) as refused:
+            self.end()
+        self.assertIn("not at an IMC stop", str(refused.exception))
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+        late_no_cf = {"completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": False}
+        self.preclose["pass_history"] = [{"sha": "a", "surviving": 2, **late_no_cf},
+                                         {"sha": "b", "surviving": 1, **late_no_cf}]
+        with self.assertRaises(SystemExit):
+            self.end()
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
 
     def test_end_refuses_an_unruled_or_stale_epoch_cluster(self) -> None:
         self.preclose = {"status": "complete", "pass_history": [
@@ -368,13 +394,26 @@ class EndTests(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             self.end(CrashOnPost())
-        self.assertEqual(len(self.archived()), 1)
-        self.assertEqual(json.loads(self.archived()[0].read_text())["status"], "ending")
+        # A failed post leaves IMC enforced: nothing archived, the live
+        # receipt still read by waiver_receipt (pass 1, fail-direction).
+        self.assertEqual(len(self.archived()), 0)
+        live = json.loads((self.state / f"{KEY}.waiver.json").read_text())
+        self.assertEqual(live["status"], "ending")
+        self.assertIsNotNone(imc_waiver.waiver_receipt("vitalharmony/harmonic-forge", 892))
         gh = EndGh()
         final = self.end(gh, now=self.now + timedelta(minutes=5))
         self.assertEqual(len(self.archived()), 1)
         self.assertEqual(final["status"], "ended")
         self.assertEqual(sum(1 for c in gh.calls if "--method" in c), 1)
+
+    def test_a_marker_only_comment_is_not_the_end_comment(self) -> None:
+        """Pass 1 (cross-family): a comment carrying only the end marker (an
+        edited-down prior post) never counts; the full comment is posted."""
+        marker = imc_waiver.end_marker(KEY, imc_waiver._iso(self.now))
+        gh = EndGh(existing=[("https://x/edited", marker)])
+        final = self.end(gh)
+        self.assertEqual(sum(1 for c in gh.calls if "--method" in c), 1)
+        self.assertNotEqual(final["end_comment_url"], "https://x/edited")
 
     def test_retry_after_post_does_not_repost(self) -> None:
         class CrashOnRefetch(EndGh):

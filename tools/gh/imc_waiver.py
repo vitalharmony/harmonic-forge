@@ -347,20 +347,32 @@ def end_comment_body(key: str, repo: str, issue: int, receipt: dict) -> str:
     ])
 
 
-def imc_stop(repo: str, issue: int) -> str | None:
+def _under_waiver(entry: dict, granted: datetime | None) -> bool:
+    """A pass that completed after the waiver was granted and ran the forced
+    cross-family call. Passes from before the waiver never count (pass 1)."""
+    done = _parse_time(entry.get("completed_at"))
+    return (granted is not None and done is not None and done >= granted
+            and bool(entry.get("cross_family_ran")))
+
+
+def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None:
     """AC2: the reason this issue is at an IMC stop, or None. Read from the
     preclose receipt through preclose_check's own reader and preclose_passes'
-    own sticky-wicket and cluster logic (the test `post_verdict` applies)."""
+    own sticky-wicket and cluster logic (the test `post_verdict` applies).
+    Only passes run under this waiver (`granted_at`) count, so `end` cannot
+    dodge the forced cross-family call with passes recorded before it."""
     import preclose_check  # noqa: PLC0415  (preclose_check imports this module)
     import preclose_passes  # noqa: PLC0415
+    granted = _parse_time(granted_at)
     receipt = preclose_check.find_receipt(repo, issue)
     passes = preclose_passes.current(preclose_passes.history(receipt))
-    if (len(passes) >= preclose_passes.MAX_PASSES
-            and preclose_passes.cap_message(passes) == preclose_passes.STICKY_WICKET):
+    waived = [p for p in passes if _under_waiver(p, granted)]
+    if (len(waived) >= preclose_passes.MAX_PASSES
+            and preclose_passes.cap_message(waived) == preclose_passes.STICKY_WICKET):
         return "sticky-wicket stop (two passes both left surviving findings)"
     epoch = max((int(p.get("epoch") or 0) for p in preclose_passes.history(receipt)), default=0)
     cluster = preclose_passes._mechanism_cluster(receipt, epoch)
-    if cluster and cluster.get("verdict"):
+    if cluster and cluster.get("verdict") and waived:
         return f"mechanism-cluster verdict {cluster.get('verdict')} (current epoch)"
     return None
 
@@ -386,7 +398,9 @@ def _pending_end(key: str) -> Path | None:
     return None
 
 
-def _existing_end_comment(repo: str, issue: int, marker: str, runner) -> str | None:
+def _existing_end_comment(repo: str, issue: int, expected: str, runner) -> str | None:
+    """An already-posted end comment whose body is exactly `expected`; a
+    comment carrying only the marker (e.g. edited down) never counts."""
     found = runner(["gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments",
                     "--jq", ".[] | [.html_url, .body] | @json"],
                    capture_output=True, text=True, check=False)
@@ -398,7 +412,7 @@ def _existing_end_comment(repo: str, issue: int, marker: str, runner) -> str | N
             url, body = json.loads(line)
         except (ValueError, TypeError):
             continue
-        if marker in str(body):
+        if str(body).strip() == expected.strip():
             return str(url)
     return None
 
@@ -417,23 +431,27 @@ def end(key: str, *, reason: str, now: datetime | None = None,
     moment = now or _now()
     live = receipt_path(key)
     if live.exists():
-        stop = imc_stop(repo, issue)
-        if stop is None:
-            raise SystemExit(
-                f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt shows "
-                "neither two current-epoch passes that both left surviving findings nor a "
-                "current-epoch mechanism-cluster verdict. `end` is the exit from that stop, "
-                "never a way around the forced cross-family pass.")
         data = read_json(live)
         if data is None:
             data = {"unreadable": True,
                     "unreadable_original": live.read_text(encoding="utf-8", errors="replace")}
-        ending = {**data, "status": "ending", "end_reason": reason.strip(),
-                  "ended_at": _iso(moment), "end_stop": stop}
-        write_json_atomic(live, ending)
-        archived = archive_dir() / f"{key}.waiver.{_stamp(moment)}.json"
-        archive_dir().mkdir(parents=True, exist_ok=True)
-        os.replace(live, archived)
+        if data.get("status") == "ending":
+            ending = data  # a crashed `end`: reuse its ended_at so the post is found once
+        else:
+            stop = imc_stop(repo, issue, data.get("granted_at"))
+            if stop is None:
+                raise SystemExit(
+                    f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt "
+                    "shows neither two current-epoch passes run under this waiver (forced "
+                    "cross-family) that both left surviving findings nor a current-epoch "
+                    "mechanism-cluster verdict after such a pass. `end` is the exit from that "
+                    "stop, never a way around the forced cross-family pass.")
+            ending = {**data, "status": "ending", "end_reason": reason.strip(),
+                      "ended_at": _iso(moment), "end_stop": stop}
+            write_json_atomic(live, ending)
+        # The live receipt stays in place (IMC still enforced) until the grant
+        # is revoked and the comment is posted; only then is it archived.
+        archived = archive_dir() / f"{key}.waiver.{_stamp(_parse_time(ending.get('ended_at')) or moment)}.json"
     else:
         archived = _pending_end(key)
         if archived is None:
@@ -441,12 +459,17 @@ def end(key: str, *, reason: str, now: datetime | None = None,
                              "`end` to complete.")
         ending = read_json(archived) or {}
     _revoke_authority(key, moment, batch_state_path)
-    url = _existing_end_comment(repo, issue, end_marker(key, str(ending.get("ended_at"))),
-                                runner)
+    body = end_comment_body(key, repo, issue, ending)
+    url = _existing_end_comment(repo, issue, body, runner)
     if url is None:
-        url = post_and_confirm(repo, issue, end_comment_body(key, repo, issue, ending), runner)
+        url = post_and_confirm(repo, issue, body, runner)
     final = {**ending, "status": "ended", "end_comment_url": url}
-    write_json_atomic(archived, final)
+    if live.exists():
+        write_json_atomic(live, final)
+        archive_dir().mkdir(parents=True, exist_ok=True)
+        os.replace(live, archived)
+    else:
+        write_json_atomic(archived, final)
     return final
 
 
