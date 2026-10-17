@@ -149,5 +149,30 @@ class CrossFamilyF1066(StaticChecksRenderPending):
         msg = self._static_checks(git(self.repo, "rev-parse", "HEAD"))
         self.assertIn("cannot check", msg)
 
+
+class PreclosePass2F1066(unittest.TestCase):
+    """Preclose pass 2 (panel + cross-family): empty value, NUL, repo-discovery."""
+
+    def test_an_empty_valued_marker_is_unreadable(self) -> None:
+        import gate_ci
+        with self.assertRaises(gate_ci.RenderPendingUnreadable):
+            gate_ci.render_pending_from_message("s\n\nRender-Pending:\n")
+
+    def test_a_nul_byte_is_unreadable(self) -> None:
+        import gate_ci
+        with self.assertRaises(gate_ci.RenderPendingUnreadable):
+            gate_ci.render_pending_from_message("s\0x\n\nRender-Pending: 5\n")
+
+    def test_a_tmpdir_inside_a_repo_cannot_hide_a_marker(self) -> None:
+        import gate_ci
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init", "-q")
+            git(repo, "config", "core.commentChar", "R")
+            with mock.patch.dict(os.environ, {"TMPDIR": str(repo)}), \
+                    mock.patch.object(tempfile, "tempdir", None):
+                self.assertEqual(
+                    gate_ci.render_pending_from_message("s\n\nRender-Pending: 6\n"), "6")
+
 if __name__ == "__main__":
     unittest.main()

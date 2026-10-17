@@ -244,17 +244,26 @@ def render_pending_from_message(message: str) -> str | None:
         # An empty message cannot be established as unmarked; both readers
         # refuse it, because both reach this one function (cross-family F1066).
         raise RenderPendingUnreadable("the commit message is empty")
+    if "\0" in message:
+        # git stops parsing at a NUL and reports no trailers, silently; that is
+        # unreadable, not unmarked (cross-family F1066 pass 2).
+        raise RenderPendingUnreadable("the commit message contains a NUL byte")
     # Every GIT_* variable is dropped (GIT_DIR, GIT_CONFIG_PARAMETERS and the
     # GIT_CONFIG_COUNT/KEY_n/VALUE_n family included), so no inherited config
     # can reach the parse (cross-family F1066).
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
     try:
-        result = subprocess.run(
-            ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse",
-             "--no-divider"],
-            input=message, capture_output=True, text=True, timeout=30,
-            cwd=tempfile.gettempdir(), env=env)
+        # A fresh empty directory with discovery capped at it, so no repository
+        # config is found even when TMPDIR sits inside a repo (cross-family F1066
+        # pass 2).
+        with tempfile.TemporaryDirectory() as neutral:
+            env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(neutral)
+            result = subprocess.run(
+                ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse",
+                 "--no-divider"],
+                input=message, capture_output=True, text=True, timeout=30,
+                cwd=neutral, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         raise RenderPendingUnreadable(f"git interpret-trailers failed: {exc}") from exc
     if result.returncode:
@@ -262,7 +271,11 @@ def render_pending_from_message(message: str) -> str | None:
             f"git interpret-trailers failed: {result.stderr.strip()[:120]}")
     for line in result.stdout.splitlines():
         key, sep, value = line.partition(":")
-        if sep and key.strip().lower() == RENDER_PENDING.lower() and value.strip():
+        if sep and key.strip().lower() == RENDER_PENDING.lower():
+            if not value.strip():
+                # A marker with no run id is still a marker: unreadable, never
+                # unmarked (preclose pass 2, fail-direction).
+                raise RenderPendingUnreadable(f"{RENDER_PENDING} has an empty value")
             return value.strip()
     return None
 
