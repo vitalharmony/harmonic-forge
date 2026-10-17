@@ -214,12 +214,19 @@ def _write_grant(key: dict, now: dt.datetime, ttl_minutes: int,
     record = {**key, "nonce": nonce, "granted_at": now.isoformat(),
               "expires": (now + dt.timedelta(minutes=ttl_minutes)).isoformat()}
     path = STORE_ROOT / "grants" / f"{nonce}.json"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    # harmonic-forge#1064 (cluster REFORGE): the file now exists, so from here on
-    # this run MAY have minted. The caller learns that from this record alone,
-    # never from reading the store.
+    # harmonic-forge#1064: recorded BEFORE the creating syscall, so no
+    # interrupt can land between "the file exists" and "this run knows it
+    # may have minted" (epoch pass 1). The caller learns the outcome from this
+    # record alone, never from reading the store. Withdrawn only when the open
+    # itself fails, which creates nothing (O_EXCL).
     if holder is not None:
         holder.append(nonce)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        if holder is not None:
+            holder.remove(nonce)
+        raise
     try:
         uid, gid = _owner_ids()
         os.fchown(fd, uid, gid)

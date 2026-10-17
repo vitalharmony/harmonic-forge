@@ -487,6 +487,37 @@ class MintedHolder(OutcomeReporting):
         self.assertEqual(code, b.EXIT_MINT_UNCERTAIN)
         self.assertIn(nonce, str(pr.call_args_list[-1]))
 
+    def test_interrupt_right_after_create_reports_a_possible_grant(self):
+        """Epoch pass 1: a Ctrl-C between the creating os.open and anything
+        after it must not read as 'nothing minted'."""
+        real_open = b.os.open
+
+        def open_then_interrupt(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if "/grants/" not in str(path):
+                return fd  # the store lock, not the grant file
+            os.close(fd)
+            raise KeyboardInterrupt()
+
+        with mock.patch.object(b.os, "open", side_effect=open_then_interrupt):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        nonce = next((self.root / "grants").iterdir()).stem
+        self.assertEqual(code, b.EXIT_MINT_UNCERTAIN)
+        self.assertIn(nonce, err)
+
+    def test_failed_create_is_not_a_possible_grant(self):
+        real_open = b.os.open
+
+        def grant_create_fails(path, *args, **kwargs):
+            if "/grants/" in str(path):
+                raise OSError(28, "ENOSPC")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(b.os, "open", side_effect=grant_create_fails):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertIn("nothing minted", err)
+
     def test_store_is_never_read_to_infer_the_outcome(self):
         self.assertFalse(hasattr(b, "_grant_nonces"))
 
