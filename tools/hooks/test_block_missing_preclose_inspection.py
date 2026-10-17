@@ -228,7 +228,8 @@ class PrShaBindingTests(unittest.TestCase):
     new commits landing after the label was added is exactly harmonic-forge
     #774's failure mode."""
 
-    CMD = f"gh pr merge 1486 -R {REPO} --squash"
+    # harmonic-forge#1077 AC5: a gated merge binds to the accepted head.
+    CMD = f"gh pr merge 1486 -R {REPO} --squash --match-head-commit abc123"
 
     def _decide(self, head_sha: str | None, receipt_ok: bool,
                 labels: set[str] | None = None, command: str | None = None) -> dict:
@@ -251,6 +252,41 @@ class PrShaBindingTests(unittest.TestCase):
 
     def test_labelled_and_receipt_matches_head_allows(self):
         self.assertFalse(self._denied(self._decide("abc123", True)))
+
+    def _reason(self, payload: dict) -> str:
+        return (payload.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+
+    def test_merge_without_match_head_commit_denies_with_the_exact_command(self):
+        """harmonic-forge#1077 AC5."""
+        payload = self._decide("abc123", True, command=f"gh pr merge 1486 -R {REPO} --squash")
+        self.assertTrue(self._denied(payload))
+        self.assertIn(f"gh pr merge 1486 --repo {REPO} --squash --match-head-commit abc123",
+                      self._reason(payload))
+
+    def test_merge_bound_to_another_head_denies(self):
+        payload = self._decide(
+            "abc123", True,
+            command=f"gh pr merge 1486 -R {REPO} --squash --match-head-commit def456")
+        self.assertTrue(self._denied(payload))
+
+    def test_match_head_commit_forms_that_bind_allow(self):
+        for command in (f"gh pr merge 1486 -R {REPO} --match-head-commit=abc123",
+                        f"gh pr merge --match-head-commit ABC123 1486 -R {REPO}",
+                        f"bash -c 'gh pr merge 1486 -R {REPO} --match-head-commit abc123'",
+                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge -f sha=abc123",
+                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge --field=sha=abc123"):
+            with self.subTest(command=command):
+                self.assertFalse(self._denied(self._decide("abc123", True, command=command)))
+
+    def test_rest_merge_without_sha_denies(self):
+        self.assertTrue(self._denied(self._decide(
+            "abc123", True, command=f"gh api -X PUT repos/{REPO}/pulls/1486/merge")))
+
+    def test_two_merges_of_the_pr_one_unbound_denies(self):
+        self.assertTrue(self._denied(self._decide(
+            "abc123", True,
+            command=(f"gh pr merge 1486 -R {REPO} --match-head-commit abc123; "
+                     f"gh pr merge 1486 -R {REPO}"))))
 
     def test_labelled_but_receipt_stale_denies(self):
         """A receipt exists but names an OLDER sha, or none exists at all --

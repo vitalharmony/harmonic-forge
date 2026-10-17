@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_check as preclose  # noqa: E402
+import preclose_passes  # noqa: E402  (harmonic-forge#1077)
 import _scratch  # noqa: E402
 
 SCRATCH_AGE_SECONDS = 24 * 60 * 60
@@ -62,14 +63,15 @@ def git_value(*args: str) -> str:
     return result.stdout.decode().strip()
 
 
-def identity(repo_arg: str, issue: int, base: str, head: str) -> tuple[str, str, str | None]:
+def identity(repo_arg: str, issue: int, base: str, head: str) -> tuple[str, str, dict]:
+    """(repo, head sha, change identity) -- harmonic-forge#1077: the receipt
+    is keyed by change identity, never patch-id."""
     repo = preclose.registered_repo(repo_arg)
     actual = preclose.origin_repo()
     if actual != preclose.normalize_repo(repo):
         raise SystemExit(f"kill-check: --repo {repo} does not match this checkout's origin {actual}")
     sha = git_value("rev-parse", "--verify", f"{head}^{{commit}}")
-    patch_id = preclose.local_patch_id(base, head)
-    return repo, sha, patch_id
+    return repo, sha, preclose.local_change_identity(base, sha)
 
 
 def receipt_path(repo: str, issue: int) -> Path:
@@ -84,12 +86,17 @@ def read_receipt(repo: str, issue: int) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def covering_receipt(repo: str, issue: int, sha: str, patch_id: str | None) -> bool:
+def covering_receipt(repo: str, issue: int, sha: str, *, repo_dir=None,
+                     main_ref: str = "origin/main") -> bool:
+    """A pass/waived receipt for this issue whose change identity accepts
+    `sha` (exact head, or a clean replay of it). A legacy receipt with only a
+    patch-id covers its exact head alone (harmonic-forge#1077)."""
     receipt = read_receipt(repo, issue)
-    return bool(receipt and receipt.get("repo") == repo and receipt.get("issue") == issue
-                and receipt.get("status") in ("pass", "waived")
-                and (receipt.get("head_sha") == sha
-                     or (patch_id is not None and receipt.get("patch_id") == patch_id)))
+    if not (receipt and receipt.get("repo") == repo and receipt.get("issue") == issue
+            and receipt.get("status") in ("pass", "waived")):
+        return False
+    return preclose_passes.accepts_entry(receipt, sha, repo_dir, main_ref,
+                                         sha_key="head_sha")
 
 
 def write_receipt(repo: str, issue: int, payload: dict) -> Path:
@@ -292,9 +299,9 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
 
 
 def run(args: argparse.Namespace) -> int:
-    repo, sha, patch_id = identity(args.repo, args.issue, args.base, args.head)
+    repo, sha, change = identity(args.repo, args.issue, args.base, args.head)
     payload = {"repo": repo, "issue": args.issue, "head_sha": sha,
-               "patch_id": patch_id, "checks": [],
+               "change_identity": change, "checks": [],
                "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     with preclose.receipt_lock(repo, args.issue):
         write_receipt(repo, args.issue, {**payload, "status": "running"})
@@ -328,11 +335,11 @@ def run(args: argparse.Namespace) -> int:
 def waive(args: argparse.Namespace) -> int:
     if not args.reason or not args.reason.strip():
         raise SystemExit("kill-check: waive needs --reason quoting the operator's instruction")
-    repo, sha, patch_id = identity(args.repo, args.issue, args.base, args.head)
+    repo, sha, change = identity(args.repo, args.issue, args.base, args.head)
     with preclose.receipt_lock(repo, args.issue):
         path = write_receipt(repo, args.issue,
                              {"repo": repo, "issue": args.issue, "head_sha": sha,
-                              "patch_id": patch_id, "status": "waived", "reason": args.reason,
+                              "change_identity": change, "status": "waived", "reason": args.reason,
                               "checks": [], "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()})
     print(f"kill-check: waiver recorded; receipt: {path}")
     return 0

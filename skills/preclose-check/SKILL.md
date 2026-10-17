@@ -197,9 +197,15 @@ writes and do not count as a pass.
 
 **At most two passes per issue** (operator ruling 2026-09-30,
 harmonic-forge#834). Pass 1 reviews; pass 2 verifies the fixes on the new
-head. **A rebase, or any head change whose diff is patch-identical to a
-reviewed one, is not a pass**: the receipt records `reviewed_patch_id`, and the
-merge hook accepts a head whose patch-id matches it.
+head. **A clean rebase of a reviewed head is not a pass** (harmonic-forge#1077):
+each pass records the head's change identity (head SHA, merge base with
+origin/main, tree), and a head is accepted when it is the reviewed SHA, or a
+clean `git merge-tree` replay of the reviewed commit onto the head's own base
+gives exactly its tree (only package.json `version` and package-lock.json
+`version`/`packages[""].version` are exempt). patch-id is never an acceptance
+basis: it ignored hunk position. The gated merge must carry
+`--match-head-commit <accepted head>`, and the merge hook's deny message prints
+it. A receipt recorded before #1077 is accepted at its exact SHA only.
 
 A third pass never runs:
 

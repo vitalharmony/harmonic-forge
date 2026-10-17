@@ -73,14 +73,25 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
-from hook_identity import repo_from_checkout as _repo_from_checkout, run_gh as _run_gh  # noqa: E402
+from hook_identity import (  # noqa: E402
+    repo_from_checkout as _repo_from_checkout, run_gh as _run_gh, slot_env as _slot_env)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+
+# harmonic-forge#1077: the shared acceptance primitive, loaded once at import
+# so every reader below (and batch_preflight, which asks this hook) resolves
+# the same module. A failure here leaves the per-call imports to fail closed.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+    import preclose_passes as _preclose_passes  # noqa: E402,F401
+except Exception:  # noqa: BLE001
+    pass
 
 PRECLOSE_LABEL = "preclose-inspected"
 #: The opt-in signal. Only issues explicitly scoped to the Tooling Exception
@@ -407,24 +418,100 @@ def _receipt(repo: str, issue: str) -> dict | None:
         return None
 
 
-def _pr_patch_id(repo: str, pr: str | None) -> str | None:
-    """harmonic-forge#834 AC3: `git patch-id --stable` of the PR's diff, from
-    `gh pr diff`, so no local checkout of the PR is needed. None on failure."""
-    if not pr:
+#: harmonic-forge#1077: the whole cache fetch (PR head, main, and any
+#: recorded commit the clone lacks) must finish inside this many seconds, well
+#: under the hook's 25 s registration timeout. A timeout denies.
+FETCH_BUDGET_SECONDS = 12
+#: The cache clone's main ref, the one `cur_base` is taken against.
+CACHE_MAIN_REF = "refs/remotes/origin/main"
+API_FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
+API_FIELD_PREFIXES = ("--field=", "--raw-field=", "-f", "-F")
+REPO_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _cache_root() -> Path:
+    """Per-user, beside the preclose receipts; one clone per owner/name."""
+    return Path.home() / ".claude" / "state" / "preclose-clones"
+
+
+def _cache_remote_url(repo: str) -> str:
+    return f"https://github.com/{repo}.git"
+
+
+def _cache_git(path: Path, *args: str, timeout: float,
+               env: dict | None = None) -> subprocess.CompletedProcess:
+    """Every git call against the cache clone. Module-level so tests replace
+    the remote with a local repo and never touch the network."""
+    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True,
+                          timeout=max(timeout, 0.1), env=env, check=False)
+
+
+def _cache_path(repo: str) -> Path | None:
+    if not REPO_SLUG.match(repo) or ".." in repo:
         return None
+    owner, name = repo.lower().split("/")
+    return _cache_root() / owner / name
+
+
+def _priming_command(repo: str, pr: str) -> str:
+    path = _cache_path(repo)
+    return (f"git -C {path} fetch --no-tags origin +refs/pull/{pr}/head:refs/remotes/origin/pr/{pr} "
+            f"+refs/heads/main:{CACHE_MAIN_REF}")
+
+
+def _cache_checkout(repo: str, pr: str, head_sha: str, recorded: dict) -> str | None:
+    """harmonic-forge#1077: the per-repo cache clone, freshly fetched, holding
+    the PR's head (which must still be `head_sha`), main, and the recorded
+    commits (b) replays. None on any failure or on the budget running out --
+    which denies, never accepts."""
+    deadline = time.monotonic() + FETCH_BUDGET_SECONDS
+
+    def left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("cache fetch budget exhausted")
+        return remaining
+
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-        import preclose_passes  # noqa: PLC0415
-    except Exception:
+        path = _cache_path(repo)
+        if path is None or not re.fullmatch(r"\d+", str(pr)):
+            return None
+        env = {**os.environ, **(_slot_env(repo) or {})}
+        fetch = ("-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
+                 "fetch", "--no-tags", "--quiet", "origin")
+        if not (path / "HEAD").exists():
+            path.mkdir(parents=True, exist_ok=True)
+            if _cache_git(path, "init", "--bare", "-q", timeout=left()).returncode:
+                return None
+        url = _cache_remote_url(repo)
+        if _cache_git(path, "remote", "set-url", "origin", url, timeout=left()).returncode:
+            if _cache_git(path, "remote", "add", "origin", url, timeout=left()).returncode:
+                return None
+        if _cache_git(path, *fetch, f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}",
+                      f"+refs/heads/main:{CACHE_MAIN_REF}", timeout=left(), env=env).returncode:
+            return None
+        fetched = _cache_git(path, "rev-parse", f"refs/remotes/origin/pr/{pr}", timeout=left())
+        if fetched.returncode or fetched.stdout.strip() != head_sha:
+            return None  # the PR moved between the head read and the fetch
+        for sha in (recorded.get("head_sha"), recorded.get("merge_base_sha")):
+            if not sha:
+                return None
+            if _cache_git(path, "cat-file", "-e", f"{sha}^{{commit}}", timeout=left()).returncode:
+                if _cache_git(path, *fetch, sha, timeout=left(), env=env).returncode:
+                    return None
+        return str(path)
+    except Exception:  # noqa: BLE001 -- a fetch that cannot finish denies
         return None
-    return preclose_passes.patch_id(_gh("pr", "diff", pr, "--repo", repo, repo=repo))
 
 
 def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | None = None) -> bool:
-    """harmonic-forge#778 AC3. `True` only when a `status: complete`
-    receipt for `repo`#`issue` names `head_sha` as its `reviewed_sha`, or
-    (harmonic-forge#834 AC3) its `reviewed_patch_id` equals the PR's current
-    patch-id: a rebase that leaves the diff unchanged is not a new pass.
+    """harmonic-forge#778 AC3. `True` only when the last completed pass on
+    `repo`#`issue`'s receipt accepts `head_sha` by change identity
+    (harmonic-forge#1077): (a) it is the reviewed head, or (b) a clean
+    `git merge-tree` replay of the reviewed commit onto the head's base gives
+    the head's exact tree -- computed in the per-repo cache clone, never from
+    `gh pr diff`. A legacy pass (no identity) is accepted at its exact SHA
+    only. A failed or timed-out fetch denies.
 
     Fails CLOSED (returns `False`, which denies) on any resolution failure
     -- unlike the rest of this hook's fail-open style. Everywhere else, a
@@ -443,17 +530,90 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | Non
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         last = preclose_passes.reviewed(_receipt(repo, issue))
-    except Exception:
+        if not last:
+            return False
+        recorded = preclose_passes.entry_identity(last)
+
+        def checkout() -> str | None:
+            if not via_pr or recorded is None:
+                return None
+            return _cache_checkout(repo, via_pr, head_sha, recorded)
+
+        return preclose_passes.accepts_entry(last, head_sha, checkout, CACHE_MAIN_REF)
+    except Exception:  # noqa: BLE001 -- fail closed, see above
         return False
-    if not last:
-        return False
-    if last.get("sha") == head_sha:
-        return True
-    reviewed_patch = last.get("patch_id")
-    return bool(reviewed_patch) and reviewed_patch == _pr_patch_id(repo, via_pr)
+
+
+def merge_head_commits(command: str, number: str) -> list[str | None]:
+    """The `--match-head-commit` value (REST form: the `sha=` field) of every
+    segment of `command` that merges PR `number`; None for a segment that
+    carries none (harmonic-forge#1077 AC5)."""
+    found: list[str | None] = []
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return [None]
+    for raw_tokens in segments:
+        shell_index = next((i for i, token in enumerate(raw_tokens)
+                            if Path(token).name in {"bash", "sh", "zsh"}
+                            and i + 2 < len(raw_tokens)
+                            and raw_tokens[i + 1] in {"-c", "-lc", "--command"}), None)
+        if shell_index is not None:
+            found.extend(merge_head_commits(raw_tokens[shell_index + 2], number))
+            continue
+        tokens = strip_invocation_prefix(raw_tokens)
+        if not tokens or os.path.basename(tokens[0]) != "gh":
+            continue
+        cli = _parse_pr_merge(tokens)
+        api = None if cli else _parse_api_merge(tokens)
+        parsed = cli or api
+        if not parsed or parsed[1] != number:
+            continue
+        value: str | None = None
+        for i, token in enumerate(tokens):
+            if cli:
+                value = _flag_value(tokens, i, ("--match-head-commit",)) or value
+            elif token in API_FIELD_FLAGS and i + 1 < len(tokens) \
+                    and tokens[i + 1].startswith("sha="):
+                value = tokens[i + 1][len("sha="):]
+            else:
+                for prefix in API_FIELD_PREFIXES:
+                    if token.startswith(f"{prefix}sha="):
+                        value = token[len(prefix) + len("sha="):]
+        found.append(value)
+    return found or [None]
+
+
+def _match_head_message(repo: str, issue: str, pr: str, head_sha: str) -> str:
+    return (f"Blocked: PR #{pr}, which is for {repo}#{issue}, is accepted as reviewed only at "
+            f"head {head_sha}, and this merge does not bind to it (harmonic-forge#1077 AC5). "
+            f"A head that moves after this check would merge unreviewed. Re-run the merge "
+            f"with the accepted head, e.g.:\n"
+            f"  gh pr merge {pr} --repo {repo} --squash --match-head-commit {head_sha}\n"
+            f"(REST form: add -f sha={head_sha}.)")
 
 
 def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    """Why the receipt does not cover this head, prefixed by AC6's legacy
+    re-review note (harmonic-forge#1077) or the cache-fetch note when they apply."""
+    note = ""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+        last = preclose_passes.reviewed(_receipt(repo, issue))
+        legacy = preclose_passes.legacy_message(last, head_sha)
+        if legacy:
+            note = f"{legacy}\n\n"
+        elif preclose_passes.entry_identity(last) is not None:
+            note = (f"Acceptance replays the reviewed commit in the cache clone "
+                    f"({_cache_path(repo)}); a failed or timed-out fetch also lands here. "
+                    f"To rule that out, prime it and retry:\n  {_priming_command(repo, via_pr)}\n\n")
+    except Exception:
+        pass
+    return note + _stale_receipt_reason(repo, issue, via_pr, head_sha)
+
+
+def _stale_receipt_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
     # harmonic-forge#834 AC4: at the cap, never tell the session to run
     # another pass -- that instruction is what produced #829's third pass.
     try:
@@ -570,6 +730,13 @@ def main() -> None:
                     return
                 if not _preclose_receipt_ok(repo, issue, head_sha, via_pr):
                     _deny(_stale_receipt_message(repo, issue, via_pr, head_sha),
+                          target_key=_acting)
+                    return
+                # harmonic-forge#1077 AC5: bind the merge to the accepted
+                # head, so a head that moves after this check fails at GitHub.
+                given = merge_head_commits(command, number)
+                if any((value or "").lower() != head_sha.lower() for value in given):
+                    _deny(_match_head_message(repo, issue, number, head_sha),
                           target_key=_acting)
                     return
 

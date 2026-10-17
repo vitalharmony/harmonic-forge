@@ -26,9 +26,26 @@ so both enforcement points say exactly the same thing (AC4).
 Issue #845 adds an earlier circuit breaker: when pass 1 has two surviving
 findings with the same author-declared mechanism, sticky-wicket rules on the
 approach before Lane 1 fixes either symptom.
+
+**Change identity, not patch-id (harmonic-forge#1077).** Every acceptance --
+``covered`` here, the merge hook, the kill-check receipt and
+``--post-verdict``'s base tie -- goes through ``change_identity``/``accepts``:
+a head is the reviewed change when (a) it is the reviewed head SHA, or (b) a
+``git merge-tree`` replay of the reviewed commit onto the head's own base is
+clean and yields exactly the head's tree (only package.json ``version`` and
+package-lock.json ``version``/``packages[""].version`` are exempt, and only
+in (b)). patch-id discarded hunk position, so the same edit to a second
+identical block hashed as reviewed.
+
+Migration note: a pass recorded before #1077 carries no ``change_identity``.
+It is accepted only at its exact recorded SHA; a rebased head under such a
+receipt needs a new pass (or the operator's ``--force``), and the merge hook
+says so naming #1077.
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 
 MAX_PASSES = 2
@@ -64,9 +81,8 @@ def normalize_mechanism(mechanism: str) -> str:
 
 def patch_id(diff_text: str | None) -> str | None:
     """``git patch-id --verbatim`` of a unified diff, or None when it cannot be
-    computed. Works outside any repository, so the merge hook can feed it
-    ``gh pr diff`` output (verified equal to ``git diff base...head`` on
-    hrse PR #2139).
+    computed. Since harmonic-forge#1077 it is never an acceptance basis; it
+    only labels the post-verdict check's patch.
 
     ``--verbatim``, never ``--stable``: ``--stable`` strips whitespace, so a
     Python or YAML re-indent that changes behavior hashed as "the same diff"
@@ -82,6 +98,154 @@ def patch_id(diff_text: str | None) -> str | None:
     return fields[0] if result.returncode == 0 and fields else None
 
 
+#: The ref ``change_identity`` takes its merge base against by default.
+MAIN_REF = "origin/main"
+#: (b)'s only exemption: these JSON keys, in these files (by basename), and
+#: nothing else -- never a nested ``"version"`` (harmonic-forge#1077 AC4).
+VERSION_EXEMPT = {
+    "package.json": (("version",),),
+    "package-lock.json": (("version",), ("packages", "", "version")),
+}
+LEGACY_RECEIPT = (
+    "This receipt predates harmonic-forge#1077: its pass records no change identity, "
+    "only a patch-id, and patch-id is no longer an acceptance basis. It is accepted "
+    "only at its exact reviewed head {reviewed}. A re-review of this head is required "
+    "(a new pass, or the operator's --force)."
+)
+
+
+def run_git(repo_dir: str | os.PathLike | None, *args: str,
+            timeout: float = 60) -> subprocess.CompletedProcess:
+    """Every git call this module makes. Module-level so a test can replace it."""
+    return subprocess.run(["git", *args], cwd=repo_dir, capture_output=True, text=True,
+                          timeout=timeout, check=False)
+
+
+def _git_out(repo_dir, *args: str) -> str:
+    """Stdout of a git call that must succeed; raises otherwise."""
+    result = run_git(repo_dir, *args)
+    if result.returncode:
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def merge_base(repo_dir, main_ref: str, head_sha: str) -> str:
+    return _git_out(repo_dir, "merge-base", main_ref, head_sha)
+
+
+def change_identity(repo_dir, head_sha: str, main_ref: str = MAIN_REF) -> dict:
+    """harmonic-forge#1077 AC1: ``{head_sha, merge_base_sha, tree}`` of the
+    commit ``head_sha`` from local git -- never from ``gh pr diff``. Raises
+    when git cannot resolve it."""
+    head = _git_out(repo_dir, "rev-parse", "--verify", f"{head_sha}^{{commit}}")
+    return {"head_sha": head, "merge_base_sha": merge_base(repo_dir, main_ref, head),
+            "tree": _git_out(repo_dir, "rev-parse", "--verify", f"{head}^{{tree}}")}
+
+
+def _strict_json(text: str):
+    def pairs(items):
+        keys = [key for key, _ in items]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate JSON key")
+        return dict(items)
+    return json.loads(text, object_pairs_hook=pairs)
+
+
+def _without_exempt(document, paths: tuple[tuple[str, ...], ...]):
+    for path in paths:
+        node = document
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+        if isinstance(node, dict):
+            node.pop(path[-1], None)
+    return document
+
+
+def _equal_but_exempt(repo_dir, replay_tree: str, head_tree: str) -> bool:
+    """True when the two trees differ only in the exempt JSON keys."""
+    raw = _git_out(repo_dir, "diff-tree", "-r", "-z", "--no-renames", replay_tree, head_tree)
+    fields = [field for field in raw.split("\0") if field != ""] if raw else []
+    if len(fields) % 2:
+        return False
+    for meta, path in zip(fields[0::2], fields[1::2]):
+        old_mode, new_mode, _old, _new, status = meta.lstrip(":").split()
+        exempt = VERSION_EXEMPT.get(os.path.basename(path))
+        if status != "M" or old_mode != new_mode or exempt is None:
+            return False
+        before = _strict_json(_git_out(repo_dir, "cat-file", "blob", f"{replay_tree}:{path}"))
+        after = _strict_json(_git_out(repo_dir, "cat-file", "blob", f"{head_tree}:{path}"))
+        if _without_exempt(before, exempt) != _without_exempt(after, exempt):
+            return False
+    return True
+
+
+def accepts(recorded: dict | None, cur_head: str, cur_base: str | None = None,
+            repo_dir=None, main_ref: str = MAIN_REF) -> bool:
+    """harmonic-forge#1077: is ``cur_head`` the change ``recorded`` (a
+    ``change_identity``) identifies?
+
+    (a) ``cur_head`` is the recorded head; else (b) replaying the recorded
+    commit onto ``cur_base`` -- merge-base(main, cur_head), never main's tip,
+    so an unrebased PR still matches when main moves -- is clean and gives
+    exactly ``cur_head``'s tree, the JSON version exemption aside.
+
+    ``repo_dir`` may be a zero-argument callable returning the directory (or
+    None), so the merge hook fetches its cache clone only when (a) fails.
+    Every error returns False: the preflight and the merge hook must agree,
+    and an error must never read as acceptance."""
+    try:
+        if not isinstance(recorded, dict) or not cur_head:
+            return False
+        if cur_head == recorded.get("head_sha"):
+            return True
+        directory = repo_dir() if callable(repo_dir) else repo_dir
+        if callable(repo_dir) and directory is None:
+            return False
+        rec_head, rec_base = recorded.get("head_sha"), recorded.get("merge_base_sha")
+        if not rec_head or not rec_base:
+            return False
+        base = cur_base or merge_base(directory, main_ref, cur_head)
+        replay = run_git(directory, "merge-tree", "--write-tree", "--merge-base", rec_base,
+                         base, rec_head)
+        if replay.returncode != 0:
+            return False
+        replay_tree = replay.stdout.split()[0]
+        head_tree = _git_out(directory, "rev-parse", "--verify", f"{cur_head}^{{tree}}")
+        return replay_tree == head_tree or _equal_but_exempt(directory, replay_tree, head_tree)
+    except Exception:  # noqa: BLE001 -- fail closed, see the docstring
+        return False
+
+
+def entry_identity(entry: dict | None) -> dict | None:
+    """The change identity a pass entry (or kill receipt) recorded, or None
+    for a legacy one."""
+    ident = (entry or {}).get("change_identity")
+    return ident if isinstance(ident, dict) and ident.get("head_sha") else None
+
+
+def accepts_entry(entry: dict | None, cur_head: str, repo_dir=None,
+                  main_ref: str = MAIN_REF, sha_key: str = "sha") -> bool:
+    """``accepts`` against a recorded pass. A legacy entry (no identity) is
+    accepted only at its exact recorded SHA (harmonic-forge#1077 AC6)."""
+    try:
+        if not entry or not cur_head:
+            return False
+        ident = entry_identity(entry)
+        if ident is None:
+            return bool(entry.get(sha_key)) and entry.get(sha_key) == cur_head
+        return accepts(ident, cur_head, None, repo_dir, main_ref)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def legacy_message(entry: dict | None, cur_head: str) -> str | None:
+    """AC6's re-review message when ``entry`` is a legacy pass that does not
+    name ``cur_head`` exactly, else None."""
+    if not entry or entry_identity(entry) is not None or entry.get("sha") == cur_head:
+        return None
+    return LEGACY_RECEIPT.format(reviewed=str(entry.get("sha"))[:12])
+
+
 def history(receipt: dict | None) -> list[dict]:
     """The completed passes on record, oldest first. A legacy complete receipt
     written before #834 carries no history and counts as one pass."""
@@ -92,7 +256,6 @@ def history(receipt: dict | None) -> list[dict]:
         return [entry for entry in carried if isinstance(entry, dict)]
     if receipt.get("status") == "complete":
         return [{"sha": receipt.get("reviewed_sha"),
-                 "patch_id": receipt.get("reviewed_patch_id"),
                  "surviving": int(receipt.get("surviving_findings") or 0)}]
     return []
 
@@ -121,18 +284,15 @@ def cap_message(passes: list[dict]) -> str:
     return OPERATOR
 
 
-def covered(passes: list[dict], sha: str, current_patch_id: str | None) -> bool:
-    """True when the last completed pass already reviewed this exact diff:
-    the same head, or a patch-identical one (a rebase)."""
+def covered(passes: list[dict], sha: str, repo_dir=None, main_ref: str = MAIN_REF) -> bool:
+    """True when the last completed pass already reviewed this change: the
+    same head, or a clean replay of it (a rebase) -- harmonic-forge#1077."""
     if not passes:
         return False
-    last = passes[-1]
-    if last.get("sha") == sha:
-        return True
-    return bool(current_patch_id) and last.get("patch_id") == current_patch_id
+    return accepts_entry(passes[-1], sha, repo_dir, main_ref)
 
 
-def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
+def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_REF,
             reforge: bool = False, force: bool = False, *, repo: str,
             issue: int | str) -> str | None:
     """Why a new pass must not run, or None when it may. ``repo``/``issue``
@@ -147,11 +307,11 @@ def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
                 and (receipt or {}).get("mechanism_cluster", {}).get("verdict") == "REFORGE"):
             return cluster
         return None
-    if covered(passes, sha, current_patch_id):
+    if covered(passes, sha, repo_dir, main_ref):
         if reforge:
             return "--reforge needs a changed diff; a completed pass already reviewed this one."
-        return ("A completed pass already covers this diff (same head, or patch-identical: "
-                "a rebase is not a pass). Nothing new to review. If a finding is disputed, "
+        return ("A completed pass already covers this change (same head, or a clean replay "
+                "of it: a rebase is not a pass). Nothing new to review. If a finding is disputed, "
                 "escalate to the operator rather than re-running.")
     if force:
         return None
@@ -162,7 +322,7 @@ def refusal(receipt: dict | None, sha: str, current_patch_id: str | None,
     return None
 
 
-def record(receipt: dict | None, sha: str, current_patch_id: str | None, surviving: int,
+def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int,
            mechanisms: list[str] | None = None, branch: str | None = None,
            reforge: bool = False, cost: dict | None = None) -> dict:
     """The receipt fields for a newly completed pass (AC1). ``cost`` is the
@@ -173,7 +333,7 @@ def record(receipt: dict | None, sha: str, current_patch_id: str | None, survivi
     epoch = max((int(p.get("epoch") or 0) for p in everything), default=0) + (1 if reforge else 0)
     prior_surviving = int(passes[-1].get("surviving") or 0) if passes and not reforge else None
     distinct = sorted(set(mechanisms or []))
-    everything = everything + [{"sha": sha, "patch_id": current_patch_id, "surviving": int(surviving),
+    everything = everything + [{"sha": sha, "change_identity": identity, "surviving": int(surviving),
                                 "mechanisms": distinct, "branch": branch, "epoch": epoch,
                                 **(cost or {})}]
     extra = _post_verdict(receipt)
@@ -189,7 +349,7 @@ def record(receipt: dict | None, sha: str, current_patch_id: str | None, survivi
                                           "epoch": epoch}
     return {"pass_history": everything, "pass_count": len(current(everything)),
             "surviving_findings": int(surviving), "prior_surviving_findings": prior_surviving,
-            "reviewed_patch_id": current_patch_id, **extra}
+            "reviewed_change_identity": identity, **extra}
 
 
 def pass_cost_view(entry: dict) -> dict:
@@ -317,10 +477,11 @@ def reviewed_head(receipt: dict | None) -> str | None:
     return (receipt or {}).get("reviewed_sha")
 
 
-def reviewed_patch_id(receipt: dict | None) -> str | None:
-    """The patch id of the diff the receipt vouches for: rebase-stable, unlike
-    the commit id (#838 sticky-wicket PATCH)."""
-    return (receipt or {}).get("reviewed_patch_id")
+def reviewed_identity(receipt: dict | None) -> dict | None:
+    """The change identity of the head the receipt vouches for, or None for a
+    legacy receipt (harmonic-forge#1077; replaces ``reviewed_patch_id``)."""
+    ident = (receipt or {}).get("reviewed_change_identity")
+    return ident if isinstance(ident, dict) and ident.get("head_sha") else None
 
 
 def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
