@@ -2609,8 +2609,8 @@ hooks = []
 id = "R-0390"
 file = "rules/universal-lane1.md"
 anchor = "doc-only-merges-wait"
-statement = "A clean rebase of a Lane 2 branch onto current origin/main is Lane 1's own action via mise run lane1-rebase, including a branch whose newest lane comment is a Lane 3 PASS on its current head (any other gate result exits 4); exit 0 means ready-for-l3 on the printed SHA in the same action, exit 2 or 3 a --kind rework, 4 or 5 the named reason, never --no-verify; an auto-AE or standing-grant AE on the old SHA needs a fresh one."
-text_sha = "6b9a29ce65cd3518"
+statement = "A clean rebase of a Lane 2 branch onto current origin/main is Lane 1's own action via mise run lane1-rebase, including a branch whose newest lane comment is a Lane 3 PASS on its current head (any other gate result exits 4); exit 0 means ready-for-l3 on the printed SHA in the same action, exit 2 or 3 a --kind rework (a conflict confined to package.json's top-level version is resolved by the tool to origin/main's version plus one patch, not exit 2, unless MAJOR or MINOR differ; a re-run after a crash that followed a resolution exits 3), 4 or 5 the named reason, never --no-verify; an auto-AE or standing-grant AE on the old SHA needs a fresh one."
+text_sha = "acf966721f09f1b4"
 hooks = []
 
 [[rule]]

@@ -365,7 +365,7 @@ description = "Run the platform-owned Lane 1 posting transport suite; wired into
 run = "python3 tools/gh/run_lane1_transport_tests.py"
 
 [tasks.lane1-rebase]
-description = "Lane 1: rebase a clean Lane 2 branch onto origin/main in a disposable prep worktree, push with a lease, and move the local branch (harmonic-forge#1018, R-0390). Exit 0 prints new=<sha> for ready-for-l3; 2 conflict, 3 local ref not movable, 4 precondition, 5 pre-push hook refused."
+description = "Lane 1: rebase a clean Lane 2 branch onto origin/main in a disposable prep worktree, push with a lease, and move the local branch (harmonic-forge#1018, R-0390). Exit 0 prints new=<sha> for ready-for-l3, plus version-resolved=<T> when it resolved a package.json version-line conflict (harmonic-forge#1035); 2 any other conflict, 3 local ref not movable, 4 precondition, 5 pre-push hook refused."
 usage = '''
 arg "<repo_dir>" help="The repo's main checkout"
 arg "<issue>" help="Issue number"
