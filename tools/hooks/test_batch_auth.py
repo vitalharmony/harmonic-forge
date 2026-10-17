@@ -192,6 +192,50 @@ class SessionScopeTests(StateFixture):
         ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
         self.assertNotIn("session_ids", self._entry("F1063"))
 
+    def test_concurrent_fresh_mints_keep_both_sessions(self):
+        """Preclose pass 1 (harmonic-forge#1063): two sessions mint the same
+        new key. The fresh entry is written under the lock that found it
+        fresh, so the second mint sees a live entry and appends; it never
+        replaces the first session's grant."""
+        real_authorize = ba.authorize
+        b_ran = []
+
+        def interleave(*args, **kwargs):  # B mints between A's decide and write
+            ba.authorize = real_authorize
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+            b_ran.append(True)
+            return real_authorize(*args, **kwargs)
+
+        ba.authorize = interleave
+        try:
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        finally:
+            ba.authorize = real_authorize
+        if not b_ran:  # no decide/write gap to interleave into: B simply follows
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        self.assertEqual(sorted(self._entry("F1063")["session_ids"]), ["session-A", "session-B"])
+
+    def test_fresh_mint_does_not_call_authorize(self):
+        """The structural half of the race fix: `top_up` never hands a fresh
+        key to a second, separately locked `authorize()` call."""
+        calls = []
+        real = ba.authorize
+        ba.authorize = lambda *a, **k: calls.append(a) or real(*a, **k)
+        try:
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        finally:
+            ba.authorize = real
+        self.assertEqual(calls, [])
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+    def test_top_up_still_validates_keys_and_actions(self):
+        with self.assertRaises(ValueError):
+            ba.top_up(["not-a-key"], state_path=self.state_path)
+        with self.assertRaises(ValueError):
+            ba.top_up(["F1063"], ["gh issue close"], state_path=self.state_path)
+        with self.assertRaises(TypeError):
+            ba.top_up(["F1063"], "gh pr merge", state_path=self.state_path)
+
     def test_remention_without_session_adds_nothing(self):
         ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
         ba.top_up(["F1063"], state_path=self.state_path, session_id=None)
