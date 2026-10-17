@@ -49,8 +49,10 @@ def bind(module: ModuleType) -> None:
 #: The whole footer line `l1_post.py` writes, at column 0. Matched against one
 #: complete line only, never searched for inside one (sticky-wicket REFORGE).
 _FOOTER_LINE = re.compile(r"<!--\s*l1-post\s+v1;([^>]*?)-->", re.I)
-#: A CommonMark fence line: up to 3 spaces, then 3+ backticks or 3+ tildes.
-_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+#: A fence line: an optional list-item marker (its width sets the container
+#: indent), up to 3 spaces, then 3+ backticks or 3+ tildes (CommonMark).
+_FENCE_OPEN = re.compile(r"^(?P<item> {0,3}(?:[-*+]|\d{1,9}[.)]) +)?(?P<pad> {0,3})"
+                         r"(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _FIELD = re.compile(r"(?:^|;)\s*prod-run=([^;\s]+)\s*(?:;|$)")
 _KIND_AE = re.compile(r"(?:^|;)\s*kind=ae\s*(?:;|$)")
 _SCRIPT_FIELD = re.compile(
@@ -72,19 +74,25 @@ def trailing_footer(body: str) -> str | None:
     column 0, outside every fence. So a fenced, unclosed-fenced, blockquoted,
     indented or inline-prefixed copy never counts. Stricter than
     `_prod_run.raw_field` by design; the parity test records where."""
-    fence: tuple[str, int] | None = None
+    fence: tuple[str, int, int] | None = None  # (char, length, container indent)
     last: str | None = None
     for line in (body or "").replace("\r\n", "\n").split("\n"):
-        opener = _FENCE_OPEN.match(line)
         if fence is not None:
-            # A closing fence: same character, at least as long, nothing after it.
-            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= fence[1] \
-                    and not opener.group(2).strip():
-                fence = None
-            last = None  # nothing inside or closing a fence is a footer
-            continue
-        if opener and not (opener.group(1)[0] == "`" and "`" in opener.group(2)):
-            fence = (opener.group(1)[0], len(opener.group(1)))
+            indent = len(line) - len(line.lstrip(" "))
+            char, length, base = fence
+            if line.strip() and base and indent < base:
+                fence = None  # a less-indented line ends the list item, and its fence
+            else:
+                rest = line[base:] if indent >= base else line
+                closer = re.match(r"^ {0,3}(`{3,}|~{3,})\s*$", rest)
+                if closer and closer.group(1)[0] == char and len(closer.group(1)) >= length:
+                    fence = None
+                last = None  # nothing inside or closing a fence is a footer
+                continue
+        opener = _FENCE_OPEN.match(line)
+        if opener and not (opener.group("fence")[0] == "`" and "`" in opener.group("info")):
+            base = len(opener.group("item") or "")
+            fence = (opener.group("fence")[0], len(opener.group("fence")), base)
             last = None
             continue
         if line.strip():
@@ -154,27 +162,23 @@ def select_ae(actions: list[dict], issue: int, mode: str) -> dict:
 def read_token() -> str:
     """The token file must be a regular, root-owned file nobody else can read."""
     try:
-        fd = os.open(broker_token_path(), os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(broker.TOKEN_PATH, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as exc:
-        raise _refuse(f"token file {broker_token_path()} unreadable: {exc}") from exc
+        raise _refuse(f"token file {broker.TOKEN_PATH} unreadable: {exc}") from exc
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
-            raise _refuse(f"token file {broker_token_path()} must be a root-owned regular "
+            raise _refuse(f"token file {broker.TOKEN_PATH} must be a root-owned regular "
                           "file with mode 0600")
         try:
             token = os.read(fd, 4096).decode("ascii", "replace").strip()
         except OSError as exc:
-            raise _refuse(f"token file {broker_token_path()} unreadable: {exc}") from exc
+            raise _refuse(f"token file {broker.TOKEN_PATH} unreadable: {exc}") from exc
     finally:
         os.close(fd)
     if not token:
-        raise _refuse(f"token file {broker_token_path()} is empty")
+        raise _refuse(f"token file {broker.TOKEN_PATH} is empty")
     return token
-
-
-def broker_token_path():
-    return broker.TOKEN_PATH
 
 
 def github(path: str, token: str):
@@ -266,7 +270,8 @@ def describe(action: dict, where: str, ttl_minutes: int) -> str:
             f"  ttl     {ttl_minutes} minutes")
 
 
-def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int) -> str:
+def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int,
+                  minted: list | None = None) -> str:
     bind(module)
     if broker._geteuid() != 0:
         raise _refuse("grant-from-ae runs as root only: the operator mints a grant, a lane never does")
@@ -288,5 +293,5 @@ def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int) -
     if not confirm(describe(action, where, ttl_minutes)):
         raise _refuse("not confirmed: nothing minted")
     key = broker._key(str(action["issue"]), action["sha"], action_text(action))
-    return broker._mint(key, ttl_minutes)
+    return broker._mint(key, ttl_minutes, minted)
 

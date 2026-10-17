@@ -388,6 +388,11 @@ class ReforgedFooterScanner(unittest.TestCase):
             "after a closed fence": ("```\ncode\n```\n" + f, True),
             "after a closed tilde fence": ("~~~\ncode\n~~~\n" + f, True),
             "text after footer": (f + "\nmore", False),
+            "fence inside a list item": ("- ```bash\n  echo hi\n  ```\n" + f, True),
+            "ordered list fence": ("1. ```\n   x\n   ```\n" + f, True),
+            "list fence ended by dedent": ("- ```\n  x\ntext\n" + f, True),
+            "over-indented top-level closer": ("```\n    ```\n" + f, False),
+            "list fence left open": ("- ```\n  x\n  " + f, False),
             "footer with suffix": (f + " trailing", False),
         }
         for name, (body, counts) in cases.items():
@@ -460,6 +465,30 @@ class OutcomeReporting(_Case):
         self.assertEqual(code, b.EXIT_OK)
         printed = "".join(c.args[0] for c in out.write.call_args_list)
         self.assertRegex(printed, r"[0-9a-f]{32}")
+
+
+class MintedHolder(OutcomeReporting):
+    """Cluster REFORGE: the outcome comes from this run's own recorded nonce."""
+
+    def test_concurrent_mint_during_prompt_is_not_credited(self):
+        def other_terminal_mints(text):
+            b.grant("1893", SHA, f"script={SCRIPT}", 60)  # someone else's grant
+            return False                                  # this run answers n
+        with mock.patch.object(ae, "confirm", side_effect=other_terminal_mints):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertNotIn("MAY be live", err)
+        self.assertIn("nothing minted", err)
+
+    def test_print_failure_after_a_mint_reports_the_nonce(self):
+        with mock.patch("builtins.print", side_effect=[BrokenPipeError("stdout gone"), None]) as pr:
+            code = b.main(["grant-from-ae", "1892", "dry-run"])
+        nonce = next((self.root / "grants").iterdir()).stem
+        self.assertEqual(code, b.EXIT_MINT_UNCERTAIN)
+        self.assertIn(nonce, str(pr.call_args_list[-1]))
+
+    def test_store_is_never_read_to_infer_the_outcome(self):
+        self.assertFalse(hasattr(b, "_grant_nonces"))
 
 
 class ReceiptKey(_Case):

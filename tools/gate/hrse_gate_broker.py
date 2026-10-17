@@ -95,7 +95,7 @@ EXIT_EXPIRED = 5
 EXIT_MISMATCH = 6
 EXIT_REFUSED = 7
 EXIT_DUPLICATE = 8
-#: grant-from-ae failed after a grant file appeared in the store: one MAY be live.
+#: grant-from-ae failed after THIS run created its grant file: it MAY be live.
 EXIT_MINT_UNCERTAIN = 9
 
 
@@ -163,7 +163,7 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
     return _mint(_key(issue, sha, action), ttl_minutes)
 
 
-def _mint(key: dict, ttl_minutes: int) -> str:
+def _mint(key: dict, ttl_minutes: int, holder: list | None = None) -> str:
     """The one write path for a grant: `grant` and `grant-from-ae` both end
     here, so a grant minted from an AE is the record `grant` would write."""
     with _store_lock():
@@ -180,7 +180,7 @@ def _mint(key: dict, ttl_minutes: int) -> str:
                 raise Refused(EXIT_DUPLICATE, f"duplicate: grant {live['nonce']} for this action "
                               f"(at {live['sha'][:12]}) is still live until {live['expires']}; "
                               "nothing minted")
-        return _write_grant(key, now, ttl_minutes)
+        return _write_grant(key, now, ttl_minutes, holder)
 
 
 @contextlib.contextmanager
@@ -208,12 +208,18 @@ def _prune_expired(now: dt.datetime) -> None:
             path.unlink(missing_ok=True)
 
 
-def _write_grant(key: dict, now: dt.datetime, ttl_minutes: int) -> str:
+def _write_grant(key: dict, now: dt.datetime, ttl_minutes: int,
+                 holder: list | None = None) -> str:
     nonce = secrets.token_hex(16)
     record = {**key, "nonce": nonce, "granted_at": now.isoformat(),
               "expires": (now + dt.timedelta(minutes=ttl_minutes)).isoformat()}
     path = STORE_ROOT / "grants" / f"{nonce}.json"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    # harmonic-forge#1064 (cluster REFORGE): the file now exists, so from here on
+    # this run MAY have minted. The caller learns that from this record alone,
+    # never from reading the store.
+    if holder is not None:
+        holder.append(nonce)
     try:
         uid, gid = _owner_ids()
         os.fchown(fd, uid, gid)
@@ -326,24 +332,18 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _grant_nonces() -> set[str] | None:
-    """The grant files present now, or None when the store cannot be read."""
-    try:
-        return {p.stem for p in (STORE_ROOT / "grants").glob("*.json") if NONCE.match(p.stem)}
-    except OSError:
-        return None
-
-
 def _grant_from_ae(args) -> int:
-    """Run grant-from-ae and report what the STORE says happened, never what
-    the exception type implies (sticky-wicket REFORGE, harmonic-forge#1064).
+    """Run grant-from-ae and report what THIS run did (harmonic-forge#1064).
 
-    One handler covers the helper import, the run and an interrupt
-    (BaseException). After any failure the grant store is re-read: a grant
-    file that was not there before means a grant MAY be live, and the exit
-    code says so (EXIT_MINT_UNCERTAIN), with the nonce, so the operator
-    checks `status` rather than trusting "nothing minted"."""
-    before = _grant_nonces()
+    `_write_grant` records the nonce in `minted` the moment the grant file is
+    created. One handler covers the helper import, the run, the confirmation,
+    Ctrl-C (BaseException) and printing the result: if `minted` is non-empty
+    and anything failed, a grant MAY be live and the exit code and message say
+    so with its nonce (EXIT_MINT_UNCERTAIN). Otherwise nothing was minted. The
+    store is never read to infer this (cluster REFORGE: a store diff credited
+    other terminals' grants to this run and could not see an unreadable
+    store)."""
+    minted: list[str] = []
     try:
         # Imported here only: `consume`, the one NOPASSWD path, never loads it.
         # `-I` drops the script's own directory from sys.path, so it is added
@@ -351,23 +351,25 @@ def _grant_from_ae(args) -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import hrse_gate_ae  # noqa: PLC0415
         nonce = hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue, args.mode,
-                                           args.ttl_minutes)
+                                           args.ttl_minutes, minted)
+        print(nonce)
+        return EXIT_OK
     except BaseException as exc:  # noqa: BLE001 -- Ctrl-C included
-        after = _grant_nonces()
-        new = sorted(after - before) if before is not None and after is not None else None
         why = str(exc) if isinstance(exc, Refused) else f"{type(exc).__name__}: {exc}"
-        if new is None or new:
-            named = ", ".join(new) if new else "unknown (the store could not be re-read)"
-            print(f"hrse-gate: grant-from-ae failed ({why}) after the grant store changed; "
-                  f"a grant MAY be live: {named}. Check `status` before minting again.",
-                  file=sys.stderr)
-            return EXIT_MINT_UNCERTAIN
-        print(f"hrse-gate: {why}" if isinstance(exc, Refused)
-              else f"hrse-gate: grant-from-ae could not decide ({why}); nothing minted",
-              file=sys.stderr)
-        return exc.code if isinstance(exc, Refused) else EXIT_REFUSED
-    print(nonce)
-    return EXIT_OK
+        if minted:
+            message = (f"hrse-gate: grant-from-ae failed ({why}) after creating grant "
+                       f"{minted[0]}; it MAY be live. Check `status` before minting again.")
+            code = EXIT_MINT_UNCERTAIN
+        elif isinstance(exc, Refused):
+            message, code = f"hrse-gate: {why}", exc.code
+        else:
+            message = f"hrse-gate: grant-from-ae could not decide ({why}); nothing minted"
+            code = EXIT_REFUSED
+        try:
+            print(message, file=sys.stderr)
+        except BaseException:  # noqa: BLE001 -- the exit code still carries it
+            pass
+        return code
 
 
 def main(argv: list[str] | None = None) -> int:
