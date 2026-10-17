@@ -486,6 +486,9 @@ KIND_OWNER: dict[str, str | None] = {
     "completion": "l1",
     "blocked": "l1",
     "finding": "l1",
+    # harmonic-forge#1036: a carried-forward PASS is Lane 1's own record; it
+    # queues nothing (absent from QUEUE_KINDS) and stays off the L2/L3 belts.
+    "carry-forward": "l1",
     "discussion": None,
 }
 

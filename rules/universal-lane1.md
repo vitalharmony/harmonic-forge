@@ -104,7 +104,12 @@ matters:
   **Outside this carve-out entirely** (no Lane 1 merge/close, whatever
   Lane 1 re-runs itself):
   - The PR head moved after the gate. The PASS covers only the SHA it names
-    (R-0354), so the new head goes back to Lane 3 via `ready-for-l3`.
+    (R-0354), so the new head goes back to Lane 3 via `ready-for-l3`,
+    unless a carry-forward accepted by `l1_post.py` names the new head
+    (harmonic-forge#1036) and `python3 tools/gh/_carry_forward.py check
+    --repo R --issue N --branch B` exits 0 immediately before `gh pr merge`;
+    a non-zero exit means the PASS does not cover the head, and the branch
+    goes to Lane 3 via `ready-for-l3`.
   - Any test case's evidence is asserted rather than executed. That is an
     unverified AC, which routes to the operator per the PASS-only bullet
     above.
@@ -337,6 +342,16 @@ a MAJOR or MINOR difference is still exit 2, and a re-run after a crash that
 followed a resolution exits 3 (reset the local branch to `origin/<branch>`). On 4 or 5, act on the named reason; never
 `--no-verify`. An AE on the old SHA carries forward under R-0209, except an
 auto-AE or standing-grant AE, which needs a fresh one.
+When the issue's newest gate report is a PASS and `lane1-rebase` exits 0,
+post `--kind carry-forward` instead of `ready-for-l3`, in the same action
+(harmonic-forge#1036). A `pending` or `absent` CI refusal (exit 3) means wait
+in the background (R-0376) and re-post. Any substantive refusal (patch-id
+differs, non-PASS, a newer gate report, red CI, a missing or edited body hash)
+sends it to Lane 3 through `ready-for-l3` and a fresh AE. Immediately before
+`gh pr merge` on a branch whose PASS was carried forward, run
+`python3 tools/gh/_carry_forward.py check --repo R --issue N --branch B`; a
+non-zero exit means the PASS does not cover the head, and the branch goes to
+Lane 3 through `ready-for-l3`.
 <!-- /R-0390 -->
 
 The structural half of this belongs in the project — a generated schema block
