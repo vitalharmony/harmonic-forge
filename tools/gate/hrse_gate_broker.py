@@ -22,6 +22,18 @@ Two verbs:
         so an operator whose run was refused can see whether the grant is
         still live before minting (a second live grant is refused anyway).
 
+    grant-from-ae <issue> dry-run|apply [--ttl-minutes N]
+        Root only, and only at a TTY (harmonic-forge#1064). Reads the issue's
+        newest `--prod-run` AE for that mode from GitHub, shows the exact grant
+        it would mint, and mints it -- through the same path as `grant` -- only
+        on an explicit `y`. The GitHub read is untrusted input: the AE is
+        written by the account every lane also uses, so the operator's `y` at
+        a root-password prompt is the authorization, never the comment.
+        GitHub is read with a root-owned token file (TOKEN_PATH), never with
+        root's or the operator's `gh` state. No sudoers rule names this verb.
+        Its logic lives in the sibling `hrse_gate_ae.py` (R-0006), loaded
+        only on this branch, installed root-owned beside this file.
+
     consume <issue> <sha> <action>
         Run as hrse-gate through the single NOPASSWD sudoers rule. Finds a
         grant matching the action exactly and renames it into receipts/.
@@ -58,12 +70,20 @@ import pwd
 import re
 import secrets
 import sys
+import time
 from pathlib import Path
 
 STORE_ROOT = Path("/var/lib/hrse-gate")
 OWNER = "hrse-gate"
 MAX_TTL_MINUTES = 24 * 60
+LOCK_WAIT_SECONDS = 10
 DEFAULT_TTL_MINUTES = 60
+
+#: harmonic-forge#1064. Root-owned, 0600, a read-only token on vitalharmony/hrse.
+TOKEN_PATH = Path("/etc/hrse-gate/github-token")
+GITHUB_API = "https://api.github.com"
+GATED_REPO = "vitalharmony/hrse"
+MAX_COMMENT_PAGES = 10
 
 SCRIPT = re.compile(r"^scripts/1-[A-Za-z0-9._-]+\.py$")
 LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -77,6 +97,8 @@ EXIT_EXPIRED = 5
 EXIT_MISMATCH = 6
 EXIT_REFUSED = 7
 EXIT_DUPLICATE = 8
+#: grant-from-ae failed after THIS run created its grant file: it MAY be live.
+EXIT_MINT_UNCERTAIN = 9
 
 
 class Refused(Exception):
@@ -140,7 +162,12 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
         raise Refused(EXIT_REFUSED, "grant runs as root only: the operator mints a grant, a lane never does")
     if not 1 <= ttl_minutes <= MAX_TTL_MINUTES:
         raise Refused(EXIT_REFUSED, f"--ttl-minutes must be 1..{MAX_TTL_MINUTES}")
-    key = _key(issue, sha, action)
+    return _mint(_key(issue, sha, action), ttl_minutes)
+
+
+def _mint(key: dict, ttl_minutes: int, holder: list | None = None) -> str:
+    """The one write path for a grant: `grant` and `grant-from-ae` both end
+    here, so a grant minted from an AE is the record `grant` would write."""
     with _store_lock():
         now = _now()
         _prune_expired(now)
@@ -155,7 +182,7 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
                 raise Refused(EXIT_DUPLICATE, f"duplicate: grant {live['nonce']} for this action "
                               f"(at {live['sha'][:12]}) is still live until {live['expires']}; "
                               "nothing minted")
-        return _write_grant(key, now, ttl_minutes)
+        return _write_grant(key, now, ttl_minutes, holder)
 
 
 @contextlib.contextmanager
@@ -164,7 +191,18 @@ def _store_lock():
     not both succeed."""
     fd = os.open(STORE_ROOT / ".mint.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        # harmonic-forge#1064 (sticky-wicket PATCH): a bounded wait, never an
+        # unbounded block, so a stopped holder cannot wedge the next mint.
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Refused(EXIT_REFUSED, f"the grant store is busy (another mint has held "
+                                  f"its lock for {LOCK_WAIT_SECONDS}s); nothing minted") from None
+                time.sleep(0.1)
         yield
     finally:
         os.close(fd)
@@ -183,12 +221,25 @@ def _prune_expired(now: dt.datetime) -> None:
             path.unlink(missing_ok=True)
 
 
-def _write_grant(key: dict, now: dt.datetime, ttl_minutes: int) -> str:
+def _write_grant(key: dict, now: dt.datetime, ttl_minutes: int,
+                 holder: list | None = None) -> str:
     nonce = secrets.token_hex(16)
     record = {**key, "nonce": nonce, "granted_at": now.isoformat(),
               "expires": (now + dt.timedelta(minutes=ttl_minutes)).isoformat()}
     path = STORE_ROOT / "grants" / f"{nonce}.json"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    # harmonic-forge#1064: recorded BEFORE the creating syscall, so no
+    # interrupt can land between "the file exists" and "this run knows it
+    # may have minted" (epoch pass 1). The caller learns the outcome from this
+    # record alone, never from reading the store. Withdrawn only when the open
+    # itself fails, which creates nothing (O_EXCL).
+    if holder is not None:
+        holder.append(nonce)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        if holder is not None:
+            holder.remove(nonce)
+        raise
     try:
         uid, gid = _owner_ids()
         os.fchown(fd, uid, gid)
@@ -286,6 +337,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("sha")
     g.add_argument("action")
     g.add_argument("--ttl-minutes", type=int, default=DEFAULT_TTL_MINUTES)
+    ga = verbs.add_parser("grant-from-ae", allow_abbrev=False)
+    ga.add_argument("issue")
+    ga.add_argument("mode", choices=("dry-run", "apply"))
+    ga.add_argument("--ttl-minutes", type=int, default=DEFAULT_TTL_MINUTES)
     st = verbs.add_parser("status", allow_abbrev=False)
     st.add_argument("issue")
     st.add_argument("sha")
@@ -295,6 +350,46 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("sha")
     c.add_argument("action")
     return parser
+
+
+def _grant_from_ae(args) -> int:
+    """Run grant-from-ae and report what THIS run did (harmonic-forge#1064).
+
+    `_write_grant` records the nonce in `minted` the moment the grant file is
+    created. One handler covers the helper import, the run, the confirmation,
+    Ctrl-C (BaseException) and printing the result: if `minted` is non-empty
+    and anything failed, a grant MAY be live and the exit code and message say
+    so with its nonce (EXIT_MINT_UNCERTAIN). Otherwise nothing was minted. The
+    store is never read to infer this (cluster REFORGE: a store diff credited
+    other terminals' grants to this run and could not see an unreadable
+    store)."""
+    minted: list[str] = []
+    try:
+        # Imported here only: `consume`, the one NOPASSWD path, never loads it.
+        # `-I` drops the script's own directory from sys.path, so it is added
+        # back; the install puts both files root-owned in /usr/local/libexec.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import hrse_gate_ae  # noqa: PLC0415
+        nonce = hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue, args.mode,
+                                           args.ttl_minutes, minted)
+        print(nonce)
+        return EXIT_OK
+    except BaseException as exc:  # noqa: BLE001 -- Ctrl-C included
+        why = str(exc) if isinstance(exc, Refused) else f"{type(exc).__name__}: {exc}"
+        if minted:
+            message = (f"hrse-gate: grant-from-ae failed ({why}) after creating grant "
+                       f"{minted[0]}; it MAY be live. Check `status` before minting again.")
+            code = EXIT_MINT_UNCERTAIN
+        elif isinstance(exc, Refused):
+            message, code = f"hrse-gate: {why}", exc.code
+        else:
+            message = f"hrse-gate: grant-from-ae could not decide ({why}); nothing minted"
+            code = EXIT_REFUSED
+        try:
+            print(message, file=sys.stderr)
+        except BaseException:  # noqa: BLE001 -- the exit code still carries it
+            pass
+        return code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -308,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "grant":
             print(grant(args.issue, args.sha, args.action, args.ttl_minutes))
+        elif args.verb == "grant-from-ae":
+            return _grant_from_ae(args)
         elif args.verb == "status":
             print(status(args.issue, args.sha, args.action))
         elif args.verb == "consume":
