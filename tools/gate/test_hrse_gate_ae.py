@@ -567,8 +567,18 @@ class SignalSafeMint(OutcomeReporting):
         fd = os.open(self.root / ".mint.lock", os.O_RDWR | os.O_CREAT, 0o600)
         self.addCleanup(os.close, fd)
         fcntl.flock(fd, fcntl.LOCK_EX)  # another root run holds the lock
+        import signal as sg
+
+        def hung(*_):  # SIGALRM is not among the ignored signals
+            raise AssertionError("grant-from-ae blocked on the store lock (wait not bounded)")
+
+        old = sg.signal(sg.SIGALRM, hung)
+        self.addCleanup(sg.signal, sg.SIGALRM, old)
+        sg.setitimer(sg.ITIMER_REAL, 3)
+        self.addCleanup(sg.setitimer, sg.ITIMER_REAL, 0)
         with mock.patch.object(b, "LOCK_WAIT_SECONDS", 0.3):
             code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        sg.setitimer(sg.ITIMER_REAL, 0)
         self.assertEqual(code, b.EXIT_REFUSED)
         self.assertIn("busy", err)
         self.assertIn("nothing minted", err)
