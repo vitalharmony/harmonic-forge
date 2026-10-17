@@ -152,3 +152,14 @@ the lane's trigger (and authorizes only its owed step), and an idle tick
 produces no text. Both fire on a belt event before any file is consulted, so
 they stay always-loaded (hrse#1730's criterion).
 """
+
+[[increase]]
+date = "2026-10-17"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 2783
+why = """
+Cumulative since the last baseline: harmonic-forge#1030 (2694, entry above)
+plus harmonic-forge#1042 (89): R-0384 names `imc_waiver.py end` as the IMC stop's exit
+and that R-0229 is then owed. It must fire at the IMC stop without being
+consulted, so it stays always-loaded; trimmed to one clause (from 354 bytes).
+"""

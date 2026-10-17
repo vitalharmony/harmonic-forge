@@ -2559,7 +2559,7 @@ id = "R-0384"
 file = "rules/lane-shorthand.md"
 anchor = "imc"
 statement = "IMC on an operator-typed BATCH line records a per-issue waiver of R-0229 and R-0230 for a LANE=1, vitalharmony, tooling-exception issue, minting no authority; imc_waiver.py record writes a pending receipt before posting and refetching the fixed-format waiver comment, then marks it recorded; while the receipt exists (an unparseable one counts) preclose_check forces the cross-family gate and refuses --force, --allow-dirty, --reforge, --cluster-verdict --force, --not-triggered and the in-family fallback. Like BATCH, IMC trusts the operator-typed line and the session; the receipt and comment are an audit trail, not proof against a session that can write files (harmonic-forge#895)."
-text_sha = "ef0b675564c67623"
+text_sha = "7dd49859ecc5973a"
 exception_to = ["R-0229", "R-0230"]
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
