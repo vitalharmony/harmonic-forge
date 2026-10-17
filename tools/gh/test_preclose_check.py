@@ -193,6 +193,46 @@ class MechanismContractTests(ScratchRepo):
                             cross_family=False, base="base", head="HEAD"))
 
 
+class MalformedAnchorTests(ScratchRepo):
+    """harmonic-forge#1047: a survivor whose anchor is not one `file:line` token
+    is refused at --complete and --post-verdict, never silently dropped."""
+
+    LIVE_SHAPES = ["a.py:113 / b.py:38-41", "gh_issue.py:113-120, 169"]
+
+    def test_both_live_shapes_refuse_and_record_nothing(self) -> None:
+        self.commit("scripts/a.py")
+        self.plan(tier="fast")
+        before = preclose.find_receipt("vitalharmony/hrse", 1208)
+        findings = [{"anchor": a, "scenario": "s", "mechanism": "m"} for a in self.LIVE_SHAPES]
+        with self.assertRaises(SystemExit) as refused:
+            self.complete(findings, not_triggered=True)
+        for anchor in self.LIVE_SHAPES:
+            self.assertIn(repr(anchor), str(refused.exception))
+        self.assertIn("Nothing recorded", str(refused.exception))
+        self.assertEqual(preclose.find_receipt("vitalharmony/hrse", 1208), before)
+
+    def test_wellformed_dismissed_and_scenarioless_shapes_pass(self) -> None:
+        self.commit("scripts/a.py")
+        self.plan(tier="fast")
+        self.complete([
+            {"anchor": "a.py:1-4", "scenario": "s", "mechanism": "m"},
+            {"anchor": "a.py:1-4 ", "scenario": "s", "mechanism": "m"},
+            {"anchor": "a.py:1 / b.py:2", "scenario": "s", "dismissed": "duplicate"},
+            {"anchor": "a.py:1 / b.py:2", "scenario": ""},
+        ], not_triggered=True)
+
+    def test_post_verdict_refuses_a_malformed_anchor(self) -> None:
+        args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, base="b",
+                                  head="HEAD", main="origin/main", envelope="e.jsonl",
+                                  own_model="claude-opus-5-5",
+                                  findings=self.findings_file([{"anchor": self.LIVE_SHAPES[0],
+                                                                "scenario": "s"}]))
+        with patch.object(preclose, "require_writable"), \
+             self.assertRaises(SystemExit) as refused:
+            preclose.post_verdict(args)
+        self.assertIn(repr(self.LIVE_SHAPES[0]), str(refused.exception))
+
+
 class PanelSizingTests(unittest.TestCase):
     def test_hook_implementation_is_high_blast(self) -> None:
         self.assertTrue(preclose.blast_radius(["tools/hooks/block_irreversible_ops.py"]))

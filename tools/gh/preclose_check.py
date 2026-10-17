@@ -522,6 +522,24 @@ def require_mechanisms(findings: list) -> None:
                          + ", ".join(missing))
 
 
+def require_wellformed_anchors(findings: list) -> None:
+    """harmonic-forge#1047: a non-dismissed finding with a scenario and a
+    non-empty anchor that is not one `file:line` token would be silently
+    dropped by `surviving_findings` (fail-open). Refuse instead, naming each."""
+    bad = [anchor for finding in findings if isinstance(finding, dict)
+           and not str(finding.get("dismissed") or "").strip()
+           and str(finding.get("scenario") or "").strip()
+           and (anchor := str(finding.get("anchor") or "").strip())
+           and not _ANCHOR.fullmatch(anchor)]
+    if bad:
+        raise SystemExit(
+            "preclose-check: these finding anchors are not a single `path:line` (or "
+            "`path:line-line`) token, so the finding would be dropped as unanchored: "
+            + "; ".join(repr(a) for a in bad)
+            + ". Split each into one finding per anchor, or move the extra locations "
+              "into the scenario. Nothing recorded.")
+
+
 def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
     findings = load_findings(args.findings)
     surviving = len(surviving_findings(findings))
@@ -941,6 +959,7 @@ def complete(args: argparse.Namespace) -> int:
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, patch, args.force, reforge)
     findings = load_findings(args.findings)
+    require_wellformed_anchors(findings)
     require_mechanisms(findings)
     mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
                   for finding in surviving_findings(findings)]
@@ -1284,6 +1303,8 @@ def post_verdict(args: argparse.Namespace) -> int:
     pass-2 head, so the diff is just the patch. Never appended to the pass
     history, so it never counts toward the cap."""
     require_writable(receipt_dir())
+    if getattr(args, "findings", None):
+        require_wellformed_anchors(load_findings(args.findings))
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()
