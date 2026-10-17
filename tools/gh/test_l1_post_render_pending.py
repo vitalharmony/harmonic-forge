@@ -86,6 +86,9 @@ AGREEMENT = [
     ("beside Signed-off-by", "subject\n\nSigned-off-by: A <a@b>\nRender-Pending: 9\n", None, "9"),
     ("repo config '=:' separators", "subject\n\nRender-Pending: 7\n", "=:", "7"),
     ("no trailer", "ordinary commit\n", None, None),
+    # Repo config must not change the answer: '=' is not the pinned separator,
+    # so neither reader sees a trailer here, whatever the checkout's config says.
+    ("repo config makes '=' a separator", "subject\n\nRender-Pending= 5\n", "=:", None),
 ]
 
 
