@@ -342,8 +342,15 @@ def main(argv: list[str] | None = None) -> int:
             # install puts both files root-owned in /usr/local/libexec.
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             import hrse_gate_ae  # noqa: PLC0415
-            print(hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue, args.mode,
-                                             args.ttl_minutes))
+            try:
+                nonce = hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue,
+                                                   args.mode, args.ttl_minutes)
+            except Refused:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- never a traceback where a refusal belongs
+                raise Refused(EXIT_REFUSED, f"grant-from-ae could not decide "
+                              f"({type(exc).__name__}: {exc}); nothing minted") from exc
+            print(nonce)
         elif args.verb == "status":
             print(status(args.issue, args.sha, args.action))
         elif args.verb == "consume":

@@ -23,6 +23,8 @@ import hrse_gate_ae as ae  # noqa: E402
 import hrse_gate_broker as b  # noqa: E402
 
 REAL_CONFIRM = ae.confirm
+REAL_GITHUB = ae.github
+REAL_ISATTY = ae.isatty
 
 SHA = "a" * 40
 OLD = "c" * 40
@@ -291,6 +293,73 @@ class FooterParsing(unittest.TestCase):
             with self.subTest(body=body[-80:]):
                 ours = ae.footer_action(body)
                 self.assertTrue(ours is None or ours == _prod_run.declared(body))
+
+
+class PassOneFindings(_Case):
+    """harmonic-forge#1064 preclose pass 1: every one is a refusal, never a
+    traceback, and nothing is minted."""
+
+    def test_malformed_pull_request_json_refuses(self):
+        for pulls in ([None], ["x"], [{"state": "open", "head": "x"}], {"not": "a list"}):
+            with self.subTest(pulls=pulls):
+                self.pulls = pulls
+                self.assertIn("malformed", self.refused()) if isinstance(pulls, list) \
+                    else self.assertIn("non-list", self.refused())
+
+    def test_malformed_branch_json_refuses(self):
+        self.pulls = []
+        for branch in ({"commit": "x"}, "x", None):
+            with self.subTest(branch=branch), \
+                    mock.patch.object(self, "main_head", None), \
+                    mock.patch.object(ae, "github", side_effect=lambda path, token, br=branch:
+                                      br if path.endswith("/branches/main") else self._github(path, token)):
+                self.assertIn("malformed branch", self.refused())
+
+    def test_blockquoted_or_unclosed_fence_footer_is_ignored(self):
+        one_line = "> " + ae_body().strip().splitlines()[-1]
+        unclosed = "note\n```\n" + ae_body()
+        for body in (one_line, unclosed):
+            with self.subTest(body=body[:20]):
+                self.assertIsNone(ae.footer_action(body))
+                self.comments = [body]
+                self.assertIn("no --prod-run AE", self.refused())
+
+    def test_token_read_error_refuses(self):
+        with mock.patch.object(ae.os, "read", side_effect=OSError(5, "EIO")):
+            self.assertIn("unreadable", self.refused())
+
+    def test_undecodable_tty_answer_is_not_consent(self):
+        with mock.patch("builtins.open", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")):
+            self.assertFalse(REAL_CONFIRM("prompt"))
+
+    def test_huge_issue_number_refuses(self):
+        with self.assertRaises(b.Refused) as ctx:
+            ae.grant_from_ae(b, "9" * 5000, "dry-run", 60)
+        self.assertEqual(ctx.exception.code, b.EXIT_REFUSED)
+        self.assertIsNone(ae.footer_action(ae_body(issue=int("9" * 12))))
+
+    def test_real_github_converts_network_errors_to_refusal(self):
+        import urllib.error
+        real = REAL_GITHUB
+        for exc in (urllib.error.URLError("down"), OSError("reset"), ValueError("bad json")):
+            with self.subTest(exc=type(exc).__name__), \
+                    mock.patch.object(ae.urllib.request, "urlopen", side_effect=exc), \
+                    self.assertRaises(b.Refused) as ctx:
+                real("repos/vitalharmony/hrse/branches/main", "t")
+            self.assertIn("GitHub cannot be read", str(ctx.exception))
+
+    def test_real_isatty_needs_both_stdin_and_stdout(self):
+        for fds, expected in (({0, 1}, True), ({0}, False), ({1}, False), (set(), False)):
+            with self.subTest(fds=fds), \
+                    mock.patch.object(ae.os, "isatty", side_effect=lambda fd, f=fds: fd in f):
+                self.assertEqual(REAL_ISATTY(), expected)
+
+    def test_unexpected_exception_in_main_is_a_refusal(self):
+        with mock.patch.object(ae, "grant_from_ae", side_effect=KeyError("boom")), \
+                mock.patch("sys.stderr") as err, mock.patch("sys.stdout"):
+            code = b.main(["grant-from-ae", "1892", "dry-run"])
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertIn("nothing minted", "".join(c.args[0] for c in err.write.call_args_list))
 
 
 class BrokerWiring(unittest.TestCase):

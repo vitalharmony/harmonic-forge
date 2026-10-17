@@ -47,12 +47,14 @@ def bind(module: ModuleType) -> None:
     broker = module
 
 _FENCE = re.compile(r"```.*?```", re.S)
-_TRAILING_FOOTER = re.compile(r"<!--\s*l1-post\s+v1;([^>]*?)-->\s*\Z", re.I)
+#: Stricter than `_prod_run`: the footer must open a line of its own (so a `>`
+#: blockquoted copy never counts; preclose pass 1, cross-family).
+_TRAILING_FOOTER = re.compile(r"(?:\A|\n)<!--\s*l1-post\s+v1;([^>]*?)-->\s*\Z", re.I)
 _FIELD = re.compile(r"(?:^|;)\s*prod-run=([^;\s]+)\s*(?:;|$)")
 _KIND_AE = re.compile(r"(?:^|;)\s*kind=ae\s*(?:;|$)")
 _SCRIPT_FIELD = re.compile(
-    r"^issue:(\d+),sha:([0-9a-f]{40}),script:(scripts/1-[A-Za-z0-9._-]+\.py),apply:(true|false)$")
-_LABEL_FIELD = re.compile(r"^issue:(\d+),sha:([0-9a-f]{40}),count-label:([A-Za-z][A-Za-z0-9_]*)$")
+    r"^issue:(\d{1,9}),sha:([0-9a-f]{40}),script:(scripts/1-[A-Za-z0-9._-]+\.py),apply:(true|false)$")
+_LABEL_FIELD = re.compile(r"^issue:(\d{1,9}),sha:([0-9a-f]{40}),count-label:([A-Za-z][A-Za-z0-9_]*)$")
 
 
 def _refuse(message: str) -> broker.Refused:
@@ -65,7 +67,10 @@ def footer_action(body: str) -> dict | None:
     Read only from the comment's own trailing footer after fenced blocks are
     stripped, exactly as `_prod_run.raw_field` does, and only from a footer
     whose kind is `ae`."""
-    footer = _TRAILING_FOOTER.search(_FENCE.sub("", body or ""))
+    body = body or ""
+    if body.count("```") % 2:
+        return None  # an unclosed fence: nothing after it is a real footer
+    footer = _TRAILING_FOOTER.search(_FENCE.sub("", body))
     if not footer or not _KIND_AE.search(footer.group(1)):
         return None
     field = _FIELD.search(footer.group(1))
@@ -129,7 +134,10 @@ def read_token() -> str:
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
             raise _refuse(f"token file {broker_token_path()} must be a root-owned regular "
                           "file with mode 0600")
-        token = os.read(fd, 4096).decode("ascii", "replace").strip()
+        try:
+            token = os.read(fd, 4096).decode("ascii", "replace").strip()
+        except OSError as exc:
+            raise _refuse(f"token file {broker_token_path()} unreadable: {exc}") from exc
     finally:
         os.close(fd)
     if not token:
@@ -176,12 +184,17 @@ def sha_is_head(sha: str, token: str) -> str:
     """Where the SHA is a head, or refuse: an open PR's head first, then
     `main`'s current head (an R-0377 post-merge step)."""
     pulls = github(f"repos/{broker.GATED_REPO}/commits/{sha}/pulls", token)
-    for pr in pulls if isinstance(pulls, list) else []:
-        head = (pr.get("head") or {}).get("sha") if isinstance(pr, dict) else None
-        if pr.get("state") == "open" and head == sha:
+    if not isinstance(pulls, list):
+        raise _refuse("GitHub returned a non-list for the commit's pull requests")
+    for pr in pulls:
+        if not isinstance(pr, dict) or not isinstance(pr.get("head"), dict):
+            raise _refuse("GitHub returned a malformed pull request entry")
+        if pr.get("state") == "open" and pr["head"].get("sha") == sha:
             return f"head of open PR #{pr.get('number')}"
     branch = github(f"repos/{broker.GATED_REPO}/branches/main", token)
-    if isinstance(branch, dict) and (branch.get("commit") or {}).get("sha") == sha:
+    if not isinstance(branch, dict) or not isinstance(branch.get("commit"), dict):
+        raise _refuse("GitHub returned a malformed branch")
+    if branch["commit"].get("sha") == sha:
         return "current head of main"
     raise _refuse(f"{sha[:12]} is neither an open PR's head nor main's current head: "
                   "the AE is stale; nothing minted")
@@ -211,7 +224,7 @@ def confirm(text: str) -> bool:
             tty.write(text + "\nMint this grant? [y/N] ")
             tty.flush()
             answer = tty.readline()
-    except OSError:
+    except (OSError, ValueError):  # ValueError covers undecodable input
         return False
     return answer.strip().lower() in ("y", "yes")
 
@@ -233,7 +246,7 @@ def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int) -
         raise _refuse("grant-from-ae needs a TTY: the confirmation is the authorization")
     if mode not in ("dry-run", "apply"):
         raise _refuse(f"mode must be dry-run or apply, got {mode!r}")
-    if not issue.isdecimal() or int(issue) < 1:
+    if not (issue.isascii() and issue.isdecimal()) or len(issue) > 9 or int(issue) < 1:
         raise _refuse(f"issue must be a positive integer, got {issue!r}")
     if not 1 <= ttl_minutes <= broker.MAX_TTL_MINUTES:
         raise _refuse(f"--ttl-minutes must be 1..{broker.MAX_TTL_MINUTES}")
