@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Tests for `hrse-gate grant-from-ae` (harmonic-forge#1064).
+
+GitHub, the TTY, the euid and the token file are all stubbed in-process; the
+store lives under a temp root. Nothing here reaches the network, `/etc`,
+`/var/lib/hrse-gate` or a real terminal.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "gh"))
+
+import hrse_gate_ae as ae  # noqa: E402
+import hrse_gate_broker as b  # noqa: E402
+
+REAL_CONFIRM = ae.confirm
+
+SHA = "a" * 40
+OLD = "c" * 40
+SCRIPT = "scripts/1-1892-revive.py"
+
+
+def ae_body(sha=SHA, script=SCRIPT, apply=False, issue=1892, kind="ae", label=None):
+    field = (f"prod-run=issue:{issue},sha:{sha},count-label:{label}" if label else
+             f"prod-run=issue:{issue},sha:{sha},script:{script},apply:{'true' if apply else 'false'}")
+    return (f"## AE\n**Authorized:** operator\n\n<!-- l1-post v1; kind={kind}; sha={sha}; "
+            f"{field}; body-sha256={'0' * 64}; checks=x -->\n")
+
+
+class _Case(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        (root / "grants").mkdir()
+        (root / "receipts").mkdir()
+        token = root / "github-token"
+        token.write_text("ghp_test\n")
+        os.chmod(token, 0o600)
+        self.comments = [ae_body()]
+        self.pulls = [{"number": 7, "state": "open", "head": {"sha": SHA}}]
+        self.main_head = OLD
+        self.answer = True
+        self.confirm_text = []
+        me = os.getuid(), os.getgid()
+        real_fstat = os.fstat
+
+        def fstat_as_root(fd):  # the test user stands in for root on the token file
+            st = real_fstat(fd)
+            return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, 0,
+                                   st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+
+        self._patches = [
+            mock.patch.object(b, "STORE_ROOT", root),
+            mock.patch.object(b, "TOKEN_PATH", token),
+            mock.patch.object(b, "_geteuid", return_value=0),
+            mock.patch.object(b, "_owner_ids", return_value=me),
+            mock.patch.object(ae, "isatty", return_value=True),
+            mock.patch.object(ae.os, "fstat", side_effect=fstat_as_root),
+            mock.patch.object(ae, "github", side_effect=self._github),
+            mock.patch.object(ae, "confirm", side_effect=self._confirm),
+        ]
+        for p in self._patches:
+            p.start()
+        self.root, self.token = root, token
+
+    def tearDown(self):
+        for p in reversed(self._patches):
+            p.stop()
+        self._tmp.cleanup()
+
+    def _github(self, path, token):
+        if "/comments?" in path:
+            page = int(path.rsplit("page=", 1)[1])
+            chunk = self.comments[(page - 1) * 100: page * 100]
+            return [{"body": c} for c in chunk]
+        if path.endswith("/pulls"):
+            return self.pulls
+        if path.endswith("/branches/main"):
+            return {"commit": {"sha": self.main_head}}
+        raise AssertionError(path)
+
+    def _confirm(self, text):
+        self.confirm_text.append(text)
+        return self.answer
+
+    def mint(self, mode="dry-run", issue="1892", ttl=60):
+        return ae.grant_from_ae(b, issue, mode, ttl)
+
+    def refused(self, mode="dry-run", issue="1892"):
+        with self.assertRaises(b.Refused) as ctx:
+            self.mint(mode, issue)
+        self.assertEqual(ctx.exception.code, b.EXIT_REFUSED)
+        self.assertEqual(list((self.root / "grants").iterdir()), [], "a refusal minted a grant")
+        return str(ctx.exception)
+
+    def spend_dry_run(self, sha=SHA, script=SCRIPT, issue=1892):
+        b.grant(str(issue), sha, f"script={script}", 60)
+        b.consume(str(issue), sha, f"script={script}")
+
+
+class Refusals(_Case):
+    def test_grant_from_ae_refuses_non_root(self):
+        with mock.patch.object(b, "_geteuid", return_value=1000):
+            self.assertIn("root only", self.refused())
+
+    def test_grant_from_ae_refuses_without_tty(self):
+        with mock.patch.object(ae, "isatty", return_value=False):
+            self.assertIn("TTY", self.refused())
+
+    def test_no_prod_run_ae_refuses(self):
+        self.comments = ["just a comment"]
+        self.assertIn("no --prod-run AE", self.refused())
+
+    def test_mode_mismatch_refuses(self):
+        self.comments = [ae_body(apply=False)]
+        self.assertIn("mode mismatch", self.refused(mode="apply"))
+
+    def test_conflicting_aes_at_newest_sha_refuse(self):
+        self.comments = [ae_body(script="scripts/1-a.py"), ae_body(script="scripts/1-b.py")]
+        self.assertIn("ambiguous", self.refused())
+
+    def test_sha_not_open_pr_head_refuses(self):
+        for pulls in ([{"number": 7, "state": "closed", "head": {"sha": SHA}}],
+                      [{"number": 7, "state": "open", "head": {"sha": OLD}}], []):
+            with self.subTest(pulls=pulls):
+                self.pulls = pulls
+                self.assertIn("stale", self.refused())
+
+    def test_github_unreadable_refuses(self):
+        with mock.patch.object(ae, "github", side_effect=b.Refused(b.EXIT_REFUSED, "GitHub cannot be read")):
+            self.assertIn("GitHub cannot be read", self.refused())
+
+    def test_comments_past_cap_refuse(self):
+        self.comments = ["x"] * (b.MAX_COMMENT_PAGES * 100) + [ae_body()]
+        self.assertIn("more than", self.refused())
+
+    def test_ae_for_another_issue_does_not_count(self):
+        self.comments = [ae_body(issue=999)]
+        self.assertIn("no --prod-run AE", self.refused())
+
+    def test_bad_arguments_refuse(self):
+        for issue, mode, ttl in (("0", "dry-run", 60), ("x", "dry-run", 60),
+                                 ("1892", "apply,force", 60), ("1892", "dry-run", 0)):
+            with self.subTest(args=(issue, mode, ttl)), self.assertRaises(b.Refused):
+                ae.grant_from_ae(b, issue, mode, ttl)
+
+
+class TokenFile(_Case):
+    def test_loose_token_file_refuses(self):
+        os.chmod(self.token, 0o644)
+        self.assertIn("0600", self.refused())
+
+    def test_non_root_token_owner_refuses(self):
+        with mock.patch.object(ae.os, "fstat", side_effect=os.stat):
+            self.assertIn("root-owned", self.refused())
+
+    def test_missing_token_file_refuses(self):
+        self.token.unlink()
+        self.assertIn("unreadable", self.refused())
+
+    def test_empty_token_file_refuses(self):
+        self.token.write_text("  \n")
+        self.assertIn("empty", self.refused())
+
+
+class Confirmation(_Case):
+    def test_empty_and_eof_answers_mint_nothing(self):
+        self.answer = False
+        self.assertIn("not confirmed", self.refused())
+
+    def test_confirm_reads_only_y_or_yes(self):
+        for raw, expected in (("y\n", True), ("YES\n", True), ("\n", False), ("", False),
+                              ("n\n", False), ("yep\n", False), (" y \n", True)):
+            with self.subTest(raw=raw), \
+                    mock.patch("builtins.open", mock.mock_open(read_data=raw)):
+                self.assertEqual(REAL_CONFIRM("prompt"), expected)
+
+    def test_confirm_with_no_tty_is_not_consent(self):
+        with mock.patch("builtins.open", side_effect=OSError("no tty")):
+            self.assertFalse(REAL_CONFIRM("prompt"))
+
+    def test_display_shows_the_action_prominently(self):
+        self.mint()
+        text = self.confirm_text[-1]
+        self.assertIn(SHA, text)
+        self.assertIn(SCRIPT, text)
+        self.assertIn("\n  DRY RUN\n", text)
+
+
+class Minting(_Case):
+    def test_dry_run_mints_on_yes(self):
+        nonce = self.mint()
+        self.assertRegex(nonce, r"^[0-9a-f]{32}$")
+
+    def test_record_matches_grant_byte_for_byte(self):
+        with mock.patch.object(b.secrets, "token_hex", return_value="1" * 32), \
+                mock.patch.object(b, "_now", return_value=b._now()) as now:
+            self.mint()
+            from_ae = (self.root / "grants" / ("1" * 32 + ".json")).read_bytes()
+            (self.root / "grants" / ("1" * 32 + ".json")).unlink()
+            b.grant("1892", SHA, f"script={SCRIPT}", 60)
+            by_hand = (self.root / "grants" / ("1" * 32 + ".json")).read_bytes()
+            self.assertTrue(now.called)
+        self.assertEqual(from_ae, by_hand)
+
+    def test_duplicate_live_grant_still_refused(self):
+        self.mint()
+        with self.assertRaises(b.Refused) as ctx:
+            self.mint()
+        self.assertEqual(ctx.exception.code, b.EXIT_DUPLICATE)
+
+    def test_main_head_is_accepted_for_a_post_merge_step(self):
+        self.pulls = [{"number": 7, "state": "closed", "head": {"sha": OLD}}]
+        self.main_head = SHA
+        self.mint()
+        self.assertIn("current head of main", self.confirm_text[-1])
+
+    def test_older_main_commit_refuses(self):
+        self.pulls = [{"number": 7, "state": "closed", "head": {"sha": OLD}}]
+        self.main_head = OLD
+        self.assertIn("stale", self.refused())
+
+    def test_count_label_mints_as_dry_run(self):
+        self.comments = [ae_body(label="Task")]
+        self.mint()
+        self.assertIn("COUNT", self.confirm_text[-1])
+
+
+class ApplyNeedsDryRun(_Case):
+    def test_dry_run_then_apply_pair_mints_apply(self):
+        self.comments = [ae_body(apply=False), ae_body(apply=True)]
+        self.spend_dry_run()
+        self.mint(mode="apply")
+        self.assertIn("APPLY (writes production)", self.confirm_text[-1])
+
+    def test_apply_needs_spent_dry_run_receipt(self):
+        self.comments = [ae_body(apply=True)]
+        self.assertIn("run the dry run first", self.refused(mode="apply"))
+
+    def test_apply_refuses_without_same_sha_dry_run_receipt(self):
+        self.comments = [ae_body(apply=True)]
+        self.spend_dry_run(sha=OLD)
+        self.assertIn("run the dry run first", self.refused(mode="apply"))
+        b.grant("1892", SHA, f"script={SCRIPT},apply", 60)
+        b.consume("1892", SHA, f"script={SCRIPT},apply")  # an apply receipt is not a dry run
+        self.assertIn("run the dry run first", self.refused(mode="apply"))
+
+    def test_unspent_dry_run_grant_does_not_count(self):
+        self.comments = [ae_body(apply=True)]
+        b.grant("1892", SHA, f"script={SCRIPT}", 60)
+        with self.assertRaises(b.Refused):
+            self.mint(mode="apply")
+
+
+class FooterParsing(unittest.TestCase):
+    def test_fenced_or_quoted_footer_is_ignored(self):
+        fenced = "text\n```\n" + ae_body() + "```\n"
+        quoted = "> " + ae_body().replace("\n", "\n> ")
+        prose = "see prod-run=issue:1892,sha:" + SHA + ",script:" + SCRIPT + ",apply:true"
+        for body in (fenced, quoted, prose):
+            with self.subTest(body=body[:30]):
+                self.assertIsNone(ae.footer_action(body))
+
+    def test_non_ae_footer_is_ignored(self):
+        self.assertIsNone(ae.footer_action(ae_body(kind="sweep")))
+
+    def test_parity_with_prod_run(self):
+        """The grammar is restated here (stdlib-only install). Every footer
+        `l1_post.py` can write parses identically to `_prod_run.declared`, and
+        on anything else this reader is never MORE permissive than the forge's."""
+        import _prod_run
+        canonical = [ae_body(), ae_body(apply=True), ae_body(label="Task"),
+                     ae_body() + "  \n", ae_body(issue=7, sha=OLD, script="scripts/1-x_y.z.py")]
+        for body in canonical:
+            with self.subTest(body=body[-80:]):
+                self.assertIsNotNone(ae.footer_action(body))
+                self.assertEqual(ae.footer_action(body), _prod_run.declared(body))
+        off = ["```\n" + ae_body() + "```", "no footer", ae_body(sha="g" * 40),
+               ae_body(script="scripts/x.py"), ae_body().replace("apply:false", "apply:maybe"),
+               ae_body().replace(f"issue:1892,sha:{SHA}", f"sha:{SHA},issue:1892")]
+        for body in off:
+            with self.subTest(body=body[-80:]):
+                ours = ae.footer_action(body)
+                self.assertTrue(ours is None or ours == _prod_run.declared(body))
+
+
+class BrokerWiring(unittest.TestCase):
+    def test_parser_offers_the_verb_with_no_path_option(self):
+        verb = b._parser()._subparsers._group_actions[0].choices["grant-from-ae"]
+        options = sorted(s for a in verb._actions for s in a.option_strings)
+        self.assertEqual(options, ["--help", "--ttl-minutes", "-h"])
+
+    def test_consume_never_imports_the_helper(self):
+        src = (HERE / "hrse_gate_broker.py").read_text(encoding="utf-8")
+        top = src.split("def main(", 1)[0]
+        self.assertNotIn("import hrse_gate_ae", top)
+
+
+if __name__ == "__main__":
+    unittest.main()

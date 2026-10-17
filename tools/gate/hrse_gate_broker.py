@@ -22,6 +22,18 @@ Two verbs:
         so an operator whose run was refused can see whether the grant is
         still live before minting (a second live grant is refused anyway).
 
+    grant-from-ae <issue> dry-run|apply [--ttl-minutes N]
+        Root only, and only at a TTY (harmonic-forge#1064). Reads the issue's
+        newest `--prod-run` AE for that mode from GitHub, shows the exact grant
+        it would mint, and mints it -- through the same path as `grant` -- only
+        on an explicit `y`. The GitHub read is untrusted input: the AE is
+        written by the account every lane also uses, so the operator's `y` at
+        a root-password prompt is the authorization, never the comment.
+        GitHub is read with a root-owned token file (TOKEN_PATH), never with
+        root's or the operator's `gh` state. No sudoers rule names this verb.
+        Its logic lives in the sibling `hrse_gate_ae.py` (R-0006), loaded
+        only on this branch, installed root-owned beside this file.
+
     consume <issue> <sha> <action>
         Run as hrse-gate through the single NOPASSWD sudoers rule. Finds a
         grant matching the action exactly and renames it into receipts/.
@@ -64,6 +76,12 @@ STORE_ROOT = Path("/var/lib/hrse-gate")
 OWNER = "hrse-gate"
 MAX_TTL_MINUTES = 24 * 60
 DEFAULT_TTL_MINUTES = 60
+
+#: harmonic-forge#1064. Root-owned, 0600, a read-only token on vitalharmony/hrse.
+TOKEN_PATH = Path("/etc/hrse-gate/github-token")
+GITHUB_API = "https://api.github.com"
+GATED_REPO = "vitalharmony/hrse"
+MAX_COMMENT_PAGES = 10
 
 SCRIPT = re.compile(r"^scripts/1-[A-Za-z0-9._-]+\.py$")
 LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -140,7 +158,12 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
         raise Refused(EXIT_REFUSED, "grant runs as root only: the operator mints a grant, a lane never does")
     if not 1 <= ttl_minutes <= MAX_TTL_MINUTES:
         raise Refused(EXIT_REFUSED, f"--ttl-minutes must be 1..{MAX_TTL_MINUTES}")
-    key = _key(issue, sha, action)
+    return _mint(_key(issue, sha, action), ttl_minutes)
+
+
+def _mint(key: dict, ttl_minutes: int) -> str:
+    """The one write path for a grant: `grant` and `grant-from-ae` both end
+    here, so a grant minted from an AE is the record `grant` would write."""
     with _store_lock():
         now = _now()
         _prune_expired(now)
@@ -286,6 +309,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("sha")
     g.add_argument("action")
     g.add_argument("--ttl-minutes", type=int, default=DEFAULT_TTL_MINUTES)
+    ga = verbs.add_parser("grant-from-ae", allow_abbrev=False)
+    ga.add_argument("issue")
+    ga.add_argument("mode", choices=("dry-run", "apply"))
+    ga.add_argument("--ttl-minutes", type=int, default=DEFAULT_TTL_MINUTES)
     st = verbs.add_parser("status", allow_abbrev=False)
     st.add_argument("issue")
     st.add_argument("sha")
@@ -308,6 +335,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "grant":
             print(grant(args.issue, args.sha, args.action, args.ttl_minutes))
+        elif args.verb == "grant-from-ae":
+            # Imported here only (harmonic-forge#1064): `consume`, the one
+            # NOPASSWD path, never loads it. `-I` drops the script's own
+            # directory from sys.path, so it is added back explicitly; the
+            # install puts both files root-owned in /usr/local/libexec.
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import hrse_gate_ae  # noqa: PLC0415
+            print(hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue, args.mode,
+                                             args.ttl_minutes))
         elif args.verb == "status":
             print(status(args.issue, args.sha, args.action))
         elif args.verb == "consume":

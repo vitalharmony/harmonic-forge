@@ -66,14 +66,16 @@ sudo install -d -o hrse-gate -g hrse-gate -m 0700 /var/lib/hrse-gate /var/lib/hr
 git -C ~/harmonic-forge fetch -q origin
 git -C ~/harmonic-forge show <FORGE_SHA>:tools/gate/hrse_gate_broker.py > /tmp/hrse-gate.py
 git -C ~/harmonic-forge show <FORGE_SHA>:tools/gate/hrse_gate_run.py > /tmp/hrse-gate-run.py
+git -C ~/harmonic-forge show <FORGE_SHA>:tools/gate/hrse_gate_ae.py > /tmp/hrse_gate_ae.py
 git -C ~/harmonic-forge show <FORGE_SHA>:tools/lane/policies/claude-lane3.json > /tmp/claude-lane3.json
 sudo install -o root -g root -m 0755 /tmp/hrse-gate.py /usr/local/libexec/hrse-gate
 sudo install -o root -g root -m 0755 /tmp/hrse-gate-run.py /usr/local/libexec/hrse-gate-run
+sudo install -o root -g root -m 0644 /tmp/hrse_gate_ae.py /usr/local/libexec/hrse_gate_ae.py
 sudo install -d -o root -g root -m 0755 /usr/local/share/hrse-gate
 sudo install -o root -g root -m 0444 /tmp/claude-lane3.json /usr/local/share/hrse-gate/claude-lane3.json
 printf '%s\n' 'mmangus ALL=(hrse-gate) NOPASSWD: /usr/local/libexec/hrse-gate consume *' > /tmp/hrse-gate.sudoers && visudo -cf /tmp/hrse-gate.sudoers
 sudo install -o root -g root -m 0440 /tmp/hrse-gate.sudoers /etc/sudoers.d/hrse-gate && sudo visudo -c
-rm /tmp/hrse-gate.py /tmp/hrse-gate-run.py /tmp/claude-lane3.json /tmp/hrse-gate.sudoers
+rm /tmp/hrse-gate.py /tmp/hrse-gate-run.py /tmp/hrse_gate_ae.py /tmp/claude-lane3.json /tmp/hrse-gate.sudoers
 ```
 
 Then write the manifest from the reviewed HRSE2 SHA:
@@ -136,6 +138,39 @@ sudo /usr/local/libexec/hrse-gate status 1892 <40-hex sha> script=scripts/1-1892
 sudo /usr/local/libexec/hrse-gate grant 1892 <40-hex sha> script=scripts/1-1892-revive-falsely-lapsed.py,apply --ttl-minutes 60
 ```
 
+Or let the broker read those values from the posted AE (harmonic-forge#1064):
+
+```bash
+sudo /usr/local/libexec/hrse-gate grant-from-ae 1892 dry-run
+sudo /usr/local/libexec/hrse-gate grant-from-ae 1892 apply     # only after the dry run was consumed at that SHA
+```
+
+It reads the issue's newest `--prod-run` AE for that mode, checks that its SHA
+is an open PR's head (or `main`'s current head, for a post-merge step), shows
+the exact grant with **DRY RUN** or **APPLY (writes production)** on its own
+line, and mints only if you type `y`. It mints exactly what `grant` would.
+The AE is written by the account every lane also uses, so read the action
+before answering: your `y` is the authorization, not the comment. `apply` also
+refuses unless a dry-run grant for the same issue, SHA and script has been
+spent. No sudoers rule names this verb, and none may: every lane runs as
+`mmangus`.
+
+### One-time: the GitHub token `grant-from-ae` reads with
+
+Root reads GitHub with its own token file, never with root's or your `gh`
+state (your `gh` keeps its token in the user keyring). Create a fine-grained
+token on `vitalharmony/hrse` with **Issues: read**, **Pull requests: read** and
+**Contents: read** only, then load it without the clipboard:
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/hrse-gate
+sudo sh -c 'umask 077; read -rs T && printf "%s" "$T" > /etc/hrse-gate/github-token'
+sudo chown root:root /etc/hrse-gate/github-token && sudo chmod 0600 /etc/hrse-gate/github-token
+```
+
+Paste the token at the silent prompt and press Enter. A missing token file, a
+mode looser than 0600 or a non-root owner makes the verb refuse.
+
 This host's `Defaults targetpw` makes `sudo` ask for the root password. A
 second `grant` for an action that already has a live grant is refused and
 names the existing one; `status` shows whether a grant is live, expired or
@@ -145,6 +180,12 @@ spent. A grant expires after `--ttl-minutes` (default 60, max 1440).
 
 Repeat the install steps and the manifest step from newer reviewed SHAs. Until
 you do, `hrse-gate-run` refuses with a digest-drift message. That is intended.
+
+harmonic-forge#1064 changed the broker, so its installed sha256 changed: after
+merging it, reinstall (including the new `/usr/local/libexec/hrse_gate_ae.py`)
+and rewrite the manifest, or every production run refuses on drift. The
+helper is not in the manifest: it only runs under `grant-from-ae`, as root,
+behind your `y`; `consume` and `hrse-gate-run` never load it.
 
 ## Limits, stated
 
