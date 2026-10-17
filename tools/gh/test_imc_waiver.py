@@ -223,9 +223,12 @@ class EndGh(FakeGh):
         self.existing = existing or []
 
     def __call__(self, argv, **kw):
+        if list(argv[:3]) == ["gh", "api", "user"]:
+            return subprocess.CompletedProcess(argv, 0, "vitalharmony\n", "")
         if "--paginate" in argv:
             self.calls.append(list(argv))
-            out = "".join(json.dumps([u, b]) + "\n" for u, b in self.existing)
+            out = "".join(json.dumps([e[0], e[1], e[2] if len(e) > 2 else "vitalharmony"]) + "\n"
+                          for e in self.existing)
             return subprocess.CompletedProcess(argv, 0, out, "")
         return super().__call__(argv, **kw)
 
@@ -314,7 +317,9 @@ class EndTests(unittest.TestCase):
         self.assertFalse(self.pc.imc_forced("vitalharmony/harmonic-forge", 892))
 
     def test_end_refuses_at_pass_count_1(self) -> None:
-        self.preclose = {"status": "complete", "pass_history": [{"sha": "a", "surviving": 2}]}
+        # Under-waiver pass (pass 2, test-honesty): only the count can refuse it.
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
         gh = EndGh()
         with self.assertRaises(SystemExit) as raised:
             self.end(gh)
@@ -330,7 +335,7 @@ class EndTests(unittest.TestCase):
 
     def test_end_refuses_when_second_pass_was_clean(self) -> None:
         self.preclose = {"status": "complete", "pass_history": [
-            {"sha": "a", "surviving": 2}, {"sha": "b", "surviving": 0}]}
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}, {"sha": "b", "surviving": 0, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
         with self.assertRaises(SystemExit):
             self.end()
 
@@ -338,7 +343,7 @@ class EndTests(unittest.TestCase):
         self.preclose = {"status": "complete", "pass_history": [
             {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z",
              "cross_family_ran": True}],
-                         "mechanism_cluster": {"epoch": 0, "verdict": "patch"}}
+                         "mechanism_cluster": {"epoch": 0, "verdict": "PATCH"}}
         self.assertEqual(self.end()["status"], "ended")
 
     def test_end_refuses_passes_from_before_the_waiver(self) -> None:
@@ -360,13 +365,94 @@ class EndTests(unittest.TestCase):
 
     def test_end_refuses_an_unruled_or_stale_epoch_cluster(self) -> None:
         self.preclose = {"status": "complete", "pass_history": [
-            {"sha": "a", "surviving": 2, "epoch": 1}],
-            "mechanism_cluster": {"epoch": 0, "verdict": "reforge"}}
+            {"sha": "a", "surviving": 2, "epoch": 1, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}],
+            "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE"}}
         with self.assertRaises(SystemExit):
             self.end()
         self.preclose["mechanism_cluster"] = {"epoch": 1}
         with self.assertRaises(SystemExit):
             self.end()
+        # Pass 2 cross-family: an unrecognized verdict is not a stop.
+        self.preclose["mechanism_cluster"] = {"epoch": 1, "verdict": "NOT_A_RULING"}
+        with self.assertRaises(SystemExit):
+            self.end()
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_retry_after_archive_write_before_unlink_posts_once(self) -> None:
+        """Reforge: a crash after the archived `ended` file is written but
+        before the live journal is removed. The retry resumes the same run id,
+        finds the prior post by marker and author, and does not repost."""
+        gh = EndGh()
+        real_unlink = Path.unlink
+        def crash(path, *a, **kw):
+            if path.name == f"{KEY}.waiver.json":
+                raise OSError("killed")
+            return real_unlink(path, *a, **kw)
+        with patch.object(Path, "unlink", crash), self.assertRaises(OSError):
+            self.end(gh)
+        live = json.loads((self.state / f"{KEY}.waiver.json").read_text())
+        self.assertEqual(live["status"], "ending")  # never rewritten as `ended`
+        retry = EndGh(existing=[(URL, gh.posted_body or "")])
+        final = self.end(retry, now=self.now + timedelta(minutes=5))
+        self.assertEqual(final["end_comment_url"], URL)
+        self.assertFalse(any("--method" in c for c in retry.calls))
+        self.assertEqual(len(self.archived()), 1)
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_resumes_a_legacy_ended_live_receipt_without_reposting(self) -> None:
+        """Pass 2: a live receipt left `ended` (pre-reforge crash window)
+        resumes its own run id instead of starting a fresh end."""
+        path = self.state / f"{KEY}.waiver.json"
+        data = json.loads(path.read_text())
+        ended_at = imc_waiver._iso(self.now)
+        data.update(status="ended", ended_at=ended_at, end_reason="r",
+                    end_comment_url="https://x/first")
+        path.write_text(json.dumps(data))
+        gh = EndGh()
+        final = self.end(gh, now=self.now + timedelta(minutes=5))
+        self.assertEqual(final["end_comment_url"], "https://x/first")
+        self.assertEqual(final["ended_at"], ended_at)
+        self.assertFalse(any("--method" in c for c in gh.calls))
+
+    def test_a_marker_from_another_author_is_not_the_end_comment(self) -> None:
+        marker = imc_waiver.end_marker(KEY, imc_waiver._iso(self.now))
+        forged = imc_waiver.end_heading(KEY) + "\n\n" + marker
+        gh = EndGh(existing=[("https://x/forged", forged, "someone-else")])
+        final = self.end(gh)
+        self.assertNotEqual(final["end_comment_url"], "https://x/forged")
+        self.assertEqual(sum(1 for c in gh.calls if "--method" in c), 1)
+
+    def test_overlapping_ends_post_once(self) -> None:
+        """Pass 2 (second-run): `end` holds a per-key lock, so a second run
+        waits, then resumes the first's journal and finds its post."""
+        import threading
+        inside, release = threading.Event(), threading.Event()
+        posted: list = []
+
+        class Slow(EndGh):
+            def __call__(self, argv, **kw):
+                if "--method" in argv:
+                    inside.set()
+                    release.wait(5)
+                    posted.append(1)
+                return super().__call__(argv, **kw)
+
+        first = Slow()
+        t = threading.Thread(target=lambda: self.end(first))
+        t.start()
+        inside.wait(5)
+        second_result: dict = {}
+
+        def run_second():
+            second_result["r"] = self.end(EndGh(existing=[(URL, first.posted_body or "")]))
+        t2 = threading.Thread(target=run_second)
+        t2.start()
+        t2.join(0.3)
+        self.assertTrue(t2.is_alive(), "second end must wait on the lock")
+        release.set()
+        t.join(5)
+        t2.join(5)
+        self.assertEqual(len(posted), 1)
 
     def test_no_unconsumed_batch_target_and_no_hook_record_after_end(self) -> None:
         self.assertTrue(imc_waiver.live_merge_grant(KEY, self.batch))
@@ -418,7 +504,8 @@ class EndTests(unittest.TestCase):
     def test_retry_after_post_does_not_repost(self) -> None:
         class CrashOnRefetch(EndGh):
             def __call__(self, argv, **kw):
-                if "--method" not in argv and "--paginate" not in argv:
+                if ("--method" not in argv and "--paginate" not in argv
+                        and list(argv[:3]) != ["gh", "api", "user"]):
                     return subprocess.CompletedProcess(argv, 1, "", "boom")
                 return super().__call__(argv, **kw)
 

@@ -40,6 +40,8 @@ Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -372,7 +374,7 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
         return "sticky-wicket stop (two passes both left surviving findings)"
     epoch = max((int(p.get("epoch") or 0) for p in preclose_passes.history(receipt)), default=0)
     cluster = preclose_passes._mechanism_cluster(receipt, epoch)
-    if cluster and cluster.get("verdict") and waived:
+    if cluster and cluster.get("verdict") in ("PATCH", "REFORGE") and waived:
         return f"mechanism-cluster verdict {cluster.get('verdict')} (current epoch)"
     return None
 
@@ -389,7 +391,8 @@ def _revoke_authority(key: str, moment: datetime, batch_state_path: Path | None)
 
 
 def _pending_end(key: str) -> Path | None:
-    """The newest archived receipt still marked `ending`: a crashed `end`."""
+    """The newest archived receipt still marked `ending`: an `end` that
+    crashed under the pre-journal layout. Completed by a retry."""
     candidates = sorted(archive_dir().glob(f"{key}.waiver.*.json"))
     for path in reversed(candidates):
         data = read_json(path)
@@ -398,21 +401,49 @@ def _pending_end(key: str) -> Path | None:
     return None
 
 
-def _existing_end_comment(repo: str, issue: int, expected: str, runner) -> str | None:
-    """An already-posted end comment whose body is exactly `expected`; a
-    comment carrying only the marker (e.g. edited down) never counts."""
+@contextlib.contextmanager
+def _end_lock(key: str):
+    """One `end` per key at a time (pass 2, second-run): overlapping runs
+    would each post. Blocks until the holder finishes."""
+    state_dir().mkdir(parents=True, exist_ok=True)
+    with open(state_dir() / f"{key}.end.lock", "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _gh_login(runner) -> str | None:
+    found = runner(["gh", "api", "user", "--jq", ".login"],
+                   capture_output=True, text=True, check=False)
+    return (found.stdout or "").strip() or None if found.returncode == 0 else None
+
+
+def _existing_end_comment(repo: str, issue: int, key: str, run_id: str, runner) -> str | None:
+    """A prior `## IMC ended` post for this run: it carries this run's marker,
+    starts with the end heading, and was written by the current gh user.
+    Keyed on the journal's stable run id, never on regenerated body text
+    (#1042 reforge). Any read failure refuses rather than re-posting."""
+    login = _gh_login(runner)
+    if not login:
+        raise SystemExit("imc-waiver: could not resolve the gh user to check for a prior "
+                         "`## IMC ended` post; nothing was posted.")
     found = runner(["gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments",
-                    "--jq", ".[] | [.html_url, .body] | @json"],
+                    "--jq", ".[] | [.html_url, .body, .user.login] | @json"],
                    capture_output=True, text=True, check=False)
     if found.returncode != 0:
         raise SystemExit(f"imc-waiver: could not read {repo}#{issue}'s comments to check for a "
                          f"prior `## IMC ended` post: {(found.stderr or '').strip()}")
+    marker = end_marker(key, run_id)
     for line in (found.stdout or "").splitlines():
         try:
-            url, body = json.loads(line)
+            url, body, author = json.loads(line)
         except (ValueError, TypeError):
             continue
-        if str(body).strip() == expected.strip():
+        body = str(body)
+        if (author == login and marker in body
+                and body.lstrip().startswith(end_heading(key))):
             return str(url)
     return None
 
@@ -420,7 +451,14 @@ def _existing_end_comment(repo: str, issue: int, expected: str, runner) -> str |
 def end(key: str, *, reason: str, now: datetime | None = None,
         batch_state_path: Path | None = None, runner=subprocess.run) -> dict:
     """harmonic-forge#1042: end an IMC waiver at the IMC stop. Returns the
-    final archived receipt (status `ended`)."""
+    final archived receipt (status `ended`).
+
+    Reforge (sticky-wicket, two passes): one journal -- the live receipt,
+    written once as `ending` with a stable `ended_at` run id -- drives every
+    step under a per-key lock. A retry from any crash point resumes that
+    journal; nothing is re-derived. The live receipt is never rewritten as
+    `ended`: the archived `ended` file is written first, then the live one is
+    removed, so IMC stays enforced until the record is complete."""
     key = key.strip().upper()
     if not reason or not reason.strip():
         raise SystemExit("imc-waiver: --reason must be non-empty.")
@@ -429,48 +467,48 @@ def end(key: str, *, reason: str, now: datetime | None = None,
         raise SystemExit(f"imc-waiver: {key} is not a repo-prefixed issue key.")
     repo, issue = target
     moment = now or _now()
-    live = receipt_path(key)
-    if live.exists():
-        data = read_json(live)
-        if data is None:
-            data = {"unreadable": True,
-                    "unreadable_original": live.read_text(encoding="utf-8", errors="replace")}
-        if data.get("status") == "ending":
-            ending = data  # a crashed `end`: reuse its ended_at so the post is found once
+    with _end_lock(key):
+        live = receipt_path(key)
+        if live.exists():
+            data = read_json(live)
+            if data is None:
+                data = {"unreadable": True,
+                        "unreadable_original": live.read_text(encoding="utf-8",
+                                                              errors="replace")}
+            if data.get("status") in ("ending", "ended") and data.get("ended_at"):
+                ending = data  # resume the journal: same run id, same reason
+            else:
+                stop = imc_stop(repo, issue, data.get("granted_at"))
+                if stop is None:
+                    raise SystemExit(
+                        f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt "
+                        "shows neither two current-epoch passes run under this waiver (forced "
+                        "cross-family) that both left surviving findings nor a current-epoch "
+                        "PATCH/REFORGE mechanism-cluster verdict after such a pass. `end` is the "
+                        "exit from that stop, never a way around the forced cross-family pass.")
+                ending = {**data, "status": "ending", "end_reason": reason.strip(),
+                          "ended_at": _iso(moment), "end_stop": stop}
+                write_json_atomic(live, ending)
         else:
-            stop = imc_stop(repo, issue, data.get("granted_at"))
-            if stop is None:
-                raise SystemExit(
-                    f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt "
-                    "shows neither two current-epoch passes run under this waiver (forced "
-                    "cross-family) that both left surviving findings nor a current-epoch "
-                    "mechanism-cluster verdict after such a pass. `end` is the exit from that "
-                    "stop, never a way around the forced cross-family pass.")
-            ending = {**data, "status": "ending", "end_reason": reason.strip(),
-                      "ended_at": _iso(moment), "end_stop": stop}
-            write_json_atomic(live, ending)
-        # The live receipt stays in place (IMC still enforced) until the grant
-        # is revoked and the comment is posted; only then is it archived.
-        archived = archive_dir() / f"{key}.waiver.{_stamp(_parse_time(ending.get('ended_at')) or moment)}.json"
-    else:
-        archived = _pending_end(key)
-        if archived is None:
-            raise SystemExit(f"imc-waiver: no IMC waiver receipt for {key} and no interrupted "
-                             "`end` to complete.")
-        ending = read_json(archived) or {}
-    _revoke_authority(key, moment, batch_state_path)
-    body = end_comment_body(key, repo, issue, ending)
-    url = _existing_end_comment(repo, issue, body, runner)
-    if url is None:
-        url = post_and_confirm(repo, issue, body, runner)
-    final = {**ending, "status": "ended", "end_comment_url": url}
-    if live.exists():
-        write_json_atomic(live, final)
+            pending = _pending_end(key)
+            if pending is None:
+                raise SystemExit(f"imc-waiver: no IMC waiver receipt for {key} and no "
+                                 "interrupted `end` to complete.")
+            ending = read_json(pending) or {}
+        run_id = str(ending.get("ended_at"))
+        archived = archive_dir() / f"{key}.waiver.{_stamp(_parse_time(run_id) or moment)}.json"
+        _revoke_authority(key, moment, batch_state_path)
+        url = ending.get("end_comment_url") or _existing_end_comment(repo, issue, key, run_id,
+                                                                     runner)
+        if url is None:
+            url = post_and_confirm(repo, issue, end_comment_body(key, repo, issue, ending),
+                                   runner)
+        final = {**ending, "status": "ended", "end_comment_url": url}
         archive_dir().mkdir(parents=True, exist_ok=True)
-        os.replace(live, archived)
-    else:
         write_json_atomic(archived, final)
-    return final
+        if live.exists():
+            live.unlink()
+        return final
 
 
 def main() -> int:
