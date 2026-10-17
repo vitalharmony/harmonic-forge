@@ -418,6 +418,16 @@ class F1060PrecloseTests(ReceiptHome):
         self.assertIn("newest round", str(ctx.exception))
         self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="rework"))
 
+    def test_ac3_legacy_older_round_shape_cannot_be_written(self):
+        # Sticky-wicket 6236471988 (b): AC3's read side trusts `through` as a
+        # reset, so the guard is record(). This is the legacy shape the old
+        # record() accepted (FAIL 1, FAIL 5, --through 1); it must be refused.
+        comments = [gate(1, "FAIL"), gate(5, "FAIL")]
+        with self._gh(comments), self.assertRaises(SystemExit):
+            sr.record(REPO, ISSUE, "PATCH", 1, "https://x/issues/1#issuecomment-99")
+        self.assertIsNone(sr.read(REPO, ISSUE))
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="rework"))
+
     def test_record_accepts_the_newest_round(self):
         comments = [gate(1, "FAIL"), gate(2, "FAIL")]
         with self._gh(comments):
