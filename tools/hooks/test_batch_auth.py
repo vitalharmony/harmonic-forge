@@ -236,6 +236,18 @@ class SessionScopeTests(StateFixture):
         with self.assertRaises(TypeError):
             ba.top_up(["F1063"], "gh pr merge", state_path=self.state_path)
 
+    def test_new_session_readopts_a_live_grant_by_remention(self):
+        """Sticky-wicket PATCH (#1063 pass 2): after /clear the lane has a new
+        session id; re-typing BATCH adds it, and the old id stays listed."""
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-old")
+        ba.link_pr("F1063", "vitalharmony/harmonic-forge", 1064, state_path=self.state_path)
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-new")
+        entry = self._entry("F1063")
+        self.assertEqual(entry["session_ids"], ["session-old", "session-new"])
+        import block_batch_stop as bbs
+        now = ba._now()
+        self.assertEqual(bbs.live_pending({"F1063": entry}, now, "session-new"), ["F1063"])
+
     def test_remention_without_session_adds_nothing(self):
         ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
         ba.top_up(["F1063"], state_path=self.state_path, session_id=None)

@@ -103,6 +103,15 @@ def live_pending(state: dict, now: datetime, session_id: str | None = None) -> l
     entry, because unknown allows. An entry with no `session_ids` -- legacy
     state, or a grant minted without a session -- holds every session, as
     before.
+
+    **A changed `session_id` releases the hold; it never wedges** (preclose
+    pass 2, sticky-wicket PATCH). A lane that continues under a new session
+    id (`/clear`, possibly a resume) is not in `session_ids`, so its Stop is
+    allowed. That is the accepted price of telling two parallel Lane 1
+    sessions apart: any more durable key brings back the cross-session block
+    this scoping removes. To put the hold back, type `BATCH <keys>` again in
+    the new session; the re-mention path (`batch_auth.top_up`) adds it to the
+    live grant. Merge authorization (`batch_gate.py`) is unaffected.
     """
     pending: list[str] = []
     for key, entry in (state or {}).items():
