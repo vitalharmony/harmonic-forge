@@ -352,6 +352,48 @@ def _new_target(action: str) -> dict:
     return {"action": action, "consumed": False, "consumed_by": None, "repo": None, "pr_number": None}
 
 
+def _check_actions(actions) -> None:
+    """The action-list rules `authorize()` and `top_up()` share."""
+    if isinstance(actions, str):
+        # A bare string is technically iterable -- silently producing one
+        # single-character garbage target per letter is far worse than a
+        # loud, immediate TypeError. Caught live while fixing this exact
+        # module's own test suite for harmonic-forge#356.
+        raise TypeError(f"actions must be a list of strings, not a bare string: {actions!r}")
+    if not actions:
+        raise ValueError("authorize() requires at least one action")
+    if CLOSE_ACTION_REMOVED in actions:
+        raise ValueError(
+            f"{CLOSE_ACTION_REMOVED!r} is no longer an authorizable action "
+            "(harmonic-forge#612) -- a batched issue closes by an explicit "
+            "close command after its merge, never by a closing keyword in a "
+            "PR body (harmonic-forge#911)"
+        )
+
+
+def _fresh_entry(raw_key: str, now: datetime, expires: datetime, actions,
+                 session_id: str | None) -> tuple[str, dict]:
+    """One new grant entry. Written by `authorize()` and, for a key that is
+    not live, by `top_up()` inside the same lock that decided it was fresh
+    (harmonic-forge#1063 preclose: deciding under one lock and writing under a
+    second let two near-simultaneous mints replace each other, dropping the
+    first session from `session_ids`)."""
+    key = raw_key.upper()
+    if not ISSUE_KEY.match(key):
+        raise ValueError(f"not a valid issue key: {raw_key!r}")
+    entry = {
+        "authorized_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "targets": [_new_target(action) for action in actions],
+    }
+    # harmonic-forge#1063: the session whose prompt minted the grant. No
+    # session, no field: an unscoped entry holds every session at Stop,
+    # exactly as before (block_batch_stop.live_pending).
+    if session_id:
+        entry["session_ids"] = [session_id]
+    return key, entry
+
+
 def _prune(state: dict, now: datetime) -> dict:
     """Drop entries expired more than `PRUNE_GRACE_HOURS` ago (AC1).
 
@@ -411,6 +453,7 @@ def top_up(
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     state_path: Path | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     """Extend a live grant instead of replacing it; authorize fresh keys.
 
@@ -426,25 +469,36 @@ def top_up(
     exactly as they are. A key with no entry, or an expired one, is authorized
     normally. Returns the keys that were newly authorized, so the caller can
     say which is which rather than claiming success for both.
+
+    harmonic-forge#1063: `session_id` is the authorizing prompt's session.
+    A re-mention of a live, session-scoped key from another session adds that
+    session to `session_ids` -- both now own the hold. A live LEGACY entry
+    (no `session_ids`) is left global: scoping it now would silently release
+    every other session that was relying on today's behavior.
     """
+    _check_actions(actions)
     actual_path = STATE_PATH if state_path is None else state_path
     fresh: list[str] = []
     with _locked_state(actual_path):
         state = _load(state_path)
         now = _now()
         state = _prune(state, now)
-        expires = (now + timedelta(hours=ttl_hours)).isoformat()
-        for key in keys:
-            key = key.upper()
+        expires = now + timedelta(hours=ttl_hours)
+        for raw_key in keys:
+            key = raw_key.upper()
             entry = state.get(key)
             if entry is not None and _entry_live(entry, now):
-                entry["expires_at"] = expires
+                entry["expires_at"] = expires.isoformat()
+                owners = entry.get("session_ids")
+                if session_id and isinstance(owners, list) and owners \
+                        and session_id not in owners:
+                    owners.append(session_id)
                 continue
+            # Written here, under the lock that found it fresh, never by a
+            # second authorize() call (harmonic-forge#1063 preclose pass 1).
+            key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
             fresh.append(key)
         _save(state, state_path)
-    if fresh:
-        authorize(fresh, actions=actions, ttl_hours=ttl_hours,
-                  state_path=state_path)
     return fresh
 
 
@@ -453,6 +507,7 @@ def authorize(
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     state_path: Path | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Write one fresh entry per issue key, one target per action (default:
     both merge and close -- harmonic-forge#356 gap 2). See module docstring
@@ -463,21 +518,7 @@ def authorize(
     (fresh targets, any prior consumption reset) -- a new BATCH grant is a
     new grant, not a merge with whatever was there before.
     """
-    if isinstance(actions, str):
-        # A bare string is technically iterable -- silently producing one
-        # single-character garbage target per letter is far worse than a
-        # loud, immediate TypeError. Caught live while fixing this exact
-        # module's own test suite for harmonic-forge#356.
-        raise TypeError(f"actions must be a list of strings, not a bare string: {actions!r}")
-    if not actions:
-        raise ValueError("authorize() requires at least one action")
-    if CLOSE_ACTION_REMOVED in actions:
-        raise ValueError(
-            f"{CLOSE_ACTION_REMOVED!r} is no longer an authorizable action "
-            "(harmonic-forge#612) -- a batched issue closes by an explicit "
-            "close command after its merge, never by a closing keyword in a "
-            "PR body (harmonic-forge#911)"
-        )
+    _check_actions(actions)
     actual_path = STATE_PATH if state_path is None else state_path
     with _locked_state(actual_path):
         state = _load(state_path)
@@ -485,14 +526,7 @@ def authorize(
         state = _prune(state, now)
         expires = now + timedelta(hours=ttl_hours)
         for raw_key in keys:
-            key = raw_key.upper()
-            if not ISSUE_KEY.match(key):
-                raise ValueError(f"not a valid issue key: {raw_key!r}")
-            state[key] = {
-                "authorized_at": now.isoformat(),
-                "expires_at": expires.isoformat(),
-                "targets": [_new_target(action) for action in actions],
-            }
+            key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
         _save(state, state_path)
 
 

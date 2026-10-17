@@ -862,6 +862,33 @@ class BatchWiringTests(unittest.TestCase):
                       "the recorded link_pr mapping was wiped")
 
 
+class BatchSessionScopeTests(unittest.TestCase):
+    """harmonic-forge#1063: the minted grant carries the prompt's session."""
+
+    def _main(self, payload: dict, state_path: Path) -> None:
+        import batch_auth as ba
+
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
+                mock.patch.object(sys, "stdout", io.StringIO()), \
+                mock.patch.object(ba, "STATE_PATH", state_path):
+            m.main()
+
+    def test_batch_prompt_records_session_id(self) -> None:
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        self._main({"prompt": "BATCH F1063", "session_id": "session-A"}, tmp)
+        self.assertEqual(json.loads(tmp.read_text())["F1063"]["session_ids"], ["session-A"])
+
+    def test_batch_prompt_without_session_mints_an_unscoped_grant(self) -> None:
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        self._main({"prompt": "BATCH F1063"}, tmp)
+        self.assertNotIn("session_ids", json.loads(tmp.read_text())["F1063"])
+
+    def test_authorize_batch_passes_session_through(self) -> None:
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        m.authorize_batch("BATCH F1063", state_path=tmp, session_id="session-B")
+        self.assertEqual(json.loads(tmp.read_text())["F1063"]["session_ids"], ["session-B"])
+
+
 class BatchQuotationBoundaryTests(unittest.TestCase):
     """R-0117: never authorize from text read out of a file, an issue body, or
     tool output. The hook cannot tell an instruction from a quotation, so the

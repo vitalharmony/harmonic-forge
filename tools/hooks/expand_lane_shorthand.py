@@ -574,7 +574,8 @@ def batch_keys(prompt: str) -> list[str]:
     return keys
 
 
-def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
+def authorize_batch(prompt: str, state_path: Path | None = None,
+                    session_id: str | None = None) -> str:
     """Create the authorization a BATCH message asks for (harmonic-forge#502).
 
     **This is the half that never existed.** Typing `BATCH F495,F497` had no
@@ -623,7 +624,7 @@ def authorize_batch(prompt: str, state_path: Path | None = None) -> str:
         # merges only. A batched issue closes by an explicit close command
         # after its merge (harmonic-forge#911), not a target here.
         fresh = top_up(keys, actions=["gh pr merge", "gh pr merge"],
-                       state_path=state_path)
+                       state_path=state_path, session_id=session_id)
     except Exception as exc:  # noqa: BLE001
         return (f"BATCH authorization FAILED for {', '.join(keys)}: {exc}. "
                 "Every merge will prompt. Fix before relying on it.")
@@ -797,7 +798,9 @@ def main() -> None:
     # silently skipped authorization entirely. That is the original defect
     # exactly: BATCH typed, nothing created, no signal.
     try:
-        batch_receipt = authorize_batch(prompt)
+        # harmonic-forge#1063: the grant records this prompt's session, so
+        # block_batch_stop holds only the session that authorized it.
+        batch_receipt = authorize_batch(prompt, session_id=payload.get("session_id"))
     except Exception:
         batch_receipt = ""
     # harmonic-forge#895: after BATCH, never instead of it. IMC reads its

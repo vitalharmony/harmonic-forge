@@ -153,6 +153,107 @@ class AuthorizeTests(StateFixture):
         self.assertEqual(merge_target["pr_number"], 1202)
 
 
+class SessionScopeTests(StateFixture):
+    """harmonic-forge#1063: the grant records its authorizing session(s)."""
+
+    def _entry(self, key):
+        return json.loads(self.state_path.read_text())[key]
+
+    def test_authorize_records_the_session(self):
+        ba.authorize(["F1063"], state_path=self.state_path, session_id="session-A")
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+    def test_entry_minted_without_session_has_no_session_ids(self):
+        for session in (None, ""):
+            with self.subTest(session=session):
+                ba.authorize(["F1063"], state_path=self.state_path, session_id=session)
+                self.assertNotIn("session_ids", self._entry("F1063"))
+
+    def test_top_up_fresh_key_records_the_session(self):
+        fresh = ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        self.assertEqual(fresh, ["F1063"])
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+    def test_remention_from_second_session_adds_it(self):
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A", "session-B"])
+
+    def test_remention_preserves_consumption_and_links(self):
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        ba.link_pr("F1063", "vitalharmony/harmonic-forge", 1064, state_path=self.state_path)
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        linked = [t for t in self._entry("F1063")["targets"] if t.get("pr_number") == 1064]
+        self.assertEqual(len(linked), 1)
+
+    def test_legacy_entry_remention_stays_global(self):
+        ba.authorize(["F1063"], state_path=self.state_path)
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        self.assertNotIn("session_ids", self._entry("F1063"))
+
+    def test_concurrent_fresh_mints_keep_both_sessions(self):
+        """Preclose pass 1 (harmonic-forge#1063): two sessions mint the same
+        new key. The fresh entry is written under the lock that found it
+        fresh, so the second mint sees a live entry and appends; it never
+        replaces the first session's grant."""
+        real_authorize = ba.authorize
+        b_ran = []
+
+        def interleave(*args, **kwargs):  # B mints between A's decide and write
+            ba.authorize = real_authorize
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+            b_ran.append(True)
+            return real_authorize(*args, **kwargs)
+
+        ba.authorize = interleave
+        try:
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        finally:
+            ba.authorize = real_authorize
+        if not b_ran:  # no decide/write gap to interleave into: B simply follows
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        self.assertEqual(sorted(self._entry("F1063")["session_ids"]), ["session-A", "session-B"])
+
+    def test_fresh_mint_does_not_call_authorize(self):
+        """The structural half of the race fix: `top_up` never hands a fresh
+        key to a second, separately locked `authorize()` call."""
+        calls = []
+        real = ba.authorize
+        ba.authorize = lambda *a, **k: calls.append(a) or real(*a, **k)
+        try:
+            ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        finally:
+            ba.authorize = real
+        self.assertEqual(calls, [])
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+    def test_top_up_still_validates_keys_and_actions(self):
+        with self.assertRaises(ValueError):
+            ba.top_up(["not-a-key"], state_path=self.state_path)
+        with self.assertRaises(ValueError):
+            ba.top_up(["F1063"], ["gh issue close"], state_path=self.state_path)
+        with self.assertRaises(TypeError):
+            ba.top_up(["F1063"], "gh pr merge", state_path=self.state_path)
+
+    def test_new_session_readopts_a_live_grant_by_remention(self):
+        """Sticky-wicket PATCH (#1063 pass 2): after /clear the lane has a new
+        session id; re-typing BATCH adds it, and the old id stays listed."""
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-old")
+        ba.link_pr("F1063", "vitalharmony/harmonic-forge", 1064, state_path=self.state_path)
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-new")
+        entry = self._entry("F1063")
+        self.assertEqual(entry["session_ids"], ["session-old", "session-new"])
+        import block_batch_stop as bbs
+        now = ba._now()
+        self.assertEqual(bbs.live_pending({"F1063": entry}, now, "session-new"), ["F1063"])
+
+    def test_remention_without_session_adds_nothing(self):
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        ba.top_up(["F1063"], state_path=self.state_path, session_id=None)
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+
 class TopUpCliTests(StateFixture):
     """harmonic-forge#549 AC6 — `top_up` is reachable, and it is the safe default.
 

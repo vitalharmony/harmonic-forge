@@ -63,7 +63,7 @@ from turn_question import (  # noqa: E402,F401 -- moved to share with enforce_ha
 )
 
 
-def live_pending(state: dict, now: datetime) -> list[str]:
+def live_pending(state: dict, now: datetime, session_id: str | None = None) -> list[str]:
     """Keys whose authorization is unexpired and still has a linked PR that
     has not been confirmed merged.
 
@@ -94,10 +94,31 @@ def live_pending(state: dict, now: datetime) -> list[str]:
     merge is the only authorizable action) is never pending — nothing here
     can tell when such a grant is finished, and guessing in the blocking
     direction is what this docstring is about.
+
+    **Scoped to the authorizing session** (harmonic-forge#1063). Two Lane 1
+    sessions run batches in parallel (operator, 2026-10-17), and a global
+    hold refused every other session's Stop. An entry carrying a non-empty
+    `session_ids` list is pending only for a session in that list; an
+    unknown Stop session (`session_id` empty) is never held by a scoped
+    entry, because unknown allows. An entry with no `session_ids` -- legacy
+    state, or a grant minted without a session -- holds every session, as
+    before.
+
+    **A changed `session_id` releases the hold; it never wedges** (preclose
+    pass 2, sticky-wicket PATCH). A lane that continues under a new session
+    id (`/clear`, possibly a resume) is not in `session_ids`, so its Stop is
+    allowed. That is the accepted price of telling two parallel Lane 1
+    sessions apart: any more durable key brings back the cross-session block
+    this scoping removes. To put the hold back, type `BATCH <keys>` again in
+    the new session; the re-mention path (`batch_auth.top_up`) adds it to the
+    live grant. Merge authorization (`batch_gate.py`) is unaffected.
     """
     pending: list[str] = []
     for key, entry in (state or {}).items():
         if not isinstance(entry, dict):
+            continue
+        owners = entry.get("session_ids")
+        if isinstance(owners, list) and owners and session_id not in owners:
             continue
         try:
             if now >= datetime.fromisoformat(entry["expires_at"]):
@@ -120,7 +141,7 @@ def live_pending(state: dict, now: datetime) -> list[str]:
 def decide(payload: dict, state: dict, now: datetime | None = None) -> tuple[str, str]:
     """`("allow", "")` or `("block", reason)`."""
     now = now or datetime.now(timezone.utc)
-    pending = live_pending(state, now)
+    pending = live_pending(state, now, payload.get("session_id") or None)
     if not pending:
         return "allow", ""
     # FINDING: this previously BLOCKED when the transcript was unreadable,
