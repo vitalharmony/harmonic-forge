@@ -423,36 +423,47 @@ class EndTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in gh.calls if "--method" in c), 1)
 
     def test_overlapping_ends_post_once(self) -> None:
-        """Pass 2 (second-run): `end` holds a per-key lock, so a second run
-        waits, then resumes the first's journal and finds its post."""
+        """Pass 2 (second-run), tightened in reforge pass 1 (test honesty):
+        `end` holds a per-key lock, so a second run waits for the first.
+        Posts are counted across BOTH runners; without the lock both read
+        the same `recorded` receipt and both post."""
         import threading
         inside, release = threading.Event(), threading.Event()
         posted: list = []
 
-        class Slow(EndGh):
+        class Counting(EndGh):
+            def __init__(self, slow: bool, **kw):
+                super().__init__(**kw)
+                self.slow = slow
+
             def __call__(self, argv, **kw):
                 if "--method" in argv:
-                    inside.set()
-                    release.wait(5)
                     posted.append(1)
+                    if self.slow:
+                        inside.set()
+                        release.wait(5)
                 return super().__call__(argv, **kw)
 
-        first = Slow()
-        t = threading.Thread(target=lambda: self.end(first))
+        outcome: dict = {}
+
+        def run(name, gh):
+            try:
+                outcome[name] = self.end(gh)
+            except SystemExit as exc:
+                outcome[name] = exc
+
+        t = threading.Thread(target=run, args=("first", Counting(True)))
         t.start()
         inside.wait(5)
-        second_result: dict = {}
-
-        def run_second():
-            second_result["r"] = self.end(EndGh(existing=[(URL, first.posted_body or "")]))
-        t2 = threading.Thread(target=run_second)
+        t2 = threading.Thread(target=run, args=("second", Counting(False)))
         t2.start()
         t2.join(0.3)
         self.assertTrue(t2.is_alive(), "second end must wait on the lock")
         release.set()
         t.join(5)
         t2.join(5)
-        self.assertEqual(len(posted), 1)
+        self.assertEqual(len(posted), 1, "two overlapping ends posted twice")
+        self.assertEqual(outcome["first"]["status"], "ended")
 
     def test_no_unconsumed_batch_target_and_no_hook_record_after_end(self) -> None:
         self.assertTrue(imc_waiver.live_merge_grant(KEY, self.batch))
