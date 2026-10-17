@@ -463,6 +463,38 @@ class HookPathRunsAsTheReposSlot(unittest.TestCase):
         self.assertIsNone(gate_ci._slot_env_for("someone/else"))
 
 
+class RenderPendingTests(unittest.TestCase):
+    """harmonic-forge#1066: a PASS on a head still marked Render-Pending is refused."""
+
+    MARKED = "render: pending baselines\n\nRender-Pending: 39013060663\n"
+
+    def test_a_marked_head_is_refused_naming_the_run(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")], message=self.MARKED))
+        self.assertFalse(ok)
+        self.assertIn("39013060663", msg)
+        self.assertIn("lane1-rebase", msg)
+
+    def test_an_unmarked_head_still_passes(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")]))
+        self.assertTrue(ok, msg)
+
+    def test_an_unreadable_message_fails_closed(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")], message=""))
+        self.assertFalse(ok)
+        self.assertIn("could not read", msg)
+
+    def test_a_body_text_line_is_not_a_trailer(self):
+        body = "subject\n\nRender-Pending: 1\n\nA closing paragraph that is prose.\n"
+        self.assertIsNone(gate_ci.render_pending_from_message(body))
+
+    def test_a_trailer_beside_another_trailer_is_read(self):
+        msg = "subject\n\nSigned-off-by: A <a@b>\nRender-Pending: 9\n"
+        self.assertEqual(gate_ci.render_pending_from_message(msg), "9")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
@@ -749,39 +781,6 @@ class ReadsActionsNotCheckRuns(unittest.TestCase):
     def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
         state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))
         self.assertEqual(state, "absent")
-
-
-class RenderPendingTests(unittest.TestCase):
-    """harmonic-forge#1066: a PASS on a head still marked Render-Pending is refused."""
-
-    MARKED = "render: pending baselines\n\nRender-Pending: 39013060663\n"
-
-    def test_a_marked_head_is_refused_naming_the_run(self):
-        ok, msg = gate_ci.check_gate_result(
-            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")], message=self.MARKED))
-        self.assertFalse(ok)
-        self.assertIn("39013060663", msg)
-        self.assertIn("lane1-rebase", msg)
-
-    def test_an_unmarked_head_still_passes(self):
-        ok, msg = gate_ci.check_gate_result(
-            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")]))
-        self.assertTrue(ok, msg)
-
-    def test_an_unreadable_message_fails_closed(self):
-        ok, msg = gate_ci.check_gate_result(
-            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")], message=""))
-        self.assertFalse(ok)
-        self.assertIn("could not read", msg)
-
-    def test_a_body_text_line_is_not_a_trailer(self):
-        body = "subject\n\nRender-Pending: 1\n\nA closing paragraph that is prose.\n"
-        self.assertIsNone(gate_ci.render_pending_from_message(body))
-
-    def test_a_trailer_beside_another_trailer_is_read(self):
-        msg = "subject\n\nSigned-off-by: A <a@b>\nRender-Pending: 9\n"
-        self.assertEqual(gate_ci.render_pending_from_message(msg), "9")
-
 
 
 if __name__ == "__main__":
