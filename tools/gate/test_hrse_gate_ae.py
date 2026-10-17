@@ -72,6 +72,7 @@ class _Case(unittest.TestCase):
         ]
         for p in self._patches:
             p.start()
+        ae.bind(b)  # never rely on an earlier test having bound it (pass 2)
         self.root, self.token = root, token
 
     def tearDown(self):
@@ -362,6 +363,117 @@ class PassOneFindings(_Case):
         self.assertIn("nothing minted", "".join(c.args[0] for c in err.write.call_args_list))
 
 
+class ReforgedFooterScanner(unittest.TestCase):
+    """Sticky-wicket REFORGE: every footer shape any pass found, in one table."""
+
+    FOOTER = ae_body().strip().splitlines()[-1]
+
+    def test_only_a_bare_final_line_counts(self):
+        f = self.FOOTER
+        cases = {
+            "plain": (ae_body(), True),
+            "trailing blank lines": (ae_body() + "\n\n  \n", True),
+            "crlf": (ae_body().replace("\n", "\r\n"), True),
+            "blockquote one line": ("> " + f, False),
+            "blockquote multi": ("> text\n> " + f, False),
+            "indented": ("    " + f, False),
+            "inline fence prefix": ("```x```" + f, False),
+            "inline text prefix": ("see " + f, False),
+            "inside closed backticks": ("```\n" + f + "\n```\n", False),
+            "inside closed tildes": ("~~~\n" + f + "\n~~~\n", False),
+            "unclosed backticks": ("```\n" + f, False),
+            "unclosed tildes": ("~~~python\n" + f, False),
+            "tilde closed by backticks": ("~~~\n```\n" + f, False),
+            "longer fence needs longer close": ("````\n```\n" + f, False),
+            "after a closed fence": ("```\ncode\n```\n" + f, True),
+            "after a closed tilde fence": ("~~~\ncode\n~~~\n" + f, True),
+            "text after footer": (f + "\nmore", False),
+            "footer with suffix": (f + " trailing", False),
+        }
+        for name, (body, counts) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(ae.footer_action(body) is not None, counts, name)
+
+
+class OutcomeReporting(_Case):
+    """Sticky-wicket REFORGE: the exit code reflects the store, not the
+    exception type."""
+
+    def run_main(self, *argv):
+        err = []
+        with mock.patch("sys.stderr") as stderr, mock.patch("sys.stdout"):
+            stderr.write.side_effect = err.append
+            code = b.main(list(argv))
+        return code, "".join(err)
+
+    def test_failure_after_the_write_reports_a_possible_grant(self):
+        real_fsync = os.fsync
+
+        def fail_after_write(fd):
+            real_fsync(fd)
+            raise OSError(5, "EIO after write")
+
+        with mock.patch.object(b.os, "fsync", side_effect=fail_after_write):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        nonce = next((self.root / "grants").iterdir()).stem
+        self.assertEqual(code, b.EXIT_MINT_UNCERTAIN)
+        self.assertIn("MAY be live", err)
+        self.assertIn(nonce, err)
+        self.assertNotIn("nothing minted", err)
+
+    def test_missing_helper_module_is_a_refusal(self):
+        import builtins
+        real_import = builtins.__import__
+
+        def no_helper(name, *a, **k):
+            if name == "hrse_gate_ae":
+                raise ModuleNotFoundError("No module named 'hrse_gate_ae'")
+            return real_import(name, *a, **k)
+
+        with mock.patch.dict(sys.modules, {"hrse_gate_ae": None}), \
+                mock.patch("builtins.__import__", side_effect=no_helper):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertIn("nothing minted", err)
+
+    def test_ctrl_c_at_the_prompt_is_a_refusal(self):
+        with mock.patch.object(ae, "confirm", side_effect=KeyboardInterrupt()):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertIn("nothing minted", err)
+        self.assertEqual(list((self.root / "grants").iterdir()), [])
+
+    def test_a_refusal_keeps_its_own_code_and_message(self):
+        self.comments = ["nothing here"]
+        code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertIn("no --prod-run AE", err)
+
+    def test_duplicate_keeps_exit_duplicate(self):
+        self.mint()
+        code, _ = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_DUPLICATE)
+
+    def test_success_prints_the_nonce(self):
+        with mock.patch("sys.stdout") as out, mock.patch("sys.stderr"):
+            code = b.main(["grant-from-ae", "1892", "dry-run"])
+        self.assertEqual(code, b.EXIT_OK)
+        printed = "".join(c.args[0] for c in out.write.call_args_list)
+        self.assertRegex(printed, r"[0-9a-f]{32}")
+
+
+class ReceiptKey(_Case):
+    def test_dry_run_receipt_for_another_script_does_not_unlock_apply(self):
+        self.comments = [ae_body(apply=True)]
+        self.spend_dry_run(script="scripts/1-other.py")
+        self.assertIn("run the dry run first", self.refused(mode="apply"))
+
+    def test_dry_run_receipt_for_another_issue_does_not_unlock_apply(self):
+        self.comments = [ae_body(apply=True)]
+        self.spend_dry_run(issue=1893)
+        self.assertIn("run the dry run first", self.refused(mode="apply"))
+
+
 class BrokerWiring(unittest.TestCase):
     def test_parser_offers_the_verb_with_no_path_option(self):
         verb = b._parser()._subparsers._group_actions[0].choices["grant-from-ae"]
@@ -369,9 +481,18 @@ class BrokerWiring(unittest.TestCase):
         self.assertEqual(options, ["--help", "--ttl-minutes", "-h"])
 
     def test_consume_never_imports_the_helper(self):
-        src = (HERE / "hrse_gate_broker.py").read_text(encoding="utf-8")
-        top = src.split("def main(", 1)[0]
-        self.assertNotIn("import hrse_gate_ae", top)
+        """The helper is imported in exactly one place, `_grant_from_ae`; the
+        NOPASSWD `consume` path and module import never load it."""
+        import ast
+        tree = ast.parse((HERE / "hrse_gate_broker.py").read_text(encoding="utf-8"))
+        owners = []
+        for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            for node in ast.walk(func):
+                if isinstance(node, ast.Import) and any(a.name == "hrse_gate_ae" for a in node.names):
+                    owners.append(func.name)
+        top = [n for n in tree.body if isinstance(n, ast.Import)
+               and any(a.name == "hrse_gate_ae" for a in n.names)]
+        self.assertEqual((owners, top), (["_grant_from_ae"], []))
 
 
 if __name__ == "__main__":

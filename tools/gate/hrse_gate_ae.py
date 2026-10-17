@@ -46,10 +46,11 @@ def bind(module: ModuleType) -> None:
     global broker
     broker = module
 
-_FENCE = re.compile(r"```.*?```", re.S)
-#: Stricter than `_prod_run`: the footer must open a line of its own (so a `>`
-#: blockquoted copy never counts; preclose pass 1, cross-family).
-_TRAILING_FOOTER = re.compile(r"(?:\A|\n)<!--\s*l1-post\s+v1;([^>]*?)-->\s*\Z", re.I)
+#: The whole footer line `l1_post.py` writes, at column 0. Matched against one
+#: complete line only, never searched for inside one (sticky-wicket REFORGE).
+_FOOTER_LINE = re.compile(r"<!--\s*l1-post\s+v1;([^>]*?)-->", re.I)
+#: A CommonMark fence line: up to 3 spaces, then 3+ backticks or 3+ tildes.
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _FIELD = re.compile(r"(?:^|;)\s*prod-run=([^;\s]+)\s*(?:;|$)")
 _KIND_AE = re.compile(r"(?:^|;)\s*kind=ae\s*(?:;|$)")
 _SCRIPT_FIELD = re.compile(
@@ -61,19 +62,46 @@ def _refuse(message: str) -> broker.Refused:
     return broker.Refused(broker.EXIT_REFUSED, message)
 
 
-def footer_action(body: str) -> dict | None:
-    """The declared action of an AE comment, or None.
+def trailing_footer(body: str) -> str | None:
+    """The attestation footer's field text, or None.
 
-    Read only from the comment's own trailing footer after fenced blocks are
-    stripped, exactly as `_prod_run.raw_field` does, and only from a footer
-    whose kind is `ae`."""
-    body = body or ""
-    if body.count("```") % 2:
-        return None  # an unclosed fence: nothing after it is a real footer
-    footer = _TRAILING_FOOTER.search(_FENCE.sub("", body))
-    if not footer or not _KIND_AE.search(footer.group(1)):
+    A forward line scan with CommonMark fence state (sticky-wicket REFORGE,
+    harmonic-forge#1064: regex fence-stripping broke in both preclose passes,
+    each patch opening a new hole). A footer counts only when the last
+    non-blank line of the body is exactly the footer `l1_post.py` writes, at
+    column 0, outside every fence. So a fenced, unclosed-fenced, blockquoted,
+    indented or inline-prefixed copy never counts. Stricter than
+    `_prod_run.raw_field` by design; the parity test records where."""
+    fence: tuple[str, int] | None = None
+    last: str | None = None
+    for line in (body or "").replace("\r\n", "\n").split("\n"):
+        opener = _FENCE_OPEN.match(line)
+        if fence is not None:
+            # A closing fence: same character, at least as long, nothing after it.
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= fence[1] \
+                    and not opener.group(2).strip():
+                fence = None
+            last = None  # nothing inside or closing a fence is a footer
+            continue
+        if opener and not (opener.group(1)[0] == "`" and "`" in opener.group(2)):
+            fence = (opener.group(1)[0], len(opener.group(1)))
+            last = None
+            continue
+        if line.strip():
+            last = line
+    if fence is not None or last is None:
+        return None  # an unclosed fence swallows the rest of the body
+    footer = _FOOTER_LINE.fullmatch(last.rstrip())
+    return footer.group(1) if footer else None
+
+
+def footer_action(body: str) -> dict | None:
+    """The declared action of an AE comment, or None: read only from a
+    `trailing_footer` whose kind is `ae`."""
+    fields = trailing_footer(body)
+    if fields is None or not _KIND_AE.search(fields):
         return None
-    field = _FIELD.search(footer.group(1))
+    field = _FIELD.search(fields)
     if not field:
         return None
     script = _SCRIPT_FIELD.match(field.group(1))

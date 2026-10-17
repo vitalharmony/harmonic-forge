@@ -95,6 +95,8 @@ EXIT_EXPIRED = 5
 EXIT_MISMATCH = 6
 EXIT_REFUSED = 7
 EXIT_DUPLICATE = 8
+#: grant-from-ae failed after a grant file appeared in the store: one MAY be live.
+EXIT_MINT_UNCERTAIN = 9
 
 
 class Refused(Exception):
@@ -324,6 +326,50 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _grant_nonces() -> set[str] | None:
+    """The grant files present now, or None when the store cannot be read."""
+    try:
+        return {p.stem for p in (STORE_ROOT / "grants").glob("*.json") if NONCE.match(p.stem)}
+    except OSError:
+        return None
+
+
+def _grant_from_ae(args) -> int:
+    """Run grant-from-ae and report what the STORE says happened, never what
+    the exception type implies (sticky-wicket REFORGE, harmonic-forge#1064).
+
+    One handler covers the helper import, the run and an interrupt
+    (BaseException). After any failure the grant store is re-read: a grant
+    file that was not there before means a grant MAY be live, and the exit
+    code says so (EXIT_MINT_UNCERTAIN), with the nonce, so the operator
+    checks `status` rather than trusting "nothing minted"."""
+    before = _grant_nonces()
+    try:
+        # Imported here only: `consume`, the one NOPASSWD path, never loads it.
+        # `-I` drops the script's own directory from sys.path, so it is added
+        # back; the install puts both files root-owned in /usr/local/libexec.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import hrse_gate_ae  # noqa: PLC0415
+        nonce = hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue, args.mode,
+                                           args.ttl_minutes)
+    except BaseException as exc:  # noqa: BLE001 -- Ctrl-C included
+        after = _grant_nonces()
+        new = sorted(after - before) if before is not None and after is not None else None
+        why = str(exc) if isinstance(exc, Refused) else f"{type(exc).__name__}: {exc}"
+        if new is None or new:
+            named = ", ".join(new) if new else "unknown (the store could not be re-read)"
+            print(f"hrse-gate: grant-from-ae failed ({why}) after the grant store changed; "
+                  f"a grant MAY be live: {named}. Check `status` before minting again.",
+                  file=sys.stderr)
+            return EXIT_MINT_UNCERTAIN
+        print(f"hrse-gate: {why}" if isinstance(exc, Refused)
+              else f"hrse-gate: grant-from-ae could not decide ({why}); nothing minted",
+              file=sys.stderr)
+        return exc.code if isinstance(exc, Refused) else EXIT_REFUSED
+    print(nonce)
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)  # parse_args, never parse_known_args: unknown tokens refuse
     if args.version:
@@ -336,21 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.verb == "grant":
             print(grant(args.issue, args.sha, args.action, args.ttl_minutes))
         elif args.verb == "grant-from-ae":
-            # Imported here only (harmonic-forge#1064): `consume`, the one
-            # NOPASSWD path, never loads it. `-I` drops the script's own
-            # directory from sys.path, so it is added back explicitly; the
-            # install puts both files root-owned in /usr/local/libexec.
-            sys.path.insert(0, str(Path(__file__).resolve().parent))
-            import hrse_gate_ae  # noqa: PLC0415
-            try:
-                nonce = hrse_gate_ae.grant_from_ae(sys.modules[__name__], args.issue,
-                                                   args.mode, args.ttl_minutes)
-            except Refused:
-                raise
-            except Exception as exc:  # noqa: BLE001 -- never a traceback where a refusal belongs
-                raise Refused(EXIT_REFUSED, f"grant-from-ae could not decide "
-                              f"({type(exc).__name__}: {exc}); nothing minted") from exc
-            print(nonce)
+            return _grant_from_ae(args)
         elif args.verb == "status":
             print(status(args.issue, args.sha, args.action))
         elif args.verb == "consume":
