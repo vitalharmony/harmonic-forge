@@ -546,19 +546,39 @@ class SignalSafeMint(OutcomeReporting):
         self.assertEqual(code, b.EXIT_OK)
         self.assertIn(nonce, "".join(c.args[0] for c in out.write.call_args_list))
 
-    def test_signals_are_ignored_before_mint_starts(self):
+    def test_signals_normal_while_waiting_and_ignored_once_locked(self):
+        """Sticky-wicket PATCH: the wait for the store lock stays interruptible;
+        signals are ignored only once the lock is held, before the write."""
         import signal as sg
-        seen = {}
-        real_mint = b._mint
+        at_mint, at_write = {}, {}
+        real_mint, real_write = b._mint, b._write_grant
 
-        def spy(*args, **kwargs):
-            seen.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
+        def spy_mint(*args, **kwargs):
+            at_mint.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
             return real_mint(*args, **kwargs)
 
-        with mock.patch.object(b, "_mint", side_effect=spy):
+        def spy_write(*args, **kwargs):
+            at_write.update({s: sg.getsignal(s) for s in ae.POST_CONFIRM_SIGNALS})
+            return real_write(*args, **kwargs)
+
+        with mock.patch.object(b, "_mint", side_effect=spy_mint), \
+                mock.patch.object(b, "_write_grant", side_effect=spy_write):
             self.mint()
-        self.assertEqual(set(seen.values()), {sg.SIG_IGN})
-        self.assertEqual(set(seen), set(ae.POST_CONFIRM_SIGNALS))
+        self.assertNotIn(sg.SIG_IGN, set(at_mint.values()))
+        self.assertEqual(set(at_write.values()), {sg.SIG_IGN})
+        self.assertIn(sg.SIGTSTP, at_write)
+
+    def test_a_held_lock_times_out_with_nothing_minted(self):
+        import fcntl
+        fd = os.open(self.root / ".mint.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)  # another root run holds the lock
+        with mock.patch.object(b, "LOCK_WAIT_SECONDS", 0.3):
+            code, err = self.run_main("grant-from-ae", "1892", "dry-run")
+        self.assertEqual(code, b.EXIT_REFUSED)
+        self.assertIn("busy", err)
+        self.assertIn("nothing minted", err)
+        self.assertEqual(list((self.root / "grants").iterdir()), [])
 
     def test_ctrl_c_at_the_prompt_still_mints_nothing(self):
         import signal as sg
@@ -567,6 +587,28 @@ class SignalSafeMint(OutcomeReporting):
         self.assertEqual(code, b.EXIT_REFUSED)
         self.assertEqual(list((self.root / "grants").iterdir()), [])
         self.assertIsNot(sg.getsignal(sg.SIGINT), sg.SIG_IGN)
+
+
+class ShaAnchoredSelection(_Case):
+    """Sticky-wicket PATCH (AC5): the newest --prod-run AE of any mode fixes
+    the SHA."""
+
+    def test_superseded_apply_is_not_offered(self):
+        self.comments = [ae_body(sha=OLD, apply=True), ae_body(sha=SHA, apply=False)]
+        self.main_head = OLD
+        self.spend_dry_run(sha=OLD)
+        self.assertIn("mode mismatch", self.refused(mode="apply"))
+
+    def test_pair_at_one_sha_still_mints_apply(self):
+        self.comments = [ae_body(apply=False), ae_body(apply=True)]
+        self.spend_dry_run()
+        self.mint(mode="apply")
+        self.assertIn("APPLY", self.confirm_text[-1])
+
+    def test_newer_sha_dry_run_after_older_pair(self):
+        self.comments = [ae_body(sha=OLD), ae_body(sha=OLD, apply=True), ae_body(sha=SHA)]
+        self.mint()
+        self.assertIn(SHA, self.confirm_text[-1])
 
 
 class ReceiptKey(_Case):

@@ -129,21 +129,22 @@ def _target(action: dict) -> tuple:
 
 
 def select_ae(actions: list[dict], issue: int, mode: str) -> dict:
-    """The newest AE for `mode`. `actions` is oldest-first, as GitHub returns
-    comments. A dry-run AE then an apply AE at one SHA is R-0377's normal pair,
-    not ambiguity: only two AEs for the SAME mode at the newest SHA that name
+    """The requested mode's AE at the newest `--prod-run` AE's SHA (AC5).
+    `actions` is oldest-first. The newest AE of ANY mode fixes the SHA, so a
+    re-post at a new SHA supersedes every older AE; a dry-run then an apply at
+    one SHA is R-0377's normal pair. Two AEs for the mode at that SHA naming
     different targets are ambiguous."""
     mine = [a for a in actions if a["issue"] == issue]
     if not mine:
         raise _refuse(f"no --prod-run AE on issue {issue}: nothing minted")
-    fitting = [a for a in mine if _fits_mode(a, mode)]
+    sha = mine[-1]["sha"]
+    fitting = [a for a in mine if a["sha"] == sha and _fits_mode(a, mode)]
     if not fitting:
-        raise _refuse(f"mode mismatch: no --prod-run AE on issue {issue} declares a {mode}; "
-                      "nothing minted")
+        raise _refuse(f"mode mismatch: the newest --prod-run AE on issue {issue} is at "
+                      f"{sha[:12]}, and no {mode} AE is declared there; nothing minted")
     newest = fitting[-1]
-    same_sha = [a for a in fitting if a["sha"] == newest["sha"]]
-    if len(same_sha) >= 2 and _target(same_sha[-2]) != _target(newest):
-        raise _refuse(f"ambiguous: the newest two {mode} AEs at {newest['sha'][:12]} name "
+    if len(fitting) >= 2 and _target(fitting[-2]) != _target(newest):
+        raise _refuse(f"ambiguous: the newest two {mode} AEs at {sha[:12]} name "
                       "different actions; mint by hand with `grant`")
     return newest
 
@@ -250,9 +251,10 @@ def confirm(text: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-#: Ignored from the operator's `y` to exit (sticky-wicket REFORGE): no handler
+#: Ignored from the moment the mint lock is held to exit (sticky-wicket): no handler
 #: can make the post-create report interrupt-proof. SIGKILL/power loss: `status`.
-POST_CONFIRM_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+POST_CONFIRM_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT,
+                        signal.SIGTSTP, signal.SIGTTIN, signal.SIGTTOU)
 
 
 def ignore_signals() -> None:
@@ -293,7 +295,6 @@ def grant_from_ae(module: ModuleType, issue: str, mode: str, ttl_minutes: int,
                       f"{action['sha'][:12]}, {action['script']}; run the dry run first")
     if not confirm(describe(action, where, ttl_minutes)):
         raise _refuse("not confirmed: nothing minted")
-    ignore_signals()  # from here to exit, Ctrl-C cannot split create from report
     key = broker._key(str(action["issue"]), action["sha"], action_text(action))
-    return broker._mint(key, ttl_minutes, minted)
+    return broker._mint(key, ttl_minutes, minted, on_locked=ignore_signals)
 

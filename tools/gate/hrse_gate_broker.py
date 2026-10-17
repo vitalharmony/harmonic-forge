@@ -70,11 +70,13 @@ import pwd
 import re
 import secrets
 import sys
+import time
 from pathlib import Path
 
 STORE_ROOT = Path("/var/lib/hrse-gate")
 OWNER = "hrse-gate"
 MAX_TTL_MINUTES = 24 * 60
+LOCK_WAIT_SECONDS = 10
 DEFAULT_TTL_MINUTES = 60
 
 #: harmonic-forge#1064. Root-owned, 0600, a read-only token on vitalharmony/hrse.
@@ -163,10 +165,16 @@ def grant(issue: str, sha: str, action: str, ttl_minutes: int) -> str:
     return _mint(_key(issue, sha, action), ttl_minutes)
 
 
-def _mint(key: dict, ttl_minutes: int, holder: list | None = None) -> str:
+def _mint(key: dict, ttl_minutes: int, holder: list | None = None,
+          on_locked=None) -> str:
     """The one write path for a grant: `grant` and `grant-from-ae` both end
-    here, so a grant minted from an AE is the record `grant` would write."""
+    here, so a grant minted from an AE is the record `grant` would write.
+    `on_locked` runs once the store lock is held, before any write:
+    grant-from-ae ignores signals there, so the wait for the lock stays
+    interruptible (harmonic-forge#1064 sticky-wicket PATCH)."""
     with _store_lock():
+        if on_locked is not None:
+            on_locked()
         now = _now()
         _prune_expired(now)
         # One approval, one live grant (sticky-wicket PATCH 2, item 3). The
@@ -189,7 +197,18 @@ def _store_lock():
     not both succeed."""
     fd = os.open(STORE_ROOT / ".mint.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        # harmonic-forge#1064 (sticky-wicket PATCH): a bounded wait, never an
+        # unbounded block, so a stopped holder cannot wedge the next mint.
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Refused(EXIT_REFUSED, f"the grant store is busy (another mint has held "
+                                  f"its lock for {LOCK_WAIT_SECONDS}s); nothing minted") from None
+                time.sleep(0.1)
         yield
     finally:
         os.close(fd)
