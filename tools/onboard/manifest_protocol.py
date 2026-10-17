@@ -57,6 +57,17 @@ class Protocol:
     #: non-zero unless they are verifiably provisioned. `None` keeps today's
     #: relink exactly.
     lane3_env_task: str | None = None
+    #: harmonic-forge#1057. Generated files `lane1-rebase` regenerates on a
+    #: rebase conflict instead of exiting 2: repo-relative path -> the mise task
+    #: (with arguments) that rewrites it. A declared file must be generated IN
+    #: FULL: the tool takes main's side and regenerates, which drops any hand
+    #: edit in a partly generated file (README.md's generated blocks,
+    #: context-budget.baseline.toml's hand-written increases) -- never declare one.
+    rebase_regenerate: dict[str, str] | None = None
+    #: harmonic-forge#1057. The mise task run in the rebase prep worktree before
+    #: any `rebase_regenerate` task (it is not provisioned). Required whenever
+    #: `rebase_regenerate` is declared.
+    rebase_provision_task: str | None = None
 
     def worktree_names(self, checkout: str) -> list[str]:
         lanes = (2, 3) if self.runs_lane3 else (2,)
@@ -122,6 +133,7 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
             or not protocol.lane3_env_task.strip()):
         raise ManifestError(
             f"{target}: {project} protocol.lane3_env_task must be non-empty when present")
+    _check_rebase_regenerate(protocol, target, project)
     if not isinstance(protocol.runs_lane3, bool):
         raise ManifestError(
             f"{target}: {project} protocol.runs_lane3 must be boolean")
@@ -130,6 +142,29 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
         raise ManifestError(
             f"{target}: {project} protocol.worktree_name must produce unique basenames")
     return protocol
+
+
+def _check_rebase_regenerate(protocol: Protocol, target: Path, project: str) -> None:
+    """Validate the harmonic-forge#1057 keys; both are optional."""
+    regen, provision = protocol.rebase_regenerate, protocol.rebase_provision_task
+    prefix = f"{target}: {project} protocol"
+    if provision is not None and (not isinstance(provision, str) or not provision.strip()):
+        raise ManifestError(f"{prefix}.rebase_provision_task must be non-empty when present")
+    if regen is None:
+        return
+    if not isinstance(regen, dict) or not regen:
+        raise ManifestError(f"{prefix}.rebase_regenerate must be a non-empty table")
+    for path, task in regen.items():
+        parts = Path(path).parts
+        if not path.strip() or Path(path).is_absolute() or ".." in parts:
+            raise ManifestError(
+                f"{prefix}.rebase_regenerate path {path!r} must be repo-relative")
+        if not isinstance(task, str) or not task.strip():
+            raise ManifestError(
+                f"{prefix}.rebase_regenerate[{path!r}] task must be non-empty")
+    if provision is None:
+        raise ManifestError(
+            f"{prefix}.rebase_regenerate needs rebase_provision_task")
 
 
 def normalize_repo(value: str) -> str:

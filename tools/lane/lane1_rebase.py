@@ -16,8 +16,26 @@ Exit codes:
   0  `refs/heads/<branch>` (local) and `origin/<branch>` both end at the new
      SHA, printed as `new=<sha>`. Post `ready-for-l3` on it (R-0338).
   1  any other failure (fetch, a lease mismatch, a busy stale prep worktree).
-  2  the rebase conflicts beyond a `package.json` version line; aborted,
-     nothing pushed, conflicting paths listed.
+  2  the rebase conflicts beyond a `package.json`/`package-lock.json` version
+     line and the project's declared generated files, or regenerating those
+     failed; aborted, nothing pushed, conflicting paths (or the task output)
+     listed.
+
+Declared generated files (harmonic-forge#1057): a conflict in a path the
+target project lists under `[project.protocol] rebase_regenerate` takes
+origin/main's side at every stop; after the rebase the tool runs
+`rebase_provision_task` and each declared task once in the prep worktree,
+commits only those paths ("regenerate <paths> after rebase onto origin/main
+(lane1-rebase)") and prints `regenerated=<paths>`. A failed task, a change
+outside the declared paths, or a delete/modify conflict on a declared path is
+exit 2. Only files generated in full may be declared: taking main's side drops
+the branch's hand edits. A re-run after a crash that followed a regeneration
+exits 3, as for a version resolution.
+
+A `package-lock.json` conflict confined to its root `"version"` and
+`packages[""].version` resolves to origin/main's lock unchanged
+(harmonic-forge#1057 gap 1, preclose); `T` comes from `package.json` alone, and
+any other lock difference is exit 2.
 
 A conflict confined to a `package.json`'s top-level `"version"` (both sides
 equal as JSON, numbers compared by literal text, once that key is removed) is resolved, not
@@ -58,6 +76,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -110,6 +129,35 @@ def _gate_ci():
     sys.path.insert(0, str(_GH))
     import gate_ci  # noqa: PLC0415 -- lazy, beside watch_lane_posts
     return gate_ci
+
+
+def regenerate_config(repo_dir: str) -> tuple[dict[str, str], str | None]:
+    """harmonic-forge#1057: the target project's declared regenerable files
+    (`path -> mise task [args]`) and its prep-worktree provision task, from its
+    `[project.protocol]` in projects.toml. A repo absent from the manifest, or
+    a project declaring nothing, yields `({}, None)`: today's behavior."""
+    sys.path.insert(0, str(_HERE.parent / "onboard"))
+    try:
+        import manifest  # noqa: PLC0415 -- lazy: only a conflicting rebase needs it
+        from manifest_protocol import normalize_repo  # noqa: PLC0415
+        url = git(repo_dir, "remote", "get-url", "origin").stdout.strip()
+        project = manifest.by_repo().get(normalize_repo(url))
+    except Exception:  # noqa: BLE001 -- an unreadable manifest declares nothing
+        return {}, None
+    protocol = getattr(project, "protocol", None)
+    if protocol is None or not protocol.rebase_regenerate:
+        return {}, None
+    return dict(protocol.rebase_regenerate), protocol.rebase_provision_task
+
+
+def run_task(prep: Path, task: str) -> subprocess.CompletedProcess:
+    """One declared mise task in the prep worktree (`task` may carry args)."""
+    try:
+        return subprocess.run(["mise", "run", *shlex.split(task)], cwd=str(prep),
+                              capture_output=True, text=True)
+    except (OSError, ValueError) as exc:
+        # F1057 preclose: a task that cannot even launch is a failed task (exit 2).
+        return subprocess.CompletedProcess(["mise", "run", task], 127, "", str(exc))
 
 
 def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
@@ -360,6 +408,46 @@ def _blank_version(raw: bytes) -> tuple[bytes, str] | None:
     return (blanked, value) if count == 1 else None
 
 
+_LOCK = "package-lock.json"
+_VERSIONED = ("package.json", _LOCK)
+
+
+def _blank_lock(raw: bytes) -> tuple[bytes, str] | None:
+    """harmonic-forge#1057 gap 1: a `package-lock.json`'s two package-version
+    keys (the root `"version"` and `packages[""].version`) blanked, and their
+    common value; None unless they are the file's first two `"version"` lines,
+    they agree, and `json.loads` confirms both were blanked."""
+    try:
+        data = _json(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+    # isinstance guards (F1057 pass 2): a malformed lock is None (exit 2), never a crash.
+    packages = data.get("packages") if data else None
+    root = packages.get("") if isinstance(packages, dict) else None
+    value = data.get("version") if data else None
+    if not isinstance(value, str) or not isinstance(root, dict) or root.get("version") != value:
+        return None
+    blanked, count = _TOP_VERSION.subn(lambda m: m.group(1) + m.group(3), raw, count=2)
+    check = _json(blanked.decode("utf-8")) if count == 2 else None
+    blanked_packages = check.get("packages") if check else None
+    blanked_root = blanked_packages.get("") if isinstance(blanked_packages, dict) else None
+    if (not check or check.get("version") != "" or not isinstance(blanked_root, dict)
+            or blanked_root.get("version") != ""):
+        return None
+    return blanked, value
+
+
+def _blank(path: str, raw: bytes) -> tuple[bytes, str] | None:
+    return _blank_lock(raw) if Path(path).name == _LOCK else _blank_version(raw)
+
+
+def _set_version(path: str, raw: bytes, target: str) -> bytes | None:
+    count = 2 if Path(path).name == _LOCK else 1
+    text, done = _TOP_VERSION.subn(
+        lambda m: m.group(1) + target.encode() + m.group(3), raw, count=count)
+    return text if done == count else None
+
+
 def _show_raw(prep: Path, spec: str) -> bytes | None:
     """`git show` as raw bytes: text mode would translate CRLF (F1035)."""
     proc = subprocess.run(["git", "-C", str(prep), "show", spec], capture_output=True)
@@ -374,16 +462,20 @@ def version_target(repo_dir: str, old: str) -> tuple[str | None, dict[str, str]]
     touched = git(repo_dir, "diff", "--name-only", base, old).stdout.split()
     mains: dict[str, str] = {}
     for path in touched:
-        if Path(path).name != "package.json":
+        if Path(path).name not in _VERSIONED:
             continue
         shown = git(repo_dir, "show", f"refs/remotes/origin/main:{path}", check=False)
         data = _json(shown.stdout) if shown.returncode == 0 else None
         version = data.get("version") if data else None
         if isinstance(version, str) and _SEMVER.match(version):
             mains[path] = version
-    if len(set(mains.values())) != 1:
+    # `T` comes from package.json alone (F1057 preclose): hrse's auto-bump never
+    # updates the lock, so the lock's version lags and must not veto `T`. The
+    # lock's own main version stays in `mains` for its MAJOR/MINOR check.
+    packages = {v for p, v in mains.items() if Path(p).name == "package.json"}
+    if len(packages) != 1:
         return None, mains
-    major, minor, patch = _SEMVER.match(next(iter(mains.values()))).groups()
+    major, minor, patch = _SEMVER.match(next(iter(packages))).groups()
     return f"{major}.{minor}.{int(patch) + 1}", mains
 
 
@@ -394,14 +486,14 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
     pushed: the caller aborts)."""
     if not target or not paths:
         return "not confined to a package.json version line"
-    if any(Path(p).name != "package.json" for p in paths):
+    if any(Path(p).name not in _VERSIONED for p in paths):
         return "not confined to a package.json version line"
     staged: list[tuple[str, bytes]] = []
     for path in paths:
         ours, theirs = _show_raw(prep, f":2:{path}"), _show_raw(prep, f":3:{path}")
         if ours is None or theirs is None:
             return f"{path}: not a two-sided content conflict"
-        upstream, branch_side = _blank_version(ours), _blank_version(theirs)
+        upstream, branch_side = _blank(path, ours), _blank(path, theirs)
         if upstream is None or branch_side is None:
             return f"{path}: not exactly one top-level version line per side"
         if upstream[0] != branch_side[0]:
@@ -415,9 +507,14 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
         if found.groups()[:2] != _SEMVER.match(main_version).groups()[:2]:
             return (f"{path}: branch version {branch_version} differs from "
                     f"origin/main's {main_version} in MAJOR or MINOR")
-        text, count = _TOP_VERSION.subn(
-            lambda m: m.group(1) + target.encode() + m.group(3), ours)
-        result = _blank_version(text) if count == 1 else None
+        if Path(path).name == _LOCK:
+            # F1057 preclose (cross-family): the lock keeps origin/main's version.
+            # hrse's bump never writes the lock, and setting it to `T` alone would
+            # leave it disagreeing with a cleanly merged package.json.
+            staged.append((path, ours))
+            continue
+        text = _set_version(path, ours, target)
+        result = _blank(path, text) if text is not None else None
         if result is None or result != (upstream[0], target):
             return f"{path}: the top-level version could not be replaced alone"
         staged.append((path, text))
@@ -427,14 +524,62 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
     return None
 
 
+def _take_upstream(prep: Path, paths: list[str]) -> None:
+    """harmonic-forge#1057: resolve each declared generated path to stage :2
+    (origin/main plus the commits already replayed); regenerated after."""
+    for path in paths:
+        # Either side missing is a delete/modify conflict (F1057 preclose: a
+        # branch-side delete must not be silently undone by main's copy).
+        if _show_raw(prep, f":2:{path}") is None or _show_raw(prep, f":3:{path}") is None:
+            raise Exit(2, f"{path}: declared generated file was deleted on one side "
+                          "(delete/modify conflict); not regenerated")
+        git(prep, "checkout", "--ours", "--", path)
+        git(prep, "add", "--", path)
+
+
+def _regenerate(prep: Path, declared: dict[str, str], provision: str | None,
+                paths: list[str]) -> None:
+    """Run the provision task, then each declared task once, and commit only the
+    declared paths. Any failure resets the prep worktree and exits 2, so nothing
+    is pushed and the `finally` removal finds a clean tree."""
+    def fail(message: str) -> None:
+        git(prep, "reset", "--hard", check=False)
+        # A task may create untracked files reset leaves behind, and they would
+        # block the prep worktree's removal (found by test r4).
+        git(prep, "clean", "-fdq", check=False)
+        raise Exit(2, message)
+
+    for task in ([provision] if provision else []) + [declared[p] for p in paths]:
+        proc = run_task(prep, task)
+        if proc.returncode:
+            fail(f"regeneration task `mise run {task}` failed (exit {proc.returncode}); "
+                 f"nothing pushed:\n{(proc.stdout + proc.stderr).strip()[-2000:]}")
+    git(prep, "add", "--", *paths)
+    stray = [line for line in git(prep, "status", "--porcelain").stdout.splitlines()
+             if line[3:] not in paths]
+    if stray:
+        fail("regeneration left changes outside the declared paths; nothing pushed:\n"
+             + "\n".join(f"  {line}" for line in stray))
+    if git(prep, "diff", "--cached", "--quiet", check=False).returncode:
+        committed = git(prep, "commit", "-q", "--no-verify", "-m",
+                        f"regenerate {', '.join(paths)} after rebase onto origin/main (lane1-rebase)",
+                        check=False)
+        if committed.returncode:
+            # F1057 pass 2: a failed commit takes the same reset-and-exit-2 path.
+            fail(f"the regeneration commit failed (exit {committed.returncode}); nothing pushed:\n"
+                 f"{(committed.stdout + committed.stderr).strip()[-2000:]}")
+
+
 def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
-                    passed: str | None = None) -> tuple[str, str | None]:
+                    passed: str | None = None) -> tuple[str, str | None, list[str]]:
     prep = prep_path(repo_dir, issue)
     prune_stale_prep(repo_dir, prep)
     prep.parent.mkdir(parents=True, exist_ok=True)
     target, mains = version_target(repo_dir, old)
+    declared, provision = regenerate_config(repo_dir)
     git(repo_dir, "worktree", "add", "--detach", str(prep), old)
     resolved = None
+    regenerated: list[str] = []
     try:
         try:
             proc = git(prep, "rebase", "origin/main", check=False)
@@ -444,17 +589,26 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
             while proc.returncode:
                 paths = git(prep, "diff", "--name-only", "--diff-filter=U",
                             check=False).stdout.split()
-                why = _resolve_versions(prep, paths, target, mains)
+                generated = [p for p in paths if p in declared]
+                rest = [p for p in paths if p not in declared]
+                why = _resolve_versions(prep, rest, target, mains) if rest or not paths else None
                 if why:
                     listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
                     raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n"
                                   f"{listed}\n  ({why})")
-                resolved = target
+                _take_upstream(prep, generated)
+                regenerated += [p for p in generated if p not in regenerated]
+                if rest:
+                    resolved = target
                 proc = git(prep, "rebase", "--continue", check=False,
                            env={**os.environ, "GIT_EDITOR": "true"})
         except BaseException:
             git(prep, "rebase", "--abort", check=False)
             raise
+        if regenerated:
+            _regenerate(prep, declared, provision, sorted(regenerated))
+        # Order (F1057 pitch): regenerate and commit, then read `new`, then the
+        # receipt, then push, so a crash receipt never names an unpushed SHA.
         new = rev(prep, "HEAD")
         # sticky-wicket reforge F1034: record the crash state before it can
         # exist, so a re-run never has to infer it from history.
@@ -462,7 +616,7 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
         if passed:
             write_receipt(repo_dir, issue, passed, old, new)
         push(prep, branch, old)
-        return new, resolved
+        return new, resolved, sorted(regenerated)
     finally:
         remove_prep(repo_dir, prep)
 
@@ -511,7 +665,7 @@ def move_local_ref(repo_dir: str, branch: str, new: str,
                       f"origin is at {new}")
 
 
-def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None]:
+def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str]]:
     # preclose F1018-3: one run per issue at a time. The stale-prep busy check
     # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
     lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
@@ -524,7 +678,7 @@ def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None]:
         return _run_locked(repo_dir, issue, branch)
 
 
-def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None]:
+def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str]]:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
@@ -532,12 +686,14 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
     passed = check_preconditions(repo_dir, issue, branch, old)
     if git(repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode == 0:
-        new, resolved = old, None  # already on current main (incl. a crash re-run)
+        new, resolved, regenerated = old, None, []  # already on current main (incl. a crash re-run)
     else:
-        new, resolved = rebase_and_push(repo_dir, issue, branch, old, passed)
-    move_local_ref(repo_dir, branch, new, old if resolved else None)
+        new, resolved, regenerated = rebase_and_push(repo_dir, issue, branch, old, passed)
+    # harmonic-forge#1057: a regeneration commit, like a resolved version,
+    # makes the rebase non-patch-equivalent to the local branch.
+    move_local_ref(repo_dir, branch, new, old if (resolved or regenerated) else None)
     drop_receipt(repo_dir, issue)
-    return new, resolved
+    return new, resolved, regenerated
 
 
 def main(argv: list[str]) -> int:
@@ -545,13 +701,15 @@ def main(argv: list[str]) -> int:
         print("usage: lane1-rebase <repo-dir> <issue> <branch>", file=sys.stderr)
         return 1
     try:
-        new, resolved = run(argv[0], int(argv[1]), argv[2])
+        new, resolved, regenerated = run(argv[0], int(argv[1]), argv[2])
     except Exit as exc:
         print(f"[lane1-rebase] exit {exc.code}: {exc.message}", file=sys.stderr)
         return exc.code
     print(f"new={new}")
     if resolved:
         print(f"version-resolved={resolved}")
+    if regenerated:
+        print(f"regenerated={','.join(regenerated)}")
     return 0
 
 

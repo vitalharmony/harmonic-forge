@@ -18,6 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lane1_rebase  # noqa: E402
 
+real_run_task = lane1_rebase.run_task
+
 BRANCH = "feat/7-thing"
 ISSUE = 7
 
@@ -762,6 +764,303 @@ class VersionConflictTests(_Fixture):
         self.assertEqual(code, 3, err)
         self.assertEqual(self.origin_branch(), pushed)
         self.assertEqual(self.local_branch(), self.branch_sha)
+
+
+LOCK = "frontend/package-lock.json"
+
+
+def lock(version, dep="1.0.0"):
+    return ('{\n  "name": "app",\n'
+            f'  "version": "{version}",\n  "lockfileVersion": 3,\n'
+            '  "packages": {\n    "": {\n      "name": "app",\n'
+            f'      "version": "{version}"\n    }},\n'
+            '    "node_modules/a": {\n'
+            f'      "version": "{dep}"\n    }}\n  }}\n}}\n')
+
+
+def _generate(prep):
+    """The stub regeneration: gen.txt lists every src*.txt, so the right answer
+    depends on both sides and taking either side alone is detectably wrong."""
+    srcs = sorted(p.name for p in Path(prep).glob("src*.txt"))
+    Path(prep, "gen.txt").write_text("".join(f"{n}\n" for n in srcs))
+
+
+class RegenerateTests(VersionConflictTests):
+    """harmonic-forge#1057: declared generated files take main's side during
+    the rebase and are regenerated once after it."""
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.declared = {"gen.txt": "gen"}
+        self.fail_task = None
+        self.stray = False
+        cfg = mock.patch.object(lane1_rebase, "regenerate_config",
+                                side_effect=lambda _r: (dict(self.declared), "prov"))
+        task = mock.patch.object(lane1_rebase, "run_task", side_effect=self._task)
+        cfg.start()
+        task.start()
+        self.addCleanup(cfg.stop)
+        self.addCleanup(task.stop)
+
+    def _task(self, prep, name):
+        self.calls.append(name)
+        if name == self.fail_task:
+            return subprocess.CompletedProcess([], 1, "", "boom")
+        if name == "const":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if name == "gen":
+            _generate(prep)
+            if self.stray:
+                Path(prep, "README.md").write_text("rewritten\n")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    def gen_on_origin(self):
+        return sh(self.origin, "show", f"refs/heads/{BRANCH}:gen.txt")
+
+    def test_r1_generated_only_conflict_regenerates_and_pushes(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.gen_on_origin(), "src1.txt\nsrc2.txt")
+        self.assertEqual(self.calls, ["prov", "gen"])
+        self.assertIn("regenerated=gen.txt", out)
+        self.assertEqual(self.local_branch(), self.origin_branch())
+
+    def test_r2_regeneration_failure_exits_2_nothing_pushed(self):
+        self.fail_task = "gen"
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("boom", err)
+
+    def test_r3_provision_failure_exits_2(self):
+        self.fail_task = "prov"
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        self.assert_refused(*self.run_captured()[::2])
+        self.assertEqual(self.calls, ["prov"])
+
+    def test_r4_change_outside_declared_paths_exits_2(self):
+        self.stray = True
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("README.md", err)
+
+    def test_r5_undeclared_conflict_alongside_exits_2(self):
+        self.on_branch({"gen.txt": "src1.txt\n", "feature.txt": "branch\n"}, "feature")
+        self.on_main({"gen.txt": "src2.txt\n", "feature.txt": "main\n"})
+        self.assert_refused(*self.run_captured()[::2])
+        self.assertEqual(self.calls, [])
+
+    def test_r6_undeclared_generated_file_exits_2(self):
+        self.declared = {"other.txt": "gen"}
+        self.on_branch({"gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"gen.txt": "src2.txt\n"})
+        self.assert_refused(*self.run_captured()[::2])
+
+    def test_r7_delete_modify_on_declared_file_exits_2(self):
+        self.on_main({"gen.txt": "v1\n"})
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        self.on_branch({"gen.txt": "v2\n"}, "branch edits gen")
+        sh(self.other, "pull", "-q", "origin", "main")
+        sh(self.other, "rm", "-q", "gen.txt")
+        sh(self.other, "commit", "-q", "-m", "main deletes gen")
+        sh(self.other, "push", "-q", "origin", "main")
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("delete/modify", err)
+
+    def test_r8_conflicts_at_two_stops_regenerate_once(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "first")
+        self.on_branch({"src3.txt": "c\n", "gen.txt": "src1.txt\nsrc3.txt\n"}, "second")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        code, _, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.gen_on_origin(), "src1.txt\nsrc2.txt\nsrc3.txt")
+        self.assertEqual(self.calls.count("gen"), 1)
+        # AC2 (pass 2): exactly one added regeneration commit, declared paths only.
+        commits = sh(self.origin, "log", "--format=%s", f"main..refs/heads/{BRANCH}").splitlines()
+        self.assertEqual(commits, ["regenerate gen.txt after rebase onto origin/main (lane1-rebase)",
+                                   "second", "first"])
+        self.assertEqual(sh(self.origin, "show", "--name-only", "--format=",
+                            f"refs/heads/{BRANCH}"), "gen.txt")
+
+    def test_r9_version_and_generated_conflict_at_one_stop(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n", PKG: pkg("2.9.41")},
+                       "feature + bump")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n", PKG: pkg("2.9.42")})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.head_version(), "2.9.43")
+        self.assertEqual(self.gen_on_origin(), "src1.txt\nsrc2.txt")
+        self.assertIn("version-resolved=2.9.43", out)
+
+    def test_r11_branch_deletes_declared_file_main_modifies_exits_2(self):
+        self.on_main({"gen.txt": "v1\n"})
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        sh(self.impl, "rm", "-q", "gen.txt")
+        sh(self.impl, "commit", "-q", "-m", "branch deletes gen")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        self.branch_sha = sh(self.impl, "rev-parse", "HEAD")
+        self.on_main({"gen.txt": "v2\n"})
+        code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("delete/modify", err)
+
+    def test_r12_task_that_cannot_launch_exits_2(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        real_run = subprocess.run
+
+        def no_mise(argv, *args, **kwargs):
+            if argv and argv[0] == "mise":
+                raise FileNotFoundError("mise")
+            return real_run(argv, *args, **kwargs)
+
+        with mock.patch.object(lane1_rebase, "run_task", side_effect=real_run_task):
+            with mock.patch.object(lane1_rebase.subprocess, "run", side_effect=no_mise):
+                code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("exit 127", err)
+
+    def test_r13_task_with_unmatched_quote_exits_2(self):
+        self.declared = {"gen.txt": 'gen "'}
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+
+        def real_for_gen(prep, task):
+            if task == "prov":
+                return subprocess.CompletedProcess([], 0, "", "")
+            return real_run_task(prep, task)
+
+        with mock.patch.object(lane1_rebase, "run_task", side_effect=real_for_gen):
+            code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("exit 127", err)
+
+    def test_r14_noop_regeneration_adds_no_commit(self):
+        # AC2 reworded (pass 2): output equal to HEAD needs no commit.
+        self.declared = {"gen.txt": "const"}
+        self.on_branch({"gen.txt": "branch\n"}, "feature")
+        self.on_main({"gen.txt": "main\n"})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.gen_on_origin(), "main")
+        self.assertNotIn("regenerate", sh(self.origin, "log", "--format=%s", f"main..refs/heads/{BRANCH}"))
+
+    def test_r15_failed_regeneration_commit_exits_2(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        real_git = lane1_rebase.git
+
+        def failing_commit(cwd, *args, **kwargs):
+            if args[:1] == ("commit",):
+                return subprocess.CompletedProcess(args, 1, "", "signing failed")
+            return real_git(cwd, *args, **kwargs)
+
+        with mock.patch.object(lane1_rebase, "git", side_effect=failing_commit):
+            code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("signing failed", err)
+
+    def test_r10_crash_after_regeneration_push_rerun_exits_3(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        with mock.patch.object(lane1_rebase, "move_local_ref",
+                               side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.run_main()
+        pushed = self.origin_branch()
+        self.assertNotEqual(pushed, self.branch_sha)
+        code, _, err = self.run_captured()
+        self.assertEqual(code, 3, err)
+        self.assertEqual(self.origin_branch(), pushed)
+
+
+class LockVersionTests(VersionConflictTests):
+    """harmonic-forge#1057 gap 1: package-lock.json's two version keys."""
+
+    def setUp(self):
+        super().setUp()
+        self.on_main({LOCK: lock("2.9.40")})
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+
+    def lock_on_origin(self):
+        return json.loads(sh(self.origin, "show", f"refs/heads/{BRANCH}:{LOCK}"))
+
+    def test_l1_lock_and_package_version_conflict_resolve_to_one_target(self):
+        self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41"), LOCK: lock("2.9.41")}, "bump")
+        self.on_main({PKG: pkg("2.9.42"), LOCK: lock("2.9.42")})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        data = self.lock_on_origin()
+        # The lock keeps origin/main's version (preclose): T is package.json's.
+        self.assertEqual((data["version"], data["packages"][""]["version"]), ("2.9.42", "2.9.42"))
+        self.assertEqual(data["packages"]["node_modules/a"]["version"], "1.0.0")
+        self.assertEqual(self.head_version(), "2.9.43")
+
+    def test_l2_lock_dependency_difference_exits_2(self):
+        self.on_branch({PKG: pkg("2.9.41"), LOCK: lock("2.9.41", dep="2.0.0")}, "bump + dep")
+        self.on_main({PKG: pkg("2.9.42"), LOCK: lock("2.9.42")})
+        self.assert_refused(*self.run_captured()[::2])
+
+
+    def test_l4_lagging_lock_does_not_veto_a_package_json_resolution(self):
+        # hrse's real shape (F1057 preclose): the auto-bump never updates the lock.
+        self.on_main({LOCK: lock("2.9.28")})
+        sh(self.impl, "fetch", "-q", "origin")
+        sh(self.impl, "reset", "-q", "--hard", "origin/main")
+        sh(self.impl, "push", "-q", "-f", "origin", f"HEAD:{BRANCH}")
+        self.on_branch({"code.py": "x = 1\n", PKG: pkg("2.9.41"), LOCK: lock("2.9.28", dep="2.0.0")},
+                       "bump + dependency")
+        self.on_main({PKG: pkg("2.9.42")})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.head_version(), "2.9.43")
+        self.assertIn("version-resolved=2.9.43", out)
+
+
+    def test_l5_malformed_lock_exits_2(self):
+        bad = '{\n  "name": "app",\n  "version": "2.9.41",\n  "packages": []\n}\n'
+        main_bad = bad.replace("2.9.41", "2.9.42")
+        self.on_branch({PKG: pkg("2.9.41"), LOCK: bad}, "bump")
+        self.on_main({PKG: pkg("2.9.42"), LOCK: main_bad})
+        self.assert_refused(*self.run_captured()[::2])
+
+    def test_l3_lock_root_versions_disagree_exits_2(self):
+        bad = lock("2.9.41").replace('"version": "2.9.41"\n    }', '"version": "2.9.39"\n    }')
+        self.on_branch({PKG: pkg("2.9.41"), LOCK: bad}, "bump")
+        self.on_main({PKG: pkg("2.9.42"), LOCK: lock("2.9.42")})
+        self.assert_refused(*self.run_captured()[::2])
+
+
+class RegenerateConfigTests(unittest.TestCase):
+    """F1057 pass 2: regenerate_config, unmocked, against the live projects.toml."""
+
+    def config_for(self, url):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            sh(tmp, "remote", "add", "origin", url)
+            return lane1_rebase.regenerate_config(tmp)
+
+    def test_hrse_https_and_ssh_remotes_resolve_the_declaration(self):
+        for url in ("https://github.com/vitalharmony/hrse.git", "git@github.com:vitalharmony/hrse.git"):
+            with self.subTest(url=url):
+                declared, provision = self.config_for(url)
+                self.assertEqual(declared["design-system.baseline.toml"], "design-system-ratchet --update")
+                self.assertEqual(provision, "worktree-provision")
+
+    def test_a_project_declaring_nothing_yields_nothing(self):
+        self.assertEqual(self.config_for("https://github.com/vitalharmony/harmonic-forge.git"), ({}, None))
 
 
 if __name__ == "__main__":

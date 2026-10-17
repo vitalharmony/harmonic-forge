@@ -497,6 +497,11 @@ class LiveManifestTests(unittest.TestCase):
         # harmonic-forge#875: hrse's gate worktree owns its backend/.env, so
         # `lane3` runs this task instead of relinking it.
         env_task = {"hrse": "lane3-env-provision"}
+        # harmonic-forge#1057: hrse's wholly generated files lane1-rebase regenerates.
+        regen = {"hrse": {
+            "rebase_regenerate": {"design-system.baseline.toml": "design-system-ratchet --update",
+                                  "docs/ONTOLOGY.md": "docs-generate"},
+            "rebase_provision_task": "worktree-provision"}}
         # harmonic-forge#806: kenekted-docs' checkout basename is `docs`; the lane launchers
         # derive worktrees from that basename, so it keeps the default template.
         worktree: dict[str, dict[str, str]] = {}
@@ -514,7 +519,8 @@ class LiveManifestTests(unittest.TestCase):
                                runs_lane3=True,
                                needs_gate_adapter=False if name in no_adapter else None,
                                ci_parity_task=parity_task.get(name),
-                               lane3_env_task=env_task.get(name))
+                               lane3_env_task=env_task.get(name),
+                               **regen.get(name, {}))
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
                           "openclaw-projects", "kenekted", "kenekted-ai",
                           "kenekted-docs", "leasepal")})
@@ -528,6 +534,44 @@ class LiveManifestTests(unittest.TestCase):
         """)
         findings = mf.check_prefix_agreement(path)
         self.assertTrue(any(f.startswith("Q:") for f in findings), findings)
+
+
+class RebaseRegenerateTests(unittest.TestCase):
+    """harmonic-forge#1057: the optional rebase_regenerate declaration."""
+
+    def load(self, extra: str):
+        return mf.load(write(MINIMAL + PROTOCOL + textwrap.indent(textwrap.dedent(extra), "    ")))
+
+    def test_declared_table_loads(self) -> None:
+        proto = self.load("""
+            rebase_regenerate = { "docs/ONTOLOGY.md" = "docs-generate" }
+            rebase_provision_task = "worktree-provision"
+        """)[0].protocol
+        self.assertEqual(proto.rebase_regenerate, {"docs/ONTOLOGY.md": "docs-generate"})
+        self.assertEqual(proto.rebase_provision_task, "worktree-provision")
+
+    def test_absent_is_none(self) -> None:
+        self.assertIsNone(self.load("")[0].protocol.rebase_regenerate)
+
+    def test_refusals(self) -> None:
+        cases = {
+            "needs rebase_provision_task": 'rebase_regenerate = { "a.md" = "gen" }',
+            "non-empty table": 'rebase_regenerate = "gen"\nrebase_provision_task = "p"',
+            "repo-relative": 'rebase_regenerate = { "../a.md" = "gen" }\nrebase_provision_task = "p"',
+            "repo-relative ": 'rebase_regenerate = { "/a.md" = "gen" }\nrebase_provision_task = "p"',
+            "task must be non-empty": 'rebase_regenerate = { "a.md" = " " }\nrebase_provision_task = "p"',
+            "rebase_provision_task must be non-empty": 'rebase_provision_task = ""',
+        }
+        for expected, body in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaises(mf.ManifestError) as ctx:
+                    self.load(body)
+                self.assertIn(expected.strip(), str(ctx.exception))
+
+    def test_live_hrse_declares_only_wholly_generated_files(self) -> None:
+        hrse = mf.by_repo(LIVE)["vitalharmony/hrse"].protocol
+        self.assertEqual(set(hrse.rebase_regenerate),
+                         {"design-system.baseline.toml", "docs/ONTOLOGY.md"})
 
 
 if __name__ == "__main__":
