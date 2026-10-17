@@ -215,6 +215,199 @@ class RecordTests(unittest.TestCase):
         self.assertIn("not a vitalharmony repo", str(refused.exception))
 
 
+class EndGh(FakeGh):
+    """Adds the comment-list read `end` uses to find a prior post."""
+
+    def __init__(self, existing: list[tuple[str, str]] | None = None, **kw) -> None:
+        super().__init__(**kw)
+        self.existing = existing or []
+
+    def __call__(self, argv, **kw):
+        if "--paginate" in argv:
+            self.calls.append(list(argv))
+            out = "".join(json.dumps([u, b]) + "\n" for u, b in self.existing)
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        return super().__call__(argv, **kw)
+
+
+def sticky_receipt() -> dict:
+    return {"status": "complete", "pass_history": [
+        {"sha": "a", "surviving": 2}, {"sha": "b", "surviving": 1}]}
+
+
+class EndTests(unittest.TestCase):
+    """harmonic-forge#1042: `imc_waiver.py end`."""
+
+    def setUp(self) -> None:
+        import preclose_check  # noqa: PLC0415
+        self.pc = preclose_check
+        self.tmp = Path(tempfile.mkdtemp())
+        self.state = self.tmp / "imc"
+        self.batch = self.tmp / "batch-authorized.json"
+        for target, value in ((imc_waiver, ("IMC_STATE_DIR", self.state)),
+                              (batch_auth, ("STATE_PATH", self.batch))):
+            patcher = patch.object(target, *value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.preclose = sticky_receipt()
+        finder = patch.object(preclose_check, "find_receipt",
+                              lambda repo, issue: self.preclose)
+        finder.start()
+        self.addCleanup(finder.stop)
+        self.now = datetime(2026, 10, 17, 1, 2, 3, tzinfo=timezone.utc)
+        self.state.mkdir(parents=True)
+        (self.state / f"{KEY}.json").write_text(json.dumps(
+            {"key": KEY, "granted_at": imc_waiver._iso(self.now)}))
+        (self.state / f"{KEY}.waiver.json").write_text(json.dumps(
+            {"key": KEY, "status": "recorded", "comment_url": URL}))
+        batch_auth.authorize([KEY], actions=["gh pr merge"], state_path=self.batch)
+
+    def end(self, gh=None, now=None):
+        return imc_waiver.end(KEY, reason="sticky-wicket PATCH", now=now or self.now,
+                              batch_state_path=self.batch, runner=gh or EndGh())
+
+    def archived(self, kind: str = "waiver") -> list[Path]:
+        return sorted((self.state / "archive").glob(f"{KEY}.{kind}.*.json"))
+
+    def test_end_archives_receipt_and_posts(self) -> None:
+        archive = self.state / "archive" / f"{KEY}.waiver.20261017T010203Z.json"
+        seen: dict = {}
+
+        class Watch(EndGh):
+            def __call__(self, argv, **kw):
+                if "--method" in argv:
+                    seen["at_post"] = json.loads(archive.read_text()) if archive.exists() else None
+                return super().__call__(argv, **kw)
+
+        gh = Watch()
+        final = self.end(gh)
+        # Archived (moved, original content kept) BEFORE the irreversible post.
+        self.assertIsNotNone(seen["at_post"])
+        self.assertEqual(seen["at_post"]["status"], "ending")
+        self.assertEqual(seen["at_post"]["comment_url"], URL)
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+        files = self.archived()
+        self.assertEqual([p.name for p in files], [f"{KEY}.waiver.20261017T010203Z.json"])
+        saved = json.loads(files[0].read_text())
+        self.assertEqual(saved, final)
+        self.assertEqual(saved["status"], "ended")
+        self.assertEqual(saved["end_comment_url"], URL)
+        body = gh.posted_body or ""
+        self.assertTrue(body.startswith("## IMC ended — F892"))
+        self.assertIn("sticky-wicket PATCH", body)
+        self.assertIn(URL, body)
+        self.assertIn("R-0229", body)
+        self.assertIsNone(imc_waiver.waiver_receipt("vitalharmony/harmonic-forge", 892))
+
+    def test_imc_refusal_does_not_fire_after_end(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.pc.imc_refusal("vitalharmony/harmonic-forge", 892, "--force")
+        self.end()
+        self.pc.imc_refusal("vitalharmony/harmonic-forge", 892, "--force")
+        self.assertFalse(self.pc.imc_forced("vitalharmony/harmonic-forge", 892))
+
+    def test_end_refuses_at_pass_count_1(self) -> None:
+        self.preclose = {"status": "complete", "pass_history": [{"sha": "a", "surviving": 2}]}
+        gh = EndGh()
+        with self.assertRaises(SystemExit) as raised:
+            self.end(gh)
+        self.assertIn("not at an IMC stop", str(raised.exception))
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+        self.assertEqual(gh.calls, [])
+        self.assertTrue(imc_waiver.live_merge_grant(KEY, self.batch))
+
+    def test_end_refuses_with_no_preclose_receipt(self) -> None:
+        self.preclose = None
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_refuses_when_second_pass_was_clean(self) -> None:
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2}, {"sha": "b", "surviving": 0}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_accepts_a_current_epoch_cluster_verdict(self) -> None:
+        self.preclose = {"status": "complete", "pass_history": [{"sha": "a", "surviving": 2}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "patch"}}
+        self.assertEqual(self.end()["status"], "ended")
+
+    def test_end_refuses_an_unruled_or_stale_epoch_cluster(self) -> None:
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "epoch": 1}],
+            "mechanism_cluster": {"epoch": 0, "verdict": "reforge"}}
+        with self.assertRaises(SystemExit):
+            self.end()
+        self.preclose["mechanism_cluster"] = {"epoch": 1}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_no_unconsumed_batch_target_and_no_hook_record_after_end(self) -> None:
+        self.assertTrue(imc_waiver.live_merge_grant(KEY, self.batch))
+        self.end()
+        self.assertFalse(imc_waiver.live_merge_grant(KEY, self.batch))
+        entry = json.loads(self.batch.read_text())[KEY]
+        self.assertTrue(all(t["consumed"] for t in entry["targets"]))
+
+    def test_hook_record_archived_not_deleted(self) -> None:
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.json").exists())
+        self.assertEqual(len(self.archived("hook")), 1)
+        with patch.dict(imc_waiver.os.environ, {"LANE": "1"}):
+            with self.assertRaises(SystemExit) as raised:
+                imc_waiver.record(KEY, branch="feat/892-x", now=self.now,
+                                  batch_state_path=self.batch, runner=EndGh())
+        self.assertIn("no IMC hook record", str(raised.exception))
+
+    def test_retry_after_crash_posts_once_archives_once(self) -> None:
+        class CrashOnPost(EndGh):
+            def __call__(self, argv, **kw):
+                if "--method" in argv:
+                    return subprocess.CompletedProcess(argv, 1, "", "network down")
+                return super().__call__(argv, **kw)
+
+        with self.assertRaises(SystemExit):
+            self.end(CrashOnPost())
+        self.assertEqual(len(self.archived()), 1)
+        self.assertEqual(json.loads(self.archived()[0].read_text())["status"], "ending")
+        gh = EndGh()
+        final = self.end(gh, now=self.now + timedelta(minutes=5))
+        self.assertEqual(len(self.archived()), 1)
+        self.assertEqual(final["status"], "ended")
+        self.assertEqual(sum(1 for c in gh.calls if "--method" in c), 1)
+
+    def test_retry_after_post_does_not_repost(self) -> None:
+        class CrashOnRefetch(EndGh):
+            def __call__(self, argv, **kw):
+                if "--method" not in argv and "--paginate" not in argv:
+                    return subprocess.CompletedProcess(argv, 1, "", "boom")
+                return super().__call__(argv, **kw)
+
+        first = CrashOnRefetch()
+        with self.assertRaises(SystemExit):
+            self.end(first)
+        gh = EndGh(existing=[(URL, first.posted_body or "")])
+        final = self.end(gh, now=self.now + timedelta(minutes=5))
+        self.assertEqual(final["end_comment_url"], URL)
+        self.assertFalse(any("--method" in c for c in gh.calls))
+        self.assertEqual(len(self.archived()), 1)
+
+    def test_end_with_nothing_to_end_refuses(self) -> None:
+        self.end()
+        with self.assertRaises(SystemExit) as raised:
+            self.end()
+        self.assertIn("no IMC waiver receipt", str(raised.exception))
+
+
+class EndRuleTextTests(unittest.TestCase):
+    def test_r0384_names_end_and_r0229(self) -> None:
+        text = (HERE.parent.parent / "rules" / "lane-shorthand.md").read_text(encoding="utf-8")
+        span = text.split("<!-- R-0384 -->", 1)[1].split("<!-- /R-0384 -->", 1)[0]
+        flat = " ".join(span.split())
+        self.assertIn("imc_waiver.py end --key <K>", flat)
+        self.assertIn("then owes R-0229's human pass", flat)
+
+
 class StateDirTests(unittest.TestCase):
     def test_default_state_dir_resolves_home_at_call_time(self) -> None:
         with tempfile.TemporaryDirectory() as home, patch.dict("os.environ", {"HOME": home}):

@@ -323,8 +323,12 @@ the receipt exists (an unparseable one counts), `preclose_check.py` forces cross
 `--not-triggered` and the in-family fallback; `--plan` refuses a live record
 with no receipt. A refusal, survivors at the pass limit, a failed
 cross-family call, red CI, a conflict or an open dependency is an IMC stop:
-end the turn with the operator's decision. R-0229 is waived, never claimed
-satisfied. Like BATCH, IMC trusts the operator-typed line and the session:
+end the turn with the operator's decision. The stop's exit, at a
+sticky-wicket stop or a current-epoch mechanism-cluster verdict only, is
+`python3 tools/gh/imc_waiver.py end --key <K> --reason "<text>"`: it archives
+the receipt, revokes the key's BATCH merge grant, archives the hook record and
+posts `## IMC ended — <K>`; the issue then owes R-0229's human pass as any
+Tooling Exception issue. R-0229 is waived, never claimed satisfied. Like BATCH, IMC trusts the operator-typed line and the session:
 the receipt and the public `## IMC waiver` comment are an audit trail, not
 proof against a session that can write files.
 <!-- /R-0384 -->

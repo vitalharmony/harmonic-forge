@@ -27,8 +27,15 @@ this directory: every lane runs as the same user, so the receipt and the
 public `## IMC waiver` comment are an audit trail, not proof against a session
 that can write files.
 
+`end` (harmonic-forge#1042) is the IMC stop's exit: at a sticky-wicket stop or
+a ruled mechanism cluster it archives the receipt (never deletes it), revokes
+the key's BATCH merge grant, archives the hook record, and posts and refetches
+`## IMC ended — <KEY>`. The issue is then a normal Tooling Exception owing
+R-0229's human pass.
+
 Run:
     python3 tools/gh/imc_waiver.py record --key F892
+    python3 tools/gh/imc_waiver.py end --key F892 --reason "sticky-wicket PATCH"
 """
 from __future__ import annotations
 
@@ -309,17 +316,161 @@ def record(key: str, *, branch: str | None = None, now: datetime | None = None,
     return receipt
 
 
+def archive_dir() -> Path:
+    return state_dir() / "archive"
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime("%Y%m%dT%H%M%SZ")
+
+
+def end_heading(key: str) -> str:
+    return f"## IMC ended — {key.upper()}"
+
+
+def end_marker(key: str, ended_at: str) -> str:
+    return f"<!-- imc-ended key={key.upper()} ended_at={ended_at} -->"
+
+
+def end_comment_body(key: str, repo: str, issue: int, receipt: dict) -> str:
+    return "\n".join([
+        end_heading(key),
+        "",
+        f"- **Reason:** {receipt.get('end_reason')}",
+        f"- **Original waiver comment:** {receipt.get('comment_url') or 'none recorded'}",
+        f"- **What changes:** the IMC waiver on {repo}#{issue} is ended; the key's BATCH "
+        "merge grant is revoked and the IMC hook record archived.",
+        f"- **What the issue now owes:** R-0229's human pass, as any Tooling Exception "
+        f"issue ({RULE_ID}).",
+        "",
+        end_marker(key, str(receipt.get("ended_at"))),
+    ])
+
+
+def imc_stop(repo: str, issue: int) -> str | None:
+    """AC2: the reason this issue is at an IMC stop, or None. Read from the
+    preclose receipt through preclose_check's own reader and preclose_passes'
+    own sticky-wicket and cluster logic (the test `post_verdict` applies)."""
+    import preclose_check  # noqa: PLC0415  (preclose_check imports this module)
+    import preclose_passes  # noqa: PLC0415
+    receipt = preclose_check.find_receipt(repo, issue)
+    passes = preclose_passes.current(preclose_passes.history(receipt))
+    if (len(passes) >= preclose_passes.MAX_PASSES
+            and preclose_passes.cap_message(passes) == preclose_passes.STICKY_WICKET):
+        return "sticky-wicket stop (two passes both left surviving findings)"
+    epoch = max((int(p.get("epoch") or 0) for p in preclose_passes.history(receipt)), default=0)
+    cluster = preclose_passes._mechanism_cluster(receipt, epoch)
+    if cluster and cluster.get("verdict"):
+        return f"mechanism-cluster verdict {cluster.get('verdict')} (current epoch)"
+    return None
+
+
+def _revoke_authority(key: str, moment: datetime, batch_state_path: Path | None) -> None:
+    """AC3: stand down the BATCH merge grant and archive the hook record, so
+    neither a lane merge nor a `record` re-run survives `end`. Idempotent."""
+    import batch_auth  # noqa: PLC0415
+    batch_auth.revoke([key], state_path=batch_state_path)
+    hook = hook_record_path(key)
+    if hook.exists():
+        archive_dir().mkdir(parents=True, exist_ok=True)
+        os.replace(hook, archive_dir() / f"{key}.hook.{_stamp(moment)}.json")
+
+
+def _pending_end(key: str) -> Path | None:
+    """The newest archived receipt still marked `ending`: a crashed `end`."""
+    candidates = sorted(archive_dir().glob(f"{key}.waiver.*.json"))
+    for path in reversed(candidates):
+        data = read_json(path)
+        if data is not None and data.get("status") == "ending":
+            return path
+    return None
+
+
+def _existing_end_comment(repo: str, issue: int, marker: str, runner) -> str | None:
+    found = runner(["gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments",
+                    "--jq", ".[] | [.html_url, .body] | @json"],
+                   capture_output=True, text=True, check=False)
+    if found.returncode != 0:
+        raise SystemExit(f"imc-waiver: could not read {repo}#{issue}'s comments to check for a "
+                         f"prior `## IMC ended` post: {(found.stderr or '').strip()}")
+    for line in (found.stdout or "").splitlines():
+        try:
+            url, body = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if marker in str(body):
+            return str(url)
+    return None
+
+
+def end(key: str, *, reason: str, now: datetime | None = None,
+        batch_state_path: Path | None = None, runner=subprocess.run) -> dict:
+    """harmonic-forge#1042: end an IMC waiver at the IMC stop. Returns the
+    final archived receipt (status `ended`)."""
+    key = key.strip().upper()
+    if not reason or not reason.strip():
+        raise SystemExit("imc-waiver: --reason must be non-empty.")
+    target = key_target(key)
+    if target is None:
+        raise SystemExit(f"imc-waiver: {key} is not a repo-prefixed issue key.")
+    repo, issue = target
+    moment = now or _now()
+    live = receipt_path(key)
+    if live.exists():
+        stop = imc_stop(repo, issue)
+        if stop is None:
+            raise SystemExit(
+                f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt shows "
+                "neither two current-epoch passes that both left surviving findings nor a "
+                "current-epoch mechanism-cluster verdict. `end` is the exit from that stop, "
+                "never a way around the forced cross-family pass.")
+        data = read_json(live)
+        if data is None:
+            data = {"unreadable": True,
+                    "unreadable_original": live.read_text(encoding="utf-8", errors="replace")}
+        ending = {**data, "status": "ending", "end_reason": reason.strip(),
+                  "ended_at": _iso(moment), "end_stop": stop}
+        write_json_atomic(live, ending)
+        archived = archive_dir() / f"{key}.waiver.{_stamp(moment)}.json"
+        archive_dir().mkdir(parents=True, exist_ok=True)
+        os.replace(live, archived)
+    else:
+        archived = _pending_end(key)
+        if archived is None:
+            raise SystemExit(f"imc-waiver: no IMC waiver receipt for {key} and no interrupted "
+                             "`end` to complete.")
+        ending = read_json(archived) or {}
+    _revoke_authority(key, moment, batch_state_path)
+    url = _existing_end_comment(repo, issue, end_marker(key, str(ending.get("ended_at"))),
+                                runner)
+    if url is None:
+        url = post_and_confirm(repo, issue, end_comment_body(key, repo, issue, ending), runner)
+    final = {**ending, "status": "ended", "end_comment_url": url}
+    write_json_atomic(archived, final)
+    return final
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Record an IMC waiver on its issue (R-0384).")
     sub = parser.add_subparsers(dest="command", required=True)
     rec = sub.add_parser("record", help="post the waiver comment and write the receipt")
     rec.add_argument("--key", required=True, help="the IMC key, e.g. F892")
+    fin = sub.add_parser("end", help="end the waiver at an IMC stop (harmonic-forge#1042)")
+    fin.add_argument("--key", required=True, help="the IMC key, e.g. F892")
+    fin.add_argument("--reason", required=True, help="why the waiver ends")
     args = parser.parse_args()
     target = key_target(args.key)
     if target is None:
         raise SystemExit(f"imc-waiver: {args.key} is not a repo-prefixed issue key.")
     from manifest_identity import apply_project_identity  # noqa: PLC0415
     apply_project_identity(target[0])  # harmonic-forge#804
+    if args.command == "end":
+        ended = end(args.key, reason=args.reason)
+        print(f"imc-waiver: ended {ended.get('key', args.key.upper())} -- "
+              f"{ended['end_comment_url']}")
+        print(f"  archived receipt: {archive_dir()}")
+        print("  the issue now owes R-0229's human pass.")
+        return 0
     receipt = record(args.key)
     print(f"imc-waiver: recorded {receipt['key']} -- {receipt['comment_url']}")
     print(f"  receipt: {receipt_path(receipt['key'])}")
