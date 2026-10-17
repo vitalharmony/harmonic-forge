@@ -98,6 +98,12 @@
 #                       and silence is what harmonic-forge#730 exists to
 #                       outlaw. Omit it entirely for a repo that ships a real
 #                       manifest (hrse).
+#   rebase_regenerate   Optional (harmonic-forge#1057). Path -> mise task that
+#                       regenerates that file; lane1-rebase takes main's side
+#                       and reruns it instead of exiting 2. Only files that
+#                       are generated IN FULL may be listed.
+#   rebase_provision_task  The task run first in the rebase prep worktree;
+#                       required when rebase_regenerate is set.
 #   ci_parity_task      Optional (harmonic-forge#802). A repo's CI standard is
 #                       `verify` -> `mise run ci-check`; a repo whose CI
 #                       instead mirrors `check`'s commands against its own
@@ -160,6 +166,12 @@ ci_parity_task = "ci-parity-check-command-sets"
 # disposable-graph file harmonic-forge#861 introduced), so `lane3` runs this
 # narrow task at launch instead of relinking it to the main checkout's.
 lane3_env_task = "lane3-env-provision"
+# harmonic-forge#1057: wholly generated files lane1-rebase regenerates on a
+# conflict. Only files generated in full: README.md (generated blocks inside
+# hand-written prose) and context-budget.baseline.toml (hand-written
+# [[increase]] entries) are deliberately absent, so a conflict there is exit 2.
+rebase_regenerate = { "design-system.baseline.toml" = "design-system-ratchet --update", "docs/ONTOLOGY.md" = "docs-generate" }
+rebase_provision_task = "worktree-provision"
 
 [[project]]
 name = "harmonic-forge"
