@@ -215,6 +215,58 @@ def gated_sha(body: str) -> str | None:
     return None
 
 
+RENDER_PENDING = "Render-Pending"
+
+
+class RenderPendingUnreadable(Exception):
+    """The head commit's message could not be read, so whether it carries a
+    `Render-Pending` trailer is unknown. Callers refuse (harmonic-forge#1066):
+    treating an unreadable commit as "no trailer" would silently skip the check."""
+
+
+def render_pending_from_message(message: str) -> str | None:
+    """The `Render-Pending` trailer value in one commit message, or None.
+
+    harmonic-forge#1066: parsed by `git interpret-trailers --parse`, never a
+    hand-written regex, so this reader and `l1_post`'s `git log -1
+    --format=%(trailers:...)` agree on what counts as a trailer. A
+    `Render-Pending:` line in body text is not a trailer to git, so not to us.
+    """
+    try:
+        result = subprocess.run(["git", "interpret-trailers", "--parse"], input=message,
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RenderPendingUnreadable(f"git interpret-trailers failed: {exc}") from exc
+    if result.returncode:
+        raise RenderPendingUnreadable(
+            f"git interpret-trailers failed: {result.stderr.strip()[:120]}")
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip().lower() == RENDER_PENDING.lower() and value.strip():
+            return value.strip()
+    return None
+
+
+def render_pending_remote(repo: str, sha: str, run=None) -> str | None:
+    """The head commit's `Render-Pending` value read via `gh api`, or None.
+
+    `check_gate_result` has no checkout (a hook calls it from any cwd), so the
+    commit is read from GitHub. A failed or empty read raises
+    `RenderPendingUnreadable`: it fails closed.
+    """
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.message"])
+    if code != 0 or not out.strip():
+        raise RenderPendingUnreadable(
+            f"could not read {sha[:8]}'s commit message: {out.strip()[:120]}")
+    return render_pending_from_message(out)
+
+
+def render_pending_refusal(sha: str, run_id: str) -> str:
+    return (f"[GATE] REFUSED: head {sha[:8]} is awaiting visual-baseline render run "
+            f"{run_id}; re-run lane1-rebase after it succeeds (harmonic-forge#1066).")
+
+
 def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | None:
     """Names of the branch's REQUIRED status checks, or None if unreadable.
 
@@ -495,6 +547,15 @@ def check_gate_result(
             f"  {why}\n"
             "The gate ran against code that is no longer what would merge. "
             "Re-gate at the current head.")
+
+    try:
+        pending = render_pending_remote(repo, sha, run=run)
+    except RenderPendingUnreadable as exc:
+        return False, (
+            f"[GATE] REFUSED: could not read head {sha[:8]}'s commit message to "
+            f"check {RENDER_PENDING} (harmonic-forge#1066): {exc}")
+    if pending:
+        return False, render_pending_refusal(sha, pending)
 
     state, detail = ci_conclusion(repo, sha, run=run,
                                   required=required_checks(repo, run=run))

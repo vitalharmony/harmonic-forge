@@ -2328,6 +2328,15 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
             f"onto {main_sha[:12]} and post ready-for-l3 in the same action as "
             f"confirming it, so this cannot drift again."
         )
+    # harmonic-forge#1066: a head still marked Render-Pending carries main's stale
+    # baselines. Head only (`-1`); a non-zero read fails closed.
+    trailer = run("git", "log", "-1",
+                  f"--format=%(trailers:key={gate_ci.RENDER_PENDING},valueonly)", sha)
+    if trailer.returncode:
+        fail(f"cannot read {sha[:12]}'s commit message to check "
+             f"{gate_ci.RENDER_PENDING}: {trailer.stderr.strip()[:120]}")
+    if trailer.stdout.strip():
+        fail(gate_ci.render_pending_refusal(sha, trailer.stdout.strip().splitlines()[0]))
     repo_root_result = run("git", "rev-parse", "--show-toplevel")
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
