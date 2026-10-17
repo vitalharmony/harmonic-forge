@@ -32,9 +32,10 @@ exit 2. Only files generated in full may be declared: taking main's side drops
 the branch's hand edits. A re-run after a crash that followed a regeneration
 exits 3, as for a version resolution.
 
-A `package-lock.json`'s root `"version"` and `packages[""].version` resolve
-with its `package.json`, to the same `T` (harmonic-forge#1057 gap 1); any other
-lock difference is exit 2.
+A `package-lock.json` conflict confined to its root `"version"` and
+`packages[""].version` resolves to origin/main's lock unchanged
+(harmonic-forge#1057 gap 1, preclose); `T` comes from `package.json` alone, and
+any other lock difference is exit 2.
 
 A conflict confined to a `package.json`'s top-level `"version"` (both sides
 equal as JSON, numbers compared by literal text, once that key is removed) is resolved, not
@@ -154,7 +155,7 @@ def run_task(prep: Path, task: str) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(["mise", "run", *shlex.split(task)], cwd=str(prep),
                               capture_output=True, text=True)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         # F1057 preclose: a task that cannot even launch is a failed task (exit 2).
         return subprocess.CompletedProcess(["mise", "run", task], 127, "", str(exc))
 
@@ -501,6 +502,12 @@ def _resolve_versions(prep: Path, paths: list[str], target: str | None,
         if found.groups()[:2] != _SEMVER.match(main_version).groups()[:2]:
             return (f"{path}: branch version {branch_version} differs from "
                     f"origin/main's {main_version} in MAJOR or MINOR")
+        if Path(path).name == _LOCK:
+            # F1057 preclose (cross-family): the lock keeps origin/main's version.
+            # hrse's bump never writes the lock, and setting it to `T` alone would
+            # leave it disagreeing with a cleanly merged package.json.
+            staged.append((path, ours))
+            continue
         text = _set_version(path, ours, target)
         result = _blank(path, text) if text is not None else None
         if result is None or result != (upstream[0], target):

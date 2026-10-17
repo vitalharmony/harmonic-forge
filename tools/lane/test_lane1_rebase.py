@@ -922,6 +922,21 @@ class RegenerateTests(VersionConflictTests):
         self.assert_refused(code, err)
         self.assertIn("exit 127", err)
 
+    def test_r13_task_with_unmatched_quote_exits_2(self):
+        self.declared = {"gen.txt": 'gen "'}
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+
+        def real_for_gen(prep, task):
+            if task == "prov":
+                return subprocess.CompletedProcess([], 0, "", "")
+            return real_run_task(prep, task)
+
+        with mock.patch.object(lane1_rebase, "run_task", side_effect=real_for_gen):
+            code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("exit 127", err)
+
     def test_r10_crash_after_regeneration_push_rerun_exits_3(self):
         self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
         self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
@@ -955,7 +970,8 @@ class LockVersionTests(VersionConflictTests):
         code, out, err = self.run_captured()
         self.assertEqual(code, 0, err)
         data = self.lock_on_origin()
-        self.assertEqual((data["version"], data["packages"][""]["version"]), ("2.9.43", "2.9.43"))
+        # The lock keeps origin/main's version (preclose): T is package.json's.
+        self.assertEqual((data["version"], data["packages"][""]["version"]), ("2.9.42", "2.9.42"))
         self.assertEqual(data["packages"]["node_modules/a"]["version"], "1.0.0")
         self.assertEqual(self.head_version(), "2.9.43")
 
