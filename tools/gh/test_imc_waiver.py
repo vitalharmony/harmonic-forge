@@ -333,6 +333,36 @@ class EndTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.end()
 
+    def test_end_refuses_one_waived_pass_even_if_cap_message_says_stop(self) -> None:
+        """Reforge pass 2 sticky-wicket: only the pass count may refuse here.
+        cap_message is pinned to STICKY_WICKET, so the `len(waived) >=
+        MAX_PASSES` check is the deciding condition."""
+        import preclose_passes  # noqa: PLC0415
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
+        with patch.object(preclose_passes, "cap_message",
+                          return_value=preclose_passes.STICKY_WICKET):
+            with self.assertRaises(SystemExit) as refused:
+                self.end()
+        self.assertIn("not at an IMC stop", str(refused.exception))
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_refuses_a_ruled_cluster_without_a_waiver_era_pass(self) -> None:
+        """Reforge pass 2 (test honesty): a current-epoch PATCH cluster whose
+        passes all ran before the waiver, or without the forced cross-family
+        call, is no IMC stop. Only `and waived` can refuse it."""
+        for entry in ({"completed_at": "2026-10-17T00:00:00Z", "cross_family_ran": True},
+                      {"completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": False}):
+            self.preclose = {"status": "complete",
+                             "pass_history": [{"sha": "a", "surviving": 2, **entry}],
+                             "mechanism_cluster": {"epoch": 0, "verdict": "PATCH"}}
+            gh = EndGh()
+            with self.assertRaises(SystemExit) as refused:
+                self.end(gh)
+            self.assertIn("not at an IMC stop", str(refused.exception))
+            self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+            self.assertEqual(gh.calls, [])
+
     def test_end_refuses_when_second_pass_was_clean(self) -> None:
         self.preclose = {"status": "complete", "pass_history": [
             {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}, {"sha": "b", "surviving": 0, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
