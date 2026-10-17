@@ -2,7 +2,10 @@
 """Sticky-wicket receipts for repeat reworks (harmonic-forge#997).
 
 `3-lane-protocol.md`'s sticky-wicket trigger is countable: two consecutive
-non-PASS Lane 3 gate results on one issue. Nothing enforced it, so a third
+non-PASS rounds on one issue. A round is a Lane 3 gate result or, since
+harmonic-forge#1060, a Lane 1 rework (a declined completion); a rework that
+answers the non-PASS gate result just before it belongs to that round. A PASS,
+or a receipt through the newest round, resets the count. Nothing enforced it, so a third
 rework could post with no fresh look at the approach (openclaw-projects#35 took
 five). `l1_post.py --kind rework` now refuses once the last two gate results on
 the issue are both non-PASS, unless this module holds a receipt recording the
@@ -26,7 +29,7 @@ there is no approach to judge (hrse#2379). A rework, handoff or ready-for-l3
 after the pair still refuses, and a third block at that SHA is owed as before.
 
     sticky_receipt.py record --repo OWNER/REPO --issue N --verdict PATCH \\
-        --through <gate-result comment id> --comment-url <sticky-wicket report URL>
+        --through <round comment id> --comment-url <sticky-wicket report URL>
 """
 from __future__ import annotations
 
@@ -133,6 +136,50 @@ def gate_details(comments: list[dict]) -> list[tuple[int, str | None, str | None
     return found
 
 
+def rounds(comments: list[dict]) -> list[tuple[int, bool, str]]:
+    """harmonic-forge#1060: `(comment id, is_pass, kind)` for every round, oldest
+    first. A round is a Lane 3 gate result (kind `gate`) or a Lane 1 rework
+    (kind `rework`, a declined completion); a rework that answers the non-PASS
+    gate result immediately before it attaches to that round and adds none."""
+    import gate_ci  # noqa: PLC0415
+    import watch_lane_posts as belt  # noqa: PLC0415
+
+    found: list[tuple[int, bool, str]] = []
+    answered = False
+    for comment in comments:
+        body = comment.get("body") or ""
+        classified = belt._classify(body)
+        detail = classified[1] if classified else ""
+        if belt._is_gate_report(detail, body):
+            found.append((int(comment["id"]), gate_ci.verdict_of(body) == "PASS", "gate"))
+            answered = False
+        elif classified == ("l1", "rework"):
+            if found and found[-1][2] == "gate" and not found[-1][1] and not answered:
+                answered = True
+            else:
+                found.append((int(comment["id"]), False, "rework"))
+    return found
+
+
+def _open_rounds(comments: list[dict], through: int | None) -> tuple[list[int], bool]:
+    """Non-PASS round ids after the later of the last PASS and `through`, and
+    whether the newest is a non-PASS gate result no rework has answered yet."""
+    found = rounds(comments)
+    tail: list[tuple[int, bool, str]] = []
+    for entry in found:
+        if entry[1]:
+            tail = []
+        elif through is None or entry[0] > through:
+            tail.append(entry)
+    unanswered = False
+    if tail and tail[-1][2] == "gate":
+        newest = tail[-1][0]
+        later = [c for c in comments if int(c["id"]) > newest]
+        import watch_lane_posts as belt  # noqa: PLC0415
+        unanswered = not any(belt._classify(c.get("body") or "") == ("l1", "rework") for c in later)
+    return [entry[0] for entry in tail], unanswered
+
+
 def _same_sha(a: str, b: str) -> bool:
     """A gate result may carry a short SHA; compare by prefix both ways."""
     return a.startswith(b) or b.startswith(a)
@@ -167,15 +214,26 @@ def same_sha_retry(details: list[tuple[int, str | None, str | None]]) -> str | N
 RETRY_EXEMPT_KINDS = ("ae", "sweep", "ae-and-sweep")
 
 
-def owed(comments: list[dict]) -> tuple[int, int] | None:
-    """`(older, newer)` gate-result ids when the last two are both non-PASS."""
-    results = gate_results(comments)
-    if len(results) < 2:
+def owed(comments: list[dict], posting: str | None = None,
+         through: int | None = None) -> tuple[int, int] | None:
+    """`(older, newer)` round ids when two consecutive non-PASS rounds stand
+    after the later of the last PASS and a receipt's `through` (harmonic-forge#1060).
+    `posting="rework"` counts the rework about to post as a round of its own,
+    unless it answers an unanswered non-PASS gate result; its pair is then
+    `(newest, newest)`."""
+    ids, unanswered = _open_rounds(comments, through)
+    if posting == "rework" and ids and not unanswered:
+        return ids[-1], ids[-1]
+    if len(ids) < 2:
         return None
-    (older, older_pass), (newer, newer_pass) = results[-2], results[-1]
-    if older_pass or newer_pass:
-        return None
-    return older, newer
+    return ids[-2], ids[-1]
+
+
+def gate_pair(comments: list[dict], pair: tuple[int, int]) -> bool:
+    """F1060 preclose: the #1019 same-SHA exemption applies only when both owed
+    rounds are gate results, never when a Lane 1 rework is one of them."""
+    gates = {cid for cid, _ in gate_results(comments)}
+    return pair[0] in gates and pair[1] in gates
 
 
 def covered(repo: str, issue: int, newer: int) -> bool:
@@ -187,17 +245,22 @@ def covered(repo: str, issue: int, newer: int) -> bool:
 def refusal(repo: str, issue: int, comments: list[dict], *, kind: str | None = None,
             attested_sha: str | None = None) -> str | None:
     """Why a rework on this issue must not post yet, or None."""
-    pair = owed(comments)
+    receipt = read(repo, issue)
+    through = (int(receipt.get("through") or 0)
+               if receipt and receipt.get("verdict") in VERDICTS else None)
+    pair = owed(comments, posting=kind, through=through)
     if pair is None or covered(repo, issue, pair[1]):
         return None
-    if kind in RETRY_EXEMPT_KINDS and attested_sha:
+    if kind in RETRY_EXEMPT_KINDS and attested_sha and gate_pair(comments, pair):
         retry = same_sha_retry(gate_details(comments))
         if retry and _same_sha(retry, attested_sha.lower()):
             return None
     older, newer = pair
-    return (f"{repo}#{issue}: the last two Lane 3 gate results (issuecomment-{older}, "
-            f"issuecomment-{newer}) are both non-PASS, so sticky-wicket is owed before another "
-            "rework (3-lane-protocol.md's countable trigger). Run the sticky-wicket agent, post its "
+    rounds_named = (f"issuecomment-{older} and this {kind}" if older == newer
+                    else f"issuecomment-{older}, issuecomment-{newer}")
+    return (f"{repo}#{issue}: two consecutive non-PASS rounds (gate results or Lane 1 "
+            f"reworks: {rounds_named}), so sticky-wicket is owed first "
+            "(3-lane-protocol.md's countable trigger). Run the sticky-wicket agent, post its "
             "verdict, then:\n  python3 ~/harmonic-forge/tools/gh/sticky_receipt.py record "
             f"--repo {repo} --issue {issue} --verdict <PATCH|REFORGE> --through {newer} "
             "--comment-url <the posted verdict's URL>")
@@ -213,7 +276,7 @@ def _verify_comment(repo: str, issue: int, url: str, through: int, verdict: str)
     if not isinstance(data, dict) or not str(data.get("issue_url", "")).endswith(f"/issues/{issue}"):
         raise SystemExit(f"sticky-receipt: {url} is not a comment on {repo}#{issue}")
     if int(data.get("id") or 0) <= through:
-        raise SystemExit(f"sticky-receipt: {url} predates gate result issuecomment-{through}")
+        raise SystemExit(f"sticky-receipt: {url} predates round issuecomment-{through}")
     body = str(data.get("body") or "")
     if not re.search(r"sticky[- ]wicket", body, re.I) or not re.search(rf"\b{verdict}\b", body):
         raise SystemExit(f"sticky-receipt: {url} does not name sticky-wicket and the verdict {verdict}")
@@ -224,8 +287,16 @@ def record(repo: str, issue: int, verdict: str, through: int, comment_url: str) 
     if verdict not in VERDICTS:
         raise SystemExit(f"sticky-receipt: verdict must be one of {', '.join(VERDICTS)}")
     comments = _gh_json(f"repos/{repo}/issues/{issue}/comments")
-    if through not in {cid for cid, _ in gate_results(comments if isinstance(comments, list) else [])}:
-        raise SystemExit(f"sticky-receipt: issuecomment-{through} is not a gate result on {repo}#{issue}")
+    listed = comments if isinstance(comments, list) else []
+    if through not in {cid for cid, _, _ in rounds(listed)}:
+        raise SystemExit(f"sticky-receipt: issuecomment-{through} is not a round (a gate result "
+                         f"or a Lane 1 rework) on {repo}#{issue}")
+    # F1060 preclose: a receipt resets the count, so it must name the NEWEST open
+    # round; one through an older round would silently clear the owed pair (AC3).
+    open_ids, _ = _open_rounds(listed, None)
+    if open_ids and through != open_ids[-1]:
+        raise SystemExit(f"sticky-receipt: --through must be the newest round, "
+                         f"issuecomment-{open_ids[-1]}, not issuecomment-{through}")
     canonical = _verify_comment(repo, issue, comment_url, through, verdict)
     directory = receipt_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -247,12 +318,12 @@ def record(repo: str, issue: int, verdict: str, through: int, comment_url: str) 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    rec = sub.add_parser("record", help="Record the sticky-wicket verdict through a gate result.")
+    rec = sub.add_parser("record", help="Record the sticky-wicket verdict through a round.")
     rec.add_argument("--repo", required=True)
     rec.add_argument("--issue", type=int, required=True)
     rec.add_argument("--verdict", required=True, choices=VERDICTS)
     rec.add_argument("--through", type=int, required=True,
-                     help="The newest gate-result comment id the verdict covers.")
+                     help="The newest round's comment id (a gate result or a Lane 1 rework) the verdict covers.")
     rec.add_argument("--comment-url", required=True,
                      help="The posted sticky-wicket report on the same issue.")
     args = parser.parse_args()

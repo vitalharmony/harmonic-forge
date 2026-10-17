@@ -1708,10 +1708,13 @@ accumulated — to read the full issue thread and diagnose whether the
 underlying *approach* is structurally wrong, not just the latest bug. This
 is the cross-lane analog of a software circuit breaker: after N failures,
 stop retrying the same thing and ask whether the thing itself is broken.
-The trigger is mechanical (harmonic-forge#997): two consecutive non-PASS Lane 3
-gate results, blocked and failed alike, make `l1_post.py --kind rework` refuse
-and the Lane 1 belt emit `owes=sticky-wicket` until `sticky_receipt.py record`
-holds the verdict through the newer result. One exemption (harmonic-forge#1019):
+The trigger is mechanical (harmonic-forge#997, #1060): two consecutive non-PASS
+rounds make `l1_post.py --kind rework` refuse and the Lane 1 belt emit
+`owes=sticky-wicket` until `sticky_receipt.py record` holds the verdict through
+the newer round. A round is a Lane 3 gate result (blocked and failed alike) or a
+Lane 1 rework (a declined completion); a rework answering the non-PASS gate
+result just before it is part of that round. A PASS, or a receipt, resets the
+count. One exemption (harmonic-forge#1019):
 two BLOCKED results at one Head-SHA, the third-newest not also BLOCKED there, do
 not refuse an AE or sweep on that same SHA and do not wake the belt; a rework,
 handoff or ready-for-l3 after them still refuses.
