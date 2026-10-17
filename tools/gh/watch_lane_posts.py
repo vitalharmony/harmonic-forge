@@ -517,6 +517,8 @@ def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
     if not pair or sticky_receipt.covered(repo, issue, pair[1]):
         return False
     # harmonic-forge#1019: a same-SHA blocked retry owes an AE re-post, not a verdict.
+    if not sticky_receipt.gate_pair(comments, pair):
+        return True
     return sticky_receipt.same_sha_retry(sticky_receipt.gate_details(comments)) is None
 
 

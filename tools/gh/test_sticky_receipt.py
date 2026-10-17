@@ -66,8 +66,8 @@ class OwedTests(ReceiptHome):
         self.assertIsNone(sr.refusal(REPO, ISSUE, comments))
 
     def test_a_receipt_through_an_older_result_does_not(self):
-        # harmonic-forge#1060: a receipt resets the count, so two NEW rounds
-        # after it are owed again; one alone is not (see RoundTests).
+        # F1060 preclose: record() refuses an older round, so no live receipt
+        # names one. Two NEW rounds after a valid receipt are owed again.
         self.write_receipt(through=1)
         self.assertIsNotNone(sr.refusal(REPO, ISSUE, [gate(1, "FAIL"), gate(5, "FAIL"),
                                                       gate(9, "FAIL")]))
@@ -398,6 +398,48 @@ class RoundTests(ReceiptHome):
                                    "html_url": "u"}):
             sr.record(REPO, ISSUE, "PATCH", 2, "https://x/issues/1#issuecomment-9")
         self.assertEqual(sr.read(REPO, ISSUE)["through"], 2)
+
+
+class F1060PrecloseTests(ReceiptHome):
+    """F1060 preclose pass 1: record() names the newest round; the belt agrees."""
+
+    def _gh(self, comments, report_id=99, through=None):
+        def fake(path):
+            if path.endswith("/comments"):
+                return comments
+            return {"id": report_id, "issue_url": f"https://x/repos/{REPO}/issues/{ISSUE}",
+                    "body": "## Sticky-wicket\nVerdict: PATCH", "html_url": "u"}
+        return mock.patch.object(sr, "_gh_json", side_effect=fake)
+
+    def test_record_refuses_an_older_round_of_the_owed_pair(self):
+        comments = [gate(1, "FAIL"), gate(2, "FAIL")]
+        with self._gh(comments), self.assertRaises(SystemExit) as ctx:
+            sr.record(REPO, ISSUE, "PATCH", 1, "https://x/issues/1#issuecomment-99")
+        self.assertIn("newest round", str(ctx.exception))
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="rework"))
+
+    def test_record_accepts_the_newest_round(self):
+        comments = [gate(1, "FAIL"), gate(2, "FAIL")]
+        with self._gh(comments):
+            sr.record(REPO, ISSUE, "PATCH", 2, "https://x/issues/1#issuecomment-99")
+        self.assertIsNone(sr.refusal(REPO, ISSUE, comments, kind="rework"))
+
+    def test_belt_wakes_for_a_rework_only_pair(self):
+        comments = [gate(1, "PASS"), rework(2), done(3), rework(4)]
+        self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+
+    def test_belt_honors_the_receipt_reset(self):
+        comments = [gate(1, "FAIL"), gate(2, "FAIL"), rework(3), done(4), gate(5, "FAIL")]
+        self.write_receipt(through=2)
+        self.assertFalse(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+
+    def test_same_sha_exemption_ignores_a_pair_with_reworks(self):
+        sha = "abc1234"
+        comments = [gate(1, "PASS", sha), gate(2, "BLOCKED (`L3B`)", sha),
+                    gate(3, "BLOCKED (`L3B`)", sha), rework(4), done(5), rework(6)]
+        # Rework 4 answers BLOCKED 3; rework 6 is a new round, so the pair is (3, 6).
+        self.assertTrue(belt._sticky_wicket_owed(REPO, ISSUE, comments))
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, comments, kind="ae", attested_sha=sha))
 
 
 if __name__ == "__main__":

@@ -229,6 +229,13 @@ def owed(comments: list[dict], posting: str | None = None,
     return ids[-2], ids[-1]
 
 
+def gate_pair(comments: list[dict], pair: tuple[int, int]) -> bool:
+    """F1060 preclose: the #1019 same-SHA exemption applies only when both owed
+    rounds are gate results, never when a Lane 1 rework is one of them."""
+    gates = {cid for cid, _ in gate_results(comments)}
+    return pair[0] in gates and pair[1] in gates
+
+
 def covered(repo: str, issue: int, newer: int) -> bool:
     receipt = read(repo, issue)
     return bool(receipt and receipt.get("verdict") in VERDICTS
@@ -244,7 +251,7 @@ def refusal(repo: str, issue: int, comments: list[dict], *, kind: str | None = N
     pair = owed(comments, posting=kind, through=through)
     if pair is None or covered(repo, issue, pair[1]):
         return None
-    if kind in RETRY_EXEMPT_KINDS and attested_sha:
+    if kind in RETRY_EXEMPT_KINDS and attested_sha and gate_pair(comments, pair):
         retry = same_sha_retry(gate_details(comments))
         if retry and _same_sha(retry, attested_sha.lower()):
             return None
@@ -280,9 +287,16 @@ def record(repo: str, issue: int, verdict: str, through: int, comment_url: str) 
     if verdict not in VERDICTS:
         raise SystemExit(f"sticky-receipt: verdict must be one of {', '.join(VERDICTS)}")
     comments = _gh_json(f"repos/{repo}/issues/{issue}/comments")
-    if through not in {cid for cid, _, _ in rounds(comments if isinstance(comments, list) else [])}:
+    listed = comments if isinstance(comments, list) else []
+    if through not in {cid for cid, _, _ in rounds(listed)}:
         raise SystemExit(f"sticky-receipt: issuecomment-{through} is not a round (a gate result "
                          f"or a Lane 1 rework) on {repo}#{issue}")
+    # F1060 preclose: a receipt resets the count, so it must name the NEWEST open
+    # round; one through an older round would silently clear the owed pair (AC3).
+    open_ids, _ = _open_rounds(listed, None)
+    if open_ids and through != open_ids[-1]:
+        raise SystemExit(f"sticky-receipt: --through must be the newest round, "
+                         f"issuecomment-{open_ids[-1]}, not issuecomment-{through}")
     canonical = _verify_comment(repo, issue, comment_url, through, verdict)
     directory = receipt_dir()
     directory.mkdir(parents=True, exist_ok=True)
