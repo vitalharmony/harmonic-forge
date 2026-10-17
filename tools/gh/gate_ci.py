@@ -67,8 +67,10 @@ green thing it could read.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 
 #: The gate-report heading. `lane_state.py` treats this as AUTHORITATIVE when
 #: the `kind=` footer disagrees, and it is right to: 74 of 98 real
@@ -228,13 +230,25 @@ def render_pending_from_message(message: str) -> str | None:
     """The `Render-Pending` trailer value in one commit message, or None.
 
     harmonic-forge#1066: parsed by `git interpret-trailers --parse`, never a
-    hand-written regex, so this reader and `l1_post`'s `git log -1
-    --format=%(trailers:...)` agree on what counts as a trailer. A
-    `Render-Pending:` line in body text is not a trailer to git, so not to us.
+    hand-written regex. Both readers (`check_gate_result` and `l1_post`'s
+    `static_checks`) call this function on the raw message, so there is one
+    recognizer, not two. A `Render-Pending:` line in body text is not a
+    trailer to git, so not to us.
     """
+    # Reforge (sticky-wicket 6237951432): this is the ONE recognizer both readers
+    # call. Its inputs are pinned -- `--no-divider` (a commit message has no patch
+    # divider, as pretty.c's %(trailers) assumes), ':' as the only separator, and
+    # no system/global/repo config (neutral cwd) -- so no ambient config can make
+    # gate_ci and l1_post disagree on what is a trailer.
+    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_CONFIG_PARAMETERS", None)
     try:
-        result = subprocess.run(["git", "interpret-trailers", "--parse"], input=message,
-                                capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse",
+             "--no-divider"],
+            input=message, capture_output=True, text=True, timeout=30,
+            cwd=tempfile.gettempdir(), env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         raise RenderPendingUnreadable(f"git interpret-trailers failed: {exc}") from exc
     if result.returncode:

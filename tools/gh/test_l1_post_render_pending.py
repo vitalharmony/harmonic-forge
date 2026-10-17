@@ -75,5 +75,45 @@ class StaticChecksRenderPending(unittest.TestCase):
         self.assertIn("cannot resolve the source worktree root", msg)
 
 
+
+# Reforge (sticky-wicket 6237951432): one table, both readers, equal answers.
+AGREEMENT = [
+    # (name, message, repo trailer.separators or None, expected run id or None)
+    ("plain trailer", "render: pending\n\nRender-Pending: 11\n", None, "11"),
+    ("below a --- line", "render: pending\n\n---\nnotes\n\nRender-Pending: 42\n", None, "42"),
+    ("body text, not a trailer",
+     "subject\n\nRender-Pending: 1\n\nA closing paragraph that is prose.\n", None, None),
+    ("beside Signed-off-by", "subject\n\nSigned-off-by: A <a@b>\nRender-Pending: 9\n", None, "9"),
+    ("repo config '=:' separators", "subject\n\nRender-Pending: 7\n", "=:", "7"),
+    ("no trailer", "ordinary commit\n", None, None),
+]
+
+
+class BothReadersAgree(StaticChecksRenderPending):
+    def test_every_message_gets_the_same_answer_from_both_readers(self) -> None:
+        import gate_ci
+        from test_gate_ci import PASS_BODY, check, fake_gh
+        for name, message, separators, expected in AGREEMENT:
+            with self.subTest(name=name):
+                if separators:
+                    git(self.repo, "config", "trailer.separators", separators)
+                else:
+                    subprocess.run(["git", "config", "--unset", "trailer.separators"],
+                                   cwd=self.repo, capture_output=True)
+                git(self.repo, "commit", "-q", "--allow-empty", "--cleanup=verbatim",
+                    "-m", message)
+                sha = git(self.repo, "rev-parse", "HEAD")
+                l1 = self._static_checks(sha)
+                l1_refused = "awaiting visual-baseline render run" in l1
+                ok, gate_msg = gate_ci.check_gate_result(
+                    "o/r", PASS_BODY,
+                    run=fake_gh(checks=[check("verify")], message=message))
+                self.assertEqual(l1_refused, not ok, f"{name}: l1={l1!r} gate={gate_msg!r}")
+                if expected:
+                    self.assertIn(expected, l1)
+                    self.assertIn(expected, gate_msg)
+                else:
+                    self.assertTrue(ok, gate_msg)
+
 if __name__ == "__main__":
     unittest.main()

@@ -2329,14 +2329,18 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
             f"confirming it, so this cannot drift again."
         )
     # harmonic-forge#1066: a head still marked Render-Pending carries main's stale
-    # baselines. Head only (`-1`); a non-zero read fails closed.
-    trailer = run("git", "log", "-1",
-                  f"--format=%(trailers:key={gate_ci.RENDER_PENDING},valueonly)", sha)
-    if trailer.returncode:
+    # baselines. Head only (`-1`); the raw message goes through gate_ci's one
+    # recognizer, never `%(trailers)`, so both readers agree. Fails closed.
+    message = run("git", "log", "-1", "--format=%B", sha)
+    if message.returncode:
         fail(f"cannot read {sha[:12]}'s commit message to check "
-             f"{gate_ci.RENDER_PENDING}: {trailer.stderr.strip()[:120]}")
-    if trailer.stdout.strip():
-        fail(gate_ci.render_pending_refusal(sha, trailer.stdout.strip().splitlines()[0]))
+             f"{gate_ci.RENDER_PENDING}: {message.stderr.strip()[:120]}")
+    try:
+        pending = gate_ci.render_pending_from_message(message.stdout)
+    except gate_ci.RenderPendingUnreadable as exc:
+        fail(f"cannot check {sha[:12]} for {gate_ci.RENDER_PENDING}: {exc}")
+    if pending:
+        fail(gate_ci.render_pending_refusal(sha, pending))
     repo_root_result = run("git", "rev-parse", "--show-toplevel")
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
