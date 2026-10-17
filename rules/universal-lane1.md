@@ -200,10 +200,26 @@ them.
    progress, and there are no tracked changes. Otherwise stop and report. The
    `lane1` launcher applies the same guard at session start
    (`tools/lane/_lane_refresh.sh`).
+   One exception (harmonic-forge#1067, operator ruling 2026-10-17): a
+   detached HEAD with no tracked changes and no merge or rebase in progress is
+   repaired, not reported. Run `git fetch origin` once (a failed fetch stops
+   and reports) and record `T=$(git rev-parse origin/main)`; every later
+   command uses `T`, never `origin/main`, so a ref that moves mid-repair
+   cannot change what was checked. When both
+   `git merge-base --is-ancestor HEAD $T` and
+   `git merge-base --is-ancestor main $T` return 0, the detached commit and
+   local `main` are both already in `T`. Both checks run before
+   `git checkout main`, so a refusal leaves HEAD where it was. Then
+   `git merge --ff-only $T` replaces step 2, and the repair is done only once
+   `git symbolic-ref HEAD` prints `refs/heads/main` and `git rev-parse HEAD`
+   equals `T`. Any failed command, a refused checkout, or either check
+   failing (a detached commit not in `T`, or a local `main` ahead or
+   diverged) stops and reports, naming the SHAs involved.
 2. Fast-forward it to `origin/main` (`git fetch origin`, then
-   `git merge --ff-only origin/main`). Never a merge commit and never a
+   `git merge --ff-only origin/main`). A failed fetch stops and reports.
+   Never a merge commit and never a
    reset. If the fast-forward is refused, stop and report. These are the
-   direct `git` commands this rule sanctions; R-0001's prohibition on manual
+   direct `git` commands this rule sanctions, with step 1's `git checkout main`; R-0001's prohibition on manual
    `add`/`commit`/`push` is unaffected.
 3. Where the repo has a running stack, restart it through its designated
    lifecycle path (R-0001). HRSE2's is `mise run restart --no-bump --no-git`
