@@ -153,6 +153,51 @@ class AuthorizeTests(StateFixture):
         self.assertEqual(merge_target["pr_number"], 1202)
 
 
+class SessionScopeTests(StateFixture):
+    """harmonic-forge#1063: the grant records its authorizing session(s)."""
+
+    def _entry(self, key):
+        return json.loads(self.state_path.read_text())[key]
+
+    def test_authorize_records_the_session(self):
+        ba.authorize(["F1063"], state_path=self.state_path, session_id="session-A")
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+    def test_entry_minted_without_session_has_no_session_ids(self):
+        for session in (None, ""):
+            with self.subTest(session=session):
+                ba.authorize(["F1063"], state_path=self.state_path, session_id=session)
+                self.assertNotIn("session_ids", self._entry("F1063"))
+
+    def test_top_up_fresh_key_records_the_session(self):
+        fresh = ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        self.assertEqual(fresh, ["F1063"])
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+    def test_remention_from_second_session_adds_it(self):
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A", "session-B"])
+
+    def test_remention_preserves_consumption_and_links(self):
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        ba.link_pr("F1063", "vitalharmony/harmonic-forge", 1064, state_path=self.state_path)
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        linked = [t for t in self._entry("F1063")["targets"] if t.get("pr_number") == 1064]
+        self.assertEqual(len(linked), 1)
+
+    def test_legacy_entry_remention_stays_global(self):
+        ba.authorize(["F1063"], state_path=self.state_path)
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-B")
+        self.assertNotIn("session_ids", self._entry("F1063"))
+
+    def test_remention_without_session_adds_nothing(self):
+        ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
+        ba.top_up(["F1063"], state_path=self.state_path, session_id=None)
+        self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+
 class TopUpCliTests(StateFixture):
     """harmonic-forge#549 AC6 — `top_up` is reachable, and it is the safe default.
 

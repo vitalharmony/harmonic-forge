@@ -411,6 +411,7 @@ def top_up(
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     state_path: Path | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     """Extend a live grant instead of replacing it; authorize fresh keys.
 
@@ -426,6 +427,12 @@ def top_up(
     exactly as they are. A key with no entry, or an expired one, is authorized
     normally. Returns the keys that were newly authorized, so the caller can
     say which is which rather than claiming success for both.
+
+    harmonic-forge#1063: `session_id` is the authorizing prompt's session.
+    A re-mention of a live, session-scoped key from another session adds that
+    session to `session_ids` -- both now own the hold. A live LEGACY entry
+    (no `session_ids`) is left global: scoping it now would silently release
+    every other session that was relying on today's behavior.
     """
     actual_path = STATE_PATH if state_path is None else state_path
     fresh: list[str] = []
@@ -439,12 +446,16 @@ def top_up(
             entry = state.get(key)
             if entry is not None and _entry_live(entry, now):
                 entry["expires_at"] = expires
+                owners = entry.get("session_ids")
+                if session_id and isinstance(owners, list) and owners \
+                        and session_id not in owners:
+                    owners.append(session_id)
                 continue
             fresh.append(key)
         _save(state, state_path)
     if fresh:
         authorize(fresh, actions=actions, ttl_hours=ttl_hours,
-                  state_path=state_path)
+                  state_path=state_path, session_id=session_id)
     return fresh
 
 
@@ -453,6 +464,7 @@ def authorize(
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     state_path: Path | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Write one fresh entry per issue key, one target per action (default:
     both merge and close -- harmonic-forge#356 gap 2). See module docstring
@@ -493,6 +505,11 @@ def authorize(
                 "expires_at": expires.isoformat(),
                 "targets": [_new_target(action) for action in actions],
             }
+            # harmonic-forge#1063: the session whose prompt minted the grant.
+            # No session, no field: an unscoped entry holds every session at
+            # Stop, exactly as before (block_batch_stop.live_pending).
+            if session_id:
+                state[key]["session_ids"] = [session_id]
         _save(state, state_path)
 
 

@@ -313,3 +313,69 @@ class ProductionEntryPointTests(unittest.TestCase):
         payload = {"transcript_path": self._transcript("## DONE\nclosed."),
                    "stop_hook_active": True}
         self.assertEqual(self._run(payload, {"F502": entry()}), "")
+
+
+class SessionScopeTests(unittest.TestCase):
+    """harmonic-forge#1063: a BATCH grant holds only the session(s) whose
+    prompt authorized it. Two Lane 1 sessions batch in parallel (operator,
+    2026-10-17); a global hold refused every other session's Stop."""
+
+    def _scoped(self, *sessions: str) -> dict:
+        e = entry()
+        e["session_ids"] = list(sessions)
+        return e
+
+    def _transcript(self, text: str = "## DONE\nF1063 merged.") -> str:
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        handle.write(json.dumps(
+            {"type": "assistant",
+             "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
+        handle.close()
+        return handle.name
+
+    def test_other_sessions_stop_is_not_blocked(self) -> None:
+        state = {"F1052": self._scoped("session-A")}
+        self.assertEqual(bbs.live_pending(state, NOW, "session-B"), [])
+        payload = {"transcript_path": self._transcript(), "session_id": "session-B"}
+        self.assertEqual(bbs.decide(payload, state, NOW)[0], "allow")
+
+    def test_authorizing_sessions_stop_is_still_blocked(self) -> None:
+        state = {"F1052": self._scoped("session-A")}
+        self.assertEqual(bbs.live_pending(state, NOW, "session-A"), ["F1052"])
+        payload = {"transcript_path": self._transcript(), "session_id": "session-A"}
+        verdict, reason = bbs.decide(payload, state, NOW)
+        self.assertEqual(verdict, "block")
+        self.assertIn("F1052", reason)
+
+    def test_a_co_owning_session_is_also_held(self) -> None:
+        state = {"F1052": self._scoped("session-A", "session-B")}
+        self.assertEqual(bbs.live_pending(state, NOW, "session-B"), ["F1052"])
+
+    def test_legacy_entry_blocks_every_session(self) -> None:
+        state = {"F502": entry()}
+        for session in ("session-A", "session-B", None):
+            with self.subTest(session=session):
+                self.assertEqual(bbs.live_pending(state, NOW, session), ["F502"])
+
+    def test_empty_session_ids_list_is_treated_as_legacy(self) -> None:
+        state = {"F502": self._scoped()}
+        self.assertEqual(bbs.live_pending(state, NOW, "session-B"), ["F502"])
+
+    def test_missing_stop_session_allows_scoped_entry(self) -> None:
+        state = {"F1052": self._scoped("session-A")}
+        self.assertEqual(bbs.live_pending(state, NOW, None), [])
+        self.assertEqual(bbs.live_pending(state, NOW, ""), [])
+        payload = {"transcript_path": self._transcript()}
+        self.assertEqual(bbs.decide(payload, state, NOW)[0], "allow")
+
+    def test_only_this_sessions_keys_are_named(self) -> None:
+        state = {"F1052": self._scoped("session-A"), "F1059": self._scoped("session-B"),
+                 "F502": entry()}
+        self.assertEqual(bbs.live_pending(state, NOW, "session-B"), ["F1059", "F502"])
+
+    def test_question_escape_hatch_still_allows_a_scoped_owner(self) -> None:
+        state = {"F1052": self._scoped("session-A")}
+        payload = {"transcript_path": self._transcript(
+            "## DECISIONS NEEDED\n1. Merge F1052 now? I recommend yes."),
+            "session_id": "session-A"}
+        self.assertEqual(bbs.decide(payload, state, NOW)[0], "allow")
