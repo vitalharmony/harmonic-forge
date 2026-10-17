@@ -125,8 +125,10 @@ class CrossFamilyF1066(StaticChecksRenderPending):
 
     def test_inherited_git_config_env_cannot_hide_a_marker(self) -> None:
         import gate_ci
-        env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "trailer.separators",
-               "GIT_CONFIG_VALUE_0": "="}
+        # core.commentChar=R makes git treat the marker line as a comment and
+        # drop it (verified live); the trailer.separators pin cannot catch that.
+        env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.commentChar",
+               "GIT_CONFIG_VALUE_0": "R"}
         with mock.patch.dict(os.environ, env):
             self.assertEqual(
                 gate_ci.render_pending_from_message("s\n\nRender-Pending: 4\n"), "4")
