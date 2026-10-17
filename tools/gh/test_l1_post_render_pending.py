@@ -118,5 +118,34 @@ class BothReadersAgree(StaticChecksRenderPending):
                 else:
                     self.assertTrue(ok, gate_msg)
 
+
+class CrossFamilyF1066(StaticChecksRenderPending):
+    """Cross-family pass 1 findings on the reforge: inherited GIT_CONFIG_* env,
+    a log output encoding, and an empty message must not change either answer."""
+
+    def test_inherited_git_config_env_cannot_hide_a_marker(self) -> None:
+        import gate_ci
+        env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "trailer.separators",
+               "GIT_CONFIG_VALUE_0": "="}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(
+                gate_ci.render_pending_from_message("s\n\nRender-Pending: 4\n"), "4")
+
+    def test_log_output_encoding_does_not_hide_a_marker_from_l1_post(self) -> None:
+        git(self.repo, "config", "i18n.logOutputEncoding", "UTF-16LE")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "render: pending",
+            "-m", "Render-Pending: 77")
+        msg = self._static_checks(git(self.repo, "rev-parse", "HEAD"))
+        self.assertIn("77", msg)
+
+    def test_an_empty_message_refuses_in_both_readers(self) -> None:
+        import gate_ci
+        with self.assertRaises(gate_ci.RenderPendingUnreadable):
+            gate_ci.render_pending_from_message("")
+        git(self.repo, "commit", "-q", "--allow-empty", "--allow-empty-message",
+            "--cleanup=verbatim", "-m", "")
+        msg = self._static_checks(git(self.repo, "rev-parse", "HEAD"))
+        self.assertIn("cannot check", msg)
+
 if __name__ == "__main__":
     unittest.main()

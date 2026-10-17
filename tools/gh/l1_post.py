@@ -2331,12 +2331,16 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
     # harmonic-forge#1066: a head still marked Render-Pending carries main's stale
     # baselines. Head only (`-1`); the raw message goes through gate_ci's one
     # recognizer, never `%(trailers)`, so both readers agree. Fails closed.
-    message = run("git", "log", "-1", "--format=%B", sha)
+    # The raw commit object, not `git log` output: log re-encodes the message
+    # per i18n.logOutputEncoding, cat-file does not (cross-family F1066). The
+    # message is everything after the header's first blank line.
+    message = run("git", "cat-file", "commit", sha)
     if message.returncode:
         fail(f"cannot read {sha[:12]}'s commit message to check "
              f"{gate_ci.RENDER_PENDING}: {message.stderr.strip()[:120]}")
+    _header, _sep, raw_message = message.stdout.partition("\n\n")
     try:
-        pending = gate_ci.render_pending_from_message(message.stdout)
+        pending = gate_ci.render_pending_from_message(raw_message)
     except gate_ci.RenderPendingUnreadable as exc:
         fail(f"cannot check {sha[:12]} for {gate_ci.RENDER_PENDING}: {exc}")
     if pending:

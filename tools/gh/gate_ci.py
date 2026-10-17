@@ -240,9 +240,15 @@ def render_pending_from_message(message: str) -> str | None:
     # divider, as pretty.c's %(trailers) assumes), ':' as the only separator, and
     # no system/global/repo config (neutral cwd) -- so no ambient config can make
     # gate_ci and l1_post disagree on what is a trailer.
-    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_CONFIG_PARAMETERS", None)
+    if not message.strip():
+        # An empty message cannot be established as unmarked; both readers
+        # refuse it, because both reach this one function (cross-family F1066).
+        raise RenderPendingUnreadable("the commit message is empty")
+    # Every GIT_* variable is dropped (GIT_DIR, GIT_CONFIG_PARAMETERS and the
+    # GIT_CONFIG_COUNT/KEY_n/VALUE_n family included), so no inherited config
+    # can reach the parse (cross-family F1066).
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
     try:
         result = subprocess.run(
             ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse",
