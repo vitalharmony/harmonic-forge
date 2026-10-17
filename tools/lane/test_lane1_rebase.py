@@ -807,6 +807,8 @@ class RegenerateTests(VersionConflictTests):
         self.calls.append(name)
         if name == self.fail_task:
             return subprocess.CompletedProcess([], 1, "", "boom")
+        if name == "const":
+            return subprocess.CompletedProcess([], 0, "", "")
         if name == "gen":
             _generate(prep)
             if self.stray:
@@ -882,6 +884,12 @@ class RegenerateTests(VersionConflictTests):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.gen_on_origin(), "src1.txt\nsrc2.txt\nsrc3.txt")
         self.assertEqual(self.calls.count("gen"), 1)
+        # AC2 (pass 2): exactly one added regeneration commit, declared paths only.
+        commits = sh(self.origin, "log", "--format=%s", f"main..refs/heads/{BRANCH}").splitlines()
+        self.assertEqual(commits, ["regenerate gen.txt after rebase onto origin/main (lane1-rebase)",
+                                   "second", "first"])
+        self.assertEqual(sh(self.origin, "show", "--name-only", "--format=",
+                            f"refs/heads/{BRANCH}"), "gen.txt")
 
     def test_r9_version_and_generated_conflict_at_one_stop(self):
         self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n", PKG: pkg("2.9.41")},
@@ -936,6 +944,31 @@ class RegenerateTests(VersionConflictTests):
             code, _, err = self.run_captured()
         self.assert_refused(code, err)
         self.assertIn("exit 127", err)
+
+    def test_r14_noop_regeneration_adds_no_commit(self):
+        # AC2 reworded (pass 2): output equal to HEAD needs no commit.
+        self.declared = {"gen.txt": "const"}
+        self.on_branch({"gen.txt": "branch\n"}, "feature")
+        self.on_main({"gen.txt": "main\n"})
+        code, out, err = self.run_captured()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.gen_on_origin(), "main")
+        self.assertNotIn("regenerate", sh(self.origin, "log", "--format=%s", f"main..refs/heads/{BRANCH}"))
+
+    def test_r15_failed_regeneration_commit_exits_2(self):
+        self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
+        self.on_main({"src2.txt": "b\n", "gen.txt": "src2.txt\n"})
+        real_git = lane1_rebase.git
+
+        def failing_commit(cwd, *args, **kwargs):
+            if args[:1] == ("commit",):
+                return subprocess.CompletedProcess(args, 1, "", "signing failed")
+            return real_git(cwd, *args, **kwargs)
+
+        with mock.patch.object(lane1_rebase, "git", side_effect=failing_commit):
+            code, _, err = self.run_captured()
+        self.assert_refused(code, err)
+        self.assertIn("signing failed", err)
 
     def test_r10_crash_after_regeneration_push_rerun_exits_3(self):
         self.on_branch({"src1.txt": "a\n", "gen.txt": "src1.txt\n"}, "feature")
@@ -995,11 +1028,39 @@ class LockVersionTests(VersionConflictTests):
         self.assertEqual(self.head_version(), "2.9.43")
         self.assertIn("version-resolved=2.9.43", out)
 
+
+    def test_l5_malformed_lock_exits_2(self):
+        bad = '{\n  "name": "app",\n  "version": "2.9.41",\n  "packages": []\n}\n'
+        main_bad = bad.replace("2.9.41", "2.9.42")
+        self.on_branch({PKG: pkg("2.9.41"), LOCK: bad}, "bump")
+        self.on_main({PKG: pkg("2.9.42"), LOCK: main_bad})
+        self.assert_refused(*self.run_captured()[::2])
+
     def test_l3_lock_root_versions_disagree_exits_2(self):
         bad = lock("2.9.41").replace('"version": "2.9.41"\n    }', '"version": "2.9.39"\n    }')
         self.on_branch({PKG: pkg("2.9.41"), LOCK: bad}, "bump")
         self.on_main({PKG: pkg("2.9.42"), LOCK: lock("2.9.42")})
         self.assert_refused(*self.run_captured()[::2])
+
+
+class RegenerateConfigTests(unittest.TestCase):
+    """F1057 pass 2: regenerate_config, unmocked, against the live projects.toml."""
+
+    def config_for(self, url):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            sh(tmp, "remote", "add", "origin", url)
+            return lane1_rebase.regenerate_config(tmp)
+
+    def test_hrse_https_and_ssh_remotes_resolve_the_declaration(self):
+        for url in ("https://github.com/vitalharmony/hrse.git", "git@github.com:vitalharmony/hrse.git"):
+            with self.subTest(url=url):
+                declared, provision = self.config_for(url)
+                self.assertEqual(declared["design-system.baseline.toml"], "design-system-ratchet --update")
+                self.assertEqual(provision, "worktree-provision")
+
+    def test_a_project_declaring_nothing_yields_nothing(self):
+        self.assertEqual(self.config_for("https://github.com/vitalharmony/harmonic-forge.git"), ({}, None))
 
 
 if __name__ == "__main__":

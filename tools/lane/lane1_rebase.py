@@ -421,13 +421,18 @@ def _blank_lock(raw: bytes) -> tuple[bytes, str] | None:
         data = _json(raw.decode("utf-8"))
     except UnicodeDecodeError:
         return None
-    root = (data or {}).get("packages", {}).get("", {}) if data else {}
+    # isinstance guards (F1057 pass 2): a malformed lock is None (exit 2), never a crash.
+    packages = data.get("packages") if data else None
+    root = packages.get("") if isinstance(packages, dict) else None
     value = data.get("version") if data else None
     if not isinstance(value, str) or not isinstance(root, dict) or root.get("version") != value:
         return None
     blanked, count = _TOP_VERSION.subn(lambda m: m.group(1) + m.group(3), raw, count=2)
     check = _json(blanked.decode("utf-8")) if count == 2 else None
-    if not check or check.get("version") != "" or check["packages"][""].get("version") != "":
+    blanked_packages = check.get("packages") if check else None
+    blanked_root = blanked_packages.get("") if isinstance(blanked_packages, dict) else None
+    if (not check or check.get("version") != "" or not isinstance(blanked_root, dict)
+            or blanked_root.get("version") != ""):
         return None
     return blanked, value
 
@@ -556,8 +561,13 @@ def _regenerate(prep: Path, declared: dict[str, str], provision: str | None,
         fail("regeneration left changes outside the declared paths; nothing pushed:\n"
              + "\n".join(f"  {line}" for line in stray))
     if git(prep, "diff", "--cached", "--quiet", check=False).returncode:
-        git(prep, "commit", "-q", "--no-verify", "-m",
-            f"regenerate {', '.join(paths)} after rebase onto origin/main (lane1-rebase)")
+        committed = git(prep, "commit", "-q", "--no-verify", "-m",
+                        f"regenerate {', '.join(paths)} after rebase onto origin/main (lane1-rebase)",
+                        check=False)
+        if committed.returncode:
+            # F1057 pass 2: a failed commit takes the same reset-and-exit-2 path.
+            fail(f"the regeneration commit failed (exit {committed.returncode}); nothing pushed:\n"
+                 f"{(committed.stdout + committed.stderr).strip()[-2000:]}")
 
 
 def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
