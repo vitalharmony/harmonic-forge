@@ -27,9 +27,10 @@ Facts (a plain dict; unknown keys are ignored):
 - `deny_hits: list[str]` -- non-empty is `deny-path`.
 - `permission_denials: int` -- above zero is `tool-refusal`.
 - `budget_exceeded: bool` -- true is `budget`.
-- `self_flag: str | None` -- the agent's "I cannot do this honestly" line;
-  non-blank is `self-flag`. `None` means no flag (the one fact where `None`
-  is a value, not a gap).
+- `self_flag: str` -- the agent's "I cannot do this honestly" line;
+  non-blank is `self-flag`, and an empty or blank string means no flag.
+  `None` is a gap like any other fact (AC3), never "no flag": the harness
+  writes `""` when the agent raised none.
 - `check_rc: int` and `live: {"pr_exists": bool, "head_sha_matches": bool,
   "ci": "green"|"pending"|"red"}` -- a non-zero `check_rc`, a missing PR, a
   PR whose head is not the SHA that was checked, or `ci == "red"` is
@@ -127,13 +128,7 @@ def _budget(facts: dict) -> str | None:
 
 
 def _self_flag(facts: dict) -> str | None:
-    if "self_flag" not in facts:
-        raise _Gap("self_flag missing")
-    flag = facts["self_flag"]
-    if flag is None:
-        return None
-    if not isinstance(flag, str):
-        raise _Gap("self_flag not a string or None")
+    flag = _str(facts, "self_flag")
     return f"agent self-flag: {flag}" if flag.strip() else None
 
 

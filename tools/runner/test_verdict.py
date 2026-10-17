@@ -19,7 +19,7 @@ def green_facts() -> dict:
         "deny_hits": [],
         "permission_denials": 0,
         "budget_exceeded": False,
-        "self_flag": None,
+        "self_flag": "",
         "check_rc": 0,
         "kill": [{"ac": "AC1", "base_rc": 1, "head_rc": 0}],
         "preclose": {"status": "complete", "survivors": 0, "provenance": CROSS},
@@ -131,14 +131,19 @@ class FailsClosed(unittest.TestCase):
 
     def test_none_fact_sets_aside_per_clause(self):
         for reason, key in FACT_OF.items():
-            if key == "self_flag":
-                continue  # None is the no-flag value, covered below
             with self.subTest(reason=reason):
                 facts = green_facts()
                 facts[key] = None
                 self.assertEqual(verdict.reduce(facts)["reason"], reason)
 
-    def test_none_self_flag_means_no_flag(self):
+    def test_none_self_flag_is_a_gap_not_no_flag(self):
+        facts = green_facts()
+        facts["self_flag"] = None
+        result = verdict.reduce(facts)
+        self.assertEqual((result["state"], result["reason"]), ("set-aside", "self-flag"))
+        self.assertIn("fact gap", result["detail"])
+
+    def test_empty_self_flag_means_no_flag(self):
         self.assertEqual(verdict.reduce(green_facts())["state"], "green")
 
     def test_wrong_typed_fact_sets_aside_per_clause(self):
