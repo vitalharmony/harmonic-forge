@@ -510,7 +510,10 @@ def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
     """harmonic-forge#997: the countable sticky-wicket trigger, uncovered."""
     import sticky_receipt  # noqa: PLC0415 -- imports this module; deferred to break the cycle
 
-    pair = sticky_receipt.owed(comments)
+    receipt = sticky_receipt.read(repo, issue)
+    through = (int(receipt.get("through") or 0)
+               if receipt and receipt.get("verdict") in sticky_receipt.VERDICTS else None)
+    pair = sticky_receipt.owed(comments, through=through)
     if not pair or sticky_receipt.covered(repo, issue, pair[1]):
         return False
     # harmonic-forge#1019: a same-SHA blocked retry owes an AE re-post, not a verdict.
