@@ -405,7 +405,7 @@ class EndRuleTextTests(unittest.TestCase):
         span = text.split("<!-- R-0384 -->", 1)[1].split("<!-- /R-0384 -->", 1)[0]
         flat = " ".join(span.split())
         self.assertIn("imc_waiver.py end --key <K>", flat)
-        self.assertIn("then owes R-0229's human pass", flat)
+        self.assertIn("after which R-0229 is owed", flat)
 
 
 class StateDirTests(unittest.TestCase):
