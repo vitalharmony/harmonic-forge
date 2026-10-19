@@ -2474,7 +2474,12 @@ def _check_git_staleness(
     if behind > 0:
         # harmonic-forge#1075: clean, on main, strictly behind -> fast-forward
         # and re-exec (does not return); otherwise refuse, naming the state.
-        reason = staleness_ff.fast_forward_or_reason(repo_root, head)
+        try:
+            reason = staleness_ff.fast_forward_or_reason(repo_root, head)
+        except (subprocess.SubprocessError, OSError) as exc:  # fail open, as above
+            print(f"[watch_lane_posts] fast-forward check failed ({exc}) -- "
+                  "continuing (fail-open)", file=sys.stderr)
+            return
         parser.error(
             f"~/harmonic-forge is {behind} commit(s) behind origin/main "
             f"(HEAD={head[:12]}, origin/main={remote[:12]}) and {reason} -- "

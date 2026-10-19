@@ -2313,6 +2313,17 @@ class GitStalenessTests(unittest.TestCase):
         self.assertEqual(self._run_git(["rev-parse", "refs/heads/main"], cwd=local),
                          main_before)
 
+    def test_git_timeout_in_fast_forward_fails_open(self):
+        """A git timeout or OSError in the fast-forward path fails open, as
+        the count phase does: no traceback, no refusal, no re-exec."""
+        for exc in (subprocess.TimeoutExpired(["git"], 15), OSError("boom")):
+            with tempfile.TemporaryDirectory() as tmp:
+                local = self._init_repos(Path(tmp))
+                execv, caught, err = self._guard(local, merge=exc)
+                self.assertIsNone(caught)
+                execv.assert_not_called()
+                self.assertIn("fast-forward check failed", err)
+
     def test_fast_forwards_and_reexecs_when_clean_on_main_and_behind(self):
         """harmonic-forge#1075 AC1 (flips the #651 refusal test)."""
         with tempfile.TemporaryDirectory() as tmp:
