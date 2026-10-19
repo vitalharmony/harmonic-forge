@@ -354,8 +354,9 @@ def remove_prep(repo_dir: str, prep: Path, force: bool = False) -> None:
     # prep worktree is the visible signal. The stale-prune at start forces.
     if prep.exists():
         git(repo_dir, "worktree", "remove", *(["--force"] if force else []),
-            str(prep), check=False)
-    git(repo_dir, "worktree", "prune", check=False)
+            str(prep), check=False, timeout=baseline_render.CALL_TIMEOUT)
+    git(repo_dir, "worktree", "prune", check=False,
+        timeout=baseline_render.CALL_TIMEOUT)
 
 
 def prune_stale_prep(repo_dir: str, prep: Path) -> None:
