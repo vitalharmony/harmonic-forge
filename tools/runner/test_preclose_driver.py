@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_driver  # noqa: E402
 
 LENSES = preclose_driver.preclose_check.LENSES
+# AC2's list, restated: the tests never take it from the code under test.
+FORBIDDEN = ("--force", "--reforge", "--allow-dirty", "--not-triggered", "--cluster-verdict",
+             "--allow-repo-mismatch")
 ISSUE_BODY = ("Intro.\n\n## Problem\n\nPR body and rationale live elsewhere.\n\n"
               "## Acceptance criteria\n\n1. The widget returns 2.\n2. It never returns 3.\n\n"
               "## Notes\n\nnot an AC\n")
@@ -199,11 +202,12 @@ class Driver(unittest.TestCase):
                                             "mechanism": "m"}]))
         self.assertTrue(self.argvs)
         for argv in self.argvs:
-            for flag in preclose_driver.FORBIDDEN:
-                self.assertNotIn(flag, argv)
+            for flag in FORBIDDEN:
+                self.assertFalse([a for a in argv if isinstance(a, str) and a.split("=")[0] == flag],
+                                 argv)
 
     def test_call_refuses_a_forbidden_flag(self):
-        for flag in preclose_driver.FORBIDDEN:
+        for flag in FORBIDDEN:
             with self.assertRaises(preclose_driver.DriverError):
                 preclose_driver.call(["python3", "preclose_check.py", flag])
 
@@ -215,14 +219,23 @@ class Driver(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
 
     def test_two_passes_held_refuses_before_plan(self):
-        receipt = {"passes": [{}, {}]}
-        with mock.patch.object(preclose_driver.preclose_passes, "current",
-                               return_value=[{}, {}]):
-            with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
-                                   return_value=receipt):
-                self.assertEqual(self.drive(), 2)
+        # The shape preclose_check writes (pass_history), read through the real
+        # preclose_passes; only the store lookup is stubbed.
+        receipt = {"status": "complete", "reviewed_sha": "b" * 40,
+                   "pass_history": [{"sha": "a" * 40, "surviving": 1, "epoch": 0},
+                                    {"sha": "b" * 40, "surviving": 1, "epoch": 0}]}
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               return_value=receipt):
+            self.assertEqual(self.drive(), 2)
         self.assertEqual(self.logged("preclose"), [])
         self.assertEqual(self.logged("claude"), [])
+
+    def test_one_pass_held_still_runs(self):
+        receipt = {"status": "complete", "reviewed_sha": "a" * 40,
+                   "pass_history": [{"sha": "a" * 40, "surviving": 1, "epoch": 0}]}
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               return_value=receipt):
+            self.assertEqual(self.drive(), 0)
 
     def test_unparseable_refuter_output_does_not_complete(self):
         for result in ("I found nothing.", '{"anchor": "x"}', '[{"anchor": "x:1"}]', "[1]"):
@@ -255,6 +268,26 @@ class Driver(unittest.TestCase):
     def test_missing_envelope_is_not_a_pass(self):
         self.assertEqual(self.drive(FAKE_CROSS_NO_ENVELOPE="1"), 2)
         self.assertFalse([a for a in self.logged("preclose") if "--complete" in a])
+
+    def test_non_empty_out_is_refused(self):
+        out = self.tmp / "out"
+        out.mkdir()
+        (out / "envelope.jsonl").write_text('{"status": "ok"}\n')
+        self.assertEqual(self.drive(), 2)
+        self.assertEqual(self.logged("preclose"), [])
+
+    def test_failed_run_leaves_no_output(self):
+        self.assertEqual(self.drive(FAKE_CROSS_NO_ENVELOPE="1"), 2)
+        out = self.tmp / "out"
+        self.assertFalse(out.exists() and any(out.iterdir()))
+
+    def test_envelope_handed_to_complete_is_this_runs(self):
+        self.drive()
+        complete = [a for a in self.logged("preclose") if "--complete" in a][0]
+        cross = self.logged("cross")[0]
+        envelope = complete[complete.index("--envelope") + 1]
+        self.assertEqual(envelope, cross[cross.index("--out") + 1])
+        self.assertNotEqual(Path(envelope).parent, self.tmp / "out")
 
     def test_complete_refusal_exits_nonzero(self):
         self.assertEqual(self.drive(FAKE_COMPLETE_RC="1"), 2)

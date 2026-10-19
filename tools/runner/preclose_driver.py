@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -194,7 +195,10 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
 
 def run_pass(args: argparse.Namespace, env: dict[str, str]) -> int:
     source, out = Path(args.source_repo).resolve(), Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    # A fresh --out per run: anything already there would read as this run's
+    # output whenever this run fails before replacing it.
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise DriverError(f"--out {out} is not an empty directory")
     head = git(source, "rev-parse", "--verify", f"{args.head}^{{commit}}").strip()
     held = passes_held(args.repo, args.issue)
     if held >= preclose_passes.MAX_PASSES:
@@ -219,10 +223,10 @@ def run_pass(args: argparse.Namespace, env: dict[str, str]) -> int:
         panel_ms = max(1, int((time.monotonic() - started) * 1000))
         findings = [f for found, _tokens in results for f in found]
         tokens = [t for _found, t in results]
-        findings_path = out / "findings.json"
+        findings_path = Path(scratch) / "findings.json"
         findings_path.write_text(json.dumps(findings, indent=1) + "\n", encoding="utf-8")
 
-        brief, envelope = Path(scratch) / "brief.md", out / "envelope.jsonl"
+        brief, envelope = Path(scratch) / "brief.md", Path(scratch) / "envelope.jsonl"
         (Path(scratch) / "diff.patch").write_text(diff, encoding="utf-8")
         (Path(scratch) / "criteria.md").write_text(criteria, encoding="utf-8")
         built = call([sys.executable, str(BRIEF_BUILDER),
@@ -241,25 +245,32 @@ def run_pass(args: argparse.Namespace, env: dict[str, str]) -> int:
                         "--posture", "verify", "--brief", str(brief), "--cwd", str(tree),
                         "--out", str(envelope)], env=env)
         cross_ms = max(1, int((time.monotonic() - started) * 1000))
-    # A failed or fallback call is still recorded when it left an envelope:
-    # --complete labels it, and the reducer sets the item aside on that label.
-    if not envelope.is_file():
-        raise DriverError(f"cross-family call left no envelope (exit {crossed.returncode})")
+        # The envelope lives in this run's scratch directory, so one that exists
+        # was written by this call. A failed or fallback call is still recorded
+        # when it left one: --complete labels it, and the reducer sets the item
+        # aside on that label.
+        if not envelope.is_file():
+            raise DriverError(f"cross-family call left no envelope (exit {crossed.returncode})")
 
-    cost = (["--panel-tokens", str(sum(tokens)), "--panel-ms", str(panel_ms)]
-            if all(isinstance(t, int) for t in tokens)
-            else ["--cost-unavailable", "a refuter's envelope carried no usage"])
-    completed = call([*check, "--complete", "--cross-family", "--own-model", args.model,
-                      "--findings", str(findings_path), "--envelope", str(envelope),
-                      "--cross-family-ms", str(cross_ms), *cost], cwd=source, env=env)
-    if completed.returncode:
-        raise DriverError(f"--complete refused: {(completed.stderr or completed.stdout).strip()[-400:]}")
-    provenance = next((line.strip() for line in completed.stdout.splitlines()
-                       if line.strip().startswith("Red-team provenance:")), "")
-    survivors = len(preclose_check.surviving_findings(findings))
-    fact = {"status": "complete", "survivors": survivors, "provenance": provenance}
-    (out / "preclose.json").write_text(json.dumps(fact, indent=1) + "\n", encoding="utf-8")
-    write_summary(out / "summary.md", args, head, lenses, findings, fact)
+        cost = (["--panel-tokens", str(sum(tokens)), "--panel-ms", str(panel_ms)]
+                if all(isinstance(t, int) for t in tokens)
+                else ["--cost-unavailable", "a refuter's envelope carried no usage"])
+        completed = call([*check, "--complete", "--cross-family", "--own-model", args.model,
+                          "--findings", str(findings_path), "--envelope", str(envelope),
+                          "--cross-family-ms", str(cross_ms), *cost], cwd=source, env=env)
+        if completed.returncode:
+            raise DriverError(f"--complete refused: "
+                              f"{(completed.stderr or completed.stdout).strip()[-400:]}")
+        provenance = next((line.strip() for line in completed.stdout.splitlines()
+                           if line.strip().startswith("Red-team provenance:")), "")
+        survivors = len(preclose_check.surviving_findings(findings))
+        fact = {"status": "complete", "survivors": survivors, "provenance": provenance}
+        # Outputs reach --out only once the pass is recorded.
+        out.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(findings_path, out / "findings.json")
+        shutil.copy2(envelope, out / "envelope.jsonl")
+        (out / "preclose.json").write_text(json.dumps(fact, indent=1) + "\n", encoding="utf-8")
+        write_summary(out / "summary.md", args, head, lenses, findings, fact)
     print(json.dumps(fact))
     return 0
 
