@@ -190,9 +190,31 @@ class Confirmation(_Case):
                     mock.patch("builtins.open", mock.mock_open(read_data=raw)):
                 self.assertEqual(REAL_CONFIRM("prompt"), expected)
 
-    def test_confirm_with_no_tty_is_not_consent(self):
-        with mock.patch("builtins.open", side_effect=OSError("no tty")):
-            self.assertFalse(REAL_CONFIRM("prompt"))
+    def test_confirm_with_no_tty_refuses_naming_the_error(self):
+        """harmonic-forge#1081: an unopenable /dev/tty is not a declined answer."""
+        with mock.patch("builtins.open", side_effect=OSError(6, "No such device or address")):
+            with self.assertRaises(b.Refused) as ctx:
+                REAL_CONFIRM("prompt")
+        self.assertEqual(ctx.exception.code, b.EXIT_REFUSED)
+        self.assertIn("/dev/tty", str(ctx.exception))
+        self.assertIn("No such device or address", str(ctx.exception))
+
+    def test_unopenable_tty_names_the_error_and_mints_nothing(self):
+        """harmonic-forge#1081 AC1, end to end through grant_from_ae with the
+        real confirm(): only the /dev/tty open fails."""
+        real_open = open
+
+        def open_failing_tty(path, *args, **kwargs):
+            if path == "/dev/tty":
+                raise OSError(6, "No such device or address")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(ae, "confirm", REAL_CONFIRM), \
+                mock.patch("builtins.open", side_effect=open_failing_tty):
+            message = self.refused()
+        self.assertIn("cannot use /dev/tty", message)
+        self.assertIn("No such device or address", message)
+        self.assertNotIn("not confirmed", message)
 
     def test_display_shows_the_action_prominently(self):
         self.mint()
