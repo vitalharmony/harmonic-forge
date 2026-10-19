@@ -214,6 +214,13 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(item["reason"], "self-flag")
         self.assertEqual(item["facts"]["self_flag"], "could not test the hook")
 
+    def test_failed_kill_receipt_sets_aside(self):
+        # Operator ruling: a kill_check.py result other than pass is kill-check-fail.
+        with mock.patch.object(te_run, "kill_receipt", return_value=False):
+            self.drive()
+        self.assertEqual(self.item()["reason"], "kill-check-fail")
+        self.assertEqual(self.fork_branches(), "")
+
     def test_preclose_driver_failure_sets_aside_and_is_not_retried(self):
         calls = []
 
