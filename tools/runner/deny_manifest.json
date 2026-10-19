@@ -1,0 +1,174 @@
+{
+  "_comment": "harmonic-forge#1053: the te-runner's one deny-list. `globs` render the --settings Edit deny rules (gitignore syntax, ./ = the agent's cwd, the worktree root; Edit rules also govern Write). `regexes` feed deny_check.py's diff check, which also applies tools/gh/preclose_check.py's HIGH_BLAST_PATTERNS by import. Tests keep the two halves equal over `git ls-files`. `bundle_root` is where Lane 1's kill-check bundles live (outside any checkout).",
+  "bundle_root": "~/.local/share/te-runner/kill-bundles",
+  "groups": [
+    {
+      "why": "HIGH_BLAST: hook implementations",
+      "globs": [
+        "./**/tools/hooks/**"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: Claude hook wiring, and all of .claude/",
+      "globs": [
+        "./**/.claude/**"
+      ],
+      "regexes": [
+        "(^|/)\\.claude/"
+      ]
+    },
+    {
+      "why": "HIGH_BLAST: Codex hook wiring, and all of .codex/",
+      "globs": [
+        "./**/.codex/**"
+      ],
+      "regexes": [
+        "(^|/)\\.codex/"
+      ]
+    },
+    {
+      "why": "HIGH_BLAST: agent definitions, and all of agents/",
+      "globs": [
+        "./**/agents/**"
+      ],
+      "regexes": [
+        "(^|/)agents/"
+      ]
+    },
+    {
+      "why": "HIGH_BLAST: git hooks",
+      "globs": [
+        "./**/.githooks/**"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: in-repo gate scripts",
+      "globs": [
+        "./**/scripts/gate_*.py"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: lane launchers (tools/lane/ ruled denied)",
+      "globs": [
+        "./**/tools/lane/**"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: CI workflows",
+      "globs": [
+        "./**/.github/workflows/**"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: Lane 1 posting gate and issue-body write path",
+      "globs": [
+        "./**/tools/gh/l1_post.py",
+        "./**/scripts/l1_post.py",
+        "./**/tools/gh/post_lane1_issue.py",
+        "./**/scripts/post_lane1_issue.py"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: migrations",
+      "globs": [
+        "./**/scripts/**/*migrat*",
+        "./**/scripts/*migrat*",
+        "./**/scripts/**/*migrat*/**"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: application code",
+      "globs": [
+        "./**/backend/app/**",
+        "./**/frontend/src/**"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "HIGH_BLAST: task definitions",
+      "globs": [
+        "./**/mise.toml"
+      ],
+      "regexes": []
+    },
+    {
+      "why": "G2: tools/gh authorization and posting modules",
+      "globs": [
+        "./tools/gh/preclose_*",
+        "./tools/gh/pitch_receipt.py",
+        "./tools/gh/kill_check.py",
+        "./tools/gh/imc_waiver.py",
+        "./tools/gh/batch_*",
+        "./tools/gh/_auto_ae.py",
+        "./tools/gh/sticky_receipt.py",
+        "./tools/gh/_standing_grant.py",
+        "./tools/gh/l2_post.py"
+      ],
+      "regexes": [
+        "^tools/gh/preclose_",
+        "^tools/gh/pitch_receipt\\.py$",
+        "^tools/gh/kill_check\\.py$",
+        "^tools/gh/imc_waiver\\.py$",
+        "^tools/gh/batch_",
+        "^tools/gh/_auto_ae\\.py$",
+        "^tools/gh/sticky_receipt\\.py$",
+        "^tools/gh/_standing_grant\\.py$",
+        "^tools/gh/l2_post\\.py$"
+      ]
+    },
+    {
+      "why": "G2: the rules that govern agents",
+      "globs": [
+        "./rules/**",
+        "./3-lane-protocol.md"
+      ],
+      "regexes": [
+        "^rules/",
+        "^3-lane-protocol\\.md$"
+      ]
+    },
+    {
+      "why": "G2: the runner itself (its fences and this manifest)",
+      "globs": [
+        "./tools/runner/**"
+      ],
+      "regexes": [
+        "^tools/runner/"
+      ]
+    },
+    {
+      "why": "F1052 residual D: files that steer pytest or the interpreter at startup, which a head could use to force a kill check's pass",
+      "globs": [
+        "./**/conftest.py",
+        "./**/pytest.ini",
+        "./**/tox.ini",
+        "./**/setup.cfg",
+        "./**/pyproject.toml",
+        "./**/sitecustomize.*",
+        "./**/sitecustomize/**",
+        "./**/usercustomize.*",
+        "./**/usercustomize/**",
+        "./**/*.pth"
+      ],
+      "regexes": [
+        "(^|/)(conftest\\.py|pytest\\.ini|tox\\.ini|setup\\.cfg|pyproject\\.toml)$",
+        "(^|/)(site|user)customize(\\.[^/]*$|/)",
+        "\\.pth$"
+      ]
+    },
+    {
+      "why": "G4: Lane 1's kill-check bundles",
+      "globs": [
+        "~/.local/share/te-runner/kill-bundles/**"
+      ],
+      "regexes": []
+    }
+  ]
+}
