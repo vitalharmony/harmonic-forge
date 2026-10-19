@@ -315,14 +315,20 @@ class Driver(unittest.TestCase):
         self.assertNotEqual(Path(envelope).parent, self.tmp / "out")
 
     def test_failure_after_complete_exits_recorded_incomplete(self):
-        one = {"status": "complete", "reviewed_sha": "a" * 40,
-               "pass_history": [{"sha": "a" * 40, "surviving": 0, "epoch": 0}]}
-        # Before the run (main, then run_pass) no pass; after the failure, one.
+        # --complete exited 0 but the receipt, still readable, does not show
+        # the pass yet: the exit code alone must make this exit 4.
         with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
-                               side_effect=[None, None, one]), \
+                               return_value=PLANNED), \
                 mock.patch.object(preclose_driver.shutil, "copy2", side_effect=OSError("ENOSPC")):
             self.assertEqual(self.drive(), preclose_driver.RECORDED_INCOMPLETE)
         self.assertEqual(len([a for a in self.logged("preclose") if "--complete" in a]), 1)
+
+    def test_receipt_gaining_a_pass_exits_4_even_when_complete_failed(self):
+        one = {"status": "complete", "reviewed_sha": "a" * 40,
+               "pass_history": [{"sha": "a" * 40, "surviving": 0, "epoch": 0}]}
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               side_effect=[PLANNED, PLANNED, one]):
+            self.assertEqual(self.drive(FAKE_COMPLETE_RC="1"), preclose_driver.RECORDED_INCOMPLETE)
 
     def test_failure_before_complete_exits_two(self):
         with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
