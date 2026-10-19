@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -47,15 +48,22 @@ def record(key: str) -> None:
     if not sid:
         return
     path = _path(key, sid)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    # The preflight form itself is never gated, so a store error must not break
+    # it: warn and carry on. The guarded run then refuses, and says why.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    except OSError as exc:
+        print(f"[preflight] receipt not written ({exc}); the guarded run will refuse "
+              f"until {receipt_dir()} is writable", file=sys.stderr)
+        return
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"key": key, "recorded_at": time.time()}, fh)
         os.replace(tmp, path)
-    except BaseException:
+    except OSError as exc:
         Path(tmp).unlink(missing_ok=True)
-        raise
+        print(f"[preflight] receipt not written ({exc})", file=sys.stderr)
 
 
 def require(key: str, preflight_cmd: str) -> str | None:

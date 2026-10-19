@@ -89,27 +89,58 @@ class PreflightTests(unittest.TestCase):
                              "--issue", issue, *extra, session=session)
 
     def test_preclose_force_needs_the_same_run_without_force(self) -> None:
-        forced = self._preclose("--complete", "--force", "--findings", "/nonexistent")
+        forced = self._preclose("--complete", "--force", "--findings", "/nonexistent", "--own-model", "m")
         self.assertNotEqual(forced.returncode, 0)
         self.assertIn(NEEDLE, forced.stderr)
         self.assertNotIn("--force", forced.stderr.split(NEEDLE)[1].splitlines()[1])
-        self._preclose("--complete", "--findings", "/nonexistent")  # the preflight form
+        self._preclose("--complete", "--findings", "/nonexistent", "--own-model", "m")  # the preflight form
         self.assertNotIn(NEEDLE, self._preclose("--complete", "--force",
-                                                "--findings", "/nonexistent").stderr)
+                                                "--findings", "/nonexistent", "--own-model", "m").stderr)
 
     def test_preclose_receipt_matches_repo_issue_and_mode_only(self) -> None:
-        self._preclose("--complete", "--findings", "/nonexistent")
-        other_issue = self._preclose("--complete", "--force", "--findings", "/nonexistent",
+        self._preclose("--complete", "--findings", "/nonexistent", "--own-model", "m")
+        other_issue = self._preclose("--complete", "--force", "--findings", "/nonexistent", "--own-model", "m",
                                      issue="2")
         self.assertIn(NEEDLE, other_issue.stderr)
         other_mode = self._preclose("--force", "--reforge")
         self.assertIn(NEEDLE, other_mode.stderr)
-        other_session = self._preclose("--complete", "--force", "--findings", "/nonexistent",
+        other_session = self._preclose("--complete", "--force", "--findings", "/nonexistent", "--own-model", "m",
                                        session="session-b")
         self.assertIn(NEEDLE, other_session.stderr)
 
+    def test_abbreviated_force_suggests_an_unforced_command(self) -> None:
+        """Preclose pass 1: argparse accepts `--forc`; the suggestion must not."""
+        forced = self._preclose("--complete", "--forc", "--findings", "/nonexistent",
+                                "--own-model", "m")
+        self.assertIn(NEEDLE, forced.stderr)
+        suggestion = forced.stderr.split(NEEDLE)[1].splitlines()[1]
+        self.assertNotIn("--fo", suggestion)
+        argv = suggestion.split()[2:]  # drop `python3 <path>`
+        self._preclose(*argv[4:])  # run the suggestion (repo/issue are re-added)
+        self.assertNotIn(NEEDLE, self._preclose("--complete", "--forc", "--findings",
+                                                "/nonexistent", "--own-model", "m").stderr)
+
+    def test_rejected_no_force_run_writes_no_receipt(self) -> None:
+        """Preclose pass 1: a run main() rejects (no --own-model) is no preflight."""
+        rejected = self._preclose("--complete", "--findings", "/nonexistent")
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(NEEDLE, self._preclose("--complete", "--force", "--findings",
+                                             "/nonexistent", "--own-model", "m").stderr)
+
+    def test_store_error_does_not_break_the_ungated_run(self) -> None:
+        """Preclose pass 1: an unwritable store warns; --help still succeeds."""
+        blocker = Path(self.tmp.name) / "file-not-dir"
+        blocker.write_text("x")
+        env = {**self.env, "PREFLIGHT_RECEIPT_DIR": str(blocker)}
+        for tool in (L1_POST, REBASE):
+            done = subprocess.run([sys.executable, str(tool), "--help"], capture_output=True,
+                                  text=True, env=env, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("receipt not written", done.stderr)
+            self.assertNotIn("Traceback", done.stderr)
+
     def test_preclose_without_force_is_never_refused(self) -> None:
-        self.assertNotIn(NEEDLE, self._preclose("--complete", "--findings", "/x").stderr)
+        self.assertNotIn(NEEDLE, self._preclose("--complete", "--findings", "/x", "--own-model", "m").stderr)
 
 
 if __name__ == "__main__":
