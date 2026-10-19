@@ -14,8 +14,8 @@ harness-side check of the final diff (which does not trust the agent: a
     deny_check.py boundary                     # the fork boundary: exit 0 only when it holds
 
 `diff` uses `--no-renames`, so both sides of a rename and every deletion
-appear, and a changed symlink whose target lands in a denied path (or leaves
-the repo) is a hit. Output is JSON `{"hits": [path...]}`.
+appear, and any added or changed symlink is a hit. `paths` refuses (exit 2)
+a spelling git never emits. Output is JSON `{"hits": [path...]}`.
 
 Edit rules are rendered without Write twins: Claude Code consults `Edit(path)`
 for both tools and ignores a `Write(path)` rule (code.claude.com/docs/en/
@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import posixpath
 import re
 import subprocess
 import sys
@@ -70,6 +69,24 @@ def denied(path: str, patterns: list[re.Pattern[str]] | None = None) -> bool:
     return any(p.search(path) for p in (patterns or regexes()))
 
 
+def paths_hits(paths: list[str]) -> list[str]:
+    """`paths` takes free-form text (a handoff's Affected Files), so it refuses
+    any spelling git would never emit rather than guess at it, and matches
+    every `/`-suffix of a well-formed path, so a prefixed spelling such as
+    `harmonic-forge/rules/x.md` is still denied. Over-denying is the
+    fail-closed direction."""
+    patterns, hits = regexes(), []
+    for raw in paths:
+        path = raw.removeprefix("./")
+        parts = path.split("/")
+        if (not path or path.startswith("/") or "\\" in path
+                or any(part in ("", ".", "..") for part in parts)):
+            raise DenyError(f"not a canonical repo-relative path: {raw!r}")
+        if any(denied("/".join(parts[i:]), patterns) for i in range(len(parts))):
+            hits.append(raw)
+    return sorted(set(hits))
+
+
 def glob_regex(glob: str) -> re.Pattern[str] | None:
     """A repo-relative glob as a regex (gitignore-style `*`, `**`, `?`), for the
     tests that keep the two halves equal. Globs anchored outside the repo
@@ -105,14 +122,11 @@ def diff_hits(base: str, head: str) -> list[str]:
     for meta, path in zip(fields[0::2], fields[1::2]):
         if not meta:
             continue
-        _old_mode, new_mode, _old, new_sha, _status = meta.lstrip(":").split(" ")
-        if denied(path, patterns):
+        _old_mode, new_mode, _old, _new, _status = meta.lstrip(":").split(" ")
+        # Any added or changed symlink is a hit, wherever it points: the runner
+        # has no use for one, and resolving targets is how it was bypassed.
+        if denied(path, patterns) or new_mode == "120000":
             hits.append(path)
-        elif new_mode == "120000":
-            target = git("cat-file", "-p", new_sha)
-            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
-            if target.startswith("/") or resolved.startswith("..") or denied(resolved, patterns):
-                hits.append(path)
     return sorted(set(hits))
 
 
@@ -176,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"holds": not problems, "problems": problems}))
             return 0 if not problems else 3
         hits = (diff_hits(args.base, args.head) if args.command == "diff"
-                else sorted({p for p in args.path if denied(p)}))
+                else paths_hits(args.path))
     except (DenyError, OSError, ValueError) as exc:
         print(f"deny-check: {exc}", file=sys.stderr)
         return 2

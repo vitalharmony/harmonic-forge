@@ -167,6 +167,16 @@ class Diff(unittest.TestCase):
         (self.repo / "docs/out").symlink_to("/etc/passwd")
         self.assertEqual(self.check(self.commit()), (3, ["docs/out"]))
 
+    def test_symlink_to_a_denied_directory_is_a_hit(self):
+        for name, target in (("hk", "tools/hooks"), ("r", "../rules"), ("c", ".claude")):
+            (self.repo / "docs" / name).symlink_to(target)
+        rc, hits = self.check(self.commit())
+        self.assertEqual((rc, hits), (3, ["docs/c", "docs/hk", "docs/r"]))
+
+    def test_any_new_symlink_is_a_hit(self):
+        (self.repo / "docs/plain").symlink_to("d.md")
+        self.assertEqual(self.check(self.commit()), (3, ["docs/plain"]))
+
     def test_bad_ref_exits_two(self):
         self.assertEqual(run(["diff", "--base", self.base, "--head", "nope"])[0], 2)
 
@@ -175,6 +185,20 @@ class Diff(unittest.TestCase):
         self.assertEqual((rc, json.loads(out)["hits"]), (3, ["./tools/hooks/x.py"]))
         rc, out, _ = run(["paths", "docs/d.md"])
         self.assertEqual((rc, json.loads(out)["hits"]), (0, []))
+
+    def test_paths_refuses_non_canonical_spellings(self):
+        for spelling in ("/home/u/wt/rules/x.md", "/rules/x.md", "tools/gh/../../rules/x.md",
+                         "tools//hooks/a.py", "tools/./hooks/a.py", "rules\\x.md", "rules/", ""):
+            rc, out, err = run(["paths", spelling])
+            self.assertEqual((rc, out), (2, ""), spelling)
+            self.assertIn("not a canonical", err, spelling)
+
+    def test_paths_denies_a_repo_prefixed_spelling(self):
+        for spelling in ("harmonic-forge/rules/x.md", "harmonic-forge/tools/gh/batch_auth.py",
+                         "harmonic-forge/tools/runner/deny_check.py",
+                         "harmonic-forge/3-lane-protocol.md"):
+            rc, out, _ = run(["paths", spelling])
+            self.assertEqual((rc, json.loads(out)["hits"]), (3, [spelling]), spelling)
 
 
 class Boundary(unittest.TestCase):
