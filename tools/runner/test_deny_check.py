@@ -82,6 +82,13 @@ class ManifestCoverage(unittest.TestCase):
             self.assertTrue(deny_check.denied(path), path)
         self.assertIn("~/.local/share/te-runner/kill-bundles/**", deny_check.globs())
 
+    def test_synthetic_high_blast_paths_are_covered_by_globs(self):
+        # Paths the tree does not hold yet, so the ls-files test cannot see them.
+        for path in ("scripts/migrations/0001_init.py", "scripts/migrate_x.py",
+                     "x/scripts/data_migration/a.py"):
+            self.assertTrue(deny_check.denied(path), path)
+            self.assertTrue(self.glob_hit(path), f"{path} has no glob")
+
     def test_ordinary_tooling_is_not_denied(self):
         for path in ("tools/telemetry/emit.py", "tools/gh/gh_issue.py", "docs/x.md"):
             self.assertFalse(deny_check.denied(path), path)
@@ -199,6 +206,17 @@ class Diff(unittest.TestCase):
                          "harmonic-forge/3-lane-protocol.md"):
             rc, out, _ = run(["paths", spelling])
             self.assertEqual((rc, json.loads(out)["hits"]), (3, [spelling]), spelling)
+
+
+class MalformedManifest(unittest.TestCase):
+    def test_malformed_manifest_exits_two(self):
+        for bad in ({"groups": [{"why": "x", "globs": [], "regexes": ["("]}]},
+                    {"groups": [{"why": "x"}]}, {}):
+            with mock.patch.object(deny_check, "manifest", return_value=bad):
+                for argv in (["paths", "docs/x.md"], ["render-settings"]):
+                    rc, out, err = run(argv)
+                    self.assertEqual(rc, 2, (bad, argv, out))
+                    self.assertIn("deny-check:", err)
 
 
 class Boundary(unittest.TestCase):

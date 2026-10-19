@@ -131,6 +131,7 @@ def diff_hits(base: str, head: str) -> list[str]:
 
 
 def render_settings() -> str:
+    regexes()  # the diff check's half must be valid before the settings half ships
     deny = [f"Bash({cmd}:*)" for cmd in DENY_BASH] + [f"Edit({g})" for g in globs()]
     settings = {"permissions": {"allow": list(ALLOW), "deny": deny}}
     return json.dumps(settings, indent=2) + "\n"
@@ -191,7 +192,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if not problems else 3
         hits = (diff_hits(args.base, args.head) if args.command == "diff"
                 else paths_hits(args.path))
-    except (DenyError, OSError, ValueError) as exc:
+    # Anything raised (a malformed manifest's re.error or KeyError included)
+    # means the check could not decide: exit 2, never Python's default 1.
+    except Exception as exc:  # noqa: BLE001
         print(f"deny-check: {exc}", file=sys.stderr)
         return 2
     print(json.dumps({"hits": hits}))

@@ -78,7 +78,8 @@
       "why": "HIGH_BLAST: migrations",
       "globs": [
         "./**/scripts/**/*migrat*",
-        "./**/scripts/*migrat*"
+        "./**/scripts/*migrat*",
+        "./**/scripts/**/*migrat*/**"
       ],
       "regexes": []
     },

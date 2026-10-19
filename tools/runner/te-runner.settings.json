@@ -37,6 +37,7 @@
       "Edit(./**/scripts/post_lane1_issue.py)",
       "Edit(./**/scripts/**/*migrat*)",
       "Edit(./**/scripts/*migrat*)",
+      "Edit(./**/scripts/**/*migrat*/**)",
       "Edit(./**/backend/app/**)",
       "Edit(./**/frontend/src/**)",
       "Edit(./**/mise.toml)",
