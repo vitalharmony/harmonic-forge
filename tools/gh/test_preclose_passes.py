@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""harmonic-forge#834 AC7: the per-issue preclose pass cap and patch-id binding.
+"""harmonic-forge#834 AC7: the per-issue preclose pass cap, and (harmonic-forge
+#1077) change-identity acceptance: exact head SHA or a clean merge-tree replay,
+never patch-id.
 
 Runs the real `preclose_check` plan/complete against a scratch git repo
 (`ScratchRepo`, from `test_preclose_check.py`) and the real merge hook's
@@ -8,8 +10,10 @@ receipt shape rather than each against its own mock.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -48,12 +52,15 @@ class PassCapTests(ScratchRepo):
         git("checkout", "-q", "main", cwd=self.repo)
         git("rebase", "-q", "base", cwd=self.repo)
 
-    def test_receipt_records_count_survivors_and_patch_id(self) -> None:
+    def test_receipt_records_count_survivors_and_change_identity(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
         stored = self.receipt()
         self.assertEqual(stored["pass_count"], 1)
         self.assertEqual(stored["surviving_findings"], 1)
-        self.assertEqual(stored["reviewed_patch_id"], preclose.local_patch_id("base", "HEAD"))
+        identity = preclose_passes.change_identity(None, "HEAD", "base")
+        self.assertEqual(stored["reviewed_change_identity"], identity)
+        self.assertEqual(stored["pass_history"][-1]["change_identity"], identity)
+        self.assertNotIn("reviewed_patch_id", stored)
 
     def test_planning_a_second_pass_does_not_reset_the_count(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
@@ -62,12 +69,12 @@ class PassCapTests(ScratchRepo):
         self.assertEqual(self.receipt()["status"], "planned")
         self.assertEqual(self.receipt()["pass_count"], 1)
 
-    def test_patch_identical_rebase_is_not_a_new_pass(self) -> None:
+    def test_clean_rebase_is_not_a_new_pass(self) -> None:
         self.run_pass("scripts/a.py")
         self.rebase_onto_moved_base()
         with self.assertRaises(SystemExit) as caught:
             self.plan(tier="fast")
-        self.assertIn("patch-identical", str(caught.exception))
+        self.assertIn("clean replay", str(caught.exception))
         self.assertEqual(self.receipt()["pass_count"], 1)
 
     def test_third_pass_with_survivors_on_both_names_sticky_wicket(self) -> None:
@@ -368,7 +375,7 @@ class MechanismClusterTests(ScratchRepo):
         receipt = self.receipt()
         self.assertIn("--force --reforge", preclose_passes.refusal(
             receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
-            preclose.local_patch_id("base", "HEAD"), force=True, repo=REPO, issue=ISSUE))
+            main_ref="base", force=True, repo=REPO, issue=ISSUE))
         self.plan(tier="fast", force=True, reforge=True)
         preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
                                 findings=self.findings_file(self.findings("new")), envelope=None,
@@ -530,9 +537,9 @@ class PreclosePassOneFixTests(ScratchRepo):
         self.plan(tier="fast")
         self.complete()
         self.commit("scripts/g.py", "def g(x):\n    if x:\n        a()\n    b()\n")
-        diff = preclose.run("git", "diff", "base...HEAD").stdout
-        with patch.object(hook, "_gh", return_value=diff):
-            self.assertFalse(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head", "7"))
+        last = preclose_passes.reviewed(preclose.find_receipt(REPO, ISSUE))
+        head = preclose.run("git", "rev-parse", "HEAD").stdout.strip()
+        self.assertFalse(preclose_passes.accepts_entry(last, head, None, "base"))
         self.assertIn("refuters:", self.plan(tier="fast"))
 
     def test_operator_reforge_on_a_changed_diff_restarts_the_count(self) -> None:
@@ -614,63 +621,361 @@ class OneReaderInvariantTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
-class HookPatchIdTests(ScratchRepo):
-    """AC3/AC4 through the real hook and the real receipt."""
+class ChangeIdentityTests(ScratchRepo):
+    """harmonic-forge#1077 AC1-AC4: the shared primitive, against real git.
+    `base` plays origin/main; the checked-out `main` branch is the PR."""
+
+    PAD = "# --\n" * 4
+    BLOCK = PAD + "def f():\n    return 1\n" + PAD
+
+    def head(self) -> str:
+        return preclose.run("git", "rev-parse", "HEAD").stdout.strip()
+
+    def identity(self) -> dict:
+        return preclose_passes.change_identity(None, "HEAD", "base")
+
+    def accepts(self, recorded: dict) -> bool:
+        return preclose_passes.accepts(recorded, self.head(), None, None, "base")
+
+    def on_base(self, relpath: str, body: str) -> None:
+        """Main moves: commit `relpath` on `base`, then return to the PR."""
+        git("checkout", "-q", "base", cwd=self.repo)
+        self.commit(relpath, body)
+        git("checkout", "-q", "main", cwd=self.repo)
+
+    def seed_base(self, files: dict[str, str]) -> None:
+        """Start main (and the PR) from these files."""
+        for relpath, body in files.items():
+            target = self.repo / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body)
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-qm", "seed files", cwd=self.repo)
+        git("branch", "-f", "base", "HEAD", cwd=self.repo)
+
+    def test_change_identity_is_local_git_and_never_gh(self) -> None:
+        """AC1."""
+        self.commit("scripts/a.py")
+        calls: list[list[str]] = []
+        real = subprocess.run
+
+        def recording(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real(argv, *args, **kwargs)
+
+        with patch.object(preclose_passes.subprocess, "run", side_effect=recording):
+            identity = self.identity()
+        self.assertEqual(identity, {
+            "head_sha": self.head(),
+            "merge_base_sha": preclose.run("git", "merge-base", "base", "HEAD").stdout.strip(),
+            "tree": preclose.run("git", "rev-parse", "HEAD^{tree}").stdout.strip()})
+        self.assertTrue(calls)
+        self.assertTrue(all(call[0] == "git" for call in calls), calls)
+
+    def test_exact_head_is_accepted(self) -> None:
+        """(a)."""
+        self.commit("scripts/a.py")
+        self.assertTrue(self.accepts(self.identity()))
+
+    def test_edit_to_a_second_identical_block_is_refused(self) -> None:
+        """AC2: the hole patch-id left open. Same patch-id, different tree."""
+        self.seed_base({"lib.py": self.BLOCK + self.BLOCK})
+        self.commit("lib.py", self.BLOCK.replace("1", "2") + self.BLOCK)
+        reviewed, reviewed_patch = self.identity(), preclose.local_patch_id("base", "HEAD")
+        git("reset", "-q", "--hard", "base", cwd=self.repo)
+        self.commit("lib.py", self.BLOCK + self.BLOCK.replace("1", "2"))
+        self.assertEqual(preclose.local_patch_id("base", "HEAD"), reviewed_patch)
+        self.assertFalse(self.accepts(reviewed))
+
+    def test_clean_rebase_onto_moved_main_is_accepted(self) -> None:
+        """AC3."""
+        self.commit("scripts/a.py")
+        reviewed = self.identity()
+        self.on_base("unrelated.txt", "u\n")
+        git("rebase", "-q", "base", cwd=self.repo)
+        self.assertNotEqual(self.head(), reviewed["head_sha"])
+        self.assertTrue(self.accepts(reviewed))
+
+    def test_main_moved_but_head_not_rebased_is_accepted(self) -> None:
+        """AC3: cur_base is merge-base(main, head), never main's tip."""
+        self.commit("scripts/a.py")
+        reviewed = self.identity()
+        git("commit", "-q", "--amend", "-m", "reworded", cwd=self.repo)  # new SHA, same tree
+        self.on_base("unrelated.txt", "u\n")
+        self.assertNotEqual(self.head(), reviewed["head_sha"])
+        self.assertTrue(self.accepts(reviewed))
+        tip = preclose.run("git", "rev-parse", "base").stdout.strip()
+        self.assertFalse(preclose_passes.accepts(reviewed, self.head(), tip, None, "base"))
+
+    def test_conflicting_replay_is_refused(self) -> None:
+        """AC3: a replay that conflicts is refused, however the head resolved it."""
+        self.seed_base({"lib.py": "a\nb\nc\n"})
+        self.commit("lib.py", "a\nB-feature\nc\n")
+        reviewed = self.identity()
+        self.on_base("lib.py", "a\nB-main\nc\n")
+        git("reset", "-q", "--hard", "base", cwd=self.repo)
+        self.commit("lib.py", "a\nB-feature\nc\n")  # the conflict, resolved to the PR side
+        self.assertFalse(self.accepts(reviewed))
+
+    def test_head_committing_the_conflict_marker_tree_is_refused(self) -> None:
+        """AC3, preclose pass 1: the head commits merge-tree's conflicted
+        tree verbatim, so the tree comparison matches and only the replay's
+        nonzero exit refuses it."""
+        self.seed_base({"lib.py": "a\nb\nc\n"})
+        self.commit("lib.py", "a\nB-feature\nc\n")
+        reviewed = self.identity()
+        self.on_base("lib.py", "a\nB-main\nc\n")
+        # By SHA, as accepts() passes it: the markers embed the ref names.
+        base_sha = preclose.run("git", "rev-parse", "base").stdout.strip()
+        replay = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "--merge-base",
+             reviewed["merge_base_sha"], base_sha, reviewed["head_sha"]],
+            cwd=self.repo, capture_output=True, text=True, check=False)
+        self.assertNotEqual(replay.returncode, 0)
+        marker_tree = replay.stdout.split()[0]
+        head = preclose.run("git", "commit-tree", marker_tree, "-p", "base",
+                            "-m", "markers").stdout.strip()
+        git("reset", "-q", "--hard", head, cwd=self.repo)
+        self.assertIn("<<<<<<<", (self.repo / "lib.py").read_text())
+        self.assertEqual(preclose.run("git", "rev-parse", "HEAD^{tree}").stdout.strip(),
+                         marker_tree)
+        self.assertFalse(self.accepts(reviewed))
+
+    def test_extra_change_after_a_rebase_is_refused(self) -> None:
+        """AC3: any non-exempt tree difference."""
+        self.commit("scripts/a.py")
+        reviewed = self.identity()
+        self.on_base("unrelated.txt", "u\n")
+        git("rebase", "-q", "base", cwd=self.repo)
+        self.commit("scripts/extra.py")
+        self.assertFalse(self.accepts(reviewed))
+
+    PACKAGE = {"name": "x", "version": "1.0.0", "dependencies": {"a": {"version": "1"}}}
+    LOCK = {"name": "x", "version": "1.0.0", "lockfileVersion": 3,
+            "packages": {"": {"name": "x", "version": "1.0.0"},
+                         "node_modules/a": {"version": "1"}}}
+
+    def reviewed_then_rebased(self, package: dict | None = None) -> dict:
+        package = self.PACKAGE if package is None else package
+        self.seed_base({"frontend/package.json": json.dumps(package, indent=2) + "\n",
+                        "frontend/package-lock.json": json.dumps(self.LOCK, indent=2) + "\n",
+                        "other.json": json.dumps({"version": "1.0.0"}) + "\n"})
+        self.commit("scripts/a.py")
+        reviewed = self.identity()
+        self.on_base("unrelated.txt", "u\n")
+        git("rebase", "-q", "base", cwd=self.repo)
+        return reviewed
+
+    def bump(self, relpath: str, document: dict) -> None:
+        self.commit(relpath, json.dumps(document, indent=2) + "\n")
+
+    def test_top_level_version_bumps_are_exempt(self) -> None:
+        """AC4: package.json version, package-lock.json version and packages[""].version."""
+        reviewed = self.reviewed_then_rebased()
+        self.bump("frontend/package.json", {**self.PACKAGE, "version": "1.0.1"})
+        lock = json.loads(json.dumps(self.LOCK))
+        lock["version"] = lock["packages"][""]["version"] = "1.0.1"
+        self.bump("frontend/package-lock.json", lock)
+        self.assertTrue(self.accepts(reviewed))
+
+    def test_nested_version_change_is_refused(self) -> None:
+        """AC4: only the listed keys; a nested "version" is a real change."""
+        reviewed = self.reviewed_then_rebased()
+        package = json.loads(json.dumps(self.PACKAGE))
+        package["dependencies"]["a"]["version"] = "2"
+        self.bump("frontend/package.json", package)
+        self.assertFalse(self.accepts(reviewed))
+
+    def test_nested_lockfile_version_change_is_refused(self) -> None:
+        reviewed = self.reviewed_then_rebased()
+        lock = json.loads(json.dumps(self.LOCK))
+        lock["packages"]["node_modules/a"]["version"] = "2"
+        self.bump("frontend/package-lock.json", lock)
+        self.assertFalse(self.accepts(reviewed))
+
+    def test_version_in_another_json_file_is_refused(self) -> None:
+        reviewed = self.reviewed_then_rebased()
+        self.bump("other.json", {"version": "1.0.1"})
+        self.assertFalse(self.accepts(reviewed))
+
+    def test_a_version_bump_beside_another_package_change_is_refused(self) -> None:
+        reviewed = self.reviewed_then_rebased()
+        self.bump("frontend/package.json", {**self.PACKAGE, "version": "1.0.1", "private": True})
+        self.assertFalse(self.accepts(reviewed))
+
+    TYPED = {**PACKAGE, "private": True, "weight": 1, "ratio": 1.5, "files": ["a", "b"]}
+
+    def test_json_exemption_is_type_strict(self) -> None:
+        """Preclose pass 1: Python == equates true, 1 and 1.0; the exemption
+        must not. Key sets and list order are exact too."""
+        for change in ({"private": 1}, {"weight": 1.0}, {"weight": True},
+                       {"files": ["b", "a"]}, {"extra": None}):
+            with self.subTest(change=change):
+                self.setUp()
+                reviewed = self.reviewed_then_rebased(self.TYPED)
+                self.bump("frontend/package.json", {**self.TYPED, "version": "1.0.1", **change})
+                self.assertFalse(self.accepts(reviewed))
+
+    def test_json_exemption_still_accepts_a_typed_document(self) -> None:
+        reviewed = self.reviewed_then_rebased(self.TYPED)
+        self.bump("frontend/package.json", {**self.TYPED, "version": "1.0.1"})
+        self.assertTrue(self.accepts(reviewed))
+
+    def test_accepts_returns_false_on_every_error(self) -> None:
+        """accepts never raises, so the preflight and the merge hook agree."""
+        self.commit("scripts/a.py")
+        missing = {"head_sha": "f" * 40, "merge_base_sha": "e" * 40, "tree": "d" * 40}
+        self.assertFalse(preclose_passes.accepts(missing, self.head(), None, None, "base"))
+        self.assertFalse(preclose_passes.accepts(self.identity(), "not-a-sha", None, None, "base"))
+        self.assertFalse(preclose_passes.accepts(missing, self.head(), None,
+                                                 "/nonexistent/repo", "base"))
+        self.assertFalse(preclose_passes.accepts(missing, self.head(), None,
+                                                 lambda: None, "base"))
+
+    def test_legacy_entry_is_accepted_at_its_exact_sha_only(self) -> None:
+        """AC6: a pass recorded before #1077 carries a patch-id, not an identity."""
+        self.commit("scripts/a.py")
+        legacy = {"sha": self.head(), "patch_id": preclose.local_patch_id("base", "HEAD")}
+        self.assertTrue(preclose_passes.accepts_entry(legacy, self.head(), None, "base"))
+        self.on_base("unrelated.txt", "u\n")
+        git("rebase", "-q", "base", cwd=self.repo)
+        self.assertEqual(preclose.local_patch_id("base", "HEAD"), legacy["patch_id"])
+        self.assertFalse(preclose_passes.accepts_entry(legacy, self.head(), None, "base"))
+        self.assertIn("harmonic-forge#1077", preclose_passes.legacy_message(legacy, self.head()))
+
+
+class HookChangeIdentityTests(ScratchRepo):
+    """AC2/AC3/AC6 through the real hook, the real receipt and a real cache
+    clone fetched from a local stand-in for GitHub (no network)."""
+
+    PR = "7"
 
     def setUp(self) -> None:
         super().setUp()
+        self.remote = Path(tempfile.mkdtemp()) / "github.git"
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.remote.parent)]))
+        git("init", "-q", "--bare", str(self.remote), cwd=self.repo)
+        # GitHub serves any commit in the repository by SHA; so does this.
+        git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=self.remote)
+        remote = patch.object(hook, "_cache_remote_url", return_value=str(self.remote))
+        remote.start()
+        self.addCleanup(remote.stop)
         self.commit("scripts/a.py")
         self.plan(tier="fast")
         self.complete()
         self.reviewed = preclose.find_receipt(REPO, ISSUE)["reviewed_sha"]
+        self.publish()
 
-    def pr_diff(self) -> str:
-        return preclose.run("git", "diff", "base...HEAD").stdout
+    def head(self) -> str:
+        return preclose.run("git", "rev-parse", "HEAD").stdout.strip()
 
-    def test_patch_identical_rebase_is_accepted(self) -> None:
-        PassCapTests.rebase_onto_moved_base(self)
-        with patch.object(hook, "_gh", return_value=self.pr_diff()):
-            self.assertTrue(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head-sha", "7"))
+    def publish(self) -> None:
+        """What GitHub would show: `base` as main, HEAD as the PR head."""
+        git("push", "-q", "--force", str(self.remote), "base:refs/heads/main",
+            f"HEAD:refs/pull/{self.PR}/head", cwd=self.repo)
 
-    def test_real_diff_change_is_denied(self) -> None:
-        self.commit("scripts/extra.py")
-        with patch.object(hook, "_gh", return_value=self.pr_diff()):
-            self.assertFalse(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head-sha", "7"))
+    def ok(self, head: str | None = None) -> bool:
+        return hook._preclose_receipt_ok(REPO, str(ISSUE), head or self.head(), self.PR)
 
-    def test_batch_preflight_agrees_with_the_merge_hook_after_a_rebase(self) -> None:
+    def preflight(self) -> str | None:
         import batch_preflight
+        prs = json.dumps([{"number": int(self.PR), "headRefName": f"fix/{ISSUE}-x",
+                           "headRefOid": self.head()}])
+        with patch.object(batch_preflight, "_gh", return_value=prs):
+            return batch_preflight._stale_preclose_receipt(REPO, str(ISSUE))
+
+    def test_clean_rebase_onto_moved_main_is_accepted(self) -> None:
         PassCapTests.rebase_onto_moved_base(self)
-        prs = '[{"number": 7, "headRefName": "fix/1208-x", "headRefOid": "new-head-sha"}]'
-        with patch.object(hook, "_gh", return_value=self.pr_diff()), \
-                patch.object(batch_preflight, "_gh", return_value=prs):
-            self.assertIsNone(batch_preflight._stale_preclose_receipt(REPO, str(ISSUE)))
+        self.publish()
+        self.assertNotEqual(self.head(), self.reviewed)
+        self.assertTrue(self.ok())
+        self.assertIsNone(self.preflight())
+
+    def test_exact_head_needs_no_fetch(self) -> None:
+        """(a) is decided before any fetch: an unreachable remote still accepts it."""
+        with patch.object(hook, "_cache_remote_url", return_value="/nonexistent/remote.git"):
+            self.assertTrue(self.ok(self.reviewed))
+
+    def test_second_identical_block_edit_is_refused(self) -> None:
+        """AC2, end to end: the reviewed head edits block 1; the PR now edits block 2."""
+        block = ChangeIdentityTests.BLOCK
+        git("reset", "-q", "--hard", "base", cwd=self.repo)
+        self.commit("lib.py", block + block)
+        git("branch", "-f", "base", "HEAD", cwd=self.repo)
+        self.commit("lib.py", block.replace("1", "2") + block)
+        self.plan(tier="fast")
+        self.complete()
+        reviewed_patch = preclose.local_patch_id("base", "HEAD")
+        git("reset", "-q", "--hard", "base", cwd=self.repo)
+        self.commit("lib.py", block + block.replace("1", "2"))
+        self.assertEqual(preclose.local_patch_id("base", "HEAD"), reviewed_patch)
+        self.publish()
+        self.assertFalse(self.ok())
+
+    def test_real_change_is_denied(self) -> None:
+        self.commit("scripts/extra.py")
+        self.publish()
+        self.assertFalse(self.ok())
+
+    def test_fetch_failure_denies_and_preflight_agrees(self) -> None:
+        PassCapTests.rebase_onto_moved_base(self)
+        self.publish()
+        with patch.object(hook, "_cache_remote_url", return_value="/nonexistent/remote.git"):
+            self.assertFalse(self.ok())
+            self.assertIn("WILL halt", self.preflight())
+
+    def test_fetch_timeout_denies(self) -> None:
+        PassCapTests.rebase_onto_moved_base(self)
+        self.publish()
+        with patch.object(hook, "FETCH_BUDGET_SECONDS", 0):
+            self.assertFalse(self.ok())
+
+    def test_pr_head_that_moved_after_the_read_denies(self) -> None:
+        """The fetched PR head must be the head the hook was asked about."""
+        PassCapTests.rebase_onto_moved_base(self)
+        rebased = self.head()
+        self.commit("scripts/later.py")
+        self.publish()
+        self.assertFalse(self.ok(rebased))
+
+    def test_legacy_receipt_exact_sha_accepted_rebased_denied_naming_1077(self) -> None:
+        """AC6: a patch-id-only receipt is never accepted by patch-id any more."""
+        receipt = preclose.find_receipt(REPO, ISSUE)
+        legacy_pass = {"sha": self.reviewed, "patch_id": preclose.local_patch_id("base", "HEAD"),
+                       "surviving": 0, "epoch": 0}
+        receipt["pass_history"] = [legacy_pass]
+        receipt.pop("reviewed_change_identity", None)
+        preclose.write_receipt(REPO, ISSUE, self.reviewed, receipt["refuters"], "complete",
+                               extra=receipt)
+        self.assertTrue(self.ok(self.reviewed))
+        PassCapTests.rebase_onto_moved_base(self)
+        self.publish()
+        self.assertEqual(preclose.local_patch_id("base", "HEAD"), legacy_pass["patch_id"])
+        self.assertFalse(self.ok())
+        message = hook._stale_receipt_message(REPO, str(ISSUE), self.PR, self.head())
+        self.assertIn("harmonic-forge#1077", message)
+        self.assertIn("re-review", message)
 
     def test_batch_preflight_at_the_cap_never_offers_a_third_pass(self) -> None:
-        import batch_preflight
         self.commit("scripts/b.py")
         self.plan(tier="fast")
         self.complete()
         self.commit("scripts/c.py")
-        prs = '[{"number": 7, "headRefName": "fix/1208-x", "headRefOid": "unreviewed-sha"}]'
-        with patch.object(hook, "_gh", return_value=self.pr_diff()), \
-                patch.object(batch_preflight, "_gh", return_value=prs):
-            message = batch_preflight._stale_preclose_receipt(REPO, str(ISSUE))
+        self.publish()
+        message = self.preflight()
         self.assertIn("WILL halt", message)
         self.assertIn("Escalate to the operator", message)
         self.assertNotIn("Re-run", message)
 
-    def test_unreadable_pr_diff_fails_closed(self) -> None:
-        with patch.object(hook, "_gh", return_value=None):
-            self.assertFalse(hook._preclose_receipt_ok(REPO, str(ISSUE), "new-head-sha", "7"))
-
     def test_stale_message_below_the_cap_still_offers_a_pass(self) -> None:
-        self.assertIn("Run the pre-close pass", hook._stale_receipt_message(REPO, str(ISSUE), "7", "abc"))
+        self.assertIn("Run the pre-close pass",
+                      hook._stale_receipt_message(REPO, str(ISSUE), self.PR, "abc"))
 
     def test_stale_message_at_the_cap_never_offers_a_third_pass(self) -> None:
         self.commit("scripts/b.py")
         self.plan(tier="fast")
         self.complete()
-        message = hook._stale_receipt_message(REPO, str(ISSUE), "7", "abc")
+        message = hook._stale_receipt_message(REPO, str(ISSUE), self.PR, "abc")
         self.assertNotIn("Run the pre-close pass", message)
         self.assertIn("Escalate to the operator", message)
 

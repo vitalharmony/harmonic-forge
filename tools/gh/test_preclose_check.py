@@ -930,7 +930,7 @@ class OwnModelCallSiteTests(unittest.TestCase):
              patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
              patch.object(preclose, "registered_repo", return_value=args.repo), \
              patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
-             patch.object(preclose, "local_patch_id", return_value="p"), \
+             patch.object(preclose, "local_change_identity", return_value={"head_sha": "a" * 40}), \
              patch.object(preclose, "check_pass_cap"), \
              patch.object(preclose, "load_findings", return_value=[]), \
              patch.object(preclose, "require_mechanisms"), \
@@ -955,7 +955,7 @@ class OwnModelCallSiteTests(unittest.TestCase):
              patch.object(passes, "current", return_value=[{}] * passes.MAX_PASSES), \
              patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
              patch.object(passes, "reviewed_head", return_value="b" * 40), \
-             patch.object(passes, "reviewed_patch_id", return_value="p"), \
+             patch.object(passes, "accepts_entry", return_value=True), \
              patch.object(preclose, "local_patch_id", return_value="p"), \
              patch.object(preclose, "require_recorded_envelope"), \
              patch.object(preclose, "compute_provenance", fake), \

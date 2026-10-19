@@ -735,6 +735,13 @@ def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | N
     return None
 
 
+#: `gh pr merge` flags whose next token is a value, not the PR number.
+_PR_MERGE_VALUE_FLAGS = frozenset({
+    "--match-head-commit", "--repo", "-R", "--body", "-b", "--body-file", "-F",
+    "--subject", "-t", "--author-email", "-A",
+})
+
+
 def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None:
     """Is this segment ANY form of `gh pr merge`? Returns (repo, number) --
     either may be None if unresolvable -- or None if not a pr-merge
@@ -752,7 +759,12 @@ def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None
 
     if rest[:2] == ["pr", "merge"]:
         repo = _repo_flag(rest)
-        number_token = next((t for t in rest[2:] if t.isdigit()), None)
+        # harmonic-forge#1077: every gated merge now carries
+        # `--match-head-commit <sha>`; a SHA that happens to be all digits is
+        # that flag's value, never the PR number.
+        args = rest[2:]
+        number_token = next((t for i, t in enumerate(args) if t.isdigit()
+                             and (i == 0 or args[i - 1] not in _PR_MERGE_VALUE_FLAGS)), None)
         return repo, (int(number_token) if number_token else None)
 
     return None
