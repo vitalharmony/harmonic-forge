@@ -133,10 +133,12 @@ def check_overlay(tree: Path, rel: str, changed: set[str]) -> None:
     if rel in changed:
         raise RunnerError(f"overlay would overwrite a path the head changed: {rel}")
     current = tree
-    for part in parts:
+    for index, part in enumerate(parts):
         current = current / part
         if current.is_symlink():
             raise RunnerError(f"overlay path crosses a symlink in the checkout: {rel}")
+        if index < len(parts) - 1 and current.exists() and not current.is_dir():
+            raise RunnerError(f"overlay path crosses a non-directory in the checkout: {rel}")
     if current.exists() and not current.is_file():
         raise RunnerError(f"overlay path is not a file in the checkout: {rel}")
 
@@ -145,7 +147,7 @@ def overlay(bundle: Path, tree: Path, files: list[str]) -> None:
     for rel in files:
         target = tree / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(bundle / "files" / rel, target)
+        shutil.copy2(bundle / "files" / rel, target)
 
 
 def test_env(repo: str, tree: Path) -> dict[str, str]:
@@ -166,6 +168,8 @@ def run_one(argv: list[str], pristine: Path, run_dir: Path, bundle: Path,
                                timeout=timeout).returncode
         except subprocess.TimeoutExpired:
             return TIMEOUT_RC
+        except OSError as exc:
+            raise RunnerError(f"cannot launch {argv[0]!r}: {exc}") from exc
     finally:
         shutil.rmtree(run_dir, ignore_errors=True)
 
@@ -209,9 +213,12 @@ def run(args: argparse.Namespace) -> dict:
                 materialize(source, sha, pristine[side])
                 for rel in files:
                     check_overlay(pristine[side], rel, changed)
-            for check, result in zip(checks, results):
+            for number, (check, result) in enumerate(zip(checks, results)):
                 for side in ("base", "head"):
-                    result[f"{side}_rc"] = run_one(check["test"], pristine[side], parent / "run",
+                    # Its own directory per run: a run whose cleanup failed
+                    # cannot break the next one.
+                    result[f"{side}_rc"] = run_one(check["test"], pristine[side],
+                                                   parent / f"run-{number}-{side}",
                                                    bundle, files, args.repo, args.timeout)
     except _scratch.ScratchError as exc:
         raise RunnerError(str(exc)) from exc

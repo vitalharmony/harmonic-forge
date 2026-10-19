@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -210,22 +211,68 @@ class KillRunnerTests(unittest.TestCase):
         self.assertIn("head changed", err)
 
     def test_digest_covers_the_bytes_that_ran(self):
-        # An edit landing while the run waits on the scratch lock: the reported
-        # digest and the results both reflect the same (edited) bytes.
-        real = kill_runner._scratch.scratch_dir
+        # The source bundle is edited after the digest is taken and before any
+        # check runs: the runs and the reported digest both stay on the
+        # original bytes.
+        original = kill_runner.bundle_digest(self.bundle)
         check = self.bundle / "files" / "tests" / "kr_check.py"
+        real = kill_runner.run_one
 
-        @contextlib.contextmanager
-        def edit_during_wait(*args, **kwargs):
+        def edit_then_run(*args, **kwargs):
             check.write_text("import sys\nsys.exit(0)\n")
-            with real(*args, **kwargs) as parent:
-                yield parent
+            return real(*args, **kwargs)
 
-        with mock.patch.object(kill_runner._scratch, "scratch_dir", edit_during_wait):
+        with mock.patch.object(kill_runner, "run_one", edit_then_run):
             rc, report, err = self.run_tool()
         self.assertEqual(rc, 0, err)
-        self.assertEqual(report["bundle_sha256"], kill_runner.bundle_digest(self.bundle))
+        self.assertEqual(report["bundle_sha256"], original)
+        self.assertEqual(report["checks"], [{"ac": "AC1", "base_rc": 1, "head_rc": 0}])
+
+    def test_executable_bundle_file_keeps_its_mode(self):
+        bundle = self.make_bundle({"tests/run.sh": "#!/bin/sh\nexit 0\n"},
+                                  [{"ac": "AC1", "test": ["./tests/run.sh"]}])
+        (bundle / "files" / "tests" / "run.sh").chmod(0o755)
+        rc, report, err = self.run_tool(bundle=bundle)
+        self.assertEqual(rc, 0, err)
         self.assertEqual(report["checks"], [{"ac": "AC1", "base_rc": 0, "head_rc": 0}])
+
+    def test_missing_test_binary_exits_two_without_traceback(self):
+        bundle = self.make_bundle({}, [{"ac": "AC1", "test": ["no-such-binary-kr"]}])
+        rc, report, err = self.run_tool(bundle=bundle)
+        self.assertEqual(rc, 2)
+        self.assertIsNone(report)
+        self.assertIn("cannot launch", err)
+
+    def test_overlay_through_head_file_is_refused_before_any_run(self):
+        (self.worktree / "tests").write_text("not a directory\n")
+        git(self.worktree, "add", "-A")
+        git(self.worktree, "commit", "-qm", "tests is a file")
+        head = git(self.worktree, "rev-parse", "HEAD")
+        rc, report, err = self.run_tool(head=head)
+        self.assertEqual(rc, 2)
+        self.assertIsNone(report)
+        self.assertIn("non-directory", err)
+        self.assertFalse((self.root / "cwd.log").exists(), "a check ran before the refusal")
+
+    def test_failed_cleanup_does_not_break_the_next_run(self):
+        # A check that leaves an undeletable directory behind.
+        sticky = ("import os, sys\nos.makedirs('stuck/inner')\nos.chmod('stuck', 0o555)\n"
+                  "sys.exit(0)\n")
+        bundle = self.make_bundle({"tests/sticky.py": sticky},
+                                  [{"ac": "AC1", "test": ["python3", "tests/sticky.py"]},
+                                   {"ac": "AC2", "test": ["python3", "tests/sticky.py"]}])
+        real_rmtree = kill_runner.shutil.rmtree
+
+        def chmod_back(path, *args, **kwargs):
+            # Leave the scratch root removable at the very end of the test.
+            for stuck in Path(path).glob("**/stuck"):
+                self.addCleanup(stuck.chmod, 0o755)
+            return real_rmtree(path, *args, **kwargs)
+
+        with mock.patch.object(kill_runner.shutil, "rmtree", chmod_back):
+            rc, report, err = self.run_tool(bundle=bundle)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([c["head_rc"] for c in report["checks"]], [0, 0])
 
     def test_bad_ref_and_bad_bundle_exit_two(self):
         rc, _report, _err = self.run_tool(head="no-such-ref")
@@ -248,6 +295,18 @@ class KillRunnerTests(unittest.TestCase):
             self.assertEqual(kill_runner.main(argv), 0)
         report = json.loads(out.getvalue())
         self.assertEqual(report["checks"], [{"ac": "AC1", "base_rc": 124, "head_rc": 124}])
+
+    def test_timeout_kills_the_whole_process_group(self):
+        marker = self.root / "grandchild-survived"
+        script = f"(sleep 3; touch {marker}) & sleep 30\n"
+        slow = self.make_bundle({"tests/slow.sh": script},
+                                [{"ac": "AC1", "test": ["sh", "tests/slow.sh"]}])
+        argv = ["run", "--repo", "o/r", "--issue", "1", "--base", self.base, "--head", self.head,
+                "--bundle", str(slow), "--source-repo", str(self.source), "--timeout", "1"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(kill_runner.main(argv), 0)
+        time.sleep(4)
+        self.assertFalse(marker.exists(), "a grandchild outlived the timeout")
 
 
 if __name__ == "__main__":
