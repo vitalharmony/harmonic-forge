@@ -115,9 +115,12 @@ def acceptance_criteria(repo: str, issue: int, env: dict[str, str]) -> str:
     return match.group(1).strip()
 
 
-def passes_held(repo: str, issue: int) -> int:
-    receipt = preclose_check.find_receipt(repo, issue)
+def _passes(receipt: dict | None) -> int:
     return len(preclose_passes.current(preclose_passes.history(receipt or {})))
+
+
+def passes_held(repo: str, issue: int) -> int:
+    return _passes(preclose_check.find_receipt(repo, issue))
 
 
 def planned_lenses(stdout: str) -> list[str]:
@@ -211,7 +214,10 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
     return [{**f, "lens": lens} for f in parse_findings(envelope.get("structured_output"))], tokens
 
 
-def run_pass(args: argparse.Namespace, env: dict[str, str]) -> int:
+def run_pass(args: argparse.Namespace, env: dict[str, str], progress: dict | None = None) -> int:
+    """`progress` records the two facts main() needs after a failure: that
+    --complete was started, and that it exited 0."""
+    progress = {} if progress is None else progress
     source, out = Path(args.source_repo).resolve(), Path(args.out).resolve()
     # A fresh --out per run: anything already there would read as this run's
     # output whenever this run fails before replacing it.
@@ -273,12 +279,14 @@ def run_pass(args: argparse.Namespace, env: dict[str, str]) -> int:
         cost = (["--panel-tokens", str(sum(tokens)), "--panel-ms", str(panel_ms)]
                 if all(isinstance(t, int) for t in tokens)
                 else ["--cost-unavailable", "a refuter's envelope carried no usage"])
+        progress["complete_started"] = True
         completed = call([*check, "--complete", "--cross-family", "--own-model", args.model,
                           "--findings", str(findings_path), "--envelope", str(envelope),
                           "--cross-family-ms", str(cross_ms), *cost], cwd=source, env=env)
         if completed.returncode:
             raise DriverError(f"--complete refused: "
                               f"{(completed.stderr or completed.stdout).strip()[-400:]}")
+        progress["complete_ok"] = True
         provenance = next((line.strip() for line in completed.stdout.splitlines()
                            if line.strip().startswith("Red-team provenance:")), "")
         survivors = len(preclose_check.surviving_findings(findings))
@@ -319,29 +327,36 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--model", default=DEFAULT_MODEL)
     run.add_argument("--budget-usd", default="5")
     args = parser.parse_args(argv)
-    before = None
+    before, progress = None, {}
     try:
-        before = passes_held(args.repo, args.issue)
-        return run_pass(args, runner_env())
+        before = preclose_check.find_receipt(args.repo, args.issue)
+        return run_pass(args, runner_env(), progress)
     except Exception as exc:  # noqa: BLE001
         print(f"preclose-driver: {exc}", file=sys.stderr)
-        if before is None:
-            return 2
-    # The receipt, not how far this code got, says whether a pass was
-    # recorded: a failure after --complete must never invite a retry that
-    # spends the last pass.
-    try:
-        recorded = passes_held(args.repo, args.issue) > before
-    except Exception as exc:  # noqa: BLE001
-        print(f"preclose-driver: cannot re-read the receipt ({exc}); not safe to retry",
-              file=sys.stderr)
-        return RECORDED_INCOMPLETE
-    if recorded:
-        print("preclose-driver: the pass WAS recorded; outputs are incomplete. Do not retry.",
-              file=sys.stderr)
-        return RECORDED_INCOMPLETE
-    return 2
+    return 2 if not recorded_or_unknown(args, before, progress) else RECORDED_INCOMPLETE
 
+
+def recorded_or_unknown(args: argparse.Namespace, before: dict | None, progress: dict) -> bool:
+    """After a failure: may a pass have been recorded? Facts only, never how
+    far this code got. --complete exiting 0 is a recorded pass; so is a
+    receipt whose pass count rose. A receipt that cannot be read (preclose's
+    reader returns None for it) once --complete was started could be one.
+    Any yes is exit 4: retrying could spend the issue's last pass."""
+    reason = "--complete exited 0" if progress.get("complete_ok") else None
+    if reason is None:
+        try:
+            after = preclose_check.find_receipt(args.repo, args.issue)
+        except Exception as exc:  # noqa: BLE001
+            after, reason = None, f"the receipt could not be re-read ({exc})"
+        if reason is None and after is not None and _passes(after) > _passes(before):
+            reason = "the receipt gained a pass"
+        if reason is None and after is None and progress.get("complete_started"):
+            reason = "--complete was started and the receipt is now unreadable"
+    if reason is None:
+        return False
+    print(f"preclose-driver: a pass may be recorded ({reason}); outputs are incomplete. "
+          "Do not retry.", file=sys.stderr)
+    return True
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_driver  # noqa: E402
 
 LENSES = preclose_driver.preclose_check.LENSES
+REAL_FIND_RECEIPT = preclose_driver.preclose_check.find_receipt
+PLANNED = {"status": "planned", "reviewed_sha": "a" * 40, "refuters": 5}
 # AC2's list, restated: the tests never take it from the code under test.
 FORBIDDEN = ("--force", "--reforge", "--allow-dirty", "--not-triggered", "--cluster-verdict",
              "--allow-repo-mismatch")
@@ -28,6 +30,8 @@ FAKE_PRECLOSE = textwrap.dedent("""\
         log.write(json.dumps(["preclose", *sys.argv[1:]]) + "\\n")
     lenses = json.loads(os.environ["FAKE_LENSES"])
     if "--complete" in sys.argv:
+        if os.environ.get("FAKE_CORRUPT"):
+            open(os.environ["FAKE_CORRUPT"], "w").write("{not json")
         if os.environ.get("FAKE_COMPLETE_RC"):
             print("refused", file=sys.stderr); sys.exit(int(os.environ["FAKE_COMPLETE_RC"]))
         print("preclose-check: recorded pass 1 of at most 2")
@@ -325,6 +329,20 @@ class Driver(unittest.TestCase):
                                side_effect=[None, None, None]):
             self.assertEqual(self.drive(FAKE_CROSS_NO_ENVELOPE="1"), 2)
 
+    def test_unreadable_real_receipt_after_complete_started_exits_4(self):
+        # The real reader: preclose_check.read_receipt returns None for a file
+        # it cannot parse, it never raises.
+        store = self.tmp / "receipts"
+        store.mkdir()
+        pc = preclose_driver.preclose_check
+        with mock.patch.object(pc, "find_receipt", REAL_FIND_RECEIPT), \
+                mock.patch.object(pc, "receipt_dir", return_value=store), \
+                mock.patch.object(pc, "legacy_receipt_dir", return_value=self.tmp / "legacy"):
+            path = pc.receipt_path("vitalharmony/harmonic-forge", 7)
+            path.write_text(json.dumps(PLANNED))
+            self.assertEqual(self.drive(FAKE_CORRUPT=str(path), FAKE_COMPLETE_RC="1"),
+                             preclose_driver.RECORDED_INCOMPLETE)
+
     def test_unreadable_receipt_after_failure_is_not_retryable(self):
         with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
                                side_effect=[None, None, ValueError("corrupt")]):
@@ -332,7 +350,11 @@ class Driver(unittest.TestCase):
                              preclose_driver.RECORDED_INCOMPLETE)
 
     def test_complete_refusal_exits_nonzero(self):
-        self.assertEqual(self.drive(FAKE_COMPLETE_RC="1"), 2)
+        # A real plan leaves a planned receipt, so --complete's refusal reads
+        # back as "no new pass": retryable.
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               return_value=PLANNED):
+            self.assertEqual(self.drive(FAKE_COMPLETE_RC="1"), 2)
         self.assertFalse((self.tmp / "out" / "preclose.json").exists())
 
     def test_missing_usage_records_cost_unavailable(self):
