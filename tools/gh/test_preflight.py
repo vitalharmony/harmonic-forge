@@ -139,6 +139,27 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("receipt not written", done.stderr)
             self.assertNotIn("Traceback", done.stderr)
 
+    def test_l1_post_help_that_fails_to_parse_writes_no_receipt(self) -> None:
+        """Sticky PATCH: `--repo --help` exits 2 without help; no receipt."""
+        bad = self.run_tool(L1_POST, "--repo", "--help")
+        self.assertEqual(bad.returncode, 2)
+        argv = (L1_POST, "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
+                "--kind", "handoff", "--sha", "0" * 40, "--branch", "main")
+        self.assertIn(NEEDLE, self.run_tool(*argv).stderr)
+
+    def test_record_never_raises_when_replace_and_cleanup_fail(self) -> None:
+        """Sticky PATCH: os.replace and the cleanup unlink both fail; no raise."""
+        with mock.patch("_preflight.os.replace", side_effect=PermissionError("store")), \
+             mock.patch("_preflight.Path.unlink", side_effect=PermissionError("cleanup")), \
+             mock.patch("sys.stderr") as err:
+            _preflight.record("k")  # must not raise
+        self.assertTrue(any("receipt not written" in str(c) for c in err.write.call_args_list))
+        self.assertIsNotNone(_preflight.require("k", "cmd"))
+
+    def test_refusal_names_the_store(self) -> None:
+        """Sticky PATCH: the guarded refusal names the store, so it does not loop."""
+        self.assertIn(self.tmp.name, _preflight.require("k", "cmd --help"))
+
     def test_preclose_without_force_is_never_refused(self) -> None:
         self.assertNotIn(NEEDLE, self._preclose("--complete", "--findings", "/x", "--own-model", "m").stderr)
 

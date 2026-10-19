@@ -14,6 +14,7 @@ value of it can name a directory outside the receipt store.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -48,22 +49,23 @@ def record(key: str) -> None:
     if not sid:
         return
     path = _path(key, sid)
-    # The preflight form itself is never gated, so a store error must not break
-    # it: warn and carry on. The guarded run then refuses, and says why.
+    # The preflight form itself is never gated, so a store error must never
+    # break it: one try covers every filesystem step, and nothing in it raises
+    # out. A `.tmp-` file a failed replace leaves behind is never read as a
+    # receipt. The guarded run then refuses and names the store.
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
-    except OSError as exc:
-        print(f"[preflight] receipt not written ({exc}); the guarded run will refuse "
-              f"until {receipt_dir()} is writable", file=sys.stderr)
-        return
-    try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"key": key, "recorded_at": time.time()}, fh)
         os.replace(tmp, path)
     except OSError as exc:
-        Path(tmp).unlink(missing_ok=True)
-        print(f"[preflight] receipt not written ({exc})", file=sys.stderr)
+        if tmp:
+            with contextlib.suppress(OSError):
+                Path(tmp).unlink(missing_ok=True)
+        print(f"[preflight] receipt not written ({exc}); the guarded run will refuse "
+              f"until {receipt_dir()} is writable", file=sys.stderr)
 
 
 def require(key: str, preflight_cmd: str) -> str | None:
@@ -72,4 +74,6 @@ def require(key: str, preflight_cmd: str) -> str | None:
     if not sid or _path(key, sid).is_file():
         return None
     return (f"first real run of this tool in this session: run its preflight form first "
-            f"and read what it requires (harmonic-forge#1076):\n  {preflight_cmd}")
+            f"and read what it requires (harmonic-forge#1076):\n  {preflight_cmd}\n"
+            f"If you already ran it, the receipt store {receipt_dir()} is not writable "
+            f"(see its [preflight] warning).")

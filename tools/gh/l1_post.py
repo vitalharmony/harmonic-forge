@@ -2820,10 +2820,14 @@ def main() -> None:
              "SHA declares this way, once. --kind ae / ae-and-sweep only.",
     )
     # harmonic-forge#1076: --help is this tool's preflight form; a posting run
-    # needs it first in this session.
-    if {"-h", "--help"} & set(sys.argv[1:]):
-        _preflight.record("l1_post")
-    args = parser.parse_args()
+    # needs it first in this session. Recorded only when argparse exits 0, which
+    # it does only after printing help; a parse error exits 2 and records nothing.
+    try:
+        args = parser.parse_args()
+    except SystemExit as exc:
+        if exc.code == 0:
+            _preflight.record("l1_post")
+        raise
     refusal = _preflight.require("l1_post", f"python3 {Path(__file__).resolve()} --help")
     if refusal:
         fail(refusal)
