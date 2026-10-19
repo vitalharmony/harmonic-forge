@@ -170,35 +170,39 @@ def run_one(argv: list[str], pristine: Path, run_dir: Path, bundle: Path,
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
-def review_worktrees(source: Path, head_sha: str) -> list[Path]:
-    """Worktrees of the source repo checked out at the head under review."""
-    listing = git(source, "worktree", "list", "--porcelain").decode()
-    found, path = [], None
-    for line in listing.splitlines():
-        if line.startswith("worktree "):
-            path = Path(line[len("worktree "):])
-        elif line.startswith("HEAD ") and path is not None and line[5:].strip() == head_sha:
-            found.append(path.resolve())
-    return found
+def linked_worktrees(source: Path) -> list[Path]:
+    """Every worktree of the source repo except the trusted checkout itself.
+    Whichever of them is under review, none is a place to run from."""
+    listing = git(source, "worktree", "list", "--porcelain", "-z").decode()
+    trees = [Path(entry[len("worktree "):]).resolve() for entry in listing.split("\0")
+             if entry.startswith("worktree ")]
+    return [tree for tree in trees if tree != source]
 
 
 def run(args: argparse.Namespace) -> dict:
     source = Path(args.source_repo).resolve()
-    bundle = Path(args.bundle).resolve()
     if args.timeout <= 0:
         raise RunnerError("--timeout must be positive")
     base, head = resolve(source, args.base), resolve(source, args.head)
     cwd = Path.cwd().resolve()
-    for tree in review_worktrees(source, head):
-        if tree != source and (cwd == tree or tree in cwd.parents):
-            raise RunnerError(f"refusing to run from inside the worktree under review: {tree}")
-    checks = load_checks(bundle)
-    files = bundle_files(bundle)
-    digest = bundle_digest(bundle)
-    changed = set(git(source, "diff", "--name-only", "--no-renames", base, head).decode().splitlines())
-    results = [{"ac": check["ac"]} for check in checks]
+    for tree in linked_worktrees(source):
+        if cwd == tree or tree in cwd.parents:
+            raise RunnerError(f"refusing to run from inside a worktree under review: {tree}")
+    changed = set(filter(None, git(source, "diff", "--name-only", "-z", "--no-renames",
+                                   base, head).decode().split("\0")))
     try:
         with _scratch.scratch_dir(f"kill-runner {args.repo}#{args.issue}", prefix="scratch-") as parent:
+            # One copy, read once: the digest covers exactly the bytes that run,
+            # however long the scratch lock wait above took.
+            bundle = parent / "bundle"
+            try:
+                shutil.copytree(Path(args.bundle).resolve(), bundle, symlinks=True)
+            except (OSError, shutil.Error) as exc:
+                raise RunnerError(f"cannot read bundle {args.bundle}: {exc}") from exc
+            checks = load_checks(bundle)
+            files = bundle_files(bundle)
+            digest = bundle_digest(bundle)
+            results = [{"ac": check["ac"]} for check in checks]
             pristine = {}
             for side, sha in (("base", base), ("head", head)):
                 pristine[side] = parent / f"pristine-{side}"

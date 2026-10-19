@@ -186,6 +186,47 @@ class KillRunnerTests(unittest.TestCase):
         self.assertIsNone(report)
         self.assertIn("worktree under review", err)
 
+    def test_cwd_inside_worktree_at_another_commit_is_refused(self):
+        # The worktree has moved past the head under review: still refused.
+        (self.worktree / "g.py").write_text("x = 1\n")
+        git(self.worktree, "add", "-A")
+        git(self.worktree, "commit", "-qm", "later")
+        os.chdir(self.worktree)
+        rc, report, err = self.run_tool()
+        self.assertEqual(rc, 2)
+        self.assertIsNone(report)
+        self.assertIn("worktree under review", err)
+
+    def test_overlay_over_head_changed_non_ascii_path_is_refused(self):
+        (self.worktree / "tést.py").write_text("x = 1\n")
+        git(self.worktree, "add", "-A")
+        git(self.worktree, "commit", "-qm", "non-ascii")
+        head = git(self.worktree, "rev-parse", "HEAD")
+        bundle = self.make_bundle({"tést.py": "x = 2\n"},
+                                  [{"ac": "AC1", "test": ["python3", "-c", "pass"]}])
+        rc, report, err = self.run_tool(bundle=bundle, head=head)
+        self.assertEqual(rc, 2)
+        self.assertIsNone(report)
+        self.assertIn("head changed", err)
+
+    def test_digest_covers_the_bytes_that_ran(self):
+        # An edit landing while the run waits on the scratch lock: the reported
+        # digest and the results both reflect the same (edited) bytes.
+        real = kill_runner._scratch.scratch_dir
+        check = self.bundle / "files" / "tests" / "kr_check.py"
+
+        @contextlib.contextmanager
+        def edit_during_wait(*args, **kwargs):
+            check.write_text("import sys\nsys.exit(0)\n")
+            with real(*args, **kwargs) as parent:
+                yield parent
+
+        with mock.patch.object(kill_runner._scratch, "scratch_dir", edit_during_wait):
+            rc, report, err = self.run_tool()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(report["bundle_sha256"], kill_runner.bundle_digest(self.bundle))
+        self.assertEqual(report["checks"], [{"ac": "AC1", "base_rc": 0, "head_rc": 0}])
+
     def test_bad_ref_and_bad_bundle_exit_two(self):
         rc, _report, _err = self.run_tool(head="no-such-ref")
         self.assertEqual(rc, 2)
