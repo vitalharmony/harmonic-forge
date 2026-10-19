@@ -58,8 +58,10 @@
       "Edit(./**/tox.ini)",
       "Edit(./**/setup.cfg)",
       "Edit(./**/pyproject.toml)",
-      "Edit(./**/sitecustomize.py)",
-      "Edit(./**/usercustomize.py)",
+      "Edit(./**/sitecustomize.*)",
+      "Edit(./**/sitecustomize/**)",
+      "Edit(./**/usercustomize.*)",
+      "Edit(./**/usercustomize/**)",
       "Edit(./**/*.pth)",
       "Edit(~/.local/share/te-runner/kill-bundles/**)"
     ]

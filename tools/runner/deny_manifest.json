@@ -151,12 +151,15 @@
         "./**/tox.ini",
         "./**/setup.cfg",
         "./**/pyproject.toml",
-        "./**/sitecustomize.py",
-        "./**/usercustomize.py",
+        "./**/sitecustomize.*",
+        "./**/sitecustomize/**",
+        "./**/usercustomize.*",
+        "./**/usercustomize/**",
         "./**/*.pth"
       ],
       "regexes": [
-        "(^|/)(conftest\\.py|pytest\\.ini|tox\\.ini|setup\\.cfg|pyproject\\.toml|sitecustomize\\.py|usercustomize\\.py)$",
+        "(^|/)(conftest\\.py|pytest\\.ini|tox\\.ini|setup\\.cfg|pyproject\\.toml)$",
+        "(^|/)(site|user)customize(\\.[^/]*$|/)",
         "\\.pth$"
       ]
     },
