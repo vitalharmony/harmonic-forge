@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+import _preflight
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
@@ -2818,7 +2819,14 @@ def main() -> None:
              "gate_production_run.py runs only an action an AE at the checked-out "
              "SHA declares this way, once. --kind ae / ae-and-sweep only.",
     )
+    # harmonic-forge#1076: --help is this tool's preflight form; a posting run
+    # needs it first in this session.
+    if {"-h", "--help"} & set(sys.argv[1:]):
+        _preflight.record("l1_post")
     args = parser.parse_args()
+    refusal = _preflight.require("l1_post", f"python3 {Path(__file__).resolve()} --help")
+    if refusal:
+        fail(refusal)
     prod_run = None
     if args.prod_run is not None:
         if args.kind not in ("ae", "ae-and-sweep"):

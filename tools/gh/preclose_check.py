@@ -49,6 +49,7 @@ import functools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1166,6 +1167,35 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
               file=sys.stderr)
 
 
+def _preclose_mode(args: argparse.Namespace) -> str:
+    """The mode `main()` dispatches to, so the preflight key matches it."""
+    if args.gate:
+        return "gate"
+    if args.post_verdict:
+        return "post-verdict"
+    if args.cluster_verdict:
+        return "cluster-verdict"
+    if args.complete:
+        return "complete"
+    return "plan+reforge" if args.reforge else "plan"
+
+
+def _preflight_force(args: argparse.Namespace, argv: list[str]) -> None:
+    """harmonic-forge#1076: a `--force` run needs the same repo, issue and mode
+    run without `--force` first in this session. That run is real, not a pure
+    dry run: if it succeeds it writes its receipts, and no `--force` is needed."""
+    import _preflight  # noqa: PLC0415
+    key = f"preclose:{args.repo.strip().lower()}#{args.issue}:{_preclose_mode(args)}"
+    if not args.force:
+        _preflight.record(key)
+        return
+    dry = " ".join(shlex.quote(a) for a in argv if a != "--force")
+    refusal = _preflight.require(key, f"python3 {Path(__file__).resolve()} {dry}")
+    if refusal:
+        raise SystemExit(f"preclose-check: {refusal}\n  That run is real: if it succeeds it "
+                         "records the pass, and no --force is needed.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plan an adversarial pre-close check for Tooling Exception work.",
@@ -1235,6 +1265,7 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    _preflight_force(args, sys.argv[1:])
     if (args.complete or args.gate or args.post_verdict or args.cluster_verdict) and (
             args.arm != "auto" or args.arm_reason or args.re_enroll):
         parser.error("--arm/--arm-reason belong to the plan: the pass records the arm the plan "
