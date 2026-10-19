@@ -222,8 +222,10 @@ def _parse_pr_merge(tokens: list[str]) -> tuple[str | None, str, str] | None:
     repo, number = _parse_positional_target(tokens[3:], PR_URL)
     # `gh pr merge` with no positional argument merges the current branch's
     # PR. Resolving that needs the branch, which the payload does not carry
-    # reliably -- fail open rather than guess at a different PR.
-    return (repo, number, "pr") if number else None
+    # reliably, so never guess. hrse#1487 failed open here; harmonic-forge#1077
+    # pass 2 found that lets an unbound merge through, so it now returns an
+    # empty number, which main() denies: name the PR explicitly.
+    return (repo, number or "", "pr")
 
 
 def _parse_api_merge(tokens: list[str]) -> tuple[str, str, str] | None:
@@ -604,9 +606,11 @@ def _bound_sha(tokens: list[str], cli: bool) -> str | None:
 
 
 def merge_head_commits(command: str, number: str) -> list[str | None]:
-    """The `--match-head-commit` value (REST form: the `sha=` field) of every
-    segment of `command` that merges PR `number`; None for a segment that
-    carries none (harmonic-forge#1077 AC5)."""
+    """The `--match-head-commit` value of every `gh pr merge` segment of
+    `command` that merges PR `number`; None for a segment that carries none
+    (harmonic-forge#1077 AC5). The REST merge form is always None: where gh
+    puts its `sha=` field depends on other flags (`--input` moves it to the
+    query string), so it is never accepted as bound (pass-2 sticky-wicket)."""
     found: list[str | None] = []
     try:
         segments = command_segments(command)
@@ -628,7 +632,7 @@ def merge_head_commits(command: str, number: str) -> list[str | None]:
         parsed = cli or api
         if not parsed or parsed[1] != number:
             continue
-        found.append(_bound_sha(tokens, bool(cli)))
+        found.append(_bound_sha(tokens, True) if cli else None)
     return found or [None]
 
 
@@ -638,7 +642,7 @@ def _match_head_message(repo: str, issue: str, pr: str, head_sha: str) -> str:
             f"A head that moves after this check would merge unreviewed. Re-run the merge "
             f"with the accepted head, e.g.:\n"
             f"  gh pr merge {pr} --repo {repo} --squash --match-head-commit {head_sha}\n"
-            f"(REST form: add -f sha={head_sha}.)")
+            f"(The REST merge form is not accepted for a gated PR.)")
 
 
 def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
@@ -709,6 +713,13 @@ def main() -> None:
     targets = find_gated_targets(command)
     if not targets:
         _allow()
+        return
+
+    if any(kind == "pr" and not number for _, number, kind in targets):
+        _deny("Blocked: `gh pr merge` with no PR number merges the current branch's PR, "
+              "which this hook cannot bind to a reviewed head (harmonic-forge#1077). Name "
+              "the PR explicitly, e.g.:\n"
+              "  gh pr merge <N> --repo <owner/repo> --squash --match-head-commit <sha>")
         return
 
     resolved: dict[str | None, str | None] = {}

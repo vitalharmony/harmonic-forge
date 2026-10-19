@@ -95,11 +95,12 @@ class FindTargetsTests(unittest.TestCase):
             "gh pr merge https://github.com/vitalharmony/hrse/pull/1486 --squash",
             (REPO, "1486", "pr"))
 
-    def test_pr_merge_without_a_number_fails_open(self) -> None:
+    def test_pr_merge_without_a_number_is_a_target_with_no_number(self) -> None:
         """Bare `gh pr merge` targets the current branch's PR; resolving
-        that from the payload is a guess, so allow rather than block the
-        wrong PR."""
-        self.assertEqual(hook.find_gated_targets("gh pr merge --squash"), [])
+        that from the payload is a guess, so it is returned with an empty
+        number for main() to deny (harmonic-forge#1077 pass 2; this failed
+        open before)."""
+        self.assertEqual(hook.find_gated_targets("gh pr merge --squash"), [(None, "", "pr")])
 
     def test_state_open_is_not_a_close(self) -> None:
         self.assertEqual(hook.find_gated_targets(
@@ -273,15 +274,29 @@ class PrShaBindingTests(unittest.TestCase):
         for command in (f"gh pr merge 1486 -R {REPO} --match-head-commit=abc123",
                         f"gh pr merge --match-head-commit ABC123 1486 -R {REPO}",
                         f"bash -c 'gh pr merge 1486 -R {REPO} --match-head-commit abc123'",
-                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge -f sha=abc123",
-                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge --field=sha=abc123",
                         f"gh pr merge 1486 -R {REPO} --squash -b 'see --match-head-commit' "
-                        f"--match-head-commit abc123 -d",
-                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge -F sha=abc123 "
-                        f"-f merge_method=squash",
-                        f"gh api --method PUT repos/{REPO}/pulls/1486/merge -fsha=abc123"):
+                        f"--match-head-commit abc123 -d"):
             with self.subTest(command=command):
                 self.assertFalse(self._denied(self._decide("abc123", True, command=command)))
+
+    def test_rest_merge_is_never_bound(self):
+        """Pass-2 sticky-wicket: with `--input`, gh moves `-f sha=` to the
+        query string, so the REST form is denied for a gated PR whatever
+        `sha=` it carries."""
+        for command in (f"gh api -X PUT repos/{REPO}/pulls/1486/merge -f sha=abc123 "
+                        f"--input body.json",
+                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge -f sha=abc123",
+                        f"gh api -X PUT repos/{REPO}/pulls/1486/merge --field=sha=abc123",
+                        f"gh api --method PUT repos/{REPO}/pulls/1486/merge -fsha=abc123"):
+            with self.subTest(command=command):
+                self.assertTrue(self._denied(self._decide("abc123", True, command=command)))
+
+    def test_merge_without_a_pr_number_denies(self):
+        """Pass 2: a bare merge picks the current branch's PR, which the hook
+        cannot bind, so it denies and asks for the PR number."""
+        payload = self._decide("abc123", True, command=f"gh pr merge -R {REPO} --squash")
+        self.assertTrue(self._denied(payload))
+        self.assertIn("gh pr merge <N>", self._reason(payload))
 
     def test_match_head_commit_inside_another_flags_value_denies(self):
         """Preclose pass 1: a flag-shaped VALUE never binds the merge."""
