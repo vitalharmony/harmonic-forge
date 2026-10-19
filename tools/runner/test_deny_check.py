@@ -248,8 +248,10 @@ class Boundary(unittest.TestCase):
         rc, out, _ = run(["boundary"])
         self.assertEqual(rc, 0, out)
         env = (self.dir / "env.txt").read_text()
-        self.assertNotIn("GH_TOKEN=", env)
-        self.assertNotIn("GITHUB_TOKEN=", env)
+        # Exact names: CI sets MISE_GITHUB_TOKEN, which is not the gh token.
+        names = {line.split("=", 1)[0] for line in env.splitlines()}
+        self.assertNotIn("GH_TOKEN", names)
+        self.assertNotIn("GITHUB_TOKEN", names)
         self.assertIn(f"GH_CONFIG_DIR={self.dir}/.config/te-runner/gh", env)
 
     def test_boundary_refuses_push_true(self):
