@@ -53,6 +53,14 @@
       "Edit(./rules/**)",
       "Edit(./3-lane-protocol.md)",
       "Edit(./tools/runner/**)",
+      "Edit(./**/conftest.py)",
+      "Edit(./**/pytest.ini)",
+      "Edit(./**/tox.ini)",
+      "Edit(./**/setup.cfg)",
+      "Edit(./**/pyproject.toml)",
+      "Edit(./**/sitecustomize.py)",
+      "Edit(./**/usercustomize.py)",
+      "Edit(./**/*.pth)",
       "Edit(~/.local/share/te-runner/kill-bundles/**)"
     ]
   }

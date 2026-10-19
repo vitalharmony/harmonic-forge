@@ -85,12 +85,15 @@ class ManifestCoverage(unittest.TestCase):
     def test_synthetic_high_blast_paths_are_covered_by_globs(self):
         # Paths the tree does not hold yet, so the ls-files test cannot see them.
         for path in ("scripts/migrations/0001_init.py", "scripts/migrate_x.py",
-                     "x/scripts/data_migration/a.py"):
+                     "x/scripts/data_migration/a.py", "conftest.py", "tools/x/conftest.py",
+                     "pytest.ini", "a/tox.ini", "setup.cfg", "pyproject.toml",
+                     "sitecustomize.py", "tools/x/usercustomize.py", "x/evil.pth"):
             self.assertTrue(deny_check.denied(path), path)
             self.assertTrue(self.glob_hit(path), f"{path} has no glob")
 
     def test_ordinary_tooling_is_not_denied(self):
-        for path in ("tools/telemetry/emit.py", "tools/gh/gh_issue.py", "docs/x.md"):
+        for path in ("tools/telemetry/emit.py", "tools/gh/gh_issue.py", "docs/x.md",
+                     "tools/x/conftest_helper.py", "docs/pyproject.toml.md"):
             self.assertFalse(deny_check.denied(path), path)
 
 

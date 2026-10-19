@@ -144,6 +144,23 @@
       ]
     },
     {
+      "why": "F1052 residual D: files that steer pytest or the interpreter at startup, which a head could use to force a kill check's pass",
+      "globs": [
+        "./**/conftest.py",
+        "./**/pytest.ini",
+        "./**/tox.ini",
+        "./**/setup.cfg",
+        "./**/pyproject.toml",
+        "./**/sitecustomize.py",
+        "./**/usercustomize.py",
+        "./**/*.pth"
+      ],
+      "regexes": [
+        "(^|/)(conftest\\.py|pytest\\.ini|tox\\.ini|setup\\.cfg|pyproject\\.toml|sitecustomize\\.py|usercustomize\\.py)$",
+        "\\.pth$"
+      ]
+    },
+    {
       "why": "G4: Lane 1's kill-check bundles",
       "globs": [
         "~/.local/share/te-runner/kill-bundles/**"
