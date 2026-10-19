@@ -12,13 +12,15 @@ session, so this module runs exactly one pass in its place:
 2. `preclose_check.py` plan, run from `--source-repo` (never an agent's
    worktree). Plan refuses without a passing `kill_check.py` receipt; for
    runner items Lane 1 writes those checks (operator ruling, 2026-10-19);
-3. one `claude -p --agent preclose-inspection` refuter per planned lens, in a
-   scratch export of the head, briefed with the issue's acceptance criteria,
-   the diff and the lens only;
+3. one `claude -p --json-schema` refuter per planned lens, in a scratch export
+   of the head, briefed with the issue's acceptance criteria, the diff and the
+   lens only, returning its findings as structured output;
 4. one cross-family `verify` call;
 5. `preclose_check.py --complete --cross-family` with every finding undismissed.
 
-Exit 0 when the pass was recorded (survivors or not), 2 when it was not.
+Exit 0 when the pass was recorded (survivors or not), 2 when it was not, and
+4 when the receipt shows a pass recorded but the run failed afterwards (or the
+receipt could not be re-read): never retry on 4.
 Writes `findings.json`, `envelope.jsonl`, `preclose.json` (the reducer's
 `preclose` fact, harmonic-forge#1051) and `summary.md` under `--out`. It
 never posts to the issue, labels anything, or passes `--force`, `--reforge`,
@@ -56,6 +58,9 @@ FORBIDDEN = ("--force", "--reforge", "--allow-dirty", "--not-triggered", "--clus
              "--allow-repo-mismatch")
 DEFAULT_MODEL = "claude-opus-5-5"
 REFUTER_TIMEOUT = 1800
+#: The receipt gained a pass but the run failed afterwards (or the receipt
+#: could not be re-read): never retry, the item is set aside.
+RECORDED_INCOMPLETE = 4
 
 
 class DriverError(Exception):
@@ -139,40 +144,38 @@ def export_head(source: Path, head: str, dest: Path) -> None:
         raise DriverError(f"cannot unpack {head[:12]} from {source}")
 
 
+#: The structured output each refuter must return (`claude -p --json-schema`).
+#: additionalProperties false keeps a refuter from adding a `dismissed` field.
+FINDINGS_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["findings"],
+    "properties": {"findings": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["anchor", "scenario", "mechanism"],
+        "properties": {k: {"type": "string"} for k in ("anchor", "scenario", "mechanism")}}}},
+}
+
+
 def refuter_prompt(lens: str, criteria: str, diff: str) -> str:
+    """The inspection instructions inline: `--json-schema` does not carry
+    through `--agent`, so the refuter is a plain run (operator ruling,
+    harmonic-forge#1059)."""
     return (f"Lens: {lens}\n\n"
-            "You are one refuter on a preclose panel. The working directory is the head of the "
-            "change. Find a concrete defect: a file:line anchor and a failure scenario a test "
-            "could reproduce. Read the code; do not trust the diff's comments.\n\n"
+            "You are one refuter on an adversarial preclose panel, reviewing a finished change "
+            "against its acceptance criteria. The working directory is the head of the change. "
+            "Find concrete defects through this lens. Every finding needs a file:line anchor, "
+            "a failure scenario (inputs or state, then the wrong behavior) and the mechanism "
+            "(the approach that fails, not the symptom). Discard anything without a concrete "
+            "scenario. Read the code; do not trust the diff's comments.\n\n"
             f"## Acceptance criteria\n\n{criteria}\n\n## Diff\n\n```diff\n{diff}\n```\n\n"
-            "Reply with ONLY a JSON list, no prose and no fence: "
-            '[{"anchor": "path:line", "scenario": "...", "mechanism": "..."}], or [] for none.')
+            "Return the findings in the structured output; an empty list when none meets the bar.")
 
 
-def last_json_list(text: str) -> list | None:
-    """The outermost JSON list that ends last in `text`, or None. The
-    preclose-inspection agent writes its report to a file and closes with
-    prose, so the list is found in the reply, not required to be all of it
-    (operator ruling, harmonic-forge#1059). A list nested inside another, such
-    as a bracket in a scenario string, never wins over its container."""
-    decoder, best = json.JSONDecoder(), None
-    for start in (i for i, ch in enumerate(text) if ch == "["):
-        try:
-            value, end = decoder.raw_decode(text, start)
-        except ValueError:
-            continue
-        if isinstance(value, list) and (best is None or end > best[1]
-                                        or (end == best[1] and start < best[0])):
-            best = (start, end, value)
-    return best[2] if best else None
-
-
-def parse_findings(text: str) -> list[dict]:
-    """A refuter's reply as findings, or DriverError. Only the three fields are
-    kept, so a refuter can never smuggle in a `dismissed` field (AC4)."""
-    data = last_json_list(text)
-    if data is None:
-        raise DriverError("refuter output holds no JSON list")
+def parse_findings(structured: object) -> list[dict]:
+    """A refuter's structured output as findings, or DriverError. Only the
+    three fields are kept, so a refuter can never add a `dismissed` field (AC4)."""
+    data = structured.get("findings") if isinstance(structured, dict) else None
+    if not isinstance(data, list):
+        raise DriverError("refuter returned no structured findings list")
     out = []
     for item in data:
         if not isinstance(item, dict) or not all(
@@ -185,9 +188,10 @@ def parse_findings(text: str) -> list[dict]:
 
 def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: str,
                 budget: str) -> tuple[list[dict], int | None]:
-    result = call(["claude", "-p", "--agent", "preclose-inspection", "--model", model,
+    result = call(["claude", "-p", "--model", model,
                    "--permission-prompts", "none", "--permission-mode", "dontAsk",
-                   "--max-budget-usd", budget, "--output-format", "json"],
+                   "--max-budget-usd", budget, "--output-format", "json",
+                   "--json-schema", json.dumps(FINDINGS_SCHEMA)],
                   cwd=cwd, env=env, stdin=prompt, timeout=REFUTER_TIMEOUT)
     if result.returncode:
         raise DriverError(f"refuter {lens} exited {result.returncode}: {result.stderr.strip()[:300]}")
@@ -195,8 +199,7 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
         envelope = json.loads(result.stdout)
     except ValueError as exc:
         raise DriverError(f"refuter {lens} printed no JSON envelope") from exc
-    if not isinstance(envelope, dict) or envelope.get("is_error") or not isinstance(
-            envelope.get("result"), str):
+    if not isinstance(envelope, dict) or envelope.get("is_error"):
         raise DriverError(f"refuter {lens} returned an error envelope")
     usage = envelope.get("usage")
     tokens = None
@@ -205,7 +208,7 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
                                         "cache_creation_input_tokens", "cache_read_input_tokens")]
         if all(isinstance(p, int) for p in parts):
             tokens = sum(parts)
-    return [{**f, "lens": lens} for f in parse_findings(envelope["result"])], tokens
+    return [{**f, "lens": lens} for f in parse_findings(envelope.get("structured_output"))], tokens
 
 
 def run_pass(args: argparse.Namespace, env: dict[str, str]) -> int:
@@ -316,11 +319,28 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--model", default=DEFAULT_MODEL)
     run.add_argument("--budget-usd", default="5")
     args = parser.parse_args(argv)
+    before = None
     try:
+        before = passes_held(args.repo, args.issue)
         return run_pass(args, runner_env())
-    except Exception as exc:  # noqa: BLE001 -- anything raised means no pass was recorded
+    except Exception as exc:  # noqa: BLE001
         print(f"preclose-driver: {exc}", file=sys.stderr)
-        return 2
+        if before is None:
+            return 2
+    # The receipt, not how far this code got, says whether a pass was
+    # recorded: a failure after --complete must never invite a retry that
+    # spends the last pass.
+    try:
+        recorded = passes_held(args.repo, args.issue) > before
+    except Exception as exc:  # noqa: BLE001
+        print(f"preclose-driver: cannot re-read the receipt ({exc}); not safe to retry",
+              file=sys.stderr)
+        return RECORDED_INCOMPLETE
+    if recorded:
+        print("preclose-driver: the pass WAS recorded; outputs are incomplete. Do not retry.",
+              file=sys.stderr)
+        return RECORDED_INCOMPLETE
+    return 2
 
 
 if __name__ == "__main__":

@@ -71,13 +71,23 @@ FAKE_CLAUDE = textwrap.dedent("""\
     import json, os, sys
     prompt = sys.stdin.read()
     with open(os.environ["FAKE_LOG"], "a") as log:
-        log.write(json.dumps(["claude", *sys.argv[1:], {"cwd": os.getcwd(), "prompt": prompt}]) + "\\n")
+        tree = open("widget.py").read() if os.path.isfile("widget.py") else None
+        log.write(json.dumps(["claude", *sys.argv[1:], {"cwd": os.getcwd(), "prompt": prompt,
+                                                         "tree": tree}]) + "\\n")
     result = os.environ.get("FAKE_RESULT", "[]")
     usage = {"input_tokens": 10, "output_tokens": 5, "cache_creation_input_tokens": 1,
              "cache_read_input_tokens": 4}
     if os.environ.get("FAKE_NO_USAGE"):
         usage = None
-    print(json.dumps({"is_error": False, "result": result, "usage": usage}))
+    envelope = {"is_error": False, "result": "", "usage": usage,
+                "structured_output": {"findings": json.loads(result)}}
+    if "FAKE_STRUCTURED" in os.environ:
+        raw = os.environ["FAKE_STRUCTURED"]
+        if raw == "absent":
+            del envelope["structured_output"]
+        else:
+            envelope["structured_output"] = json.loads(raw)
+    print(json.dumps(envelope))
 """)
 
 FAKE_GH = textwrap.dedent("""\
@@ -175,7 +185,13 @@ class Driver(unittest.TestCase):
     def test_refuter_argv_and_cwd(self):
         self.drive()
         argv = self.logged("claude")[0]
-        for pair in (["--agent", "preclose-inspection"], ["--permission-prompts", "none"],
+        self.assertNotIn("--agent", argv)
+        schema = json.loads(argv[argv.index("--json-schema") + 1])
+        item = schema["properties"]["findings"]["items"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertFalse(item["additionalProperties"])
+        self.assertEqual(set(item["required"]), {"anchor", "scenario", "mechanism"})
+        for pair in (["--permission-prompts", "none"],
                      ["--permission-mode", "dontAsk"]):
             i = argv.index(pair[0])
             self.assertEqual(argv[i:i + 2], pair)
@@ -183,6 +199,9 @@ class Driver(unittest.TestCase):
         cwd = Path(argv[-1]["cwd"])
         self.assertNotEqual(cwd.resolve(), self.src.resolve())
         self.assertNotIn(str(self.src.resolve()), str(cwd.resolve()))
+        # Positively: the cwd held the head's tree, inside the driver's scratch dir.
+        self.assertEqual(argv[-1]["tree"], "def widget():\n    return 2\n")
+        self.assertTrue(cwd.parent.name.startswith("preclose-driver-"), cwd)
 
     def test_cross_family_argv_matches_real_usage(self):
         self.drive()
@@ -230,15 +249,6 @@ class Driver(unittest.TestCase):
         self.assertEqual(self.logged("preclose"), [])
         self.assertEqual(self.logged("claude"), [])
 
-    def test_list_after_the_agents_closing_prose_is_parsed(self):
-        reply = ("/tmp/x/advisory-preclose-inspection-abc.md\n\n1 finding met the bar.\n\n"
-                 "> This is an adversarial pre-close check, not a Lane 3 gate.\n\n"
-                 '[{"anchor": "widget.py:2", "scenario": "returns [3] not [2]", "mechanism": "m"}]')
-        self.assertEqual(self.drive(FAKE_RESULT=reply), 0)
-        written = json.loads((self.tmp / "out" / "findings.json").read_text())
-        self.assertEqual(written[0]["scenario"], "returns [3] not [2]")
-        self.assertEqual(len(written), len(LENSES))
-
     def test_one_pass_held_still_runs(self):
         receipt = {"status": "complete", "reviewed_sha": "a" * 40,
                    "pass_history": [{"sha": "a" * 40, "surviving": 1, "epoch": 0}]}
@@ -247,10 +257,12 @@ class Driver(unittest.TestCase):
             self.assertEqual(self.drive(), 0)
 
     def test_unparseable_refuter_output_does_not_complete(self):
-        for result in ("I found nothing.", '{"anchor": "x"}', '[{"anchor": "x:1"}]', "[1]"):
+        for structured in ("absent", "null", "[]", '{"findings": {}}', '{"other": []}',
+                           '{"findings": [{"anchor": "x:1"}]}', '{"findings": [1]}'):
             self.log.unlink(missing_ok=True)
-            self.assertEqual(self.drive(FAKE_RESULT=result), 2, result)
-            self.assertFalse([a for a in self.logged("preclose") if "--complete" in a], result)
+            self.assertEqual(self.drive(FAKE_STRUCTURED=structured), 2, structured)
+            self.assertFalse([a for a in self.logged("preclose") if "--complete" in a],
+                             structured)
 
     def test_findings_are_never_dismissed(self):
         found = [{"anchor": "widget.py:2", "scenario": "returns 3", "mechanism": "m",
@@ -297,6 +309,27 @@ class Driver(unittest.TestCase):
         envelope = complete[complete.index("--envelope") + 1]
         self.assertEqual(envelope, cross[cross.index("--out") + 1])
         self.assertNotEqual(Path(envelope).parent, self.tmp / "out")
+
+    def test_failure_after_complete_exits_recorded_incomplete(self):
+        one = {"status": "complete", "reviewed_sha": "a" * 40,
+               "pass_history": [{"sha": "a" * 40, "surviving": 0, "epoch": 0}]}
+        # Before the run (main, then run_pass) no pass; after the failure, one.
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               side_effect=[None, None, one]), \
+                mock.patch.object(preclose_driver.shutil, "copy2", side_effect=OSError("ENOSPC")):
+            self.assertEqual(self.drive(), preclose_driver.RECORDED_INCOMPLETE)
+        self.assertEqual(len([a for a in self.logged("preclose") if "--complete" in a]), 1)
+
+    def test_failure_before_complete_exits_two(self):
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               side_effect=[None, None, None]):
+            self.assertEqual(self.drive(FAKE_CROSS_NO_ENVELOPE="1"), 2)
+
+    def test_unreadable_receipt_after_failure_is_not_retryable(self):
+        with mock.patch.object(preclose_driver.preclose_check, "find_receipt",
+                               side_effect=[None, None, ValueError("corrupt")]):
+            self.assertEqual(self.drive(FAKE_CROSS_NO_ENVELOPE="1"),
+                             preclose_driver.RECORDED_INCOMPLETE)
 
     def test_complete_refusal_exits_nonzero(self):
         self.assertEqual(self.drive(FAKE_COMPLETE_RC="1"), 2)
