@@ -18,13 +18,13 @@ from pathlib import Path
 
 
 def _is_main_guard(node: ast.stmt) -> bool:
+    """Any top-level `if` whose test names `__name__` and the string
+    `"__main__"`, whatever the spelling: reversed, or joined with `and`."""
     if not isinstance(node, ast.If):
         return False
-    test = node.test
-    return (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name)
-            and test.left.id == "__name__" and len(test.comparators) == 1
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value == "__main__")
+    parts = list(ast.walk(node.test))
+    return (any(isinstance(p, ast.Name) and p.id == "__name__" for p in parts)
+            and any(isinstance(p, ast.Constant) and p.value == "__main__" for p in parts))
 
 
 def _is_test_definition(node: ast.stmt) -> bool:
@@ -34,14 +34,24 @@ def _is_test_definition(node: ast.stmt) -> bool:
             and (node.name.startswith("test_") or node.name == "setUpModule"))
 
 
+def _definitions(nodes: list[ast.stmt]):
+    """Test definitions in `nodes`, including those inside top-level
+    if/try/with blocks, but never inside a class or function body."""
+    for node in nodes:
+        if _is_test_definition(node):
+            yield node
+        elif not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                yield from _definitions(getattr(node, field, []) or [])
+
+
 def violations(source: str) -> list[tuple[int, int]]:
     """(main-block line, offending definition line) for each definition after it."""
     body = ast.parse(source).body
     found = []
     for i, node in enumerate(body):
         if _is_main_guard(node):
-            found += [(node.lineno, later.lineno) for later in body[i + 1:]
-                      if _is_test_definition(later)]
+            found += [(node.lineno, later.lineno) for later in _definitions(body[i + 1:])]
             break
     return found
 
@@ -53,11 +63,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="a test file another open issue owns; name that issue beside it")
     args = parser.parse_args(argv)
     excluded = {Path(p) for p in args.exclude}
-    bad = 0
+    bad = scanned = 0
     for root in args.roots:
+        if not Path(root).is_dir():
+            print(f"[main-block] root {root!r} is not a directory; nothing checked", file=sys.stderr)
+            return 2
         for path in sorted(Path(root).rglob("test_*.py")):
             if path in excluded:
                 continue
+            scanned += 1
             for main_line, line in violations(path.read_text(encoding="utf-8")):
                 print(f"{path}:{line}: defined after the __main__ block at line {main_line}; "
                       "move the block to the end of the file (harmonic-forge#1072)")
@@ -65,7 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     if bad:
         print(f"[main-block] {bad} definition(s) after a __main__ block", file=sys.stderr)
         return 1
-    print("[main-block] ok: every test file's __main__ block is last")
+    if not scanned:
+        print("[main-block] no test_*.py found under the roots; nothing checked", file=sys.stderr)
+        return 2
+    print(f"[main-block] ok: every test file's __main__ block is last ({scanned} files)")
     return 0
 
 

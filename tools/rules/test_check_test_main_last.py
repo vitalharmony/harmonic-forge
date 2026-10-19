@@ -47,10 +47,36 @@ class MainBlockLastTests(unittest.TestCase):
             (Path(tmp) / "test_mid.py").write_text(END)
             self.assertEqual(check.main([tmp]), 0)
 
+    def test_reversed_and_compound_guards_are_recognized(self):
+        """Preclose pass 1: the guard is matched by what it names, not its shape."""
+        for guard in ('if "__main__" == __name__:', 'if __name__ == "__main__" and True:'):
+            src = f"{guard}\n    pass\nclass Late:\n    pass\n"
+            self.assertEqual(check.violations(src), [(1, 3)], guard)
+
+    def test_definition_inside_a_top_level_block_after_main_is_reported(self):
+        """Preclose pass 1 (cross-family): a class nested in if/try after the block."""
+        src = ('if __name__ == "__main__":\n    pass\n'
+               'if True:\n    class Late:\n        pass\n'
+               'try:\n    def test_x(): pass\nexcept Exception:\n    pass\n')
+        self.assertEqual(check.violations(src), [(1, 4), (1, 7)])
+
+    def test_method_inside_a_class_before_main_is_not_double_counted(self):
+        src = 'class A:\n    def test_a(self): pass\nif __name__ == "__main__":\n    pass\n'
+        self.assertEqual(check.violations(src), [])
+
+    def test_missing_root_or_nothing_scanned_fails(self):
+        """Preclose pass 1: scanning nothing is not 'ok'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(check.main([str(Path(tmp) / "nope")]), 2)
+            self.assertEqual(check.main([tmp]), 2)  # empty: no test_*.py
+            (Path(tmp) / "plain.py").write_text("x = 1\n")
+            self.assertEqual(check.main([str(Path(tmp) / "plain.py")]), 2)
+
     def test_exclude_skips_only_the_named_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             owned = Path(tmp) / "test_owned.py"
             owned.write_text(MID)
+            (Path(tmp) / "test_clean.py").write_text(END)
             self.assertEqual(check.main([tmp, "--exclude", str(owned)]), 0)
             (Path(tmp) / "test_other.py").write_text(MID)
             self.assertEqual(check.main([tmp, "--exclude", str(owned)]), 1)
