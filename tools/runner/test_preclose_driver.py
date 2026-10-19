@@ -230,6 +230,15 @@ class Driver(unittest.TestCase):
         self.assertEqual(self.logged("preclose"), [])
         self.assertEqual(self.logged("claude"), [])
 
+    def test_list_after_the_agents_closing_prose_is_parsed(self):
+        reply = ("/tmp/x/advisory-preclose-inspection-abc.md\n\n1 finding met the bar.\n\n"
+                 "> This is an adversarial pre-close check, not a Lane 3 gate.\n\n"
+                 '[{"anchor": "widget.py:2", "scenario": "returns [3] not [2]", "mechanism": "m"}]')
+        self.assertEqual(self.drive(FAKE_RESULT=reply), 0)
+        written = json.loads((self.tmp / "out" / "findings.json").read_text())
+        self.assertEqual(written[0]["scenario"], "returns [3] not [2]")
+        self.assertEqual(len(written), len(LENSES))
+
     def test_one_pass_held_still_runs(self):
         receipt = {"status": "complete", "reviewed_sha": "a" * 40,
                    "pass_history": [{"sha": "a" * 40, "surviving": 1, "epoch": 0}]}

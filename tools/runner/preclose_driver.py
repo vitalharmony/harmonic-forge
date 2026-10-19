@@ -149,15 +149,30 @@ def refuter_prompt(lens: str, criteria: str, diff: str) -> str:
             '[{"anchor": "path:line", "scenario": "...", "mechanism": "..."}], or [] for none.')
 
 
+def last_json_list(text: str) -> list | None:
+    """The outermost JSON list that ends last in `text`, or None. The
+    preclose-inspection agent writes its report to a file and closes with
+    prose, so the list is found in the reply, not required to be all of it
+    (operator ruling, harmonic-forge#1059). A list nested inside another, such
+    as a bracket in a scenario string, never wins over its container."""
+    decoder, best = json.JSONDecoder(), None
+    for start in (i for i, ch in enumerate(text) if ch == "["):
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            continue
+        if isinstance(value, list) and (best is None or end > best[1]
+                                        or (end == best[1] and start < best[0])):
+            best = (start, end, value)
+    return best[2] if best else None
+
+
 def parse_findings(text: str) -> list[dict]:
     """A refuter's reply as findings, or DriverError. Only the three fields are
     kept, so a refuter can never smuggle in a `dismissed` field (AC4)."""
-    try:
-        data = json.loads(text.strip())
-    except ValueError as exc:
-        raise DriverError(f"refuter output is not JSON: {exc}") from exc
-    if not isinstance(data, list):
-        raise DriverError("refuter output is not a JSON list")
+    data = last_json_list(text)
+    if data is None:
+        raise DriverError("refuter output holds no JSON list")
     out = []
     for item in data:
         if not isinstance(item, dict) or not all(
