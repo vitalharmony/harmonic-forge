@@ -57,7 +57,8 @@ resolution exits 3 (fail-closed); recover by resetting the local branch to
      the issue is `tooling-exception`).
   5  the pre-push hook refused the push. Never retried with `--no-verify`.
   6  CI-rendered visual baselines (harmonic-forge#1058, `_baseline_render`):
-     pushed, baselines pending -- any failure after push 1, or a
+     pushed, baselines pending (push 1 ends in a `Render-Pending:
+     undispatched` marker) -- any failure after push 1, or a
      `Render-Pending:` head on origin at entry (nothing done). Prints the
      pushed SHA, the run id if known and a manual-recovery recipe; a re-run
      does not resume. A rendered rebase prints `render-run=<id>` on exit 0.
@@ -103,9 +104,10 @@ class Exit(Exception):
 
 
 def git(cwd: str | Path, *args: str, check: bool = True,
-        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        env: dict[str, str] | None = None,
+        timeout: float | None = None) -> subprocess.CompletedProcess:
     proc = subprocess.run(["git", "-C", str(cwd), *args],
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, env=env, timeout=timeout)
     if check and proc.returncode:
         raise Exit(1, f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc
@@ -157,11 +159,12 @@ def regenerate_config(repo_dir: str) -> tuple[dict[str, str], str | None]:
     return dict(protocol.rebase_regenerate), protocol.rebase_provision_task
 
 
-def run_task(prep: Path, task: str) -> subprocess.CompletedProcess:
+def run_task(prep: Path, task: str,
+             timeout: float | None = None) -> subprocess.CompletedProcess:
     """One declared mise task in the prep worktree (`task` may carry args)."""
     try:
         return subprocess.run(["mise", "run", *shlex.split(task)], cwd=str(prep),
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, timeout=timeout)
     except (OSError, ValueError) as exc:
         # F1057 preclose: a task that cannot even launch is a failed task (exit 2).
         return subprocess.CompletedProcess(["mise", "run", task], 127, "", str(exc))
@@ -362,9 +365,9 @@ def prune_stale_prep(repo_dir: str, prep: Path) -> None:
     remove_prep(repo_dir, prep, force=True)
 
 
-def push(prep: Path, branch: str, old: str) -> None:
+def push(prep: Path, branch: str, old: str, timeout: float | None = None) -> None:
     proc = git(prep, "push", f"--force-with-lease={branch}:{old}", "origin",
-               f"HEAD:refs/heads/{branch}", check=False)
+               f"HEAD:refs/heads/{branch}", check=False, timeout=timeout)
     if proc.returncode == 0:
         return
     err = proc.stderr.strip()
@@ -624,6 +627,15 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
         # Order (F1057 pitch): regenerate and commit, then read `new`, then the
         # receipt, then push, so a crash receipt never names an unpushed SHA.
         new = rev(prep, "HEAD")
+        rendered = new
+        if rebaselined:
+            # harmonic-forge#1058 preclose 1: push 1 itself ends in an empty
+            # `Render-Pending: undispatched` marker, so origin's head is marked
+            # (F1066's readers refuse it, a re-run exits 6) from the first push.
+            git(prep, "commit", "-q", "--no-verify", "--allow-empty", "-m",
+                f"visual baselines pending render for {rendered} (lane1-rebase)\n\n"
+                f"{_gate_ci().RENDER_PENDING}: undispatched")
+            new = rev(prep, "HEAD")
         # sticky-wicket reforge F1034: record the crash state before it can
         # exist, so a re-run never has to infer it from history.
         # No receipt on the l2.done path: there is no PASS to carry.
@@ -633,7 +645,8 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
         render_run = None
         if rebaselined:  # harmonic-forge#1058: every failure from here is exit 6
             new, render_run = baseline_render.render(
-                sys.modules[__name__], repo_dir, issue, branch, prep, baselines, new, passed)
+                sys.modules[__name__], repo_dir, issue, branch, prep, baselines,
+                rendered, new, passed)
         return new, resolved, sorted(regenerated), render_run
     finally:
         remove_prep(repo_dir, prep)

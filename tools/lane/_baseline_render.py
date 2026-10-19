@@ -3,14 +3,16 @@
 A conflict in a path matching the target project's `[project.protocol]
 rebase_visual_baselines.glob` takes origin/main's side at every rebase stop
 (main's file, or absent when main has none). Only when such a conflict
-happened, after push 1 (the rebased branch, no trailer), one forward pass:
+happened, push 1 is the rebased commits plus an empty marker carrying
+`Render-Pending: undispatched` (lane1_rebase), then one forward pass:
 
   list the workflow's `workflow_dispatch` run ids -> `gh workflow run
-  <workflow> -f ref=<pushed sha>` -> the single NEW id is the render run
-  (zero or several: exit 6, no marker) -> an empty commit carrying
-  `Render-Pending: <run-id>` pushed within the lease -> a bounded wait (20
-  min) -> the run must have succeeded and carry `visual-baselines-<pushed
-  sha>` -> the fetch task runs with HEAD at the marker's parent -> the
+  <workflow> -f ref=<rendered>` (the rebased SHA, the marker's parent) -> the
+  single NEW id is the render run (zero or several: exit 6, head stays
+  `undispatched`) -> a second empty marker `Render-Pending: <run-id>` pushed
+  within the lease -> a wall-clock-bounded wait (20 min; every gh/git call
+  has a timeout) -> the run must have succeeded and carry
+  `visual-baselines-<rendered>` -> the fetch task runs with HEAD at `rendered` -> the
   fetched files are carried onto the marker, only declared paths committed
   (no trailer) -> pushed within the lease on the marker. Exit 0 then prints
   `render-run=<id>`.
@@ -35,10 +37,13 @@ import time
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-RENDER_TIMEOUT = 20 * 60  # seconds: the bounded wait
+RENDER_TIMEOUT = 20 * 60  # seconds: the wall-clock bound on the wait
+CALL_TIMEOUT = 120  # seconds: every gh/git call in the render path
+FETCH_TIMEOUT = 15 * 60  # seconds: the fetch task (downloads the artifact)
 POLL = 15
 FIND_ATTEMPTS = 8  # about two minutes for a dispatched run to be listed
 _sleep = time.sleep
+_clock = time.monotonic
 
 
 def config(lr, repo_dir: str) -> dict[str, str] | None:
@@ -82,7 +87,7 @@ def marker_of(lr, cwd, sha: str) -> str | None:
     """The `Render-Pending` run id on commit `sha`, read with gate_ci's own
     recognizer (harmonic-forge#1066), never a second parser."""
     gate_ci = lr._gate_ci()
-    message = lr.git(cwd, "log", "-1", "--format=%B", sha).stdout
+    message = lr.git(cwd, "log", "-1", "--format=%B", sha, timeout=CALL_TIMEOUT).stdout
     try:
         return gate_ci.render_pending_from_message(message)
     except gate_ci.RenderPendingUnreadable as exc:
@@ -93,7 +98,8 @@ def marker_of(lr, cwd, sha: str) -> str | None:
 # ---------------------------------------------------------------- gh calls
 
 def _gh(lr, *args: str) -> str:
-    proc = subprocess.run(["gh", *args], capture_output=True, text=True)
+    proc = subprocess.run(["gh", *args], capture_output=True, text=True,
+                          timeout=CALL_TIMEOUT)
     if proc.returncode:
         raise lr.Exit(1, f"gh {' '.join(args[:3])} failed: {proc.stderr.strip()[-500:]}")
     return proc.stdout
@@ -124,13 +130,16 @@ def run_artifacts(lr, slug: str, run_id: str) -> list[str]:
 
 
 def wait_run(lr, slug: str, run_id: str) -> dict | None:
-    """Poll until the run completes; None after RENDER_TIMEOUT."""
-    for _ in range(RENDER_TIMEOUT // POLL + 1):
+    """Poll until the run completes; None once RENDER_TIMEOUT of wall clock
+    has passed (a deadline, not an iteration count)."""
+    deadline = _clock() + RENDER_TIMEOUT
+    while True:
         run = read_run(lr, slug, run_id)
         if run.get("status") == "completed":
             return run
+        if _clock() >= deadline:
+            return None
         _sleep(POLL)
-    return None
 
 
 def find_new_run(lr, slug: str, workflow: str, before: set[str]) -> str:
@@ -147,7 +156,7 @@ def find_new_run(lr, slug: str, workflow: str, before: set[str]) -> str:
     if len(new) != 1:
         raise lr.Exit(6, f"{len(new)} new workflow_dispatch runs of {workflow} after the "
                          f"dispatch ({', '.join(sorted(new)) or 'none'}); cannot tell which "
-                         "renders this push; no marker pushed")
+                         "renders this push; head stays Render-Pending: undispatched")
     return next(iter(new))
 
 
@@ -157,11 +166,14 @@ def recovery(branch: str, pushed: str, rendered: str, run_id: str | None,
              cfg: dict[str, str] | None) -> str:
     """The fixed manual-recovery recipe every exit 6 prints."""
     workflow = cfg["workflow"] if cfg else "<render workflow>"
-    fetch = (cfg["fetch_task"].format(run_id=run_id or "<id>") if cfg
+    known = run_id not in (None, "undispatched")
+    fetch = (cfg["fetch_task"].format(run_id=run_id if known else "<id>") if cfg
              else "<fetch task> --run <id>")
+    start = ("wait for that run (or re-dispatch it: " if known
+             else "no render run was identified (marker `undispatched`); dispatch one ("
+             ) + f"`gh workflow run {workflow} -f ref={rendered}`)"
     return (f"origin/{branch} is at {pushed}; render run {run_id or 'none'}. "
-            "Recover by hand: wait for that run (or re-dispatch it: "
-            f"`gh workflow run {workflow} -f ref={rendered}`), then in a worktree at "
+            f"Recover by hand: {start}, then in a worktree at "
             f"{rendered[:12]} (the marker's parent) run `mise run {fetch}` "
             "(fetch_visual_baselines.py --run <id>), carry the files onto "
             f"origin/{branch}'s head, commit the declared baselines, and push with a "
@@ -180,26 +192,31 @@ def refuse_marked_head(lr, repo_dir: str, branch: str, head: str) -> None:
 
 
 def render(lr, repo_dir: str, issue: int, branch: str, prep: Path,
-           cfg: dict[str, str], rendered: str, passed: str | None) -> tuple[str, str]:
-    """From push 1 at `rendered` to a pushed baseline commit; returns (final
-    SHA, run id). The ONE handler: any failure in here is exit 6."""
-    state: dict[str, str | None] = {"pushed": rendered, "run_id": None}
+           cfg: dict[str, str], rendered: str, pushed: str,
+           passed: str | None) -> tuple[str, str]:
+    """From push 1 (`pushed`: the `undispatched` marker on `rendered`) to a
+    pushed baseline commit; returns (final SHA, run id). The ONE handler: any
+    failure in here, its own cleanup's included, is exit 6."""
+    state: dict[str, str | None] = {"pushed": pushed, "run_id": None}
     try:
         return _forward(lr, repo_dir, issue, branch, prep, cfg, rendered, passed, state)
     except BaseException as exc:  # noqa: BLE001 -- every failure after push 1 is exit 6
-        lr.git(prep, "reset", "-q", "--hard", check=False)
-        lr.git(prep, "clean", "-fdq", check=False)
         detail = (f"exit {exc.code}: {exc.message}" if isinstance(exc, lr.Exit)
                   else f"{type(exc).__name__}: {exc}")
+        for step in (("reset", "-q", "--hard"), ("clean", "-fdq")):
+            try:  # a cleanup failure is reported, never raised past here
+                lr.git(prep, *step, check=False, timeout=CALL_TIMEOUT)
+            except BaseException as cleanup:  # noqa: BLE001
+                detail += f"\n(cleanup git {step[0]} failed: {type(cleanup).__name__}: {cleanup})"
         raise lr.Exit(6, f"pushed, visual baselines pending; {detail}\n"
-                         + recovery(branch, state["pushed"], rendered, state["run_id"], cfg)
-                         ) from exc
+                         + recovery(branch, state["pushed"] or pushed, rendered,
+                                    state["run_id"], cfg)) from exc
 
 
 def _push(lr, repo_dir, issue, prep, branch, passed, lease, target, state) -> None:
     if passed:  # the Lane 3 PASS receipt is extended before every push (F1034)
         lr.write_receipt(repo_dir, issue, passed, lease, target)
-    lr.push(prep, branch, lease)
+    lr.push(prep, branch, lease, timeout=CALL_TIMEOUT)
     state["pushed"] = target
 
 
@@ -211,13 +228,14 @@ def _forward(lr, repo_dir, issue, branch, prep, cfg, rendered, passed, state):
     run_id = find_new_run(lr, slug, workflow, before)
     state["run_id"] = run_id
     trailer = lr._gate_ci().RENDER_PENDING
+    pending = state["pushed"]  # the `undispatched` marker push 1 left
     lr.git(prep, "commit", "-q", "--no-verify", "--allow-empty", "-m",
            f"visual baselines pending render run {run_id} for {rendered} (lane1-rebase)\n\n"
-           f"{trailer}: {run_id}")
-    marker = lr.rev(prep, "HEAD")
+           f"{trailer}: {run_id}", timeout=CALL_TIMEOUT)
+    marker = lr.git(prep, "rev-parse", "HEAD", timeout=CALL_TIMEOUT).stdout.strip()
     if marker_of(lr, prep, marker) != run_id:
         raise lr.Exit(6, f"the marker commit does not carry {trailer}: {run_id}")
-    _push(lr, repo_dir, issue, prep, branch, passed, rendered, marker, state)
+    _push(lr, repo_dir, issue, prep, branch, passed, pending, marker, state)
     run = wait_run(lr, slug, run_id)
     if run is None:
         raise lr.Exit(6, f"render run {run_id} did not complete within "
@@ -227,25 +245,27 @@ def _forward(lr, repo_dir, issue, branch, prep, cfg, rendered, passed, state):
     name = f"visual-baselines-{rendered}"
     if name not in run_artifacts(lr, slug, run_id):
         raise lr.Exit(6, f"render run {run_id} has no artifact {name}")
-    # The fetch checks HEAD against the rendered SHA: run it at the marker's parent.
-    lr.git(prep, "checkout", "-q", "--detach", rendered)
+    # The fetch checks HEAD against the rendered SHA: run it at `rendered`.
+    lr.git(prep, "checkout", "-q", "--detach", rendered, timeout=CALL_TIMEOUT)
     task = cfg["fetch_task"].format(run_id=run_id)
-    proc = lr.run_task(prep, task)
+    proc = lr.run_task(prep, task, timeout=FETCH_TIMEOUT)
     if proc.returncode:
         raise lr.Exit(6, f"fetch `mise run {task}` failed (exit {proc.returncode}):\n"
                          f"{(proc.stdout + proc.stderr).strip()[-2000:]}")
-    # The marker is empty, so the fetched working-tree changes carry across.
-    lr.git(prep, "checkout", "-q", "--detach", marker)
-    entries = lr.git(prep, "status", "--porcelain", "-z", "--untracked-files=all").stdout
+    # The markers are empty, so the fetched working-tree changes carry across.
+    lr.git(prep, "checkout", "-q", "--detach", marker, timeout=CALL_TIMEOUT)
+    entries = lr.git(prep, "status", "--porcelain", "-z", "--untracked-files=all",
+                     timeout=CALL_TIMEOUT).stdout
     paths = [entry[3:] for entry in entries.split("\0") if entry]
     stray = [path for path in paths if not is_baseline(path, cfg["glob"])]
     if stray:
         raise lr.Exit(6, "the fetch changed paths outside the declared baselines:\n"
                          + "\n".join(f"  {path}" for path in stray))
     if paths:
-        lr.git(prep, "add", "-A", "--", *paths)
+        lr.git(prep, "add", "-A", "--", *paths, timeout=CALL_TIMEOUT)
     lr.git(prep, "commit", "-q", "--no-verify", "--allow-empty", "-m",
-           f"visual baselines rendered by run {run_id} for {rendered} (lane1-rebase)")
-    final = lr.rev(prep, "HEAD")
+           f"visual baselines rendered by run {run_id} for {rendered} (lane1-rebase)",
+           timeout=CALL_TIMEOUT)
+    final = lr.git(prep, "rev-parse", "HEAD", timeout=CALL_TIMEOUT).stdout.strip()
     _push(lr, repo_dir, issue, prep, branch, passed, marker, final, state)
     return final, run_id

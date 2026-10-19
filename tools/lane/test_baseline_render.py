@@ -14,6 +14,8 @@ import _baseline_render as br  # noqa: E402
 import lane1_rebase  # noqa: E402
 import test_lane1_rebase as base  # noqa: E402
 
+real_wait_run = br.wait_run
+
 sh, BRANCH = base.sh, base.BRANCH
 PNG = "frontend/e2e/visual/overture-snapshots/overture-screens-linux.png"
 DEEP = "frontend/e2e/visual/sub/x-snapshots/a.png"
@@ -56,7 +58,10 @@ class RenderTests(base._Fixture):
         def artifacts(_lr, _slug, _run):
             return [self.artifact or f"visual-baselines-{self.dispatched[-1]}"]
 
-        def fetch(prep, task):
+        def fetch(prep, task, timeout=None):
+            # As hrse's real fetch: refuse unless HEAD is the rendered SHA.
+            if sh(prep, "rev-parse", "HEAD") != self.dispatched[-1]:
+                return subprocess.CompletedProcess([], 1, "", "HEAD is not the rendered SHA")
             self.fetches.append(task)
             Path(prep, PNG).write_text("rendered\n")
             if self.stray:
@@ -102,11 +107,11 @@ class RenderTests(base._Fixture):
         self.assertIn("Recover by hand", err)
         self.assertFalse(self.prep_left())
 
-    def assert_exit6_unmarked(self, code, err):
+    def assert_exit6_undispatched(self, code, err):
         self.assertEqual(code, 6, err)
         head = self.origin_branch()
-        self.assertIsNone(self.trailer(head))
-        self.assertEqual(self.dispatched, [head])
+        self.assertEqual(self.trailer(head), "undispatched")
+        self.assertEqual(self.dispatched, [sh(self.origin, "rev-parse", f"{head}^")])
         self.assertIn("Recover by hand", err)
         self.assertFalse(self.prep_left())
 
@@ -119,7 +124,8 @@ class RenderTests(base._Fixture):
         self.assertEqual(self.show(head), "rendered")
         self.assertIsNone(self.trailer(head))
         self.assertEqual(self.trailer(f"{head}^"), "R1")
-        self.assertEqual(self.dispatched, [sh(self.origin, "rev-parse", f"{head}^^")])
+        self.assertEqual(self.trailer(f"{head}^^"), "undispatched")
+        self.assertEqual(self.dispatched, [sh(self.origin, "rev-parse", f"{head}^^^")])
         self.assertEqual(self.push_spy.call_count, 3)
         self.assertEqual(self.fetches, ["visual-baselines-fetch --run R1"])
         self.assertIn("render-run=R1", out)
@@ -160,14 +166,14 @@ class RenderTests(base._Fixture):
         self.conflict()
         self.after = {"100", "R1", "R2"}
         code, _, err = self.run_captured()
-        self.assert_exit6_unmarked(code, err)
+        self.assert_exit6_undispatched(code, err)
         self.assertIn("2 new workflow_dispatch runs", err)
 
     def test_zero_new_run_ids_exit_6_no_marker(self):
         self.conflict()
         self.after = {"100"}
         code, _, err = self.run_captured()
-        self.assert_exit6_unmarked(code, err)
+        self.assert_exit6_undispatched(code, err)
         self.assertIn("0 new workflow_dispatch runs", err)
 
     def test_marker_push_lease_refused_exits_6(self):
@@ -185,6 +191,64 @@ class RenderTests(base._Fixture):
         self.assertEqual(code, 6, err)
         self.assertIn("push refused", err)
         self.assertIn("render run R1", err)
+
+    # Preclose 1: push 1 is already marked, so a failure before the run is
+    # identified leaves `Render-Pending: undispatched` and a re-run exits 6.
+    def test_dispatch_failure_leaves_undispatched_and_rerun_exits_6(self):
+        self.conflict()
+
+        def boom():
+            raise lane1_rebase.Exit(1, "gh workflow run failed: boom")
+        self.on_dispatch = boom
+        code, _, err = self.run_captured()
+        self.assert_exit6_undispatched(code, err)
+        self.assertIn("no render run was identified", err)
+        head = self.origin_branch()
+        self.on_dispatch = None
+        code, _, err = self.run_captured()
+        self.assertEqual(code, 6, err)
+        self.assertIn("Render-Pending: undispatched", err)
+        self.assertEqual(self.origin_branch(), head)
+
+    def test_timeout_after_push_1_exits_6(self):
+        self.conflict()
+
+        def stall():
+            raise subprocess.TimeoutExpired(["gh", "workflow", "run"], br.CALL_TIMEOUT)
+        self.on_dispatch = stall
+        code, _, err = self.run_captured()
+        self.assert_exit6_undispatched(code, err)
+        self.assertIn("TimeoutExpired", err)
+
+    def test_gh_calls_carry_a_timeout(self):
+        done = subprocess.CompletedProcess([], 0, "[]", "")
+        with mock.patch.object(br.subprocess, "run", return_value=done) as run:
+            br._gh(lane1_rebase, "api", "repos/o/r/actions/runs/1")
+        self.assertEqual(run.call_args.kwargs.get("timeout"), br.CALL_TIMEOUT)
+
+    def test_wait_is_bounded_by_wall_clock(self):
+        ticks = iter(range(0, 10**6, 600))  # each read of the clock: 10 minutes on
+        with mock.patch.object(br, "read_run", return_value={"status": "in_progress"}) as read, \
+             mock.patch.object(br, "_clock", side_effect=lambda: next(ticks)):
+            self.assertIsNone(real_wait_run(lane1_rebase, "o/r", "R1"))
+        self.assertLessEqual(read.call_count, br.RENDER_TIMEOUT // 600 + 1)
+
+    def test_cleanup_exception_in_handler_still_exits_6(self):
+        self.conflict()
+        self.conclusion = "failure"
+        real_git = lane1_rebase.git
+
+        def git(cwd, *args, **kw):
+            if args[:1] == ("reset",) and "--hard" in args:
+                raise OSError("cleanup boom")
+            return real_git(cwd, *args, **kw)
+        with mock.patch.object(lane1_rebase, "git", side_effect=git):
+            code, _, err = self.run_captured()
+        self.assertEqual(code, 6, err)
+        self.assertIn("cleanup git reset failed: OSError: cleanup boom", err)
+        self.assertIn("render run R1", err)
+        self.assertIn("Recover by hand", err)
+        self.assertEqual(self.trailer(self.origin_branch()), "R1")
 
     # Before any work: a marked head on origin is exit 6, nothing touched.
     def test_marked_head_on_entry_exits_6_touches_nothing(self):
