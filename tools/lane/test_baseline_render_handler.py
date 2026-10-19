@@ -49,6 +49,56 @@ class HandlerTests(RenderFixture):
         self.assertIn("Recover by hand", err)
         self.assertIn("prep removal failed: OSError: remove boom", err)
 
+    # harmonic-forge#1087: the prep cleanup's git calls carry CALL_TIMEOUT.
+    def _cleanup_git(self, raise_after_first_prune):
+        """Patch `git` so `worktree` calls record their kwargs and, once the
+        start-of-run stale prune has run, optionally time out."""
+        real_git, seen = lane1_rebase.git, {"prunes": 0, "calls": []}
+
+        def git(cwd, *args, **kw):
+            if args[:1] == ("worktree",) and args[1:2] in (("remove",), ("prune",)):
+                seen["calls"].append((args[1], kw.get("timeout")))
+                if raise_after_first_prune and seen["prunes"] >= 1:
+                    raise subprocess.TimeoutExpired(["git", *args], br.CALL_TIMEOUT)
+                if args[1] == "prune":
+                    seen["prunes"] += 1
+            return real_git(cwd, *args, **kw)
+        return git, seen
+
+    def test_cleanup_timeout_keeps_exit_6(self):
+        """AC2: exit 6 and its recovery text survive a cleanup timeout."""
+        self.conflict()
+        self.conclusion = "failure"
+        git, _ = self._cleanup_git(raise_after_first_prune=True)
+        with mock.patch.object(lane1_rebase, "git", side_effect=git):
+            code, _, err = self.run_captured()
+        self.assertEqual(code, 6, err)
+        self.assertIn("Recover by hand", err)
+        self.assertIn("prep removal failed: TimeoutExpired", err)
+
+    def test_cleanup_timeout_on_success_propagates(self):
+        """AC3: with no prior failure the cleanup TimeoutExpired propagates."""
+        self.conflict()
+        git, _ = self._cleanup_git(raise_after_first_prune=True)
+        with mock.patch.object(lane1_rebase, "git", side_effect=git), \
+             self.assertRaises(subprocess.TimeoutExpired):
+            self.run_captured()
+
+    def test_cleanup_git_calls_carry_call_timeout(self):
+        """AC1 (the kill test): both cleanup calls pass CALL_TIMEOUT, checked
+        separately, on a run where the prep worktree exists at cleanup."""
+        self.conflict()
+        git, seen = self._cleanup_git(raise_after_first_prune=False)
+        with mock.patch.object(lane1_rebase, "git", side_effect=git):
+            self.run_captured()
+        after_start = seen["calls"][1:]  # drop the start-of-run stale prune
+        removes = [t for name, t in after_start if name == "remove"]
+        prunes = [t for name, t in after_start if name == "prune"]
+        self.assertTrue(removes, seen["calls"])
+        self.assertTrue(prunes, seen["calls"])
+        self.assertEqual(set(removes), {br.CALL_TIMEOUT})
+        self.assertEqual(set(prunes), {br.CALL_TIMEOUT})
+
     # Survivor 2: push 1 is inside the handler.
     def test_push_1_timeout_exits_6_with_recovery(self):
         self.conflict()
