@@ -224,6 +224,7 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: `lane_state.py`'s, imported rather than restated -- a second regex is how
 #: two readers of one heading drift apart.
 import gate_ci  # noqa: E402
+import staleness_ff  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
     CallCounter,
@@ -2471,10 +2472,18 @@ def _check_git_staleness(
               "continuing (fail-open)", file=sys.stderr)
         return
     if behind > 0:
+        # harmonic-forge#1075: clean, on main, strictly behind -> fast-forward
+        # and re-exec (does not return); otherwise refuse, naming the state.
+        try:
+            reason = staleness_ff.fast_forward_or_reason(repo_root, head)
+        except (subprocess.SubprocessError, OSError) as exc:  # fail open, as above
+            print(f"[watch_lane_posts] fast-forward check failed ({exc}) -- "
+                  "continuing (fail-open)", file=sys.stderr)
+            return
         parser.error(
             f"~/harmonic-forge is {behind} commit(s) behind origin/main "
-            f"(HEAD={head[:12]}, origin/main={remote[:12]}) -- relaunch via "
-            "lane1/lane2/lane3 to pick up the pull (harmonic-forge#651)")
+            f"(HEAD={head[:12]}, origin/main={remote[:12]}) and {reason} -- "
+            "relaunch via lane1/lane2/lane3 to pick up the pull (harmonic-forge#651)")
 
 
 def _build_parser() -> argparse.ArgumentParser:
