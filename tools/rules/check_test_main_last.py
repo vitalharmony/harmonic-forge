@@ -6,8 +6,12 @@ whose main block sits part-way through runs only the tests above it and skips
 any `setUpModule` below it, and still reports OK on the partial suite.
 harmonic-forge#1070 found 98 of 321 tests silently dropped that way.
 
-Fails when any `test_*.py` under the given roots defines a class, a `test_*`
-function or `setUpModule` after its top-level main block, naming file and line.
+Rule (sticky-wicket REFORGE, issuecomment-6279769936): the first top-level
+statement that mentions `__name__` anywhere in it is the main block, and it
+must be the file's last top-level statement. Nothing about the guard's
+spelling or the later statements' kind is recognized, so no spelling (elif,
+nested, reversed, computed) and no block type escapes it. That is stricter than
+"no class, test function or setUpModule after it": any later statement fails.
 """
 from __future__ import annotations
 
@@ -17,43 +21,14 @@ import sys
 from pathlib import Path
 
 
-def _is_main_guard(node: ast.stmt) -> bool:
-    """Any top-level `if` whose test names `__name__` and the string
-    `"__main__"`, whatever the spelling: reversed, or joined with `and`."""
-    if not isinstance(node, ast.If):
-        return False
-    parts = list(ast.walk(node.test))
-    return (any(isinstance(p, ast.Name) and p.id == "__name__" for p in parts)
-            and any(isinstance(p, ast.Constant) and p.value == "__main__" for p in parts))
-
-
-def _is_test_definition(node: ast.stmt) -> bool:
-    if isinstance(node, ast.ClassDef):
-        return True
-    return (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and (node.name.startswith("test_") or node.name == "setUpModule"))
-
-
-def _definitions(nodes: list[ast.stmt]):
-    """Test definitions in `nodes`, including those inside top-level
-    if/try/with blocks, but never inside a class or function body."""
-    for node in nodes:
-        if _is_test_definition(node):
-            yield node
-        elif not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            for field in ("body", "orelse", "finalbody", "handlers"):
-                yield from _definitions(getattr(node, field, []) or [])
-
-
 def violations(source: str) -> list[tuple[int, int]]:
-    """(main-block line, offending definition line) for each definition after it."""
+    """(main-block line, next top-level statement's line), or [] when the
+    first statement naming `__name__` is the last one (or there is none)."""
     body = ast.parse(source).body
-    found = []
     for i, node in enumerate(body):
-        if _is_main_guard(node):
-            found += [(node.lineno, later.lineno) for later in _definitions(body[i + 1:])]
-            break
-    return found
+        if any(isinstance(n, ast.Name) and n.id == "__name__" for n in ast.walk(node)):
+            return [(node.lineno, body[i + 1].lineno)] if i + 1 < len(body) else []
+    return []
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,11 +48,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             scanned += 1
             for main_line, line in violations(path.read_text(encoding="utf-8")):
-                print(f"{path}:{line}: defined after the __main__ block at line {main_line}; "
+                print(f"{path}:{line}: code after the __main__ block at line {main_line}; "
                       "move the block to the end of the file (harmonic-forge#1072)")
                 bad += 1
     if bad:
-        print(f"[main-block] {bad} definition(s) after a __main__ block", file=sys.stderr)
+        print(f"[main-block] {bad} file(s) with code after the __main__ block", file=sys.stderr)
         return 1
     if not scanned:
         print("[main-block] no test_*.py found under the roots; nothing checked", file=sys.stderr)
