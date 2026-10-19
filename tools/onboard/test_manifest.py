@@ -630,10 +630,6 @@ class RebaseVisualBaselinesTests(unittest.TestCase):
             "fetch_task": "visual-baselines-fetch --run {run_id}"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SweepFallbackConsumerTests(unittest.TestCase):
     """`sweep_repos()` must have a real consumer, or AC3 is half done.
 
@@ -669,3 +665,7 @@ class SweepFallbackConsumerTests(unittest.TestCase):
             [sys.executable, str(script), "--help"],
             capture_output=True, text=True, timeout=30)
         self.assertIn("--manifest-repos", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

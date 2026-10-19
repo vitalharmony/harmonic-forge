@@ -130,10 +130,6 @@ class SharesOneDetector(unittest.TestCase):
         self.assertIs(probe.note_reload, cm.note_reload)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TheFastPathIsRealNotDecorative(unittest.TestCase):
     """The marker-exists check is a performance guard, not a correctness one
     — `note_reload` is update-only and would refuse anyway. Mutation testing
@@ -331,3 +327,7 @@ class DenyLogicIsNotDuplicated(unittest.TestCase):
         """It said so deliberately, and that stopped being true."""
         self.assertNotIn("It never blocks", probe.__doc__)
         self.assertIn("harmonic-forge#451", probe.__doc__)
+
+
+if __name__ == "__main__":
+    unittest.main()

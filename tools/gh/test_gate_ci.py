@@ -495,10 +495,6 @@ class RenderPendingTests(unittest.TestCase):
         self.assertEqual(gate_ci.render_pending_from_message(msg), "9")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class PrecloseRegressionTests(unittest.TestCase):
     """The twelve findings the harmonic-forge#504 panel raised against this
     diff, each with the test whose absence let it through."""
@@ -781,6 +777,10 @@ class ReadsActionsNotCheckRuns(unittest.TestCase):
     def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
         state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))
         self.assertEqual(state, "absent")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
 
 
 if __name__ == "__main__":

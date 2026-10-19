@@ -172,10 +172,6 @@ class RecordHookMain(Base):
             record_session_model.main()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LaunchModelTests(unittest.TestCase):
     """harmonic-forge#656 follow-up: SessionStart carries no model in 2.1.270."""
 
@@ -215,3 +211,7 @@ class LaunchModelTests(unittest.TestCase):
         with mock.patch.object(sm, "launch_model", return_value="opus"):
             from pathlib import Path as _P
             self.assertEqual(sm.current_model("", "/nonexistent", None, record_dir=_P(home), home=_P(home)), "opus")
+
+
+if __name__ == "__main__":
+    unittest.main()

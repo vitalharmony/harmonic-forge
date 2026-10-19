@@ -1035,10 +1035,6 @@ class MainSwitchesSlotPerRepoTests(unittest.TestCase):
         self.assertIsNone(rh._ENV, "main must leave no slot applied when it returns")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AuditUnboardedTests(unittest.TestCase):
     """hrse#979 — open issues invisible to board-driven reporting."""
 
@@ -1593,3 +1589,7 @@ class InertPhaseDependentsTests(unittest.TestCase):
             )
         self.assertTrue(any("/dependencies/blocking" in p for p in called),
                         "the dependency API must actually be consulted")
+
+
+if __name__ == "__main__":
+    unittest.main()

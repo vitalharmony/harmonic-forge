@@ -552,10 +552,6 @@ class RenderTests(unittest.TestCase):
         self.assertRegex(self.render([self.record("H1")]), r"\d+ analyzed fresh, \d+ from cache")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PipelineSectionPlacementTests(__import__("unittest").TestCase):
     """hrse#1477 — where the section is spliced, at the `render()` level."""
 
@@ -1909,3 +1905,7 @@ class StaleRenderTests(RenderTests):
             with self.subTest(key=key):
                 self.assertNotIn("|", label)
                 self.assertNotIn("]", label)
+
+
+if __name__ == "__main__":
+    unittest.main()

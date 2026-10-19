@@ -210,10 +210,6 @@ class EnvelopeParsingTests(unittest.TestCase):
         self.assertEqual([], list(m.iter_envelopes("not json at all")))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReservedMarkerInjectionTests(unittest.TestCase):
     """Found live by the cross-family reviewer on this module's own second
     invocation (harmonic-forge#598). `stderr` in a `process-error` envelope is
@@ -267,3 +263,7 @@ class ReservedMarkerInjectionTests(unittest.TestCase):
     def test_real_stderr_still_reaches_the_reader(self):
         self.assertIn("codex: command not found",
                       self._forged("codex: command not found"))
+
+
+if __name__ == "__main__":
+    unittest.main()

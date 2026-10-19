@@ -462,10 +462,6 @@ class DocResolvedMarkerTests(unittest.TestCase):
         self.assertIn(404, self._cuts(doc))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Phase4CutsSubjectSpan(unittest.TestCase):
     """hrse#917 phase 4 — the subject is the first ref in the BOLD TITLE."""
 
@@ -847,3 +843,7 @@ class ConfigRefusalTests(unittest.TestCase):
              patch("sys.stderr"):
             self.assertEqual(drift_check.main(), 2)
         closed.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

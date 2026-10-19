@@ -621,10 +621,6 @@ class HookContentTests(unittest.TestCase):
         self.assertIn("gone.py", check.detail)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SessionStartMatcherSemanticsTests(unittest.TestCase):
     """harmonic-forge#560 preclose. A matcher is a REGEX, not a pipe list.
 
@@ -1364,3 +1360,7 @@ class LaneTaskGeneratorTests(Base):
         block = lt.render()
         self.assertIn("HARMONIC_FORGE_ROOT", block)
         self.assertNotIn('python3 tools/worktree/', block)
+
+
+if __name__ == "__main__":
+    unittest.main()

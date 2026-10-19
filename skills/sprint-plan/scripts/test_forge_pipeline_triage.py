@@ -250,10 +250,6 @@ class NeverMutatesTests(__import__("unittest").TestCase):
         self.assertTrue(found, "guard failed to detect an appended mutating call")
 
 
-if __name__ == "__main__":
-    __import__("unittest").main()
-
-
 class SummarySectionTests(__import__("unittest").TestCase):
     """hrse#1477 — the sprint-summary emitter.
 
@@ -764,3 +760,7 @@ class RankerAndSummaryAgreeTests(__import__("unittest").TestCase):
         self.assertTrue(
             any(line.startswith("- forge#97") for line in lines),
             "forge#97 absent from the rendered section entirely")
+
+
+if __name__ == "__main__":
+    __import__("unittest").main()

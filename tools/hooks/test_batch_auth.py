@@ -854,10 +854,6 @@ class CrossAccountKeysTests(unittest.TestCase):
         self.assertIn("kenekted/kenekted-platform", ba._repo_prefixes("harmonicarchitect"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CrossRepoMergeArityTests(unittest.TestCase):
     """AC7/AC8 — a cross-repo issue needs one merge target per repo.
 
@@ -1996,3 +1992,7 @@ class MixedCaseRepoTests(unittest.TestCase):
                 match = ba._derived_merge_match(
                     "LeasePAL-ML/LeasePAL-App-Prototype", 3, state)
             self.assertIsNotNone(match)
+
+
+if __name__ == "__main__":
+    unittest.main()
