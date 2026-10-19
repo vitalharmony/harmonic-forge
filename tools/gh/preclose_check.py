@@ -49,6 +49,7 @@ import functools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1166,6 +1167,38 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
               file=sys.stderr)
 
 
+def _preclose_mode(args: argparse.Namespace) -> str:
+    """The mode `main()` dispatches to, so the preflight key matches it."""
+    if args.gate:
+        return "gate"
+    if args.post_verdict:
+        return "post-verdict"
+    if args.cluster_verdict:
+        return "cluster-verdict"
+    if args.complete:
+        return "complete"
+    return "plan+reforge" if args.reforge else "plan"
+
+
+def _preflight_force(args: argparse.Namespace, argv: list[str]) -> None:
+    """harmonic-forge#1076: a `--force` run needs the same repo, issue and mode
+    run without `--force` first in this session. That run is real, not a pure
+    dry run: if it succeeds it writes its receipts, and no `--force` is needed."""
+    import _preflight  # noqa: PLC0415
+    key = f"preclose:{args.repo.strip().lower()}#{args.issue}:{_preclose_mode(args)}"
+    if not args.force:
+        _preflight.record(key)
+        return
+    # argparse accepts any unambiguous prefix (`--forc`), so strip every one,
+    # or the suggested command would itself still be forced.
+    dry = " ".join(shlex.quote(a) for a in argv
+                   if not (a.startswith("--fo") and "--force".startswith(a)))
+    refusal = _preflight.require(key, f"python3 {Path(__file__).resolve()} {dry}")
+    if refusal:
+        raise SystemExit(f"preclose-check: {refusal}\n  That run is real: if it succeeds it "
+                         "records the pass, and no --force is needed.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plan an adversarial pre-close check for Tooling Exception work.",
@@ -1235,6 +1268,9 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    # harmonic-forge#1076: the preflight receipt is recorded (or required) only
+    # once main()'s own argument validation has passed, just before dispatch, so
+    # a no-force run this tool rejects never counts as the preflight.
     if (args.complete or args.gate or args.post_verdict or args.cluster_verdict) and (
             args.arm != "auto" or args.arm_reason or args.re_enroll):
         parser.error("--arm/--arm-reason belong to the plan: the pass records the arm the plan "
@@ -1245,6 +1281,7 @@ def main() -> None:
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")
+        _preflight_force(args, sys.argv[1:])
         sys.exit(gate(args))
     if args.post_verdict:
         if not (args.findings and args.envelope):
@@ -1255,11 +1292,14 @@ def main() -> None:
         if args.panel_tokens is not None or args.panel_ms is not None or args.cost_unavailable:
             parser.error("--post-verdict is one cross-family refuter, not a panel: it takes "
                          "--cross-family-ms only")
+        _preflight_force(args, sys.argv[1:])
         sys.exit(post_verdict(args))
     if args.cluster_verdict:
         if not args.comment_url:
             parser.error("--cluster-verdict needs --comment-url")
+        _preflight_force(args, sys.argv[1:])
         sys.exit(cluster_verdict(args))
+    _preflight_force(args, sys.argv[1:])
     sys.exit(complete(args) if args.complete else plan(args))
 
 

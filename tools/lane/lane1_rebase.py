@@ -750,8 +750,20 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None
 
 
 def main(argv: list[str]) -> int:
+    sys.path.insert(0, str(_GH))
+    import _preflight  # noqa: PLC0415 -- tools/gh, beside watch_lane_posts
+    # harmonic-forge#1076: --help is the preflight form, checked before the
+    # argument count so it can always run.
+    if {"-h", "--help"} & set(argv):
+        _preflight.record("lane1_rebase")
+        print(__doc__)
+        return 0
     if len(argv) != 3 or not argv[1].isdigit():
         print("usage: lane1-rebase <repo-dir> <issue> <branch>", file=sys.stderr)
+        return 1
+    refusal = _preflight.require("lane1_rebase", f"python3 {Path(__file__).resolve()} --help")
+    if refusal:
+        print(f"[lane1-rebase] {refusal}", file=sys.stderr)
         return 1
     try:
         new, resolved, regenerated, render_run = run(argv[0], int(argv[1]), argv[2])
