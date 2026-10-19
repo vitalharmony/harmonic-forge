@@ -56,6 +56,11 @@ resolution exits 3 (fail-closed); recover by resetting the local branch to
      Lane 3 PASS on the branch head, a Lane 3 gate is open on the old SHA, or
      the issue is `tooling-exception`).
   5  the pre-push hook refused the push. Never retried with `--no-verify`.
+  6  CI-rendered visual baselines (harmonic-forge#1058, `_baseline_render`):
+     pushed, baselines pending -- any failure after push 1, or a
+     `Render-Pending:` head on origin at entry (nothing done). Prints the
+     pushed SHA, the run id if known and a manual-recovery recipe; a re-run
+     does not resume. A rendered rebase prints `render-run=<id>` on exit 0.
 
 Safe to re-run: a stale prep worktree is pruned at start and the prep
 worktree is removed in a `finally`; if `origin/<branch>` already contains
@@ -80,6 +85,8 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+import _baseline_render as baseline_render
 
 _HERE = Path(__file__).resolve().parent
 _GH = _HERE.parent / "gh"
@@ -571,15 +578,18 @@ def _regenerate(prep: Path, declared: dict[str, str], provision: str | None,
 
 
 def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
-                    passed: str | None = None) -> tuple[str, str | None, list[str]]:
+                    passed: str | None = None) -> tuple[str, str | None, list[str], str | None]:
     prep = prep_path(repo_dir, issue)
     prune_stale_prep(repo_dir, prep)
     prep.parent.mkdir(parents=True, exist_ok=True)
     target, mains = version_target(repo_dir, old)
     declared, provision = regenerate_config(repo_dir)
+    baselines = baseline_render.config(sys.modules[__name__], repo_dir)
+    glob = baselines["glob"] if baselines else None
     git(repo_dir, "worktree", "add", "--detach", str(prep), old)
     resolved = None
     regenerated: list[str] = []
+    rebaselined = False
     try:
         try:
             proc = git(prep, "rebase", "origin/main", check=False)
@@ -590,13 +600,17 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
                 paths = git(prep, "diff", "--name-only", "--diff-filter=U",
                             check=False).stdout.split()
                 generated = [p for p in paths if p in declared]
-                rest = [p for p in paths if p not in declared]
+                pngs = [p for p in paths if p not in declared
+                        and baseline_render.is_baseline(p, glob)]
+                rest = [p for p in paths if p not in declared and p not in pngs]
                 why = _resolve_versions(prep, rest, target, mains) if rest or not paths else None
                 if why:
                     listed = "\n".join(f"  {p}" for p in paths) or "  (none reported)"
                     raise Exit(2, f"rebase of {branch} onto origin/main conflicts:\n"
                                   f"{listed}\n  ({why})")
                 _take_upstream(prep, generated)
+                baseline_render.take_baselines(sys.modules[__name__], prep, pngs)
+                rebaselined = rebaselined or bool(pngs)
                 regenerated += [p for p in generated if p not in regenerated]
                 if rest:
                     resolved = target
@@ -616,7 +630,11 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
         if passed:
             write_receipt(repo_dir, issue, passed, old, new)
         push(prep, branch, old)
-        return new, resolved, sorted(regenerated)
+        render_run = None
+        if rebaselined:  # harmonic-forge#1058: every failure from here is exit 6
+            new, render_run = baseline_render.render(
+                sys.modules[__name__], repo_dir, issue, branch, prep, baselines, new, passed)
+        return new, resolved, sorted(regenerated), render_run
     finally:
         remove_prep(repo_dir, prep)
 
@@ -665,7 +683,7 @@ def move_local_ref(repo_dir: str, branch: str, new: str,
                       f"origin is at {new}")
 
 
-def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str]]:
+def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str], str | None]:
     # preclose F1018-3: one run per issue at a time. The stale-prep busy check
     # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
     lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
@@ -678,22 +696,26 @@ def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[s
         return _run_locked(repo_dir, issue, branch)
 
 
-def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str]]:
+def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str], str | None]:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
     if not old or not main:
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
+    # harmonic-forge#1058: a marked head is exit 6 before any work.
+    baseline_render.refuse_marked_head(sys.modules[__name__], repo_dir, branch, old)
     passed = check_preconditions(repo_dir, issue, branch, old)
     if git(repo_dir, "merge-base", "--is-ancestor", main, old, check=False).returncode == 0:
-        new, resolved, regenerated = old, None, []  # already on current main (incl. a crash re-run)
+        new, resolved, regenerated, render_run = old, None, [], None  # already on current main (incl. a crash re-run)
     else:
-        new, resolved, regenerated = rebase_and_push(repo_dir, issue, branch, old, passed)
-    # harmonic-forge#1057: a regeneration commit, like a resolved version,
-    # makes the rebase non-patch-equivalent to the local branch.
-    move_local_ref(repo_dir, branch, new, old if (resolved or regenerated) else None)
+        new, resolved, regenerated, render_run = rebase_and_push(
+            repo_dir, issue, branch, old, passed)
+    # harmonic-forge#1057: a regeneration commit, like a resolved version or a
+    # rendered baseline (#1058), makes the rebase non-patch-equivalent to local.
+    move_local_ref(repo_dir, branch, new,
+                   old if (resolved or regenerated or render_run) else None)
     drop_receipt(repo_dir, issue)
-    return new, resolved, regenerated
+    return new, resolved, regenerated, render_run
 
 
 def main(argv: list[str]) -> int:
@@ -701,7 +723,7 @@ def main(argv: list[str]) -> int:
         print("usage: lane1-rebase <repo-dir> <issue> <branch>", file=sys.stderr)
         return 1
     try:
-        new, resolved, regenerated = run(argv[0], int(argv[1]), argv[2])
+        new, resolved, regenerated, render_run = run(argv[0], int(argv[1]), argv[2])
     except Exit as exc:
         print(f"[lane1-rebase] exit {exc.code}: {exc.message}", file=sys.stderr)
         return exc.code
@@ -710,6 +732,8 @@ def main(argv: list[str]) -> int:
         print(f"version-resolved={resolved}")
     if regenerated:
         print(f"regenerated={','.join(regenerated)}")
+    if render_run:
+        print(f"render-run={render_run}")
     return 0
 
 
