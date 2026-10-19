@@ -121,7 +121,8 @@ def rev(cwd: str | Path, ref: str) -> str | None:
 # ---------------------------------------------------------------- preconditions
 
 def repo_slug(repo_dir: str) -> str:
-    url = git(repo_dir, "remote", "get-url", "origin").stdout.strip()
+    url = git(repo_dir, "remote", "get-url", "origin",
+              timeout=baseline_render.CALL_TIMEOUT).stdout.strip()
     match = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url)
     if not match:
         raise Exit(1, f"cannot derive owner/repo from origin url {url!r}")
@@ -258,7 +259,8 @@ def _same_sha(a: str | None, b: str | None) -> bool:
 
 
 def receipt_path(repo_dir: str, issue: int) -> Path:
-    common = git(repo_dir, "rev-parse", "--git-common-dir").stdout.strip()
+    common = git(repo_dir, "rev-parse", "--git-common-dir",
+                 timeout=baseline_render.CALL_TIMEOUT).stdout.strip()
     base = Path(common) if Path(common).is_absolute() else Path(repo_dir) / common
     return base / f"lane1-rebase-{issue}.json"
 
@@ -373,7 +375,8 @@ def push(prep: Path, branch: str, old: str, timeout: float | None = None) -> Non
     err = proc.stderr.strip()
     if "[rejected]" in err or "stale info" in err:
         raise Exit(1, f"push refused (lease: origin/{branch} is no longer {old[:12]}):\n{err}")
-    hook = git(prep, "rev-parse", "--git-path", "hooks/pre-push", check=False).stdout.strip()
+    hook = git(prep, "rev-parse", "--git-path", "hooks/pre-push", check=False,
+               timeout=baseline_render.CALL_TIMEOUT).stdout.strip()
     hook_path = Path(hook) if Path(hook).is_absolute() else prep / hook
     if hook and os.access(hook_path, os.X_OK):
         raise Exit(5, f"pre-push hook refused the push (never --no-verify):\n{err}")
@@ -593,6 +596,7 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
     resolved = None
     regenerated: list[str] = []
     rebaselined = False
+    failure: BaseException | None = None
     try:
         try:
             proc = git(prep, "rebase", "origin/main", check=False)
@@ -641,15 +645,28 @@ def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
         # No receipt on the l2.done path: there is no PASS to carry.
         if passed:
             write_receipt(repo_dir, issue, passed, old, new)
-        push(prep, branch, old)
         render_run = None
-        if rebaselined:  # harmonic-forge#1058: every failure from here is exit 6
+        if rebaselined:  # harmonic-forge#1058: from push 1 on, one handler (exit 6)
             new, render_run = baseline_render.render(
                 sys.modules[__name__], repo_dir, issue, branch, prep, baselines,
-                rendered, new, passed)
+                rendered, new, passed, old)
+        else:
+            push(prep, branch, old)
         return new, resolved, sorted(regenerated), render_run
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
-        remove_prep(repo_dir, prep)
+        try:
+            remove_prep(repo_dir, prep)
+        except BaseException as cleanup:  # noqa: BLE001 -- never replaces a failure
+            if failure is None:
+                raise
+            note = f"(prep removal failed: {type(cleanup).__name__}: {cleanup})"
+            if isinstance(failure, Exit):
+                failure.message += f"\n{note}"
+            else:
+                print(note, file=sys.stderr)
 
 
 def move_local_ref(repo_dir: str, branch: str, new: str,

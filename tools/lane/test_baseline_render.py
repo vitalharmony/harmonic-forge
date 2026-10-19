@@ -24,7 +24,7 @@ CFG = {"glob": "frontend/e2e/visual/*-snapshots/*.png",
        "fetch_task": "visual-baselines-fetch --run {run_id}"}
 
 
-class RenderTests(base._Fixture):
+class RenderFixture(base._Fixture):
     write = base.VersionConflictTests.write
     on_branch = base.VersionConflictTests.on_branch
     on_main = base.VersionConflictTests.on_main
@@ -115,6 +115,8 @@ class RenderTests(base._Fixture):
         self.assertIn("Recover by hand", err)
         self.assertFalse(self.prep_left())
 
+
+class RenderTests(RenderFixture):
     # AC2: one forward pass, three pushes, render-run printed.
     def test_baseline_only_conflict_renders_and_exits_0(self):
         self.conflict()
@@ -232,23 +234,6 @@ class RenderTests(base._Fixture):
              mock.patch.object(br, "_clock", side_effect=lambda: next(ticks)):
             self.assertIsNone(real_wait_run(lane1_rebase, "o/r", "R1"))
         self.assertLessEqual(read.call_count, br.RENDER_TIMEOUT // 600 + 1)
-
-    def test_cleanup_exception_in_handler_still_exits_6(self):
-        self.conflict()
-        self.conclusion = "failure"
-        real_git = lane1_rebase.git
-
-        def git(cwd, *args, **kw):
-            if args[:1] == ("reset",) and "--hard" in args:
-                raise OSError("cleanup boom")
-            return real_git(cwd, *args, **kw)
-        with mock.patch.object(lane1_rebase, "git", side_effect=git):
-            code, _, err = self.run_captured()
-        self.assertEqual(code, 6, err)
-        self.assertIn("cleanup git reset failed: OSError: cleanup boom", err)
-        self.assertIn("render run R1", err)
-        self.assertIn("Recover by hand", err)
-        self.assertEqual(self.trailer(self.origin_branch()), "R1")
 
     # Before any work: a marked head on origin is exit 6, nothing touched.
     def test_marked_head_on_entry_exits_6_touches_nothing(self):

@@ -185,7 +185,10 @@ def refuse_marked_head(lr, repo_dir: str, branch: str, head: str) -> None:
     run_id = marker_of(lr, repo_dir, head)
     if run_id is None:
         return
-    rendered = lr.rev(repo_dir, f"{head}^") or "<marker parent>"
+    rendered = head  # first parents past every marker: the rendered commit
+    while rendered and marker_of(lr, repo_dir, rendered) is not None:
+        rendered = lr.rev(repo_dir, f"{rendered}^")
+    rendered = rendered or "<marker parent>"
     raise lr.Exit(6, f"origin/{branch} head {head[:12]} carries Render-Pending: {run_id}; "
                      "nothing done. " + recovery(branch, head, rendered, run_id,
                                                  config(lr, repo_dir)))
@@ -193,14 +196,25 @@ def refuse_marked_head(lr, repo_dir: str, branch: str, head: str) -> None:
 
 def render(lr, repo_dir: str, issue: int, branch: str, prep: Path,
            cfg: dict[str, str], rendered: str, pushed: str,
-           passed: str | None) -> tuple[str, str]:
-    """From push 1 (`pushed`: the `undispatched` marker on `rendered`) to a
-    pushed baseline commit; returns (final SHA, run id). The ONE handler: any
-    failure in here, its own cleanup's included, is exit 6."""
-    state: dict[str, str | None] = {"pushed": pushed, "run_id": None}
+           passed: str | None, old: str) -> tuple[str, str]:
+    """From push 1 (`pushed`: the `undispatched` marker on `rendered`, leased
+    on `old`) to a pushed baseline commit; returns (final SHA, run id). The ONE
+    handler: from push 1 on, any failure, its own cleanup's included, is exit
+    6 -- except a lease or hook refusal of push 1 (origin did not move: 1/5)."""
+    state: dict[str, str | None] = {"pushed": None, "run_id": None}
+    refused = None
     try:
+        try:
+            lr.push(prep, branch, old, timeout=CALL_TIMEOUT)
+        except lr.Exit as exc:
+            if exc.code == 5 or exc.message.startswith("push refused"):
+                refused = exc
+            raise
+        state["pushed"] = pushed
         return _forward(lr, repo_dir, issue, branch, prep, cfg, rendered, passed, state)
     except BaseException as exc:  # noqa: BLE001 -- every failure after push 1 is exit 6
+        if exc is refused:
+            raise
         detail = (f"exit {exc.code}: {exc.message}" if isinstance(exc, lr.Exit)
                   else f"{type(exc).__name__}: {exc}")
         for step in (("reset", "-q", "--hard"), ("clean", "-fdq")):
