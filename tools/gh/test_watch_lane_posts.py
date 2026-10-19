@@ -2313,16 +2313,56 @@ class GitStalenessTests(unittest.TestCase):
         self.assertEqual(self._run_git(["rev-parse", "refs/heads/main"], cwd=local),
                          main_before)
 
-    def test_git_timeout_in_fast_forward_fails_open(self):
-        """A git timeout or OSError in the fast-forward path fails open, as
-        the count phase does: no traceback, no refusal, no re-exec."""
+    def test_read_only_git_timeout_fails_open(self):
+        """A timeout in a read-only check, before any write, fails open as the
+        count phase does: no traceback, no refusal, no re-exec."""
+        real = watch_lane_posts.staleness_ff._git
+
+        def status_times_out(repo_root, *args):
+            if args[:1] == ("status",):
+                raise subprocess.TimeoutExpired(["git"], 15)
+            return real(repo_root, *args)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            with patch("staleness_ff._git", side_effect=status_times_out):
+                execv, caught, err = self._guard(local)
+            self.assertIsNone(caught)
+            execv.assert_not_called()
+            self.assertIn("fast-forward check failed", err)
+
+    def test_merge_timeout_or_oserror_refuses(self):
+        """Sticky-wicket PATCH (AC3): from merge --ff-only on the checkout may
+        have changed, so a timeout or OSError there refuses, never fails open."""
         for exc in (subprocess.TimeoutExpired(["git"], 15), OSError("boom")):
             with tempfile.TemporaryDirectory() as tmp:
                 local = self._init_repos(Path(tmp))
                 execv, caught, err = self._guard(local, merge=exc)
-                self.assertIsNone(caught)
+                self.assertIsNotNone(caught)
+                self.assertEqual(caught.code, 2)
+                self.assertIn("merge --ff-only failed or timed out", err)
                 execv.assert_not_called()
-                self.assertIn("fast-forward check failed", err)
+
+    def test_execv_failure_after_fast_forward_refuses(self):
+        """Sticky-wicket PATCH (AC1): a failed re-exec after a successful
+        fast-forward refuses, so the belt never runs pre-merge code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            fake_file = local / "tools" / "gh" / "watch_lane_posts.py"
+            with patch.object(watch_lane_posts, "__file__", str(fake_file)), \
+                 patch("staleness_ff.os.execv", side_effect=OSError("exec failed")), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err:
+                with self.assertRaises(SystemExit) as cm:
+                    watch_lane_posts._check_git_staleness(argparse.ArgumentParser())
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("fast-forwarded but re-exec failed", err.getvalue())
+
+    def test_refuses_naming_a_rebase_in_progress(self):
+        """AC4: a stopped rebase detaches HEAD; the refusal names the rebase."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            self._run_git(["checkout", "-q", "--detach"], cwd=local)
+            (local / ".git" / "rebase-merge").mkdir()
+            self._refuses(local, "rebase is in progress")
 
     def test_fast_forwards_and_reexecs_when_clean_on_main_and_behind(self):
         """harmonic-forge#1075 AC1 (flips the #651 refusal test)."""

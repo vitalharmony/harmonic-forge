@@ -42,7 +42,15 @@ def _reexec(repo_root: str, old: str) -> None:
 
 
 def fast_forward_or_reason(repo_root: str, head: str) -> str:
-    """Fast-forward and re-exec (never returns), or return why it refused."""
+    """Fast-forward and re-exec (never returns), or return why it refused.
+
+    The read-only checks may raise; the caller fails open on those. From
+    `merge --ff-only` on, the checkout may have changed, so an exception there
+    is a refusal, never a fail-open start on pre-merge code."""
+    # A rebase detaches HEAD, so this runs first to name it (AC4).
+    reason = _in_progress(repo_root)
+    if reason:
+        return reason
     if _git(repo_root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
         return "the tree is dirty"
     sym = _git(repo_root, "symbolic-ref", "-q", "HEAD")
@@ -50,15 +58,18 @@ def fast_forward_or_reason(repo_root: str, head: str) -> str:
         return "HEAD is detached"
     if sym.stdout.strip() != "refs/heads/main":
         return f"on {sym.stdout.strip()}, not refs/heads/main"
-    reason = _in_progress(repo_root)
-    if reason:
-        return reason
     if _git(repo_root, "merge-base", "--is-ancestor", "HEAD", "origin/main").returncode != 0:
         return "HEAD has diverged from origin/main"
-    code, msg = _merge_ff(repo_root)
-    if code != 0:
-        recount = _git(repo_root, "rev-list", "--count", "HEAD..origin/main")
-        if recount.returncode != 0 or recount.stdout.strip() != "0":
-            return f"merge --ff-only failed: {msg}"
-    _reexec(repo_root, head)
+    try:
+        code, msg = _merge_ff(repo_root)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return f"merge --ff-only failed or timed out: {exc} (check .git/index.lock)"
+    try:
+        if code != 0:
+            recount = _git(repo_root, "rev-list", "--count", "HEAD..origin/main")
+            if recount.returncode != 0 or recount.stdout.strip() != "0":
+                return f"merge --ff-only failed: {msg}"
+        _reexec(repo_root, head)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return f"fast-forwarded but re-exec failed: {exc}"
     return "re-exec returned"  # only reachable when os.execv is patched out
