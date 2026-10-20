@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A patch-identical rebase carries a Lane 3 PASS forward (harmonic-forge#1036).
+"""A rebase that is still the gated change carries a Lane 3 PASS forward (harmonic-forge#1036).
 
 A PASS covers only the SHA it names (R-0354). A branch that only needed a
 rebase onto a newer `main` used to go back through `ready-for-l3`, an AE, a
@@ -42,8 +42,8 @@ Lane 1 re-runs the checks immediately before `gh pr merge`:
 Exit codes: 0 every check holds; 1 a substantive refusal (the PASS does not
 cover the head: `ready-for-l3` and a fresh AE); 2 no carry-forward found or
 bad usage; 3 only CI-wait refusals; 4 the base moved -- `origin/main`
-advanced past the carried head while the branch's own code diff is still
-patch-identical to the gated one, so `lane1-rebase` then a new carry-forward,
+advanced past the carried head while the head is still the gated change
+(`preclose_passes.accepts`), so `lane1-rebase` then a new carry-forward,
 not `ready-for-l3`.
 
 The PASS comment must also be unedited by GitHub's own record: its REST
@@ -359,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     code, refusals = check(args.repo, args.issue, args.branch)
     if code == BASE_EXIT:
         print(f"[carry-forward] {args.repo}#{args.issue}: origin/main moved past origin/{args.branch}; "
-              "the code is still patch-identical -- run lane1-rebase, then post a new carry-forward "
+              "the head is still the gated change -- run lane1-rebase, then post a new carry-forward "
               "(not ready-for-l3):\n" + "\n".join(f"{n}. {r}" for n, r in enumerate(refusals, 1)),
               file=sys.stderr)
     elif code == 0:

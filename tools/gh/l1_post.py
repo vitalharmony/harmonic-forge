@@ -2835,7 +2835,7 @@ def main() -> None:
     parser.add_argument("--ae-file", type=Path, help="AE body file, --kind ae-and-sweep only")
     parser.add_argument("--sweep-file", type=Path, help="Sweep body file, --kind ae-and-sweep only")
     parser.add_argument("--spec-comment", type=int)
-    # harmonic-forge#1036: the PASS a patch-identical rebase carries forward.
+    # harmonic-forge#1036: the PASS a rebase of the gated change carries forward.
     parser.add_argument("--from-sha", default=None,
                         help="--kind carry-forward only: the SHA the Lane 3 PASS gated")
     parser.add_argument("--pass-comment", type=int, default=None,

@@ -108,8 +108,8 @@ matters:
     unless a carry-forward accepted by `l1_post.py` names the new head
     (harmonic-forge#1036) and `python3 tools/gh/_carry_forward.py check
     --repo R --issue N --branch B` exits 0 immediately before `gh pr merge`;
-    exit 4 means only `origin/main` moved and the code is still
-    patch-identical, so Lane 1 runs `lane1-rebase` and posts a new
+    exit 4 means only `origin/main` moved and the head is still
+    the gated change (`preclose_passes.accepts`), so Lane 1 runs `lane1-rebase` and posts a new
     carry-forward, not `ready-for-l3`; exit 3 is a CI wait; any other non-zero
     exit means the PASS does not cover the head, and the branch goes to Lane 3
     via `ready-for-l3`.
@@ -348,13 +348,13 @@ auto-AE or standing-grant AE, which needs a fresh one.
 When the issue's newest gate report is a PASS and `lane1-rebase` exits 0,
 post `--kind carry-forward` instead of `ready-for-l3`, in the same action
 (harmonic-forge#1036). A `pending` or `absent` CI refusal (exit 3) means wait
-in the background (R-0376) and re-post. Any substantive refusal (patch-id
-differs, non-PASS, a newer gate report, red CI, a missing or edited body hash)
+in the background (R-0376) and re-post. Any substantive refusal (not the
+gated change, non-PASS, a newer gate report, red CI, a missing or edited body hash)
 sends it to Lane 3 through `ready-for-l3` and a fresh AE. Immediately before
 `gh pr merge` on a branch whose PASS was carried forward, run
 `python3 tools/gh/_carry_forward.py check --repo R --issue N --branch B`.
-Exit 4 means `origin/main` moved past the carried head while the code is still
-patch-identical: run `lane1-rebase`, then post a new carry-forward, never
+Exit 4 means `origin/main` moved past the carried head while the head is still
+the gated change: run `lane1-rebase`, then post a new carry-forward, never
 `ready-for-l3`. Exit 3 is a CI wait. Any other non-zero exit means the PASS
 does not cover the head, and the branch goes to Lane 3 through `ready-for-l3`.
 <!-- /R-0390 -->
