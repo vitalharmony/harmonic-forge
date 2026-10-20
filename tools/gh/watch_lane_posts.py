@@ -1261,7 +1261,10 @@ def discover_queue(repo: str, lane: str,
             # "not a regression" -- true only while nothing diffed this
             # function's result against a previous cycle, which #596 changed.
             classified = _classify(comment.get("body", ""))
-            if classified is not None and not _is_l2_finding(*classified):
+            # F1099 preclose pass 2 survivor 2: a gate report is never skipped
+            # as a Lane 2 finding, whatever its footer kind says.
+            if classified is not None and (not _is_l2_finding(*classified)
+                                           or _is_gate_report(classified[1], comment.get("body", ""))):
                 last_kind = classified
                 last_body = comment.get("body", "")
                 last_id = comment.get("id")

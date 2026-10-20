@@ -2817,6 +2817,13 @@ class QueueCycleOwesTests(unittest.TestCase):
                 body = f"{hashes} Lane 3 Gate Results — H851\n\n**Verdict:** FAIL\n"
                 self.assertEqual(self._queue_l1([body]), {851: "gate-result owes=fail-review"})
 
+    def test_finding_footered_gate_report_still_queues_to_l1(self):
+        """F1099 preclose pass 2 survivor 2: a gate-report FAIL footered
+        kind=finding is not skipped as a Lane 2 finding."""
+        body = "## Lane 3 Gate Results — H851\n\n**Verdict:** FAIL\n\n"
+        self.assertEqual(self._queue_l1([body + _marker("finding", "LANE2")]),
+                         {851: "gate-result owes=fail-review"})
+
     def test_second_fail_renders_owes_sticky_wicket(self):
         """harmonic-forge#1099 AC2 (kill check 4): a sticky-owed FAIL renders
         `STICKY_OWES`, not `fail-review`."""
