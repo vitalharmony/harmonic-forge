@@ -1,0 +1,9 @@
+[Unit]
+Description=Harmonic Forge te-runner: phone alert when a run fails or aborts (harmonic-forge#1055)
+
+[Service]
+Type=oneshot
+# The ntfy topic lives in a file, never in this unit: NTFY_TOPIC_FILE names it.
+Environment=NTFY_TOPIC_FILE=%h/.local/share/te-runner/ntfy-topic
+# $$ passes a literal $ to the shell; systemd would expand a single $ itself.
+ExecStart=/bin/sh -c 'topic=$$(cat "$$NTFY_TOPIC_FILE") && curl -fsS -H "Title: te-runner failed" -d "forge-te-runner.service failed or aborted; see ~/Harmonic_Projects/logs/forge-te-runner.log" "https://ntfy.sh/$$topic"'

@@ -163,3 +163,13 @@ plus harmonic-forge#1042 (89): R-0384 names `imc_waiver.py end` as the IMC stop'
 and that R-0229 is then owed. It must fire at the IMC stop without being
 consulted, so it stays always-loaded; trimmed to one clause (from 354 bytes).
 """
+
+[[increase]]
+date = "2026-10-19"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 2804
+why = """
+Cumulative since the last baseline: 2783 (entry above) plus harmonic-forge#1094 (21):
+R-0115 and R-0408 name R-0415 beside R-0351 as a close exception. Both state a close
+absolute that must fire without being consulted, so the exception list stays inline.
+"""
