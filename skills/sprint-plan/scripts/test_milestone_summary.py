@@ -728,11 +728,12 @@ class LaneStateTests(unittest.TestCase):
         self.assertEqual(self.state(self.HANDOFF, self.READY),
                          (lane_state.AWAITING_GATE, None))
 
-    def test_fail_after_pass_routes_back_to_lane_2(self) -> None:
-        """TC4 -- an earlier PASS does not survive a later FAIL."""
+    def test_fail_after_pass_routes_to_lane_1(self) -> None:
+        """TC4 -- an earlier PASS does not survive a later FAIL, which is
+        Lane 1's to review (harmonic-forge#1099), with no operator trigger."""
         state, trigger = self.state(self.HANDOFF, self.L2D, self.PASS, self.FAIL)
-        self.assertEqual(trigger, "Fix H1")
-        self.assertIn("back to L2", state)
+        self.assertIsNone(trigger)
+        self.assertIn("Lane 1 owes the rework", state)
 
     def test_pass_after_fail_is_gated(self) -> None:
         """The mirror: the re-gate PASS is the newest marker, so it wins.
@@ -822,14 +823,15 @@ class LaneStateTests(unittest.TestCase):
         self.assertEqual(self.state(self.HANDOFF, self.REWORK, self.L2D),
                          (lane_state.AWAITING_GATE, None))
 
-    def test_rework_and_gate_fail_share_a_trigger_but_not_a_key(self) -> None:
-        """The Lane 1 decision on this issue's plan, asserted rather than
-        assumed: the operator types the same thing in both cases, and the
-        model still knows which of the two it is. A shared key would make the
-        row report the wrong reason on every row it got right."""
+    def test_rework_and_gate_fail_differ_in_trigger_and_key(self) -> None:
+        """harmonic-forge#1099: a rework is Lane 2's trigger (`Fix H1`); a
+        FAIL is Lane 1's to review and renders no operator trigger. A shared
+        key would make the row report the wrong reason on every row it got
+        right."""
         rework = self.full(self.HANDOFF, self.L2D, self.REWORK)
         fail = self.full(self.HANDOFF, self.L2D, self.FAIL)
-        self.assertEqual(rework.trigger, fail.trigger)
+        self.assertEqual(rework.trigger, "Fix H1")
+        self.assertIsNone(fail.trigger)
         self.assertNotEqual(rework.key, fail.key)
         self.assertEqual(rework.key, lane_state.KEY_REWORK)
 
@@ -1312,13 +1314,13 @@ class GatePhaseTests(unittest.TestCase):
         self.assertEqual((state.state, state.key),
                          (lane_state.EXECUTABLE, lane_state.KEY_EXECUTABLE))
 
-    def test_a_fail_still_routes_back_to_lane_2_before_the_refix_lands(self) -> None:
+    def test_a_fail_still_routes_to_lane_1_before_the_refix_lands(self) -> None:
         """The carry-forward must not swallow the FAIL itself. Between the
-        FAIL and Lane 2's re-post the row still says `Fix H1`."""
+        FAIL and Lane 1's rework the row still says `gate.fail`."""
         state = self.full(self.HANDOFF, self.READY, self.SPEC, self.AE,
                           self.SWEEP, self.FAIL)
         self.assertEqual((state.trigger, state.key),
-                         ("Fix H1", lane_state.KEY_GATE_FAIL))
+                         (None, lane_state.KEY_GATE_FAIL))
 
     def test_an_unauthorized_l2d_is_awaiting_gate_not_executable(self) -> None:
         """The mirror of the test above: without an AE/sweep pair beneath it,
@@ -1427,7 +1429,7 @@ class GatePhaseTests(unittest.TestCase):
         self.assertEqual(self.full(self.HANDOFF).state, "ready: Implement H1")
         self.assertEqual(self.full(LaneStateTests.PLAN_FIRST).state, "ready: Plan H1")
         self.assertEqual(self.full(self.HANDOFF, self.L2D, self.FAIL).state,
-                         "FAIL, back to L2 → Fix H1")
+                         "FAIL, Lane 1 owes the rework")
         self.assertEqual(self.full(self.HANDOFF, LaneStateTests.L2B).state,
                          "blocked: L2B, see thread")
 
@@ -1513,7 +1515,8 @@ class QuotedMarkerTests(unittest.TestCase):
     def test_the_real_hrse_1590_thread_is_not_gated(self) -> None:
         """The live symptom, as a fixture: handoff, then the evidence-quoting
         plan, then Lane 1's answer. Before the fix this classified as
-        `FAIL, back to L2 → Fix H1590`."""
+        `FAIL, back to L2 → Fix H1590` (since harmonic-forge#1099,
+        `FAIL, Lane 1 owes the rework`)."""
         record = {"key": "H1590", "fields": {"Tier": "deep"}, "deps": [],
                   "scope": [], "tooling": None,
                   "comments": [{"body": LaneStateTests.HANDOFF},

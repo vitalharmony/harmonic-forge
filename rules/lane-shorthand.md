@@ -153,8 +153,9 @@ the close comment). The three carve-outs above apply to operator chat only,
 and `NOW` remains the operator's interrupt; a belt event on **another** issue
 is not a carve-out. **A belt event on the issue the lane is working right now
 is read immediately, before the finish line.** It is not a new item: it amends
-the task in hand (a `rework` changes the spec being implemented; a FAIL
-`gate-result` changes what done means), so deferring it finishes the task on
+the task in hand (for Lane 2, a `rework` changes the spec being implemented;
+for Lane 1, a FAIL `gate-result` changes what done means, and never reaches
+Lane 2, R-0207), so deferring it finishes the task on
 the wrong premise. It is also the one case the belt never re-offers: the
 lane's own status post becomes the newest classified comment, so
 `queue_cycle` drops the issue and emits `left-queue-for-<lane>`.
