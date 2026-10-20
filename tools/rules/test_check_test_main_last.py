@@ -1,4 +1,7 @@
 """harmonic-forge#1072: the main-block-last check."""
+import contextlib
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -6,6 +9,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_test_main_last as check  # noqa: E402
+
+
+@contextlib.contextmanager
+def _cwd(path):
+    old = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old)
 
 MID = '''import unittest
 class A(unittest.TestCase):
@@ -71,6 +84,23 @@ class MainBlockLastTests(unittest.TestCase):
                       'try:\n    def test_x(): pass\nexcept Exception:\n    pass\n'):
             src = 'if __name__ == "__main__":\n    pass\n' + after
             self.assertEqual(check.violations(src), [(1, 3)], after)
+
+    def test_late_setupmodule_alone_fails(self):
+        """Reforge pass 2: setUpModule is named in the issue, so pin it alone."""
+        src = 'import unittest\nif __name__ == "__main__":\n    unittest.main()\ndef setUpModule(): pass\n'
+        self.assertEqual(check.violations(src), [(2, 4)])
+
+    def test_default_scans_every_tracked_test_file(self):
+        """Reforge pass 2: no roots means git ls-files, so scripts/ is covered."""
+        with tempfile.TemporaryDirectory() as tmp, _cwd(tmp):
+            subprocess.run(["git", "init", "-q"], check=True)
+            Path("scripts").mkdir()
+            Path("scripts/test_late.py").write_text(MID)
+            Path("scripts/test_untracked.py").write_text(MID)
+            subprocess.run(["git", "add", "scripts/test_late.py"], check=True)
+            self.assertEqual(check.main([]), 1)
+            subprocess.run(["git", "rm", "-q", "--cached", "scripts/test_late.py"], check=True)
+            self.assertEqual(check.main([]), 2)  # nothing tracked: nothing checked
 
     def test_main_fails_on_a_mid_file_fixture_and_passes_at_end(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,26 +41,43 @@ def violations(source: str) -> list[tuple[int, int]]:
     return []
 
 
+def _tracked_test_files() -> list[Path]:
+    """Every tracked test_*.py in the repo (preclose reforge pass 2: a fixed
+    root list missed scripts/). Raises when git cannot list them."""
+    out = subprocess.run(["git", "ls-files", "-z", "--", "*test_*.py"], check=True,
+                         capture_output=True, text=True, timeout=30).stdout
+    return sorted(Path(p) for p in out.split("\0") if p and Path(p).name.startswith("test_"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("roots", nargs="*", default=["tools", "skills"])
+    parser.add_argument("roots", nargs="*",
+                        help="directories to scan; default: every tracked test_*.py in the repo")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATH",
                         help="a test file another open issue owns; name that issue beside it")
     args = parser.parse_args(argv)
     excluded = {Path(p) for p in args.exclude}
-    bad = scanned = 0
+    paths: list[Path] = []
+    if not args.roots:
+        try:
+            paths = _tracked_test_files()
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"[main-block] cannot list tracked test files ({exc}); nothing checked", file=sys.stderr)
+            return 2
     for root in args.roots:
         if not Path(root).is_dir():
             print(f"[main-block] root {root!r} is not a directory; nothing checked", file=sys.stderr)
             return 2
-        for path in sorted(Path(root).rglob("test_*.py")):
-            if path in excluded:
-                continue
-            scanned += 1
-            for main_line, line in violations(path.read_text(encoding="utf-8")):
-                print(f"{path}:{line}: code after the __main__ block at line {main_line}; "
-                      "move the block to the end of the file (harmonic-forge#1072)")
-                bad += 1
+        paths.extend(sorted(Path(root).rglob("test_*.py")))
+    bad = scanned = 0
+    for path in paths:
+        if path in excluded:
+            continue
+        scanned += 1
+        for main_line, line in violations(path.read_text(encoding="utf-8")):
+            print(f"{path}:{line}: code after the __main__ block at line {main_line}; "
+                  "move the block to the end of the file (harmonic-forge#1072)")
+            bad += 1
     if bad:
         print(f"[main-block] {bad} file(s) with code after the __main__ block", file=sys.stderr)
         return 1
