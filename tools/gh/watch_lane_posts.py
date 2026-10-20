@@ -820,7 +820,10 @@ def _classify(body: str) -> tuple[str, str] | None:
     headline = _mark_retired_tokens(body.strip().split("\n", 1)[0])
     if _L2_HEADING_RE.match(headline):
         return "l2", headline
-    if _L3_HEADING_RE.match(headline):
+    if _L3_HEADING_RE.match(headline) or _GATE_RESULT_HEADING.match(headline):
+        # harmonic-forge#1099 (preclose survivor 3): any heading level
+        # `_is_gate_report` accepts is a Lane 3 post, so a markerless FAIL
+        # under `#`, `###` or `####` reaches Lane 1 too.
         return "l3", headline
     return None
 
@@ -1288,6 +1291,12 @@ def discover_queue(repo: str, lane: str,
         if kind == "gate-result" and not _gate_result_owes_review(last_body):
             # harmonic-forge#851 AC1.6: a PASS or BLOCKED owes no review; Lane 1
             # owes the close or the unblock, which its own belt does not queue.
+            # An uncovered sticky-wicket trigger still does (F1099 preclose
+            # survivor 1: a BLOCKED newest after a FAIL must not drop it).
+            if sticky:
+                queued[issue] = f"gate-result owes={STICKY_OWES}"
+                if marker_ids is not None:
+                    marker_ids[issue] = newest_id
             continue
         owes = (STICKY_OWES if kind == "gate-result" and sticky
                 else _queue_owes(lane, kind, last_body))
@@ -1750,6 +1759,10 @@ def comment_watch_cycle(
             if classified is None:
                 continue
             lane, detail = classified
+            # harmonic-forge#1099 (preclose survivor 2): a gate report is never
+            # Lane 2's news, whatever its footer's kind or posted-by says.
+            if self_lane == "l2" and _is_gate_report(detail, comment.get("body", "")):
+                continue
             # One predicate (sticky-wicket PATCH, epoch 2; harmonic-forge#1099):
             # a gate result that owes Lane 1 a review is its news whoever posted
             # it, so neither the poster-lane watch filter nor the ownership

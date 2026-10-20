@@ -2588,6 +2588,15 @@ class CommentWatchOwnershipTests(unittest.TestCase):
         markerless = "## Lane 3 Gate Results — H851 — FAIL\n\n**Verdict:** FAIL\n"
         self.assertEqual(self._emitted([markerless], "l2", {"l1"}), [])
 
+    def test_l2_comment_watch_drops_a_discussion_footered_gate_report(self):
+        """F1099 preclose survivor 2: a gate report footered kind=discussion,
+        from LANE1 or LANE-unset, is not Lane 2's news either."""
+        for poster in ("LANE1", "LANE-unset"):
+            with self.subTest(poster=poster):
+                self.seen = SeenSet(Path(self.tmp.name) / f"seen-d-{poster}.tsv")
+                fail = self.FAIL_HEAD + _marker("discussion", poster)
+                self.assertEqual(self._emitted([fail], "l2", {"l1"}), [])
+
     def test_l1_comment_watch_prints_a_lane_unset_fail(self):
         """harmonic-forge#1099 AC2 (kill check 2b): Lane 1's belt watches only
         l2 and l3, so a FAIL stamped LANE-unset (lane `l1`) reaches it only
@@ -2789,6 +2798,24 @@ class QueueCycleOwesTests(unittest.TestCase):
                         self.assertEqual(
                             self._queue([body + _marker("gate-result", "LANE3")], lane), {})
         self.assertEqual(self._queue_l1([self.PASS + _marker("gate-result", "LANE3")]), {})
+
+    def test_blocked_newest_keeps_an_owed_sticky_wicket(self):
+        """F1099 preclose survivor 1: a PASS or BLOCKED newest does not drop an
+        uncovered sticky-wicket trigger from Lane 1's queue."""
+        for verdict in ("PASS", "BLOCKED"):
+            with self.subTest(verdict=verdict):
+                body = f"## Lane 3 Gate Results — H851\n\n**Verdict:** {verdict}\n\n"
+                self.assertEqual(
+                    self._queue_l1([body + _marker("gate-result", "LANE3")], sticky=True),
+                    {851: f"gate-result owes={watch_lane_posts.STICKY_OWES}"})
+
+    def test_markerless_fail_at_any_heading_level_queues_to_l1(self):
+        """F1099 preclose survivor 3: every heading level `_is_gate_report`
+        accepts classifies as a Lane 3 post, so the FAIL reaches Lane 1."""
+        for hashes in ("#", "###", "####"):
+            with self.subTest(hashes=hashes):
+                body = f"{hashes} Lane 3 Gate Results — H851\n\n**Verdict:** FAIL\n"
+                self.assertEqual(self._queue_l1([body]), {851: "gate-result owes=fail-review"})
 
     def test_second_fail_renders_owes_sticky_wicket(self):
         """harmonic-forge#1099 AC2 (kill check 4): a sticky-owed FAIL renders
@@ -3324,11 +3351,10 @@ class FailChannelAgreementTests(unittest.TestCase):
             with self.subTest(poster=poster, footer=footer, heading=heading,
                               verdict=verdict, labels=labels):
                 self.assertFalse(self._queued(body, labels, "l2"))
-                if not (footer == "discussion" and poster != "LANE3"):
-                    # A Lane 1 `discussion` is always Lane 2's news on the
-                    # comment watch (a Plan-First ratification), whatever its
-                    # body says -- the one named exception.
-                    self.assertFalse(self._emitted(body, labels, "l2"))
+                # F1099 preclose survivor 2: no exception -- a gate report is
+                # never Lane 2's news, whatever its footer kind or poster (a
+                # Plan-First ratification `discussion` is not a gate report).
+                self.assertFalse(self._emitted(body, labels, "l2"))
                 if self._queued(body, labels, "l1"):
                     self.assertTrue(self._emitted(body, labels, "l1"))
                     checked += 1
