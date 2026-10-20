@@ -2574,36 +2574,50 @@ class CommentWatchOwnershipTests(unittest.TestCase):
                   pass_body + _marker("gate-result", "LANE-unset")]
         self.assertEqual(self._emitted(bodies, "l2", {"l1"}), [])
 
-    def test_lane2_belt_hears_a_misattributed_fail_before_a_later_discussion(self):
-        """Reforge ruling, fix 1: a FAIL stamped LANE-unset, followed by an
-        ordinary Lane 1 discussion, still reaches Lane 2 on the comment watch.
-        The queue alone loses it, because its newest marker is the discussion."""
-        fail = ("## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
-                + _marker("gate-result", "LANE-unset"))
-        self.assertEqual(self._emitted([fail, _marker("discussion")], "l2", {"l1"}),
-                         ["gate-result", "discussion"])
+    FAIL_HEAD = "## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
 
-    def test_lane2_belt_hears_a_fail_from_every_poster_before_a_later_discussion(self):
-        """Sticky-wicket PATCH (epoch 2): the invariant is "whoever posted it",
-        so drive every poster, including LANE3 (lane l3, which Lane 2's
-        --watch l1 belt does not watch) and a markerless report."""
-        head = "## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
+    def test_l2_comment_watch_drops_a_fail_gate_result(self):
+        """harmonic-forge#1099 AC1 (kill check 2): Lane 2 takes work only from
+        Lane 1, so no FAIL reaches Lane 2's comment watch, whoever posted it,
+        marked or markerless."""
         for poster in ("LANE1", "LANE-unset", "LANE3"):
             with self.subTest(poster=poster):
-                fail = head + _marker("gate-result", poster)
-                self.assertEqual(self._emitted([fail, _marker("discussion")], "l2", {"l1"}),
-                                 ["gate-result", "discussion"])
+                self.seen = SeenSet(Path(self.tmp.name) / f"seen-{poster}.tsv")
+                fail = self.FAIL_HEAD + _marker("gate-result", poster)
+                self.assertEqual(self._emitted([fail], "l2", {"l1"}), [])
         markerless = "## Lane 3 Gate Results — H851 — FAIL\n\n**Verdict:** FAIL\n"
-        # `_emitted` keeps the text after the last " — ", so the markerless
-        # heading "## Lane 3 Gate Results — H851 — FAIL" reads back as "FAIL".
-        self.assertEqual(self._emitted([markerless], "l2", {"l1"}), ["FAIL"])
+        self.assertEqual(self._emitted([markerless], "l2", {"l1"}), [])
+
+    def test_l1_comment_watch_prints_a_lane_unset_fail(self):
+        """harmonic-forge#1099 AC2 (kill check 2b): Lane 1's belt watches only
+        l2 and l3, so a FAIL stamped LANE-unset (lane `l1`) reaches it only
+        through `_fail_owed_to_l1` -- and still does after a later discussion,
+        which would hide it from the newest-marker-wins queue."""
+        fail = self.FAIL_HEAD + _marker("gate-result", "LANE-unset")
+        self.assertEqual(self._emitted([fail, _marker("discussion")], "l1", {"l2", "l3"}),
+                         ["gate-result"])
+
+    def test_l1_comment_watch_prints_a_fail_from_every_poster(self):
+        head = self.FAIL_HEAD
+        for poster in ("LANE1", "LANE-unset", "LANE3"):
+            with self.subTest(poster=poster):
+                self.seen = SeenSet(Path(self.tmp.name) / f"seen-{poster}.tsv")
+                fail = head + _marker("gate-result", poster)
+                self.assertEqual(self._emitted([fail], "l1", {"l2", "l3"}), ["gate-result"])
+
+    def test_l1_comment_watch_drops_a_lane1_stamped_pass(self):
+        """A PASS owes no review, so a LANE1-stamped one stays filtered by the
+        poster-lane watch (Lane 1 never hears itself)."""
+        pass_body = "## Lane 3 Gate Results — H1 — PASS\n\n**Verdict:** PASS\n\n"
+        self.assertEqual(
+            self._emitted([pass_body + _marker("gate-result", "LANE1")], "l1", {"l2", "l3"}), [])
 
     def test_lane2_belt_still_ignores_lane3_pass_and_ae(self):
         pass_body = "## Lane 3 Gate Results — H1 — PASS\n\n**Verdict:** PASS\n\n"
         bodies = [pass_body + _marker("gate-result", "LANE3"), _marker("ae", "LANE3")]
         self.assertEqual(self._emitted(bodies, "l2", {"l1"}), [])
 
-    def test_lane3_belt_never_hears_a_fail_meant_for_lane2(self):
+    def test_lane3_belt_never_hears_a_fail(self):
         fail = ("## Lane 3 Gate Results — H1 — FAIL\n\n**Verdict:** FAIL\n\n"
                 + _marker("gate-result", "LANE-unset"))
         self.assertEqual(self._emitted([fail], "l3", {"l1"}), [])
@@ -2715,47 +2729,81 @@ class QueueCycleOwesTests(unittest.TestCase):
     def test_rework_owes_fix(self):
         self.assertEqual(self._queue([_marker("rework")], "l2"), {851: "rework owes=fix"})
 
-    def test_fail_gate_result_queues_to_l2_owes_fix(self):
-        self.assertEqual(self._queue([self.FAIL + _marker("gate-result", "LANE1")], "l2"),
-                         {851: "gate-result owes=fix"})
+    def _queue_l1(self, bodies, sticky=False):
+        with patch("watch_lane_posts._sticky_wicket_owed", return_value=sticky):
+            return self._queue(bodies, "l1")
 
-    def test_fail_gate_result_queues_to_l2_from_lane3_poster(self):
-        for poster in ("LANE3", "LANE-unset"):
+    def test_fail_from_lane3_does_not_queue_to_l2(self):
+        """harmonic-forge#1099 AC1 (kill check 1): a gate result of any verdict
+        is never Lane 2's trigger, whoever posted it."""
+        for poster in ("LANE3", "LANE1", "LANE-unset"):
             with self.subTest(poster=poster):
                 self.assertEqual(
-                    self._queue([self.FAIL + _marker("gate-result", poster)], "l2"),
-                    {851: "gate-result owes=fix"})
+                    self._queue([self.FAIL + _marker("gate-result", poster)], "l2"), {})
+        self.assertEqual(self._queue(["## Lane 3 Gate Results — FAIL\n\nTC2 failed."], "l2"), {})
+        self.assertNotIn("gate-result", watch_lane_posts.QUEUE_KINDS["l2"])
+        self.assertNotIn("gate-result", watch_lane_posts.OWES["l2"])
+        self.assertNotIn("l2", watch_lane_posts.QUEUE_ANY_POSTER_KINDS)
 
-    def test_fail_shapes_the_poster_accepts_all_queue_to_l2(self):
+    def test_fail_from_lane3_queues_to_l1_owes_fail_review(self):
+        """harmonic-forge#1099 AC2 (kill check 3)."""
+        self.assertEqual(self._queue_l1([self.FAIL + _marker("gate-result", "LANE3")]),
+                         {851: "gate-result owes=fail-review"})
+
+    def test_fail_from_lane_unset_and_lane1_queues_to_l1(self):
+        """harmonic-forge#1099 AC2 (kill check 3): any poster, through
+        `QUEUE_ANY_POSTER_KINDS["l1"]` -- a LANE1 stamp is not in
+        `QUEUE_POSTERS["l1"]`."""
+        for poster in ("LANE-unset", "LANE1"):
+            with self.subTest(poster=poster):
+                self.assertEqual(
+                    self._queue_l1([self.FAIL + _marker("gate-result", poster)]),
+                    {851: "gate-result owes=fail-review"})
+
+    def test_fail_shapes_the_poster_accepts_all_queue_to_l1(self):
         """Preclose pass 1 survivor 1: the verdict is read the way gate_ci reads
         it -- heading OR lead block -- and any heading level the poster takes."""
         shapes = {
             "lead-block verdict": "## Lane 3 Gate Results — H851\n\n**Verdict:** FAIL\n**Finding:** x\n\n",
             "### heading": "### Lane 3 Gate Results — FAIL\n\nTC2 failed.\n\n",
+            "unreadable verdict": "## Lane 3 Gate Results — H851\n\nNo verdict stated anywhere.\n\n",
         }
         for name, body in shapes.items():
             with self.subTest(shape=name):
-                self.assertEqual(self._queue([body + _marker("gate-result", "LANE3")], "l2"),
-                                 {851: "gate-result owes=fix"})
+                self.assertEqual(self._queue_l1([body + _marker("gate-result", "LANE3")]),
+                                 {851: "gate-result owes=fail-review"})
 
-    def test_markerless_fail_gate_result_queues_to_l2(self):
+    def test_markerless_fail_gate_result_queues_to_l1(self):
         """Most of the historical corpus carries no kind footer."""
-        self.assertEqual(self._queue(["## Lane 3 Gate Results — FAIL\n\nTC2 failed."], "l2"),
-                         {851: "gate-result owes=fix"})
+        self.assertEqual(self._queue_l1(["## Lane 3 Gate Results — FAIL\n\nTC2 failed."]),
+                         {851: "gate-result owes=fail-review"})
 
-    def test_unreadable_verdict_queues_rather_than_drops(self):
-        body = "## Lane 3 Gate Results — H851\n\nNo verdict stated anywhere.\n\n"
-        self.assertEqual(self._queue([body + _marker("gate-result", "LANE3")], "l2"),
-                         {851: "gate-result owes=fix"})
-
-    def test_lead_block_pass_and_blocked_do_not_queue_to_l2(self):
+    def test_pass_queues_to_no_lane(self):
+        """harmonic-forge#1099 AC2 (kill check 6): a PASS or BLOCKED owes no
+        review; Lane 1 owes the close or the unblock, which is not queued."""
         for verdict in ("PASS", "BLOCKED"):
-            with self.subTest(verdict=verdict):
-                body = f"## Lane 3 Gate Results — H851\n\n**Verdict:** {verdict}\n\n"
-                self.assertEqual(self._queue([body + _marker("gate-result", "LANE3")], "l2"), {})
+            body = f"## Lane 3 Gate Results — H851\n\n**Verdict:** {verdict}\n\n"
+            for lane in ("l1", "l2", "l3"):
+                with self.subTest(verdict=verdict, lane=lane):
+                    with patch("watch_lane_posts._sticky_wicket_owed", return_value=False):
+                        self.assertEqual(
+                            self._queue([body + _marker("gate-result", "LANE3")], lane), {})
+        self.assertEqual(self._queue_l1([self.PASS + _marker("gate-result", "LANE3")]), {})
 
-    def test_pass_gate_result_does_not_queue_to_l2(self):
-        self.assertEqual(self._queue([self.PASS + _marker("gate-result", "LANE3")], "l2"), {})
+    def test_second_fail_renders_owes_sticky_wicket(self):
+        """harmonic-forge#1099 AC2 (kill check 4): a sticky-owed FAIL renders
+        `STICKY_OWES`, not `fail-review`."""
+        self.assertEqual(
+            self._queue_l1([self.FAIL + _marker("gate-result", "LANE3")], sticky=True),
+            {851: f"gate-result owes={watch_lane_posts.STICKY_OWES}"})
+        self.assertEqual(watch_lane_posts.STICKY_OWES, "sticky-wicket")
+
+    def test_lane1_rework_newest_drops_fail_from_l1_and_queues_fix_to_l2(self):
+        """harmonic-forge#1099 AC2: Lane 1's own rework ends its review, and is
+        Lane 2's only trigger."""
+        bodies = [self.FAIL + _marker("gate-result", "LANE3"), _marker("rework", "LANE1")]
+        self.assertEqual(self._queue_l1(bodies), {})
+        self.assertEqual(self._queue(bodies, "l2"), {851: "rework owes=fix"})
 
     def test_any_poster_exception_does_not_widen_handoff(self):
         """The per-kind exception never lets a Lane 2 `handoff` queue to Lane 2."""
@@ -2767,16 +2815,22 @@ class QueueCycleOwesTests(unittest.TestCase):
                          {851: "spec owes=spec-review"})
         self.assertIn("l3", watch_lane_posts.QUEUE_POSTERS["l1"])
 
-    def test_recorded_fail_gate_result_is_a_candidate_for_l2(self):
-        """The no-network pre-filter honors the same any-poster exception."""
+    def test_recorded_fail_gate_result_is_a_candidate_for_l1_not_l2(self):
+        """The no-network pre-filter honors the same any-poster exception,
+        now Lane 1's (harmonic-forge#1099)."""
+        got = {}
         with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, "a.json").write_text(json.dumps({
-                "repo": "vitalharmony/harmonic-forge", "issue": 851, "kind": "gate-result",
-                "posted_by": "l3", "posted_at": "2026-10-02T03:00:00Z"}))
-            got = watch_lane_posts.read_queue_candidates(
-                ["vitalharmony/harmonic-forge"], "l2",
-                now=dt.datetime(2026, 10, 2, 4, tzinfo=dt.UTC), base_dir=Path(tmp))
-        self.assertEqual(got, {("vitalharmony/harmonic-forge", 851)})
+            for poster in ("l3", "l1"):
+                Path(tmp, "a.json").write_text(json.dumps({
+                    "repo": "vitalharmony/harmonic-forge", "issue": 851, "kind": "gate-result",
+                    "posted_by": poster, "posted_at": "2026-10-02T03:00:00Z"}))
+                for lane in ("l1", "l2"):
+                    got[(poster, lane)] = watch_lane_posts.read_queue_candidates(
+                        ["vitalharmony/harmonic-forge"], lane,
+                        now=dt.datetime(2026, 10, 2, 4, tzinfo=dt.UTC), base_dir=Path(tmp))
+        for poster in ("l3", "l1"):
+            self.assertEqual(got[(poster, "l1")], {("vitalharmony/harmonic-forge", 851)})
+            self.assertEqual(got[(poster, "l2")], set())
 
 
 class TickRateLimitSnapshotTests(unittest.TestCase):
@@ -3207,16 +3261,17 @@ class ReadQueueCandidatesTests(unittest.TestCase):
 
 
 class FailChannelAgreementTests(unittest.TestCase):
-    """harmonic-forge#851 sticky-wicket PATCH (epoch 2, pass 2): Lane 2's two
-    channels must agree on "does Lane 2 owe a fix?". For every gate report
-    across poster x footer kind x heading x verdict x labels, the comment
-    watch emits it iff `discover_queue` queues it. Two named differences: the
-    comment watch still emits after a later comment (covered by
-    `CommentWatchOwnershipTests`), and a Lane 1 `discussion` always reaches
-    Lane 2's comment watch (skipped below)."""
+    """harmonic-forge#851 sticky-wicket PATCH (epoch 2, pass 2), retargeted by
+    harmonic-forge#1099: a gate report owing a review reaches Lane 1 on both
+    channels and Lane 2 on neither. Across poster x footer kind x heading x
+    verdict x labels: Lane 2's comment watch and queue are always silent, and
+    whenever Lane 1's queue holds a report, Lane 1's comment watch prints it.
+    (The converse does not hold: Lane 1 owns `gate-result`, so its comment
+    watch also prints a PASS, which owes a close, not a review.)"""
 
     NOW = "2026-10-02T04:00:00Z"
     REPO = "vitalharmony/hrse"
+    WATCH = {"l1": {"l2", "l3"}, "l2": {"l1"}}
 
     def _body(self, poster, footer, heading, verdict):
         lines = []
@@ -3228,7 +3283,7 @@ class FailChannelAgreementTests(unittest.TestCase):
             lines.append(f"<!-- l1-post v1; kind={footer};{by} sha=abc -->")
         return "\n\n".join(lines)
 
-    def _emitted(self, body, labels):
+    def _emitted(self, body, labels, lane):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -3237,22 +3292,23 @@ class FailChannelAgreementTests(unittest.TestCase):
              patch("watch_lane_posts._issue_meta",
                    return_value=("open", labels) if labels is not None else (None, None)):
             lines, _ = watch_lane_posts.comment_watch_cycle(
-                [(self.REPO, 851)], {"l1"}, self.NOW, Watermarks(root / "wm"),
+                [(self.REPO, 851)], self.WATCH[lane], self.NOW, Watermarks(root / "wm"),
                 SeenSet(root / "seen.tsv"), set(), allow_priming=False,
-                deferred_advances=[], self_lane="l2")
+                deferred_advances=[], self_lane=lane)
         return bool(lines)
 
-    def _queued(self, body, labels):
+    def _queued(self, body, labels, lane):
         # harmonic-forge#854: discover_queue reads labels from _issue_meta's
         # one issue read; an unreadable read is (None, None), failing open.
         meta = ("open", labels) if labels is not None else (None, None)
         with patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": body}]), \
-             patch("watch_lane_posts._issue_meta", return_value=meta):
-            queue, ok = discover_queue(self.REPO, "l2", {851})
+             patch("watch_lane_posts._issue_meta", return_value=meta), \
+             patch("watch_lane_posts._sticky_wicket_owed", return_value=False):
+            queue, ok = discover_queue(self.REPO, lane, {851})
         self.assertTrue(ok)
         return 851 in queue
 
-    def test_both_channels_agree_on_every_gate_report(self):
+    def test_fail_reaches_lane1_on_both_channels_and_lane2_on_neither(self):
         import itertools
         posters = ("LANE1", "LANE3", "LANE-unset")
         footers = ("gate-result", "discussion", None)
@@ -3264,34 +3320,37 @@ class FailChannelAgreementTests(unittest.TestCase):
                 posters, footers, headings, verdicts, label_sets):
             if footer != "gate-result" and not heading:
                 continue  # not a gate report at all
-            if footer == "discussion" and poster != "LANE3":
-                # The second named difference: a Lane 1 `discussion` is always
-                # Lane 2's news on the comment watch (it carries a Plan-First
-                # ratification, `test_lane2_still_hears_plan_ratification_
-                # discussion`), whatever its body says.
-                continue
             body = self._body(poster, footer, heading, verdict)
             with self.subTest(poster=poster, footer=footer, heading=heading,
                               verdict=verdict, labels=labels):
-                self.assertEqual(self._emitted(body, labels), self._queued(body, labels))
-                checked += 1
-        self.assertGreater(checked, 40)
+                self.assertFalse(self._queued(body, labels, "l2"))
+                if not (footer == "discussion" and poster != "LANE3"):
+                    # A Lane 1 `discussion` is always Lane 2's news on the
+                    # comment watch (a Plan-First ratification), whatever its
+                    # body says -- the one named exception.
+                    self.assertFalse(self._emitted(body, labels, "l2"))
+                if self._queued(body, labels, "l1"):
+                    self.assertTrue(self._emitted(body, labels, "l1"))
+                    checked += 1
+                self.assertEqual(self._queued(body, labels, "l1"), verdict != "PASS")
+        self.assertGreater(checked, 20)
 
-    def test_a_discussion_footered_fail_report_reaches_lane2_on_both_channels(self):
+    def test_a_discussion_footered_fail_report_reaches_lane1_on_both_channels(self):
         body = self._body("LANE3", "discussion", True, "FAIL")
-        self.assertTrue(self._emitted(body, set()))
-        self.assertTrue(self._queued(body, set()))
+        self.assertTrue(self._emitted(body, set(), "l1"))
+        self.assertTrue(self._queued(body, set(), "l1"))
+        self.assertFalse(self._emitted(body, set(), "l2"))
+        self.assertFalse(self._queued(body, set(), "l2"))
         passing = self._body("LANE3", "discussion", True, "PASS")
-        self.assertFalse(self._emitted(passing, set()))
-        self.assertFalse(self._queued(passing, set()))
+        self.assertFalse(self._queued(passing, set(), "l1"))
 
-    def test_a_fail_on_a_lane1_only_issue_never_wakes_lane2(self):
-        body = self._body("LANE3", "gate-result", True, "FAIL")
-        for label in ("tooling-exception", "epic"):
-            with self.subTest(label=label):
-                self.assertFalse(self._emitted(body, {label}))
-        self.assertTrue(self._emitted(body, set()))
-        self.assertTrue(self._emitted(body, None))  # unreadable labels fail open
+    def test_a_fail_on_a_tooling_exception_issue_reaches_lane1(self):
+        """Lane 1 owns Tooling Exception work, so its label never excludes the
+        FAIL from Lane 1; only an epic does, and unreadable labels fail open."""
+        body = self._body("LANE-unset", "gate-result", True, "FAIL")
+        self.assertTrue(self._emitted(body, {"tooling-exception"}, "l1"))
+        self.assertFalse(self._emitted(body, {"epic"}, "l1"))
+        self.assertTrue(self._emitted(body, None, "l1"))
 
 
 #: harmonic-forge#854: `discover_queue`'s per-issue read now also returns the

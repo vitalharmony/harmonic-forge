@@ -205,9 +205,14 @@ class BeltEventTests(ReceiptHome):
         self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL"), plan]),
                          {ISSUE: "plan owes=plan-review"})
 
-    def test_a_covered_trigger_emits_nothing(self):
+    def test_a_covered_trigger_owes_the_fail_review_not_a_verdict(self):
+        """harmonic-forge#1099: once a receipt covers the pair, the newest FAIL
+        still owes Lane 1 its review (`fail-review`) until Lane 1's own post
+        (the rework) is newest; then nothing is queued to Lane 1."""
         self.write_receipt(through=2)
-        self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL")]), {})
+        self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL")]),
+                         {ISSUE: "gate-result owes=fail-review"})
+        self.assertEqual(self._queue([gate(1, "FAIL"), gate(2, "FAIL"), rework(3)]), {})
 
     def test_owed_and_uncovered_is_a_lane_1_event(self):
         comments = [gate(1, "FAIL"), gate(2, "FAIL")]
@@ -216,7 +221,7 @@ class BeltEventTests(ReceiptHome):
         self.assertFalse(belt._sticky_wicket_owed(REPO, ISSUE, comments))
 
     def test_the_event_owes_sticky_wicket(self):
-        self.assertEqual(belt.OWES["l1"]["gate-result"], "sticky-wicket")
+        self.assertEqual(belt.STICKY_OWES, "sticky-wicket")
 
 
 

@@ -214,6 +214,7 @@ class ObligationsTableMatchesOwesTests(unittest.TestCase):
         expected = {(lane, owes) for lane, kinds in watch_lane_posts.OWES.items()
                     for owes in kinds.values()}
         expected.add(("l2", watch_lane_posts.PLAN_FIRST_OWES))
+        expected.add(("l1", watch_lane_posts.STICKY_OWES))
         self.assertEqual(documented, expected)
 
     #: Reforge ruling, fix 4: each row's action is bound to its `(lane, owes)`
@@ -228,6 +229,7 @@ class ObligationsTableMatchesOwesTests(unittest.TestCase):
         ("l2", "fix"): "do the work on the branch",
         ("l1", "plan-review"): "Implementation Spec",
         ("l1", "spec-review"): "Review Lane 3's spec",
+        ("l1", "fail-review"): "Lane 2 never acts on a gate result",
         ("l1", "sticky-wicket"): "sticky_receipt.py record",
     }
     _FULL_ROW_RE = re.compile(r"^\s*\|\s*(l[123])\s*\|\s*`([\w-]+)`\s*\|(.*)\|\s*$", re.MULTILINE)

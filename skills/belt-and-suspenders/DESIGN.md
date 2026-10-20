@@ -510,9 +510,10 @@ an account-wide scan with no worktree or queued-plan in hand is exactly the
 independent-discovery case the operator's own framing excludes, regardless of
 which loop arms it or how narrow its own internal reasoning was. **The accepted
 gap this leaves is wider than "no new comment"**: `--queue-for l1` runs
-`discover_queue`, which admits only `QUEUE_KINDS["l1"] = ("plan",)` — so on an
-issue with no live worktree, EVERY non-`plan` inbound marker is uncaught, not
-only a silent state change. A `gate-result` FAIL/BLOCKED, a `## L2 Finding`, an
+`discover_queue`, which admits only `QUEUE_KINDS["l1"] = ("plan", "spec",
+"gate-result")` — so on an issue with no live worktree and no recorded candidate,
+every other inbound marker is uncaught, not only a silent state change. A
+`gate-result` BLOCKED, a `## L2 Finding`, an
 `l2.done`, or a `discussion` on such an issue goes unseen by Lane 1's belt
 until something else surfaces it (the operator, a different lane's own belt,
 or Lane 1 re-arming after noticing); it is not compensated for with a wider
@@ -570,23 +571,33 @@ enforces that regardless of PASS.
 does not wait behind a newly-opened item. "1 agreed" sat unexecuted for multiple
 turns while item 2 was investigated.
 
+**A FAIL is Lane 1's to review (harmonic-forge#1099).** Every non-PASS,
+non-BLOCKED gate result (FAIL, a heading/lead conflict, or an unreadable
+verdict) queues as `queued-for-l1 kind=gate-result owes=fail-review`, or
+`owes=sticky-wicket` when `_sticky_wicket_owed` holds, whoever posted it
+(`QUEUE_ANY_POSTER_KINDS["l1"]`). Lane 1's comment watch also prints it
+whoever posted it (`_fail_owed_to_l1`), as the primary channel: Lane 1's belt
+watches only l2 and l3, so a FAIL stamped `LANE1` or `LANE-unset` would
+otherwise reach it only through the newest-marker-wins queue. Lane 1's own
+post (a rework, a verdict) drops it from the queue; the rework then queues to
+Lane 2 as `owes=fix`.
+
 Parameters: overlap `K` to be set from the first week's tick log · no session
 lock (Lane 1's belt does not mutate a shared worktree).
 
 ## Role: Lane 2
 
-Fires on `handoff`, `rework`, `gate-result` (from any poster, unless its verdict, read by `gate_ci.verdict_of` from the heading or the lead block, is PASS or BLOCKED). Silent on `ready-for-l3`, `ae`,
-`sweep`, `ae-and-sweep`, `spec`, and a PASS `gate-result` — that is the Lane 1 ↔ Lane 3
-channel. Since harmonic-forge#851 the comment-watch enforces this itself:
+Fires on `handoff`, `rework`. Silent on `ready-for-l3`, `ae`,
+`sweep`, `ae-and-sweep`, `spec`, and every `gate-result` — that is the Lane 1 ↔ Lane 3
+channel. Lane 2 takes work only from Lane 1 (R-0207, harmonic-forge#1099): a
+FAIL goes to Lane 1, and Lane 1's `rework` is what reaches Lane 2. Since harmonic-forge#851 the comment-watch enforces this itself:
 `watch_lane_posts.KIND_OWNER` maps each kind to the lane that owes the next
 step, keyed on `kind=` and never on `posted-by`, and a belt prints only its own
 lane's kinds plus unowned ones (`discussion`, which carries a Plan-First
-ratification, and any kind the table does not know). A gate result that owes a
-fix is the one exception: Lane 2's comment watch prints it whoever posted it
-(`_fail_owed_to_l2`), as the primary channel. It also queues as
-`queued-for-l2 kind=gate-result owes=fix` through `QUEUE_ANY_POSTER_KINDS`, as a
-second channel only, because the queue is newest-marker-wins and a later
-unrelated comment supersedes it. (`discussion` was removed from `QUEUE_KINDS["l2"]` in
+ratification, and any kind the table does not know). No gate result reaches
+Lane 2 on either channel: the any-poster exception and the comment-watch
+override that once delivered a FAIL to Lane 2 are Lane 1's now (Role: Lane 1).
+(`discussion` was removed from `QUEUE_KINDS["l2"]` in
 harmonic-forge#570 — R-0337/`lane-shorthand.md` measured 63 issues on
 `vitalharmony/hrse` whose newest marker after `l2.done` was a `discussion`,
 none of them actionable — so it never queues.)

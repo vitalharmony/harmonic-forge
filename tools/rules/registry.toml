@@ -1756,8 +1756,8 @@ hooks = []
 id = "R-0207"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "B is not a failure verdict and is available on every lane; L3F routes to reimplementation while L3B routes to remediation then a re-run of the same commit."
-text_sha = "f171f4d7eae72bc2"
+statement = "B is not a failure verdict and is available on every lane; L3F routes to Lane 1, which posts the rework Lane 2 reimplements, while L3B routes to remediation then a re-run of the same commit. Canonical: Lane 2 takes work only from Lane 1 (a handoff, a rework, a Plan-First ratification); a Lane 3 result of any verdict goes to Lane 1, which decides what Lane 2 does (harmonic-forge#1099)."
+text_sha = "c078dfa1c37d93f9"
 hooks = []
 
 [[rule]]
@@ -2197,8 +2197,8 @@ hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-
 id = "R-0337"
 file = "rules/lane-tooling-reference.md"
 anchor = "kind-rework"
-statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework, never as ordinary discussion; it renders the same Fix H<N> trigger as a gate FAIL under a distinct l1.rework key."
-text_sha = "76979902e0659a26"
+statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework, never as ordinary discussion; it renders the Fix H<N> trigger under a distinct l1.rework key; a gate FAIL renders no trigger, since Lane 2 takes work only from Lane 1 (R-0207)."
+text_sha = "168c6dd464f7959b"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind rework"], wired_in = "hrse" }]
 
 [[rule]]
@@ -2491,16 +2491,16 @@ hooks = []
 id = "R-0375"
 file = "rules/lane-shorthand.md"
 anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
-statement = "A belt event on another issue arriving mid-task queues behind the current task in every lane, which runs to its status post; the chat carve-outs do not apply and NOW stays the operator's interrupt. A belt event on the issue in hand is read immediately (it amends the task, and the belt never re-offers it). A background wait is not an in-flight step: R-0376 has precedence during it. A deferred queued line is written as an open task entry and taken up at the finish line; the belt re-offers every queued item to a new lane session and an unchanged item within one session only every 4 hours, as a backstop, for Lane 2/3 inbound on another issue, never Lane 1's own waits."
-text_sha = "ec45a51f53fdb6c8"
+statement = "A belt event on another issue arriving mid-task queues behind the current task in every lane, which runs to its status post; the chat carve-outs do not apply and NOW stays the operator's interrupt. A belt event on the issue in hand is read immediately (it amends the task, and the belt never re-offers it): for Lane 2 a rework, for Lane 1 a FAIL gate result, which never reaches Lane 2 (R-0207). A background wait is not an in-flight step: R-0376 has precedence during it. A deferred queued line is written as an open task entry and taken up at the finish line; the belt re-offers every queued item to a new lane session and an unchanged item within one session only every 4 hours, as a backstop, for Lane 2/3 inbound on another issue, never Lane 1's own waits."
+text_sha = "4dbe0ae12b124239"
 hooks = []
 
 [[rule]]
 id = "R-0376"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes, and a step whose output is a post ends when the post lands. Recovery is the lane's own task entry, never a belt re-offer (at once to a new session, otherwise every 4 hours), which Lane 1's own waits do not have. A Codex lane never ends a turn with an unpolled background session."
-text_sha = "489775bfc09c95dc"
+statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes, and a step whose output is a post ends when the post lands. Recovery is the lane's own task entry, never a belt re-offer (at once to a new session, otherwise every 4 hours), which Lane 1's own waits do not have (QUEUE_KINDS[l1] is plan/spec/a non-PASS, non-BLOCKED gate-result, from l2/l3 posters). A Codex lane never ends a turn with an unpolled background session."
+text_sha = "da916db67042dc99"
 hooks = []
 
 [[rule]]

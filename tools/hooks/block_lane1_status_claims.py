@@ -1364,7 +1364,7 @@ def main() -> None:
                 "too large for an issue comment) and a "
                 "feedback_*.md lesson file directly inside "
                 "~/Harmonic_Projects/operator-memory/ (harmonic-forge#797). "
-                "Record the failure and report it for Lane 2 to fix instead."
+                "Record the failure and report it for Lane 1 instead."
             )))
             return
         if write_on_main_branch(file_path, cwd):

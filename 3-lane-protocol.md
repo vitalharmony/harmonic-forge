@@ -965,7 +965,8 @@ an unchanged item within one session only every 4 hours, as a backstop
 (harmonic-forge#1007). It fires only where the waiting issue's newest classified comment
 is a `QUEUE_KINDS[<lane>]` kind from a `QUEUE_POSTERS[<lane>]` poster. Lane 1's
 own Tooling Exception waits have no re-offer at all: `QUEUE_KINDS["l1"]` is
-`plan`/`spec` only and `QUEUE_POSTERS["l1"]` excludes Lane 1's own markers, so
+`plan`/`spec`/`gate-result` (a non-PASS, non-BLOCKED one) and
+`QUEUE_POSTERS["l1"]` excludes Lane 1's own markers, so
 a backgrounded preclose panel, `kill-check` or CI run on an issue whose newest
 marker is a PASS or Lane 1's own post is never re-announced. There the task
 entry is the only record. This rule adds no shared state.
@@ -1065,7 +1066,13 @@ route the work back a lane. `L3F` and `L3B` are different outcomes and
 conflating them sends the wrong work to the wrong lane:
 
 - **`L3F`** — the gate ran and something failed. The *implementation* is in
-  question. Routes to "Reimplement #N".
+  question. Routes to Lane 1, which reviews it and posts the `rework`
+  naming what Lane 2 reimplements.
+
+**Lane 2 takes work only from Lane 1 (a handoff, a rework, a Plan-First
+ratification). A Lane 3 result of any verdict goes to Lane 1, which decides
+what Lane 2 does** (harmonic-forge#1099). This is the canonical statement;
+every other copy points here.
 - **`L3B`** — the gate could not produce a trustworthy verdict at all. The
   implementation is *not* what is in question; a precondition, the
   environment, or the baseline is. Routes to remediation, then a re-run of

@@ -32,8 +32,8 @@ number or prose, so the display string stays free to be reworded.
 | `gate.ae-without-sweep` | `AE posted, L1 owes the sweep` | **R-0208 partial transition** — see below |
 | `gate.executable` | `authorized, gate executable` | AE + sweep, or that pair carried forward (R-0209) |
 | `gate.pass` | `gated` | Lane 3 passed |
-| `gate.fail` | `FAIL, back to L2 → Fix H<N>` | Lane 3 failed |
-| `l1.rework` | `L1 asked for rework, back to L2 → Fix H<N>` | Lane 1 asked Lane 2 for more work on the branch — a rebase, a correction. **Same trigger as `gate.fail`, deliberately; different key** (hrse#1609) |
+| `gate.fail` | `FAIL, Lane 1 owes the rework` | Lane 3 failed; Lane 1 reviews it (R-0207), and its belt carries it, so no operator trigger |
+| `l1.rework` | `L1 asked for rework, back to L2 → Fix H<N>` | Lane 1 asked Lane 2 for more work on the branch — a rebase, a correction. The trigger Lane 2 acts on; `gate.fail` renders none since harmonic-forge#1099 (hrse#1609) |
 | `unknown` | `unknown` | the fail-loud default |
 
 <!-- R-0331 -->
@@ -100,8 +100,7 @@ closing notes, merge confirmations and gate sign-offs. Treating a newer
 discussion as "Lane 2 owes work" would have been wrong 63 times out of 63 on a
 model whose contract is fail-loud.
 
-The trigger it renders is `Fix H<N>` — the same one a gate FAIL renders,
-because what Lane 2 must do is identical: re-read the issue and do the work on
-the branch. Only the operator-facing token is shared; the key stays
-`l1.rework`, so the row still says which of the two it is.
+The trigger it renders is `Fix H<N>`: re-read the issue and do the work on
+the branch. A gate FAIL renders no trigger, because Lane 2 takes work only
+from Lane 1 (R-0207); the key stays `l1.rework`, distinct from `gate.fail`.
 <!-- /R-0337 -->
