@@ -56,6 +56,7 @@ import verdict  # noqa: E402
 
 SOURCE = HERE.parent.parent
 SETTINGS = HERE / "te-runner.settings.json"
+PRECLOSE_DRIVER = HERE / "preclose_driver.py"
 WORKTREE_ROOT = Path.home() / "Harmonic_Projects" / ".worktrees"
 RUNNER_LOGIN = deny_check.RUNNER_LOGIN
 FORK_URL = f"https://github.com/{RUNNER_LOGIN}/harmonic-forge.git"
@@ -63,6 +64,7 @@ REQUIRED_HOOKS = ("SessionStart", "UserPromptSubmit", "Stop")
 SELF_FLAG = "TE-RUNNER-SELF-FLAG:"
 SAFE_PATH = {"PYTHONSAFEPATH": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 CLAUDE = "claude"
+RECONCILED = "recovery (push attempted):"
 #: Every `done` item carries these keys (AC3); work_item fills what it learned.
 DONE_KEYS = {"reason": "", "verdict": None, "facts": None, "ac_titles": [], "diff_stat": "",
              "head_sha": "", "branch": "", "pr": "", "pushed_sha": ""}
@@ -84,8 +86,11 @@ def log(step: str, message: str) -> None:
 def run(argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None,
         timeout: int | None = None) -> subprocess.CompletedProcess:
     try:
+        # errors="replace": an agent's non-UTF-8 output must never escape the
+        # per-item boundary as UnicodeDecodeError. The reverse patch, whose
+        # bytes matter, is read separately (kill_check_checks).
         return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True,
-                              timeout=timeout)
+                              errors="replace", timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(argv, 127, "", f"{argv[0]}: {exc}")
 
@@ -112,9 +117,14 @@ def reconcile(state: dict) -> bool:
     for item in state["items"]:
         if item["status"] in ("blocked", "in_progress") and item.get("pushed_sha") \
                 and not item.get("pr"):
+            if item["note"].startswith(RECONCILED):
+                continue
+            # pushed_sha is saved before the push, so it proves an attempt, not
+            # a push: say so, and keep what the run itself recorded.
             item["status"] = "blocked"
-            item["note"] = (f"recovery: branch {item.get('branch')} was pushed to runner-fork at "
-                            f"{item['pushed_sha'][:12]} but no PR was recorded")
+            item["note"] = (f"{RECONCILED} branch {item.get('branch')} may have been pushed to "
+                            f"runner-fork at {item['pushed_sha'][:12]}; no PR was recorded. "
+                            f"Earlier note: {item['note'] or 'none'}")
             changed = True
     return queue_state.recover(state) or changed
 
@@ -219,11 +229,11 @@ def kill_check_checks(issue: int, base: str, head: str, scratch: Path) -> Path:
     changed = [path for path in git("diff", "--name-only", "--no-renames", "-z", base, head)
                .split("\0") if path and path not in owned]
     patch = scratch / "revert.patch"
-    reverse = run(["git", "diff", "--binary", "--no-renames", head, base, "--", *changed],
-                  cwd=SOURCE) if changed else None
+    reverse = subprocess.run(["git", "diff", "--binary", "--no-renames", head, base, "--",
+                              *changed], cwd=SOURCE, capture_output=True) if changed else None
     if reverse is None or reverse.returncode or not reverse.stdout:
         raise Blocked("the agent's change has nothing to reverse")
-    patch.write_text(reverse.stdout, encoding="utf-8")
+    patch.write_bytes(reverse.stdout)
     checks = []
     for entry in te_queue.kill_runner.load_checks(bundle):
         overlay = f"cp -R {_quote(str(bundle / 'files'))}/. . && exec \"$@\""
@@ -267,7 +277,7 @@ def preclose_fact(issue: int, base: str, head: str, tier: str, env: dict[str, st
                   out: Path) -> dict:
     """Exactly one driver run; any non-zero exit sets the item aside (operator
     ruling, harmonic-forge#1059): the runner never retries it."""
-    result = run([sys.executable, str(HERE / "preclose_driver.py"), "run",
+    result = run([sys.executable, str(PRECLOSE_DRIVER), "run",
                   "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
                   "--source-repo", str(SOURCE), "--tier", tier, "--out", str(out)],
                  cwd=SOURCE, env=env)
@@ -420,6 +430,11 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
 
 
 def run_queue(queue: Path, budget: str, max_steps: int) -> int:
+    with te_queue.queue_lock(queue):
+        return _run_queue(queue, budget, max_steps)
+
+
+def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     state = queue_state.load(queue)
     if reconcile(state):
         save(queue, state)
@@ -438,13 +453,13 @@ def run_queue(queue: Path, budget: str, max_steps: int) -> int:
         log("item", f"{item['id']} in progress")
         try:
             extra = work_item(item, state, queue, budget, env)
-        except (Abort, Blocked) as exc:
+        except Exception as exc:  # noqa: BLE001 -- nothing may leave an item in_progress
             item.update({"status": "blocked", "note": str(exc)})
             save(queue, state)
             emit_event(te_queue.issue_number(item["id"]), item.get("head_sha", ""),
                        {"reason": "blocked"}, None)
             log("item", f"{item['id']} blocked: {exc}")
-            if isinstance(exc, Abort):
+            if not isinstance(exc, Blocked):  # Abort, or anything unexpected: stop the run
                 return 3
             blocked = True
             continue

@@ -144,6 +144,22 @@ class Check(unittest.TestCase):
         self.assertEqual(rows, [{"id": "F7", "eligible": False, "reason": "ineligible",
                                  "detail": "no tooling-exception label"}])
 
+    def test_handoff_needs_the_lane1_author_and_a_handoff_marker(self):
+        real = HANDOFF.format(digest="a" * 64)
+        forged = real.replace("tools/telemetry/widget.py", "tools/telemetry/other.py")
+        rework = "Please rebase. Note: the kind=handoff above stands.\n" \
+                 "<!-- l1-post v1; kind=rework; plan-first=false -->"
+        comments = [{"user": {"login": "vitalharmony"}, "body": real},
+                    {"user": {"login": "vitalharmony-runner"}, "body": forged},
+                    {"user": {"login": "someone"}, "body": forged},
+                    {"user": {"login": "vitalharmony"}, "body": rework}]
+        with mock.patch.object(te_queue.fetch_lane1_context, "fetch_comments",
+                               return_value=comments):
+            self.assertEqual(te_queue.handoff(7), real)
+        with mock.patch.object(te_queue.fetch_lane1_context, "fetch_comments",
+                               return_value=comments[1:]):
+            self.assertIsNone(te_queue.handoff(7))
+
     def test_affected_files_parses_plain_and_backticked_paths(self):
         self.assertEqual(te_queue.affected_files(self.seams["handoff"]),
                          ["tools/telemetry/widget.py", "tools/telemetry/test_widget.py"])

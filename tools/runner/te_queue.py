@@ -26,6 +26,8 @@ Exit 0 when the check ran (whatever it found), 2 when it could not.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import re
 import subprocess
@@ -46,6 +48,8 @@ import queue_state  # noqa: E402
 REPO = "vitalharmony/harmonic-forge"
 BOARD_OWNER, BOARD_NUMBER = "vitalharmony", "3"
 KIND = "te-issue"
+#: Lane 1 posts handoffs as the operator's account (tools/gh/l1_post.py).
+LANE1_LOGIN = "vitalharmony"
 ELIGIBLE_TIERS = ("fast", "standard")
 PROCEED = ("PROCEED", "PROCEED_WITH_NAMED_CHANGES")
 DIGEST_RE = re.compile(r"kill-bundle-sha256:\s*`?([0-9a-f]{64})`?")
@@ -79,10 +83,33 @@ def load(path: Path) -> dict:
         raise QueueError(str(exc)) from exc
 
 
+@contextlib.contextmanager
+def queue_lock(path: Path):
+    """The one writer of a queue file: a run holds this for its whole length,
+    and `add` refuses while it is held, so no stale whole-file save drops an
+    item or a second run blocks the first one's live item."""
+    lock = path.with_name(path.name + ".lock")
+    with open(lock, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise QueueError(f"{path} is in use by a running te_run.py; try again after it ends") \
+                from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def add(path: Path, keys: list[str]) -> list[str]:
     """Append each key as a pending item; refuse any already present."""
     for key in keys:
         issue_number(key)
+    with queue_lock(path):
+        return _add(path, keys)
+
+
+def _add(path: Path, keys: list[str]) -> list[str]:
     state = load(path) if path.exists() else {"items": []}
     present = {item["id"]: item["status"] for item in state["items"]}
     clash = [f"{key} ({present[key]})" for key in keys if key in present]
@@ -118,15 +145,24 @@ def tier(issue: int) -> str | None:
         raise QueueError(f"cannot read the board Tier of F{issue}: {exc}") from exc
 
 
+def is_handoff(comment: dict) -> bool:
+    """A Lane 1 handoff: posted by the Lane 1 account, and the l1-post marker's
+    own kind is `handoff`. Body text alone is never trusted: anyone who can
+    comment, the runner's own identity included, can write a marker."""
+    body = comment.get("body") or ""
+    login = (comment.get("user") or {}).get("login")
+    marker = fetch_lane1_context._MARKER_RE.search(body)
+    kind = fetch_lane1_context._KIND_RE.search(marker.group(0)) if marker else None
+    return login == LANE1_LOGIN and bool(kind) and kind.group(1) == "handoff"
+
+
 def handoff(issue: int) -> str | None:
     """The newest posted Lane 1 handoff's body, or None."""
     try:
         comments = fetch_lane1_context.fetch_comments(REPO, issue)
     except SystemExit as exc:
         raise QueueError(f"cannot read the comments of F{issue}") from exc
-    handoffs = [c.get("body", "") for c in comments
-                if fetch_lane1_context.is_lane1_comment(c.get("body", ""))
-                and "kind=handoff" in c.get("body", "")]
+    handoffs = [c.get("body", "") for c in comments if is_handoff(c)]
     return handoffs[-1] if handoffs else None
 
 

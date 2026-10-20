@@ -21,6 +21,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import te_run  # noqa: E402
 
+REAL_PRECLOSE_FACT = te_run.preclose_fact
+
 ISSUE = ("Body.\n\n## Acceptance criteria\n\n1. The widget returns 2. More text.\n"
          "2. Nothing else changes.\n\n## Notes\n")
 
@@ -234,15 +236,44 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.fork_branches(), "")
 
     def test_preclose_driver_failure_sets_aside_and_is_not_retried(self):
-        calls = []
+        # A real stub driver behind preclose_fact: it writes a PASSING
+        # preclose.json and still exits non-zero. Each item is set aside, and
+        # the driver runs exactly once per item (operator ruling, #1059).
+        driver = self.tmp / "driver.py"
+        driver.write_text(textwrap.dedent("""\
+            import json, os, sys
+            from pathlib import Path
+            with open(os.environ["FAKE_DRIVER_LOG"], "a") as log:
+                log.write("run\\n")
+            out = Path(sys.argv[sys.argv.index("--out") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "preclose.json").write_text(json.dumps({"status": "complete", "survivors": 0,
+                "provenance": "Red-team provenance: cross-family (codex) — 1/1"}))
+            sys.exit(int(os.environ["FAKE_DRIVER_RC"]))
+        """))
+        calls = self.tmp / "driver.log"
+        for rc in ("2", "4"):
+            calls.write_text("")
+            self.setUp_queue_fresh()
+            with mock.patch.object(te_run, "preclose_fact", REAL_PRECLOSE_FACT), \
+                    mock.patch.object(te_run, "PRECLOSE_DRIVER", driver):
+                self.drive(FAKE_DRIVER_RC=rc, FAKE_DRIVER_LOG=str(calls))
+            self.assertEqual(calls.read_text().count("run"), 1, rc)
+            item = self.item()
+            self.assertEqual(item["reason"], "preclose-survivor", rc)
+            self.assertEqual(item["facts"]["preclose"]["status"], f"driver exit {rc}")
 
-        def once(*args):
-            calls.append(args)
-            return {"status": "driver exit 4", "survivors": 0, "provenance": ""}
-        with mock.patch.object(te_run, "preclose_fact", once):
-            self.drive()
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(self.item()["reason"], "preclose-survivor")
+    def setUp_queue_fresh(self):
+        self.queue.unlink()
+        te_run.te_queue.add(self.queue, ["F7"])
+        for stale in (self.tmp / "wt").iterdir():
+            shutil.rmtree(stale)
+        sh("git", "worktree", "prune", cwd=self.src)
+        sh("git", "branch", "-D", "--quiet", "fix/7-te-runner", cwd=self.src) \
+            if "fix/7-te-runner" in sh("git", "branch", "--list", "fix/7-te-runner", cwd=self.src) \
+            else None
+        for ref in sh("git", "for-each-ref", "--format=%(refname)", "refs/heads", cwd=self.fork).split():
+            sh("git", "update-ref", "-d", ref, cwd=self.fork)
 
     # --- AC3 harness-only writes, AC6 env ----------------------------------------------
 
@@ -345,15 +376,21 @@ class Pipeline(unittest.TestCase):
 
     def test_kill_after_push_is_reconciled_as_blocked_with_branch(self):
         state = te_run.queue_state.load(self.queue)
-        state["items"][0].update({"status": "in_progress", "pushed_sha": "a" * 40,
-                                  "branch": "fix/7-te-runner"})
+        state["items"][0].update({"status": "blocked", "pushed_sha": "a" * 40,
+                                  "branch": "fix/7-te-runner",
+                                  "note": "push to runner-fork failed: denied"})
         state["items"].append({"id": "F9", "kind": "te-issue", "status": "in_progress",
                                "note": ""})
         te_run.queue_state.save(self.queue, state)
         self.drive()
         self.assertEqual(self.item()["status"], "blocked")
-        self.assertIn("fix/7-te-runner", self.item()["note"])
-        self.assertIn("no PR was recorded", self.item()["note"])
+        note = self.item()["note"]
+        self.assertIn("fix/7-te-runner", note)
+        self.assertIn("may have been pushed", note)  # an attempt, never claimed as a push
+        self.assertIn("no PR was recorded", note)
+        self.assertIn("push to runner-fork failed: denied", note)  # the run's own record kept
+        self.drive()  # a second start keeps the note as it is
+        self.assertEqual(self.item()["note"], note)
         self.assertEqual(self.item("F9")["status"], "blocked")
         self.assertIn("recovery", self.item("F9")["note"])
 
@@ -378,6 +415,23 @@ class Pipeline(unittest.TestCase):
             self.assertEqual(self.drive(), 3)
         self.assertEqual(self.item()["status"], "pending")
         self.assertEqual(self.observed(), [])
+
+    def test_queue_is_locked_while_a_run_holds_it(self):
+        with te_run.te_queue.queue_lock(self.queue):
+            with self.assertRaises(te_run.te_queue.QueueError):
+                te_run.te_queue.add(self.queue, ["F8"])
+            self.assertEqual(te_run.main(["run", "--queue", str(self.queue),
+                                          "--max-budget-usd", "1"]), 2)
+        self.assertEqual(self.item()["status"], "pending")
+        te_run.te_queue.add(self.queue, ["F8"])  # free again once the holder ends
+
+    def test_an_unexpected_error_blocks_the_item_never_in_progress(self):
+        boom = UnicodeDecodeError("utf-8", b"\\xe9", 0, 1, "invalid continuation byte")
+        with mock.patch.object(te_run, "deny_hits", side_effect=boom):
+            self.assertEqual(self.drive(), 3)
+        item = self.item()
+        self.assertEqual(item["status"], "blocked")
+        self.assertIn("invalid continuation byte", item["note"])
 
     def test_max_steps_bounds_the_run(self):
         te_run.te_queue.add(self.queue, ["F8"])
@@ -420,6 +474,33 @@ class SafePath(unittest.TestCase):
 
 
 class KillCheckChecks(unittest.TestCase):
+    def test_reverse_patch_of_a_non_utf8_file_is_byte_exact(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = tmp / "src"
+        src.mkdir()
+        sh("git", "init", "-q", "-b", "main", cwd=src)
+        (src / "widget.py").write_text("x = 1\n")
+        commit(src, "base")
+        base = sh("git", "rev-parse", "HEAD", cwd=src)
+        latin = "caf\xe9 na\xefve\n".encode("latin-1")
+        (src / "notes.txt").write_bytes(latin)
+        commit(src, "head")
+        head = sh("git", "rev-parse", "HEAD", cwd=src)
+        bundle = tmp / "bundle"
+        (bundle / "files").mkdir(parents=True)
+        (bundle / "files" / "t.py").write_text("x = 1\n")
+        (bundle / "checks.json").write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
+        scratch = tmp / "scratch"
+        scratch.mkdir()
+        with mock.patch.object(te_run, "SOURCE", src), \
+                mock.patch.object(te_run.te_queue, "bundle_dir", return_value=bundle):
+            path = te_run.kill_check_checks(7, base, head, scratch)
+        [check] = json.loads(path.read_text())
+        sh("git", "apply", check["patch"], cwd=src)  # reverses the head exactly
+        self.assertFalse((src / "notes.txt").exists())
+
+
     def test_checks_reverse_the_agents_change_and_overlay_the_bundle(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
