@@ -67,10 +67,33 @@ def require_write_tier(body: str) -> None:
 # Lane 2's own guard routes `plan` postings through (`reject_plan_as_
 # discussion` below refuses a `plan` posted through any OTHER path). Same
 # graceful-absence posture as `gate_ci` immediately above.
+#
 try:
     import belt_candidates
 except ImportError:  # pragma: no cover - platform checkout absent
     belt_candidates = None
+
+# harmonic-forge#1103: `watch_lane_posts` supplies the recognizer both belt
+# channels use, so the candidate store records a gate report under the kind
+# the belt reads it as. Imported unguarded (preclose pass 2, R-0381): a
+# missing module must fail loudly, not silently drop the kind upgrade.
+import watch_lane_posts
+
+def candidate_kind(kind: str, body: str) -> str:
+    """The kind to record in the belt candidate store (harmonic-forge#1103).
+
+    `kind` is the footer kind, `discussion` by default, and
+    `belt_candidates.read_candidates` drops a `discussion` candidate for every
+    lane, so a Lane 3 FAIL posted through `mise run lane-comment` reached no
+    lane. A body `watch_lane_posts._is_gate_report` recognizes is recorded as
+    `gate-result`; anything else keeps `kind` unchanged. The heading may sit anywhere in the body, below prose,
+    as `gate_ci.looks_like_a_gate_report` (the PASS gate's own recognizer)
+    accepts it; a quoted or fenced gate heading is not a gate report
+    (`_strip_quoted`)."""
+    if (watch_lane_posts._is_gate_report(kind, body)
+            or looks_like_a_gate_report(watch_lane_posts._strip_quoted(body))):
+        return "gate-result"
+    return kind
 
 from l1_post import (
     comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
@@ -548,6 +571,8 @@ def main() -> None:
               "Lane 3 spec or gate report (a Lane 1/2 relay never is); the map was not recorded",
               file=sys.stderr)
     override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
+    # harmonic-forge#1103: computed BEFORE the post, recorded after it.
+    record_kind = candidate_kind(args.kind, body)
     require_round_approval(args.repo, args.issue, body)
     lane = os.environ.get("LANE")
     posted_by = f"LANE{lane}" if lane else "LANE-unset"
@@ -570,7 +595,7 @@ def main() -> None:
     #: so it is simply never eligible, rather than being misattributed.
     if belt_candidates is not None:
         candidate_poster = f"l{lane}" if lane in ("1", "2", "3") else "unknown"
-        belt_candidates.record_candidate(args.repo, args.issue, args.kind, candidate_poster)
+        belt_candidates.record_candidate(args.repo, args.issue, record_kind, candidate_poster)
     else:
         #: harmonic-forge#691 preclose finding 4. Same hole `l1_post.py`'s
         #: `record_queue_candidate` had: a bare `ImportError` fallback to

@@ -70,7 +70,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
+from pathlib import Path
+
+# The shared visible-text reader lives beside this module (harmonic-forge#1103).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import markdown_strip  # noqa: E402
 
 #: The gate-report heading. `lane_state.py` treats this as AUTHORITATIVE when
 #: the `kind=` footer disagrees, and it is right to: 74 of 98 real
@@ -139,8 +145,11 @@ def lane3_artifact(body: str, kind: str | None = None, posted_by: str | None = N
 
 
 def looks_like_a_gate_report(body: str) -> bool:
-    """Is this body a Lane 3 gate report, whatever it was stamped?"""
-    return GATE_HEADING.search(body) is not None
+    """Is this body a Lane 3 gate report, whatever it was stamped?
+
+    Read from the visible text only (`markdown_strip.visible_text`): a gate
+    heading inside a quote or code block is evidence, not a report."""
+    return GATE_HEADING.search(markdown_strip.visible_text(body)) is not None
 
 
 def _lead_block(body: str) -> str:
@@ -162,7 +171,11 @@ def verdict_of(body: str) -> str | None:
     Returns `"CONFLICT"` when the heading and the lead block disagree — which
     is refused rather than resolved. A report whose own two statements of its
     verdict differ has not stated one.
+
+    Read from the visible text only (harmonic-forge#1103): a prior report
+    quoted or fenced above the real one must not supply the verdict.
     """
+    body = markdown_strip.visible_text(body)
     heading = GATE_HEADING.search(body)
     from_heading = None
     if heading:
@@ -312,19 +325,51 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
     failure and re-gate" — is unactionable, because you cannot un-cancel a
     historical run of an unrelated scheduled workflow.
 
-    None means "could not establish", and the caller then falls back to
-    considering every check. That fallback is the stricter direction.
+    Three outcomes, kept apart (harmonic-forge#1103 preclose pass 1):
+
+    - a non-empty set: the branch's required contexts;
+    - an EMPTY set: the branch is readable and requires nothing -- GitHub
+      answered 404 "Branch not protected" (harmonic-forge, cymagraph-infra and
+      openclaw-projects today), or the protection names no contexts. This is
+      a permanent repo state, not a read failure, and `ci_conclusion` judges
+      every check it observes for it (`if required:` is falsy), exactly as
+      before #1103;
+    - None: could not establish -- any other failed read, or unparseable
+      output. It is NOT a stricter fallback: `ci_conclusion(required=None)`
+      judges only the runs it can see, so a head whose required check has not
+      reported yet reads green. Each caller must therefore either refuse on
+      None (the Lane 3 PASS gate in `check_gate_result` and
+      `_carry_forward.check_ci` do) or substitute an explicit default it names
+      (`report_red_main.DEFAULT_REQUIRED_CHECKS`, which it also substitutes
+      for the empty set).
     """
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}/protection",
                      "--jq", ".required_status_checks.contexts"])
     if code != 0:
+        err = out or ""
+        # Only GitHub's own 404 means "no protection rule"; any other failure
+        # carrying the phrase (an HTTP 500, say) is an unreadable read.
+        return set() if (UNPROTECTED_MESSAGE in err and "HTTP 404" in err) else None
+    if not (out or "").strip():
+        # A successful read with no output is unparseable, not "no contexts"
+        # (harmonic-forge#1103 preclose pass 2): only GitHub's 404 above or an
+        # actual JSON null/[] means the branch requires nothing.
         return None
     try:
-        contexts = json.loads(out or "null")
+        contexts = json.loads(out)
     except ValueError:
         return None
-    return set(contexts) if isinstance(contexts, list) and contexts else None
+    if contexts is None:
+        return set()
+    if not isinstance(contexts, list):
+        return None
+    return set(contexts)
+
+
+#: GitHub's message for a 404 on `branches/<b>/protection` when the branch has
+#: no protection rule (`gh: Branch not protected (HTTP 404)` on stderr).
+UNPROTECTED_MESSAGE = "Branch not protected"
 
 
 def _latest_per_name(runs: list[dict]) -> list[dict]:
@@ -590,8 +635,13 @@ def check_gate_result(
     if pending:
         return False, render_pending_refusal(sha, pending)
 
-    state, detail = ci_conclusion(repo, sha, run=run,
-                                  required=required_checks(repo, run=run))
+    required = required_checks(repo, run=run)
+    if required is None:
+        # harmonic-forge#1103: an unreadable required set is not "consider
+        # every check" -- it lets an unreported required check read green.
+        return False, (
+            f"[GATE] REFUSED: cannot read {repo}'s required checks; retry")
+    state, detail = ci_conclusion(repo, sha, run=run, required=required)
     if state == "green":
         return True, f"[GATE] CI green for {sha[:8]} ({detail})"
     if state == "red":

@@ -227,6 +227,7 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: `lane_state.py`'s, imported rather than restated -- a second regex is how
 #: two readers of one heading drift apart.
 import gate_ci  # noqa: E402
+import markdown_strip  # noqa: E402
 import staleness_ff  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
@@ -768,19 +769,18 @@ def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
 #: (`l1_post.py`, `l2_post.py`) ever emits its real marker inside a fence,
 #: so stripping fenced content before the marker search cannot hide a
 #: genuine one -- only a quoted one.
-_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+#: Both wrappers delegate to the one shared reader,
+#: `markdown_strip.visible_text` (harmonic-forge#1103 reforge): fenced and
+#: indented code blocks and `>` quote lines, per CommonMark.
 
 
 def _strip_fenced_blocks(body: str) -> str:
-    return _FENCED_BLOCK_RE.sub("", body)
-
-
-_QUOTE_LINE_RE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
+    return markdown_strip.visible_text(body)
 
 
 def _strip_quoted(body: str) -> str:
-    """`body` without fenced blocks or `>` quote lines."""
-    return _QUOTE_LINE_RE.sub("", _strip_fenced_blocks(body))
+    """`body` without code blocks or `>` quote lines."""
+    return markdown_strip.visible_text(body)
 
 
 def _own_marker(body: str) -> str | None:
