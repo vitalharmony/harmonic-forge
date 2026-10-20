@@ -200,7 +200,8 @@ def fetch(branch: str, from_sha: str, git: GitRunner, cwd) -> list[Refusal]:
     proc = git("fetch", "origin", "+refs/heads/main:refs/remotes/origin/main",
                f"+refs/heads/{branch}:refs/remotes/origin/{branch}", cwd=cwd)
     if proc.returncode:
-        return [Refusal(f"cannot fetch origin/main and origin/{branch}: {proc.stderr.strip()[:200]}")]
+        return [Refusal(f"cannot fetch origin/main and origin/{branch} (retry): "
+                        f"{proc.stderr.strip()[:200]}", wait=True)]
     if _resolve(git, cwd, from_sha) is None:
         git("fetch", "origin", from_sha, cwd=cwd)
     if _resolve(git, cwd, from_sha) is None:
@@ -249,10 +250,16 @@ def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
 
 def check_ci(repo: str, sha: str, run=None) -> list[Refusal]:
     """AC1 bullet 5: CI green under the REQUIRED checks; pending/absent wait."""
-    state, detail = gate_ci.ci_conclusion(repo, sha, run=run,
-                                          required=gate_ci.required_checks(repo, run=run))
+    required = gate_ci.required_checks(repo, run=run)
+    if required is None:
+        # F1036 epoch 2 survivor 2: never fall back to the observed runs; an
+        # unreadable required set cannot show every required check reported.
+        return [Refusal(f"cannot read {repo}'s required checks (retry)", wait=True)]
+    state, detail = gate_ci.ci_conclusion(repo, sha, run=run, required=required)
     if state == "green":
         return []
+    if state == "unknown":
+        return [Refusal(f"CI on {sha[:12]} could not be read ({detail}); retry", wait=True)]
     if state in ("pending", "absent"):
         return [Refusal(f"CI on {sha[:12]} is {state} ({detail}); wait for CI to finish, "
                         "then re-post", wait=True)]
@@ -261,7 +268,7 @@ def check_ci(repo: str, sha: str, run=None) -> list[Refusal]:
 
 def check_not_tooling_exception(labels: set[str] | None) -> list[Refusal]:
     if labels is None:
-        return [Refusal("cannot read the issue's labels")]
+        return [Refusal("cannot read the issue's labels (retry)", wait=True)]
     if "tooling-exception" in labels:
         return [Refusal("the issue is tooling-exception: no Lane 3 gate exists to carry forward")]
     return []
@@ -288,7 +295,7 @@ def validate(repo: str, issue: int, pass_comment_id: int, from_sha: str, sha: st
         labels = watch._read_issue_meta(repo, issue)[1]
     refusals: list[Refusal] = []
     if comments is None:
-        refusals.append(Refusal(f"cannot read the comments of {repo}#{issue}"))
+        refusals.append(Refusal(f"cannot read the comments of {repo}#{issue} (retry)", wait=True))
     else:
         refusals += check_pass_comment(comments, pass_comment_id, from_sha)
         refusals += check_no_newer_gate_report(comments, pass_comment_id)
@@ -341,7 +348,7 @@ def check(repo: str, issue: int, branch: str, run=None, git: GitRunner | None = 
     if comments is None:
         comments = _watch()._fetch_all_comments(repo, issue)
     if comments is None:
-        return REFUSE_EXIT, [f"cannot read the comments of {repo}#{issue}"]
+        return WAIT_EXIT, [f"cannot read the comments of {repo}#{issue} (retry)"]
     fields = newest_carry_forward(comments)
     if fields is None:
         return USAGE_EXIT, [f"no kind=carry-forward governs {repo}#{issue} (none posted, or a newer "

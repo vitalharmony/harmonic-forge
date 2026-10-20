@@ -197,6 +197,20 @@ class CarryForwardValidateTests(_Fixture):
     def test_absent_ci_is_a_wait_refusal(self):
         self.assertRefused(self.validate(self.rebase(), ci="absent"), "is absent", wait=True)
 
+    def test_unreadable_required_checks_is_a_retry_refusal(self):
+        """F1036 epoch 2 survivor 2: no fallback to the observed runs."""
+        with mock.patch.object(gate_ci, "required_checks", return_value=None):
+            self.assertRefused(self.validate(self.rebase()), "required checks", wait=True)
+
+    def test_unreadable_comments_is_a_retry_refusal(self):
+        """F1036 epoch 2 survivor 1: a failed read is a retry, never 'not covered'."""
+        with mock.patch.object(watch, "_fetch_all_comments", return_value=None):
+            self.assertRefused(cf.validate(REPO, ISSUE, PASS_ID, self.from_sha, self.rebase(), BRANCH,
+                                           fake_ci(), stub_git(), cwd=self.repo, labels=self.labels,
+                                           excluded=set()), "(retry)", wait=True)
+            self.assertEqual(cf.check(REPO, ISSUE, BRANCH, fake_ci(), stub_git(), cwd=self.repo,
+                                      labels=self.labels, excluded=set())[0], cf.WAIT_EXIT)
+
     def test_red_ci_is_a_substantive_refusal(self):
         refusals = self.validate(self.rebase(), ci="red")
         self.assertRefused(refusals, "is red")

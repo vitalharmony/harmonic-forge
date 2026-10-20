@@ -793,6 +793,26 @@ class ChangeIdentityTests(ScratchRepo):
         self.bump("frontend/package-lock.json", lock)
         self.assertFalse(self.accepts(reviewed))
 
+    def test_symlinked_package_json_is_never_exempt(self) -> None:
+        """F1036 epoch 2 survivor 3: a symlink's blob is its link text, so a
+        retargeted package.json symlink is refused, never parsed as JSON."""
+        self.seed_base({"README": "r\n"})
+        link = self.repo / "frontend" / "package.json"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to('{"version":"1.0.0"}')
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-qm", "link", cwd=self.repo)
+        git("branch", "-f", "base", "HEAD", cwd=self.repo)
+        self.commit("scripts/a.py")
+        reviewed = self.identity()
+        self.on_base("unrelated.txt", "u\n")
+        git("rebase", "-q", "base", cwd=self.repo)
+        link.unlink()
+        link.symlink_to('{"version":"1.0.1"}')
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-qm", "retarget", cwd=self.repo)
+        self.assertFalse(self.accepts(reviewed))
+
     def test_version_in_another_json_file_is_refused(self) -> None:
         reviewed = self.reviewed_then_rebased()
         self.bump("other.json", {"version": "1.0.1"})
