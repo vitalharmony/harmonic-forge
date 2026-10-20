@@ -52,10 +52,11 @@ def gate_body(verdict, sha, *, marker=True, footer_kind="gate-result"):
     return f"{prefix}\n\n<!-- l1-post v1; kind={footer_kind}; posted-by=LANE3; sha={sha};{sha_field} -->\n"
 
 
-def cf_body(sha, from_sha, pass_id=PASS_ID):
-    return (f"## Gate carry-forward — F7\n\n**Target:** {sha}\n**Carried:** PASS {pass_id}\n"
-            f"**Next:** merge\n\n<!-- l1-post v1; kind=carry-forward; sha={sha}; from-sha={from_sha}; "
-            f"pass={pass_id}; body-sha256={'0' * 64}; checks=body-validation -->\n")
+def cf_body(sha, from_sha, pass_id=PASS_ID, *, digest=None):
+    prefix = f"## Gate carry-forward — F7\n\n**Target:** {sha}\n**Carried:** PASS {pass_id}\n**Next:** merge"
+    digest = digest or hashlib.sha256(prefix.encode()).hexdigest()
+    return (f"{prefix}\n\n<!-- l1-post v1; kind=carry-forward; sha={sha}; from-sha={from_sha}; "
+            f"pass={pass_id}; body-sha256={digest}; checks=body-validation -->\n")
 
 
 def fake_ci(mode="green"):
@@ -434,6 +435,16 @@ class MergeTimeCheckTests(_Fixture):
     def test_no_carry_forward_exits_usage(self):
         self.assertEqual(self.check()[0], cf.USAGE_EXIT)
 
+    def test_newer_pass_supersedes_the_carry_forward(self):
+        """F1036 preclose survivor 3: a gate report newer than the newest
+        carry-forward gates the head directly, so no carry-forward governs it."""
+        sha = self.rebase()
+        self.comments.append({"id": PASS_ID + 1, "body": cf_body(sha, self.from_sha)})
+        self.comments.append({"id": PASS_ID + 2, "body": gate_body("PASS", "d" * 40)})
+        code, refusals = self.check()
+        self.assertEqual(code, cf.USAGE_EXIT)
+        self.assertIn("newer gate report supersedes it", refusals[0])
+
     def test_a_quoted_carry_forward_footer_is_not_read(self):
         sha = self.rebase()
         quoted = "\n".join("> " + line for line in cf_body(sha, self.from_sha).splitlines())
@@ -485,6 +496,30 @@ class LaneOneOnlyAndArgsTests(unittest.TestCase):
         self.assertEqual(l1_post.LEAD_FIELDS["carry-forward"], ("Target", "Carried", "Next"))
 
 
+class PostingGuardWiringTests(unittest.TestCase):
+    """F1036 preclose survivor 1: `l1_post.main` runs `_carry_forward.validate`
+    and refuses before `post_kind` when it returns a refusal."""
+
+    def test_a_validate_refusal_stops_the_post(self):
+        import l1_post  # noqa: PLC0415
+        argv = ["l1_post.py", "--kind", "carry-forward", "--issue", "7", "--sha", "b" * 40,
+                "--branch", "feat/7-thing", "--file", "/x", "--from-sha", "a" * 40,
+                "--pass-comment", str(PASS_ID)]
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(os.environ, {"LANE": "1"}), \
+                mock.patch.object(l1_post, "resolve_repo", return_value=REPO), \
+                mock.patch.object(l1_post, "apply_project_identity"), \
+                mock.patch.object(l1_post, "resolve_sha", return_value="b" * 40), \
+                mock.patch.object(l1_post, "regular_body", return_value="body"), \
+                mock.patch.object(l1_post, "_collect"), \
+                mock.patch.object(cf, "validate", return_value=[cf.Refusal("not the gated change")]) as validate, \
+                mock.patch.object(l1_post, "post_kind") as post_kind:
+            with self.assertRaises(SystemExit) as raised:
+                l1_post.main()
+        self.assertNotEqual(raised.exception.code, 0)
+        validate.assert_called_once()
+        post_kind.assert_not_called()
+
+
 class BeltRoutingTests(unittest.TestCase):
     def test_carry_forward_is_owned_by_lane_1_and_queues_nothing(self):
         self.assertEqual(watch.KIND_OWNER["carry-forward"], "l1")
@@ -521,6 +556,13 @@ class SecondRebaseTests(unittest.TestCase):
     def test_carry_forward_from_another_sha_does_not_move_the_pass(self):
         self.assertEqual(self.marker(self.L2D, gate_body("PASS", self.GATED),
                                      cf_body(self.FIRST, "9" * 40)), f"l3.pass:{self.GATED}")
+
+    def test_edited_carry_forward_does_not_move_the_pass(self):
+        """F1036 preclose survivor 2: a carry-forward whose body-sha256 does
+        not match its body is not trusted."""
+        self.assertEqual(self.marker(self.L2D, gate_body("PASS", self.GATED),
+                                     cf_body(self.FIRST, self.GATED, digest="0" * 64)),
+                         f"l3.pass:{self.GATED}")
 
     def test_carry_forward_after_a_fail_does_not_pass(self):
         self.assertEqual(self.marker(self.L2D, gate_body("FAIL", self.GATED),

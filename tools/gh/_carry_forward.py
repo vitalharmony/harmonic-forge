@@ -40,7 +40,7 @@ Lane 1 re-runs the checks immediately before `gh pr merge`:
     python3 tools/gh/_carry_forward.py check --repo R --issue N --branch B
 
 Exit codes: 0 every check holds; 1 a substantive refusal (the PASS does not
-cover the head: `ready-for-l3` and a fresh AE); 2 no carry-forward found or
+cover the head: `ready-for-l3` and a fresh AE); 2 no carry-forward governs the head (none, or a newer gate report supersedes it) or
 bad usage; 3 only CI-wait refusals; 4 the base moved -- `origin/main`
 advanced past the carried head while the head is still the gated change
 (`preclose_passes.accepts`), so `lane1-rebase` then a new carry-forward,
@@ -316,8 +316,16 @@ def footer_fields(body: str) -> dict[str, str] | None:
 
 
 def newest_carry_forward(comments: list[dict]) -> dict[str, str] | None:
+    """The newest carry-forward's fields, or None when there is none or a
+    gate report is newer than it (F1036 preclose survivor 3): a newer gate
+    report gates the head directly, so no carry-forward governs it."""
     found = [(int(c["id"]), f) for c in comments if (f := footer_fields(c.get("body") or ""))]
-    return max(found, key=lambda pair: pair[0])[1] if found else None
+    if not found:
+        return None
+    newest_id, fields = max(found, key=lambda pair: pair[0])
+    if any(int(c.get("id", -1)) > newest_id and is_gate_report(c.get("body") or "") for c in comments):
+        return None
+    return fields
 
 
 def check(repo: str, issue: int, branch: str, run=None, git: GitRunner | None = None, *,
@@ -330,7 +338,8 @@ def check(repo: str, issue: int, branch: str, run=None, git: GitRunner | None = 
         return REFUSE_EXIT, [f"cannot read the comments of {repo}#{issue}"]
     fields = newest_carry_forward(comments)
     if fields is None:
-        return USAGE_EXIT, [f"no kind=carry-forward comment on {repo}#{issue}"]
+        return USAGE_EXIT, [f"no kind=carry-forward governs {repo}#{issue} (none posted, or a newer "
+                            "gate report supersedes it: merge on that report, R-0354)"]
     refusals = validate(repo, issue, int(fields["pass"]), fields["from-sha"], fields["sha"], branch,
                         run, git, cwd=cwd, comments=comments, labels=labels, excluded=excluded)
     if not refusals:

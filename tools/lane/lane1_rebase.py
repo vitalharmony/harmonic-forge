@@ -206,8 +206,10 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
             # PASS's own gated SHA, moves the PASS onto the SHA it names, so a
             # second rebase of a carried branch is rebaseable. Its checks ran
             # in `l1_post.py`, and `_carry_forward.py check` re-runs them
-            # before any merge.
-            if found == ("l1", "carry-forward") and newest and newest.startswith("l3.pass:"):
+            # before any merge. Only an unedited one counts (F1036 preclose
+            # survivor 2): its body-sha256 marker present and intact.
+            if (found == ("l1", "carry-forward") and newest and newest.startswith("l3.pass:")
+                    and _carry_forward_intact(comment)):
                 fields = _carry_forward_fields(body)
                 if fields and (_same_sha(fields["from-sha"], newest.split(":", 1)[1])
                                or _same_sha(fields["from-sha"], gated_from)):
@@ -234,6 +236,14 @@ def _carry_forward_fields(body: str) -> dict[str, str] | None:
     sys.path.insert(0, str(_GH))
     import _carry_forward  # noqa: PLC0415
     return _carry_forward.footer_fields(body)
+
+
+def _carry_forward_intact(comment: dict) -> bool:
+    sys.path.insert(0, str(_GH))
+    import _carry_forward  # noqa: PLC0415
+    body = comment.get("body") or ""
+    return bool(_carry_forward._BODY_SHA_MARKER.search(body)) and \
+        _carry_forward.clr.verify_body_sha256(comment)
 
 
 def issue_labels(repo_dir: str, issue: int) -> set[str]:
