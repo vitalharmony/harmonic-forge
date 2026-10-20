@@ -670,12 +670,23 @@ class RealBoundary(unittest.TestCase):
         targets = [home / ".claude" / "state" / marker,
                    home / ".local" / "share" / "te-runner" / marker,
                    home / ".config" / "te-runner" / marker,
-                   Path(te_run.SOURCE) / marker]
+                   Path(te_run.SOURCE) / marker,
+                   te_run.sandbox.TRUSTED_LINK.resolve() / marker,
+                   te_run.sandbox.RUNNER_GH / marker]
         for target in targets:
             self.addCleanup(lambda t=target: t.unlink(missing_ok=True))
-        script = "; ".join(f"echo x > '{t}' 2>/dev/null" for t in targets) + "; echo ok > inside"
-        subprocess.run(te_run.sandbox.wrap(["sh", "-c", script], self.tmp), check=True)
+        # The agent profile, the one the agent runs under. Its read-only binds
+        # put some of these parents back in view, so each one that exists on the
+        # host is checked visible first: a write must fail as read-only, not
+        # because the directory is missing.
+        visible = [t.parent for t in targets[4:] if t.parent.is_dir()]
+        script = "".join(f"test -d '{p}' && echo seen >> seen; " for p in visible)
+        script += "; ".join(f"echo x > '{t}' 2>/dev/null" for t in targets) + "; echo ok > inside"
+        subprocess.run(te_run.sandbox.wrap(["sh", "-c", script], self.tmp, profile="agent"),
+                       check=True)
         self.assertTrue((self.tmp / "inside").exists())
+        seen = (self.tmp / "seen").read_text().split() if visible else []
+        self.assertEqual(len(seen), len(visible), "a bound trusted path was not in view")
         leaked = [str(t) for t in targets if t.exists()]
         self.assertEqual(leaked, [], "a write from inside the boundary reached a trusted path")
 
