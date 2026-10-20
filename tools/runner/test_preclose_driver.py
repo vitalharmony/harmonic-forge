@@ -141,7 +141,8 @@ class Driver(unittest.TestCase):
         self.log = self.tmp / "log.jsonl"
         self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
                     "FAKE_LOG": str(self.log), "FAKE_BODY": ISSUE_BODY,
-                    "FAKE_LENSES": json.dumps(list(LENSES))}
+                    "FAKE_LENSES": json.dumps(list(LENSES)),
+                    "STUB_BWRAP_LOG": str(self.tmp / "bwrap.jsonl")}
         self.enter(mock.patch.object(preclose_driver, "PRECLOSE", self.tmp / "preclose.py"))
         self.enter(mock.patch.object(preclose_driver, "CROSS_FAMILY", self.tmp / "cross.sh"))
         self.enter(mock.patch.object(preclose_driver.preclose_check, "find_receipt",
@@ -210,6 +211,11 @@ class Driver(unittest.TestCase):
             i = argv.index(pair[0])
             self.assertEqual(argv[i:i + 2], pair)
         self.assertIn("--max-budget-usd", argv)
+        # The refuter ran inside the boundary, bound to its own export (#1098).
+        [wrapped] = [c for c in map(json.loads, (self.tmp / "bwrap.jsonl").read_text().splitlines())
+                     if "claude" in c[c.index("--chdir") + 3:][0]][:1]
+        self.assertEqual(Path(wrapped[wrapped.index("--chdir") + 1]).resolve(),
+                         Path(argv[-1]["cwd"]).resolve())
         cwd = Path(argv[-1]["cwd"])
         self.assertNotEqual(cwd.resolve(), self.src.resolve())
         self.assertNotIn(str(self.src.resolve()), str(cwd.resolve()))

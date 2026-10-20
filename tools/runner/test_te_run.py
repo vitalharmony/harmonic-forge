@@ -34,9 +34,12 @@ FAKE_CLAUDE = textwrap.dedent("""\
     prompt = sys.stdin.read()
     queue = (here / "queue_path").read_text()
     status = [i["status"] for i in json.loads(Path(queue).read_text())["items"]]
-    with open(here / "observed.jsonl", "a") as log:
-        log.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "prompt": prompt,
-                              "env": dict(os.environ), "statuses": status}) + "\\n")
+    try:  # best effort: under real bwrap the fake's own directory is read-only
+        with open(here / "observed.jsonl", "a") as log:
+            log.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "prompt": prompt,
+                                  "env": dict(os.environ), "statuses": status}) + "\\n")
+    except OSError:
+        pass
     Path("widget.py").write_text("def widget():\\n    return %s\\n" % os.environ.get("FAKE_RETURN", "2"))
     subprocess.run(["git", "add", "-A"], check=True)
     subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-q", "-m", "agent"],
@@ -654,6 +657,34 @@ class RealBoundary(unittest.TestCase):
         head = sh("git", "rev-parse", "FETCH_HEAD", cwd=src)
         self.assertNotEqual(head, sh("git", "rev-parse", "main", cwd=src))
         self.assertEqual(sh("git", "show", f"{head}:a.txt", cwd=src), "2")
+
+
+@unittest.skipUnless(shutil.which("bwrap"), "real bwrap is not installed")
+class RealPipeline(Pipeline):
+    """The whole pipeline under real bwrap: the agent must be able to commit
+    inside the boundary and the harness must see that commit (#1098). Fixtures
+    live under home, since the boundary covers /tmp with a fresh tmpfs."""
+
+    def setUp(self):
+        base = Path.home() / ".cache" / "te-runner-test-scratch"
+        base.mkdir(parents=True, exist_ok=True)
+        real_mkdtemp = tempfile.mkdtemp
+        with mock.patch.object(tempfile, "mkdtemp", lambda *a, **k: real_mkdtemp(dir=base)):
+            super().setUp()
+        self.enter(mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}))
+
+    def test_real_bwrap_agent_commit_reaches_the_harness(self):
+        self.assertEqual(self.drive(), 0)
+        item = self.item()
+        base = sh("git", "rev-parse", "origin/main", cwd=self.src)
+        self.assertEqual(item["verdict"]["state"], "green", item.get("note"))
+        self.assertNotEqual(item["head_sha"], base)
+        self.assertIn("refs/heads/fix/7-te-runner", self.fork_branches())
+
+
+# Only the green path runs under real bwrap; Pipeline's other tests use the stub.
+for _name in [n for n in vars(Pipeline) if n.startswith("test_")]:
+    setattr(RealPipeline, _name, unittest.skip("covered under the stub bwrap")(lambda self: None))
 
 
 class SafePath(unittest.TestCase):
