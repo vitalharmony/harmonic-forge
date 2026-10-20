@@ -152,6 +152,17 @@ def looks_like_a_gate_report(body: str) -> bool:
     return GATE_HEADING.search(markdown_strip.visible_text(body)) is not None
 
 
+def may_be_a_gate_report(body: str) -> bool:
+    """Must the CI check run on this body? (#1103 reforge regression fix.)
+
+    True when EITHER the raw body OR its visible text carries the gate
+    heading. Deciding whether to RUN a check is the undecidable side: a
+    fenced or nested-fence heading is not a report for the belt
+    (`looks_like_a_gate_report`), but it is never a reason to skip the CI
+    check. `verdict_of` still reads the visible text only."""
+    return GATE_HEADING.search(body) is not None or looks_like_a_gate_report(body)
+
+
 def _lead_block(body: str) -> str:
     """The text above the first `###` section — where the verdict may live.
 
@@ -403,17 +414,21 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
                            run=None) -> tuple[str, str]:
     """`ci_conclusion` for a caller that AUTHORIZES (#1103 reforge fix 1).
 
-    A non-empty `required` is judged as is. An EMPTY one (unprotected branch,
-    or null/[] contexts) runs both readings and keeps the stricter: every
-    observed check must be green AND `DEFAULT_REQUIRED_CHECKS` must have
-    reported green, so neither an absent `verify` nor a red observed check
-    can authorize."""
+    ONE snapshot of the checks is read and every condition is judged against
+    it. A non-empty `required` is judged as is. An EMPTY one (unprotected
+    branch, or null/[] contexts) needs both: every observed check green AND
+    `DEFAULT_REQUIRED_CHECKS` reported green. Every visible check is judged
+    FIRST, so a red check with `verify` missing is `red`, never the `absent`
+    a no-PR override could authorize."""
+    runs, failure = _read_check_runs(repo, sha, run=run)
+    if failure is not None:
+        return failure
     if required:
-        return ci_conclusion(repo, sha, run=run, required=required)
-    state, detail = ci_conclusion(repo, sha, run=run, required=set(DEFAULT_REQUIRED_CHECKS))
+        return _judge_runs(runs, sha, required)
+    state, detail = _judge_runs(runs, sha, set())
     if state != "green":
         return state, detail
-    return ci_conclusion(repo, sha, run=run, required=set())
+    return _judge_runs(runs, sha, set(DEFAULT_REQUIRED_CHECKS))
 
 
 def ci_conclusion(repo: str, sha: str, run=None,
@@ -429,6 +444,16 @@ def ci_conclusion(repo: str, sha: str, run=None,
     "every check completed", an empty list satisfied it vacuously, and it
     reported done on a PR whose CI had not yet registered.
     """
+    runs, failure = _read_check_runs(repo, sha, run=run)
+    if failure is not None:
+        return failure
+    return _judge_runs(runs, sha, required)
+
+
+def _read_check_runs(repo: str, sha: str, run=None
+                     ) -> tuple[list[dict], tuple[str, str] | None]:
+    """One snapshot of the commit's check runs: `(runs, None)`, or
+    `([], (state, detail))` when it could not be read."""
     run = run or _run
     # harmonic-forge#805: read the Actions runs for this SHA, then each run's jobs, instead of
     # `commits/<sha>/check-runs`. A fine-grained PAT has no permission that can read check-runs
@@ -447,14 +472,14 @@ def ci_conclusion(repo: str, sha: str, run=None,
         # abbreviated one, which would read as "no runs" and wrongly refuse a valid PASS.
         code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
         if code != 0 or len(full.strip()) != 40:
-            return "unknown", f"could not resolve {sha[:8]} to a full SHA: {full.strip()[:120]}"
+            return [], ("unknown", f"could not resolve {sha[:8]} to a full SHA: {full.strip()[:120]}")
         sha = full.strip()
     code, out = run(["gh", "api", "--paginate",
                      f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
                      "--jq", ".workflow_runs[] | {id, name, status, conclusion, "
                              "started_at: .run_started_at}"])
     if code != 0:
-        return "unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}"
+        return [], ("unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}")
     runs = []
     try:
         wf_runs = [json.loads(line) for line in (out or "").splitlines() if line.strip()]
@@ -465,8 +490,8 @@ def ci_conclusion(repo: str, sha: str, run=None,
                              f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&filter=latest",
                              "--jq", ".jobs[]"])
             if code != 0:
-                return "unknown", (f"could not read the jobs of run {run_id} for {sha[:8]}: "
-                                   f"{out.strip()[:200]}")
+                return [], ("unknown", (f"could not read the jobs of run {run_id} for {sha[:8]}: "
+                                   f"{out.strip()[:200]}"))
             for line in (out or "").splitlines():
                 line = line.strip()
                 if line:
@@ -479,7 +504,13 @@ def ci_conclusion(repo: str, sha: str, run=None,
                              "status": wf.get("status"), "conclusion": wf.get("conclusion"),
                              "started_at": wf.get("started_at")})
     except (ValueError, KeyError, TypeError):
-        return "unknown", f"unparseable job payload for {sha[:8]}"
+        return [], ("unknown", f"unparseable job payload for {sha[:8]}")
+    return runs, None
+
+
+def _judge_runs(runs: list[dict], sha: str,
+                required: set[str] | None) -> tuple[str, str]:
+    """Judge one snapshot (see `ci_conclusion`)."""
     if not runs:
         return "absent", f"{sha[:8]} has no check runs at all"
 
@@ -618,7 +649,7 @@ def check_gate_result(
             "verdicts. A report whose own two statements of its verdict "
             "disagree has not stated one — say which it is.")
     if verdict is None:
-        if looks_like_a_gate_report(body):
+        if may_be_a_gate_report(body):
             # Fail CLOSED on a gate report whose verdict cannot be read.
             # `L3P`, `Conditional PASS — 8/9 cases`, and `✅ PASS` all satisfy
             # `validate_lead` (which requires the LINE, never its content) and

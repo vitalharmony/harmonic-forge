@@ -41,7 +41,7 @@ _FORGE = _FORGE_ROOT / "tools" / "gh"
 if _FORGE.is_dir():
     sys.path.insert(0, str(_FORGE))
 
-from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_gate_report, verdict_of
+from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_gate_report, may_be_a_gate_report, verdict_of
 
 # harmonic-forge#791: the one definition of "this round is approved", shared
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
@@ -472,7 +472,7 @@ def require_round_approval(repo: str, issue: int, body: str) -> None:
     SystemExit); a PASS with no parseable Head-SHA also refuses -- there is
     nothing to check authorization against.
     """
-    if verdict_of(body) != "PASS" or not looks_like_a_gate_report(body):
+    if verdict_of(body) != "PASS" or not may_be_a_gate_report(body):
         return
     sha = gated_sha(body)
     if sha is None:

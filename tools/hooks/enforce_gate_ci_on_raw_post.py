@@ -332,7 +332,7 @@ def decision(command: object, cwd: Path, check=None, round_check=None) -> dict:
             # Every token on its own line, so a quoted body's heading starts
             # a line the way `looks_like_a_gate_report` requires.
             body = "\n".join(token for seg in segments for token in seg) + "\n" + command
-        if not gate_ci.looks_like_a_gate_report(body):
+        if not gate_ci.may_be_a_gate_report(body):
             continue
         if repo is None:
             # harmonic-forge#792 preclose finding: skipping here let a PASS

@@ -905,5 +905,45 @@ class VisibleTextVerdictTests(unittest.TestCase):
         self.assertIsNone(gate_ci.verdict_of(body))
 
 
+class RegressionFixTests(unittest.TestCase):
+    """harmonic-forge#1103 reforge regressions: a fenced gate heading must
+    still RUN the CI check, and the authorizing read judges one snapshot with
+    every visible check before `absent`."""
+
+    REAL = "## Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n**Head-SHA:** " + "a" * 40 + "\n"
+
+    def _assert_runs_and_refuses(self, body):
+        for checks in ([check("verify", "failure")], []):
+            ok, msg = gate_ci.check_gate_result("o/r", body, run=fake_gh(checks=checks))
+            self.assertNotIn("not a gate report", msg)
+            self.assertFalse(ok, msg)
+
+    def test_a_tilde_fenced_pass_runs_the_ci_check(self):
+        self._assert_runs_and_refuses("~~~\n" + self.REAL + "~~~\n")
+
+    def test_a_four_backtick_fence_around_a_fence_runs_the_ci_check(self):
+        self._assert_runs_and_refuses("````\n```\n" + self.REAL + "```\n````\n")
+
+    def test_unprotected_verify_missing_lint_red_is_red_not_absent(self):
+        state, detail = gate_ci.authorizing_conclusion(
+            "o/r", "a" * 40, set(), run=fake_gh(checks=[check("lint", "failure")]))
+        self.assertEqual(state, "red", detail)
+
+    def test_one_snapshot_of_check_runs(self):
+        inner = fake_gh(checks=[check("lint"), check("verify")])
+        calls = []
+
+        def run(cmd):
+            url = next((a for a in cmd if a.startswith("repos/")), "")
+            if "/actions/runs?" in url:
+                calls.append(url)
+                if len(calls) > 1:
+                    return 0, ""
+            return inner(cmd)
+        state, detail = gate_ci.authorizing_conclusion("o/r", "a" * 40, set(), run=run)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(state, "green", detail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
