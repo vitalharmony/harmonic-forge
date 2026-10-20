@@ -41,7 +41,9 @@ from pathlib import Path
 #: The account's real home, never `$HOME`: a caller that points `$HOME`
 #: elsewhere (kill_check.py's tests do) must not move what the boundary hides.
 HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
-SYSTEM = ("/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/opt")
+#: `/var/lib/ca-certificates` is where this host's `/etc/ssl/certs` links point:
+#: without it every TLS call inside the boundary fails (harmonic-forge#1107).
+SYSTEM = ("/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/var/lib/ca-certificates")
 TOOLCHAIN = (HOME / ".local" / "share" / "mise", HOME / ".local" / "state" / "mise",
              HOME / ".config" / "mise", HOME / ".local" / "bin")
 CLAUDE_HOME = HOME / ".claude"

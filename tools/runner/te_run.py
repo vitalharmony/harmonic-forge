@@ -72,6 +72,11 @@ REQUIRED_HOOKS = ("SessionStart", "UserPromptSubmit", "Stop")
 SELF_FLAG = "TE-RUNNER-SELF-FLAG:"
 SAFE_PATH = {"PYTHONSAFEPATH": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 CLAUDE = "claude"
+#: The runner identity's token, for the agent's gh only: bwrap cannot reach the
+#: keyring (harmonic-forge#1107). Mode 0o600, non-empty, or the run aborts.
+RUNNER_GH_TOKEN = Path.home() / ".config" / "te-runner" / "gh-token"
+#: How much of the agent's stderr a G3 abort carries.
+STDERR_TAIL_LINES, STDERR_TAIL_CHARS = 20, 2000
 RECONCILED = "recovery (push attempted):"
 #: Every `done` item carries these keys (AC3); work_item fills what it learned.
 DONE_KEYS = {"reason": "", "verdict": None, "facts": None, "ac_titles": [], "diff_stat": "",
@@ -220,11 +225,62 @@ def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
     except OSError as exc:
         raise Blocked(f"claude did not start: {exc}") from exc
     log_path.write_text(done.stdout, encoding="utf-8")
+    log_path.with_suffix(log_path.suffix + ".stderr").write_text(done.stderr or "",
+                                                                 encoding="utf-8")
     parsed = parse_stream(done.stdout)
     problems = g3_problems(parsed)
     if problems:
-        raise Abort("G3: " + "; ".join(problems))
+        message = "G3: " + "; ".join(problems)
+        tail = stderr_tail(done.stderr or "")
+        if tail:
+            message += "; stderr: " + tail
+        raise Abort(message)
+    if done.returncode:  # G3 passed: the oracle judges the head, the exit is only logged
+        log("agent", f"claude exited {done.returncode}")
     return parsed
+
+
+def stderr_tail(text: str) -> str:
+    lines = text.strip().splitlines()[-STDERR_TAIL_LINES:]
+    return "\n".join(lines)[-STDERR_TAIL_CHARS:]
+
+
+def runner_token() -> str | None:
+    """The runner token, or None (logged) when it is missing, loose or empty."""
+    try:
+        mode = os.stat(RUNNER_GH_TOKEN).st_mode & 0o777
+        token = RUNNER_GH_TOKEN.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log("token", f"runner gh token {RUNNER_GH_TOKEN} unreadable: {exc}")
+        return None
+    if mode != 0o600:
+        log("token", f"runner gh token {RUNNER_GH_TOKEN} has mode {oct(mode)}, not 0o600")
+        return None
+    if not token:
+        log("token", f"runner gh token {RUNNER_GH_TOKEN} is empty")
+        return None
+    return token
+
+
+def probe(agent_env: dict[str, str]) -> bool:
+    """HTTPS and identity from inside the agent's boundary, before any item:
+    `gh api user` must answer with the runner's login (harmonic-forge#1107)."""
+    with tempfile.TemporaryDirectory(prefix="te-run-probe-") as name:
+        scratch = Path(name)
+        try:
+            argv = sandbox.wrap(["gh", "api", "user", "--jq", ".login"], scratch, scratch,
+                                profile="agent")
+            done = subprocess.run(argv, cwd=scratch, env=agent_env, capture_output=True,
+                                  text=True, errors="replace", timeout=120)
+        except (sandbox.SandboxError, OSError, subprocess.TimeoutExpired) as exc:
+            log("probe", str(exc))
+            return False
+    login = done.stdout.strip()
+    if done.returncode or login != deny_check.RUNNER_LOGIN:
+        log("probe", f"exit {done.returncode}, login {login!r}, not {deny_check.RUNNER_LOGIN}; "
+                     f"stderr: {stderr_tail(done.stderr or '')}")
+        return False
+    return True
 
 
 # --- the oracle --------------------------------------------------------------------
@@ -430,7 +486,8 @@ def emit_event(issue: int, head: str, extra: dict, cost: object) -> None:
         log("telemetry", f"not written: {exc}")
 
 
-def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, str]) -> dict:
+def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, str],
+              agent_env: dict[str, str]) -> dict:
     issue = te_queue.issue_number(item["id"])
     failure = te_queue.first_failure(issue)
     body = te_queue.gh_json(f"repos/{te_queue.REPO}/issues/{issue}").get("body") or ""
@@ -471,7 +528,7 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         pin = pinned.group(1)
         bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
         parsed = run_agent(clone, agent_prompt(issue, body, handoff),
-                           budget, env, scratch / "stream.jsonl", scratch / "transcripts")
+                           budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts")
         result = parsed["result"]
         # The head is read through SOURCE, never the clone's own git, and pinned
         # by a ref so a gc in SOURCE cannot prune it before the push (#1098).
@@ -555,6 +612,14 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         log("boundary", "; ".join(problems))
         return 3
     env = preclose_driver.runner_env()
+    token = runner_token()
+    if token is None:
+        return 3
+    # Only the agent (and the probe) holds the runner token; the shared env
+    # feeds the oracle, kill checks, preclose and the PR, and stays token-free.
+    agent_env = {**env, "GH_TOKEN": token}
+    if not probe(agent_env):
+        return 3
     blocked = False
     for _step in range(max_steps):
         item = queue_state.next_item(state)
@@ -564,7 +629,7 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         save(queue, state)
         log("item", f"{item['id']} in progress")
         try:
-            extra = work_item(item, state, queue, budget, env)
+            extra = work_item(item, state, queue, budget, env, agent_env)
         except Exception as exc:  # noqa: BLE001 -- nothing may leave an item in_progress
             set_status(item, "blocked", run_id, note=str(exc))
             save(queue, state)

@@ -140,7 +140,11 @@ def labels(issue: int) -> list[str]:
 
 def tier(issue: int) -> str | None:
     try:
-        return item_list_cache.fetch_issue_tier(REPO, issue, BOARD_NUMBER, owner=BOARD_OWNER)
+        # The runner's own gh identity, never the operator's (harmonic-forge#1107).
+        return item_list_cache.fetch_issue_tier(
+            REPO, issue, BOARD_NUMBER, owner=BOARD_OWNER,
+            run=lambda args: subprocess.run(args, capture_output=True, text=True,
+                                            env=deny_check.runner_env()))
     except Exception as exc:  # noqa: BLE001 -- any failure to read is a failure, never "no tier"
         raise QueueError(f"cannot read the board Tier of F{issue}: {exc}") from exc
 
