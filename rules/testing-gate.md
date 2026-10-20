@@ -381,6 +381,22 @@ added to its own tracked `.claude/settings.json`, the same way
 explicitly NOT done by this change — it is named here rather than silently
 assumed, so this paragraph does not repeat #565's own original defect of
 claiming coverage it does not have.
+
+**A PASS also covers a later SHA named by a `carry-forward` that `l1_post.py`
+accepted (harmonic-forge#1036): the same change as the gated SHA, CI green
+on that SHA.** `l1_post.py --kind carry-forward` (Lane 1 only, `LANE=1`) re-derives
+every condition live before posting: the named comment is this issue's newest
+gate report, verdict PASS, `Head-SHA` equal to `--from-sha`, `body-sha256`
+present and intact; the new SHA is the `origin/<branch>` head and contains
+`origin/main`; `preclose_passes.accepts` holds: replaying the gated commit onto the new
+head's merge-base with `origin/main` is clean and gives exactly the new
+head's tree, `package.json` `"version":` lines and `package-lock.json`'s two
+top-level version lines aside (a difference in a regenerated file refuses); CI on the new SHA is green under the required checks; and the issue
+is not `tooling-exception`. Any other difference refuses, and the new SHA goes
+to Lane 3. A hand-typed `kind=carry-forward` footer is indistinguishable from
+an accepted one, so the merge step re-runs the same checks
+(`python3 tools/gh/_carry_forward.py check --repo R --issue N --branch B`,
+R-0390).
 <!-- /R-0354 -->
 
 ### Why this is a check and not a line of guidance

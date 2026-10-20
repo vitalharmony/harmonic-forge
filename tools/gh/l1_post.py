@@ -99,6 +99,7 @@ import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a pos
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
 import _scratch  # noqa: E402  (harmonic-forge#949)
+import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -183,7 +184,7 @@ LIST_ITEM = re.compile(r"(?m)^\s*(\d+)\.\s")
 #: case-scanning" rather than "labels observed to be safe so far".
 LEAD_LINE = re.compile(
     r"(?im)^[ \t]*\**[ \t]*(?:Readiness|Blockers|Next|Authorized|Status|Change"
-    r"|Scope|Target|Verified|Finding|Cases|Verdict)"
+    r"|Scope|Target|Verified|Finding|Cases|Verdict|Carried)"
     r"[ \t]*\**[ \t]*:.*$")
 
 
@@ -704,6 +705,8 @@ LEAD_FIELDS = {
     "rework": ("Finding", "Next"),
     "spec": ("Cases", "Next"),
     "gate-result": ("Verdict", "Finding", "Next"),
+    # harmonic-forge#1036: which SHA now carries which PASS, and what follows.
+    "carry-forward": ("Target", "Carried", "Next"),
 }
 
 #: Where the lead has to be, and what the cap (below) measures. `<details>`
@@ -2562,7 +2565,7 @@ def _post_kind(
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
     grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
-    milestone_ack: str | None = None,
+    milestone_ack: str | None = None, carry_forward: tuple[str, int] | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -2684,6 +2687,13 @@ def _post_kind(
     # footer field -- the reserved namespace no body may contain, so only this
     # script can mint it (`_prod_run.declared` reads it back from here alone).
     prod_run_field = f" {prod_run_token};" if prod_run_token else ""
+    # harmonic-forge#1036: after `sha=`, so every `\bsha=` reader still finds
+    # the carried-to SHA first. `_carry_forward.py check` re-validates these.
+    if kind == "carry-forward":
+        if carry_forward is None:
+            fail("--kind carry-forward requires --from-sha and --pass-comment")
+        checks.append("carry-forward")
+        prod_run_field += f" from-sha={carry_forward[0]}; pass={int(carry_forward[1])};"
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
     if kind in STICKY_CHECKED_KINDS:
@@ -2741,6 +2751,55 @@ def _discharge_handoff_owed(repo: str, issue: int) -> None:
         pass
 
 
+#: harmonic-forge#1036: flags a carry-forward never takes -- each one waives or
+#: widens something the carry-forward's own live checks must decide alone.
+CARRY_FORWARD_REFUSED_FLAGS = (
+    ("ack_no_pr_required", "--ack-no-pr-required"), ("ack_overlap", "--ack-overlap"),
+    ("prod_run", "--prod-run"), ("mutates_live", "--mutates-live"),
+    ("spec_comment", "--spec-comment"), ("cross_repo", "--cross-repo"),
+)
+
+
+def validate_carry_forward_args(args) -> None:
+    """Argument shape for `--kind carry-forward` (harmonic-forge#1036), before
+    any git or GitHub read. `--from-sha`/`--pass-comment` are required for it
+    and refused on every other kind; it refuses unless `LANE=1` (operator
+    ruling 6219929298, Q2: the same self-authorization class as
+    `deny_lane3_ae_self_post.py`)."""
+    if args.kind != "carry-forward":
+        if args.from_sha is not None or args.pass_comment is not None:
+            fail("--from-sha / --pass-comment are valid only for --kind carry-forward")
+        return
+    problems = []
+    lane = os.environ.get("LANE")
+    if lane != "1":
+        problems.append(f"--kind carry-forward is Lane 1's alone; LANE is {lane!r}, not '1'")
+    if not args.from_sha or args.pass_comment is None:
+        problems.append("--kind carry-forward requires --from-sha and --pass-comment")
+    for attr, flag in CARRY_FORWARD_REFUSED_FLAGS:
+        value = getattr(args, attr, None)
+        if value not in (None, False):
+            problems.append(f"{flag} is not valid with --kind carry-forward")
+    if len(problems) == 1:
+        fail(problems[0])
+    if problems:
+        fail(f"{len(problems)} problems:\n" + "\n".join(f"{n}. {p}" for n, p in enumerate(problems, 1)))
+
+
+def refuse_carry_forward(refusals: list) -> None:
+    """Refuse a carry-forward naming every failed check. Only CI-wait
+    refusals exit `_carry_forward.WAIT_EXIT` (re-post when CI finishes); any
+    substantive one is a plain refusal: the branch goes to Lane 3."""
+    if not refusals:
+        return
+    listing = "\n".join(f"{n}. {r}" for n, r in enumerate(refusals, 1))
+    if all(getattr(r, "wait", False) for r in refusals):
+        print(f"[l1-post] carry-forward must wait for CI:\n{listing}", file=sys.stderr)
+        raise SystemExit(_carry_forward.WAIT_EXIT)
+    fail(f"carry-forward refused ({len(refusals)} failed check(s)); the branch goes to Lane 3 "
+         f"through ready-for-l3 and a fresh AE:\n{listing}")
+
+
 def write_receipt(record: dict) -> None:
     root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "harmonic-forge/l1-post"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -2768,13 +2827,19 @@ def main() -> None:
     # now DOES carry a LEAD_FIELDS entry (a private-repo incident): see that dict's own
     # comment for why the "over-reach" reading this note used to give was
     # narrower than it looked.
-    parser.add_argument("--kind", choices=("handoff", "ready-for-l3", "sweep", "ae", "ae-and-sweep", "rework"), required=True)
+    parser.add_argument("--kind", choices=("handoff", "ready-for-l3", "sweep", "ae", "ae-and-sweep", "rework",
+                                           "carry-forward"), required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--file", type=Path, help="Body file for every --kind except ae-and-sweep")
     parser.add_argument("--ae-file", type=Path, help="AE body file, --kind ae-and-sweep only")
     parser.add_argument("--sweep-file", type=Path, help="Sweep body file, --kind ae-and-sweep only")
     parser.add_argument("--spec-comment", type=int)
+    # harmonic-forge#1036: the PASS a rebase of the gated change carries forward.
+    parser.add_argument("--from-sha", default=None,
+                        help="--kind carry-forward only: the SHA the Lane 3 PASS gated")
+    parser.add_argument("--pass-comment", type=int, default=None,
+                        help="--kind carry-forward only: the Lane 3 PASS comment id")
     parser.add_argument("--mutates-live", action="store_true")
     # a private-repo incident. Deliberately a required tri-state rather than a `store_true`
     # flag: `--plan-first` absent would be indistinguishable from
@@ -2831,6 +2896,7 @@ def main() -> None:
     refusal = _preflight.require("l1_post", f"python3 {Path(__file__).resolve()} --help")
     if refusal:
         fail(refusal)
+    validate_carry_forward_args(args)
     prod_run = None
     if args.prod_run is not None:
         if args.kind not in ("ae", "ae-and-sweep"):
@@ -2986,13 +3052,18 @@ def main() -> None:
                                      bool(prod_run), args.ack_no_pr_required),
         ]
     _collect(steps)
+    if args.kind == "carry-forward":
+        # harmonic-forge#1036: every live check, all named, before anything posts.
+        refuse_carry_forward(_carry_forward.validate(
+            repo, args.issue, args.pass_comment, args.from_sha, sha, args.branch))
 
     url, _ = post_kind(
         repo, args.issue, args.kind, body, sha, args.branch,
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
         grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)), prod_run=prod_run,
-        milestone_ack=args.milestone_ack,
+        milestone_ack=args.milestone_ack, carry_forward=(
+            (args.from_sha, args.pass_comment) if args.kind == "carry-forward" else None),
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

@@ -148,7 +148,11 @@ def _strict_json(text: str):
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate JSON key")
         return dict(items)
-    return json.loads(text, object_pairs_hook=pairs)
+    # F1036 epoch 2 survivor 3: a number compares by its type and literal text,
+    # never as a float, so two distinct large values cannot compare equal and
+    # 1 never equals 1.0 (the type-strict exemption above).
+    return json.loads(text, object_pairs_hook=pairs, parse_float=lambda s: ("float", s),
+                      parse_int=lambda s: ("int", s))
 
 
 def _without_exempt(document, paths: tuple[tuple[str, ...], ...]):
@@ -187,7 +191,8 @@ def _equal_but_exempt(repo_dir, replay_tree: str, head_tree: str,
             continue
         old_mode, new_mode, _old, _new, status = meta.lstrip(":").split()
         exempt = VERSION_EXEMPT.get(os.path.basename(path))
-        if status != "M" or old_mode != new_mode or exempt is None:
+        # F1036 epoch 2 survivor 3: a symlink's blob is its link text, never JSON.
+        if status != "M" or old_mode != new_mode or old_mode != "100644" or exempt is None:
             return False
         before = _strict_json(_git_out(repo_dir, "cat-file", "blob", f"{replay_tree}:{path}"))
         after = _strict_json(_git_out(repo_dir, "cat-file", "blob", f"{head_tree}:{path}"))

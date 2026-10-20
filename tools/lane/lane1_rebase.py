@@ -184,6 +184,7 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
     if comments is None:
         raise Exit(4, f"cannot read the comments of #{issue}")
     newest = None
+    gated_from = None  # the SHA the newest PASS gated, once a carry-forward moved it
     for comment in comments:
         body = comment.get("body") or ""
         found = watch._classify(body)
@@ -195,10 +196,25 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
             # `posted-by=LANE3`. No heading fallback, no kind denylist: a
             # quoted heading in any other comment is never a verdict.
             if found == ("l3", "gate-result"):
+                gated_from = None
                 if gate_ci.verdict_of(body) == "PASS":
                     newest = f"l3.pass:{gate_ci.gated_sha(body) or ''}"
                 else:
                     newest = f"l3.{detail}"
+                continue
+            # harmonic-forge#1036: a carry-forward after the PASS, from the
+            # PASS's own gated SHA, moves the PASS onto the SHA it names, so a
+            # second rebase of a carried branch is rebaseable. Its checks ran
+            # in `l1_post.py`, and `_carry_forward.py check` re-runs them
+            # before any merge. Only an unedited one counts (F1036 preclose
+            # survivor 2): its body-sha256 marker present and intact.
+            if (found == ("l1", "carry-forward") and newest and newest.startswith("l3.pass:")
+                    and _carry_forward_intact(comment)):
+                fields = _carry_forward_fields(body)
+                if fields and (_same_sha(fields["from-sha"], newest.split(":", 1)[1])
+                               or _same_sha(fields["from-sha"], gated_from)):
+                    gated_from = gated_from or newest.split(":", 1)[1]
+                    newest = f"l3.pass:{fields['sha']}"
                 continue
             # sticky-wicket PATCH (F1018 pass 2): Lane 1's own posts after the
             # L2D (ready-for-l3, AE, sweep, discussion) do not change the
@@ -214,6 +230,20 @@ def newest_lane_marker(repo_dir: str, issue: int) -> str | None:
                 detail = "done"
             newest = f"{lane}.{detail}"
     return newest
+
+
+def _carry_forward_fields(body: str) -> dict[str, str] | None:
+    sys.path.insert(0, str(_GH))
+    import _carry_forward  # noqa: PLC0415
+    return _carry_forward.footer_fields(body)
+
+
+def _carry_forward_intact(comment: dict) -> bool:
+    sys.path.insert(0, str(_GH))
+    import _carry_forward  # noqa: PLC0415
+    body = comment.get("body") or ""
+    return bool(_carry_forward._BODY_SHA_MARKER.search(body)) and \
+        _carry_forward.clr.verify_body_sha256(comment)
 
 
 def issue_labels(repo_dir: str, issue: int) -> set[str]:
