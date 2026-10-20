@@ -98,7 +98,7 @@ open the PR, merge it, then close, unless something is genuinely blocking
 issue). This does not relax the "no lane closes/merges without this literal
 instruction" rule elsewhere in this doc — it resolves the opposite failure,
 treating "needs a PR/merge" as if it were itself a reason to stop and ask.
-One named exception to that rule: `universal-lane1.md`'s R-0351.
+Two named exceptions to that rule: `universal-lane1.md`'s R-0351 and R-0415.
 <!-- /R-0115 -->
 
 ## `EOQ` — end of queue (the default for any unmarked mid-turn message)
@@ -343,7 +343,7 @@ owes=spec` belt event is `Spec H<N>`. One addition (harmonic-forge#895):
 always on a `BATCH` line (R-0384).
 <!-- /R-0343 -->
 <!-- R-0408 -->
-While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351), and a mid-task lane queues the event per R-0375.
+While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues the event per R-0375.
 <!-- /R-0408 -->
 
 ## Repo prefixes

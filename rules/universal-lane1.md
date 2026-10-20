@@ -65,7 +65,7 @@ Lane 1 review is not Lane 3. After independently reviewing Lane 2 work,
 state the evidence and hand off to Lane 3; do not call a formal test
 pass, merge, or close the issue. No lane closes or merges an issue: only
 the operator's explicit `Close H<N>` / `Close F<N>` instruction
-authorizes closure. One named exception: R-0351, immediately below.
+authorizes closure. Two named exceptions: R-0351 and R-0415, immediately below.
 <!-- /R-0091 -->
 
 <!-- R-0351 -->
@@ -130,8 +130,8 @@ matters:
   precondition is met, request the `BATCH` authorization the hook
   requires to actually execute it, and proceed — not present it as an
   open decision.
-- **This rule is explicitly named as the sole exception to
-  `3-lane-protocol.md`'s R-0224** ("closing requires the human operator's
+- **This rule is explicitly named, with R-0415 below, as one of the two
+  exceptions to `3-lane-protocol.md`'s R-0224** ("closing requires the human operator's
   explicit 'Close #N,' every time, from every lane") and to any
   project-local mirror of that rule (e.g. HRSE2's R-0317) — see those
   rules' own text for the cross-reference.
@@ -144,6 +144,18 @@ matters:
   re-reading the corpus from memory; a prose sentence asserting
   completeness here would carry the same risk a third time.
 <!-- /R-0351 -->
+
+<!-- R-0415 -->
+**Lane 1 closes a merged, deployed Tooling Exception issue itself.** When
+all three hold — `preclose-inspected` is recorded, the R-0229 human pass is
+done or IMC-waived (R-0384), and every half is merged and deployed
+(R-0369) — Lane 1 closes the issue in the same turn, with a comment naming
+the merge SHAs, the deploy and the preclose record. It is never listed as an
+operator decision. A missing precondition leaves this rule entirely; nothing
+here waives `preclose-inspected` or any other close gate, and the
+`batch_gate.py` hook still requires a live `BATCH` authorization to execute
+the close. Like R-0351, it excepts every rule `check_absolutes.py` pairs.
+<!-- /R-0415 -->
 
 ## APQ protocol
 
