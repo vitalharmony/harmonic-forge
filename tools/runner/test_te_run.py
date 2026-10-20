@@ -435,6 +435,19 @@ class Pipeline(unittest.TestCase):
         self.assertIn("kill-bundle-sha256", self.item()["note"])
         self.assertEqual(self.observed(), [])
 
+    def test_symlinked_checks_json_is_refused_before_the_agent(self):
+        # checks.json as a symlink to a file the agent could rewrite after the
+        # snapshot: refused outright, and nothing the agent writes ever runs.
+        real = self.tmp / "agent-writable-checks.json"
+        shutil.move(str(self.bundle / "checks.json"), real)
+        (self.bundle / "checks.json").symlink_to(real)
+        self.assertEqual(self.drive(), 3)
+        item = self.item()
+        self.assertEqual(item["status"], "blocked")
+        self.assertIn("symlink", item["note"])
+        self.assertIn("checks.json", item["note"])
+        self.assertEqual(self.observed(), [])
+
     def test_non_finite_budget_is_refused(self):
         for budget in ("nan", "inf", "-inf", "0", "-1"):
             self.assertEqual(te_run.main(["run", "--queue", str(self.queue),

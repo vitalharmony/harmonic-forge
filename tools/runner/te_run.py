@@ -215,8 +215,17 @@ def snapshot_bundle(issue: int, pin: str, scratch: Path) -> Path:
     snapshot = scratch / "bundle"
     try:
         shutil.copytree(te_queue.bundle_dir(issue), snapshot, symlinks=True)
+    except OSError as exc:
+        raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
+    # A symlink anywhere in the copy (checks.json included) would point the
+    # oracle at a file the agent can still write, so none is accepted. The copy
+    # is what is scanned: it is exactly what the oracle will use.
+    links = [str(p.relative_to(snapshot)) for p in snapshot.rglob("*") if p.is_symlink()]
+    if links:
+        raise Blocked(f"the kill-check bundle holds a symlink ({', '.join(links[:3])}); refused")
+    try:
         digest = te_queue.kill_runner.bundle_digest(snapshot)
-    except (OSError, te_queue.kill_runner.RunnerError) as exc:
+    except te_queue.kill_runner.RunnerError as exc:
         raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
     if digest != pin:
         raise Blocked("the kill-check bundle no longer matches the handoff's kill-bundle-sha256")
