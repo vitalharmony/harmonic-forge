@@ -30,6 +30,16 @@ CHECK = ("import os, sys\nfrom pathlib import Path\n"
          "sys.exit(0 if f() == 2 else 1)\n")
 
 
+
+STUB_BWRAP = Path(__file__).resolve().parent / "testdata" / "stub_bwrap.py"
+
+
+def setUpModule():
+    # The unit tests run the boundary's argv through a stand-in (harmonic-forge#1098);
+    # real confinement has its own tests.
+    os.environ["TE_RUNNER_BWRAP"] = str(STUB_BWRAP)
+    os.environ["HARMONIC_FORGE_TESTING"] = "1"
+
 class KillRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         # Under the real ~/.cache, not /tmp: the scratch root is refused under

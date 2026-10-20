@@ -47,6 +47,8 @@ GH_TOOLS = HERE.parent / "gh"
 sys.path.insert(0, str(GH_TOOLS))
 import preclose_check  # noqa: E402
 import preclose_passes  # noqa: E402
+sys.path.insert(0, str(HERE))
+import sandbox  # noqa: E402
 
 PRECLOSE = GH_TOOLS / "preclose_check.py"
 CROSS_FAMILY = HERE.parent / "lane" / "cross_family_call.sh"
@@ -191,11 +193,18 @@ def parse_findings(structured: object) -> list[dict]:
 
 def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: str,
                 budget: str) -> tuple[list[dict], int | None]:
-    result = call(["claude", "-p", "--model", model,
-                   "--permission-prompts", "none", "--permission-mode", "dontAsk",
-                   "--max-budget-usd", budget, "--output-format", "json",
-                   "--json-schema", json.dumps(FINDINGS_SCHEMA)],
-                  cwd=cwd, env=env, stdin=prompt, timeout=REFUTER_TIMEOUT)
+    argv = ["claude", "-p", "--model", model,
+            "--permission-prompts", "none", "--permission-mode", "dontAsk",
+            "--max-budget-usd", budget, "--output-format", "json",
+            "--json-schema", json.dumps(FINDINGS_SCHEMA)]
+    try:
+        # A refuter may run the head's (the agent's) tests, so it runs inside the
+        # bwrap boundary: only its export of the head and a private transcripts
+        # dir are writable (harmonic-forge#1098).
+        argv = sandbox.wrap(argv, cwd, Path(tempfile.mkdtemp(prefix="transcripts-", dir=cwd.parent)))
+    except sandbox.SandboxError as exc:
+        raise DriverError(str(exc)) from exc
+    result = call(argv, cwd=cwd, env=env, stdin=prompt, timeout=REFUTER_TIMEOUT)
     if result.returncode:
         raise DriverError(f"refuter {lens} exited {result.returncode}: {result.stderr.strip()[:300]}")
     try:

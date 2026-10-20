@@ -7,9 +7,12 @@ Works a `te_queue.py` queue one item at a time. The harness alone writes item
 statuses: the agent is never given the queue path. Per item:
 
 1. re-check eligibility (`te_queue.first_failure`); an ineligible item is
-   reduced and set aside without a worktree;
-2. create `fix/<N>-te-runner` from `origin/main` in a fresh worktree (an
-   existing branch or worktree of that name blocks the item, never reused);
+   reduced and set aside without a checkout;
+2. create `fix/<N>-te-runner` from `origin/main` in a fresh `git clone
+   --shared` (an existing branch or checkout of that name blocks the item,
+   never reused). The agent and every run of its code (`mise run check`, the
+   kill-check tests, the preclose refuters) run inside `sandbox.py`'s `bwrap`
+   boundary (harmonic-forge#1098);
 3. run `claude -p` in it with `te-runner.settings.json`, the runner's own key
    and gh config (`preclose_driver.runner_env`), and stream-json with hook
    events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit` and
@@ -53,6 +56,7 @@ sys.path.insert(0, str(HERE.parent / "lane"))
 sys.path.insert(0, str(HERE.parent / "telemetry"))
 import deny_check  # noqa: E402
 import preclose_driver  # noqa: E402
+import sandbox  # noqa: E402
 import queue_state  # noqa: E402
 import te_queue  # noqa: E402
 import verdict  # noqa: E402
@@ -141,7 +145,7 @@ def save(path: Path, state: dict) -> None:
 
 def agent_prompt(issue: int, body: str, handoff: str) -> str:
     """The issue and its handoff only: never the queue, never a status."""
-    return (f"Implement harmonic-forge#{issue} in this worktree, following the Lane 1 handoff "
+    return (f"Implement harmonic-forge#{issue} in this checkout, following the Lane 1 handoff "
             "below exactly. Commit your work with `git commit` when it is done; do not push, "
             "and do not open a pull request. If you cannot complete the issue honestly, end "
             f"your final message with one line `{SELF_FLAG} <reason>`.\n\n"
@@ -191,12 +195,18 @@ def g3_problems(parsed: dict) -> list[str]:
     return problems
 
 
-def run_agent(worktree: Path, prompt: str, budget: str, env: dict[str, str],
-              log_path: Path) -> dict:
+def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
+              log_path: Path, transcripts: Path) -> dict:
     if not SETTINGS.is_file():
         raise Abort(f"settings file {SETTINGS} is missing")
     try:
-        done = subprocess.run(claude_argv(budget), cwd=worktree, env=env, input=prompt,
+        # The agent runs inside the bwrap boundary (harmonic-forge#1098): only its
+        # clone and a private transcripts dir are writable.
+        argv = sandbox.wrap(claude_argv(budget), clone, transcripts)
+    except sandbox.SandboxError as exc:
+        raise Abort(str(exc)) from exc
+    try:
+        done = subprocess.run(argv, cwd=clone, env=env, input=prompt,
                               capture_output=True, text=True)
     except OSError as exc:
         raise Blocked(f"claude did not start: {exc}") from exc
@@ -270,9 +280,13 @@ def kill_check_checks(bundle: Path, base: str, head: str, scratch: Path) -> Path
     checks = []
     for entry in te_queue.kill_runner.load_checks(bundle):
         overlay = f"cp -R {_quote(str(bundle / 'files'))}/. . && exec \"$@\""
+        # The test executes the agent's code, so it runs inside the boundary,
+        # writable = kill_check.py's own scratch tree (the cwd at test time). The
+        # trusted sandbox.py is named by absolute path, never the tree's copy.
         checks.append({"ac": entry["ac"], "mechanism": "the agent's change, reversed",
-                       "patch": str(patch), "test": ["sh", "-c", overlay, "kill-check",
-                                                     *entry["test"]]})
+                       "patch": str(patch),
+                       "test": [sys.executable, str(HERE / "sandbox.py"), "here", "--",
+                                "sh", "-c", overlay, "kill-check", *entry["test"]]})
     path = scratch / "checks.json"
     path.write_text(json.dumps(checks, indent=1), encoding="utf-8")
     return path
@@ -342,13 +356,15 @@ def live_facts(pr: str, head: str, env: dict[str, str]) -> dict:
     return {"pr_exists": True, "head_sha_matches": data.get("headRefOid") == head, "ci": ci}
 
 
-def open_pr(item: dict, state: dict, queue: Path, worktree: Path, issue: int, head: str,
+def open_pr(item: dict, state: dict, queue: Path, issue: int, head: str,
             branch: str, titles: list[str], env: dict[str, str]) -> str:
-    if run(["git", "remote", "get-url", "runner-fork"], cwd=worktree).returncode:
-        git("remote", "add", "runner-fork", FORK_URL, cwd=worktree)
+    # Pushed from SOURCE, never from the agent's clone: the clone's .git/config
+    # and hooks are agent-writable and would run as the operator (#1098).
+    if run(["git", "remote", "get-url", "runner-fork"], cwd=SOURCE).returncode:
+        git("remote", "add", "runner-fork", FORK_URL)
     item.update({"pushed_sha": head, "branch": branch})
     save(queue, state)  # before the push: a kill after it stays visible
-    pushed = run(["git", "push", "runner-fork", f"{head}:refs/heads/{branch}"], cwd=worktree,
+    pushed = run(["git", "push", "runner-fork", f"{head}:refs/heads/{branch}"], cwd=SOURCE,
                  env=env)
     if pushed.returncode:
         raise Blocked(f"push to runner-fork failed: {pushed.stderr.strip()[:200]}")
@@ -413,14 +429,17 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
                  "deny_hits": [failure[1]] if failure[0] == "deny-path" else []}
         return {"facts": facts, "verdict": verdict.reduce(facts), "ac_titles": titles}
     branch = f"fix/{issue}-te-runner"
-    worktree = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
-    if worktree.exists() or not run(["git", "rev-parse", "--verify", "--quiet",
-                                     f"refs/heads/{branch}"], cwd=SOURCE).returncode:
-        raise Blocked(f"branch {branch} or worktree {worktree} already exists; never reused")
+    clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
+    if clone.exists() or not run(["git", "rev-parse", "--verify", "--quiet",
+                                  f"refs/heads/{branch}"], cwd=SOURCE).returncode:
+        raise Blocked(f"branch {branch} or checkout {clone} already exists; never reused")
     git("fetch", "-q", "origin", "main")
     base = git("rev-parse", "origin/main")
-    git("worktree", "add", "-q", "-b", branch, str(worktree), base)
-    log("worktree", f"{worktree} on {branch} from {base[:12]}")
+    # A standalone clone, not a linked worktree: its .git lives inside the
+    # boundary's one writable directory, so the agent can commit (#1098).
+    git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(clone))
+    git("checkout", "-q", "-b", branch, base, cwd=clone)
+    log("clone", f"{clone} on {branch} from {base[:12]}")
     with tempfile.TemporaryDirectory(prefix="te-run-") as scratch_name:
         scratch = Path(scratch_name)
         handoff = te_queue.handoff(issue) or ""
@@ -429,12 +448,20 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
             raise Blocked("the handoff pins no kill-bundle-sha256")
         pin = pinned.group(1)
         bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
-        parsed = run_agent(worktree, agent_prompt(issue, body, handoff),
-                           budget, env, scratch / "stream.jsonl")
+        parsed = run_agent(clone, agent_prompt(issue, body, handoff),
+                           budget, env, scratch / "stream.jsonl", scratch / "transcripts")
         result = parsed["result"]
-        head = git("rev-parse", "HEAD", cwd=worktree)
+        # The head is read through SOURCE, never the clone's own git, and pinned
+        # by a ref so a gc in SOURCE cannot prune it before the push (#1098).
+        git("fetch", "-q", str(clone), "HEAD")
+        head = git("rev-parse", "FETCH_HEAD")
+        git("update-ref", f"refs/te-runner/{issue}", head)
         log("agent", f"head {head[:12]}, cost {result.get('total_cost_usd')}")
-        check_rc = run(["mise", "run", "check"], cwd=worktree, env=oracle_env(env)).returncode
+        try:
+            check_argv = sandbox.wrap(["mise", "run", "check"], clone)
+        except sandbox.SandboxError as exc:
+            raise Abort(str(exc)) from exc
+        check_rc = run(check_argv, cwd=clone, env=oracle_env(env)).returncode
         log("check", f"exit {check_rc}")
         kill = kill_facts(issue, base, head, env, bundle, pin)
         if kill and not kill_receipt(issue, base, head, env, scratch, bundle):
@@ -459,7 +486,7 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
                  "diff_stat": (git("diff", "--stat", base, head).splitlines() or [""])[-1].strip(),
                  "ac_titles": titles, "total_cost_usd": result.get("total_cost_usd")}
         if outcome["state"] == "green":
-            pr = open_pr(item, state, queue, worktree, issue, head, branch, titles, env)
+            pr = open_pr(item, state, queue, issue, head, branch, titles, env)
             extra["pr"] = pr
             facts["live"] = live_facts(pr, head, env)
             extra["live_read_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

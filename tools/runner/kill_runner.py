@@ -40,6 +40,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 import _scratch  # noqa: E402
 from kill_check import run_command  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox  # noqa: E402
 
 TIMEOUT_RC = 124
 
@@ -163,8 +165,20 @@ def run_one(argv: list[str], pristine: Path, run_dir: Path, bundle: Path,
     shutil.copytree(pristine, run_dir, symlinks=True)
     try:
         overlay(bundle, run_dir, files)
+        # Inside the boundary a missing binary is just a non-zero exit, so it is
+        # refused here, before wrapping: a check that cannot launch is an error
+        # (exit 2), never a test result.
+        if shutil.which(argv[0], path=None if os.sep not in argv[0] else "") is None \
+                and not (run_dir / argv[0]).is_file():
+            raise RunnerError(f"cannot launch {argv[0]!r}: not found")
         try:
-            return run_command(argv, cwd=run_dir, env=test_env(repo, run_dir),
+            # The test executes the head's (the agent's) code, so it runs inside
+            # the bwrap boundary with only its run directory writable (#1098).
+            confined = sandbox.wrap(argv, run_dir)
+        except sandbox.SandboxError as exc:
+            raise RunnerError(str(exc)) from exc
+        try:
+            return run_command(confined, cwd=run_dir, env=test_env(repo, run_dir),
                                timeout=timeout).returncode
         except subprocess.TimeoutExpired:
             return TIMEOUT_RC

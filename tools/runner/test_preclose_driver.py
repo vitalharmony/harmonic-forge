@@ -107,6 +107,16 @@ def sh(*args: str, cwd: Path) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
+
+STUB_BWRAP = Path(__file__).resolve().parent / "testdata" / "stub_bwrap.py"
+
+
+def setUpModule():
+    # The unit tests run the boundary's argv through a stand-in (harmonic-forge#1098);
+    # real confinement has its own tests.
+    os.environ["TE_RUNNER_BWRAP"] = str(STUB_BWRAP)
+    os.environ["HARMONIC_FORGE_TESTING"] = "1"
+
 class Driver(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
