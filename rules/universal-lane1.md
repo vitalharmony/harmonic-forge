@@ -153,9 +153,9 @@ done or waived by an IMC waiver that is still live (R-0384; once
 (R-0369) — Lane 1 closes the issue in the same turn, with a comment naming
 the merge SHAs, the deploy and the preclose record. It is never listed as an
 operator decision. A missing precondition leaves this rule entirely; nothing
-here waives `preclose-inspected` or any other close gate, and the
-`batch_gate.py` hook still requires a live `BATCH` authorization to execute
-the close. Like R-0351, it excepts every rule `check_absolutes.py` pairs. Its forge and
+here waives `preclose-inspected` or any other close gate. `BATCH` grants the
+merge only (R-0341), so the close's own `gh issue close` prompt is the
+confirmation, never an operator decision to list. Like R-0351, it excepts every rule `check_absolutes.py` pairs. Its forge and
 HRSE2 halves merge forge first: an HRSE2 row naming R-0415 before R-0415
 exists fails `check_absolutes.py`.
 <!-- /R-0415 -->

@@ -2312,8 +2312,8 @@ exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0
 id = "R-0415"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
-statement = "Lane 1 closes a Tooling Exception issue itself, in the same turn and never as an operator decision, when preclose-inspected is recorded, the R-0229 pass is done or waived by an IMC waiver still live (one ended with imc_waiver.py end does not count), and every half is merged and deployed; a missing precondition leaves the rule, and the BATCH hook still gates execution."
-text_sha = "e9e86b3127cc4c51"
+statement = "Lane 1 closes a Tooling Exception issue itself, in the same turn and never as an operator decision, when preclose-inspected is recorded, the R-0229 pass is done or waived by an IMC waiver still live (one ended with imc_waiver.py end does not count), and every half is merged and deployed; a missing precondition leaves the rule, and BATCH grants the merge only, so the close's own prompt is the confirmation."
+text_sha = "a3c71b57f62dcfbe"
 hooks = []
 exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
 
