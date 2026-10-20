@@ -102,6 +102,18 @@ class VersionOnlyReplay(unittest.TestCase):
                                 pkg("1.0.1", scripts={"t": "x"}))
         self.assertFalse(self.accepts(r, c, m))
 
+    def test_conflict_on_a_non_exempt_json_file_is_refused_even_if_json_equal(self):
+        """Preclose pass 1: only VERSION_EXEMPT basenames are judged. A conflicted
+        config.json reformatted on both sides is JSON-equal to its base on each
+        side, so only the basename refusal stops it."""
+        self.write("config.json", '{"a": 1}\n')
+        self.base = self.commit("base with config")
+        r, c, m = self.scenario(pkg("1.0.1"), pkg("1.1.0"), pkg("1.0.1"),
+                                rec_extra={"config.json": '{"a":1}\n'},
+                                main_extra={"config.json": '{ "a" : 1 }\n'},
+                                cur_extra={"config.json": '{"a":1}\n'})
+        self.assertFalse(self.accepts(r, c, m))
+
     def test_head_that_drops_the_reviewed_non_exempt_edit_is_refused(self):
         """Kill check: the reviewed side is what catches a head that is
         version-only against its base but silently dropped the reviewed edit."""
