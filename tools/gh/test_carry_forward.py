@@ -176,7 +176,7 @@ class CarryForwardValidateTests(_Fixture):
 
     def test_one_changed_code_line_is_refused(self):
         sha = self.rebase({"app.py": APP.replace("1", "3"), "frontend/package.json": PKG % "1.0.2"})
-        self.assertRefused(self.validate(sha), "patch-id differs")
+        self.assertRefused(self.validate(sha), "is not the gated change")
 
     def test_fail_result_is_refused(self):
         self.set_pass(gate_body("FAIL", self.from_sha))
@@ -236,7 +236,7 @@ class CarryForwardValidateTests(_Fixture):
         self.assertRefused(self.validate(self.rebase()), "no readable created_at/updated_at")
 
     def test_same_replacement_in_another_function_is_refused(self):
-        """Fix 5: patch-id ignores hunk position; the function context must match."""
+        """Fix 5: the same replacement in another function is a different tree (sticky REFORGE)."""
         block = "    x = 0\n    x = 0\n    x = 0\n    return 1\n    pass\n    pass\n    pass\n"
         mod = f"def f():\n{block}\n\ndef g():\n{block}"
         sh(self.repo, "checkout", "-q", "main")
@@ -250,7 +250,7 @@ class CarryForwardValidateTests(_Fixture):
         sh(self.repo, "push", "-q", "origin", "main")
         self.set_pass(gate_body("PASS", self.from_sha))
         self.assertEqual(self.validate(self.rebase({"mod.py": in_f})), [])
-        self.assertRefused(self.validate(self.rebase({"mod.py": in_g})), "function contexts differ")
+        self.assertRefused(self.validate(self.rebase({"mod.py": in_g})), "is not the gated change")
 
     def test_markerless_pass_is_refused(self):
         self.set_pass(gate_body("PASS", self.from_sha, marker=False))
@@ -284,7 +284,7 @@ class CarryForwardValidateTests(_Fixture):
     def test_indentation_only_python_change_is_refused(self):
         sha = self.rebase({"app.py": APP.replace("    return 1", "     return 2"),
                            "frontend/package.json": PKG % "1.0.2"})
-        self.assertRefused(self.validate(sha), "patch-id differs")
+        self.assertRefused(self.validate(sha), "is not the gated change")
 
     def test_version_change_in_a_non_package_json_file_is_refused(self):
         self.from_sha = self.branch_on(self.base, {
@@ -292,12 +292,12 @@ class CarryForwardValidateTests(_Fixture):
         sh(self.repo, "checkout", "-q", "main")
         self.set_pass(gate_body("PASS", self.from_sha))
         sha = self.rebase({"app.py": APP.replace("1", "2"), "notes.txt": NOTES.replace('"a"', '"c"')})
-        self.assertRefused(self.validate(sha), "patch-id differs")
+        self.assertRefused(self.validate(sha), "is not the gated change")
 
     def test_lock_dependency_version_change_is_refused(self):
         sha = self.rebase({"app.py": APP.replace("1", "2"), "frontend/package.json": PKG % "1.0.2",
                            "frontend/package-lock.json": LOCK % ("1.0.2", "1.0.2", "9.9.8")})
-        self.assertRefused(self.validate(sha), "patch-id differs")
+        self.assertRefused(self.validate(sha), "is not the gated change")
 
     def test_wrong_checkout_repo_is_refused(self):
         refusals = self.validate(self.rebase(), git=stub_git("https://github.com/o/other.git"))
@@ -312,7 +312,7 @@ class CarryForwardValidateTests(_Fixture):
         sha = sh(self.repo, "rev-parse", "HEAD")
         sh(self.repo, "push", "-q", "-f", "origin", f"{sha}:refs/heads/{BRANCH}")
         sh(self.repo, "checkout", "-q", "main")
-        self.assertRefused(self.validate(sha), "binary change")
+        self.assertRefused(self.validate(sha), "is not the gated change")
 
     def test_every_refusal_is_named_not_only_the_first(self):
         self.set_pass(gate_body("FAIL", self.from_sha))
@@ -345,16 +345,18 @@ class DeclaredGeneratedRebaseTests(_Fixture):
             return cf.validate(REPO, ISSUE, PASS_ID, self.from_sha, sha, BRANCH, fake_ci(),
                                stub_git(), cwd=self.repo, comments=self.comments, labels=self.labels)
 
-    def test_rebased_diff_touching_declared_file_is_accepted(self):
-        self.assertEqual(self.run_declared(APP.replace("1", "2")), [])
+    def test_rebased_diff_touching_declared_file_is_refused(self):
+        """Gap 5, option A (operator, 2026-10-19): a declared generated file that
+        differs refuses and goes back through Lane 3; it is never filtered out."""
+        self.assertRefused(self.run_declared(APP.replace("1", "2")), "is not the gated change")
 
     def test_rebased_diff_touching_declared_file_plus_code_line_is_refused(self):
-        self.assertRefused(self.run_declared(APP.replace("1", "3")), "patch-id differs")
+        self.assertRefused(self.run_declared(APP.replace("1", "3")), "is not the gated change")
 
 
 class RegenerationAmendmentTests(_Fixture):
-    """6229366936: a rebase with a regeneration commit and a lock version
-    resolution carries forward; the same plus one changed code line does not."""
+    """6229366936's regeneration amendment, superseded for generated files by
+    gap 5 option A: a regeneration commit refuses; so does one more code line."""
 
     def regen_rebase(self, app):
         return self.rebase(
@@ -362,17 +364,19 @@ class RegenerationAmendmentTests(_Fixture):
              "frontend/package-lock.json": LOCK % ("1.0.2", "1.0.2", "9.9.9")},
             {"design.toml": "gen 3 regenerated\n"})
 
-    def test_regeneration_commit_and_lock_version_carry_forward(self):
+    def test_regeneration_commit_is_refused_even_when_declared(self):
+        """Gap 5, option A: the regeneration commit changes a declared file, so
+        the head is not the gated tree; the lock's version keys alone would pass."""
         sha = self.regen_rebase(APP.replace("1", "2"))
-        self.assertEqual(self.validate(sha, excluded={"design.toml"}), [])
+        self.assertRefused(self.validate(sha, excluded={"design.toml"}), "is not the gated change")
 
     def test_regeneration_without_declaration_is_refused(self):
         sha = self.regen_rebase(APP.replace("1", "2"))
-        self.assertRefused(self.validate(sha), "patch-id differs")
+        self.assertRefused(self.validate(sha), "is not the gated change")
 
     def test_regeneration_plus_one_code_line_is_refused(self):
         sha = self.regen_rebase(APP.replace("1", "3"))
-        self.assertRefused(self.validate(sha, excluded={"design.toml"}), "patch-id differs")
+        self.assertRefused(self.validate(sha, excluded={"design.toml"}), "is not the gated change")
 
 
 class MergeTimeCheckTests(_Fixture):
@@ -394,7 +398,7 @@ class MergeTimeCheckTests(_Fixture):
         self.comments.append({"id": PASS_ID + 1, "body": cf_body(sha, self.from_sha)})
         code, refusals = self.check()
         self.assertEqual(code, cf.REFUSE_EXIT)
-        self.assertRefused(refusals, "patch-id differs")
+        self.assertRefused(refusals, "is not the gated change")
 
     def test_head_moved_after_carry_forward_is_refused(self):
         carried = self.rebase()
@@ -435,36 +439,6 @@ class MergeTimeCheckTests(_Fixture):
         quoted = "\n".join("> " + line for line in cf_body(sha, self.from_sha).splitlines())
         self.comments.append({"id": PASS_ID + 1, "body": "## note\n\n" + quoted})
         self.assertEqual(self.check()[0], cf.USAGE_EXIT)
-
-
-class FilterDiffTests(unittest.TestCase):
-    def test_package_json_version_lines_only_in_package_json(self):
-        diff = ('diff --git a/x/package.json b/x/package.json\n--- a/x/package.json\n+++ b/x/package.json\n'
-                '@@ -1 +1 @@\n-  "version": "1",\n+  "version": "2",\n'
-                'diff --git a/n.txt b/n.txt\n--- a/n.txt\n+++ b/n.txt\n@@ -1 +1 @@\n-"version": "a"\n+"version": "b"\n')
-        out = cf.filter_diff(diff)
-        self.assertNotIn('"version": "1"', out)
-        self.assertIn('-"version": "a"', out)
-        self.assertIn('+"version": "b"', out)
-
-
-    def test_package_json_version_line_with_another_key_survives(self):
-        """Fix 4: only a line that is exactly a version key/value is dropped."""
-        diff = ('diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n'
-                '@@ -1 +1 @@\n-  "version": "1", "scripts": {"x": "a"},\n'
-                '+  "version": "2", "scripts": {"x": "b"},\n')
-        out = cf.filter_diff(diff)
-        self.assertIn('"scripts": {"x": "b"}', out)
-
-    def test_lock_root_version_line_with_another_key_survives(self):
-        diff = ('diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n'
-                '+++ b/package-lock.json\n@@ -1 +1 @@\n-  "version": "1", "x": 1,\n+  "version": "2", "x": 2,\n')
-        self.assertIn('"x": 2', cf.filter_diff(diff))
-
-    def test_exact_version_lines_are_still_dropped(self):
-        diff = ('diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n'
-                '@@ -1 +1 @@\n-  "version": "1",\n+  "version": "2"\n')
-        self.assertEqual(cf.filter_diff(diff), "")
 
 
 class LaneOneOnlyAndArgsTests(unittest.TestCase):

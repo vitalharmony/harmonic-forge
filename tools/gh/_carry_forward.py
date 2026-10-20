@@ -15,23 +15,19 @@ every check below holds, each re-derived live from git and GitHub at post time:
 2. no gate report on the issue is newer than that PASS;
 3. the checkout's origin is `--repo`;
 4. `--sha` is the current `origin/<branch>` head and contains `origin/main`;
-5. the branch's own code diff is unchanged: `git patch-id --verbatim` (not
-   `--stable`, which ignores whitespace) of `git diff $(git merge-base
-   <from-sha> origin/main) <from-sha>` equals that of `git diff origin/main
-   <sha>`, after removing from both diffs the `"version":` lines of any
-   `package.json`, the two top-level version lines of `package-lock.json`
-   (root and `packages[""]`), and the whole section of every file the project
-   declares under `[project.protocol] rebase_regenerate` (F1057 amendment) --
-   so a `lane1-rebase` regeneration commit contributes nothing. A binary
-   change in either diff refuses, since patch-id cannot see inside it;
+5. `--sha` is the gated change on a newer base: replaying `--from-sha` onto
+   `--sha`'s merge base with `origin/main` gives exactly `--sha`'s tree, the
+   JSON version keys of `package.json` / `package-lock.json` aside
+   (`preclose_passes.accepts`, F1077's rule, with harmonic-forge#1086's
+   version-only conflict). A declared generated file that differs refuses
+   (operator ruling on gap 5, option A);
 6. CI on `--sha` is `green` under the repo's REQUIRED checks
    (`gate_ci.ci_conclusion(..., required=gate_ci.required_checks(repo))`).
    `pending` and `absent` are WAIT refusals: re-post once CI finishes;
 7. the issue is not `tooling-exception` (no Lane 3 gate exists there).
 
-Not reused: `_standing_grant._tree_identical`, which compares files at two
-commits; a rebase legitimately changes every file `main` changed, so the
-invariant here is the branch's own diff, a patch-id over each base.
+Reused, not re-implemented: the replay-and-compare is the one rule every
+preclose consumer already uses (sticky-wicket REFORGE 6240719003).
 
 `validate()` returns EVERY refusal, never only the first. A refusal is a
 `Refusal` (a `str`) whose `.wait` says it is a CI wait rather than a
@@ -69,6 +65,7 @@ sys.path.insert(0, str(_HERE))
 
 import check_lane3_ready as clr  # noqa: E402
 import gate_ci  # noqa: E402
+import preclose_passes as pp  # noqa: E402
 
 WAIT_EXIT = 3
 BASE_EXIT = 4
@@ -86,12 +83,6 @@ _FOOTER_FIELD = {
     "from-sha": re.compile(r"(?<![\w-])from-sha=([0-9a-f]{7,40})\b"),
     "pass": re.compile(r"(?<![\w-])pass=(\d+)\b"),
 }
-_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--no-color")
-_SECTION = re.compile(r"^diff --git a/(?P<a>.*) b/(?P<b>.*)$")
-# Exactly a version key/value line -- a line that also carries another key is kept.
-_VERSION_LINE = re.compile(r'^[+-]\s*"version"\s*:\s*"[^"]*"\s*,?\s*$')
-_HUNK_HEADING = re.compile(r"^@@ -\S+ \+\S+ @@ ?(?P<heading>.*)$")
-_KEY_OPEN = re.compile(r'^[ +-](\s*)"([^"]*)"\s*:\s*\{')
 
 GitRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -225,133 +216,28 @@ def check_head(branch: str, sha: str, git: GitRunner, cwd) -> list[Refusal]:
     return out
 
 
-def filter_diff(diff: str, excluded: set[str] | frozenset[str] = frozenset()) -> str:
-    """The diff with its version lines and declared generated files removed.
-
-    - every `^[+-]\\s*"version":` line, inside a `package.json` section only
-      (never the whole-diff `grep -v`, which would also hide a `"version":`
-      change in any other file);
-    - in a `package-lock.json` section, only the root `"version"` (indent 2)
-      and `packages[""].version` (the line under a `"": {` opener seen in the
-      same hunk) -- any other lock difference survives and refuses;
-    - the whole section of a path in `excluded`.
-
-    A hunk left with no `+`/`-` line is dropped, and a file section left with
-    no hunk: `lane1-rebase` resolves a lock version conflict to origin/main's
-    lock unchanged, so the rebased diff has no lock section at all while the
-    gated diff had a version-only one.
-    """
-    sections: list[tuple[list[str], list[list[str]]]] = []
-    name, drop, opener = "", False, None
-    for line in diff.splitlines(keepends=True):
-        section = _SECTION.match(line.rstrip("\n"))
-        if section:
-            name = section.group("b")
-            drop = name in excluded or section.group("a") in excluded
-            opener = None
-            if not drop:
-                sections.append(([line], []))
-            continue
-        if drop or not sections:
-            continue
-        header, hunks = sections[-1]
-        if line.startswith("@@"):
-            opener = None
-            hunks.append([line])
-            continue
-        if not hunks:
-            header.append(line)
-            continue
-        base = name.rsplit("/", 1)[-1]
-        if base == "package-lock.json":
-            key = _KEY_OPEN.match(line)
-            if key:
-                opener = (len(key.group(1)), key.group(2))
-        if _VERSION_LINE.match(line):
-            if base == "package.json":
-                continue
-            if base == "package-lock.json":
-                indent = len(line[1:]) - len(line[1:].lstrip(" "))
-                if indent == 2 or (indent == 6 and opener == (4, "")):
-                    continue
-        hunks[-1].append(line)
-    out: list[str] = []
-    for header, hunks in sections:
-        kept = [h for h in hunks if any(line.startswith(("+", "-")) for line in h[1:])]
-        if kept or not hunks:
-            out += header
-            for hunk in kept:
-                out += hunk
-    return "".join(out)
-
-
-PATCH_ID_MODE = "--verbatim"  # never --stable: it ignores whitespace (assumption 5)
-
-
-def _patch_id(text: str, cwd) -> str | None:
-    proc = subprocess.run(["git", "patch-id", PATCH_ID_MODE], input=text, cwd=cwd,
-                          capture_output=True, text=True)
-    if proc.returncode:
-        return None
-    parts = proc.stdout.split()
-    return parts[0] if parts else None
-
-
-def hunk_headings(diff: str) -> list[tuple[str, str]]:
-    """(file, function-context heading) of every hunk, in order."""
-    out, name = [], ""
-    for line in diff.splitlines():
-        section = _SECTION.match(line)
-        if section:
-            name = section.group("b")
-            continue
-        hunk = _HUNK_HEADING.match(line)
-        if hunk:
-            out.append((name, hunk.group("heading").strip()))
-    return out
-
-
 def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
                          excluded: set[str] | frozenset[str] = frozenset()) -> list[Refusal]:
-    """AC1 bullet 4 / AC4: the branch's own code diff is unchanged."""
-    base = git("merge-base", from_sha, "refs/remotes/origin/main", cwd=cwd)
-    if base.returncode or not base.stdout.strip():
+    """AC1 bullet 4 / AC4: ``sha`` is the gated change on a newer base.
+
+    Sticky-wicket REFORGE (6240719003) replaced the patch-id comparison with
+    F1077's change-identity rule, ``preclose_passes.accepts``: replay the gated
+    commit onto ``sha``'s merge base with ``origin/main`` and require exactly
+    ``sha``'s tree, the JSON version keys aside (harmonic-forge#1086 accepts a
+    replay that conflicts only there). ``excluded`` is kept for the caller's
+    signature and deliberately unused: a declared generated file that differs
+    refuses, and goes back through Lane 3 (operator ruling, gap 5, option A)."""
+    del excluded
+    old = git("merge-base", from_sha, "refs/remotes/origin/main", cwd=cwd)
+    if old.returncode or not old.stdout.strip():
         return [Refusal(f"cannot find the merge base of {from_sha[:12]} and origin/main")]
-    old_base = base.stdout.strip()
-    # The rebased side is diffed from ITS merge base with origin/main (equal to
-    # origin/main whenever --sha contains it), so a merely stale base does not
-    # read as a code change; check_head reports the stale base on its own.
     new = git("merge-base", sha, "refs/remotes/origin/main", cwd=cwd)
     if new.returncode or not new.stdout.strip():
         return [Refusal(f"cannot find the merge base of {sha[:12]} and origin/main")]
-    pairs = ((old_base, from_sha), (new.stdout.strip(), sha))
-    for lo, hi in pairs:
-        numstat = git("diff", *_DIFF_FLAGS, "--numstat", lo, hi, cwd=cwd)
-        if numstat.returncode:
-            return [Refusal(f"cannot diff {lo[:12]}..{hi[:12]}")]
-        if any(line.startswith("-\t-\t") and line.split("\t", 2)[2] not in excluded
-               for line in numstat.stdout.splitlines()):
-            return [Refusal(f"{lo[:12]}..{hi[:12]} carries a binary change, which patch-id cannot compare")]
-    ids, headings = [], []
-    for lo, hi in pairs:
-        diff = git("diff", *_DIFF_FLAGS, lo, hi, cwd=cwd)
-        if diff.returncode:
-            return [Refusal(f"cannot diff {lo[:12]}..{hi[:12]}")]
-        filtered = filter_diff(diff.stdout, excluded)
-        ids.append(_patch_id(filtered, cwd))
-        headings.append(hunk_headings(filtered))
-    old_id, new_id = ids
-    if not old_id or not new_id:
-        return [Refusal(f"patch-id is empty for {'the gated diff' if not old_id else 'the rebased diff'} "
-                        "after the version and generated-file filter, so the code diffs cannot be compared")]
-    if old_id != new_id:
-        return [Refusal(f"patch-id differs: the gated diff ({old_id[:12]}) and the rebased diff "
-                        f"({new_id[:12]}) are not the same code change")]
-    if headings[0] != headings[1]:
-        # patch-id ignores hunk position: the same replacement moved into another
-        # function hashes the same, so the hunks' function contexts must match too.
-        return [Refusal("hunk function contexts differ: the gated diff "
-                        f"{headings[0]} and the rebased diff {headings[1]} change different places")]
+    recorded = {"head_sha": from_sha, "merge_base_sha": old.stdout.strip()}
+    if not pp.accepts(recorded, sha, cur_base=new.stdout.strip(), repo_dir=cwd):
+        return [Refusal(f"{sha[:12]} is not the gated change {from_sha[:12]} on a newer base: replaying it "
+                        "does not give exactly that tree (JSON version keys aside)")]
     return []
 
 
