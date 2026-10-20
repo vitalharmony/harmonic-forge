@@ -358,11 +358,20 @@ class Pipeline(unittest.TestCase):
         self.assertIn("recovery", self.item("F9")["note"])
 
     def test_push_failure_after_pushed_sha_is_recorded(self):
-        with mock.patch.object(te_run, "FORK_URL", str(self.tmp / "no-such-fork.git")):
+        on_disk = []
+        real_run = te_run.run
+
+        def watching(argv, **kw):
+            if argv[:2] == ["git", "push"]:  # what a kill at this instant would leave
+                on_disk.append(self.item().get("pushed_sha"))
+            return real_run(argv, **kw)
+        with mock.patch.object(te_run, "FORK_URL", str(self.tmp / "no-such-fork.git")), \
+                mock.patch.object(te_run, "run", watching):
             self.assertEqual(self.drive(), 3)
         item = self.item()
         self.assertEqual(item["status"], "blocked")
-        self.assertTrue(item["pushed_sha"])  # recorded before the push was attempted
+        self.assertEqual(len(on_disk), 1)
+        self.assertTrue(on_disk[0], "pushed_sha was not saved before the push")
 
     def test_boundary_failure_aborts_before_any_item(self):
         with mock.patch.object(te_run.deny_check, "boundary", return_value=["push is True"]):
