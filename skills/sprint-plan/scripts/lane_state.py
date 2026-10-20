@@ -7,7 +7,7 @@ separate four completely different next actions:
     no handoff, not startable         nothing to do yet
     handoff posted, awaiting trigger  `Implement H<N>` / `Plan H<N>`
     Lane 2 done, awaiting the gate    the gate runs
-    gate FAILed, back with Lane 2     `Fix H<N>`
+    gate FAILed, Lane 1 owes rework   (none: the belt carries it)
 
 **No new bookkeeping.** Every signal is already a posted comment carrying a
 machine-readable marker — `l1_post.py`'s `<!-- l1-post v1; kind=... -->`
@@ -720,16 +720,15 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
     ref = record.get("key", "")
     name, index = newest
     if name == "rework":
-        # hrse#1609. Same operator trigger as a gate FAIL, deliberately
-        # (Lane 1 decision on this issue's plan): what Lane 2 must do is
-        # identical — re-read the issue and do the work on the branch — so a
-        # second token would be vocabulary to remember for no behavioural
-        # difference. The KEY stays distinct, which is where precision is
-        # actually needed; the state string above says which of the two it is.
+        # hrse#1609. A rework is Lane 2's trigger. A gate FAIL no longer
+        # shares it (harmonic-forge#1099): Lane 2 takes work only from Lane 1,
+        # so a FAIL is Lane 1's to review, and the rework Lane 1 posts is what
+        # renders `Fix H<N>`. The KEY was always distinct.
         return LaneState(f"{REWORK_REQUESTED} → Fix {ref}", f"Fix {ref}",
                          KEY_REWORK, at)
     if name == "gate_fail":
-        return LaneState(f"FAIL, back to L2 → Fix {ref}", f"Fix {ref}", KEY_GATE_FAIL, at)
+        # harmonic-forge#1099: no operator trigger; Lane 1's belt carries it.
+        return LaneState("FAIL, Lane 1 owes the rework", None, KEY_GATE_FAIL, at)
     if name == "gate_pass":
         return LaneState(GATED, None, KEY_GATE_PASS, at)
     if name == "blocked":

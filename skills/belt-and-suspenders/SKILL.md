@@ -2,7 +2,6 @@
 name: belt-and-suspenders
 description: Arm a lane's proactive work-discovery protocol — a persistent Monitor (the belt) plus a self-paced loop (the suspenders), parameterized by the LANE env var. Use when a lane session should spend idle time advancing work instead of waiting. Do NOT use in a session with no LANE set.
 ---
-
 # Belt and suspenders
 1. Run `python3 ~/harmonic-forge/tools/lane/belt_plan.py`. If it exits non-zero, report its message and stop.
 2. Make exactly the `Monitor` call (`monitor`) and the `Skill` call (`loop`) it prints, character for character. Do not rewrite, extend or summarize either.
@@ -12,7 +11,7 @@ description: Arm a lane's proactive work-discovery protocol — a persistent Mon
 ## Tick output — silence is the default
 Every Monitor event and every loop tick ends in exactly one of two ways.
 6. **Nothing is owed to this lane → no text at all.** Do not report, acknowledge, summarize, or say "nothing to do". Call `ScheduleWakeup` with `noop: true` (loop tick) or simply end the turn (Monitor event — re-arming on expiry per step 4 is not text and still happens). The global BLUF rule does not apply: a no-op tick is not a response to the operator, so there are no sections to print, empty or otherwise.
-7. **Another lane's event is not this lane's news.** A post by another lane — a ready-for-l3, an AE, a gate result, a handoff for someone else — is owed to that lane. Stay silent unless it changes what *this* lane must do next (e.g. Lane 2 receiving a `rework` or a FAIL on its own branch — a FAIL reaches Lane 2 on the comment watch whoever posted it, and also as `queued-for-l2 kind=gate-result owes=fix`). Never relay, restate, or announce another lane's post to the operator. The belt already drops the kinds another lane owes (harmonic-forge#851), so anything it still prints that is not in rule 9 is a kind it has no owner for: read it, and stay silent unless it is yours.
+7. **Another lane's event is not this lane's news.** A post by another lane — a ready-for-l3, an AE, a gate result, a handoff for someone else — is owed to that lane. Stay silent unless it changes what *this* lane must do next (e.g. Lane 2 receiving a `rework` on its own branch). Never relay, restate, or announce another lane's post to the operator. The belt already drops the kinds another lane owes (harmonic-forge#851), so anything it still prints that is not in rule 9 is a kind it has no owner for: read it, and stay silent unless it is yours.
 8. **Speak only when this lane acted, or needs the operator.** Then the BLUF rule applies in full, and it covers only this lane's action and the operator's next step — including the literal trigger phrase when another lane must be woken.
 9. **A `queued-for-<lane> … owes=<action>` event is the trigger** (harmonic-forge#851). Do the step below for your own lane. Do not ask first, and do not relay it to the operator. The preconditions each step names are checks: when one fails, report that lane's `B` token naming it, and never turn it into a question. Lane 3's `owes=gate` authority is R-0208 (the posted AE is Lane 3's trigger). Its `owes=spec` authority is R-0220 (equivalent to `Spec H<N>`). This is Claude Code only: a Codex Lane 3 session has no belt and keeps the relay it names.
 
@@ -23,8 +22,9 @@ Every Monitor event and every loop tick ends in exactly one of two ways.
    | l3 | `sweep-missing` | Post `L3B` naming the missing sweep (R-0208: AE and sweep are one action). |
    | l2 | `implement` | Re-read the full issue thread, then implement from the handoff on its feature branch. |
    | l2 | `plan` | Re-read the full issue thread, then post the plan with `l2_post.py --kind plan` (`L2S`) and stop. |
-   | l2 | `fix` | A `rework` or a FAIL `gate-result`: re-read the issue thread, then do the work on the branch. |
+   | l2 | `fix` | A Lane 1 `rework`: re-read the issue thread, then do the work on the branch. A gate result is never Lane 2's trigger. |
    | l1 | `plan-review` | Review Lane 2's plan and post the verdict and Implementation Spec. |
    | l1 | `spec-review` | Review Lane 3's spec. If auto-AE is on (`/auto-ae status`; `_auto_ae.state()`) and the issue is under a live BATCH lease, post the AE (citing "auto-AE (R-0378)" and the spec comment) and the sweep in the same turn, for a spec that is Tier R or W throughout. Otherwise post them once the operator's AE arrives. |
+   | l1 | `fail-review` | Read the FAIL. For an implementation defect, post `--kind rework` naming the fix for Lane 2. For a gate or spec defect, it is a Lane 3 re-test (R-0222). Lane 2 never acts on a gate result. |
    | l1 | `sticky-wicket` | Two consecutive non-PASS gate results: run the sticky-wicket agent, post its verdict, then `sticky_receipt.py record` through the newer result before any rework (harmonic-forge#997). |
 10. **A belt event that arrives mid-task waits behind it** (R-0375), in every lane: finish the current task to its status post first. Defer only `queued-for-<lane>` lines, and write each deferred one as an open task entry taken up at the finish line: the belt re-offers every queued item at once to a new lane session, but an unchanged item within one session only every 4 hours, as a backstop (harmonic-forge#1007); a comment-watch line carrying owed work is handled as today, and an event on the issue the lane is working now is read immediately (it amends the task in hand, and the belt will not re-offer it). Say what was queued, in one line: "`queued-for-l2 H1897` — queued behind H1887, finishing to L2D".

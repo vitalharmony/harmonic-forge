@@ -186,8 +186,11 @@ comment only when the belt's own `--queue-for` lane owes its kind
 does not know). So Lane 2 no longer hears the Lane 1 <-> Lane 3 channel.
 Every queued line names its obligation:
 `<repo>#<n> queued-for-<lane> kind=<k> owes=<action>`, from `OWES`.
-`SKILL.md` rule 9 is the matching action table. A FAIL gate result queues to
-Lane 2 from any poster, as `kind=gate-result owes=fix`.
+`SKILL.md` rule 9 is the matching action table. Lane 2 takes work only from
+Lane 1 (harmonic-forge#1099, R-0207): no gate result reaches Lane 2 on either
+channel. A non-PASS, non-BLOCKED gate result queues to Lane 1 from any poster,
+as `kind=gate-result owes=fail-review` (`owes=sticky-wicket` when that is
+owed), and Lane 1's `rework` is what queues the fix to Lane 2.
 
 DO NOT paste a `--worktrees <static path>` command for a lane's belt. A
 hardcoded worktree list goes stale the moment an ephemeral checkout appears
@@ -411,9 +414,9 @@ _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git
 #: actionable) and it was removed.
 QUEUE_KINDS = {
     "l3": ("ready-for-l3", "ae", "sweep", "ae-and-sweep"),
-    # harmonic-forge#851: `gate-result` queues from any poster
-    # (`QUEUE_ANY_POSTER_KINDS`), and only a FAIL -- a PASS owes Lane 2 nothing.
-    "l2": ("handoff", "rework", "gate-result"),
+    # harmonic-forge#1099: Lane 2 takes work only from Lane 1. A gate result
+    # is never Lane 2's trigger; Lane 1 reviews a FAIL and posts a `rework`.
+    "l2": ("handoff", "rework"),
     # harmonic-forge#618. Lane 1's belt is worktrees-first (#590), and a
     # Plan-First issue HAS NO WORKTREE until Lane 1 approves the plan -- the
     # branch is created in response to the approval. So the single most
@@ -432,7 +435,10 @@ QUEUE_KINDS = {
     # noise on the lane with the least capacity to absorb it. The four stalled
     # plans were posted as `discussion`; harmonic-forge#618's guard in
     # `post_lane_discussion.py` is what makes `plan` the marker they carry.
-    "l1": ("plan", "spec"),
+    #
+    # harmonic-forge#1099: `gate-result` too, from any poster
+    # (`QUEUE_ANY_POSTER_KINDS`), and only a non-PASS, non-BLOCKED one.
+    "l1": ("plan", "spec", "gate-result"),
 }
 
 #: WHO must have posted the marker for it to queue work TO a lane.
@@ -455,11 +461,12 @@ QUEUE_POSTERS: dict[str, tuple[str, ...]] = {
 #: harmonic-forge#851. Kinds that queue to a lane WHOEVER posted them -- a
 #: per-kind exception that never widens `QUEUE_POSTERS` for the lane's other
 #: kinds. A gate result is stamped `posted-by=LANE1` or `LANE-unset` when it is
-#: posted outside a `LANE=3` session (`post_lane_discussion.py`), and Lane 2
-#: owes the fix on a FAIL no matter which of those it says. `kind=` is stamped
+#: posted outside a `LANE=3` session (`post_lane_discussion.py`), and Lane 1
+#: owes the FAIL review no matter which of those it says (harmonic-forge#1099;
+#: this was Lane 2's exception under #851). `kind=` is stamped
 #: only after the posting tool validated the body, so it is the authority.
 QUEUE_ANY_POSTER_KINDS: dict[str, tuple[str, ...]] = {
-    "l2": ("gate-result",),
+    "l1": ("gate-result",),
 }
 
 #: harmonic-forge#851 Part 1. Which lane OWES the next action on each marker
@@ -503,11 +510,14 @@ KIND_OWNER: dict[str, str | None] = {
 OWES: dict[str, dict[str, str]] = {
     "l3": {"ready-for-l3": "spec", "sweep": "gate", "ae-and-sweep": "gate",
            "ae": "sweep-missing"},
-    "l2": {"handoff": "implement", "rework": "fix", "gate-result": "fix"},
-    "l1": {"plan": "plan-review", "spec": "spec-review", "gate-result": "sticky-wicket"},
+    "l2": {"handoff": "implement", "rework": "fix"},
+    "l1": {"plan": "plan-review", "spec": "spec-review", "gate-result": "fail-review"},
 }
 #: The one value a Lane 2 `handoff` renders instead of `OWES["l2"]["handoff"]`.
 PLAN_FIRST_OWES = "plan"
+#: The value a Lane 1 `gate-result` renders instead of `OWES["l1"]["gate-result"]`
+#: when `_sticky_wicket_owed` holds (harmonic-forge#997, #1099).
+STICKY_OWES = "sticky-wicket"
 
 
 def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
@@ -565,14 +575,15 @@ def _queue_owes(lane: str, kind: str, body: str) -> str:
 _GATE_RESULT_HEADING = re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.IGNORECASE)
 
 
-def _gate_result_owes_fix(body: str) -> bool:
-    """Does Lane 2 owe a fix on this gate result? (harmonic-forge#851 AC1.6)
+def _gate_result_owes_review(body: str) -> bool:
+    """Does Lane 1 owe a FAIL review on this gate result? (harmonic-forge#851
+    AC1.6; retargeted from Lane 2 by harmonic-forge#1099)
 
     The verdict is read by `gate_ci.verdict_of`, the platform's canonical
     reader: the heading OR the `**Verdict:**` lead block, because most real
     reports carry a bare heading (preclose pass 1 survivor 1). Only a stated
     PASS (Lane 1 owes the close) or BLOCKED (Lane 1 owes the unblock) owes
-    Lane 2 nothing. FAIL, a heading/lead CONFLICT, and an unreadable verdict
+    no review. FAIL, a heading/lead CONFLICT, and an unreadable verdict
     all queue: an undecidable report is emitted for the lane to read, never
     silently dropped."""
     return gate_ci.verdict_of(body) not in ("PASS", "BLOCKED")
@@ -591,16 +602,19 @@ def _is_gate_report(detail: str, body: str) -> bool:
     return bool(_GATE_RESULT_HEADING.match(first))
 
 
-def _fail_owed_to_l2(self_lane: str | None, detail: str, body: str) -> bool:
-    """A gate result that owes a fix is always Lane 2's news on the comment
-    watch, whoever posted it (reforge ruling, fix 1). The queue entry stays
-    as a second channel, but it is newest-marker-wins, so a later unrelated
-    comment would otherwise hide the FAIL from Lane 2 on both channels."""
-    if self_lane != "l2":
+def _fail_owed_to_l1(self_lane: str | None, detail: str, body: str) -> bool:
+    """A gate result that owes a review is always Lane 1's news on the comment
+    watch, whoever posted it (reforge ruling, fix 1; retargeted from Lane 2 by
+    harmonic-forge#1099). Lane 1's belt watches only l2 and l3, so a FAIL
+    stamped `LANE1` or `LANE-unset` would otherwise never print; the queue
+    entry is a second channel, but it is newest-marker-wins, so a later
+    unrelated comment would hide the FAIL on both channels. Never Lane 2's:
+    Lane 2 takes work only from Lane 1."""
+    if self_lane != "l1":
         return False
     if not _is_gate_report(detail, body):
         return False
-    return _gate_result_owes_fix(body)
+    return _gate_result_owes_review(body)
 
 
 #: Overlap `K`, in minutes. `query_since` reads from `min(watermark, now - K)`,
@@ -809,7 +823,10 @@ def _classify(body: str) -> tuple[str, str] | None:
     headline = _mark_retired_tokens(body.strip().split("\n", 1)[0])
     if _L2_HEADING_RE.match(headline):
         return "l2", headline
-    if _L3_HEADING_RE.match(headline):
+    if _L3_HEADING_RE.match(headline) or _GATE_RESULT_HEADING.match(headline):
+        # harmonic-forge#1099 (preclose survivor 3): any heading level
+        # `_is_gate_report` accepts is a Lane 3 post, so a markerless FAIL
+        # under `#`, `###` or `####` reaches Lane 1 too.
         return "l3", headline
     return None
 
@@ -1247,14 +1264,17 @@ def discover_queue(repo: str, lane: str,
             # "not a regression" -- true only while nothing diffed this
             # function's result against a previous cycle, which #596 changed.
             classified = _classify(comment.get("body", ""))
-            if classified is not None and not _is_l2_finding(*classified):
+            # F1099 preclose pass 2 survivor 2: a gate report is never skipped
+            # as a Lane 2 finding, whatever its footer kind says.
+            if classified is not None and (not _is_l2_finding(*classified)
+                                           or _is_gate_report(classified[1], comment.get("body", ""))):
                 last_kind = classified
                 last_body = comment.get("body", "")
                 last_id = comment.get("id")
         newest_id = comments[-1].get("id") if comments else None
         if not last_kind:
             if sticky:
-                queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
+                queued[issue] = f"gate-result owes={STICKY_OWES}"
                 if marker_ids is not None:
                     marker_ids[issue] = newest_id
             continue
@@ -1270,14 +1290,23 @@ def discover_queue(repo: str, lane: str,
             # every tick until a receipt covers it. Owed plan/spec reviews win, so
             # the trigger never hides them.
             if sticky:
-                queued[issue] = f"gate-result owes={OWES['l1']['gate-result']}"
+                queued[issue] = f"gate-result owes={STICKY_OWES}"
                 if marker_ids is not None:
                     marker_ids[issue] = newest_id
             continue
-        if kind == "gate-result" and not _gate_result_owes_fix(last_body):
-            # harmonic-forge#851 AC1.6: a PASS owes Lane 2 nothing; Lane 1 owes the close.
+        if kind == "gate-result" and not _gate_result_owes_review(last_body):
+            # harmonic-forge#851 AC1.6: a PASS or BLOCKED owes no review; Lane 1
+            # owes the close or the unblock, which its own belt does not queue.
+            # An uncovered sticky-wicket trigger still does (F1099 preclose
+            # survivor 1: a BLOCKED newest after a FAIL must not drop it).
+            if sticky:
+                queued[issue] = f"gate-result owes={STICKY_OWES}"
+                if marker_ids is not None:
+                    marker_ids[issue] = newest_id
             continue
-        queued[issue] = f"{kind} owes={_queue_owes(lane, kind, last_body)}"
+        owes = (STICKY_OWES if kind == "gate-result" and sticky
+                else _queue_owes(lane, kind, last_body))
+        queued[issue] = f"{kind} owes={owes}"
         if marker_ids is not None:
             marker_ids[issue] = last_id
     if fetch_failed:
@@ -1736,17 +1765,20 @@ def comment_watch_cycle(
             if classified is None:
                 continue
             lane, detail = classified
-            # One predicate (sticky-wicket PATCH, epoch 2): a gate result that
-            # owes Lane 2 a fix is its news whoever posted it, so neither the
-            # poster-lane watch filter nor the ownership filter may drop it.
-            fail_for_l2 = _fail_owed_to_l2(self_lane, detail, comment.get("body", ""))
-            if fail_for_l2:
-                # The same label exclusion `discover_queue` applies (an epic, or
-                # a Lane-1-owned Tooling Exception issue, never wakes Lane 2),
-                # read only on this rare path; an unreadable label set fails
-                # open, as there.
-                fail_for_l2 = _fail_may_reach(repo, issue, self_lane)
-            if not fail_for_l2 and (lane not in watch or not _owed_to(self_lane, detail)):
+            # harmonic-forge#1099 (preclose survivor 2): a gate report is never
+            # Lane 2's news, whatever its footer's kind or posted-by says.
+            if self_lane == "l2" and _is_gate_report(detail, comment.get("body", "")):
+                continue
+            # One predicate (sticky-wicket PATCH, epoch 2; harmonic-forge#1099):
+            # a gate result that owes Lane 1 a review is its news whoever posted
+            # it, so neither the poster-lane watch filter nor the ownership
+            # filter may drop it.
+            fail_for_l1 = _fail_owed_to_l1(self_lane, detail, comment.get("body", ""))
+            if fail_for_l1:
+                # The same label exclusion `discover_queue` applies, read only
+                # on this rare path; an unreadable label set fails open, as there.
+                fail_for_l1 = _fail_may_reach(repo, issue, self_lane)
+            if not fail_for_l1 and (lane not in watch or not _owed_to(self_lane, detail)):
                 continue
             cid = str(comment.get("id", ""))
             if cid and seen.settled(cid):
