@@ -74,6 +74,17 @@ FAKE_GH = textwrap.dedent("""\
 FAKE_MISE = "#!/bin/sh\nexit ${FAKE_MISE_RC:-0}\n"
 
 
+def private_scratch_root(case: unittest.TestCase) -> str:
+    """A disk-backed scratch root of the test's own (_scratch refuses /tmp), so
+    kill_runner never takes the shared scratch lock -- which a kill_check.py
+    run of these very tests already holds."""
+    base = Path.home() / ".cache" / "te-runner-test-scratch"
+    base.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(dir=base))
+    case.addCleanup(shutil.rmtree, root, True)
+    return str(root)
+
+
 def sh(*args: str, cwd: Path) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -121,7 +132,8 @@ class Pipeline(unittest.TestCase):
         key.chmod(0o600)
         self.enter(mock.patch.dict(os.environ, {
             "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_FORK": str(self.fork),
-            "GH_TOKEN": "operator-token", "GITHUB_TOKEN": "operator-token"}))
+            "GH_TOKEN": "operator-token", "GITHUB_TOKEN": "operator-token",
+            "HRSE_SCRATCH_ROOT": private_scratch_root(self)}))
         pd, tq = te_run.preclose_driver, te_run.te_queue
         for target, name, value in (
                 (te_run, "SOURCE", src), (te_run, "WORKTREE_ROOT", self.tmp / "wt"),
@@ -390,9 +402,10 @@ class SafePath(unittest.TestCase):
         (bundle / "checks.json").write_text(json.dumps(
             [{"ac": "AC1", "test": ["python3", "-m", "unittest", "discover", "-s", "tests",
                                     "-t", "."]}]))
+        env = {**os.environ, "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
         with mock.patch.object(te_run, "SOURCE", src), \
                 mock.patch.object(te_run.te_queue, "bundle_dir", return_value=bundle):
-            kill = te_run.kill_facts(7, base, head, dict(os.environ))
+            kill = te_run.kill_facts(7, base, head, env)
         self.assertEqual(len(kill), 1)
         self.assertNotEqual(kill[0]["head_rc"], 0, "the head's unittest.py shadowed the oracle")
 
