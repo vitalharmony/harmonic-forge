@@ -2292,6 +2292,14 @@ text_sha = "f253d1877db64409"
 hooks = [{ script = "tools/hooks/deny_bare_cd.py", events = ["PreToolUse:Bash"], wired_in = "user settings" }]
 
 [[rule]]
+id = "R-0414"
+file = "rules/universal-claude.md"
+anchor = "batch-subagents-and-run-named-tools-directly"
+statement = "Batch related items into one subagent, never one per item, and make small revisions with Edit directly; run a tool the operator names from this session, never through its wrapping agent."
+text_sha = "ad9c811397a4125f"
+hooks = []
+
+[[rule]]
 id = "R-0350"
 file = "3-lane-protocol.md"
 anchor = "lane2-never-pushes"
@@ -2777,6 +2785,6 @@ hooks = []
 id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix."
-text_sha = "4434a71143ff4da4"
+statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed."
+text_sha = "ed1d695005a978cc"
 hooks = []

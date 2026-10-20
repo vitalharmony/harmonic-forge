@@ -57,6 +57,11 @@ derivable from code or Git.
   for the session. Use `git -C <dir>` or `(cd <dir> && cmd)`. Enforced by
   `tools/hooks/deny_bare_cd.py` (PreToolUse, Bash).
 <!-- /R-0349 -->
+<!-- R-0414 -->
+- Batch related items into one subagent, never one per item, and make small
+  revisions with Edit directly. When the operator names a script or tool, run
+  it from this session, never through the agent that normally wraps it.
+<!-- /R-0414 -->
 
 <!-- R-0083 -->
 - Prefer `gh api` REST endpoints over GraphQL-backed `gh` subcommands
