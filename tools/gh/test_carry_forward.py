@@ -230,10 +230,11 @@ class CarryForwardValidateTests(_Fixture):
 
     def test_ci_conclusion_is_called_with_required(self):
         with mock.patch.object(gate_ci, "required_checks", return_value={"verify"}) as req, \
-                mock.patch.object(gate_ci, "ci_conclusion", return_value=("green", "verify:success")) as ci:
+                mock.patch.object(gate_ci, "_read_check_runs", return_value=([], None)), \
+                mock.patch.object(gate_ci, "_judge_runs", return_value=("green", "verify:success")) as ci:
             self.assertEqual(cf.check_ci(REPO, "a" * 40, run="R"), [])
         req.assert_called_once_with(REPO, run="R")
-        self.assertEqual(ci.call_args.kwargs.get("required"), {"verify"})
+        self.assertEqual(ci.call_args.args[2], {"verify"})
 
     def test_edited_pass_body_is_refused(self):
         self.set_pass(gate_body("PASS", self.from_sha).replace("TCs ran.", "TCs ran, edited."))
