@@ -822,6 +822,7 @@ class SafePath(unittest.TestCase):
         self.assertNotEqual(kill[0]["head_rc"], 0, "the head's unittest.py shadowed the oracle")
 
 
+@unittest.skipUnless(shutil.which("bwrap"), "real bwrap is not installed")
 class RealKillReceipt(unittest.TestCase):
     """The real kill_check.py path (operator ruling: python3 -P on every oracle
     run). A head that only adds a unittest.py shadow, with a wrong fix, must
@@ -856,7 +857,9 @@ class RealKillReceipt(unittest.TestCase):
         scratch = tmp / "scratch"
         scratch.mkdir()
         # A private receipt store (HOME) and scratch root: never the operator's.
-        env = {**os.environ, "HOME": str(tmp / "home"),
+        # Real bwrap (no stub): the bundle sits under /tmp, which the boundary
+        # covers, so the check works only through its read-only input.
+        env = {**os.environ, "HOME": str(tmp / "home"), "TE_RUNNER_BWRAP": "",
                "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
         with mock.patch.object(te_run, "SOURCE", src):
             passed = te_run.kill_receipt(7, base, head, env, scratch, bundle)
