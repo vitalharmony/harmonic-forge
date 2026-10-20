@@ -572,6 +572,24 @@ class Pipeline(unittest.TestCase):
             te_run.run_agent(self.tmp, "p", "1", {}, log_path, self.tmp / "t")
         self.assertEqual((self.tmp / "s" / "stream.jsonl.stderr").read_text(), "warn: x\n")
 
+    def test_token_with_special_mode_bits_is_refused(self):
+        self.token.chmod(0o1600)
+        self.assertIsNone(te_run.runner_token())
+
+    def test_non_utf8_agent_stderr_still_aborts_with_g3_and_writes_logs(self):
+        bad = self.bin / "claude"
+        bad.write_text("#!/usr/bin/env python3\nimport sys\n"
+                       "sys.stdin.read()\nsys.stderr.buffer.write(b'\\xff\\xfe')\n")
+        bad.chmod(0o755)
+        log_path = self.tmp / "s2" / "stream.jsonl"
+        log_path.parent.mkdir()
+        with mock.patch.object(te_run, "claude_argv", return_value=[str(bad)]), \
+                mock.patch.object(te_run, "source_objects", return_value=self.tmp), \
+                self.assertRaises(te_run.Abort) as caught:
+            te_run.run_agent(self.tmp, "p", "1", dict(os.environ), log_path, self.tmp / "t2")
+        self.assertIn("G3", str(caught.exception))
+        self.assertTrue((self.tmp / "s2" / "stream.jsonl.stderr").exists())
+
     def test_missing_or_loose_key_file_refuses(self):
         key = te_run.preclose_driver.RUNNER_KEY
         key.chmod(0o644)

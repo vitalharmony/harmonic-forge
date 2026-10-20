@@ -47,6 +47,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -221,7 +222,7 @@ def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
         raise Abort(str(exc)) from exc
     try:
         done = subprocess.run(argv, cwd=clone, env=env, input=prompt,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, errors="replace")
     except OSError as exc:
         raise Blocked(f"claude did not start: {exc}") from exc
     log_path.write_text(done.stdout, encoding="utf-8")
@@ -248,7 +249,7 @@ def stderr_tail(text: str) -> str:
 def runner_token() -> str | None:
     """The runner token, or None (logged) when it is missing, loose or empty."""
     try:
-        mode = os.stat(RUNNER_GH_TOKEN).st_mode & 0o777
+        mode = stat.S_IMODE(os.stat(RUNNER_GH_TOKEN).st_mode)
         token = RUNNER_GH_TOKEN.read_text(encoding="utf-8").strip()
     except OSError as exc:
         log("token", f"runner gh token {RUNNER_GH_TOKEN} unreadable: {exc}")
