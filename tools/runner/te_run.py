@@ -9,10 +9,11 @@ statuses: the agent is never given the queue path. Per item:
 1. re-check eligibility (`te_queue.first_failure`); an ineligible item is
    reduced and set aside without a checkout;
 2. create `fix/<N>-te-runner` from `origin/main` in a fresh `git clone
-   --shared` (an existing branch or checkout of that name blocks the item,
-   never reused). The agent and every run of its code (`mise run check`, the
-   kill-check tests, the preclose refuters) run inside `sandbox.py`'s `bwrap`
-   boundary (harmonic-forge#1098);
+   --shared` (an existing checkout, local branch, `refs/te-runner/<N>` or
+   runner-fork branch of that name blocks the item, never reused). The agent
+   and every run of its code (`mise run check`, the kill-check tests, the
+   preclose refuters, the cross-family reviewer) run inside `sandbox.py`'s
+   allowlist `bwrap` boundary (harmonic-forge#1098);
 3. run `claude -p` in it with `te-runner.settings.json`, the runner's own key
    and gh config (`preclose_driver.runner_env`), and stream-json with hook
    events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit` and
@@ -112,6 +113,13 @@ def git(*args: str, cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def source_objects() -> Path:
+    """SOURCE's object store: the `--shared` clone borrows its objects from
+    here, so each boundary that runs git in the clone names it as a read-only
+    input (the allowlist hides everything else in SOURCE)."""
+    return (SOURCE / git("rev-parse", "--git-path", "objects")).resolve()
+
+
 def oracle_env(env: dict[str, str]) -> dict[str, str]:
     return {**env, **SAFE_PATH}
 
@@ -202,7 +210,8 @@ def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
     try:
         # The agent runs inside the bwrap boundary (harmonic-forge#1098): only its
         # clone and a private transcripts dir are writable.
-        argv = sandbox.wrap(claude_argv(budget), clone, transcripts)
+        argv = sandbox.wrap(claude_argv(budget), clone, transcripts, profile="agent",
+                            inputs=(source_objects(),))
     except sandbox.SandboxError as exc:
         raise Abort(str(exc)) from exc
     try:
@@ -280,12 +289,14 @@ def kill_check_checks(bundle: Path, base: str, head: str, scratch: Path) -> Path
     checks = []
     for entry in te_queue.kill_runner.load_checks(bundle):
         overlay = f"cp -R {_quote(str(bundle / 'files'))}/. . && exec \"$@\""
-        # The test executes the agent's code, so it runs inside the boundary,
-        # writable = kill_check.py's own scratch tree (the cwd at test time). The
-        # trusted sandbox.py is named by absolute path, never the tree's copy.
+        # The test executes the agent's code, so it runs inside the oracle
+        # boundary, writable = kill_check.py's own scratch tree (the cwd at test
+        # time), with the bundle snapshot its one read-only input. The trusted
+        # sandbox.py is named by absolute path, never the tree's copy.
         checks.append({"ac": entry["ac"], "mechanism": "the agent's change, reversed",
                        "patch": str(patch),
-                       "test": [sys.executable, str(HERE / "sandbox.py"), "here", "--",
+                       "test": [sys.executable, str(HERE / "sandbox.py"), "here",
+                                "--ro", str(bundle), "--",
                                 "sh", "-c", overlay, "kill-check", *entry["test"]]})
     path = scratch / "checks.json"
     path.write_text(json.dumps(checks, indent=1), encoding="utf-8")
@@ -430,9 +441,20 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         return {"facts": facts, "verdict": verdict.reduce(facts), "ac_titles": titles}
     branch = f"fix/{issue}-te-runner"
     clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
-    if clone.exists() or not run(["git", "rev-parse", "--verify", "--quiet",
-                                  f"refs/heads/{branch}"], cwd=SOURCE).returncode:
-        raise Blocked(f"branch {branch} or checkout {clone} already exists; never reused")
+    # Every trace an earlier run of this issue leaves counts: its checkout, a
+    # local branch, the pinned head ref, or the branch on the runner's fork. A
+    # re-queued issue whose clone was deleted must not run the agent again.
+    if clone.exists() or any(not run(["git", "rev-parse", "--verify", "--quiet", ref],
+                                     cwd=SOURCE).returncode
+                             for ref in (f"refs/heads/{branch}", f"refs/te-runner/{issue}")):
+        raise Blocked(f"branch {branch}, refs/te-runner/{issue} or checkout {clone} "
+                      "already exists; never reused")
+    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
+                 cwd=SOURCE, env=env)
+    if remote.returncode:
+        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
+    if remote.stdout.strip():
+        raise Blocked(f"branch {branch} already exists on the runner fork; never reused")
     git("fetch", "-q", "origin", "main")
     base = git("rev-parse", "origin/main")
     # A standalone clone, not a linked worktree: its .git lives inside the
@@ -458,7 +480,8 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         git("update-ref", f"refs/te-runner/{issue}", head)
         log("agent", f"head {head[:12]}, cost {result.get('total_cost_usd')}")
         try:
-            check_argv = sandbox.wrap(["mise", "run", "check"], clone)
+            check_argv = sandbox.wrap(["mise", "run", "check"], clone,
+                                      inputs=(source_objects(),))
         except sandbox.SandboxError as exc:
             raise Abort(str(exc)) from exc
         check_rc = run(check_argv, cwd=clone, env=oracle_env(env)).returncode

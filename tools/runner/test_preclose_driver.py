@@ -64,6 +64,8 @@ FAKE_CROSS = textwrap.dedent("""\
     assert pairs["--families"] in ("2", "3"), args
     assert pairs["--posture"] in ("read-only", "probe", "verify"), args
     assert os.path.isfile(pairs["--brief"]) and os.path.isdir(pairs["--cwd"]), args
+    with open(os.environ["FAKE_LOG"], "a") as log:
+        log.write(json.dumps(["cross-tree", sorted(os.listdir(pairs["--cwd"]))]) + "\\n")
     if os.environ.get("FAKE_CROSS_NO_ENVELOPE"):
         sys.exit(1)
     open(pairs["--out"], "w").write('{"status": "ok"}\\n')
@@ -235,6 +237,32 @@ class Driver(unittest.TestCase):
                  "cross_family_call.sh").read_text()
         for flag in pairs:
             self.assertIn(f"{flag})", usage, f"{flag} is not in the real script's parser")
+
+    def test_cross_family_runs_in_the_reviewer_boundary_without_workspace_config(self):
+        # The agent can commit reviewer workspace config; gemini would load it
+        # and run its mcpServers command. It never reaches the reviewer.
+        for config in (".gemini", ".codex"):
+            (self.src / config).mkdir()
+            (self.src / config / "settings.json").write_text('{"mcpServers": {}}')
+        sh("git", "add", ".", cwd=self.src)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "cfg",
+           cwd=self.src)
+        self.head = sh("git", "rev-parse", "HEAD", cwd=self.src).strip()
+        self.assertEqual(self.drive(), 0)
+        [tree] = self.logged("cross-tree")
+        self.assertIn("widget.py", tree[0])
+        self.assertNotIn(".gemini", tree[0])
+        self.assertNotIn(".codex", tree[0])
+        calls = list(map(json.loads, (self.tmp / "bwrap.jsonl").read_text().splitlines()))
+        [cross] = [c for c in calls if str(preclose_driver.CROSS_FAMILY)
+                   in c[c.index("--chdir") + 3:]]
+        argv = self.logged("cross")[0]
+        scratch = Path(argv[argv.index("--cwd") + 1]).parent
+        self.assertEqual(Path(cross[cross.index("--chdir") + 1]), scratch.resolve())
+        bound = [cross[i + 1] for i, a in enumerate(cross) if a in ("--bind", "--ro-bind")]
+        claude_home = str(preclose_driver.sandbox.CLAUDE_HOME)
+        self.assertNotIn(claude_home, bound)  # the reviewer profile, never the agent's
+        self.assertIn(str(Path(preclose_driver.CROSS_FAMILY).resolve().parent), bound)
 
     def test_no_forbidden_flag_in_any_argv(self):
         self.drive(FAKE_RESULT=json.dumps([{"anchor": "widget.py:2", "scenario": "s",

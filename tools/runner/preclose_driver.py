@@ -201,7 +201,8 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
         # A refuter may run the head's (the agent's) tests, so it runs inside the
         # bwrap boundary: only its export of the head and a private transcripts
         # dir are writable (harmonic-forge#1098).
-        argv = sandbox.wrap(argv, cwd, Path(tempfile.mkdtemp(prefix="transcripts-", dir=cwd.parent)))
+        argv = sandbox.wrap(argv, cwd, Path(tempfile.mkdtemp(prefix="transcripts-", dir=cwd.parent)),
+                            profile="agent")
     except sandbox.SandboxError as exc:
         raise DriverError(str(exc)) from exc
     result = call(argv, cwd=cwd, env=env, stdin=prompt, timeout=REFUTER_TIMEOUT)
@@ -273,10 +274,24 @@ def run_pass(args: argparse.Namespace, env: dict[str, str], progress: dict | Non
                       "--evidence", ".", "--out", str(brief)], env=env)
         if built.returncode:
             raise DriverError(f"cross-family brief refused: {built.stderr.strip()[-300:]}")
+        # The reviewers' own workspace config in the head (`.gemini/`, `.codex/`)
+        # is the agent's to write: it is removed from the export, and the call
+        # runs inside the reviewer boundary, writable = this run's scratch.
+        for config in (".gemini", ".codex"):
+            if (tree / config).is_symlink() or (tree / config).is_file():
+                (tree / config).unlink()
+            else:
+                shutil.rmtree(tree / config, ignore_errors=True)
+        try:
+            cross_argv = sandbox.wrap(
+                ["bash", str(CROSS_FAMILY), "--caller", "claude", "--families", "2",
+                 "--posture", "verify", "--brief", str(brief), "--cwd", str(tree),
+                 "--out", str(envelope)], Path(scratch), profile="reviewer",
+                inputs=tuple(dict.fromkeys((Path(CROSS_FAMILY).resolve().parent, HERE.parent))))
+        except sandbox.SandboxError as exc:
+            raise DriverError(str(exc)) from exc
         started = time.monotonic()
-        crossed = call(["bash", str(CROSS_FAMILY), "--caller", "claude", "--families", "2",
-                        "--posture", "verify", "--brief", str(brief), "--cwd", str(tree),
-                        "--out", str(envelope)], env=env)
+        crossed = call(cross_argv, cwd=Path(scratch), env=env)
         cross_ms = max(1, int((time.monotonic() - started) * 1000))
         # The envelope lives in this run's scratch directory, so one that exists
         # was written by this call. A failed or fallback call is still recorded

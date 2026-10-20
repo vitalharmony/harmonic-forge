@@ -32,8 +32,11 @@ FAKE_CLAUDE = textwrap.dedent("""\
     from pathlib import Path
     here = Path(__file__).resolve().parent
     prompt = sys.stdin.read()
-    queue = (here / "queue_path").read_text()
-    status = [i["status"] for i in json.loads(Path(queue).read_text())["items"]]
+    try:  # under real bwrap the queue is outside the allowlist, so unreadable
+        queue = (here / "queue_path").read_text()
+        status = [i["status"] for i in json.loads(Path(queue).read_text())["items"]]
+    except OSError:
+        status = None
     try:  # best effort: under real bwrap the fake's own directory is read-only
         with open(here / "observed.jsonl", "a") as log:
             log.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "prompt": prompt,
@@ -309,18 +312,34 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(agent), 1)
         call = agent[0]
         self.assertEqual(call[call.index("--chdir") + 1], clone)
-        self.assertEqual(call[call.index("--bind") + 1:call.index("--bind") + 3], [clone, clone])
+        # The writable bind is the last mount, after every read-only one.
+        self.assertEqual(call[call.index("--chdir") - 3:call.index("--chdir")],
+                         ["--bind", clone, clone])
+        self.assertEqual(call[call.index("--chdir") - 6:call.index("--chdir") - 3],
+                         ["--ro-bind"] + [str(te_run.source_objects())] * 2)
 
-    def test_boundary_hides_receipts_bundles_and_runner_config(self):
+    def test_boundary_is_an_allowlist_over_an_empty_home(self):
         self.drive()
-        call = self.bwrap_calls()[0]
-        hidden = [call[i + 1] for i, a in enumerate(call) if a == "--tmpfs"]
-        home = Path.home()
-        for path in (home / ".claude" / "state", home / ".local" / "share" / "te-runner",
-                     home / ".config" / "te-runner"):
-            self.assertIn(str(path), hidden)
-        # The stub logs bwrap's arguments (no argv[0]): the root is read-only first.
-        self.assertEqual(call[:4], ["--die-with-parent", "--ro-bind", "/", "/"])
+        home = te_run.sandbox.HOME
+        secrets = (home / ".local" / "share" / "te-runner",
+                   home / ".config" / "te-runner" / "anthropic-key", home / ".claude" / "state")
+        calls = self.bwrap_calls()
+        self.assertTrue(calls)
+        for call in calls:
+            mounts = [(a, Path(call[i + 1])) for i, a in enumerate(call)
+                      if a in ("--bind", "--ro-bind", "--tmpfs")]
+            tmpfs = [p for a, p in mounts if a == "--tmpfs"]
+            bound = [p for a, p in mounts if a != "--tmpfs"]
+            self.assertIn(home, tmpfs)
+            self.assertIn(Path("/tmp"), tmpfs)
+            self.assertNotIn(Path("/"), bound)
+            self.assertNotIn(home, bound)
+            # Nothing bound exposes a secret, unless a later tmpfs covers it again.
+            for secret in secrets:
+                for i, (kind, path) in enumerate(mounts):
+                    if kind != "--tmpfs" and secret.is_relative_to(path):
+                        self.assertTrue(any(k == "--tmpfs" and secret.is_relative_to(p)
+                                            for k, p in mounts[i + 1:]), (secret, call))
 
     def test_agent_check_and_kill_tests_run_inside_the_boundary(self):
         self.drive()
@@ -411,6 +430,7 @@ class Pipeline(unittest.TestCase):
         sh("git", "branch", "-D", "--quiet", "fix/7-te-runner", cwd=self.src) \
             if "fix/7-te-runner" in sh("git", "branch", "--list", "fix/7-te-runner", cwd=self.src) \
             else None
+        sh("git", "update-ref", "-d", "refs/te-runner/7", cwd=self.src)
         for ref in sh("git", "for-each-ref", "--format=%(refname)", "refs/heads", cwd=self.fork).split():
             sh("git", "update-ref", "-d", ref, cwd=self.fork)
 
@@ -513,6 +533,24 @@ class Pipeline(unittest.TestCase):
         self.assertIn("never reused", self.item()["note"])
         self.assertEqual(self.observed(), [])
 
+    def test_pinned_head_ref_blocks_a_requeued_item_whose_clone_was_deleted(self):
+        sh("git", "update-ref", "refs/te-runner/7", "HEAD", cwd=self.src)
+        self.assertEqual(self.drive(), 3)
+        self.assertIn("refs/te-runner/7", self.item()["note"])
+        self.assertEqual(self.observed(), [])
+
+    def test_branch_on_the_runner_fork_blocks_the_item(self):
+        sh("git", "push", "-q", str(self.fork), "HEAD:refs/heads/fix/7-te-runner", cwd=self.src)
+        self.assertEqual(self.drive(), 3)
+        self.assertIn("already exists on the runner fork", self.item()["note"])
+        self.assertEqual(self.observed(), [])
+
+    def test_unreadable_runner_fork_blocks_the_item(self):
+        with mock.patch.object(te_run, "FORK_URL", str(self.tmp / "no-such-fork.git")):
+            self.assertEqual(self.drive(), 3)
+        self.assertIn("cannot read the runner fork", self.item()["note"])
+        self.assertEqual(self.observed(), [])
+
     def test_kill_after_push_is_reconciled_as_blocked_with_branch(self):
         state = te_run.queue_state.load(self.queue)
         state["items"][0].update({"status": "blocked", "pushed_sha": "a" * 40,
@@ -540,9 +578,9 @@ class Pipeline(unittest.TestCase):
         def watching(argv, **kw):
             if argv[:2] == ["git", "push"]:  # what a kill at this instant would leave
                 on_disk.append(self.item().get("pushed_sha"))
+                return subprocess.CompletedProcess(argv, 1, "", "denied")
             return real_run(argv, **kw)
-        with mock.patch.object(te_run, "FORK_URL", str(self.tmp / "no-such-fork.git")), \
-                mock.patch.object(te_run, "run", watching):
+        with mock.patch.object(te_run, "run", watching):
             self.assertEqual(self.drive(), 3)
         item = self.item()
         self.assertEqual(item["status"], "blocked")
@@ -652,11 +690,69 @@ class RealBoundary(unittest.TestCase):
         sh("git", "checkout", "-q", "-b", "fix/7-te-runner", "main", cwd=clone)
         script = ("echo 2 > a.txt && git add a.txt && "
                   "git -c user.name=a -c user.email=a@a commit -q -m agent")
-        subprocess.run(te_run.sandbox.wrap(["sh", "-c", script], clone), check=True)
+        subprocess.run(te_run.sandbox.wrap(["sh", "-c", script], clone, profile="agent",
+                                           inputs=(src / ".git" / "objects",)), check=True)
         sh("git", "fetch", "-q", str(clone), "HEAD", cwd=src)
         head = sh("git", "rev-parse", "FETCH_HEAD", cwd=src)
         self.assertNotEqual(head, sh("git", "rev-parse", "main", cwd=src))
         self.assertEqual(sh("git", "show", f"{head}:a.txt", cwd=src), "2")
+
+
+    def here(self, *args: str, cwd: Path) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(Path(te_run.__file__).resolve().parent
+                                                   / "sandbox.py"), "here", *args],
+                              cwd=cwd, capture_output=True, text=True)
+
+    def test_real_bwrap_pinned_check_cannot_run_code_from_the_clone(self):
+        # The agent's clone persists at a predictable path; a pinned check that
+        # reaches for code there must fail inside the oracle boundary.
+        clone = self.tmp / "harmonic-forge-7r-impl"
+        clone.mkdir()
+        (clone / "x.py").write_text("print('AGENT CODE RAN')\n")
+        tree = self.tmp / "tree"
+        tree.mkdir()
+        done = self.here("--", "python3", str(clone / "x.py"), cwd=tree)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn("AGENT CODE RAN", done.stdout)
+
+    def test_real_bwrap_oracle_reads_no_operator_or_runner_state(self):
+        tree = self.tmp / "tree"
+        tree.mkdir()
+        home = te_run.sandbox.HOME
+        probes = [home / ".claude", home / ".claude.json", home / ".config" / "te-runner",
+                  home / ".local" / "share" / "te-runner", Path(te_run.SOURCE)]
+        script = "; ".join(f"test -e '{p}' && echo 'SEEN {p}'" for p in probes) + "; true"
+        done = self.here("--", "sh", "-c", script, cwd=tree)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("SEEN", done.stdout)
+
+    def test_real_bwrap_oracle_sees_its_bundle_snapshot_under_tmp(self):
+        # The snapshot lives in a /tmp scratch, which the boundary covers with a
+        # tmpfs; the generated check names it as a read-only input.
+        with tempfile.TemporaryDirectory(prefix="te-run-") as scratch_name:
+            scratch = Path(scratch_name)
+            src = self.tmp / "src"
+            src.mkdir()
+            sh("git", "init", "-q", "-b", "main", cwd=src)
+            (src / "widget.py").write_text("x = 1\n")
+            commit(src, "base")
+            base = sh("git", "rev-parse", "HEAD", cwd=src)
+            (src / "widget.py").write_text("x = 2\n")
+            commit(src, "head")
+            head = sh("git", "rev-parse", "HEAD", cwd=src)
+            bundle = scratch / "bundle"
+            (bundle / "files").mkdir(parents=True)
+            (bundle / "files" / "t.py").write_text("print('BUNDLE TEST RAN')\n")
+            (bundle / "checks.json").write_text(json.dumps([{"ac": "AC1",
+                                                             "test": ["python3", "t.py"]}]))
+            with mock.patch.object(te_run, "SOURCE", src):
+                path = te_run.kill_check_checks(bundle, base, head, scratch)
+            [check] = json.loads(path.read_text())
+            tree = self.tmp / "tree"
+            tree.mkdir()
+            done = subprocess.run(check["test"], cwd=tree, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("BUNDLE TEST RAN", done.stdout)
 
 
 @unittest.skipUnless(shutil.which("bwrap"), "real bwrap is not installed")
@@ -672,9 +768,13 @@ class RealPipeline(Pipeline):
         with mock.patch.object(tempfile, "mkdtemp", lambda *a, **k: real_mkdtemp(dir=base)):
             super().setUp()
         self.enter(mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}))
+        # The fake claude and mise live in the fixture, outside the allowlist:
+        # they join the read-only toolchain, and nothing else of the fixture does.
+        sb = te_run.sandbox
+        self.enter(mock.patch.object(sb, "TOOLCHAIN", (*sb.TOOLCHAIN, self.bin)))
 
     def test_real_bwrap_agent_commit_reaches_the_harness(self):
-        self.assertEqual(self.drive(), 0)
+        self.assertEqual(self.drive(), 0, self.item().get("note"))
         item = self.item()
         base = sh("git", "rev-parse", "origin/main", cwd=self.src)
         self.assertEqual(item["verdict"]["state"], "green", item.get("note"))
@@ -727,7 +827,7 @@ class RealKillReceipt(unittest.TestCase):
     run). A head that only adds a unittest.py shadow, with a wrong fix, must
     not earn a passing receipt."""
 
-    def test_shadowing_head_never_earns_a_kill_check_receipt(self):
+    def receipt(self, fix: str, shadow: bool) -> tuple[bool, dict]:
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         src = tmp / "src"
@@ -739,8 +839,9 @@ class RealKillReceipt(unittest.TestCase):
         (src / "widget.py").write_text("def widget():\n    return 1\n")
         commit(src, "base")
         base = sh("git", "rev-parse", "HEAD", cwd=src)
-        (src / "widget.py").write_text("def widget():\n    return 3\n")
-        (src / "unittest.py").write_text("raise SystemExit(0)\n")
+        (src / "widget.py").write_text(f"def widget():\n    return {fix}\n")
+        if shadow:
+            (src / "unittest.py").write_text("raise SystemExit(0)\n")
         commit(src, "head")
         head = sh("git", "rev-parse", "HEAD", cwd=src)
         bundle = tmp / "bundle"
@@ -759,9 +860,19 @@ class RealKillReceipt(unittest.TestCase):
                "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
         with mock.patch.object(te_run, "SOURCE", src):
             passed = te_run.kill_receipt(7, base, head, env, scratch, bundle)
-        self.assertFalse(passed, "the unittest.py shadow earned a passing kill_check receipt")
         [path] = (tmp / "home" / ".claude" / "state" / "preclose").glob("*_7.kill.json")
-        receipt = json.loads(path.read_text())
+        return passed, json.loads(path.read_text())
+
+    def test_the_same_setup_with_a_real_fix_earns_a_receipt(self):
+        # The positive control: the fixture itself works end to end, so the
+        # shadow test below fails for the shadow, never for its setup.
+        passed, receipt = self.receipt("2", shadow=False)
+        self.assertTrue(passed, receipt)
+        self.assertEqual(receipt["status"], "pass", receipt)
+
+    def test_shadowing_head_never_earns_a_kill_check_receipt(self):
+        passed, receipt = self.receipt("3", shadow=True)
+        self.assertFalse(passed, "the unittest.py shadow earned a passing kill_check receipt")
         # Failed for the right reason: the real test ran at the head and failed
         # (the shadow did not mask it), not because kill_check.py refused to run.
         self.assertEqual(receipt["status"], "fail", receipt)
@@ -817,9 +928,10 @@ class KillCheckChecks(unittest.TestCase):
             path = te_run.kill_check_checks(bundle, base, head, scratch)
         [check] = json.loads(path.read_text())
         # Wrapped by the trusted sandbox.py (absolute path, never the tree's copy).
-        self.assertEqual(check["test"][1:6], [str(Path(te_run.__file__).resolve().parent
-                                                  / "sandbox.py"), "here", "--", "sh", "-c"])
-        self.assertIn(str(bundle / "files"), check["test"][6])
+        self.assertEqual(check["test"][1:8], [str(Path(te_run.__file__).resolve().parent
+                                                  / "sandbox.py"), "here", "--ro", str(bundle),
+                                              "--", "sh", "-c"])
+        self.assertIn(str(bundle / "files"), check["test"][8])
         self.assertEqual(check["test"][-2:], ["python3", "t.py"])
         sh("git", "apply", "--check", check["patch"], cwd=src)  # applies to the head
         sh("git", "apply", check["patch"], cwd=src)
