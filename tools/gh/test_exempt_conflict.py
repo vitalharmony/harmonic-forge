@@ -102,6 +102,12 @@ class VersionOnlyReplay(unittest.TestCase):
                                 pkg("1.0.1", scripts={"t": "x"}))
         self.assertFalse(self.accepts(r, c, m))
 
+    def test_head_that_drops_the_reviewed_non_exempt_edit_is_refused(self):
+        """Kill check: the reviewed side is what catches a head that is
+        version-only against its base but silently dropped the reviewed edit."""
+        r, c, m = self.scenario(pkg("1.0.1", scripts={"t": "x"}), pkg("1.1.0"), pkg("1.0.1"))
+        self.assertFalse(self.accepts(r, c, m))
+
     def test_head_that_differs_from_its_base_in_a_non_exempt_key_is_refused(self):
         r, c, m = self.scenario(pkg("1.0.1"), pkg("1.1.0"), pkg("1.0.1", private=True))
         self.assertFalse(self.accepts(r, c, m))
