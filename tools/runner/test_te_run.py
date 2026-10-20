@@ -70,6 +70,8 @@ FAKE_GH = textwrap.dedent("""\
                               f"refs/heads/{branch}"], capture_output=True, text=True).stdout.strip()
         (here / "pr_head").write_text(sha)
         print("https://github.com/vitalharmony/harmonic-forge/pull/9999")
+    elif args[:2] == ["pr", "comment"]:
+        print("https://github.com/vitalharmony/harmonic-forge/pull/9999#issuecomment-77")
     elif args[:2] == ["pr", "view"]:
         print(json.dumps({"headRefOid": (here / "pr_head").read_text(),
                           "statusCheckRollup": [{"conclusion": "SUCCESS"}]}))
@@ -212,6 +214,66 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(title.endswith("(harmonic-forge#7)"))
         self.assertNotRegex(body.lower(), r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #?\d")
         self.assertEqual(len(self.events), 1)
+
+    def test_green_item_records_the_summary_link_and_live_read_time(self):
+        def fact(issue, base, head, tier, env, out):
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "summary.md").write_text("## Preclose pass\n")
+            return {"status": "complete", "survivors": 0,
+                    "provenance": "Red-team provenance: cross-family (codex) — 1/1"}
+        with mock.patch.object(te_run, "preclose_fact", fact):
+            self.assertEqual(self.drive(), 0)
+        item = self.item()
+        self.assertEqual(item["preclose_summary"],
+                         "https://github.com/vitalharmony/harmonic-forge/pull/9999#issuecomment-77")
+        self.assertRegex(item["live_read_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        comment = next(c for c in self.gh_calls() if c[:2] == ["pr", "comment"])
+        self.assertIn("--repo", comment)
+
+    def test_every_finished_item_carries_the_runs_id(self):
+        te_run.te_queue.add(self.queue, ["F8"])
+        with mock.patch.object(te_run.te_queue, "issue_number",
+                               side_effect=lambda key: int(key[1:])):
+            self.drive(FAKE_MISE_RC="1")
+        state = te_run.queue_state.load(self.queue)
+        self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")
+        self.assertEqual({i["run_id"] for i in state["items"]}, {state["run_id"]})
+
+    def test_a_run_that_works_nothing_still_replaces_the_run_id(self):
+        state = te_run.queue_state.load(self.queue)
+        state["run_id"] = "run-20200101T000000Z"
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run.deny_check, "boundary", return_value=["push is True"]):
+            self.assertEqual(self.drive(), 3)
+        self.assertNotEqual(te_run.queue_state.load(self.queue)["run_id"], "run-20200101T000000Z")
+
+    def test_two_runs_in_the_same_second_get_distinct_ids(self):
+        fixed = te_run.dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=te_run.dt.timezone.utc)
+        ids = []
+        with mock.patch.object(te_run.deny_check, "boundary", return_value=["stop here"]), \
+                mock.patch.object(te_run, "dt", wraps=te_run.dt) as fake_dt:
+            fake_dt.datetime.now.return_value = fixed
+            for _ in range(2):
+                self.drive()
+                ids.append(te_run.queue_state.load(self.queue)["run_id"])
+        self.assertNotEqual(ids[0], ids[1])
+        self.assertTrue(all(i.startswith("run-20261020T120000Z-") for i in ids), ids)
+
+    def test_crash_recovered_item_is_stamped_with_the_new_run(self):
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0].update({"status": "in_progress", "pushed_sha": "a" * 40,
+                                  "branch": "fix/7-te-runner"})
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run.deny_check, "boundary", return_value=["stop here"]):
+            self.drive()
+        state = te_run.queue_state.load(self.queue)
+        self.assertEqual(state["items"][0]["status"], "blocked")
+        self.assertEqual(state["items"][0]["run_id"], state["run_id"])
+
+    def test_every_status_write_goes_through_set_status(self):
+        source = Path(te_run.__file__).read_text()
+        body = source.split("def _run_queue", 1)[1].split("\ndef main", 1)[0]
+        self.assertNotRegex(body, r'\["status"\]\s*=|"status":')
 
     def test_set_aside_branch_is_never_pushed(self):
         self.assertEqual(self.drive(FAKE_MISE_RC="1"), 0)

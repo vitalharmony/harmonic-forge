@@ -40,6 +40,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -69,7 +70,8 @@ CLAUDE = "claude"
 RECONCILED = "recovery (push attempted):"
 #: Every `done` item carries these keys (AC3); work_item fills what it learned.
 DONE_KEYS = {"reason": "", "verdict": None, "facts": None, "ac_titles": [], "diff_stat": "",
-             "head_sha": "", "branch": "", "pr": "", "pushed_sha": ""}
+             "head_sha": "", "branch": "", "pr": "", "pushed_sha": "", "preclose_summary": "",
+             "live_read_at": ""}
 
 
 class Abort(Exception):
@@ -460,10 +462,14 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
             pr = open_pr(item, state, queue, worktree, issue, head, branch, titles, env)
             extra["pr"] = pr
             facts["live"] = live_facts(pr, head, env)
+            extra["live_read_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             outcome = verdict.reduce(facts)
             if summary:
-                run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body", summary],
-                    env=env)
+                posted = run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body",
+                              summary], env=env)
+                url = posted.stdout.strip().splitlines()[-1] if posted.stdout.strip() else ""
+                # The report links the summary (harmonic-forge#1056 AC3).
+                extra["preclose_summary"] = url if url.startswith("https://") else ""
         return {**extra, "facts": facts, "verdict": outcome}
 
 
@@ -472,10 +478,28 @@ def run_queue(queue: Path, budget: str, max_steps: int) -> int:
         return _run_queue(queue, budget, max_steps)
 
 
+def set_status(item: dict, status: str, run_id: str, **fields: object) -> None:
+    """Every status change goes through here, so every item this run touches
+    carries the run's id and the report can scope to it (harmonic-forge#1056
+    sticky-wicket PATCH: stamping by hand at each write site missed some)."""
+    item.update({**fields, "status": status, "run_id": run_id})
+
+
 def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     state = queue_state.load(queue)
-    if reconcile(state):
-        save(queue, state)
+    # The run's id first, saved at once: a run that ends before any item (a
+    # boundary failure, an empty queue) must still replace the last run's id,
+    # or the report would re-propose that run's work.
+    # A random suffix: two runs in the same second must never share an id.
+    run_id = ("run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+              + "-" + secrets.token_hex(4))
+    state["run_id"] = run_id
+    before = {item["id"]: (item["status"], item["note"]) for item in state["items"]}
+    reconcile(state)  # queue_state.recover is imported unmodified, so its changes are
+    for item in state["items"]:  # detected and stamped here rather than inside it
+        if (item["status"], item["note"]) != before[item["id"]]:
+            set_status(item, item["status"], run_id)
+    save(queue, state)
     problems = deny_check.boundary()
     if problems:
         log("boundary", "; ".join(problems))
@@ -486,13 +510,13 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         item = queue_state.next_item(state)
         if item is None:
             break
-        item["status"] = "in_progress"
+        set_status(item, "in_progress", run_id)
         save(queue, state)
         log("item", f"{item['id']} in progress")
         try:
             extra = work_item(item, state, queue, budget, env)
         except Exception as exc:  # noqa: BLE001 -- nothing may leave an item in_progress
-            item.update({"status": "blocked", "note": str(exc)})
+            set_status(item, "blocked", run_id, note=str(exc))
             save(queue, state)
             emit_event(te_queue.issue_number(item["id"]), item.get("head_sha", ""),
                        {"reason": "blocked"}, None)
@@ -502,8 +526,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
             blocked = True
             continue
         outcome = extra["verdict"]
-        item.update({**extra, "status": "done",
-                     "reason": outcome.get("reason") or "", "note": outcome.get("detail", "")})
+        set_status(item, "done", run_id, **extra, reason=outcome.get("reason") or "",
+                   note=outcome.get("detail", ""))
         for key, default in DONE_KEYS.items():  # never overwrites pushed_sha set before a push
             item.setdefault(key, default)
         save(queue, state)
