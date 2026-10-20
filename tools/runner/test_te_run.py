@@ -70,6 +70,8 @@ FAKE_GH = textwrap.dedent("""\
                               f"refs/heads/{branch}"], capture_output=True, text=True).stdout.strip()
         (here / "pr_head").write_text(sha)
         print("https://github.com/vitalharmony/harmonic-forge/pull/9999")
+    elif args[:2] == ["pr", "comment"]:
+        print("https://github.com/vitalharmony/harmonic-forge/pull/9999#issuecomment-77")
     elif args[:2] == ["pr", "view"]:
         print(json.dumps({"headRefOid": (here / "pr_head").read_text(),
                           "statusCheckRollup": [{"conclusion": "SUCCESS"}]}))
@@ -212,6 +214,21 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(title.endswith("(harmonic-forge#7)"))
         self.assertNotRegex(body.lower(), r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #?\d")
         self.assertEqual(len(self.events), 1)
+
+    def test_green_item_records_the_summary_link_and_live_read_time(self):
+        def fact(issue, base, head, tier, env, out):
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "summary.md").write_text("## Preclose pass\n")
+            return {"status": "complete", "survivors": 0,
+                    "provenance": "Red-team provenance: cross-family (codex) — 1/1"}
+        with mock.patch.object(te_run, "preclose_fact", fact):
+            self.assertEqual(self.drive(), 0)
+        item = self.item()
+        self.assertEqual(item["preclose_summary"],
+                         "https://github.com/vitalharmony/harmonic-forge/pull/9999#issuecomment-77")
+        self.assertRegex(item["live_read_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        comment = next(c for c in self.gh_calls() if c[:2] == ["pr", "comment"])
+        self.assertIn("--repo", comment)
 
     def test_set_aside_branch_is_never_pushed(self):
         self.assertEqual(self.drive(FAKE_MISE_RC="1"), 0)

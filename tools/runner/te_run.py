@@ -69,7 +69,8 @@ CLAUDE = "claude"
 RECONCILED = "recovery (push attempted):"
 #: Every `done` item carries these keys (AC3); work_item fills what it learned.
 DONE_KEYS = {"reason": "", "verdict": None, "facts": None, "ac_titles": [], "diff_stat": "",
-             "head_sha": "", "branch": "", "pr": "", "pushed_sha": ""}
+             "head_sha": "", "branch": "", "pr": "", "pushed_sha": "", "preclose_summary": "",
+             "live_read_at": ""}
 
 
 class Abort(Exception):
@@ -460,10 +461,14 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
             pr = open_pr(item, state, queue, worktree, issue, head, branch, titles, env)
             extra["pr"] = pr
             facts["live"] = live_facts(pr, head, env)
+            extra["live_read_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             outcome = verdict.reduce(facts)
             if summary:
-                run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body", summary],
-                    env=env)
+                posted = run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body",
+                              summary], env=env)
+                url = posted.stdout.strip().splitlines()[-1] if posted.stdout.strip() else ""
+                # The report links the summary (harmonic-forge#1056 AC3).
+                extra["preclose_summary"] = url if url.startswith("https://") else ""
         return {**extra, "facts": facts, "verdict": outcome}
 
 
