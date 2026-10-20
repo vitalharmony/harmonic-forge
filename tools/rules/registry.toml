@@ -2295,8 +2295,8 @@ hooks = [{ script = "tools/hooks/deny_bare_cd.py", events = ["PreToolUse:Bash"],
 id = "R-0414"
 file = "rules/universal-claude.md"
 anchor = "batch-subagents-and-run-named-tools-directly"
-statement = "Batch related items into one subagent, never one per item, and make small revisions with Edit directly; run a tool the operator names from this session, never through its wrapping agent."
-text_sha = "ad9c811397a4125f"
+statement = "Batch related items into one subagent, never one per item, unless a rule requires independent agents (the preclose panel), and make small revisions with Edit directly; run a tool the operator names from this session, never through its wrapping agent."
+text_sha = "f80c5f0ff81f58b9"
 hooks = []
 
 [[rule]]
