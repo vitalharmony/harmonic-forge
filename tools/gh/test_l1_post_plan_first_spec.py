@@ -154,10 +154,6 @@ class MarkerVocabulary(unittest.TestCase):
                 spec("The plan is below.\n\n1. Step one.\n2. Step two.\n"), True)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WiredIntoMain(unittest.TestCase):
     """A rule that is correct and unreachable is not a rule.
 
@@ -204,3 +200,7 @@ class WiredIntoMain(unittest.TestCase):
         """The other direction, through `main()` — proving the refusal comes
         from the declared flag and not from the body."""
         self.assertEqual(self._main("false"), ["handoff"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -265,10 +265,6 @@ class NeverWedgeTests(unittest.TestCase):
                 self.assertEqual(out.getvalue(), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ProductionEntryPointTests(unittest.TestCase):
     """`main()`'s emission was untested: `if verdict == "block":` → `if False:`
     left the whole suite green, so the hook could ship as a no-op."""
@@ -379,3 +375,7 @@ class SessionScopeTests(unittest.TestCase):
             "## DECISIONS NEEDED\n1. Merge F1052 now? I recommend yes."),
             "session_id": "session-A"}
         self.assertEqual(bbs.decide(payload, state, NOW)[0], "allow")
+
+
+if __name__ == "__main__":
+    unittest.main()

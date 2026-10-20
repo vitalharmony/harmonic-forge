@@ -955,10 +955,6 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         self.assertEqual(len({e["family"] for e in envelopes}), 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestProbePolicyBoundary(unittest.TestCase):
     """harmonic-forge#432 — `probe` posture's Gemini branch was unbounded.
 
@@ -1919,3 +1915,7 @@ class SignalForwardingTests(PromptFileHygieneTests):
         proc.wait(timeout=30)
         self.assertTrue(record.exists())
         self.assertEqual(record.read_text(), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

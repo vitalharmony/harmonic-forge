@@ -302,10 +302,6 @@ def setUpModule():  # noqa: N802
 def tearDownModule():  # noqa: N802
     _STICKY_PATCH.stop()
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WorldPreflightTests(StoreCase):
     """harmonic-forge#905 AC1: cheap world checks refuse before the full suite."""
 
@@ -377,3 +373,6 @@ class PreflightFreshnessTests(StoreCase):
 
 _REAL_REFRESH = L.refresh_main
 
+
+if __name__ == "__main__":
+    unittest.main()

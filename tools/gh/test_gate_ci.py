@@ -495,10 +495,6 @@ class RenderPendingTests(unittest.TestCase):
         self.assertEqual(gate_ci.render_pending_from_message(msg), "9")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class PrecloseRegressionTests(unittest.TestCase):
     """The twelve findings the harmonic-forge#504 panel raised against this
     diff, each with the test whose absence let it through."""

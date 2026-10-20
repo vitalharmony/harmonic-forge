@@ -329,10 +329,6 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertNotIn("kind=ae-and-sweep", captured_body["body"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LeadOnBothHalves(unittest.TestCase):
     """harmonic-forge#472 on this branch specifically.
 
@@ -489,3 +485,7 @@ class ProdRunFooterTests(MainIntegrationTests):
                 post.main()
         self.assertIn("valid only for --kind ae", str(ctx.exception))
         mock_run.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

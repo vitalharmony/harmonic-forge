@@ -263,10 +263,6 @@ class SanctionedFormTests(unittest.TestCase):
                          ["Bash(/usr/local/libexec/hrse-gate-run:*)"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RootToolTests(unittest.TestCase):
     """A root tool may be a root-owned symlink (openSUSE's /usr/bin/git); a
     symlink the lane owns, or one pointing at a lane-writable file, is refused.
@@ -320,3 +316,7 @@ class RootToolTests(unittest.TestCase):
         if not git.exists() or os.lstat(git).st_uid != 0:
             self.skipTest("no root-owned /usr/bin/git on this host")
         self.assertTrue(os.path.realpath(w._root_tool(git)).endswith("git"))
+
+
+if __name__ == "__main__":
+    unittest.main()
