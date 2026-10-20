@@ -56,6 +56,14 @@ class MainBlockLastTests(unittest.TestCase):
             self.assertEqual(len(found), 1, guard)
             self.assertEqual(found[0][0], 1, guard)
 
+    def test_plain_name_use_before_the_guard_is_not_the_guard(self):
+        """Reforge pass 1: getLogger(__name__) above a final guard is fine."""
+        src = ('import logging\nlog = logging.getLogger(__name__)\n'
+               'class A:\n    pass\nif __name__ == "__main__":\n    pass\n')
+        self.assertEqual(check.violations(src), [])
+        late = src + 'class B:\n    pass\n'
+        self.assertEqual(check.violations(late), [(5, 7)])
+
     def test_any_block_type_after_the_guard_fails(self):
         """match/case, if, try: the statements after the guard are not inspected."""
         for after in ('match 1:\n    case _:\n        class Late: pass\n',

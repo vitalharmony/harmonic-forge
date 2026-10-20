@@ -7,11 +7,12 @@ any `setUpModule` below it, and still reports OK on the partial suite.
 harmonic-forge#1070 found 98 of 321 tests silently dropped that way.
 
 Rule (sticky-wicket REFORGE, issuecomment-6279769936): the first top-level
-statement that mentions `__name__` anywhere in it is the main block, and it
-must be the file's last top-level statement. Nothing about the guard's
-spelling or the later statements' kind is recognized, so no spelling (elif,
-nested, reversed, computed) and no block type escapes it. That is stricter than
-"no class, test function or setUpModule after it": any later statement fails.
+statement that compares `__name__` anywhere in it is the main block, and it
+must be the file's last top-level statement. Only the comparison is required,
+not a spelling, so elif, nested, reversed and computed guards all match, while
+a plain use such as `getLogger(__name__)` does not (reforge pass 1). No later
+statement's kind is inspected: any statement after the block fails, which is
+stricter than "no class, test function or setUpModule after it".
 """
 from __future__ import annotations
 
@@ -21,12 +22,20 @@ import sys
 from pathlib import Path
 
 
+def _compares_name(node: ast.stmt) -> bool:
+    """True when `__name__` is an operand of a comparison anywhere in `node`,
+    so a guard in any spelling matches and `getLogger(__name__)` does not."""
+    return any(isinstance(c, ast.Compare)
+               and any(isinstance(n, ast.Name) and n.id == "__name__" for n in ast.walk(c))
+               for c in ast.walk(node))
+
+
 def violations(source: str) -> list[tuple[int, int]]:
     """(main-block line, next top-level statement's line), or [] when the
-    first statement naming `__name__` is the last one (or there is none)."""
+    first statement comparing `__name__` is the last one (or there is none)."""
     body = ast.parse(source).body
     for i, node in enumerate(body):
-        if any(isinstance(n, ast.Name) and n.id == "__name__" for n in ast.walk(node)):
+        if _compares_name(node):
             return [(node.lineno, body[i + 1].lineno)] if i + 1 < len(body) else []
     return []
 
