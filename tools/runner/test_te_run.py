@@ -236,7 +236,7 @@ class Pipeline(unittest.TestCase):
                                side_effect=lambda key: int(key[1:])):
             self.drive(FAKE_MISE_RC="1")
         state = te_run.queue_state.load(self.queue)
-        self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z$")
+        self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")
         self.assertEqual({i["run_id"] for i in state["items"]}, {state["run_id"]})
 
     def test_a_run_that_works_nothing_still_replaces_the_run_id(self):
@@ -246,6 +246,18 @@ class Pipeline(unittest.TestCase):
         with mock.patch.object(te_run.deny_check, "boundary", return_value=["push is True"]):
             self.assertEqual(self.drive(), 3)
         self.assertNotEqual(te_run.queue_state.load(self.queue)["run_id"], "run-20200101T000000Z")
+
+    def test_two_runs_in_the_same_second_get_distinct_ids(self):
+        fixed = te_run.dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=te_run.dt.timezone.utc)
+        ids = []
+        with mock.patch.object(te_run.deny_check, "boundary", return_value=["stop here"]), \
+                mock.patch.object(te_run, "dt", wraps=te_run.dt) as fake_dt:
+            fake_dt.datetime.now.return_value = fixed
+            for _ in range(2):
+                self.drive()
+                ids.append(te_run.queue_state.load(self.queue)["run_id"])
+        self.assertNotEqual(ids[0], ids[1])
+        self.assertTrue(all(i.startswith("run-20261020T120000Z-") for i in ids), ids)
 
     def test_crash_recovered_item_is_stamped_with_the_new_run(self):
         state = te_run.queue_state.load(self.queue)

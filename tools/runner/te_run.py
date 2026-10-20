@@ -40,6 +40,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -489,7 +490,9 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     # The run's id first, saved at once: a run that ends before any item (a
     # boundary failure, an empty queue) must still replace the last run's id,
     # or the report would re-propose that run's work.
-    run_id = "run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # A random suffix: two runs in the same second must never share an id.
+    run_id = ("run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+              + "-" + secrets.token_hex(4))
     state["run_id"] = run_id
     before = {item["id"]: (item["status"], item["note"]) for item in state["items"]}
     reconcile(state)  # queue_state.recover is imported unmodified, so its changes are
