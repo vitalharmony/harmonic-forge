@@ -86,7 +86,7 @@ import markdown_strip  # noqa: E402
 #: skipped the check entirely while `lane_state.py` still scored the comment
 #: `gate.pass`. That is the exact 00:12-PASS / 00:13-CI-failure sequence this
 #: module exists to prevent, reachable by leaving a flag off.
-GATE_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*Lane 3 Gate Results\b(?P<rest>.*)$")
+GATE_HEADING = re.compile(r"(?im)^ {0,3}#{1,6}[ \t]+Lane 3 Gate Results\b(?P<rest>.*)$")
 
 #: The verdict, and ONLY from a place a verdict may legitimately live: the
 #: heading, or the lead block above the first `###`/`<details>`.
@@ -367,6 +367,14 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
     return set(contexts)
 
 
+#: The required set an authorizing caller substitutes when `required_checks`
+#: returns an EMPTY set (unprotected branch, or null/[] contexts): an empty set
+#: makes `ci_conclusion` judge only what it can see, so a head whose `verify`
+#: has not reported reads green (#1103 reforge fix 1). Lives here, not in
+#: `report_red_main`, because that module imports this one.
+DEFAULT_REQUIRED_CHECKS = frozenset({"verify"})
+
+
 #: GitHub's message for a 404 on `branches/<b>/protection` when the branch has
 #: no protection rule (`gh: Branch not protected (HTTP 404)` on stderr).
 UNPROTECTED_MESSAGE = "Branch not protected"
@@ -389,6 +397,23 @@ def _latest_per_name(runs: list[dict]) -> list[dict]:
                                            or newest[name].get("created_at") or ""):
             newest[name] = entry
     return list(newest.values())
+
+
+def authorizing_conclusion(repo: str, sha: str, required: set[str],
+                           run=None) -> tuple[str, str]:
+    """`ci_conclusion` for a caller that AUTHORIZES (#1103 reforge fix 1).
+
+    A non-empty `required` is judged as is. An EMPTY one (unprotected branch,
+    or null/[] contexts) runs both readings and keeps the stricter: every
+    observed check must be green AND `DEFAULT_REQUIRED_CHECKS` must have
+    reported green, so neither an absent `verify` nor a red observed check
+    can authorize."""
+    if required:
+        return ci_conclusion(repo, sha, run=run, required=required)
+    state, detail = ci_conclusion(repo, sha, run=run, required=set(DEFAULT_REQUIRED_CHECKS))
+    if state != "green":
+        return state, detail
+    return ci_conclusion(repo, sha, run=run, required=set())
 
 
 def ci_conclusion(repo: str, sha: str, run=None,
@@ -641,7 +666,7 @@ def check_gate_result(
         # every check" -- it lets an unreported required check read green.
         return False, (
             f"[GATE] REFUSED: cannot read {repo}'s required checks; retry")
-    state, detail = ci_conclusion(repo, sha, run=run, required=required)
+    state, detail = authorizing_conclusion(repo, sha, required, run=run)
     if state == "green":
         return True, f"[GATE] CI green for {sha[:8]} ({detail})"
     if state == "red":

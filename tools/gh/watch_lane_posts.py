@@ -573,7 +573,7 @@ def _queue_owes(lane: str, kind: str, body: str) -> str:
 #: Any `Lane 3 Gate Results` heading the posting tool accepts (`#{1,4}`, no
 #: verdict required -- `post_lane_discussion.py`), so a markerless gate report
 #: is still recognized as one.
-_GATE_RESULT_HEADING = re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.IGNORECASE)
+_GATE_RESULT_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+Lane 3 Gate Results\b", re.IGNORECASE)
 
 
 def _gate_result_owes_review(body: str) -> bool:
@@ -593,14 +593,15 @@ def _gate_result_owes_review(body: str) -> bool:
 def _is_gate_report(detail: str, body: str) -> bool:
     """Is this comment a Lane 3 gate report? One answer for both channels
     (sticky-wicket PATCH, epoch 2 pass 2): a `kind=gate-result` footer, or a
-    `Lane 3 Gate Results` heading as the detail or as the body's first
-    unquoted line, whatever the footer's kind. 74 of 98 real gate reports carry
+    `Lane 3 Gate Results` heading as the detail or on ANY visible line of the
+    body (matching `gate_ci.looks_like_a_gate_report`, #1103 reforge fix 5),
+    whatever the footer's kind. 74 of 98 real gate reports carry
     no gate-result footer (`post_lane_discussion.py`), and
     `mise run lane-comment` stamps `kind=discussion` by default."""
     if detail == "gate-result" or _GATE_RESULT_HEADING.match(detail):
         return True
-    first = _strip_quoted(body).strip().split("\n", 1)[0]
-    return bool(_GATE_RESULT_HEADING.match(first))
+    return any(_GATE_RESULT_HEADING.match(line)
+               for line in _strip_quoted(body).splitlines())
 
 
 def _fail_owed_to_l1(self_lane: str | None, detail: str, body: str) -> bool:

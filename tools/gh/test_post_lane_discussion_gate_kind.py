@@ -49,11 +49,12 @@ class CandidateKindTests(unittest.TestCase):
         body = "Example of a report:\n\n~~~~markdown\n" + FAIL_BODY + "~~~~\n"
         self.assertEqual(P.candidate_kind("discussion", body), "discussion")
 
-    def test_an_unclosed_or_shorter_closed_fence_hides_the_heading(self) -> None:
-        """harmonic-forge#1103 preclose pass 3: an unclosed `~~~` fence runs
-        to the end; a ```` fence is not closed by a ``` line inside it."""
+    def test_an_unclosed_fence_strips_nothing_a_longer_one_hides(self) -> None:
+        """harmonic-forge#1103 reforge fix 2: an unclosed `~~~` opener strips
+        nothing (the heading stays a gate report); a ```` fence is not closed
+        by a ``` line inside it."""
         unclosed = "Example:\n\n~~~\n" + FAIL_BODY
-        self.assertEqual(P.candidate_kind("discussion", unclosed), "discussion")
+        self.assertEqual(P.candidate_kind("discussion", unclosed), "gate-result")
         nested = "Example:\n\n````\n```\n" + FAIL_BODY + "````\n"
         self.assertEqual(P.candidate_kind("discussion", nested), "discussion")
 

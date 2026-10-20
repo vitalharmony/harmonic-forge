@@ -13,7 +13,9 @@ block constructs that can hide or fake a heading:
   spaces. A backtick opener whose info string contains a backtick is NOT a
   fence (so a line starting with an inline ```code``` span is text). The
   closer is the same character, at least as long as the opener, followed
-  only by whitespace. An unclosed fence runs to the end of the body;
+  only by whitespace. An UNCLOSED opener strips nothing: it is read as a
+  text line and reading continues (#1103 reforge fix 2 -- when the reader
+  cannot decide, it keeps the text visible, the side that runs more checks);
 - indented code blocks: a line indented 4+ spaces (or a tab) that follows a
   blank line, the start of the body, or another indented-code line. A
   4-space line continuing a paragraph or list item is kept as text.
@@ -30,13 +32,23 @@ _QUOTE = re.compile(r"^[ \t]*>")
 _INDENTED = re.compile(r"^(?: {4}|\t| {0,3}\t)")
 
 
+def _closes(opener: str, rest: list[str]) -> bool:
+    """Does a closer for `opener` appear in `rest`?"""
+    for line in rest:
+        m = _FENCE_CLOSE.match(line.rstrip("\r\n"))
+        if m and m.group(1)[0] == opener[0] and len(m.group(1)) >= len(opener):
+            return True
+    return False
+
+
 def visible_text(body: str) -> str:
     """`body` with blockquotes, fenced and indented code blocks removed."""
     kept: list[str] = []
     fence: str | None = None
     prev_blank = True  # start of body counts as a blank line before it
     in_indented = False
-    for line in body.splitlines(keepends=True):
+    lines = body.splitlines(keepends=True)
+    for i, line in enumerate(lines):
         text = line.rstrip("\r\n")
         if fence is not None:
             m = _FENCE_CLOSE.match(text)
@@ -58,7 +70,8 @@ def visible_text(body: str) -> str:
             prev_blank = False
             continue
         m = _FENCE_OPEN.match(text)
-        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+        if (m and not (m.group(1)[0] == "`" and "`" in m.group(2))
+                and _closes(m.group(1), lines[i + 1:])):
             fence = m.group(1)
             continue
         if _QUOTE.match(text):

@@ -160,7 +160,7 @@ STATE_PATH = Path.home() / ".claude" / "state" / "main-ci-status.json"
 #: Used whenever `gate_ci.required_checks()` returns `None` or an empty set (no branch
 #: protection configured) -- see the module docstring's "unprotected branch"
 #: section for why an unscoped scan is the wrong fallback for a reporter.
-DEFAULT_REQUIRED_CHECKS = {"verify"}
+DEFAULT_REQUIRED_CHECKS = set(gate_ci.DEFAULT_REQUIRED_CHECKS)
 
 
 def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:

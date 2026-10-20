@@ -249,6 +249,24 @@ class PassRequiresGreenCiTests(unittest.TestCase):
         self.assertFalse(ok, msg)
         self.assertIn("RED", msg)
 
+    def test_an_unprotected_branch_requires_verify(self):
+        """harmonic-forge#1103 reforge fix 1: an empty required set fails
+        closed onto DEFAULT_REQUIRED_CHECKS. Lint green with verify absent
+        must not PASS; verify green does."""
+        def unprotected(checks):
+            inner = fake_gh(checks=checks)
+
+            def run(cmd):
+                if any("/protection" in a for a in cmd):
+                    return 1, "gh: Branch not protected (HTTP 404)\n"
+                return inner(cmd)
+            return run
+        ok, msg = gate_ci.check_gate_result("o/r", PASS_BODY, run=unprotected([check("lint")]))
+        self.assertFalse(ok, msg)
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=unprotected([check("lint"), check("verify")]))
+        self.assertTrue(ok, msg)
+
     def test_a_non_404_branch_not_protected_failure_is_unreadable(self):
         """harmonic-forge#1103 preclose pass 3: the phrase without GitHub's
         404 is not proof of an unprotected branch; None, and PASS refuses."""
