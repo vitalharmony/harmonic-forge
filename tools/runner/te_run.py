@@ -237,7 +237,8 @@ def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
             message += "; stderr: " + tail
         raise Abort(message)
     if done.returncode:  # G3 passed: the oracle judges the head, the exit is only logged
-        log("agent", f"claude exited {done.returncode}")
+        tail = stderr_tail(done.stderr or "")
+        log("agent", f"claude exited {done.returncode}" + (f"; stderr: {tail}" if tail else ""))
     return parsed
 
 

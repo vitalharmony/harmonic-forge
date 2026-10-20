@@ -555,10 +555,20 @@ class Pipeline(unittest.TestCase):
 
     def test_nonzero_agent_exit_after_g3_is_logged_not_raised(self):
         rc1 = self.bin / "claude"
-        rc1.write_text(FAKE_CLAUDE.rstrip("\n") + "\nsys.exit(1)\n")
+        rc1.write_text(FAKE_CLAUDE.rstrip("\n")
+                       + "\nsys.stderr.write('boom: TLS\\n')\nsys.exit(1)\n")
         with mock.patch.object(te_run, "log") as logged:
             self.assertEqual(self.drive(), 0)
         self.assertEqual(self.item()["status"], "done")
+        self.assertTrue(any(a[0] == "agent" and "claude exited 1" in a[1]
+                            and "boom: TLS" in a[1]
+                            for a in (c.args for c in logged.call_args_list)))
+
+    def test_nonzero_agent_exit_with_empty_stderr_logs_the_bare_exit(self):
+        rc1 = self.bin / "claude"
+        rc1.write_text(FAKE_CLAUDE.rstrip("\n") + "\nsys.exit(1)\n")
+        with mock.patch.object(te_run, "log") as logged:
+            self.assertEqual(self.drive(), 0)
         self.assertIn(("agent", "claude exited 1"),
                       [c.args for c in logged.call_args_list])
 
