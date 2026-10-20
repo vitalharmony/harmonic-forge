@@ -44,12 +44,12 @@ def sh(cwd, *args):
     return proc.stdout.strip()
 
 
-def gate_body(verdict, sha, *, marker=True, footer_kind="gate-result"):
+def gate_body(verdict, sha, *, marker=True, footer_kind="gate-result", poster="LANE3"):
     prefix = (f"## Lane 3 Gate Results — {verdict}\n\n**Verdict:** {verdict}\n"
               f"Head-SHA: `{sha}`\nCI: green\n\nTCs ran.")
     digest = hashlib.sha256(prefix.encode()).hexdigest()
     sha_field = f" body-sha256={digest};" if marker else ""
-    return f"{prefix}\n\n<!-- l1-post v1; kind={footer_kind}; posted-by=LANE3; sha={sha};{sha_field} -->\n"
+    return f"{prefix}\n\n<!-- l1-post v1; kind={footer_kind}; posted-by={poster}; sha={sha};{sha_field} -->\n"
 
 
 def cf_body(sha, from_sha, pass_id=PASS_ID, *, digest=None):
@@ -260,6 +260,14 @@ class CarryForwardValidateTests(_Fixture):
     def test_pass_on_another_sha_is_refused(self):
         self.set_pass(gate_body("PASS", "0123456789abcdef0123456789abcdef01234567"))
         self.assertRefused(self.validate(self.rebase()), "not --from-sha")
+
+    def test_pass_not_posted_by_lane3_is_refused(self):
+        """F1036 epoch 2 survivor 1: a gate-report-shaped PASS from another
+        lane, or with no poster, is never a Lane 3 PASS to carry."""
+        for poster in ("LANE2", "LANE1", "LANE-unset"):
+            with self.subTest(poster=poster):
+                self.set_pass(gate_body("PASS", self.from_sha, poster=poster))
+                self.assertRefused(self.validate(self.rebase()), "not posted by Lane 3")
 
     def test_pass_comment_not_on_issue_is_refused(self):
         self.comments = [c for c in self.comments if c["id"] != PASS_ID]
@@ -563,6 +571,14 @@ class SecondRebaseTests(unittest.TestCase):
         self.assertEqual(self.marker(self.L2D, gate_body("PASS", self.GATED),
                                      cf_body(self.FIRST, self.GATED, digest="0" * 64)),
                          f"l3.pass:{self.GATED}")
+
+    def test_a_newer_pass_resets_the_chain(self):
+        """F1036 epoch 2 survivor 2: a carry-forward from the OLD gated SHA after
+        a newer PASS does not move the newer PASS."""
+        newer = "4" * 40
+        self.assertEqual(self.marker(self.L2D, gate_body("PASS", self.GATED),
+                                     cf_body(self.FIRST, self.GATED), gate_body("PASS", newer),
+                                     cf_body(self.SECOND, self.GATED)), f"l3.pass:{newer}")
 
     def test_carry_forward_after_a_fail_does_not_pass(self):
         self.assertEqual(self.marker(self.L2D, gate_body("FAIL", self.GATED),

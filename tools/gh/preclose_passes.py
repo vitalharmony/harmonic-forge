@@ -148,7 +148,11 @@ def _strict_json(text: str):
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate JSON key")
         return dict(items)
-    return json.loads(text, object_pairs_hook=pairs)
+    # F1036 epoch 2 survivor 3: a number compares by its type and literal text,
+    # never as a float, so two distinct large values cannot compare equal and
+    # 1 never equals 1.0 (the type-strict exemption above).
+    return json.loads(text, object_pairs_hook=pairs, parse_float=lambda s: ("float", s),
+                      parse_int=lambda s: ("int", s))
 
 
 def _without_exempt(document, paths: tuple[tuple[str, ...], ...]):

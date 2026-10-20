@@ -816,6 +816,14 @@ class ChangeIdentityTests(ScratchRepo):
                 self.bump("frontend/package.json", {**self.TYPED, "version": "1.0.1", **change})
                 self.assertFalse(self.accepts(reviewed))
 
+    def test_json_exemption_compares_numbers_exactly(self) -> None:
+        """F1036 epoch 2 survivor 3: 1.5 and 1.5000000000000001 parse to the
+        same float; they must not be the same JSON value."""
+        reviewed = self.reviewed_then_rebased(self.TYPED)
+        text = json.dumps({**self.TYPED, "version": "1.0.1"}, indent=2) + "\n"
+        self.commit("frontend/package.json", text.replace("1.5", "1.5000000000000001"))
+        self.assertFalse(self.accepts(reviewed))
+
     def test_json_exemption_still_accepts_a_typed_document(self) -> None:
         reviewed = self.reviewed_then_rebased(self.TYPED)
         self.bump("frontend/package.json", {**self.TYPED, "version": "1.0.1"})

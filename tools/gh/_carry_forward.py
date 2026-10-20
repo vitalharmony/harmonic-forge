@@ -130,6 +130,12 @@ def check_pass_comment(comments: list[dict], pass_comment_id: int, from_sha: str
     out: list[Refusal] = []
     if not is_gate_report(body):
         out.append(Refusal(f"comment {pass_comment_id} is not a Lane 3 gate report"))
+    # F1036 epoch 2 survivor 1: only Lane 3's own post is a PASS to carry.
+    marker = _watch()._own_marker(body) or ""
+    poster = _watch()._POSTED_BY_RE.search(marker)
+    if not poster or poster.group(1).upper() != "LANE3":
+        out.append(Refusal(f"comment {pass_comment_id} was not posted by Lane 3 "
+                           f"(posted-by={poster.group(1) if poster else 'absent'})"))
     verdict = gate_ci.verdict_of(body)
     if verdict != "PASS":
         out.append(Refusal(f"comment {pass_comment_id}'s verdict is {verdict or 'unreadable'}, not PASS"))
