@@ -787,10 +787,10 @@ hooks = []
 id = "R-0091"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
-statement = "Lane 1 review is not Lane 3: state the evidence and hand off, never call a formal test pass, merge, or close. One named exception: R-0351."
-text_sha = "955823790258d550"
+statement = "Lane 1 review is not Lane 3: state the evidence and hand off, never call a formal test pass, merge, or close. Two named exceptions: R-0351 and R-0415."
+text_sha = "462380600c1ffd33"
 hooks = []
-excepted_by = "R-0351"
+excepted_by = ["R-0351", "R-0415"]
 
 [[rule]]
 id = "R-0092"
@@ -991,10 +991,10 @@ hooks = []
 id = "R-0115"
 file = "rules/lane-shorthand.md"
 anchor = "close-compound-instruction"
-statement = "`close` authorizes the full PR then merge then close sequence as one action; needing a PR or merge is not itself a reason to stop and ask. One named exception: R-0351."
-text_sha = "9c160ceee30668f0"
+statement = "`close` authorizes the full PR then merge then close sequence as one action; needing a PR or merge is not itself a reason to stop and ask. Two named exceptions: R-0351 and R-0415."
+text_sha = "a77da3ef4d77d04e"
 hooks = []
-excepted_by = "R-0351"
+excepted_by = ["R-0351", "R-0415"]
 
 [[rule]]
 id = "R-0116"
@@ -1207,10 +1207,10 @@ hooks = []
 id = "R-0141"
 file = "3-lane-protocol.md"
 anchor = "Lanes are roles, not fixed tools"
-statement = "The protocol's requirements (independent-eyes gating, no lane closes/merges on its own [one named exception: R-0351], HITL-gate language) are tool-agnostic and apply identically regardless of which tool fills a lane."
-text_sha = "4a564f7f3156a79c"
+statement = "The protocol's requirements (independent-eyes gating, no lane closes/merges on its own [two named exceptions: R-0351 and R-0415], HITL-gate language) are tool-agnostic and apply identically regardless of which tool fills a lane."
+text_sha = "ef351eb6e3a9e883"
 hooks = []
-excepted_by = "R-0351"
+excepted_by = ["R-0351", "R-0415"]
 
 [[rule]]
 id = "R-0142"
@@ -1891,19 +1891,19 @@ hooks = []
 id = "R-0223"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "Lane 1 recommends closing — never a unilateral close, except the narrow R-0351 carve-out."
-text_sha = "fd2b24906c512833"
+statement = "Lane 1 recommends closing — never a unilateral close, except the narrow R-0351 carve-out and R-0415 (a merged, deployed Tooling Exception issue)."
+text_sha = "d05befad3cc7a199"
 hooks = []
-excepted_by = "R-0351"
+excepted_by = ["R-0351", "R-0415"]
 
 [[rule]]
 id = "R-0224"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "Closing requires the operator's explicit \"Close #N\" every time, from every lane, with no exception for confidence or a clean local test pass, except the one named exception: R-0351."
-text_sha = "bc2a165fc792a938"
+statement = "Closing requires the operator's explicit \"Close #N\" every time, from every lane, with no exception for confidence or a clean local test pass, except the two named exceptions: R-0351 and R-0415."
+text_sha = "947b6b527ba4d862"
 hooks = []
-excepted_by = "R-0351"
+excepted_by = ["R-0351", "R-0415"]
 
 [[rule]]
 id = "R-0225"
@@ -2131,11 +2131,11 @@ hooks = []
 id = "R-0252"
 file = "3-lane-protocol.md"
 anchor = "Team Topology"
-statement = "Tool choice per lane is a per-collaborator decision; what is non-negotiable regardless of tool is the protocol itself. One named exception: R-0351."
-text_sha = "98ca05d64eef0dec"
+statement = "Tool choice per lane is a per-collaborator decision; what is non-negotiable regardless of tool is the protocol itself. Two named exceptions: R-0351 and R-0415."
+text_sha = "e9b793876cfa27d9"
 hooks = []
 restates = "R-0141"
-excepted_by = "R-0351"
+excepted_by = ["R-0351", "R-0415"]
 
 [[rule]]
 id = "R-0330"
@@ -2312,7 +2312,16 @@ id = "R-0351"
 file = "rules/universal-lane1.md"
 anchor = "role-boundary-never-closes"
 statement = "Narrow carve-out to R-0091: Lane 1 only, PASS only, independently-reverified only (a spot-check: gated SHA equals PR head and CI green, plus 1-2 test cases re-run live -- highest-risk and one random; a moved head, asserted evidence or a disagreeing spot-check leaves the carve-out; unset/unreadable Tier or data-migration requires every test case re-run; Tier deep spot-checks like every other tier), may merge and close directly, narrating after the fact; Lane 2/3 authority and the data-migration/preclose close-gates are unaffected. Grants decision authority only -- the live batch_gate.py hook still requires a BATCH authorization to execute. The current, authoritative list of every rule it excepts is enforced by tools/rules/check_absolutes.py, not asserted in prose."
-text_sha = "95a8c69cd78c1bd8"
+text_sha = "2f9bb7895ea1eb47"
+hooks = []
+exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
+
+[[rule]]
+id = "R-0415"
+file = "rules/universal-lane1.md"
+anchor = "role-boundary-never-closes"
+statement = "Lane 1 closes a Tooling Exception issue itself, in the same turn and never as an operator decision, when preclose-inspected is recorded, the R-0229 pass is done or waived by an IMC waiver still live (one ended with imc_waiver.py end does not count), and every half is merged and deployed; a missing precondition leaves the rule, and BATCH grants the merge only, so the close's own prompt is the confirmation."
+text_sha = "a3c71b57f62dcfbe"
 hooks = []
 exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0300", "R-0317"]
 
@@ -2745,8 +2754,8 @@ hooks = []
 id = "R-0408"
 file = "rules/lane-shorthand.md"
 anchor = "operator-lane-triggers"
-statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351), and a mid-task lane queues it per R-0375."
-text_sha = "19dcfb3d3fe6306a"
+statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues it per R-0375."
+text_sha = "d67d5d3b526c0f18"
 hooks = []
 
 [[rule]]
