@@ -482,6 +482,10 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     if reconcile(state):
         save(queue, state)
     problems = deny_check.boundary()
+    # The run's id, on the queue and on every item it finishes, so the report
+    # proposes only this run's work (harmonic-forge#1056 preclose pass 1).
+    run_id = "run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    state["run_id"] = run_id
     if problems:
         log("boundary", "; ".join(problems))
         return 3
@@ -497,7 +501,7 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         try:
             extra = work_item(item, state, queue, budget, env)
         except Exception as exc:  # noqa: BLE001 -- nothing may leave an item in_progress
-            item.update({"status": "blocked", "note": str(exc)})
+            item.update({"status": "blocked", "note": str(exc), "run_id": run_id})
             save(queue, state)
             emit_event(te_queue.issue_number(item["id"]), item.get("head_sha", ""),
                        {"reason": "blocked"}, None)
@@ -507,7 +511,7 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
             blocked = True
             continue
         outcome = extra["verdict"]
-        item.update({**extra, "status": "done",
+        item.update({**extra, "status": "done", "run_id": run_id,
                      "reason": outcome.get("reason") or "", "note": outcome.get("detail", "")})
         for key, default in DONE_KEYS.items():  # never overwrites pushed_sha set before a push
             item.setdefault(key, default)

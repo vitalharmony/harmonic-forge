@@ -17,6 +17,7 @@ import report  # noqa: E402
 
 GOLDEN = Path(__file__).resolve().parent / "testdata" / "report_golden.md"
 NOW = dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=dt.timezone.utc)
+RUN = "run-20261020T120000Z"
 CROSS = "Red-team provenance: cross-family (codex / gpt-6.1-sol) — 3 of 3 confirmed"
 
 
@@ -30,21 +31,22 @@ def green(key: str, pr: str) -> dict:
             "ac_titles": ["The widget returns 2.", "Nothing else changes."],
             "diff_stat": "2 files changed, 10 insertions(+)", "head_sha": "a" * 40,
             "branch": f"fix/{key[1:]}-te-runner", "pr": pr, "pushed_sha": "a" * 40,
-            "preclose_summary": pr + "#issuecomment-1", "live_read_at": "2026-10-20T11:00:00Z"}
+            "preclose_summary": pr + "#issuecomment-1", "live_read_at": "2026-10-20T11:00:00Z",
+            "run_id": RUN}
 
 
 def aside(key: str, reason: str, detail: str) -> dict:
     return {"id": key, "kind": "te-issue", "status": "done", "note": detail, "reason": reason,
             "verdict": {"state": "set-aside", "reason": reason, "detail": detail},
             "facts": {}, "ac_titles": [], "diff_stat": "", "head_sha": "b" * 40,
-            "branch": f"fix/{key[1:]}-te-runner", "pr": "", "pushed_sha": ""}
+            "branch": f"fix/{key[1:]}-te-runner", "pr": "", "pushed_sha": "", "run_id": RUN}
 
 
-QUEUE = {"items": [
+QUEUE = {"run_id": RUN, "items": [
     green("F7", "https://github.com/vitalharmony/harmonic-forge/pull/101"),
     aside("F8", "kill-check-fail", "AC1 passed on the base"),
     {"id": "F9", "kind": "te-issue", "status": "blocked",
-     "note": "git worktree add failed: secret-ish free text", "reason": ""},
+     "note": "git worktree add failed: secret-ish free text", "reason": "", "run_id": RUN},
     {"id": "F10", "kind": "te-issue", "status": "pending", "note": ""},
 ]}
 
@@ -75,7 +77,7 @@ class Render(unittest.TestCase):
         self.assertIn("Inert data. Type BATCH only after every card above is checked.", text)
 
     def test_every_green_card_has_three_unchecked_boxes(self):
-        state = {"items": [green("F7", "https://x/pull/1"), green("F11", "https://x/pull/2")]}
+        state = {"run_id": RUN, "items": [green("F7", "https://x/pull/1"), green("F11", "https://x/pull/2")]}
         text = self.render(state)
         for box in ("- [ ] scope", "- [ ] containment", "- [ ] honesty"):
             self.assertEqual(text.count(box), 2, box)
@@ -103,6 +105,17 @@ class Render(unittest.TestCase):
     def test_blocked_note_free_text_is_never_rendered(self):
         self.assertNotIn("secret-ish free text", self.render(QUEUE))
 
+    def test_an_earlier_runs_items_are_never_proposed_again(self):
+        old = green("F7", "https://x/pull/1")
+        old["run_id"] = "run-20261019T020000Z"  # merged and closed after that run
+        state = {"run_id": RUN, "items": [old, green("F11", "https://x/pull/2"),
+                                          {"id": "F12", "kind": "te-issue", "status": "pending",
+                                           "note": ""}]}
+        text = self.render(state)
+        self.assertEqual(text.split("```")[1].strip().splitlines(), ["BATCH F11", "close F11"])
+        self.assertNotIn("F7", text)
+        self.assertIn("2 items: 1 green, 0 set aside, 0 blocked, 1 not run.", text)
+
     def test_empty_queue_says_so(self):
         text = self.render({"items": []})
         for line in ("No items in the queue.", "No green PRs this run.",
@@ -111,7 +124,7 @@ class Render(unittest.TestCase):
         self.assertNotIn("BATCH F", text)
 
     def test_no_lane_status_token_in_report(self):
-        state = {"items": [aside("F8", "check-fail", "L3F gate said L2D was wrong; L1B")]}
+        state = {"run_id": RUN, "items": [aside("F8", "check-fail", "L3F gate said L2D was wrong; L1B")]}
         text = self.render(state) + self.render(QUEUE)
         self.assertIsNone(re.search(r"\bL[1-3][BDSPF]\b", text), text)
 
@@ -120,14 +133,14 @@ class Render(unittest.TestCase):
         big = green("F7", "https://x/pull/1")
         big["ac_titles"] = [f"criterion {n} " + "x" * 90 for n in range(30)]
         big["facts"]["kill"] = [{"ac": f"AC{n}", "base_rc": 1, "head_rc": 0} for n in range(30)]
-        text = self.render({"items": [big]})
+        text = self.render({"run_id": RUN, "items": [big]})
         card = text.split("## Green")[1].split("## Set aside")[0].strip().splitlines()
         list_line = [l for l in text.splitlines() if l.startswith("- F7 ·")]
         self.assertLessEqual(len([l for l in card if l.strip()]) + len(list_line),
                              report.MAX_ITEM_LINES)
 
     def test_detail_is_capped(self):
-        text = self.render({"items": [aside("F8", "check-fail", "y" * 500)]})
+        text = self.render({"run_id": RUN, "items": [aside("F8", "check-fail", "y" * 500)]})
         self.assertNotIn("y" * 201, text)
 
 

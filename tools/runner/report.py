@@ -138,8 +138,17 @@ def set_aside_entry(number: int, item: dict) -> str:
             f"Recommendation: {recommendation}.")
 
 
+def run_items(state: dict) -> list[dict]:
+    """This run's items only: those `te_run` stamped with the queue's current
+    `run_id`, plus any still pending. An earlier run's green item is never
+    proposed again (preclose pass 1)."""
+    run_id = state.get("run_id")
+    return [item for item in state["items"]
+            if item.get("status") == "pending" or (run_id and item.get("run_id") == run_id)]
+
+
 def render_text(state: dict, run_id: str) -> str:
-    items = state["items"]
+    items = run_items(state)
     kinds = [classify(item) for item in items]
     green = [item for item, kind in zip(items, kinds) if kind == "green"]
     aside = [item for item, kind in zip(items, kinds) if kind in ("set aside", "blocked")]
@@ -170,7 +179,10 @@ def render_text(state: dict, run_id: str) -> str:
 
 def render(queue: Path, out: Path, now: dt.datetime | None = None) -> Path:
     state = queue_state.load(queue)
-    run_id = "run-" + (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    # The queue's own run id names the report; a queue no run has worked yet
+    # gets a render-time id and lists only pending items.
+    run_id = state.get("run_id") or \
+        "unrun-" + (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{run_id}.md"
     path.write_text(render_text(state, run_id), encoding="utf-8")

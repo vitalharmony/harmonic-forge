@@ -230,6 +230,15 @@ class Pipeline(unittest.TestCase):
         comment = next(c for c in self.gh_calls() if c[:2] == ["pr", "comment"])
         self.assertIn("--repo", comment)
 
+    def test_every_finished_item_carries_the_runs_id(self):
+        te_run.te_queue.add(self.queue, ["F8"])
+        with mock.patch.object(te_run.te_queue, "issue_number",
+                               side_effect=lambda key: int(key[1:])):
+            self.drive(FAKE_MISE_RC="1")
+        state = te_run.queue_state.load(self.queue)
+        self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z$")
+        self.assertEqual({i["run_id"] for i in state["items"]}, {state["run_id"]})
+
     def test_set_aside_branch_is_never_pushed(self):
         self.assertEqual(self.drive(FAKE_MISE_RC="1"), 0)
         item = self.item()
