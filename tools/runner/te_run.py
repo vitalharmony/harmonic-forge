@@ -37,8 +37,10 @@ import argparse
 import collections
 import datetime as dt
 import json
+import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -206,25 +208,45 @@ def run_agent(worktree: Path, prompt: str, budget: str, env: dict[str, str],
 
 # --- the oracle --------------------------------------------------------------------
 
-def kill_facts(issue: int, base: str, head: str, env: dict[str, str]) -> list[dict]:
+def snapshot_bundle(issue: int, pin: str, scratch: Path) -> Path:
+    """The bundle copied into this run's private scratch BEFORE the agent runs,
+    and verified against the handoff's pin. The oracle uses only this copy, so
+    nothing the agent does to the bundle on disk afterwards reaches it."""
+    snapshot = scratch / "bundle"
+    try:
+        shutil.copytree(te_queue.bundle_dir(issue), snapshot, symlinks=True)
+        digest = te_queue.kill_runner.bundle_digest(snapshot)
+    except (OSError, te_queue.kill_runner.RunnerError) as exc:
+        raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
+    if digest != pin:
+        raise Blocked("the kill-check bundle no longer matches the handoff's kill-bundle-sha256")
+    return snapshot
+
+
+def kill_facts(issue: int, base: str, head: str, env: dict[str, str], bundle: Path,
+               pin: str) -> list[dict]:
     result = run([sys.executable, "-P", str(HERE / "kill_runner.py"), "run",
                   "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
-                  "--bundle", str(te_queue.bundle_dir(issue)), "--source-repo", str(SOURCE)],
+                  "--bundle", str(bundle), "--source-repo", str(SOURCE)],
                  cwd=SOURCE, env=oracle_env(env))
     if result.returncode:
         log("kill", f"kill_runner could not run: {result.stderr.strip()[:200]}")
         return []
     try:
-        return json.loads(result.stdout)["checks"]
+        report = json.loads(result.stdout)
+        checks, digest = report["checks"], report["bundle_sha256"]
     except (ValueError, KeyError, TypeError):
         return []
+    if digest != pin:  # the bundle kill_runner actually ran is the pinned one
+        log("kill", "kill_runner ran a bundle other than the pinned one")
+        return []
+    return checks
 
 
-def kill_check_checks(issue: int, base: str, head: str, scratch: Path) -> Path:
+def kill_check_checks(bundle: Path, base: str, head: str, scratch: Path) -> Path:
     """One `kill_check.py` check per bundle check: the bundle's files copied
     into the scratch tree, then its test; the stub patch is the agent's change
     reversed, outside the bundle's own paths (operator ruling, harmonic-forge#1055)."""
-    bundle = te_queue.bundle_dir(issue)
     owned = set(te_queue.kill_runner.bundle_files(bundle))
     changed = [path for path in git("diff", "--name-only", "--no-renames", "-z", base, head)
                .split("\0") if path and path not in owned]
@@ -249,9 +271,10 @@ def _quote(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def kill_receipt(issue: int, base: str, head: str, env: dict[str, str], scratch: Path) -> bool:
+def kill_receipt(issue: int, base: str, head: str, env: dict[str, str], scratch: Path,
+                 bundle: Path) -> bool:
     try:
-        checks = kill_check_checks(issue, base, head, scratch)
+        checks = kill_check_checks(bundle, base, head, scratch)
     except (Blocked, te_queue.kill_runner.RunnerError) as exc:
         log("kill-check", str(exc))
         return False
@@ -389,15 +412,21 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     log("worktree", f"{worktree} on {branch} from {base[:12]}")
     with tempfile.TemporaryDirectory(prefix="te-run-") as scratch_name:
         scratch = Path(scratch_name)
-        parsed = run_agent(worktree, agent_prompt(issue, body, te_queue.handoff(issue) or ""),
+        handoff = te_queue.handoff(issue) or ""
+        pinned = te_queue.DIGEST_RE.search(handoff)
+        if not pinned:
+            raise Blocked("the handoff pins no kill-bundle-sha256")
+        pin = pinned.group(1)
+        bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
+        parsed = run_agent(worktree, agent_prompt(issue, body, handoff),
                            budget, env, scratch / "stream.jsonl")
         result = parsed["result"]
         head = git("rev-parse", "HEAD", cwd=worktree)
         log("agent", f"head {head[:12]}, cost {result.get('total_cost_usd')}")
         check_rc = run(["mise", "run", "check"], cwd=worktree, env=oracle_env(env)).returncode
         log("check", f"exit {check_rc}")
-        kill = kill_facts(issue, base, head, env)
-        if kill and not kill_receipt(issue, base, head, env, scratch):
+        kill = kill_facts(issue, base, head, env, bundle, pin)
+        if kill and not kill_receipt(issue, base, head, env, scratch, bundle):
             kill = []
         log("kill", f"{len(kill)} check(s)")
         hits = deny_hits(base, head)
@@ -484,8 +513,10 @@ def main(argv: list[str] | None = None) -> int:
     worked.add_argument("--max-steps", type=int, default=5)
     args = parser.parse_args(argv)
     try:
-        if float(args.max_budget_usd) <= 0 or args.max_steps <= 0:
-            raise ValueError("--max-budget-usd and --max-steps must be positive")
+        if not (math.isfinite(float(args.max_budget_usd)) and float(args.max_budget_usd) > 0) \
+                or args.max_steps <= 0:
+            raise ValueError("--max-budget-usd must be a finite positive number and "
+                             "--max-steps positive")
         return run_queue(Path(args.queue), args.max_budget_usd, args.max_steps)
     except (ValueError, OSError, te_queue.QueueError, preclose_driver.DriverError,
             deny_check.DenyError) as exc:

@@ -41,6 +41,8 @@ FAKE_CLAUDE = textwrap.dedent("""\
     subprocess.run(["git", "add", "-A"], check=True)
     subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-q", "-m", "agent"],
                    check=True)
+    if os.environ.get("FAKE_TAMPER_BUNDLE"):  # the agent rewrites Lane 1's tests on disk
+        Path(os.environ["FAKE_TAMPER_BUNDLE"]).write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
     drop = os.environ.get("FAKE_DROP_HOOK", "")
     print(json.dumps({"type": "system", "subtype": "init",
                       "apiKeySource": os.environ.get("FAKE_KEYSOURCE", "ANTHROPIC_API_KEY")}))
@@ -145,7 +147,9 @@ class Pipeline(unittest.TestCase):
         self.enter(mock.patch.object(te_run.deny_check, "boundary", return_value=[]))
         self.enter(mock.patch.object(tq, "first_failure", return_value=None))
         self.enter(mock.patch.object(tq, "gh_json", return_value={"body": ISSUE}))
-        self.enter(mock.patch.object(tq, "handoff", return_value="the handoff"))
+        self.digest = tq.kill_runner.bundle_digest(bundle)
+        self.enter(mock.patch.object(tq, "handoff",
+                                     return_value=f"the handoff\nkill-bundle-sha256: {self.digest}\n"))
         self.enter(mock.patch.object(tq, "tier", return_value="standard"))
         self.enter(mock.patch.object(tq, "bundle_dir", return_value=bundle))
         self.enter(mock.patch.object(te_run, "kill_receipt", return_value=True))
@@ -416,6 +420,27 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.item()["status"], "pending")
         self.assertEqual(self.observed(), [])
 
+    def test_bundle_rewritten_by_the_agent_never_reaches_the_oracle(self):
+        # A wrong implementation (returns 3) plus a rewritten bundle whose test
+        # always passes: the oracle runs the snapshot taken before the agent ran.
+        self.drive(FAKE_RETURN="3", FAKE_TAMPER_BUNDLE=str(self.bundle / "checks.json"))
+        item = self.item()
+        self.assertEqual(item["reason"], "kill-check-fail")
+        self.assertEqual(item["facts"]["kill"], [{"ac": "AC1", "base_rc": 1, "head_rc": 1}])
+        self.assertEqual(self.fork_branches(), "")
+
+    def test_bundle_that_no_longer_matches_the_pin_blocks_before_the_agent(self):
+        (self.bundle / "files" / "tests" / "test_widget.py").write_text("x = 1\n")
+        self.assertEqual(self.drive(), 3)
+        self.assertIn("kill-bundle-sha256", self.item()["note"])
+        self.assertEqual(self.observed(), [])
+
+    def test_non_finite_budget_is_refused(self):
+        for budget in ("nan", "inf", "-inf", "0", "-1"):
+            self.assertEqual(te_run.main(["run", "--queue", str(self.queue),
+                                          f"--max-budget-usd={budget}"]), 2, budget)
+        self.assertEqual(self.observed(), [])
+
     def test_queue_is_locked_while_a_run_holds_it(self):
         with te_run.te_queue.queue_lock(self.queue):
             with self.assertRaises(te_run.te_queue.QueueError):
@@ -466,11 +491,59 @@ class SafePath(unittest.TestCase):
             [{"ac": "AC1", "test": ["python3", "-m", "unittest", "discover", "-s", "tests",
                                     "-t", "."]}]))
         env = {**os.environ, "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
-        with mock.patch.object(te_run, "SOURCE", src), \
-                mock.patch.object(te_run.te_queue, "bundle_dir", return_value=bundle):
-            kill = te_run.kill_facts(7, base, head, env)
+        digest = te_run.te_queue.kill_runner.bundle_digest(bundle)
+        with mock.patch.object(te_run, "SOURCE", src):
+            kill = te_run.kill_facts(7, base, head, env, bundle, digest)
+            self.assertEqual(te_run.kill_facts(7, base, head, env, bundle, "0" * 64), [],
+                             "a bundle other than the pinned one must not count")
         self.assertEqual(len(kill), 1)
         self.assertNotEqual(kill[0]["head_rc"], 0, "the head's unittest.py shadowed the oracle")
+
+
+class RealKillReceipt(unittest.TestCase):
+    """The real kill_check.py path (operator ruling: python3 -P on every oracle
+    run). A head that only adds a unittest.py shadow, with a wrong fix, must
+    not earn a passing receipt."""
+
+    def test_shadowing_head_never_earns_a_kill_check_receipt(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = tmp / "src"
+        src.mkdir()
+        sh("git", "init", "-q", "-b", "main", cwd=src)
+        # Never fetched: kill_check.py only reads the URL to name the repo.
+        sh("git", "remote", "add", "origin", "https://github.com/vitalharmony/harmonic-forge.git",
+           cwd=src)
+        (src / "widget.py").write_text("def widget():\n    return 1\n")
+        commit(src, "base")
+        base = sh("git", "rev-parse", "HEAD", cwd=src)
+        (src / "widget.py").write_text("def widget():\n    return 3\n")
+        (src / "unittest.py").write_text("raise SystemExit(0)\n")
+        commit(src, "head")
+        head = sh("git", "rev-parse", "HEAD", cwd=src)
+        bundle = tmp / "bundle"
+        (bundle / "files" / "tests").mkdir(parents=True)
+        (bundle / "files" / "tests" / "__init__.py").write_text("")
+        (bundle / "files" / "tests" / "test_widget.py").write_text(
+            "import unittest\nimport widget\n\n\nclass W(unittest.TestCase):\n"
+            "    def test_two(self):\n        self.assertEqual(widget.widget(), 2)\n")
+        (bundle / "checks.json").write_text(json.dumps(
+            [{"ac": "AC1", "test": ["python3", "-m", "unittest", "discover", "-s", "tests",
+                                    "-t", "."]}]))
+        scratch = tmp / "scratch"
+        scratch.mkdir()
+        # A private receipt store (HOME) and scratch root: never the operator's.
+        env = {**os.environ, "HOME": str(tmp / "home"),
+               "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
+        with mock.patch.object(te_run, "SOURCE", src):
+            passed = te_run.kill_receipt(7, base, head, env, scratch, bundle)
+        self.assertFalse(passed, "the unittest.py shadow earned a passing kill_check receipt")
+        [path] = (tmp / "home" / ".claude" / "state" / "preclose").glob("*_7.kill.json")
+        receipt = json.loads(path.read_text())
+        # Failed for the right reason: the real test ran at the head and failed
+        # (the shadow did not mask it), not because kill_check.py refused to run.
+        self.assertEqual(receipt["status"], "fail", receipt)
+        self.assertEqual([c["verdict"] for c in receipt["checks"]], ["broken-test"], receipt)
 
 
 class KillCheckChecks(unittest.TestCase):
@@ -493,9 +566,8 @@ class KillCheckChecks(unittest.TestCase):
         (bundle / "checks.json").write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
         scratch = tmp / "scratch"
         scratch.mkdir()
-        with mock.patch.object(te_run, "SOURCE", src), \
-                mock.patch.object(te_run.te_queue, "bundle_dir", return_value=bundle):
-            path = te_run.kill_check_checks(7, base, head, scratch)
+        with mock.patch.object(te_run, "SOURCE", src):
+            path = te_run.kill_check_checks(bundle, base, head, scratch)
         [check] = json.loads(path.read_text())
         sh("git", "apply", check["patch"], cwd=src)  # reverses the head exactly
         self.assertFalse((src / "notes.txt").exists())
@@ -519,9 +591,8 @@ class KillCheckChecks(unittest.TestCase):
         (bundle / "checks.json").write_text(json.dumps([{"ac": "AC1", "test": ["python3", "t.py"]}]))
         scratch = tmp / "scratch"
         scratch.mkdir()
-        with mock.patch.object(te_run, "SOURCE", src), \
-                mock.patch.object(te_run.te_queue, "bundle_dir", return_value=bundle):
-            path = te_run.kill_check_checks(7, base, head, scratch)
+        with mock.patch.object(te_run, "SOURCE", src):
+            path = te_run.kill_check_checks(bundle, base, head, scratch)
         [check] = json.loads(path.read_text())
         self.assertEqual(check["test"][:2], ["sh", "-c"])
         self.assertIn(str(bundle / "files"), check["test"][2])
