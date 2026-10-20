@@ -43,10 +43,14 @@ def violations(source: str) -> list[tuple[int, int]]:
 
 def _tracked_test_files() -> list[Path]:
     """Every tracked test_*.py in the repo (preclose reforge pass 2: a fixed
-    root list missed scripts/). Raises when git cannot list them."""
-    out = subprocess.run(["git", "ls-files", "-z", "--", "*test_*.py"], check=True,
+    root list missed scripts/), listed from the top level so a run from a
+    subdirectory still scans the whole repo (post-verdict check). Raises when
+    git cannot list them."""
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], check=True,
+                         capture_output=True, text=True, timeout=30).stdout.strip()
+    out = subprocess.run(["git", "-C", top, "ls-files", "-z", "--", "*test_*.py"], check=True,
                          capture_output=True, text=True, timeout=30).stdout
-    return sorted(Path(p) for p in out.split("\0") if p and Path(p).name.startswith("test_"))
+    return sorted(Path(top) / p for p in out.split("\0") if p and Path(p).name.startswith("test_"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exclude", action="append", default=[], metavar="PATH",
                         help="a test file another open issue owns; name that issue beside it")
     args = parser.parse_args(argv)
-    excluded = {Path(p) for p in args.exclude}
+    excluded = {Path(p).resolve() for p in args.exclude}
     paths: list[Path] = []
     if not args.roots:
         try:
@@ -71,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         paths.extend(sorted(Path(root).rglob("test_*.py")))
     bad = scanned = 0
     for path in paths:
-        if path in excluded:
+        if path.resolve() in excluded:
             continue
         scanned += 1
         for main_line, line in violations(path.read_text(encoding="utf-8")):

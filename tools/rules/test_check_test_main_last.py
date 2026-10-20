@@ -99,6 +99,9 @@ class MainBlockLastTests(unittest.TestCase):
             Path("scripts/test_untracked.py").write_text(MID)
             subprocess.run(["git", "add", "scripts/test_late.py"], check=True)
             self.assertEqual(check.main([]), 1)
+            Path("tools").mkdir()
+            with _cwd("tools"):
+                self.assertEqual(check.main([]), 1)  # post-verdict: a subdirectory run scans the repo
             subprocess.run(["git", "rm", "-q", "--cached", "scripts/test_late.py"], check=True)
             self.assertEqual(check.main([]), 2)  # nothing tracked: nothing checked
 
