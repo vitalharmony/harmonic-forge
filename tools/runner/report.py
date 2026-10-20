@@ -65,6 +65,8 @@ DECISIONS = {
                         "Lane 1 reviews the kill-check results before any re-run"),
     "preclose-survivor": ("what the preclose panel found",
                           "read the preclose summary; Lane 1 fixes or reforges"),
+    "unstamped": ("which run produced this item (it carries no run id)",
+                  "read it in the queue file before acting; it is never proposed for merge"),
     "blocked": ("why the run could not proceed (the queue file's note)",
                 "fix the named cause before re-queuing; never retried automatically"),
 }
@@ -85,13 +87,15 @@ def classify(item: dict) -> str:
         return "blocked"
     if item.get("status") != "done":
         return "not run"
+    if not item.get("run_id"):
+        return "unstamped"  # never green, never in the BATCH block
     state = (item.get("verdict") or {}).get("state")
     return "green" if state == "green" else "set aside"
 
 
 def reason_code(item: dict, kind: str) -> str:
-    if kind == "blocked":
-        return "blocked"
+    if kind in ("blocked", "unstamped"):
+        return kind
     if kind == "not run":
         return "—"
     return (item.get("verdict") or {}).get("reason") or ("green" if kind == "green" else "?")
@@ -132,7 +136,7 @@ def set_aside_entry(number: int, item: dict) -> str:
     kind = classify(item)
     reason = reason_code(item, kind)
     decision, recommendation = DECISIONS.get(reason, ("what went wrong", "route it to Lane 1"))
-    detail = clean((item.get("verdict") or {}).get("detail")) if kind != "blocked" else \
+    detail = clean((item.get("verdict") or {}).get("detail")) if kind not in ("blocked", "unstamped") else \
         "see the item's note in the queue file"
     return (f"{number}. {issue_key(item)} ({reason}): {detail}. Decision: {decision}. "
             f"Recommendation: {recommendation}.")
@@ -143,16 +147,21 @@ def run_items(state: dict) -> list[dict]:
     `run_id`, plus any still pending. An earlier run's green item is never
     proposed again (preclose pass 1)."""
     run_id = state.get("run_id")
+    # An item with no run id at all is shown too (fail closed: unknown
+    # provenance is surfaced, never dropped), but only as set aside.
     return [item for item in state["items"]
-            if item.get("status") == "pending" or (run_id and item.get("run_id") == run_id)]
+            if item.get("status") == "pending" or not item.get("run_id")
+            or (run_id and item.get("run_id") == run_id)]
 
 
 def render_text(state: dict, run_id: str) -> str:
     items = run_items(state)
     kinds = [classify(item) for item in items]
     green = [item for item, kind in zip(items, kinds) if kind == "green"]
-    aside = [item for item, kind in zip(items, kinds) if kind in ("set aside", "blocked")]
+    aside = [item for item, kind in zip(items, kinds)
+             if kind in ("set aside", "blocked", "unstamped")]
     counts = {k: kinds.count(k) for k in ("green", "set aside", "blocked", "not run")}
+    counts["set aside"] += kinds.count("unstamped")
     lines = [f"# te-runner report {run_id}", "",
              f"{len(items)} items: {counts['green']} green, {counts['set aside']} set aside, "
              f"{counts['blocked']} blocked, {counts['not run']} not run.", "", "## Items", ""]

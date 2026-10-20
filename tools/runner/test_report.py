@@ -116,6 +116,15 @@ class Render(unittest.TestCase):
         self.assertNotIn("F7", text)
         self.assertIn("2 items: 1 green, 0 set aside, 0 blocked, 1 not run.", text)
 
+    def test_an_unstamped_item_is_set_aside_never_proposed(self):
+        unstamped = green("F13", "https://x/pull/3")
+        del unstamped["run_id"]
+        text = self.render({"run_id": RUN, "items": [unstamped, green("F11", "https://x/pull/2")]})
+        self.assertEqual(text.split("```")[1].strip().splitlines(), ["BATCH F11", "close F11"])
+        section = text.split("## Set aside")[1].split("## Merge")[0]
+        self.assertIn("F13 (unstamped)", section)
+        self.assertEqual(text.count("- [ ] scope"), 1)
+
     def test_empty_queue_says_so(self):
         text = self.render({"items": []})
         for line in ("No items in the queue.", "No green PRs this run.",
@@ -153,7 +162,12 @@ class Notify(unittest.TestCase):
         self.report = self.dir / "run.md"
         self.report.write_text("# te-runner report run-x\n\n4 items: 1 green, 1 set aside.\n")
         self.curl = self.dir / "curl"
+        # Like real curl on failure, the stub names the URL (and so the topic)
+        # on stderr: a relayed stderr would leak it.
         self.curl.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n"
+                             "for a; do url=$a; done\n"
+                             "[ \"${FAKE_CURL_RC:-0}\" = 0 ] || "
+                             "echo \"curl: (22) The requested URL returned error: 404 ($url)\" >&2\n"
                              "exit ${FAKE_CURL_RC:-0}\n")
         self.curl.chmod(0o755)
 

@@ -477,15 +477,27 @@ def run_queue(queue: Path, budget: str, max_steps: int) -> int:
         return _run_queue(queue, budget, max_steps)
 
 
+def set_status(item: dict, status: str, run_id: str, **fields: object) -> None:
+    """Every status change goes through here, so every item this run touches
+    carries the run's id and the report can scope to it (harmonic-forge#1056
+    sticky-wicket PATCH: stamping by hand at each write site missed some)."""
+    item.update({**fields, "status": status, "run_id": run_id})
+
+
 def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     state = queue_state.load(queue)
-    if reconcile(state):
-        save(queue, state)
-    problems = deny_check.boundary()
-    # The run's id, on the queue and on every item it finishes, so the report
-    # proposes only this run's work (harmonic-forge#1056 preclose pass 1).
+    # The run's id first, saved at once: a run that ends before any item (a
+    # boundary failure, an empty queue) must still replace the last run's id,
+    # or the report would re-propose that run's work.
     run_id = "run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     state["run_id"] = run_id
+    before = {item["id"]: (item["status"], item["note"]) for item in state["items"]}
+    reconcile(state)  # queue_state.recover is imported unmodified, so its changes are
+    for item in state["items"]:  # detected and stamped here rather than inside it
+        if (item["status"], item["note"]) != before[item["id"]]:
+            set_status(item, item["status"], run_id)
+    save(queue, state)
+    problems = deny_check.boundary()
     if problems:
         log("boundary", "; ".join(problems))
         return 3
@@ -495,13 +507,13 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         item = queue_state.next_item(state)
         if item is None:
             break
-        item["status"] = "in_progress"
+        set_status(item, "in_progress", run_id)
         save(queue, state)
         log("item", f"{item['id']} in progress")
         try:
             extra = work_item(item, state, queue, budget, env)
         except Exception as exc:  # noqa: BLE001 -- nothing may leave an item in_progress
-            item.update({"status": "blocked", "note": str(exc), "run_id": run_id})
+            set_status(item, "blocked", run_id, note=str(exc))
             save(queue, state)
             emit_event(te_queue.issue_number(item["id"]), item.get("head_sha", ""),
                        {"reason": "blocked"}, None)
@@ -511,8 +523,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
             blocked = True
             continue
         outcome = extra["verdict"]
-        item.update({**extra, "status": "done", "run_id": run_id,
-                     "reason": outcome.get("reason") or "", "note": outcome.get("detail", "")})
+        set_status(item, "done", run_id, **extra, reason=outcome.get("reason") or "",
+                   note=outcome.get("detail", ""))
         for key, default in DONE_KEYS.items():  # never overwrites pushed_sha set before a push
             item.setdefault(key, default)
         save(queue, state)

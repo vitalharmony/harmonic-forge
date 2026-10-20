@@ -239,6 +239,30 @@ class Pipeline(unittest.TestCase):
         self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z$")
         self.assertEqual({i["run_id"] for i in state["items"]}, {state["run_id"]})
 
+    def test_a_run_that_works_nothing_still_replaces_the_run_id(self):
+        state = te_run.queue_state.load(self.queue)
+        state["run_id"] = "run-20200101T000000Z"
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run.deny_check, "boundary", return_value=["push is True"]):
+            self.assertEqual(self.drive(), 3)
+        self.assertNotEqual(te_run.queue_state.load(self.queue)["run_id"], "run-20200101T000000Z")
+
+    def test_crash_recovered_item_is_stamped_with_the_new_run(self):
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0].update({"status": "in_progress", "pushed_sha": "a" * 40,
+                                  "branch": "fix/7-te-runner"})
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run.deny_check, "boundary", return_value=["stop here"]):
+            self.drive()
+        state = te_run.queue_state.load(self.queue)
+        self.assertEqual(state["items"][0]["status"], "blocked")
+        self.assertEqual(state["items"][0]["run_id"], state["run_id"])
+
+    def test_every_status_write_goes_through_set_status(self):
+        source = Path(te_run.__file__).read_text()
+        body = source.split("def _run_queue", 1)[1].split("\ndef main", 1)[0]
+        self.assertNotRegex(body, r'\["status"\]\s*=|"status":')
+
     def test_set_aside_branch_is_never_pushed(self):
         self.assertEqual(self.drive(FAKE_MISE_RC="1"), 0)
         item = self.item()
