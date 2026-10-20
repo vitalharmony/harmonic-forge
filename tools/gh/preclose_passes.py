@@ -174,13 +174,17 @@ def _strict_equal(a, b) -> bool:
     return a == b
 
 
-def _equal_but_exempt(repo_dir, replay_tree: str, head_tree: str) -> bool:
-    """True when the two trees differ only in the exempt JSON keys."""
+def _equal_but_exempt(repo_dir, replay_tree: str, head_tree: str,
+                      skip: set[str] = frozenset()) -> bool:
+    """True when the two trees differ only in the exempt JSON keys. Paths in
+    ``skip`` (a version-only conflict, harmonic-forge#1086) are not compared."""
     raw = _git_out(repo_dir, "diff-tree", "-r", "-z", "--no-renames", replay_tree, head_tree)
     fields = [field for field in raw.split("\0") if field != ""] if raw else []
     if len(fields) % 2:
         return False
     for meta, path in zip(fields[0::2], fields[1::2]):
+        if path in skip:
+            continue
         old_mode, new_mode, _old, _new, status = meta.lstrip(":").split()
         exempt = VERSION_EXEMPT.get(os.path.basename(path))
         if status != "M" or old_mode != new_mode or exempt is None:
@@ -218,13 +222,25 @@ def accepts(recorded: dict | None, cur_head: str, cur_base: str | None = None,
         if not rec_head or not rec_base:
             return False
         base = cur_base or merge_base(directory, main_ref, cur_head)
-        replay = run_git(directory, "merge-tree", "--write-tree", "--merge-base", rec_base,
-                         base, rec_head)
-        if replay.returncode != 0:
+        replay = run_git(directory, "merge-tree", "--write-tree", "--name-only", "--no-messages",
+                         "-z", "--merge-base", rec_base, base, rec_head)
+        if replay.returncode not in (0, 1):
             return False
-        replay_tree = replay.stdout.split()[0]
+        # -z: NUL-separated; field 1 is the tree, the rest exactly the conflicted paths.
+        fields = [f for f in replay.stdout.split("\0") if f]
+        if not fields:
+            return False
+        replay_tree, conflicted = fields[0], fields[1:]
         head_tree = _git_out(directory, "rev-parse", "--verify", f"{cur_head}^{{tree}}")
-        return replay_tree == head_tree or _equal_but_exempt(directory, replay_tree, head_tree)
+        if replay.returncode == 0:
+            return replay_tree == head_tree or _equal_but_exempt(directory, replay_tree, head_tree)
+        # harmonic-forge#1086: a conflict is accepted only when it is version-only,
+        # and then only the conflicted paths are skipped in the tree comparison.
+        import _exempt_conflict  # noqa: PLC0415 -- it imports this module
+        if not _exempt_conflict.version_only_conflict(directory, conflicted, rec_base, rec_head,
+                                                      base, cur_head):
+            return False
+        return _equal_but_exempt(directory, replay_tree, head_tree, skip=set(conflicted))
     except Exception:  # noqa: BLE001 -- fail closed, see the docstring
         return False
 
