@@ -266,10 +266,6 @@ class GuardsStillDenyTests(unittest.TestCase):
             self.assertEqual(bip._batch_note("denied."), "denied.")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AC3WiringTests(unittest.TestCase):
     """AC3 asserted end to end, not by `hasattr`.
 
@@ -428,3 +424,7 @@ class TopUpRemedyTests(unittest.TestCase):
         recorded PR links loses them."""
         out = self._annotate("F594", ["F326"])
         self.assertIn("which is not live, it authorizes fresh", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

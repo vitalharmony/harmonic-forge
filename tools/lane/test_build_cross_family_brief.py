@@ -140,10 +140,6 @@ class TestEmptyArtifactBody(unittest.TestCase):
     def test_a_nonempty_artifact_still_builds(self):
         self.assertIn("body", m.build([("a.md", "body")], "i", "q", ["c"], ["p"]))
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestEvidencePaths(unittest.TestCase):
     """harmonic-forge#598 preclose finding 1. Embedding the artifact makes the
     brief readable cold; it does not make the assumptions checkable. Without
@@ -324,3 +320,7 @@ class _FakeCompletedProcess:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+if __name__ == "__main__":
+    unittest.main()

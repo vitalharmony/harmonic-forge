@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+import _preflight
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
@@ -2331,6 +2332,23 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
             f"onto {main_sha[:12]} and post ready-for-l3 in the same action as "
             f"confirming it, so this cannot drift again."
         )
+    # harmonic-forge#1066: a head still marked Render-Pending carries main's stale
+    # baselines. Head only (`-1`); the raw message goes through gate_ci's one
+    # recognizer, never `%(trailers)`, so both readers agree. Fails closed.
+    # The raw commit object, not `git log` output: log re-encodes the message
+    # per i18n.logOutputEncoding, cat-file does not (cross-family F1066). The
+    # message is everything after the header's first blank line.
+    message = run("git", "cat-file", "commit", sha)
+    if message.returncode:
+        fail(f"cannot read {sha[:12]}'s commit message to check "
+             f"{gate_ci.RENDER_PENDING}: {message.stderr.strip()[:120]}")
+    _header, _sep, raw_message = message.stdout.partition("\n\n")
+    try:
+        pending = gate_ci.render_pending_from_message(raw_message)
+    except gate_ci.RenderPendingUnreadable as exc:
+        fail(f"cannot check {sha[:12]} for {gate_ci.RENDER_PENDING}: {exc}")
+    if pending:
+        fail(gate_ci.render_pending_refusal(sha, pending))
     repo_root_result = run("git", "rev-parse", "--show-toplevel")
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
@@ -2866,7 +2884,18 @@ def main() -> None:
              "gate_production_run.py runs only an action an AE at the checked-out "
              "SHA declares this way, once. --kind ae / ae-and-sweep only.",
     )
-    args = parser.parse_args()
+    # harmonic-forge#1076: --help is this tool's preflight form; a posting run
+    # needs it first in this session. Recorded only when argparse exits 0, which
+    # it does only after printing help; a parse error exits 2 and records nothing.
+    try:
+        args = parser.parse_args()
+    except SystemExit as exc:
+        if exc.code == 0:
+            _preflight.record("l1_post")
+        raise
+    refusal = _preflight.require("l1_post", f"python3 {Path(__file__).resolve()} --help")
+    if refusal:
+        fail(refusal)
     validate_carry_forward_args(args)
     prod_run = None
     if args.prod_run is not None:

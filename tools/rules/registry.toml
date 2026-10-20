@@ -2292,6 +2292,14 @@ text_sha = "f253d1877db64409"
 hooks = [{ script = "tools/hooks/deny_bare_cd.py", events = ["PreToolUse:Bash"], wired_in = "user settings" }]
 
 [[rule]]
+id = "R-0414"
+file = "rules/universal-claude.md"
+anchor = "batch-subagents-and-run-named-tools-directly"
+statement = "Batch related items into one subagent, never one per item, unless a rule requires independent agents (the preclose panel), and make small revisions with Edit directly; run a tool the operator names from this session, never through its wrapping agent."
+text_sha = "f80c5f0ff81f58b9"
+hooks = []
+
+[[rule]]
 id = "R-0350"
 file = "3-lane-protocol.md"
 anchor = "lane2-never-pushes"
@@ -2559,7 +2567,7 @@ id = "R-0384"
 file = "rules/lane-shorthand.md"
 anchor = "imc"
 statement = "IMC on an operator-typed BATCH line records a per-issue waiver of R-0229 and R-0230 for a LANE=1, vitalharmony, tooling-exception issue, minting no authority; imc_waiver.py record writes a pending receipt before posting and refetching the fixed-format waiver comment, then marks it recorded; while the receipt exists (an unparseable one counts) preclose_check forces the cross-family gate and refuses --force, --allow-dirty, --reforge, --cluster-verdict --force, --not-triggered and the in-family fallback. Like BATCH, IMC trusts the operator-typed line and the session; the receipt and comment are an audit trail, not proof against a session that can write files (harmonic-forge#895)."
-text_sha = "ef0b675564c67623"
+text_sha = "7dd49859ecc5973a"
 exception_to = ["R-0229", "R-0230"]
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
@@ -2777,6 +2785,6 @@ hooks = []
 id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "The task list has exactly one `in_progress` item at all times (the belt watch when idle). Every queued issue has its own entry naming its blocker, and only operator-owned items carry a `YOU:` prefix."
-text_sha = "4434a71143ff4da4"
+statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed."
+text_sha = "ed1d695005a978cc"
 hooks = []

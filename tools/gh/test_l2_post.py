@@ -539,10 +539,6 @@ class PlanHeadingIsL2SNotL2PTests(unittest.TestCase):
                 self.assertNotIn("L2P", heading)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestLeadBlock(unittest.TestCase):
     """harmonic-forge#472 — outcome first, evidence collapsed.
 
@@ -629,3 +625,7 @@ class TestLeadBlock(unittest.TestCase):
 #: marker-posting tools. Its own unit tests live in
 #: `test_belt_candidates.py`; `test_l2_post_belt_candidate.py` covers the
 #: AC5' integration assertion that THIS tool's `main()` actually calls it.
+
+
+if __name__ == "__main__":
+    unittest.main()

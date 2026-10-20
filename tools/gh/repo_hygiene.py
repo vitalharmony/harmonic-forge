@@ -313,10 +313,13 @@ def audit_open_prs(repo: str, report: Report) -> None:
         mergeable = detail.get("mergeable")
         mergeable_state = detail.get("mergeable_state")
         if mergeable is True and mergeable_state == "clean":
+            # harmonic-forge#1077: the merge binds to the head this report saw.
+            head_sha = ((detail.get("head") or {}).get("sha")
+                        or (pr.get("head") or {}).get("sha") or "<head-sha>")
             report.green_unmerged_prs.append(Finding(
                 repo, f"#{number}",
                 f"branch {ref!r} — mergeable and checks green, not merged — "
-                f"gh pr merge {number} --repo {repo}"))
+                f"gh pr merge {number} --repo {repo} --match-head-commit {head_sha}"))
         else:
             report.blocked_open_prs.append(Finding(
                 repo, f"#{number}",

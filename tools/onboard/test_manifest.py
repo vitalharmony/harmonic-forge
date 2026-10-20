@@ -501,7 +501,11 @@ class LiveManifestTests(unittest.TestCase):
         regen = {"hrse": {
             "rebase_regenerate": {"design-system.baseline.toml": "design-system-ratchet --update",
                                   "docs/ONTOLOGY.md": "docs-generate"},
-            "rebase_provision_task": "worktree-provision"}}
+            "rebase_provision_task": "worktree-provision",
+            # harmonic-forge#1058: hrse's CI-rendered visual baselines.
+            "rebase_visual_baselines": {"glob": "frontend/e2e/visual/*-snapshots/*.png",
+                                        "workflow": "update-visual-baselines.yml",
+                                        "fetch_task": "visual-baselines-fetch --run {run_id}"}}}
         # harmonic-forge#806: kenekted-docs' checkout basename is `docs`; the lane launchers
         # derive worktrees from that basename, so it keeps the default template.
         worktree: dict[str, dict[str, str]] = {}
@@ -574,8 +578,56 @@ class RebaseRegenerateTests(unittest.TestCase):
                          {"design-system.baseline.toml", "docs/ONTOLOGY.md"})
 
 
-if __name__ == "__main__":
-    unittest.main()
+class RebaseVisualBaselinesTests(unittest.TestCase):
+    """harmonic-forge#1058: the optional rebase_visual_baselines declaration."""
+
+    def load(self, extra: str):
+        return mf.load(write(MINIMAL + PROTOCOL + textwrap.indent(textwrap.dedent(extra), "    ")))
+
+    def test_declared_table_loads(self) -> None:
+        proto = self.load("""
+            rebase_visual_baselines = { glob = "a/*-snapshots/*.png", workflow = "w.yml", fetch_task = "f --run {run_id}" }
+        """)[0].protocol
+        self.assertEqual(proto.rebase_visual_baselines,
+                         {"glob": "a/*-snapshots/*.png", "workflow": "w.yml",
+                          "fetch_task": "f --run {run_id}"})
+
+    def test_absent_is_none(self) -> None:
+        self.assertIsNone(self.load("")[0].protocol.rebase_visual_baselines)
+
+    def test_refusals(self) -> None:
+        good = {"glob": '"a/*.png"', "workflow": '"w.yml"', "fetch_task": '"f --run {run_id}"'}
+
+        def body(**over):
+            fields = {**good, **over}
+            return "rebase_visual_baselines = { " + ", ".join(
+                f"{k} = {v}" for k, v in fields.items() if v is not None) + " }"
+        cases = {
+            "exactly the keys": body(workflow=None),
+            "exactly the keys ": body(extra='"x"'),
+            "glob must be non-empty": body(glob='" "'),
+            "must be repo-relative": body(glob='"../a/*.png"'),
+            "must be repo-relative ": body(glob='"/a/*.png"'),
+            "must be a workflow file name": body(workflow='"w"'),
+            "must be a workflow file name ": body(workflow='".github/workflows/w.yml"'),
+            "{run_id} only": body(fetch_task='"f --run"'),
+            "{run_id} only ": body(fetch_task='"f {run_id} {sha}"'),
+            "{run_id} only  ": body(fetch_task='"f {run_id!r}"'),
+            "{run_id} only   ": body(fetch_task='"f {"'),
+        }
+        cases["must be a table"] = 'rebase_visual_baselines = "x"'
+        for expected, text in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaises(mf.ManifestError) as ctx:
+                    self.load(text)
+                self.assertIn(expected.strip(), str(ctx.exception))
+
+    def test_live_hrse_declares_the_visual_baselines(self) -> None:
+        hrse = mf.by_repo(LIVE)["vitalharmony/hrse"].protocol
+        self.assertEqual(hrse.rebase_visual_baselines, {
+            "glob": "frontend/e2e/visual/*-snapshots/*.png",
+            "workflow": "update-visual-baselines.yml",
+            "fetch_task": "visual-baselines-fetch --run {run_id}"})
 
 
 class SweepFallbackConsumerTests(unittest.TestCase):
@@ -613,3 +665,7 @@ class SweepFallbackConsumerTests(unittest.TestCase):
             [sys.executable, str(script), "--help"],
             capture_output=True, text=True, timeout=30)
         self.assertIn("--manifest-repos", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

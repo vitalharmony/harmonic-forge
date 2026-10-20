@@ -46,6 +46,13 @@ from hook_identity import slot_env as _slot_env  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# harmonic-forge#1077: loaded at import, so the preclose answer below is the
+# merge hook's own even when a later caller's sys.path cannot import it.
+try:
+    import block_missing_preclose_inspection as _merge_hook  # noqa: E402
+except Exception:  # noqa: BLE001
+    _merge_hook = None
+
 #: The guard whose precondition is per-issue and therefore the expensive one:
 #: it fires once per close, so a batch of N halts N times.
 PRECLOSE_LABEL = "tooling-exception"
@@ -184,16 +191,24 @@ def _stale_preclose_receipt(repo: str, issue: str) -> str | None:
     if not pr_number or not head_sha:
         return None
     # harmonic-forge#834: ask the merge hook itself, so the preflight's answer
-    # is the merge's answer (patch-id acceptance, last completed pass, and the
-    # at-the-cap message that never says "run another pass").
+    # is the merge's answer (change-identity acceptance, last completed pass,
+    # and the at-the-cap message that never says "run another pass").
+    # harmonic-forge#1077: the hook's acceptance fails closed on every error,
+    # so an error here is a halt too -- an exception must never read as
+    # "the merge will go through" when the hook would deny it.
+    merge_hook = _merge_hook
     try:
-        import block_missing_preclose_inspection as merge_hook  # noqa: PLC0415
-
+        if merge_hook is None:
+            import block_missing_preclose_inspection as merge_hook  # noqa: PLC0415
         if merge_hook._preclose_receipt_ok(repo, str(issue), head_sha, str(pr_number)):
             return None
+    except Exception:
+        pass
+    try:
         message = merge_hook._stale_receipt_message(repo, str(issue), str(pr_number), head_sha)
     except Exception:
-        return None  # fail open, consistent with every other lookup here
+        message = (f"No completed pre-close receipt could be confirmed to cover PR "
+                   f"#{pr_number}'s head {str(head_sha)[:12]} (harmonic-forge#1077).")
     return f"{PRECLOSE_SATISFIED_LABEL} present, but the merge WILL halt. {message}"
 
 

@@ -27,12 +27,21 @@ this directory: every lane runs as the same user, so the receipt and the
 public `## IMC waiver` comment are an audit trail, not proof against a session
 that can write files.
 
+`end` (harmonic-forge#1042) is the IMC stop's exit: at a sticky-wicket stop or
+a ruled mechanism cluster it archives the receipt (never deletes it), revokes
+the key's BATCH merge grant, archives the hook record, and posts and refetches
+`## IMC ended — <KEY>`. The issue is then a normal Tooling Exception owing
+R-0229's human pass.
+
 Run:
     python3 tools/gh/imc_waiver.py record --key F892
+    python3 tools/gh/imc_waiver.py end --key F892 --reason "sticky-wicket PATCH"
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -309,17 +318,220 @@ def record(key: str, *, branch: str | None = None, now: datetime | None = None,
     return receipt
 
 
+def archive_dir() -> Path:
+    return state_dir() / "archive"
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime("%Y%m%dT%H%M%SZ")
+
+
+def end_heading(key: str) -> str:
+    return f"## IMC ended — {key.upper()}"
+
+
+def end_marker(key: str, ended_at: str) -> str:
+    return f"<!-- imc-ended key={key.upper()} ended_at={ended_at} -->"
+
+
+def end_comment_body(key: str, repo: str, issue: int, receipt: dict) -> str:
+    return "\n".join([
+        end_heading(key),
+        "",
+        f"- **Reason:** {receipt.get('end_reason')}",
+        f"- **Original waiver comment:** {receipt.get('comment_url') or 'none recorded'}",
+        f"- **What changes:** the IMC waiver on {repo}#{issue} is ended; the key's BATCH "
+        "merge grant is revoked and the IMC hook record archived.",
+        f"- **What the issue now owes:** R-0229's human pass, as any Tooling Exception "
+        f"issue ({RULE_ID}).",
+        "",
+        end_marker(key, str(receipt.get("ended_at"))),
+    ])
+
+
+def _under_waiver(entry: dict, granted: datetime | None) -> bool:
+    """A pass that completed after the waiver was granted and ran the forced
+    cross-family call. Passes from before the waiver never count (pass 1)."""
+    done = _parse_time(entry.get("completed_at"))
+    return (granted is not None and done is not None and done >= granted
+            and bool(entry.get("cross_family_ran")))
+
+
+def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None:
+    """AC2: the reason this issue is at an IMC stop, or None. Read from the
+    preclose receipt through preclose_check's own reader and preclose_passes'
+    own sticky-wicket and cluster logic (the test `post_verdict` applies).
+    Only passes run under this waiver (`granted_at`) count, so `end` cannot
+    dodge the forced cross-family call with passes recorded before it."""
+    import preclose_check  # noqa: PLC0415  (preclose_check imports this module)
+    import preclose_passes  # noqa: PLC0415
+    granted = _parse_time(granted_at)
+    receipt = preclose_check.find_receipt(repo, issue)
+    passes = preclose_passes.current(preclose_passes.history(receipt))
+    waived = [p for p in passes if _under_waiver(p, granted)]
+    if (len(waived) >= preclose_passes.MAX_PASSES
+            and preclose_passes.cap_message(waived) == preclose_passes.STICKY_WICKET):
+        return "sticky-wicket stop (two passes both left surviving findings)"
+    epoch = max((int(p.get("epoch") or 0) for p in preclose_passes.history(receipt)), default=0)
+    cluster = preclose_passes._mechanism_cluster(receipt, epoch)
+    if cluster and cluster.get("verdict") in ("PATCH", "REFORGE") and waived:
+        return f"mechanism-cluster verdict {cluster.get('verdict')} (current epoch)"
+    return None
+
+
+def _revoke_authority(key: str, moment: datetime, batch_state_path: Path | None) -> None:
+    """AC3: stand down the BATCH merge grant and archive the hook record, so
+    neither a lane merge nor a `record` re-run survives `end`. Idempotent."""
+    import batch_auth  # noqa: PLC0415
+    batch_auth.revoke([key], state_path=batch_state_path)
+    hook = hook_record_path(key)
+    if hook.exists():
+        archive_dir().mkdir(parents=True, exist_ok=True)
+        os.replace(hook, archive_dir() / f"{key}.hook.{_stamp(moment)}.json")
+
+
+def _pending_end(key: str) -> Path | None:
+    """The newest archived receipt still marked `ending`: an `end` that
+    crashed under the pre-journal layout. Completed by a retry."""
+    candidates = sorted(archive_dir().glob(f"{key}.waiver.*.json"))
+    for path in reversed(candidates):
+        data = read_json(path)
+        if data is not None and data.get("status") == "ending":
+            return path
+    return None
+
+
+@contextlib.contextmanager
+def _end_lock(key: str):
+    """One `end` per key at a time (pass 2, second-run): overlapping runs
+    would each post. Blocks until the holder finishes."""
+    state_dir().mkdir(parents=True, exist_ok=True)
+    with open(state_dir() / f"{key}.end.lock", "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _gh_login(runner) -> str | None:
+    found = runner(["gh", "api", "user", "--jq", ".login"],
+                   capture_output=True, text=True, check=False)
+    return (found.stdout or "").strip() or None if found.returncode == 0 else None
+
+
+def _existing_end_comment(repo: str, issue: int, key: str, run_id: str, runner) -> str | None:
+    """A prior `## IMC ended` post for this run: it carries this run's marker,
+    starts with the end heading, and was written by the current gh user.
+    Keyed on the journal's stable run id, never on regenerated body text
+    (#1042 reforge). Any read failure refuses rather than re-posting."""
+    login = _gh_login(runner)
+    if not login:
+        raise SystemExit("imc-waiver: could not resolve the gh user to check for a prior "
+                         "`## IMC ended` post; nothing was posted.")
+    found = runner(["gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments",
+                    "--jq", ".[] | [.html_url, .body, .user.login] | @json"],
+                   capture_output=True, text=True, check=False)
+    if found.returncode != 0:
+        raise SystemExit(f"imc-waiver: could not read {repo}#{issue}'s comments to check for a "
+                         f"prior `## IMC ended` post: {(found.stderr or '').strip()}")
+    marker = end_marker(key, run_id)
+    for line in (found.stdout or "").splitlines():
+        try:
+            url, body, author = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        body = str(body)
+        if (author == login and marker in body
+                and body.lstrip().startswith(end_heading(key))):
+            return str(url)
+    return None
+
+
+def end(key: str, *, reason: str, now: datetime | None = None,
+        batch_state_path: Path | None = None, runner=subprocess.run) -> dict:
+    """harmonic-forge#1042: end an IMC waiver at the IMC stop. Returns the
+    final archived receipt (status `ended`).
+
+    Reforge (sticky-wicket, two passes): one journal -- the live receipt,
+    written once as `ending` with a stable `ended_at` run id -- drives every
+    step under a per-key lock. A retry from any crash point resumes that
+    journal; nothing is re-derived. The live receipt is never rewritten as
+    `ended`: the archived `ended` file is written first, then the live one is
+    removed, so IMC stays enforced until the record is complete."""
+    key = key.strip().upper()
+    if not reason or not reason.strip():
+        raise SystemExit("imc-waiver: --reason must be non-empty.")
+    target = key_target(key)
+    if target is None:
+        raise SystemExit(f"imc-waiver: {key} is not a repo-prefixed issue key.")
+    repo, issue = target
+    moment = now or _now()
+    with _end_lock(key):
+        live = receipt_path(key)
+        if live.exists():
+            data = read_json(live)
+            if data is None:
+                data = {"unreadable": True,
+                        "unreadable_original": live.read_text(encoding="utf-8",
+                                                              errors="replace")}
+            if data.get("status") in ("ending", "ended") and data.get("ended_at"):
+                ending = data  # resume the journal: same run id, same reason
+            else:
+                stop = imc_stop(repo, issue, data.get("granted_at"))
+                if stop is None:
+                    raise SystemExit(
+                        f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt "
+                        "shows neither two current-epoch passes run under this waiver (forced "
+                        "cross-family) that both left surviving findings nor a current-epoch "
+                        "PATCH/REFORGE mechanism-cluster verdict after such a pass. `end` is the "
+                        "exit from that stop, never a way around the forced cross-family pass.")
+                ending = {**data, "status": "ending", "end_reason": reason.strip(),
+                          "ended_at": _iso(moment), "end_stop": stop}
+                write_json_atomic(live, ending)
+        else:
+            pending = _pending_end(key)
+            if pending is None:
+                raise SystemExit(f"imc-waiver: no IMC waiver receipt for {key} and no "
+                                 "interrupted `end` to complete.")
+            ending = read_json(pending) or {}
+        run_id = str(ending.get("ended_at"))
+        archived = archive_dir() / f"{key}.waiver.{_stamp(_parse_time(run_id) or moment)}.json"
+        _revoke_authority(key, moment, batch_state_path)
+        url = ending.get("end_comment_url") or _existing_end_comment(repo, issue, key, run_id,
+                                                                     runner)
+        if url is None:
+            url = post_and_confirm(repo, issue, end_comment_body(key, repo, issue, ending),
+                                   runner)
+        final = {**ending, "status": "ended", "end_comment_url": url}
+        archive_dir().mkdir(parents=True, exist_ok=True)
+        write_json_atomic(archived, final)
+        if live.exists():
+            live.unlink()
+        return final
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Record an IMC waiver on its issue (R-0384).")
     sub = parser.add_subparsers(dest="command", required=True)
     rec = sub.add_parser("record", help="post the waiver comment and write the receipt")
     rec.add_argument("--key", required=True, help="the IMC key, e.g. F892")
+    fin = sub.add_parser("end", help="end the waiver at an IMC stop (harmonic-forge#1042)")
+    fin.add_argument("--key", required=True, help="the IMC key, e.g. F892")
+    fin.add_argument("--reason", required=True, help="why the waiver ends")
     args = parser.parse_args()
     target = key_target(args.key)
     if target is None:
         raise SystemExit(f"imc-waiver: {args.key} is not a repo-prefixed issue key.")
     from manifest_identity import apply_project_identity  # noqa: PLC0415
     apply_project_identity(target[0])  # harmonic-forge#804
+    if args.command == "end":
+        ended = end(args.key, reason=args.reason)
+        print(f"imc-waiver: ended {ended.get('key', args.key.upper())} -- "
+              f"{ended['end_comment_url']}")
+        print(f"  archived receipt: {archive_dir()}")
+        print("  the issue now owes R-0229's human pass.")
+        return 0
     receipt = record(args.key)
     print(f"imc-waiver: recorded {receipt['key']} -- {receipt['comment_url']}")
     print(f"  receipt: {receipt_path(receipt['key'])}")

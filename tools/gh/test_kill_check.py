@@ -281,8 +281,7 @@ class KillCheckTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.execute()
         self.assertEqual(self.receipt()["status"], "running")
-        self.assertFalse(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD"),
-                                               preclose.local_patch_id("origin/main", "HEAD")))
+        self.assertFalse(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD")))
 
     def test_invalid_recheck_records_fail_not_running(self) -> None:
         self.assertEqual(self.execute(), 0)
@@ -356,7 +355,8 @@ class KillCheckTests(unittest.TestCase):
                 reason="operator: waive these checks")), 0)
             self.assertEqual(preclose.plan(args), 0)
 
-    def test_patch_identical_rebase_receipt(self) -> None:
+    def test_clean_rebase_receipt(self) -> None:
+        """harmonic-forge#1077: a clean replay of the checked head is covered."""
         self.assertEqual(self.execute(), 0)
         first = self.receipt()
         git(self.repo, "checkout", "-q", "--detach", "origin/main")
@@ -367,8 +367,7 @@ class KillCheckTests(unittest.TestCase):
         git(self.repo, "checkout", "-q", "main")
         git(self.repo, "rebase", "-q", "origin/main")
         self.assertNotEqual(first["head_sha"], git(self.repo, "rev-parse", "HEAD"))
-        self.assertTrue(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD"),
-                                              preclose.local_patch_id("origin/main", "HEAD")))
+        self.assertTrue(kill.covering_receipt(REPO, ISSUE, git(self.repo, "rev-parse", "HEAD")))
         args = argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main", head="HEAD",
                                   tier="fast", force=False, reforge=False,
                                   allow_dirty=False, allow_repo_mismatch=False)

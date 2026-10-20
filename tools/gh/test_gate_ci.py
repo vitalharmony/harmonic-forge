@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_ci  # noqa: E402
 
 
-def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_runs=()):
+def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_runs=(),
+            message="ordinary commit\n"):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -61,6 +62,9 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_run
             if any('select(.state == "open")' in a for a in cmd):
                 listed = [p for p in listed if p.get("state", "open") == "open"]
             return 0, json.dumps(listed)
+        if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url) and ".commit.message" in cmd:
+            # harmonic-forge#1066: the head commit's message, for the Render-Pending read.
+            return 0, message
         if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url):
             # Short-SHA resolution (`--jq .sha`): the fixture's SHAs are hex, padded to 40.
             return 0, url.rsplit("/", 1)[1].ljust(40, "0")
@@ -459,8 +463,36 @@ class HookPathRunsAsTheReposSlot(unittest.TestCase):
         self.assertIsNone(gate_ci._slot_env_for("someone/else"))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+class RenderPendingTests(unittest.TestCase):
+    """harmonic-forge#1066: a PASS on a head still marked Render-Pending is refused."""
+
+    MARKED = "render: pending baselines\n\nRender-Pending: 39013060663\n"
+
+    def test_a_marked_head_is_refused_naming_the_run(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")], message=self.MARKED))
+        self.assertFalse(ok)
+        self.assertIn("39013060663", msg)
+        self.assertIn("lane1-rebase", msg)
+
+    def test_an_unmarked_head_still_passes(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")]))
+        self.assertTrue(ok, msg)
+
+    def test_an_unreadable_message_fails_closed(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(checks=[check("verify")], message=""))
+        self.assertFalse(ok)
+        self.assertIn("could not read", msg)
+
+    def test_a_body_text_line_is_not_a_trailer(self):
+        body = "subject\n\nRender-Pending: 1\n\nA closing paragraph that is prose.\n"
+        self.assertIsNone(gate_ci.render_pending_from_message(body))
+
+    def test_a_trailer_beside_another_trailer_is_read(self):
+        msg = "subject\n\nSigned-off-by: A <a@b>\nRender-Pending: 9\n"
+        self.assertEqual(gate_ci.render_pending_from_message(msg), "9")
 
 
 class PrecloseRegressionTests(unittest.TestCase):

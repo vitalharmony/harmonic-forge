@@ -681,10 +681,6 @@ class LiveIssueAggregateFetchCap(unittest.TestCase):
         self.assertLess(len(expanded), 80000)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BatchAuthorizationTests(unittest.TestCase):
     """AC1 — typing BATCH must create the authorization with no session action.
 
@@ -981,3 +977,7 @@ class ProductionStateIsolationTests(unittest.TestCase):
         source = inspect.getsource(_run)
         self.assertIn("STATE_PATH", source)
         self.assertIn("mkdtemp", source)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -222,11 +222,13 @@ class AuditOpenPRsTests(unittest.TestCase):
         `verify: SUCCESS` (implied by GitHub's own `clean` computation)."""
         r = self._audit(
             [self._list_pr(1513, "docs/roadmap-2.9-thesis")],
-            {1513: {"mergeable": True, "mergeable_state": "clean"}},
+            {1513: {"mergeable": True, "mergeable_state": "clean", "head": {"sha": "f00d"}}},
         )
         self.assertEqual(len(r.green_unmerged_prs), 1)
         self.assertIn("#1513", r.green_unmerged_prs[0].name)
-        self.assertIn("gh pr merge 1513", r.green_unmerged_prs[0].detail)
+        # harmonic-forge#1077: the printed merge binds to the head it saw.
+        self.assertIn("gh pr merge 1513 --repo", r.green_unmerged_prs[0].detail)
+        self.assertIn("--match-head-commit f00d", r.green_unmerged_prs[0].detail)
         self.assertEqual(r.blocked_open_prs, [])
 
     def test_not_mergeable_is_blocked(self):
@@ -1033,10 +1035,6 @@ class MainSwitchesSlotPerRepoTests(unittest.TestCase):
         self.assertIsNone(rh._ENV, "main must leave no slot applied when it returns")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AuditUnboardedTests(unittest.TestCase):
     """hrse#979 — open issues invisible to board-driven reporting."""
 
@@ -1591,3 +1589,7 @@ class InertPhaseDependentsTests(unittest.TestCase):
             )
         self.assertTrue(any("/dependencies/blocking" in p for p in called),
                         "the dependency API must actually be consulted")
+
+
+if __name__ == "__main__":
+    unittest.main()

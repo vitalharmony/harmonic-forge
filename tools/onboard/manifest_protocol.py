@@ -68,6 +68,13 @@ class Protocol:
     #: any `rebase_regenerate` task (it is not provisioned). Required whenever
     #: `rebase_regenerate` is declared.
     rebase_provision_task: str | None = None
+    #: harmonic-forge#1058. CI-rendered visual baselines: `{glob, workflow,
+    #: fetch_task}`. A rebase conflict on a path matching `glob` (component-wise,
+    #: `*` never crosses `/`) takes origin/main's side; after the push
+    #: `lane1-rebase` dispatches `workflow` with `-f ref=<pushed sha>`, waits,
+    #: and runs `fetch_task` (`{run_id}` is the only placeholder) to fetch the
+    #: rendered files.
+    rebase_visual_baselines: dict[str, str] | None = None
 
     def worktree_names(self, checkout: str) -> list[str]:
         lanes = (2, 3) if self.runs_lane3 else (2,)
@@ -134,6 +141,7 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
         raise ManifestError(
             f"{target}: {project} protocol.lane3_env_task must be non-empty when present")
     _check_rebase_regenerate(protocol, target, project)
+    _check_rebase_visual_baselines(protocol, target, project)
     if not isinstance(protocol.runs_lane3, bool):
         raise ManifestError(
             f"{target}: {project} protocol.runs_lane3 must be boolean")
@@ -165,6 +173,36 @@ def _check_rebase_regenerate(protocol: Protocol, target: Path, project: str) -> 
     if provision is None:
         raise ManifestError(
             f"{prefix}.rebase_regenerate needs rebase_provision_task")
+
+
+_BASELINE_KEYS = ("glob", "workflow", "fetch_task")
+
+
+def _check_rebase_visual_baselines(protocol: Protocol, target: Path, project: str) -> None:
+    """Validate the optional harmonic-forge#1058 declaration, as #1057's."""
+    decl = protocol.rebase_visual_baselines
+    prefix = f"{target}: {project} protocol.rebase_visual_baselines"
+    if decl is None:
+        return
+    if not isinstance(decl, dict) or set(decl) != set(_BASELINE_KEYS):
+        raise ManifestError(f"{prefix} must be a table with exactly the keys "
+                            f"{', '.join(_BASELINE_KEYS)}")
+    for key in _BASELINE_KEYS:
+        if not isinstance(decl[key], str) or not decl[key].strip():
+            raise ManifestError(f"{prefix}.{key} must be non-empty")
+    parts = Path(decl["glob"]).parts
+    if Path(decl["glob"]).is_absolute() or ".." in parts:
+        raise ManifestError(f"{prefix}.glob {decl['glob']!r} must be repo-relative")
+    workflow = decl["workflow"]
+    if "/" in workflow or not workflow.endswith((".yml", ".yaml")):
+        raise ManifestError(f"{prefix}.workflow {workflow!r} must be a workflow file name")
+    try:
+        fields = {(field, spec, conv) for _lit, field, spec, conv
+                  in Formatter().parse(decl["fetch_task"]) if field is not None}
+    except ValueError as exc:
+        raise ManifestError(f"{prefix}.fetch_task must use {{run_id}} only") from exc
+    if fields != {("run_id", "", None)}:
+        raise ManifestError(f"{prefix}.fetch_task must use {{run_id}} only")
 
 
 def normalize_repo(value: str) -> str:

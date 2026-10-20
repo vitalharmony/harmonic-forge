@@ -446,10 +446,6 @@ class CompactionCountTests(unittest.TestCase):
                 encoding="utf-8")
             self.assertEqual(self._compact(path).get("compactions"), 2)
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LaneCrossCheck(unittest.TestCase):
     """harmonic-forge#479 — `LANE` is wrong for every daemon-spawned
     background job on a machine whose daemon was first started from a Lane 1
@@ -1073,3 +1069,7 @@ class TriggerRejectsNonValues(unittest.TestCase):
             record = json.dumps({"type": "system", "compactMetadata": {"trigger": "manual"}})
             path.write_text(record + "\n")
             self.assertEqual(cm.trigger_of(str(path)), "manual")
+
+
+if __name__ == "__main__":
+    unittest.main()

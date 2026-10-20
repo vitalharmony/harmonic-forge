@@ -49,6 +49,7 @@ import functools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -678,14 +679,25 @@ def current_branch() -> str | None:
     return name if name and name != "HEAD" else None
 
 
-def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, force: bool,
+def local_change_identity(main_ref: str, head: str) -> dict:
+    """harmonic-forge#1077: the change identity of `head` in this checkout,
+    its merge base taken against `main_ref` (`--base`, default origin/main)."""
+    try:
+        return preclose_passes.change_identity(None, head, main_ref)
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"preclose-check: cannot compute the change identity of {head!r} "
+                         f"against {main_ref!r}: {exc}") from None
+
+
+def check_pass_cap(repo: str, issue: int, head_sha: str, main_ref: str, force: bool,
                    reforge: bool = False) -> None:
-    """harmonic-forge#834: at most two passes per issue, and a patch-identical
-    head (a rebase) is not a new pass. Replaces the old per-SHA check, which
-    re-armed on every head change and so allowed unbounded passes."""
+    """harmonic-forge#834: at most two passes per issue, and a clean replay of
+    a reviewed head (a rebase) is not a new pass (#1077: by change identity,
+    never patch-id). Replaces the old per-SHA check, which re-armed on every
+    head change and so allowed unbounded passes."""
     if force and not reforge:
         receipt = find_receipt(repo, issue)
-        reason = preclose_passes.refusal(receipt, head_sha, patch, reforge, force,
+        reason = preclose_passes.refusal(receipt, head_sha, None, main_ref, reforge, force,
                                          repo=repo, issue=issue)
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
@@ -695,16 +707,16 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, patch: str | None, forc
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
-    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, patch, reforge, force,
-                                     repo=repo, issue=issue)
+    reason = preclose_passes.refusal(find_receipt(repo, issue), head_sha, None, main_ref, reforge,
+                                     force, repo=repo, issue=issue)
     if reason:
         raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
 
 
-def kill_receipt_ok(repo: str, issue: int, head_sha: str, patch_id: str | None) -> bool:
-    """The independent kill-check receipt must cover this exact review diff."""
+def kill_receipt_ok(repo: str, issue: int, head_sha: str, main_ref: str) -> bool:
+    """The independent kill-check receipt must cover this change (#1077)."""
     import kill_check  # Lazy: kill_check reuses this module's receipt helpers.
-    return kill_check.covering_receipt(repo, issue, head_sha, patch_id)
+    return kill_check.covering_receipt(repo, issue, head_sha, main_ref=main_ref)
 
 
 def write_receipt(repo: str, issue: int, head_sha: str, size: int, status: str,
@@ -830,10 +842,9 @@ def plan(args: argparse.Namespace) -> int:
             f"{unmatched.get('granted_at')}) but no matching waiver receipt. Record the waiver "
             f"on the issue first: python3 tools/gh/imc_waiver.py record --key "
             f"{unmatched.get('key')}")
-    check_pass_cap(repo, args.issue, head_sha, local_patch_id(args.base, args.head), args.force,
+    check_pass_cap(repo, args.issue, head_sha, args.base, args.force,
                    getattr(args, "reforge", False))
-    if not args.force and not kill_receipt_ok(
-            repo, args.issue, head_sha, local_patch_id(args.base, args.head)):
+    if not args.force and not kill_receipt_ok(repo, args.issue, head_sha, args.base):
         raise SystemExit(
             f"preclose-check: no passing kill-check receipt covers {repo}#{args.issue} "
             f"at {head_sha[:12]}. Run: mise run kill-check -- run --repo {repo} "
@@ -955,9 +966,9 @@ def complete(args: argparse.Namespace) -> int:
     # harmonic-forge#701 preclose finding (two refuters): without this, a
     # second --complete on the same SHA overwrote the receipt and could
     # relabel a required two-family pass as in-family only.
-    patch = local_patch_id(args.base, args.head)
+    identity = local_change_identity(args.base, head_sha)
     reforge = getattr(args, "reforge", False)
-    check_pass_cap(repo, args.issue, head_sha, patch, args.force, reforge)
+    check_pass_cap(repo, args.issue, head_sha, args.base, args.force, reforge)
     findings = load_findings(args.findings)
     require_wellformed_anchors(findings)
     require_mechanisms(findings)
@@ -1011,7 +1022,7 @@ def complete(args: argparse.Namespace) -> int:
         if enrolled.get("reason"):
             cost["arm_reason"] = enrolled["reason"]
     path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-        **preclose_passes.record(prior, head_sha, patch, surviving, mechanisms,
+        **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
                                  current_branch(), reforge, cost),
         "cross_family_required": required,
         "cross_family_reason": why,
@@ -1156,6 +1167,38 @@ def emit_pass(repo: str, issue: int, head_sha: str, entry: dict, labels: dict) -
               file=sys.stderr)
 
 
+def _preclose_mode(args: argparse.Namespace) -> str:
+    """The mode `main()` dispatches to, so the preflight key matches it."""
+    if args.gate:
+        return "gate"
+    if args.post_verdict:
+        return "post-verdict"
+    if args.cluster_verdict:
+        return "cluster-verdict"
+    if args.complete:
+        return "complete"
+    return "plan+reforge" if args.reforge else "plan"
+
+
+def _preflight_force(args: argparse.Namespace, argv: list[str]) -> None:
+    """harmonic-forge#1076: a `--force` run needs the same repo, issue and mode
+    run without `--force` first in this session. That run is real, not a pure
+    dry run: if it succeeds it writes its receipts, and no `--force` is needed."""
+    import _preflight  # noqa: PLC0415
+    key = f"preclose:{args.repo.strip().lower()}#{args.issue}:{_preclose_mode(args)}"
+    if not args.force:
+        _preflight.record(key)
+        return
+    # argparse accepts any unambiguous prefix (`--forc`), so strip every one,
+    # or the suggested command would itself still be forced.
+    dry = " ".join(shlex.quote(a) for a in argv
+                   if not (a.startswith("--fo") and "--force".startswith(a)))
+    refusal = _preflight.require(key, f"python3 {Path(__file__).resolve()} {dry}")
+    if refusal:
+        raise SystemExit(f"preclose-check: {refusal}\n  That run is real: if it succeeds it "
+                         "records the pass, and no --force is needed.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plan an adversarial pre-close check for Tooling Exception work.",
@@ -1225,6 +1268,9 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    # harmonic-forge#1076: the preflight receipt is recorded (or required) only
+    # once main()'s own argument validation has passed, just before dispatch, so
+    # a no-force run this tool rejects never counts as the preflight.
     if (args.complete or args.gate or args.post_verdict or args.cluster_verdict) and (
             args.arm != "auto" or args.arm_reason or args.re_enroll):
         parser.error("--arm/--arm-reason belong to the plan: the pass records the arm the plan "
@@ -1235,6 +1281,7 @@ def main() -> None:
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")
+        _preflight_force(args, sys.argv[1:])
         sys.exit(gate(args))
     if args.post_verdict:
         if not (args.findings and args.envelope):
@@ -1245,11 +1292,14 @@ def main() -> None:
         if args.panel_tokens is not None or args.panel_ms is not None or args.cost_unavailable:
             parser.error("--post-verdict is one cross-family refuter, not a panel: it takes "
                          "--cross-family-ms only")
+        _preflight_force(args, sys.argv[1:])
         sys.exit(post_verdict(args))
     if args.cluster_verdict:
         if not args.comment_url:
             parser.error("--cluster-verdict needs --comment-url")
+        _preflight_force(args, sys.argv[1:])
         sys.exit(cluster_verdict(args))
+    _preflight_force(args, sys.argv[1:])
     sys.exit(complete(args) if args.complete else plan(args))
 
 
@@ -1316,18 +1366,18 @@ def post_verdict(args: argparse.Namespace) -> int:
             or preclose_passes.cap_message(passes) != preclose_passes.STICKY_WICKET):
         raise SystemExit("preclose-check: --post-verdict applies only after two passes that both "
                          "left surviving findings (the sticky-wicket case).")
-    # F838 sticky-wicket PATCH: bind --base by PATCH ID, not by commit id.
-    # Lane 1 rebases finished branches, after which the pass-2 commit is
-    # unreachable (and absent from a fresh clone), so a commit-id binding made
-    # --force permanently unreachable. Pass 2's patch id is already the
-    # rebase-stable identity (#834: "a patch-identical rebase is not a pass").
+    # F838 sticky-wicket PATCH: Lane 1 rebases finished branches, after which
+    # the pass-2 commit is unreachable, so a commit-id-only binding made
+    # --force permanently unreachable. harmonic-forge#1077: the rebased twin
+    # is accepted by change identity (exact head, or a clean replay of it onto
+    # its own base against --main), never by patch-id.
     pass_two_head = preclose_passes.reviewed_head(prior)
-    pass_two_patch = preclose_passes.reviewed_patch_id(prior)
-    if base_sha != pass_two_head and not (
-            pass_two_patch and local_patch_id(args.main, base_sha) == pass_two_patch):
+    if not preclose_passes.accepts_entry(passes[-1], base_sha, None, args.main):
         raise SystemExit(f"preclose-check: --base {base_sha[:12]} is neither the pass-2 head "
-                         f"{str(pass_two_head)[:12]} nor patch-identical to it against "
-                         f"{args.main}. The post-verdict check reads only the patch since pass 2.")
+                         f"{str(pass_two_head)[:12]} nor a clean replay of it against "
+                         f"{args.main}. The post-verdict check reads only the patch since pass 2."
+                         + (f" {preclose_passes.legacy_message(passes[-1], base_sha)}"
+                            if preclose_passes.legacy_message(passes[-1], base_sha) else ""))
     # Two-dot: exactly base's descendants. Three-dot would widen to the whole
     # branch whenever a rebase moved the merge base.
     patch = local_patch_id(base_sha, head_sha, dots="..")

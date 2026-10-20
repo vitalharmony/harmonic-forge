@@ -104,6 +104,11 @@
 #                       are generated IN FULL may be listed.
 #   rebase_provision_task  The task run first in the rebase prep worktree;
 #                       required when rebase_regenerate is set.
+#   rebase_visual_baselines  Optional (harmonic-forge#1058). `{ glob, workflow,
+#                       fetch_task }`: CI-rendered baselines. lane1-rebase takes
+#                       main's side on a conflict, pushes, dispatches `workflow`
+#                       for the pushed SHA, and fetches with `fetch_task`
+#                       (`{run_id}` its only placeholder).
 #   ci_parity_task      Optional (harmonic-forge#802). A repo's CI standard is
 #                       `verify` -> `mise run ci-check`; a repo whose CI
 #                       instead mirrors `check`'s commands against its own
@@ -172,6 +177,7 @@ lane3_env_task = "lane3-env-provision"
 # [[increase]] entries) are deliberately absent, so a conflict there is exit 2.
 rebase_regenerate = { "design-system.baseline.toml" = "design-system-ratchet --update", "docs/ONTOLOGY.md" = "docs-generate" }
 rebase_provision_task = "worktree-provision"
+rebase_visual_baselines = { glob = "frontend/e2e/visual/*-snapshots/*.png", workflow = "update-visual-baselines.yml", fetch_task = "visual-baselines-fetch --run {run_id}" }
 
 [[project]]
 name = "harmonic-forge"

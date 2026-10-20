@@ -185,6 +185,10 @@ def main() -> int:
     # not setdefault: before this, any test reaching `telemetry/emit.py` wrote
     # the operator's real store.
     os.environ["HARMONIC_FORGE_TELEMETRY_STORE"] = str(Path(archive_tmp.name) / "store")
+    # harmonic-forge#1076: a suite calling a guarded tool's main() must neither
+    # be refused nor write the session's real preflight receipts.
+    os.environ["PREFLIGHT_RECEIPT_DIR"] = str(Path(archive_tmp.name) / "preflight")
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
     files = _test_files()
     if not files:
         print("[test] no test files found — refusing to report success", file=sys.stderr)

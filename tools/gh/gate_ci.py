@@ -67,8 +67,10 @@ green thing it could read.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 
 #: The gate-report heading. `lane_state.py` treats this as AUTHORITATIVE when
 #: the `kind=` footer disagrees, and it is right to: 74 of 98 real
@@ -213,6 +215,89 @@ def gated_sha(body: str) -> str | None:
         if found:
             return found.group(1)
     return None
+
+
+RENDER_PENDING = "Render-Pending"
+
+
+class RenderPendingUnreadable(Exception):
+    """The head commit's message could not be read, so whether it carries a
+    `Render-Pending` trailer is unknown. Callers refuse (harmonic-forge#1066):
+    treating an unreadable commit as "no trailer" would silently skip the check."""
+
+
+def render_pending_from_message(message: str) -> str | None:
+    """The `Render-Pending` trailer value in one commit message, or None.
+
+    harmonic-forge#1066: parsed by `git interpret-trailers --parse`, never a
+    hand-written regex. Both readers (`check_gate_result` and `l1_post`'s
+    `static_checks`) call this function on the raw message, so there is one
+    recognizer, not two. A `Render-Pending:` line in body text is not a
+    trailer to git, so not to us.
+    """
+    # Reforge (sticky-wicket 6237951432): this is the ONE recognizer both readers
+    # call. Its inputs are pinned -- `--no-divider` (a commit message has no patch
+    # divider, as pretty.c's %(trailers) assumes), ':' as the only separator, and
+    # no system/global/repo config (neutral cwd) -- so no ambient config can make
+    # gate_ci and l1_post disagree on what is a trailer.
+    if not message.strip():
+        # An empty message cannot be established as unmarked; both readers
+        # refuse it, because both reach this one function (cross-family F1066).
+        raise RenderPendingUnreadable("the commit message is empty")
+    if "\0" in message:
+        # git stops parsing at a NUL and reports no trailers, silently; that is
+        # unreadable, not unmarked (cross-family F1066 pass 2).
+        raise RenderPendingUnreadable("the commit message contains a NUL byte")
+    # Every GIT_* variable is dropped (GIT_DIR, GIT_CONFIG_PARAMETERS and the
+    # GIT_CONFIG_COUNT/KEY_n/VALUE_n family included), so no inherited config
+    # can reach the parse (cross-family F1066).
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
+    try:
+        # A fresh empty directory with discovery capped at it, so no repository
+        # config is found even when TMPDIR sits inside a repo (cross-family F1066
+        # pass 2).
+        with tempfile.TemporaryDirectory() as neutral:
+            env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(neutral)
+            result = subprocess.run(
+                ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse",
+                 "--no-divider"],
+                input=message, capture_output=True, text=True, timeout=30,
+                cwd=neutral, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RenderPendingUnreadable(f"git interpret-trailers failed: {exc}") from exc
+    if result.returncode:
+        raise RenderPendingUnreadable(
+            f"git interpret-trailers failed: {result.stderr.strip()[:120]}")
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip().lower() == RENDER_PENDING.lower():
+            if not value.strip():
+                # A marker with no run id is still a marker: unreadable, never
+                # unmarked (preclose pass 2, fail-direction).
+                raise RenderPendingUnreadable(f"{RENDER_PENDING} has an empty value")
+            return value.strip()
+    return None
+
+
+def render_pending_remote(repo: str, sha: str, run=None) -> str | None:
+    """The head commit's `Render-Pending` value read via `gh api`, or None.
+
+    `check_gate_result` has no checkout (a hook calls it from any cwd), so the
+    commit is read from GitHub. A failed or empty read raises
+    `RenderPendingUnreadable`: it fails closed.
+    """
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.message"])
+    if code != 0 or not out.strip():
+        raise RenderPendingUnreadable(
+            f"could not read {sha[:8]}'s commit message: {out.strip()[:120]}")
+    return render_pending_from_message(out)
+
+
+def render_pending_refusal(sha: str, run_id: str) -> str:
+    return (f"[GATE] REFUSED: head {sha[:8]} is awaiting visual-baseline render run "
+            f"{run_id}; re-run lane1-rebase after it succeeds (harmonic-forge#1066).")
 
 
 def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | None:
@@ -495,6 +580,15 @@ def check_gate_result(
             f"  {why}\n"
             "The gate ran against code that is no longer what would merge. "
             "Re-gate at the current head.")
+
+    try:
+        pending = render_pending_remote(repo, sha, run=run)
+    except RenderPendingUnreadable as exc:
+        return False, (
+            f"[GATE] REFUSED: could not read head {sha[:8]}'s commit message to "
+            f"check {RENDER_PENDING} (harmonic-forge#1066): {exc}")
+    if pending:
+        return False, render_pending_refusal(sha, pending)
 
     state, detail = ci_conclusion(repo, sha, run=run,
                                   required=required_checks(repo, run=run))

@@ -130,6 +130,10 @@ class StaticChecksFailureTests(unittest.TestCase):
                 return _completed(" M dirtied.py\n")
             if args[:3] == ("git", "rev-parse", "--show-toplevel"):
                 return _completed(tmp + "\n")
+            # harmonic-forge#1066: an empty message fails closed, so the
+            # Render-Pending read needs a real (unmarked) commit object.
+            if args[:3] == ("git", "cat-file", "commit"):
+                return _completed("tree " + "c" * 40 + "\n\nsubject\n")
             return _completed()
         with mock.patch.object(L, "run", side_effect=fake_run), \
              mock.patch.object(L, "resolve_sha", return_value=SHA), \
@@ -298,10 +302,6 @@ def setUpModule():  # noqa: N802
 def tearDownModule():  # noqa: N802
     _STICKY_PATCH.stop()
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WorldPreflightTests(StoreCase):
     """harmonic-forge#905 AC1: cheap world checks refuse before the full suite."""
 
@@ -373,3 +373,6 @@ class PreflightFreshnessTests(StoreCase):
 
 _REAL_REFRESH = L.refresh_main
 
+
+if __name__ == "__main__":
+    unittest.main()

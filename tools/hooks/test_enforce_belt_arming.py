@@ -837,10 +837,6 @@ class GrantDirectoryIsHookOwned(unittest.TestCase):
         self.assertIsNone(self._deny("Write", {"file_path": "/tmp/x.py", "content": ""}))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ScopedToTheSessionsWorkspace(unittest.TestCase):
     """harmonic-forge#917 AC3."""
 
@@ -925,3 +921,7 @@ class FailsClosedOnAnUnloadableManifest(unittest.TestCase):
         result = self._hook("Monitor", {"command": "tail -f /tmp/x.log",
                                         "description": "log", "timeout_ms": 60000})
         self.assertIsNone(_decision(result), result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

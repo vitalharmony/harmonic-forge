@@ -363,6 +363,15 @@ class ClassifyTests(unittest.TestCase):
         tokens = "gh pr merge 993 --repo vitalharmony/hrse --squash".split()
         self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
 
+    def test_pr_merge_with_match_head_commit_keeps_its_target(self):
+        """harmonic-forge#1077: the gated merge carries `--match-head-commit`;
+        an all-digit SHA value is never read as the PR number."""
+        for cmd in ("gh pr merge 993 --repo vitalharmony/hrse --squash --match-head-commit abc123",
+                    "gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse",
+                    "gh pr merge --match-head-commit=1234567 993 --repo vitalharmony/hrse"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.classify_pr_merge(cmd.split()), ("vitalharmony/hrse", 993))
+
     def test_unrelated_commands_are_not_classified(self):
         for cmd in ("git status", "gh issue list --repo vitalharmony/hrse", "git clean -fd"):
             with self.subTest(cmd=cmd):
@@ -843,10 +852,6 @@ class CrossAccountKeysTests(unittest.TestCase):
     def test_an_account_restricted_map_is_still_available(self) -> None:
         self.assertNotIn("kenekted/kenekted-platform", ba._repo_prefixes("vitalharmony"))
         self.assertIn("kenekted/kenekted-platform", ba._repo_prefixes("harmonicarchitect"))
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class CrossRepoMergeArityTests(unittest.TestCase):
@@ -1987,3 +1992,7 @@ class MixedCaseRepoTests(unittest.TestCase):
                 match = ba._derived_merge_match(
                     "LeasePAL-ML/LeasePAL-App-Prototype", 3, state)
             self.assertIsNotNone(match)
+
+
+if __name__ == "__main__":
+    unittest.main()

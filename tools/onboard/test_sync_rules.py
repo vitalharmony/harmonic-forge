@@ -409,10 +409,6 @@ class CliSurfaceTests(unittest.TestCase):
             self.assertEqual(sync_rules.main([]), sync_rules.EXIT_CANNOT_RUN)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StaleSkillDirTests(unittest.TestCase):
     """harmonic-forge#708: a skill that moved to the platform leaves an old
     directory holding only git-ignored files on every checkout that pulls
@@ -458,3 +454,7 @@ class StaleSkillDirTests(unittest.TestCase):
         shutil.rmtree(self.project / ".git")
         self.assertFalse(self._link())
         self.assertTrue(self.stale.is_dir() and not self.stale.is_symlink())
+
+
+if __name__ == "__main__":
+    unittest.main()

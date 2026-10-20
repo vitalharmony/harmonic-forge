@@ -2283,16 +2283,159 @@ class GitStalenessTests(unittest.TestCase):
         (local / "tools" / "gh").mkdir(parents=True)
         return local
 
-    def test_refuses_when_head_is_behind_origin_main(self):
+    def _guard(self, local, merge=None):
+        """Run the guard against `local` with os.execv patched (and the
+        merge step optionally replaced). Returns (execv mock, SystemExit|None,
+        stderr text)."""
+        fake_file = local / "tools" / "gh" / "watch_lane_posts.py"
+        caught = None
+        with patch.object(watch_lane_posts, "__file__", str(fake_file)), \
+             patch("staleness_ff.os.execv") as execv, \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            ctx = patch("staleness_ff._merge_ff", side_effect=merge) if merge \
+                else contextlib.nullcontext()
+            with ctx:
+                try:
+                    watch_lane_posts._check_git_staleness(argparse.ArgumentParser())
+                except SystemExit as exc:
+                    caught = exc
+        return execv, caught, err.getvalue()
+
+    def _refuses(self, local, needle):
+        before = self._run_git(["rev-parse", "HEAD"], cwd=local)
+        main_before = self._run_git(["rev-parse", "refs/heads/main"], cwd=local)
+        execv, caught, err = self._guard(local)
+        self.assertIsNotNone(caught)
+        self.assertEqual(caught.code, 2)
+        self.assertIn(needle, err)
+        execv.assert_not_called()
+        self.assertEqual(self._run_git(["rev-parse", "HEAD"], cwd=local), before)
+        self.assertEqual(self._run_git(["rev-parse", "refs/heads/main"], cwd=local),
+                         main_before)
+
+    def test_read_only_git_timeout_fails_open(self):
+        """A timeout in a read-only check, before any write, fails open as the
+        count phase does: no traceback, no refusal, no re-exec."""
+        real = watch_lane_posts.staleness_ff._git
+
+        def status_times_out(repo_root, *args):
+            if args[:1] == ("status",):
+                raise subprocess.TimeoutExpired(["git"], 15)
+            return real(repo_root, *args)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            with patch("staleness_ff._git", side_effect=status_times_out):
+                execv, caught, err = self._guard(local)
+            self.assertIsNone(caught)
+            execv.assert_not_called()
+            self.assertIn("fast-forward check failed", err)
+
+    def test_merge_timeout_or_oserror_refuses(self):
+        """Sticky-wicket PATCH (AC3): from merge --ff-only on the checkout may
+        have changed, so a timeout or OSError there refuses, never fails open."""
+        for exc in (subprocess.TimeoutExpired(["git"], 15), OSError("boom")):
+            with tempfile.TemporaryDirectory() as tmp:
+                local = self._init_repos(Path(tmp))
+                execv, caught, err = self._guard(local, merge=exc)
+                self.assertIsNotNone(caught)
+                self.assertEqual(caught.code, 2)
+                self.assertIn("merge --ff-only failed or timed out", err)
+                execv.assert_not_called()
+
+    def test_execv_failure_after_fast_forward_refuses(self):
+        """Sticky-wicket PATCH (AC1): a failed re-exec after a successful
+        fast-forward refuses, so the belt never runs pre-merge code."""
         with tempfile.TemporaryDirectory() as tmp:
             local = self._init_repos(Path(tmp))
             fake_file = local / "tools" / "gh" / "watch_lane_posts.py"
+            with patch.object(watch_lane_posts, "__file__", str(fake_file)), \
+                 patch("staleness_ff.os.execv", side_effect=OSError("exec failed")), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err:
+                with self.assertRaises(SystemExit) as cm:
+                    watch_lane_posts._check_git_staleness(argparse.ArgumentParser())
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("fast-forwarded but re-exec failed", err.getvalue())
+
+    def test_refuses_naming_a_rebase_in_progress(self):
+        """AC4: a stopped rebase detaches HEAD; the refusal names the rebase."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            self._run_git(["checkout", "-q", "--detach"], cwd=local)
+            (local / ".git" / "rebase-merge").mkdir()
+            self._refuses(local, "rebase is in progress")
+
+    def test_fast_forwards_and_reexecs_when_clean_on_main_and_behind(self):
+        """harmonic-forge#1075 AC1 (flips the #651 refusal test)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            old = self._run_git(["rev-parse", "HEAD"], cwd=local)
+            execv, caught, err = self._guard(local)
+            new = self._run_git(["rev-parse", "HEAD"], cwd=local)
+            self.assertNotEqual(old, new)
+            self.assertEqual(self._run_git(
+                ["rev-list", "--count", "HEAD..origin/main"], cwd=local), "0")
+            self.assertIn(f"fast-forwarded ~/harmonic-forge {old[:12]}..{new[:12]}", err)
+            execv.assert_called_once_with(sys.executable, [sys.executable, *sys.argv])
+            # After the (patched) re-exec, a second run finds 0 behind and continues.
+            execv2, caught2, _ = self._guard(local)
+            self.assertIsNone(caught2)
+            execv2.assert_not_called()
+
+    def test_refuses_when_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            (local / "f.txt").write_text("dirty\n")
+            self._refuses(local, "dirty")
+
+    def test_refuses_when_detached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            self._run_git(["checkout", "-q", "--detach"], cwd=local)
+            self._refuses(local, "detached")
+
+    def test_refuses_on_another_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            self._run_git(["checkout", "-q", "-b", "other"], cwd=local)
+            self._refuses(local, "not refs/heads/main")
+
+    def test_refuses_when_diverged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            self._run_git(["-c", "user.email=t@example.invalid", "-c", "user.name=T",
+                           "commit", "-q", "--allow-empty", "-m", "L"], cwd=local)
+            self._refuses(local, "diverged")
+
+    def test_refuses_when_merge_in_progress(self):
+        """AC4."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
             head = self._run_git(["rev-parse", "HEAD"], cwd=local)
-            with patch.object(watch_lane_posts, "__file__", str(fake_file)):
-                parser = argparse.ArgumentParser()
-                with self.assertRaises(SystemExit) as caught:
-                    watch_lane_posts._check_git_staleness(parser)
-            self.assertEqual(caught.exception.code, 2)
+            (local / ".git" / "MERGE_HEAD").write_text(head + "\n")
+            self._refuses(local, "merge is in progress")
+
+    def test_failed_merge_with_zero_behind_reexecs(self):
+        """AC3: a concurrent lane fast-forwarded first; our merge failed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+
+            def concurrent(repo_root):
+                self._run_git(["merge", "-q", "--ff-only", "origin/main"], cwd=local)
+                return 128, "fatal: Unable to create index.lock"
+            execv, caught, _ = self._guard(local, merge=concurrent)
+            execv.assert_called_once()
+
+    def test_failed_merge_still_behind_refuses_with_git_message(self):
+        """AC3: still behind after a failed merge -> refuse, nothing moved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = self._init_repos(Path(tmp))
+            before = self._run_git(["rev-parse", "HEAD"], cwd=local)
+            execv, caught, err = self._guard(
+                local, merge=lambda _r: (128, "fatal: Unable to create index.lock"))
+            self.assertEqual(caught.code, 2)
+            self.assertIn("index.lock", err)
+            execv.assert_not_called()
+            self.assertEqual(self._run_git(["rev-parse", "HEAD"], cwd=local), before)
 
     def test_fails_open_on_a_broken_git_invocation(self):
         """AC3: any git error must warn and continue, never block the belt."""
