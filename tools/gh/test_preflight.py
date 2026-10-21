@@ -12,8 +12,8 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import _preflight  # noqa: E402
+from test_l1_post_dry_run import Harness  # noqa: E402
 
-L1_POST = HERE / "l1_post.py"
 PRECLOSE = HERE / "preclose_check.py"
 REBASE = HERE.parent / "lane" / "lane1_rebase.py"
 NEEDLE = "first real run of this tool in this session"
@@ -65,16 +65,6 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(list(Path(self.tmp.name).rglob(".tmp-*")), [])
 
     # --- the three tools --------------------------------------------------
-
-    def test_l1_post_refuses_then_allows_after_help(self) -> None:
-        argv = (L1_POST, "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
-                "--kind", "handoff", "--sha", "0" * 40, "--branch", "main")
-        first = self.run_tool(*argv)
-        self.assertNotEqual(first.returncode, 0)
-        self.assertIn(NEEDLE, first.stderr)
-        self.assertIn("l1_post.py --help", first.stderr)
-        self.assertEqual(self.run_tool(L1_POST, "--help").returncode, 0)
-        self.assertNotIn(NEEDLE, self.run_tool(*argv).stderr)
 
     def test_lane1_rebase_refuses_then_allows_after_help(self) -> None:
         argv = (REBASE, "/nonexistent", "1", "feat/x")
@@ -132,20 +122,12 @@ class PreflightTests(unittest.TestCase):
         blocker = Path(self.tmp.name) / "file-not-dir"
         blocker.write_text("x")
         env = {**self.env, "PREFLIGHT_RECEIPT_DIR": str(blocker)}
-        for tool in (L1_POST, REBASE):
+        for tool in (REBASE,):  # l1_post: --help writes nothing (harmonic-forge#1115)
             done = subprocess.run([sys.executable, str(tool), "--help"], capture_output=True,
                                   text=True, env=env, timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("receipt not written", done.stderr)
             self.assertNotIn("Traceback", done.stderr)
-
-    def test_l1_post_help_that_fails_to_parse_writes_no_receipt(self) -> None:
-        """Sticky PATCH: `--repo --help` exits 2 without help; no receipt."""
-        bad = self.run_tool(L1_POST, "--repo", "--help")
-        self.assertEqual(bad.returncode, 2)
-        argv = (L1_POST, "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
-                "--kind", "handoff", "--sha", "0" * 40, "--branch", "main")
-        self.assertIn(NEEDLE, self.run_tool(*argv).stderr)
 
     def test_record_never_raises_when_replace_and_cleanup_fail(self) -> None:
         """Sticky PATCH: os.replace and the cleanup unlink both fail; no raise."""
@@ -162,6 +144,37 @@ class PreflightTests(unittest.TestCase):
 
     def test_preclose_without_force_is_never_refused(self) -> None:
         self.assertNotIn(NEEDLE, self._preclose("--complete", "--findings", "/x", "--own-model", "m").stderr)
+
+
+class L1PostDryRunPreflightTests(Harness):
+    """harmonic-forge#1115: l1_post's preflight form is a clean --dry-run of
+    the same post; --help no longer admits a real post."""
+
+    def test_l1_post_refuses_then_allows_after_dry_run_not_help(self) -> None:
+        """AC4."""
+        first = self.run_main(*self.r4l3())[0]
+        self.assertIn(NEEDLE, first)
+        self.assertIn("--dry-run", first)
+        self.assertEqual(self.run_main("--help")[0], "0")
+        self.assertIn(NEEDLE, self.run_main(*self.r4l3())[0])
+        self.assertEqual(self.receipts(), [])
+        self.assertIsNone(self.run_main(*self.r4l3("--dry-run"))[0])
+        self.assertIsNone(self.run_main(*self.r4l3())[0])
+
+    def test_l1_post_store_error_does_not_break_the_dry_run(self) -> None:
+        blocker = self.dir / "file-not-dir"
+        blocker.write_text("x")
+        with mock.patch.dict(os.environ, {"PREFLIGHT_RECEIPT_DIR": str(blocker)}):
+            code, _, err = self.run_main(*self.r4l3("--dry-run"))
+        self.assertIsNone(code)
+        self.assertIn("receipt not written", err)
+
+    def test_l1_post_refused_dry_run_writes_no_receipt(self) -> None:
+        self.overlap = True
+        self.assertIn("overlaps", self.run_main(*self.r4l3("--dry-run"))[0])
+        self.assertEqual(self.receipts(), [])
+        self.overlap = False
+        self.assertIn(NEEDLE, self.run_main(*self.r4l3())[0])
 
 
 if __name__ == "__main__":

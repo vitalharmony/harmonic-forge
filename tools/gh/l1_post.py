@@ -2810,6 +2810,75 @@ def write_receipt(record: dict) -> None:
     temp.replace(target)
 
 
+def _body_digest(path: Path | None) -> str | None:
+    """sha256 of a body file's bytes, never its path (harmonic-forge#1115)."""
+    if path is None:
+        return None
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None  # the body read itself refuses later, on both paths
+
+
+def _post_digest(args: argparse.Namespace, repo: str, sha: str) -> str:
+    """harmonic-forge#1115: the identity of one post -- resolved repo and SHA,
+    body contents and every flag that changes a check. File paths and argv
+    order are deliberately absent, so a run via a wrapper (absolute paths,
+    another cwd) and a direct run of the same post produce the same digest."""
+    fields = {
+        "repo": repo, "issue": args.issue, "kind": args.kind, "sha": sha, "branch": args.branch,
+        "file": _body_digest(args.file), "ae_file": _body_digest(args.ae_file),
+        "sweep_file": _body_digest(args.sweep_file), "spec_comment": args.spec_comment,
+        "prod_run": args.prod_run, "from_sha": args.from_sha, "pass_comment": args.pass_comment,
+        "ack_overlap": args.ack_overlap, "ack_no_pr_required": args.ack_no_pr_required,
+        "milestone_ack": args.milestone_ack, "plan_first": args.plan_first,
+        "mutates_live": args.mutates_live, "cross_repo": args.cross_repo,
+    }
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+
+def _dry_run_command() -> str:
+    """The exact --dry-run command for the entry point actually used: the
+    wrapper names itself in L1_POST_ENTRY (HRSE2's `mise run l1-post`)."""
+    import shlex  # noqa: PLC0415
+    entry = os.environ.get("L1_POST_ENTRY") or f"python3 {Path(__file__).resolve()}"
+    argv = [a for a in sys.argv[1:] if a != "--dry-run"]
+    return f"{entry} {shlex.join([*argv, '--dry-run'])}"
+
+
+def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
+                    ack_overlap: str | None, ack_no_pr_required: str | None,
+                    grant_on_main: bool) -> list:
+    """harmonic-forge#1115: `_post_kind`'s refusals as side-effect-free steps
+    for `--dry-run`. Posts nothing, opens no PR, emits no attempt; the only
+    local write is `refresh_main`'s fetch, which the real post makes too.
+    `_post_kind` itself is unchanged."""
+    def world() -> None:
+        refresh_main()  # world checks always read a fresh origin/main
+        world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
+
+    steps = [world]
+    if kind == "ready-for-l3":
+        steps.append(lambda: _refuse_if_ci_red(repo, issue, sha, None))
+    if kind in ("ready-for-l3", "ae") and not (kind == "ae" and grant_on_main):
+        def pr() -> None:
+            try:
+                require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
+                                open_missing=False, issue=issue, sha=sha)
+            except SystemExit as exc:
+                if kind == "ready-for-l3" and str(exc).startswith("[l1-post] no open PR exists for"):
+                    print(f"[l1-post] dry run: would open PR for {branch} against main")
+                    return
+                raise
+        steps.append(pr)
+    return steps
+
+
+def _dry_run_clean(receipt_key: str, kind: str, repo: str, issue: int, sha: str) -> None:
+    print(f"[l1-post] dry run clean: {kind} {repo}#{issue} @ {sha[:12]}")
+    _preflight.record(receipt_key)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate and atomically post a Lane 1 claim")
     parser.add_argument("--repo")
@@ -2884,18 +2953,15 @@ def main() -> None:
              "gate_production_run.py runs only an action an AE at the checked-out "
              "SHA declares this way, once. --kind ae / ae-and-sweep only.",
     )
-    # harmonic-forge#1076: --help is this tool's preflight form; a posting run
-    # needs it first in this session. Recorded only when argparse exits 0, which
-    # it does only after printing help; a parse error exits 2 and records nothing.
-    try:
-        args = parser.parse_args()
-    except SystemExit as exc:
-        if exc.code == 0:
-            _preflight.record("l1_post")
-        raise
-    refusal = _preflight.require("l1_post", f"python3 {Path(__file__).resolve()} --help")
-    if refusal:
-        fail(refusal)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Run every refusal for this exact post, post nothing; a clean run admits "
+             "the matching real post in this session (harmonic-forge#1115).",
+    )
+    # harmonic-forge#1115: --help is no longer this tool's preflight form (it
+    # checked nothing about the post). The gate is a clean --dry-run of the same
+    # post, enforced below once the repo and SHA are resolved.
+    args = parser.parse_args()
     validate_carry_forward_args(args)
     prod_run = None
     if args.prod_run is not None:
@@ -2940,6 +3006,13 @@ def main() -> None:
     sha = resolve_sha(args.sha)
     if prod_run and "script" in prod_run:
         _refuse_script_contract(prod_run["script"], sha)
+    receipt_key = _preflight.digest_key("l1_post", _post_digest(args, repo, sha))
+    if not args.dry_run:
+        # harmonic-forge#1115: the real post needs a clean dry run of this exact
+        # post in this session. The dry run itself is never gated.
+        refusal = _preflight.require(receipt_key, _dry_run_command())
+        if refusal:
+            fail(refusal)
 
     if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic
@@ -2966,7 +3039,16 @@ def main() -> None:
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, _spec_body(repo, args.spec_comment), repo, args.issue),
+            *(_publish_checks(repo, args.issue, "ae", sha, args.branch, ack_overlap=args.ack_overlap,
+                              ack_no_pr_required=args.ack_no_pr_required,
+                              grant_on_main=grant_on_main(ae_body, sha))
+              if args.dry_run else []),
         ])
+        if args.dry_run:
+            # The sweep half's publish checks (world checks) are the AE half's,
+            # same repo/issue/SHA/branch/ack, so they are not run twice.
+            _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
+            return
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
                               ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
@@ -3051,7 +3133,20 @@ def main() -> None:
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
         ]
+    if args.dry_run:
+        if args.kind == "carry-forward":
+            steps.append(lambda: refuse_carry_forward(_carry_forward.validate(
+                repo, args.issue, args.pass_comment, args.from_sha, sha, args.branch)))
+        steps += _publish_checks(
+            repo, args.issue, args.kind, sha, args.branch, ack_overlap=args.ack_overlap,
+            ack_no_pr_required=args.ack_no_pr_required,
+            grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)))
     _collect(steps)
+    if args.dry_run:
+        if args.kind == "ready-for-l3":
+            print("[l1-post] dry run: mise run check skipped; the real post runs it")
+        _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
+        return
     if args.kind == "carry-forward":
         # harmonic-forge#1036: every live check, all named, before anything posts.
         refuse_carry_forward(_carry_forward.validate(
