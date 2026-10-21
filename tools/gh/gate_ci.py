@@ -88,6 +88,12 @@ import markdown_strip  # noqa: E402
 #: module exists to prevent, reachable by leaving a flag off.
 GATE_HEADING = re.compile(r"(?im)^ {0,3}#{1,6}[ \t]+Lane 3 Gate Results\b(?P<rest>.*)$")
 
+#: Lane 3's status token as a heading (`## L3P` = passed, `## L3F` = failed,
+#: `rules/lane-shorthand.md`), in the same ATX form as `GATE_HEADING`
+#: (harmonic-forge#1108). `lane_state` scores it, so this module checks it.
+GATE_TOKEN = re.compile(r"(?m)^ {0,3}#{1,6}[ \t]+L3(?P<code>[PF])\b")
+_TOKEN_VERDICT = {"P": "PASS", "F": "FAIL"}
+
 #: The verdict, and ONLY from a place a verdict may legitimately live: the
 #: heading, or the lead block above the first `###`/`<details>`.
 #:
@@ -160,7 +166,12 @@ def may_be_a_gate_report(body: str) -> bool:
     fenced or nested-fence heading is not a report for the belt
     (`looks_like_a_gate_report`), but it is never a reason to skip the CI
     check. `verdict_of` still reads the visible text only."""
-    return GATE_HEADING.search(body) is not None or looks_like_a_gate_report(body)
+    if GATE_HEADING.search(body) is not None or looks_like_a_gate_report(body):
+        return True
+    # harmonic-forge#1108: `lane_state` scores a `## L3P` / `## L3F` token as
+    # `gate.pass` / `gate.fail`, so the CI check must run on one too.
+    return (GATE_TOKEN.search(body) is not None
+            or GATE_TOKEN.search(markdown_strip.visible_text(body)) is not None)
 
 
 def _lead_block(body: str) -> str:
@@ -196,9 +207,14 @@ def verdict_of(body: str) -> str | None:
     found = _LEAD_VERDICT.search(_lead_block(body))
     from_lead = found.group(1).upper() if found else None
 
-    if from_heading and from_lead and from_heading != from_lead:
+    # harmonic-forge#1108: a visible `## L3P` / `## L3F` token states a
+    # verdict too. Every statement present must agree; any disagreement,
+    # including two tokens that differ, is CONFLICT.
+    stated = {_TOKEN_VERDICT[m.group("code")] for m in GATE_TOKEN.finditer(body)}
+    stated |= {v for v in (from_heading, from_lead) if v}
+    if len(stated) > 1:
         return "CONFLICT"
-    return from_heading or from_lead
+    return stated.pop() if stated else None
 
 
 #: `\**` on BOTH sides of the colon, because Markdown bolds the label together

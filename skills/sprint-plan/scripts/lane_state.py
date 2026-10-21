@@ -37,8 +37,18 @@ the tool-call level.
 from __future__ import annotations
 
 import re
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import NamedTuple
+
+# harmonic-forge#1108: one gate-result recognizer. Stripping and the gate
+# heading come from `tools/gh` (the same modules `gate_ci` reads), so a comment
+# this module scores is one `gate_ci` checks. Mirrors `gate_ci.py`'s own
+# `sys.path` insert; `gate_ci` never imports this module, so there is no cycle.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools" / "gh"))
+import markdown_strip  # noqa: E402
+from gate_ci import GATE_HEADING  # noqa: E402
 
 #: `L` + lane digit + one letter, per `harmonic-forge/rules/lane-shorthand.md`
 #: — the canonical table (`3-lane-protocol.md` R-0206 points there and keeps
@@ -69,10 +79,16 @@ _SPEC_POSTED = {("3", "S")}
 #: Lane 3's gate verdict, as actually posted — a heading, not an `L3P`/`L3F`
 #: token. Non-greedy up to the first PASS/FAIL so a FAIL whose parenthetical
 #: reads "(migration executed successfully; ...)" is still a FAIL.
-_GATE_RESULT = re.compile(r"^##\s+Lane 3 Gate Results\b[^\n]*?\b(PASS|FAIL)\b", re.M)
+#: Built on `gate_ci.GATE_HEADING`'s ATX prefix (harmonic-forge#1108), so
+#: the two recognize the same headings.
+_GATE_PREFIX = r"^ {0,3}#{1,6}[ \t]+Lane 3 Gate Results\b"
+assert GATE_HEADING.pattern.startswith("(?im)" + _GATE_PREFIX)
+#: The heading matches case-insensitively, as `GATE_HEADING` does; the
+#: verdict word stays upper-case, as `gate_ci._HEADING_VERDICT` reads it.
+_GATE_RESULT = re.compile("(?i:" + _GATE_PREFIX + r")[^\n]*?\b(PASS|FAIL)\b", re.M)
 #: The same heading with neither verdict in it: a gate comment this module
 #: cannot score. Unrecognized, never silently skipped.
-_GATE_HEADING = re.compile(r"^##\s+Lane 3 Gate Results\b", re.M)
+_GATE_HEADING = re.compile(_GATE_PREFIX, re.M | re.I)
 
 #: hrse#1590: the footer is the AUTHORITY, not one of two equal signals.
 #: `l1_post.py` stamps it on every artifact it posts and refuses to post
@@ -116,6 +132,9 @@ _SPEC_HEADING = re.compile(r"^#{1,4}\s*Lane 3 Test Spec\b", re.M | re.I)
 #: another comment is not mistaken for one (`milestone_summary_analysis.py`
 #: strips fences before its `## Dependencies` search for the same reason).
 _HANDOFF_HEADING = re.compile(r"^##\s+Handoff\b", re.M)
+#: No longer read here (harmonic-forge#1108 strips with
+#: `markdown_strip.visible_text`); kept because `tools/telemetry/eras.py`
+#: imports it, and that reader is outside #1108's scope.
 _FENCE = re.compile(r"```.*?```", re.S)
 
 #: hrse#1589: Plan-First is DECLARED by `l1_post.py`, not inferred from prose.
@@ -397,7 +416,7 @@ def _scan_comment(comment: dict) -> list[Transition]:
     #: heading for exactly this reason; the fix is applying that everywhere a
     #: marker is read, footers included. A footer inside a fence is quoted
     #: evidence too, and `l1_post.py` never emits one there.
-    body = _FENCE.sub("", raw)
+    body = markdown_strip.visible_text(raw)
     ident = str(comment.get("id") or "")
     at = str(comment.get("createdAt") or comment.get("created_at") or "")
 
@@ -501,7 +520,7 @@ class _Markers:
         self.plan_first: bool | None = None
         self.timeline: list[Transition] = []
         for index, comment in enumerate(comments):
-            body = _FENCE.sub("", comment.get("body") or "")
+            body = markdown_strip.visible_text(comment.get("body") or "")
             found = _scan_comment(comment)
             self.timeline.extend(found)
             # The `elif` hrse#1584 wrote, restated for a scan that now emits
