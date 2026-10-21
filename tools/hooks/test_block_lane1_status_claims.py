@@ -1222,6 +1222,13 @@ class TestF1116AttackShapes(_F1116Fixture):
             self.assertUnresolved(
                 "false " + operator + "\nW={SCRATCH}; cd $W{MAIN} && echo x > tracked.md", "W")
 
+    def test_pass1_s3_dynamic_command_word_is_unresolved(self):
+        # Preclose pass 1, survivor 3: `$e` runs eval, `$s` source, `$d` declare.
+        self.assertUnresolved(
+            "W={SCRATCH}; e=eval; $e \"$(printf '\\x57')={MAIN}\"; cd $W && echo x > tracked.md", "W")
+        self.assertUnresolved(
+            "W={SCRATCH}; d=declare; $d W={MAIN}; cd $W && echo x > tracked.md", "W")
+
 
 if __name__ == "__main__":
     unittest.main()
