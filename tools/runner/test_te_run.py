@@ -892,6 +892,37 @@ class RealBoundary(unittest.TestCase):
         self.assertNotEqual(head, sh("git", "rev-parse", "main", cwd=src))
         self.assertEqual(sh("git", "show", f"{head}:a.txt", cwd=src), "2")
 
+    def fresh_claude_home(self) -> Path:
+        """A `.claude/` with neither `state/` nor `projects/`, the CI runner's
+        shape (harmonic-forge#1132), patched in for the real one."""
+        claude = self.tmp / "home" / ".claude"
+        claude.mkdir(parents=True)
+        for name, value in (("CLAUDE_HOME", claude), ("CLAUDE_STATE", claude / "state"),
+                            ("TRANSCRIPTS", claude / "projects")):
+            self.enter(mock.patch.object(te_run.sandbox, name, value))
+        return claude
+
+    def test_real_bwrap_agent_runs_without_claude_mount_points(self):
+        claude = self.fresh_claude_home()
+        work = self.tmp / "work"
+        work.mkdir()
+        done = subprocess.run(te_run.sandbox.wrap(["true"], work, profile="agent"),
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(p.name for p in claude.iterdir()), ["projects", "state"])
+        self.assertEqual((claude / "state").stat().st_mode & 0o777, 0o700)
+
+    def test_real_bwrap_agent_cannot_read_host_state(self):
+        claude = self.fresh_claude_home()
+        (claude / "state").mkdir(mode=0o700)
+        (claude / "state" / "secret").write_text("host\n")
+        work = self.tmp / "work"
+        work.mkdir()
+        script = f"ls -A '{claude / 'state'}' > listing"
+        subprocess.run(te_run.sandbox.wrap(["sh", "-c", script], work, profile="agent"),
+                       check=True)
+        self.assertEqual((work / "listing").read_text(), "")
+
 
     def here(self, *args: str, cwd: Path) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, str(Path(te_run.__file__).resolve().parent
