@@ -2880,11 +2880,6 @@ class TickRateLimitSnapshotTests(unittest.TestCase):
         self.assertIn("ratelimit=dict(_COUNTER.ratelimit)", src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-
 class QueueNoiseFilterTests(unittest.TestCase):
     """Operator ruling 2026-09-14 (harmonic-forge#663)."""
 
@@ -4228,3 +4223,7 @@ class OfferStateTest(unittest.TestCase):
             with self.assertRaises(BrokenPipeError):
                 watch_lane_posts.deliver_queue_lines(lines, offers)
         self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 3600).get((self.REPO, 1530)))
+
+
+if __name__ == "__main__":
+    unittest.main()
