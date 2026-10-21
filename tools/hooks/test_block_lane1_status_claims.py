@@ -1215,6 +1215,13 @@ class TestF1116AttackShapes(_F1116Fixture):
         self.assertUnresolved(
             'WX={SCRATCH}; read W""X <<< {MAIN}; cd $WX && echo x > tracked.md', "WX")
 
+    def test_pass1_s2_operator_before_newline_is_unresolved(self):
+        # Preclose pass 1, survivor 2: the assignment after `&&<NL>` is
+        # conditional, after `|<NL>` it runs in a subshell.
+        for operator in ("&&", "||", "|"):
+            self.assertUnresolved(
+                "false " + operator + "\nW={SCRATCH}; cd $W{MAIN} && echo x > tracked.md", "W")
+
 
 if __name__ == "__main__":
     unittest.main()

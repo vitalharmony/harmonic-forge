@@ -1254,6 +1254,11 @@ def _raw_shell_words(text: str) -> list[dict] | None:
             continue
         operator = next((op for op in RAW_OPERATORS if text.startswith(op, cursor)), None)
         if operator is not None:
+            if operator == "\n" and previous in ("&&", "||", "|", "|&"):
+                # A newline after `&&`/`||`/`|` continues that operator; the
+                # word after it is still conditional or piped (preclose pass
+                # 1, survivor 2). Recording "\n" would hide that.
+                return None
             if operator == "(":
                 depth += 1
             elif operator == ")":
