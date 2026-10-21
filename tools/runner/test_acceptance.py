@@ -44,5 +44,38 @@ class Shared(unittest.TestCase):
                 preclose_driver.acceptance_criteria("vitalharmony/harmonic-forge", 1, {})
 
 
+class Anchored(unittest.TestCase):
+    """harmonic-forge#1112 sticky-wicket patch 1: the heading is anchored and
+    fenced code is skipped; a section with no items is refused."""
+
+    def test_f1112_own_body_reads_its_criteria(self):
+        # F1112's live body has a wrapped table cell starting `## Acceptance
+        # criteria\s*$`; ...` above its real section.
+        body = (Path(__file__).resolve().parent / "testdata" / "f1112_body.md").read_text()
+        found = acceptance.items(acceptance.section(body))
+        self.assertGreaterEqual(len(found), 15)
+        self.assertTrue(found[0].startswith("Every `mise` run inside a boundary"), found[:1])
+        with mock.patch.object(preclose_driver, "issue_body", return_value=body):
+            criteria = preclose_driver.acceptance_criteria("vitalharmony/harmonic-forge", 1112, {})
+        self.assertIn("share one heading matcher", criteria)
+        self.assertGreaterEqual(len(te_run.ac_titles(body)), 15)
+
+    def test_heading_inside_fenced_code_is_skipped(self):
+        body = ("## Problem\n\n```\n## Acceptance criteria\n\n1. Fake.\n```\n\n"
+                "## Acceptance criteria\n\n1. Real.\n\n## Next\n")
+        self.assertEqual(acceptance.items(acceptance.section(body)), ["Real."])
+
+    def test_acceptance_testing_notes_is_not_the_section(self):
+        body = ("## Acceptance testing notes\n\n1. Not a criterion.\n\n"
+                "## Acceptance criteria\n\n1. Real.\n")
+        self.assertEqual(acceptance.items(acceptance.section(body)), ["Real."])
+
+    def test_section_with_no_items_is_refused_by_the_driver(self):
+        with mock.patch.object(preclose_driver, "issue_body",
+                               return_value="## Acceptance criteria\n\nprose only\n"):
+            with self.assertRaises(preclose_driver.DriverError):
+                preclose_driver.acceptance_criteria("vitalharmony/harmonic-forge", 1, {})
+
+
 if __name__ == "__main__":
     unittest.main()

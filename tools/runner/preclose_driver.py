@@ -128,6 +128,10 @@ def acceptance_criteria(repo: str, issue: int, env: dict[str, str]) -> str:
     text = acceptance.section(issue_body(repo, issue, env))
     if not text:
         raise DriverError(f"{repo}#{issue} has no acceptance criteria section")
+    # A section with no criterion items is refused, never one blanket
+    # assumption (harmonic-forge#1112 sticky-wicket patch 1).
+    if not acceptance.items(text):
+        raise DriverError(f"{repo}#{issue}'s acceptance section lists no criteria")
     return text
 
 

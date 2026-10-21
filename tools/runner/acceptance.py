@@ -4,28 +4,49 @@
 brief's one-assumption-per-criterion list (AC14) all read an issue body through
 here, so a body one of them accepts is a body every one of them accepts.
 
-The heading is case-insensitive and may carry trailing text: `## Acceptance
-criteria`, `## Acceptance`, `### acceptance criteria (amended)`. The section
-runs to the next heading of the same or a higher level.
+The heading is case-insensitive and anchored: `## Acceptance criteria`,
+`## Acceptance`, `### acceptance criteria (amended)`, with an optional trailing
+colon, and nothing else on the line, so `## Acceptance testing notes` or a
+wrapped table cell starting `## Acceptance criteria\s*$`; ...` never matches
+(harmonic-forge#1112 sticky-wicket patch 1). Lines inside fenced code are
+never headings. The section runs to the next heading of the same or a higher
+level.
 """
 from __future__ import annotations
 
 import re
 
-HEADING = re.compile(r"^(#{1,6})\s*Acceptance(\s+criteria)?\b.*$", re.IGNORECASE | re.MULTILINE)
+HEADING = re.compile(r"^(#{1,6})\s*Acceptance(\s+criteria)?\s*(\(.*\))?\s*:?\s*$",
+                     re.IGNORECASE)
+FENCE = re.compile(r"^\s{0,3}(```|~~~)")
 #: A top-level criterion: a numbered item or a checkbox item, not indented.
 ITEM = re.compile(r"^(?:\d+\.|[-*]\s+\[[ xX]\])\s+(.*\S)")
 
 
+def _unfenced(lines: list[str]) -> list[bool]:
+    """For each line, whether it sits outside fenced code (fence lines count as inside)."""
+    outside, fenced = [], False
+    for line in lines:
+        if FENCE.match(line):
+            fenced = not fenced
+            outside.append(False)
+        else:
+            outside.append(not fenced)
+    return outside
+
+
 def section(body: str) -> str | None:
     """The first acceptance section's text, stripped; None when there is none."""
-    match = HEADING.search(body or "")
-    if not match:
+    lines = (body or "").splitlines()
+    outside = _unfenced(lines)
+    start = next((n for n, line in enumerate(lines) if outside[n] and HEADING.match(line)), None)
+    if start is None:
         return None
-    level = len(match.group(1))
-    rest = body[match.end():]
-    end = re.search(rf"^#{{1,{level}}}\s", rest, re.MULTILINE)
-    return (rest[:end.start()] if end else rest).strip()
+    level = len(HEADING.match(lines[start]).group(1))
+    end_heading = re.compile(rf"^#{{1,{level}}}\s")
+    end = next((n for n in range(start + 1, len(lines))
+                if outside[n] and end_heading.match(lines[n])), len(lines))
+    return "\n".join(lines[start + 1:end]).strip()
 
 
 def items(text: str | None) -> list[str]:
