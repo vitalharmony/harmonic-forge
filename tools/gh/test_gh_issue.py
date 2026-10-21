@@ -877,6 +877,14 @@ class TestFindRetiredCitations(unittest.TestCase):
         "LANE_CLI=geminix", "gemini", "Gemini API", "gemini-2.5-pro",
         "gemini-embedding-001", "GEMINI_API_KEY", "docs/old_board_sync.py",
         "xtools/gemini/x", "Estimate: 3", "Priority field", "my L2P",
+        # Post-verdict check: the value is exactly gemini/3, never a
+        # compound value or a quoted string merely starting with it.
+        "LANE_CLI gemini/other", "LANE_CLI gemini+other",
+        'LANE_CLI "gemini other"', "--agent gemini/other",
+        "--agent gemini+other", '--agent "gemini other"',
+        "--caller gemini/other", "--caller gemini+other",
+        '--caller "gemini other"', "--families 3/4", "--families 3+4",
+        '--families "3 4"',
     )
 
     def _path_keys(self):

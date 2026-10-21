@@ -69,14 +69,21 @@ RETIRED_ARTIFACTS: dict[str, str] = {
 # Command-fragment patterns (harmonic-forge#1113): regexes searched anywhere
 # inside a backtick span, accepting a space or "=" between flag and value and
 # an optionally shell-quoted value (`--agent "gemini"`, `LANE_CLI='gemini'`),
-# so `lane3 --agent=gemini; echo done` is flagged. The value needs a right
-# boundary (never "-", "." or alphanumeric), so `--agent gemini-embedding-001`
-# and `--families 3.5` are not. Never the bare word "gemini", which would
-# flag HRSE2's Gemini model API.
-_VALUE_END = r"(?![\w.-])"
+# so `lane3 --agent=gemini; echo done` is flagged. The value is exactly
+# gemini/3: unquoted, it ends at end-of-span, whitespace or a shell
+# operator; quoted, at its matching closing quote. So `--agent
+# gemini-embedding-001`, `--families 3.5`, `LANE_CLI gemini/other` and
+# `--caller "gemini other"` are not flagged. Never the bare word "gemini",
+# which would flag HRSE2's Gemini model API.
+
+
+def _value(v: str) -> str:
+    return rf"""(?:"{v}"|'{v}'|{v}(?=\s|$|[;&|)<>]))"""
+
+
 RETIRED_COMMAND_FRAGMENTS: dict[re.Pattern[str], str] = {
-    re.compile(r"--agent[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
-    re.compile(r"--caller[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
-    re.compile(r"--families[=\s]+[\"']?3" + _VALUE_END): _GEMINI_CLI_RETIRED,
-    re.compile(r"\bLANE_CLI[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
+    re.compile(r"--agent[=\s]+" + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(r"--caller[=\s]+" + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(r"--families[=\s]+" + _value("3")): _GEMINI_CLI_RETIRED,
+    re.compile(r"\bLANE_CLI[=\s]+" + _value("gemini")): _GEMINI_CLI_RETIRED,
 }
