@@ -112,6 +112,29 @@ class KillBaselines(Base):
         self.assertTrue(any("broken-test" in f for f in record["failures"]), record)
         self.assertTrue((self.tmp / "run" / "preflight.json").is_file())
 
+    def test_failed_origin_fetch_is_collected_and_every_check_still_runs(self):
+        # Cross-family finding 1: a failed fetch is one refusal among the
+        # others, never an abort before run_all writes its report.
+        sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
+        state = {"items": [{"id": "F7", "status": "pending", "note": ""}]}
+        with mock.patch.object(te_run, "SOURCE", self.src), \
+                mock.patch.object(te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"), \
+                mock.patch.object(preflight, "permission_probe", return_value=[]), \
+                mock.patch.object(preflight, "kill_baselines", return_value=[]), \
+                mock.patch.object(preflight, "codex_parity", return_value=["codex differs"]), \
+                mock.patch.object(preflight, "rehearsal", return_value=[]), \
+                mock.patch.object(preflight, "item_failures", return_value=["F7 item bad"]), \
+                mock.patch.object(te_run, "base_check",
+                                  return_value={"sha": self.base, "failures": [], "ran": 1,
+                                                "complete": True, "step_failures": []}):
+            record = te_run.run_preflight(state, self.tmp / "run", {**os.environ},
+                                          {**os.environ})
+        failures = record["failures"]
+        self.assertTrue(any("fetch origin main failed" in f for f in failures), record)
+        self.assertIn("codex differs", failures)
+        self.assertIn("F7 item bad", failures)
+        self.assertTrue((self.tmp / "run" / "preflight.json").is_file())
+
 
 ISSUE_BODY = "## Acceptance criteria\n\n1. The widget returns 2.\n"
 

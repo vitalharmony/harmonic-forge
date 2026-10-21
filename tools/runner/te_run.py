@@ -947,8 +947,13 @@ def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
     scratch = run_dir / "preflight"
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
-    git("fetch", "-q", "origin", "main")
-    base = git("rev-parse", "origin/main")
+    # A failed fetch is one refusal among the others, never an abort before
+    # every check has run and reported (cross-family finding 1).
+    fetched = run(["git", "fetch", "-q", "origin", "main"], cwd=SOURCE)
+    fetch_problems = ([f"git fetch origin main failed: {fetched.stderr.strip()[:200]}"]
+                      if fetched.returncode else [])
+    resolved = run(["git", "rev-parse", "--verify", "origin/main^{commit}"], cwd=SOURCE)
+    base = "" if resolved.returncode else resolved.stdout.strip()
     issues = preflight.pending_issues(state)
 
     def permissions() -> list[str]:
@@ -967,7 +972,8 @@ def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
         return preflight.base_problems(current)
 
     record = preflight.run_all(
-        [("permission-probe", permissions), ("base-check", base_run),
+        [("origin-fetch", lambda: fetch_problems),
+         ("permission-probe", permissions), ("base-check", base_run),
          ("kill-baselines", lambda: preflight.kill_baselines(issues, SOURCE, base, scratch)),
          ("codex", lambda: preflight.codex_parity(scratch, env)),
          ("rehearsal", lambda: preflight.rehearsal(scratch, env)),
