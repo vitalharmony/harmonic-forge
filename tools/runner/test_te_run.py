@@ -1632,6 +1632,23 @@ class ProvisionClone(unittest.TestCase):
             result = te_run.check_sha(head, dict(os.environ), None)
         self.assertEqual(result["step_failures"], [])
 
+    def test_failed_provision_is_a_step_failure_not_abort(self):
+        tmp = _scratch(self)
+        head = sh("git", "rev-parse", "HEAD", cwd=te_run.SOURCE).strip()
+
+        def fail(path, objects):
+            raise te_run.provision.ProvisionError("verify exited 1")
+
+        with mock.patch.object(te_run, "CHECK_TREE_ROOT", tmp / "trees"), \
+                mock.patch.object(te_run, "BASE_CHECK_ROOT", tmp / "base"), \
+                mock.patch.object(te_run.provision, "provision_clone", fail):
+            result = te_run.check_sha(head, dict(os.environ), None)
+            cached = te_run.base_check(head, dict(os.environ))
+        self.assertEqual(result["step_failures"], ["provision_clone: verify exited 1"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(cached["step_failures"], ["provision_clone: verify exited 1"])
+        self.assertFalse((tmp / "base" / head / "result.json").exists())
+
     def test_both_linker_calls_go_through_the_boundary(self):
         path = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, path, True)

@@ -564,7 +564,12 @@ def check_sha(sha: str, env: dict[str, str], evidence: Path | None, name: str = 
         try:
             provision.provision_clone(tree, source_objects())  # harmonic-forge#1127
         except provision.ProvisionError as exc:
-            raise Abort(f"cannot provision the check tree for {sha[:12]}: {exc}") from exc
+            # A step failure, never Abort: the head's is the item's own failure
+            # (judge_check), the base's is fatal in preflight, and complete=False
+            # keeps it out of the base cache.
+            return {"sha": sha, "steps": [], "step_failures": [f"provision_clone: {exc}"],
+                    "complete": False, "test_rc": 127, "failures": [],
+                    "module_errors": [], "ran": 0, "printed_ran": False}
         return {"sha": sha, **run_steps(tree, env, evidence, name)}
     finally:
         shutil.rmtree(root, ignore_errors=True)
