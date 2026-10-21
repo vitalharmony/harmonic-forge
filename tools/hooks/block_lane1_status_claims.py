@@ -1114,27 +1114,29 @@ def protected_write_denial(
 # found ten deny-list bypasses): a variable `cd` operand resolves only for ONE
 # exact raw-text shape. Everything else stays unresolvable, as before.
 ALLOWLIST_FORBIDDEN = re.compile(r"[\n\r|()`\\<]|\$\(|(?<!&)&(?!&)|&&&")
-ALLOWLIST_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+# Positive name pattern (sticky-wicket PATCH): lowercase, no leading `_`. Every
+# bash special/dynamic/readonly variable is uppercase or `_`, so none can match
+# and nothing is enumerated. `$HOME` is accepted only in the VALUE grammar's
+# explicit branch below.
+ALLOWLIST_NAME = r"[a-z][a-z0-9_]*"
+SHELL_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 ALLOWLIST_PATH_CHARS = r"[A-Za-z0-9._/@+-]"
 ALLOWLIST_ASSIGNMENT = re.compile(
     rf"(?:export\s+)?(?P<name>{ALLOWLIST_NAME})=(?P<value>\S*)")
 ALLOWLIST_VALUE = re.compile(
     rf"(?:(?P<abs>/{ALLOWLIST_PATH_CHARS}*)"
     rf"|(?P<tilde>~)(?P<tsuffix>/{ALLOWLIST_PATH_CHARS}*)?"
-    rf"|\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
+    rf"|\$(?:(?P<home>HOME)|\{{(?P<bhome>HOME)\}}"
+    rf"|(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
     rf"(?P<vsuffix>/{ALLOWLIST_PATH_CHARS}*)?)")
 ALLOWLIST_CD = re.compile(
     rf"cd\s+(?P<q>\"?)\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
     rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?(?P=q)")
-ALLOWLIST_SPECIAL_NAMES = frozenset({
-    "HOME", "PWD", "OLDPWD", "CDPATH", "IFS", "TMPDIR", "PATH",
-    "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE",
-})
 ALLOWLIST_DIR_WORD = re.compile(r"(?:^|[\s;&\"'])(?:cd|pushd|popd)(?=$|[\s;&\"'])")
 ALLOWLIST_COMPOUND_WORD = re.compile(
     r"(?:^|[\s;&])(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|"
     r"select|function|coproc|time)(?=$|[\s;&])")
-VARIABLE_OPERAND = re.compile(rf"\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})")
+VARIABLE_OPERAND = re.compile(rf"\$(?:(?P<var>{SHELL_NAME})|\{{(?P<bvar>{SHELL_NAME})\}})")
 
 
 def _allowlist_split(command: str) -> tuple[list[str], list[str]] | None:
@@ -1189,8 +1191,8 @@ def allowlisted_variable_cd(command: str) -> dict[str, str] | None:
     """
     if ALLOWLIST_FORBIDDEN.search(command):
         return None
-    if re.sub(rf"\$\{{{ALLOWLIST_NAME}\}}", "", command).count("{") or "}" in re.sub(
-            rf"\$\{{{ALLOWLIST_NAME}\}}", "", command):
+    unbraced = re.sub(rf"\$\{{(?:{ALLOWLIST_NAME}|HOME)\}}", "", command)
+    if "{" in unbraced or "}" in unbraced:
         return None
     if ALLOWLIST_COMPOUND_WORD.search(command):
         return None
@@ -1213,7 +1215,7 @@ def allowlisted_variable_cd(command: str) -> dict[str, str] | None:
         if match is None:
             return None
         name, value = match.group("name"), match.group("value")
-        if name in ALLOWLIST_SPECIAL_NAMES or name in variables:
+        if name in variables:
             return None
         quoted = len(value) >= 2 and value[0] == value[-1] == '"'
         if quoted:
@@ -1230,8 +1232,10 @@ def allowlisted_variable_cd(command: str) -> dict[str, str] | None:
                 return None
             resolved = home + (parsed.group("tsuffix") or "")
         else:
-            ref = parsed.group("var") or parsed.group("bvar")
-            base = home if ref == "HOME" else variables.get(ref)
+            if parsed.group("home") or parsed.group("bhome"):
+                base: str | None = home
+            else:
+                base = variables.get(parsed.group("var") or parsed.group("bvar"))
             if base is None:
                 return None
             resolved = base + (parsed.group("vsuffix") or "")

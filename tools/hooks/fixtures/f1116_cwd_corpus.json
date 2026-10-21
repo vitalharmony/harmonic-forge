@@ -1,294 +1,294 @@
 {
- "_comment": "harmonic-forge#1116 AC5: synthetic regression corpus built from the issue's measured distribution (58 literal / 6 mktemp / 2 chained / 1 literal parse-miss / 1 outer-shell). Not a replay of the measured commands. {MAIN} is a git checkout on main with tracked.md; {SCRATCH} is an untracked dir; HOME is pinned to their common parent, so ~/proj and ~/scratch name them. Reforged to the AC1 allow-list (2026-10-21): pushd rows, mktemp rows (AC3 dropped) and the newline-joined row now refuse as unresolved, as on origin/main.",
+ "_comment": "harmonic-forge#1116 AC5: synthetic regression corpus built from the issue's measured distribution (58 literal / 6 mktemp / 2 chained / 1 literal parse-miss / 1 outer-shell). Not a replay of the measured commands. {MAIN} is a git checkout on main with tracked.md; {SCRATCH} is an untracked dir; HOME is pinned to their common parent, so ~/proj and ~/scratch name them. Reforged to the AC1 allow-list (2026-10-21): pushd rows, mktemp rows (AC3 dropped) and the newline-joined row now refuse as unresolved, as on origin/main. Sticky-wicket PATCH (2026-10-21): assigned and cd names must match [a-z][a-z0-9_]*, so the resolving rows (0-57, 64, 65) use lowercase names; an uppercase spelling of any of them now refuses as unresolved.",
  "rows": [
   {
    "shape": "literal-assignment",
-   "command": "W={SCRATCH}; cd $W && echo x > out.txt",
+   "command": "w={SCRATCH}; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W={SCRATCH}; cd \"$W\" && echo x > out.txt",
+   "command": "w={SCRATCH}; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W={SCRATCH}; cd ${W} && echo x > out.txt",
+   "command": "w={SCRATCH}; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W={SCRATCH}; cd \"${W}\" && echo x > out.txt",
+   "command": "w={SCRATCH}; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W={SCRATCH}; pushd $W >/dev/null && echo x > out.txt",
+   "command": "w={SCRATCH}; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W={SCRATCH}; cd $W && echo x > out.txt",
+   "command": "export w={SCRATCH}; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W={SCRATCH}; cd \"$W\" && echo x > out.txt",
+   "command": "export w={SCRATCH}; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W={SCRATCH}; cd ${W} && echo x > out.txt",
+   "command": "export w={SCRATCH}; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W={SCRATCH}; cd \"${W}\" && echo x > out.txt",
+   "command": "export w={SCRATCH}; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W={SCRATCH}; pushd $W >/dev/null && echo x > out.txt",
+   "command": "export w={SCRATCH}; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=~/scratch; cd $W && echo x > out.txt",
+   "command": "w=~/scratch; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=~/scratch; cd \"$W\" && echo x > out.txt",
+   "command": "w=~/scratch; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=~/scratch; cd ${W} && echo x > out.txt",
+   "command": "w=~/scratch; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=~/scratch; cd \"${W}\" && echo x > out.txt",
+   "command": "w=~/scratch; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=~/scratch; pushd $W >/dev/null && echo x > out.txt",
+   "command": "w=~/scratch; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=~/scratch; cd $W && echo x > out.txt",
+   "command": "export w=~/scratch; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=~/scratch; cd \"$W\" && echo x > out.txt",
+   "command": "export w=~/scratch; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=~/scratch; cd ${W} && echo x > out.txt",
+   "command": "export w=~/scratch; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=~/scratch; cd \"${W}\" && echo x > out.txt",
+   "command": "export w=~/scratch; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=~/scratch; pushd $W >/dev/null && echo x > out.txt",
+   "command": "export w=~/scratch; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=$HOME/scratch; cd $W && echo x > out.txt",
+   "command": "w=$HOME/scratch; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=$HOME/scratch; cd \"$W\" && echo x > out.txt",
+   "command": "w=$HOME/scratch; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=$HOME/scratch; cd ${W} && echo x > out.txt",
+   "command": "w=$HOME/scratch; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=$HOME/scratch; cd \"${W}\" && echo x > out.txt",
+   "command": "w=$HOME/scratch; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=$HOME/scratch; pushd $W >/dev/null && echo x > out.txt",
+   "command": "w=$HOME/scratch; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=$HOME/scratch; cd $W && echo x > out.txt",
+   "command": "export w=$HOME/scratch; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=$HOME/scratch; cd \"$W\" && echo x > out.txt",
+   "command": "export w=$HOME/scratch; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=$HOME/scratch; cd ${W} && echo x > out.txt",
+   "command": "export w=$HOME/scratch; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=$HOME/scratch; cd \"${W}\" && echo x > out.txt",
+   "command": "export w=$HOME/scratch; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=$HOME/scratch; pushd $W >/dev/null && echo x > out.txt",
+   "command": "export w=$HOME/scratch; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=${HOME}/scratch; cd $W && echo x > out.txt",
+   "command": "w=${HOME}/scratch; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=${HOME}/scratch; cd \"$W\" && echo x > out.txt",
+   "command": "w=${HOME}/scratch; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=${HOME}/scratch; cd ${W} && echo x > out.txt",
+   "command": "w=${HOME}/scratch; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=${HOME}/scratch; cd \"${W}\" && echo x > out.txt",
+   "command": "w=${HOME}/scratch; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=${HOME}/scratch; pushd $W >/dev/null && echo x > out.txt",
+   "command": "w=${HOME}/scratch; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=${HOME}/scratch; cd $W && echo x > out.txt",
+   "command": "export w=${HOME}/scratch; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=${HOME}/scratch; cd \"$W\" && echo x > out.txt",
+   "command": "export w=${HOME}/scratch; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=${HOME}/scratch; cd ${W} && echo x > out.txt",
+   "command": "export w=${HOME}/scratch; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=${HOME}/scratch; cd \"${W}\" && echo x > out.txt",
+   "command": "export w=${HOME}/scratch; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=${HOME}/scratch; pushd $W >/dev/null && echo x > out.txt",
+   "command": "export w=${HOME}/scratch; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"{SCRATCH}\"; cd $W && echo x > out.txt",
+   "command": "w=\"{SCRATCH}\"; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"{SCRATCH}\"; cd \"$W\" && echo x > out.txt",
+   "command": "w=\"{SCRATCH}\"; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"{SCRATCH}\"; cd ${W} && echo x > out.txt",
+   "command": "w=\"{SCRATCH}\"; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"{SCRATCH}\"; cd \"${W}\" && echo x > out.txt",
+   "command": "w=\"{SCRATCH}\"; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"{SCRATCH}\"; pushd $W >/dev/null && echo x > out.txt",
+   "command": "w=\"{SCRATCH}\"; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=\"{SCRATCH}\"; cd $W && echo x > out.txt",
+   "command": "export w=\"{SCRATCH}\"; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=\"{SCRATCH}\"; cd \"$W\" && echo x > out.txt",
+   "command": "export w=\"{SCRATCH}\"; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=\"{SCRATCH}\"; cd ${W} && echo x > out.txt",
+   "command": "export w=\"{SCRATCH}\"; cd ${w} && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=\"{SCRATCH}\"; cd \"${W}\" && echo x > out.txt",
+   "command": "export w=\"{SCRATCH}\"; cd \"${w}\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W=\"{SCRATCH}\"; pushd $W >/dev/null && echo x > out.txt",
+   "command": "export w=\"{SCRATCH}\"; pushd $w >/dev/null && echo x > out.txt",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"$HOME/scratch\"; cd $W && echo x > out.txt",
+   "command": "w=\"$HOME/scratch\"; cd $w && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"$HOME/scratch\"; cd \"$W\" && echo x > out.txt",
+   "command": "w=\"$HOME/scratch\"; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "literal-assignment",
-   "command": "W={MAIN}; cd $W && echo x > tracked.md",
+   "command": "w={MAIN}; cd $w && echo x > tracked.md",
    "expect": "deny-protected"
   },
   {
    "shape": "literal-assignment",
-   "command": "export W={MAIN} && cd \"$W\" && echo x > tracked.md",
+   "command": "export w={MAIN} && cd \"$w\" && echo x > tracked.md",
    "expect": "deny-protected"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=~/proj; cd ${W} && echo x > tracked.md",
+   "command": "w=~/proj; cd ${w} && echo x > tracked.md",
    "expect": "deny-protected"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=$HOME/proj; cd $W && echo x > tracked.md",
+   "command": "w=$HOME/proj; cd $w && echo x > tracked.md",
    "expect": "deny-protected"
   },
   {
    "shape": "literal-assignment",
-   "command": "W=\"{MAIN}\"\ncd \"${W}\"\necho x > tracked.md",
+   "command": "w=\"{MAIN}\"\ncd \"${w}\"\necho x > tracked.md",
    "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
-   "command": "W={SCRATCH}/..; cd $W/proj && echo x > tracked.md",
+   "command": "w={SCRATCH}/..; cd $w/proj && echo x > tracked.md",
    "expect": "deny-protected"
   },
   {
@@ -323,12 +323,12 @@
   },
   {
    "shape": "chained",
-   "command": "A={SCRATCH}; B=$A/sub; cd $B && echo x > out.txt",
+   "command": "a={SCRATCH}; b=$a/sub; cd $b && echo x > out.txt",
    "expect": "allow"
   },
   {
    "shape": "chained",
-   "command": "R=~/scratch; W=${R}/sub; cd \"$W\" && echo x > out.txt",
+   "command": "r=~/scratch; w=${r}/sub; cd \"$w\" && echo x > out.txt",
    "expect": "allow"
   },
   {

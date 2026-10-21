@@ -1064,99 +1064,99 @@ class TestF1116SameCommandVariables(_F1116Fixture):
 
     # AC1
     def test_ac1_literal_assignment_resolves(self):
-        self.assertAllowed("W={SCRATCH} && cd $W && echo x > f")
-        self.assertAllowed("W={SCRATCH}; cd $W && echo x > f")
+        self.assertAllowed("w={SCRATCH} && cd $w && echo x > f")
+        self.assertAllowed("w={SCRATCH}; cd $w && echo x > f")
 
     def test_ac1_export_and_quoted_operand_resolve(self):
-        self.assertAllowed('export W={SCRATCH}; cd "$W" && echo x > f')
-        self.assertAllowed('export W="{SCRATCH}" && cd "${W}" && echo x > f')
+        self.assertAllowed('export w={SCRATCH}; cd "$w" && echo x > f')
+        self.assertAllowed('export w="{SCRATCH}" && cd "${w}" && echo x > f')
 
     def test_ac1_tilde_home_and_suffix_resolve(self):
-        self.assertAllowed("W=~/scratch; cd $W/sub && echo > f")
-        self.assertAllowed('W=$HOME/scratch; cd "$W" && echo > f')
-        self.assertAllowed("W=${HOME}/scratch; cd $W && echo > f")
+        self.assertAllowed("w=~/scratch; cd $w/sub && echo > f")
+        self.assertAllowed('w=$HOME/scratch; cd "$w" && echo > f')
+        self.assertAllowed("w=${HOME}/scratch; cd $w && echo > f")
 
     def test_ac1_chained_assignment_resolves(self):
-        self.assertAllowed("B={SCRATCH}; W=$B/sub; cd ${W} && echo > f")
-        self.assertAllowed("B={SCRATCH}; W=${B}/sub; cd $W && echo > f")
+        self.assertAllowed("b={SCRATCH}; w=$b/sub; cd ${w} && echo > f")
+        self.assertAllowed("b={SCRATCH}; w=${b}/sub; cd $w && echo > f")
 
     def test_ac1_allowlist_map(self):
-        self.assertEqual(m.allowlisted_variable_cd("W=/a/b && cd $W && x"),
-                         {"W": "/a/b"})
-        self.assertIsNone(m.allowlisted_variable_cd("cd $W && x"))
-        self.assertIsNone(m.allowlisted_variable_cd("W=/a; cd /a && x"))
+        self.assertEqual(m.allowlisted_variable_cd("w=/a/b && cd $w && x"),
+                         {"w": "/a/b"})
+        self.assertIsNone(m.allowlisted_variable_cd("cd $w && x"))
+        self.assertIsNone(m.allowlisted_variable_cd("w=/a; cd /a && x"))
 
     def test_ac1_directory_change_is_backward_compatible(self):
-        self.assertEqual(m.directory_change(["cd", "$W"]), (None, False))
-        self.assertEqual(m.directory_change(["cd", "$W/x"], {"W": "/a"}), ("/a/x", True))
-        self.assertEqual(m.directory_change(["cd", "${W}"], {"W": "/a"}), ("/a", True))
-        self.assertEqual(m.directory_change(["cd", "$V"], {"W": "/a"}), (None, False))
+        self.assertEqual(m.directory_change(["cd", "$w"]), (None, False))
+        self.assertEqual(m.directory_change(["cd", "$w/x"], {"w": "/a"}), ("/a/x", True))
+        self.assertEqual(m.directory_change(["cd", "${w}"], {"w": "/a"}), ("/a", True))
+        self.assertEqual(m.directory_change(["cd", "$v"], {"w": "/a"}), (None, False))
 
     def test_ac1_every_other_shape_stays_unresolved(self):
         for command in (
             # not one flat && / ; chain
-            "W={SCRATCH}\ncd $W && echo > f",
-            "W={SCRATCH}; cd $W || echo > f",
-            "W={SCRATCH}; cd $W && echo x | tee f",
-            "W={SCRATCH}; cd $W && echo x > f &",
-            "W={SCRATCH}; cd $W && echo x > f 2>&1",
-            "W={SCRATCH}; cd $W && (echo x > f)",
-            "W={SCRATCH}; cd $W && { echo x > f; }",
-            "if true; then W={SCRATCH}; fi; cd $W && echo > f",
-            "W={SCRATCH}; cd $W && echo $(date) > f",
-            "W={SCRATCH}; cd $W && echo `date` > f",
-            "W={SCRATCH}; cd $W && cat <(true) > f",
-            "W={SCRATCH}; cd $W && cat <<EOF > f",
-            "W={SCRATCH}; cd $W && echo x \\\n > f",
+            "w={SCRATCH}\ncd $w && echo > f",
+            "w={SCRATCH}; cd $w || echo > f",
+            "w={SCRATCH}; cd $w && echo x | tee f",
+            "w={SCRATCH}; cd $w && echo x > f &",
+            "w={SCRATCH}; cd $w && echo x > f 2>&1",
+            "w={SCRATCH}; cd $w && (echo x > f)",
+            "w={SCRATCH}; cd $w && { echo x > f; }",
+            "if true; then w={SCRATCH}; fi; cd $w && echo > f",
+            "w={SCRATCH}; cd $w && echo $(date) > f",
+            "w={SCRATCH}; cd $w && echo `date` > f",
+            "w={SCRATCH}; cd $w && cat <(true) > f",
+            "w={SCRATCH}; cd $w && cat <<EOF > f",
+            "w={SCRATCH}; cd $w && echo x \\\n > f",
             # something other than an assignment before the cd
-            "mkdir -p {SCRATCH}; W={SCRATCH}; cd $W && echo > f",
-            "W={SCRATCH}; true; cd $W && echo > f",
-            "W={SCRATCH} true; cd $W && echo > f",
+            "mkdir -p {SCRATCH}; w={SCRATCH}; cd $w && echo > f",
+            "w={SCRATCH}; true; cd $w && echo > f",
+            "w={SCRATCH} true; cd $w && echo > f",
             # name and value rules
             "PWD={SCRATCH}; cd $PWD && echo > f",
-            "W={SCRATCH}; W={SCRATCH}; cd $W && echo > f",
-            "W=.; cd $W && echo > f",
-            "W=rel/dir; cd $W && echo > f",
-            "W='{SCRATCH}'; cd $W && echo > f",
-            'W="~/scratch"; cd $W && echo > f',
-            "W={SCRATCH}/*; cd $W && echo > f",
-            "W=$X/sub; cd $W && echo > f",
-            "W=$(pwd); cd $W && echo > f",
+            "w={SCRATCH}; w={SCRATCH}; cd $w && echo > f",
+            "w=.; cd $w && echo > f",
+            "w=rel/dir; cd $w && echo > f",
+            "w='{SCRATCH}'; cd $w && echo > f",
+            'w="~/scratch"; cd $w && echo > f',
+            "w={SCRATCH}/*; cd $w && echo > f",
+            "w=$x/sub; cd $w && echo > f",
+            "w=$(pwd); cd $w && echo > f",
             # operand rules
-            "W={SCRATCH}; cd '$W' && echo > f",
-            "W={SCRATCH}; cd $W* && echo > f",
-            "W={SCRATCH}; cd -P $W && echo > f",
+            "w={SCRATCH}; cd '$w' && echo > f",
+            "w={SCRATCH}; cd $w* && echo > f",
+            "w={SCRATCH}; cd -P $w && echo > f",
             # exactly one directory change, && after it
-            "W={SCRATCH}; cd $W; echo > f",
-            "W={SCRATCH}; cd $W && echo > f; echo > g",
-            "W={SCRATCH}; cd $W && cd sub && echo > f",
-            "W={SCRATCH}; pushd $W && echo > f",
-            "W={SCRATCH}; cd $W && popd && echo > f",
+            "w={SCRATCH}; cd $w; echo > f",
+            "w={SCRATCH}; cd $w && echo > f; echo > g",
+            "w={SCRATCH}; cd $w && cd sub && echo > f",
+            "w={SCRATCH}; pushd $w && echo > f",
+            "w={SCRATCH}; cd $w && popd && echo > f",
             # NAME appears nowhere else
-            "W={SCRATCH}; cd $W && W={MAIN} && echo > f",
-            "W={SCRATCH}; cd $W && echo W > f",
+            "w={SCRATCH}; cd $w && w={MAIN} && echo > f",
+            "w={SCRATCH}; cd $w && echo w > f",
         ):
             with self.subTest(command=command):
                 self.assertUnresolved(command, None)
 
     # AC2
     def test_ac2_variable_into_main_checkout_denies_as_protected(self):
-        reason = self.assertProtected("W={MAIN}; cd $W && echo x > tracked.md")
+        reason = self.assertProtected("w={MAIN}; cd $w && echo x > tracked.md")
         self.assertIn("tracked file", reason)
 
     def test_ac2_tilde_into_main_checkout_denies_as_protected(self):
-        self.assertProtected("W=~/proj; cd $W && echo x > tracked.md")
-        self.assertProtected("W={SCRATCH}/..; cd $W/proj && echo x > tracked.md")
+        self.assertProtected("w=~/proj; cd $w && echo x > tracked.md")
+        self.assertProtected("w={SCRATCH}/..; cd $w/proj && echo x > tracked.md")
 
     # AC3 (dropped): mktemp is never resolved.
     def test_ac3_mktemp_stays_unresolved(self):
         for command in (
-            "T=$(mktemp -d); cd $T && echo > f",
-            'T="$(mktemp -d)"; cd "$T" && echo > f',
-            "T=$(mktemp -d -t x.XXXX) && cd $T && echo > f",
+            "t=$(mktemp -d); cd $t && echo > f",
+            't="$(mktemp -d)"; cd "$t" && echo > f',
+            "t=$(mktemp -d -t x.XXXX) && cd $t && echo > f",
         ):
             with self.subTest(command=command):
-                self.assertUnresolved(command, "T")
+                self.assertUnresolved(command, "t")
 
     # AC4
     def test_ac4_outer_shell_variable_names_it(self):
@@ -1181,7 +1181,7 @@ class TestF1116Lane2(_F1116Fixture):
     LANE = "2"
 
     def test_ac2_lane2_variable_into_main_checkout_is_the_lane2_denial(self):
-        reason = self.assertProtected("W={MAIN}; cd $W && echo x > new.md")
+        reason = self.assertProtected("w={MAIN}; cd $w && echo x > new.md")
         self.assertIn("LANE=2", reason)
 
 
@@ -1232,52 +1232,83 @@ class TestF1116AttackShapes(_F1116Fixture):
         self.assertIsNotNone(self.reason(command), command)
 
     def test_p1_s1_quote_split_name(self):
-        self.assertDenied('WX={SCRATCH}; declare W""X={MAIN}; cd $WX && echo x > README.md')
-        self.assertDenied('WX={SCRATCH}; read W""X; cd $WX && echo x > README.md')
+        self.assertDenied('wx={SCRATCH}; declare w""x={MAIN}; cd $wx && echo x > README.md')
+        self.assertDenied('wx={SCRATCH}; read w""x; cd $wx && echo x > README.md')
 
     def test_p1_s2_operator_continued_by_newline(self):
         for operator in ("&&", "||", "|"):
             with self.subTest(operator=operator):
                 self.assertDenied("false " + operator
-                                  + "\nW={SCRATCH}; cd $W{MAIN} && echo x > tracked.md")
+                                  + "\nw={SCRATCH}; cd $w{MAIN} && echo x > tracked.md")
 
     def test_p1_s3_eval_through_a_variable(self):
-        self.assertDenied("W={SCRATCH}; e=eval; $e \"$(printf '\\x57')={MAIN}\"; "
-                          "cd $W && echo x > tracked.md")
+        self.assertDenied("w={SCRATCH}; e=eval; $e \"$(printf '\\x77')={MAIN}\"; "
+                          "cd $w && echo x > tracked.md")
 
     def test_p1_s4_function_shadows_mktemp(self):
-        self.assertDenied("mktemp() { echo {MAIN}; }; T=$(mktemp -d); cd $T && echo x > tracked.md")
+        self.assertDenied("mktemp() { echo {MAIN}; }; t=$(mktemp -d); cd $t && echo x > tracked.md")
 
     def test_p2_s1_alias_and_path_shadow_mktemp(self):
         self.assertDenied("shopt -s expand_aliases\nalias mktemp='echo {MAIN}'\n"
-                          "T=$(mktemp -d); cd $T && echo x > tracked.md")
-        self.assertDenied("PATH={SCRATCH}:$PATH; T=$(mktemp -d); cd $T && echo x > tracked.md")
+                          "t=$(mktemp -d); cd $t && echo x > tracked.md")
+        self.assertDenied("PATH={SCRATCH}:$PATH; t=$(mktemp -d); cd $t && echo x > tracked.md")
 
     def test_p2_s2_cd_dash_and_popd_return(self):
-        self.assertDenied("W={SCRATCH}; cd $W && cd - && echo x > tracked.md")
-        self.assertDenied("W={SCRATCH}; pushd $W; popd; echo x > tracked.md")
+        self.assertDenied("w={SCRATCH}; cd $w && cd - && echo x > tracked.md")
+        self.assertDenied("w={SCRATCH}; pushd $w; popd; echo x > tracked.md")
 
     def test_p2_s3_failed_cd_then_semicolon(self):
-        self.assertDenied("W=/nonexistent-f1116; cd $W; echo x > tracked.md")
-        self.assertDenied('T=$(mktemp -d); cd "$T"; echo x > tracked.md')
+        self.assertDenied("w=/nonexistent-f1116; cd $w; echo x > tracked.md")
+        self.assertDenied('t=$(mktemp -d); cd "$t"; echo x > tracked.md')
 
     def test_p2_s4_escaped_operand(self):
-        self.assertDenied("W={SCRATCH}; mkdir -p '$W' && cd '$W/..' && echo x > tracked.md")
-        self.assertDenied("W={SCRATCH}; cd \\$W && echo x > tracked.md")
+        self.assertDenied("w={SCRATCH}; mkdir -p '$w' && cd '$w/..' && echo x > tracked.md")
+        self.assertDenied("w={SCRATCH}; cd \\$w && echo x > tracked.md")
 
     def test_p2_s5_nameref_from_runtime_name(self):
-        self.assertDenied("W={SCRATCH}; declare -n N=$(printf '\\x57'); N={MAIN}; "
-                          "cd $W && echo x > README.md")
+        self.assertDenied("w={SCRATCH}; declare -n n=$(printf '\\x77'); n={MAIN}; "
+                          "cd $w && echo x > README.md")
 
     def test_p2_s6_cd_in_subshell_or_pipeline(self):
-        self.assertDenied("W={SCRATCH}; (cd $W); echo x > README.md")
-        self.assertDenied("W={SCRATCH}; cd $W | cat; echo x > README.md")
+        self.assertDenied("w={SCRATCH}; (cd $w); echo x > README.md")
+        self.assertDenied("w={SCRATCH}; cd $w | cat; echo x > README.md")
+
+    # Sticky-wicket PATCH: the name slot is the positive `[a-z][a-z0-9_]*`;
+    # bash's special/dynamic variables (open set) never match it.
+    def test_name_dirstack_refused(self):
+        self.assertIsNone(m.allowlisted_variable_cd("DIRSTACK=/var/tmp; cd $DIRSTACK && x"))
+        self.assertDenied("DIRSTACK=/var/tmp; cd $DIRSTACK && echo x > CLAUDE.md")
+
+    def test_name_funcname_refused(self):
+        self.assertIsNone(m.allowlisted_variable_cd("FUNCNAME=/tmp/zz && cd $FUNCNAME && x"))
+        self.assertDenied("FUNCNAME=/tmp/zz && cd $FUNCNAME && echo x > README.md")
+
+    def test_name_ppid_refused(self):
+        self.assertIsNone(m.allowlisted_variable_cd("PPID=/tmp; cd $PPID && x"))
+        self.assertDenied("PPID=/tmp; cd $PPID && echo x > README.md")
+
+    def test_name_uppercase_ordinary_refused(self):
+        self.assertIsNone(m.allowlisted_variable_cd("W=/tmp; cd $W && x"))
+        self.assertDenied("W=/tmp; cd $W && echo x > README.md")
+
+    def test_name_underscore_and_mixed_case_refused(self):
+        for command in ("_=/tmp; cd $_ && x", "_w=/tmp; cd $_w && x",
+                        "wX=/tmp; cd $wX && x", "RANDOM=/tmp; cd ${RANDOM} && x",
+                        "w=/tmp; cd $W && x"):
+            with self.subTest(command=command):
+                self.assertIsNone(m.allowlisted_variable_cd(command))
+
+    def test_name_lowercase_still_resolves(self):
+        self.assertEqual(m.allowlisted_variable_cd("w=/tmp/x; cd $w && echo x > out.txt"),
+                         {"w": "/tmp/x"})
+        result = m.decision("w=/tmp/x; cd $w && echo x > out.txt", self.main)
+        self.assertFalse(_is_denied(result))
 
     def test_first_ac6_a_mktemp_lookalike(self):
-        self.assertDenied("T=$(mktemp -d >&2; echo {MAIN}); cd $T && echo > tracked.md")
+        self.assertDenied("t=$(mktemp -d >&2; echo {MAIN}); cd $t && echo > tracked.md")
 
     def test_first_ac6_b_conditional_reassignment(self):
-        self.assertDenied('W={MAIN}; [ -n "$X" ] && W={SCRATCH}; cd $W && echo > tracked.md')
+        self.assertDenied('w={MAIN}; [ -n "$x" ] && w={SCRATCH}; cd $w && echo > tracked.md')
 
 
 if __name__ == "__main__":
