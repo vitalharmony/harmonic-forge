@@ -40,15 +40,25 @@ _CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("
 # calls from the thread; never a real `gh api` call from a test.
 _SWEEP_CALLS_PATCH = _ci_mock.patch.object(post, "_latest_sweep_calls", return_value=[])
 
+# harmonic-forge#1115: these tests check the AE/sweep logic, not the dry-run
+# preflight gate (test_l1_post_dry_run.py owns that). With no session id the
+# gate does not apply, so the outcome cannot depend on the caller's
+# CLAUDE_CODE_SESSION_ID (set in any Claude session and in kill_check runs).
+_NO_SESSION_PATCH = _ci_mock.patch.dict("os.environ")
+
 
 def setUpModule():  # noqa: N802
     _CI_PATCH.start()
     _SWEEP_CALLS_PATCH.start()
+    _NO_SESSION_PATCH.start()
+    import os
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 
 
 def tearDownModule():  # noqa: N802
     _CI_PATCH.stop()
     _SWEEP_CALLS_PATCH.stop()
+    _NO_SESSION_PATCH.stop()
 
 # harmonic-forge#472: every artifact in the ratified table now leads with
 # its own summary block, so these fixtures carry one. They are the shape a
