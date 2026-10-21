@@ -10,6 +10,7 @@ never derived from `LANE`), and the AC5' integration assertion that
 `main()` actually calls it on every successful post -- not merely that
 the function exists.
 """
+import json
 import sys
 import unittest
 import unittest.mock
@@ -108,9 +109,12 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "validate_ae"), \
              unittest.mock.patch.object(L, "validate_lead"), \
              unittest.mock.patch.object(L, "validate_sweep"), \
+             unittest.mock.patch.object(L, "validate_ae_external_calls"), \
              unittest.mock.patch.object(L, "validate_sticky_wicket"), \
              unittest.mock.patch.object(L, "run", return_value=unittest.mock.Mock(
-                 returncode=0, stdout="## Lane 3 Test Spec")), \
+                 returncode=0, stdout=json.dumps({  # F1115 PATCH 2: body + issue_url
+                     "body": "## Lane 3 Test Spec\n\n<!-- l1-post v1; kind=spec; classes=1:ac -->",
+                     "issue_url": "https://api.github.com/repos/vitalharmony/hrse/issues/1921"}))), \
              unittest.mock.patch.object(
                  L, "post_kind", side_effect=[("https://example/ae", 1),
                                               ("https://example/sweep", 2)]), \
@@ -121,6 +125,27 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
             unittest.mock.call("vitalharmony/hrse", 1921, "sweep"),
         ])
         self.assertEqual(recorder.call_count, 2)
+
+
+
+# harmonic-forge#1115: these tests drive l1_post, not the dry-run preflight
+# gate (test_l1_post_dry_run.py owns that). With no session id the gate does
+# not apply, so the outcome cannot depend on the caller's
+# CLAUDE_CODE_SESSION_ID (set in any Claude session and in kill_check runs).
+# Child processes inherit the stripped environment.
+import os as _os  # noqa: E402
+from unittest import mock as _session_mock  # noqa: E402
+
+_NO_SESSION_PATCH = _session_mock.patch.dict(_os.environ)
+
+
+def setUpModule():  # noqa: N802
+    _NO_SESSION_PATCH.start()
+    _os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+
+
+def tearDownModule():  # noqa: N802
+    _NO_SESSION_PATCH.stop()
 
 
 if __name__ == "__main__":

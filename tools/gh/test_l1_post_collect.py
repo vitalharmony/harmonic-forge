@@ -138,12 +138,13 @@ ORDER = {
                 "validate_sticky_wicket", "validate_lead"],
     "rework": ["validate_milestone_current", "validate_sticky_wicket", "validate_lead"],
     "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
-    "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep"],
+    "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep",
+              "validate_sweep_against_posted_ae"],  # harmonic-forge#1115 AC9
     "ae": ["validate_sticky_wicket", "validate_lead", "validate_ae", "validate_grant_ae",
-           "validate_auto_ae"],
+           "validate_auto_ae", "_latest_sweep_calls", "validate_ae_external_calls"],
     "ae-and-sweep": ["validate_sticky_wicket", "validate_ae", "validate_grant_ae",
                      "validate_auto_ae", "validate_lead", "validate_lead", "_spec_body",
-                     "validate_sweep"],
+                     "validate_sweep", "validate_ae_external_calls"],
 }
 
 
@@ -168,7 +169,11 @@ class ValidatorOrderTests(unittest.TestCase):
                    mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
                    mock.patch.object(l1_post, "grant_on_main", return_value=False),
                    mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1)),
-                   mock.patch.object(l1_post, "record_queue_candidate")]
+                   mock.patch.object(l1_post, "record_queue_candidate"),
+                   # F1115 PATCH 1: the live-id resolver reads a real footer; the
+                   # validator order, not the spec, is under test here.
+                   mock.patch.object(l1_post, "spec_live_ids", return_value=set()),
+                   mock.patch.object(l1_post, "spec_is_tier_p", return_value=False)]
         for name in {n for names in ORDER.values() for n in names}:
             patches.append(mock.patch.object(
                 l1_post, name, side_effect=lambda *a, _n=name, **k: calls.append(_n) or "spec"))
@@ -182,6 +187,27 @@ class ValidatorOrderTests(unittest.TestCase):
         for kind, expected in ORDER.items():
             with self.subTest(kind=kind):
                 self.assertEqual(self._calls(kind), expected)
+
+
+
+# harmonic-forge#1115: these tests drive l1_post, not the dry-run preflight
+# gate (test_l1_post_dry_run.py owns that). With no session id the gate does
+# not apply, so the outcome cannot depend on the caller's
+# CLAUDE_CODE_SESSION_ID (set in any Claude session and in kill_check runs).
+# Child processes inherit the stripped environment.
+import os as _os  # noqa: E402
+from unittest import mock as _session_mock  # noqa: E402
+
+_NO_SESSION_PATCH = _session_mock.patch.dict(_os.environ)
+
+
+def setUpModule():  # noqa: N802
+    _NO_SESSION_PATCH.start()
+    _os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+
+
+def tearDownModule():  # noqa: N802
+    _NO_SESSION_PATCH.stop()
 
 
 if __name__ == "__main__":

@@ -238,7 +238,9 @@ session given the identical chat-only trigger correctly refused instead.
 
 **On every `AE H<N>` trigger or `owes=gate` belt event (R-0208: the posted AE
 is the trigger), run `lane3-begin --issue <N>` first and read
-the latest AE comment's `**Authorized:**` line before replying.** The AE
+the latest AE comment's `**Authorized:**` line, and its
+`External calls authorized:` line (the only external calls the gate may make,
+harmonic-forge#1115), before replying.** The AE
 comment defines scope; the chat wording and your session memory do not.
 harmonic-forge#797: a session refused a genuine TC2-only Tier W AE as
 out-of-role "production triage" because it answered from its own memory of

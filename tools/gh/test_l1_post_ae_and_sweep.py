@@ -10,6 +10,8 @@ wrong.
 """
 import importlib.util
 import subprocess
+import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -37,20 +39,42 @@ import unittest.mock as _ci_mock  # noqa: E402
 _CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
 
 
+# harmonic-forge#1115 AC9: a standalone AE or sweep reads the thread for the
+# other half; an empty fake thread, never a real `gh api` call from a test.
+import check_lane3_ready as _lane3_ready  # noqa: E402
+_SWEEP_CALLS_PATCH = _ci_mock.patch.object(_lane3_ready, "fetch_comments", return_value=[])
+
+# harmonic-forge#1115: these tests check the AE/sweep logic, not the dry-run
+# preflight gate (test_l1_post_dry_run.py owns that). With no session id the
+# gate does not apply, so the outcome cannot depend on the caller's
+# CLAUDE_CODE_SESSION_ID (set in any Claude session and in kill_check runs).
+_NO_SESSION_PATCH = _ci_mock.patch.dict("os.environ")
+
+
 def setUpModule():  # noqa: N802
     _CI_PATCH.start()
+    _SWEEP_CALLS_PATCH.start()
+    _NO_SESSION_PATCH.start()
+    import os
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 
 
 def tearDownModule():  # noqa: N802
     _CI_PATCH.stop()
+    _SWEEP_CALLS_PATCH.stop()
+    _NO_SESSION_PATCH.stop()
 
 # harmonic-forge#472: every artifact in the ratified table now leads with
 # its own summary block, so these fixtures carry one. They are the shape a
 # real post must have, which is the point of using them here.
 AE_BODY = ("## AE — F1\n\n**Authorized:** the spec in issuecomment-77, "
-           "against `feat/x` @ `abc1234`.\n**Next:** Lane 3 executes and "
+           "against `feat/x` @ `abc1234`.\n**External calls authorized:** none\n"
+           "**Next:** Lane 3 executes and "
            "reports.\n\nApproved, execute against the spec.")
-SPEC_BODY = "### Test Cases\n1. Does the thing.\n2. Does the other thing."
+# F1115 PATCH 1/2: a Lane 3 spec heading and its `classes=` footer, so the
+# live-id resolver can tell which cases are live (here: none).
+SPEC_BODY = ("## Lane 3 Test Spec — F1\n\n### Test Cases\n1. Does the thing.\n"
+             "2. Does the other thing.\n\n<!-- l1-post v1; kind=spec; classes=1:ac,2:ac -->")
 SWEEP_BODY = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases "
               "executable as written.\n**Blockers:** none.\n**Next:** Lane 3 "
               "executes.\n\nWrite tier: R\n\n1. TC1 -- ready\n2. TC2 -- ready")
@@ -81,7 +105,10 @@ def _fake_run(*args, **kwargs):
     elif "rev-parse" in joined:
         result.stdout = FAKE_SHA
     elif "issues/comments/" in joined and "--jq" in joined:
-        result.stdout = SPEC_BODY
+        # F1115 PATCH 2: `_spec_body` reads the comment's body and issue_url.
+        repo = re.search(r"repos/([^/]+/[^/]+)/issues/comments/", joined).group(1)
+        result.stdout = json.dumps({"body": SPEC_BODY,
+                                    "issue_url": f"https://api.github.com/repos/{repo}/issues/1"})
     elif "ls-remote" in joined:
         result.stdout = f"{FAKE_SHA}\trefs/heads/fix/1-thing"
     elif "merge-base" in joined:
@@ -378,6 +405,310 @@ class LeadOnBothHalves(unittest.TestCase):
             self._run(stripped, SWEEP_BODY)
         self.assertIn("harmonic-forge#472", str(ctx.exception))
         self.assertEqual(self.posted, [])
+
+
+
+LIVE_SPEC = ("## Lane 3 Test Spec — F1\n\n### Cases\n| TC1 | live | x | y | z |\n"
+             "| TC2 | ac | x | y | z |\n\n"
+             "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=1:live,2:ac -->")
+LIVE_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases executable.\n"
+              "**Blockers:** none.\n**Next:** Lane 3 executes.\n\nWrite tier: W\n\n"
+              "### Per-case readiness\n"
+              "- TC1: ready, live UI run.\n"
+              "  External calls: llm:anthropic; paid-api:tavily\n"
+              "- TC2: ready, offline fixtures\n")
+TIER_P_SPEC = ("## Lane 3 Test Spec — F1\n\nWrite tier: P\n\n### Cases\n"
+               "| P1 | ac | x | y | z |\n| P2 | live | x | y | z |\n\n"
+               "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=P1:ac,P2:live -->")
+TIER_P_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases executable.\n"
+                "**Blockers:** none.\n**Next:** Lane 3 executes.\n\nWrite tier: P\n\n"
+                "### Per-case readiness\n"
+                "- P1: ready, offline fixtures\n"
+                "- P2: ready, live run.\n"
+                "  External calls: llm:anthropic\n")
+
+
+_REAL_SPEC_BODY = post._spec_body
+
+
+def _ae(calls: str | None) -> str:
+    """AE_BODY with its `External calls authorized:` field set, or removed."""
+    line = "**External calls authorized:** none\n"
+    return AE_BODY.replace(line, "" if calls is None else f"**External calls authorized:** {calls}\n")
+
+
+class ExternalCallsThroughMain(LeadOnBothHalves):
+    """harmonic-forge#1115 AC9 (reforged): the AE's structured field equals
+    the sweep's live-case call union, checked on both sides. Every case
+    drives main() over a fake comment thread; no `_latest_*` reader is
+    stubbed."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for name, kw in (("apply_project_identity", {}),
+                         ("project_for_path", {"return_value": mock.Mock(repo="vitalharmony/harmonic-forge")})):
+            patcher = mock.patch.object(post, name, **kw)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.thread: list[dict] = []
+        self.spec = LIVE_SPEC
+        patcher = mock.patch.object(_lane3_ready, "fetch_comments",
+                                    side_effect=lambda repo, issue: self.thread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _spec(self, repo: str, comment, issue: int) -> str:
+        """The spec `_spec_body` returns; a test may route it through the real one."""
+        return self.spec
+
+    def _run(self, ae_body: str, sweep_body: str):
+        with patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)):
+            super()._run(ae_body, sweep_body)
+
+    def _standalone(self, kind: str, body: str, spec_comment: bool = True) -> None:
+        self.ae_file.write_text(body)
+        argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
+                "--kind", kind, "--sha", FAKE_SHA, "--branch", "x", "--file", str(self.ae_file)]
+        if spec_comment:
+            argv += ["--spec-comment", "999"]
+        with patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)), \
+             patch.object(post, "comment_body",
+                          side_effect=lambda r, i, b: (self.posted.append(b) or ("u", len(self.posted)))), \
+             patch.object(post, "write_receipt"), \
+             patch.object(sys, "argv", argv):
+            post.main()
+
+    def _on_thread(self, body: str, kind: str, sha: str = FAKE_SHA) -> None:
+        self.thread.append({"id": len(self.thread) + 1,
+                            "body": body + f"\n<!-- l1-post v1; kind={kind}; sha={sha} -->"})
+
+    def _refused(self, call, *needles: str) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            call()
+        for needle in needles:
+            self.assertIn(needle, str(ctx.exception))
+        self.assertEqual(self.posted, [], "nothing may post on an AC9 refusal")
+
+    # Kill check 1: the field is required.
+    def test_a_standalone_ae_without_the_field_is_refused(self) -> None:
+        self._refused(lambda: self._standalone("ae", _ae(None)), "External calls authorized")
+
+    def test_an_ae_and_sweep_without_the_field_is_refused(self) -> None:
+        self._refused(lambda: self._run(_ae(None), LIVE_SWEEP), "External calls authorized")
+
+    def test_a_standalone_ae_with_none_and_no_sweep_posts(self) -> None:
+        self._standalone("ae", _ae("none"))
+        self.assertEqual(len(self.posted), 1)
+
+    # Kill check 2: equality, never containment.
+    def test_an_ae_authorizing_a_subset_is_refused(self) -> None:
+        self._refused(lambda: self._run(_ae("llm:anthropic"), LIVE_SWEEP), "paid-api:tavily")
+
+    def test_an_ae_authorizing_a_superset_is_refused(self) -> None:
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily; message:gmail-draft"),
+                                        LIVE_SWEEP), "message:gmail-draft")
+
+    def test_an_ae_equal_to_the_sweep_posts_both(self) -> None:
+        self._run(_ae("paid-api:tavily; LLM:Anthropic ; llm:anthropic"), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_a_standalone_ae_subset_of_the_newest_sweep_on_its_sha_is_refused(self) -> None:
+        self._on_thread(LIVE_SWEEP.replace("; paid-api:tavily", ""), "sweep")
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._on_thread(LIVE_SWEEP.replace("paid-api:tavily", "message:slack"), "sweep", "b" * 40)
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic")), "paid-api:tavily")
+
+    def test_a_standalone_ae_equal_to_the_newest_sweep_on_its_sha_posts(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
+        self.assertEqual(len(self.posted), 1)
+
+    def test_a_standalone_ae_with_a_sweep_but_no_spec_comment_is_refused(self) -> None:
+        """No spec means no live ids: fail closed, never guess (reforge pass 1)."""
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"),
+                                               spec_comment=False), "--spec-comment")
+
+    # Reforge pass 1: the comparand is the LIVE cases' union, on every path.
+    def test_a_non_live_case_call_the_ae_does_not_authorize_is_accepted(self) -> None:
+        sweep = LIVE_SWEEP + "  External calls: paid-api:serp\n"  # TC2 is `ac`
+        self._run(_ae("llm:anthropic; paid-api:tavily"), sweep)
+        self.assertEqual(len(self.posted), 2)
+        self.posted.clear()
+        self._on_thread(sweep, "sweep")
+        self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
+        self.assertEqual(len(self.posted), 1)
+        self.posted.clear()
+        self.thread.clear()
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._standalone("sweep", sweep)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_a_live_case_call_missing_from_the_ae_is_refused(self) -> None:
+        sweep = LIVE_SWEEP + "  External calls: paid-api:serp\n"
+        self._refused(lambda: self._run(_ae("llm:anthropic"), sweep), "not authorized: paid-api:tavily")
+        self._on_thread(sweep, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic")), "not authorized: paid-api:tavily")
+        self.thread.clear()
+        self._on_thread(_ae("llm:anthropic"), "ae")
+        self._refused(lambda: self._standalone("sweep", sweep), "not authorized: paid-api:tavily")
+
+    # Kill check 3: the sweep side runs against the newest AE on the SHA.
+    def test_a_sweep_naming_a_call_the_newest_ae_lacks_is_refused(self) -> None:
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._on_thread(_ae("llm:anthropic"), "ae")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), "paid-api:tavily")
+
+    def test_a_sweep_with_no_ae_on_its_sha_is_refused(self) -> None:
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae", "b" * 40)
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), "no AE is posted")
+
+    def test_a_sweep_equal_to_the_newest_ae_posts(self) -> None:
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._standalone("sweep", LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_a_live_case_with_no_external_calls_line_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace("  External calls: llm:anthropic; paid-api:tavily\n", "")
+        self._refused(lambda: self._run(_ae("none"), sweep), "TC1 carry no `External calls:` line")
+
+    def test_a_live_case_with_two_external_calls_lines_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace("- TC2:", "  External calls: none\n- TC2:")
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), sweep), "more than one")
+
+    # Kill check 4: Tier P live ids are canonicalized like footer ids.
+    def test_a_tier_p_live_case_with_no_external_calls_line_is_refused(self) -> None:
+        self.spec = TIER_P_SPEC
+        sweep = TIER_P_SWEEP.replace("  External calls: llm:anthropic\n", "")
+        self._refused(lambda: self._run(_ae("none"), sweep), "TC2 carry no `External calls:` line")
+
+    def test_a_tier_p_sweep_with_its_line_posts(self) -> None:
+        self.spec = TIER_P_SPEC
+        self._run(_ae("llm:anthropic"), TIER_P_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    # Sticky-wicket PATCH 1 (F1115 survivor 1): unknown live ids refuse, on every path.
+    def _every_path_refuses(self, *needles: str) -> None:
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP), *needles)
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic; paid-api:tavily")), *needles)
+        self.thread.clear()
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), *needles)
+
+    def test_a_spec_without_a_classes_footer_refuses_on_every_path(self) -> None:
+        self.spec = LIVE_SPEC.rsplit("\n\n", 1)[0]
+        self._every_path_refuses("cannot tell which Lane 3 cases are live", "classes=")
+
+    def test_a_misplaced_classes_footer_refuses_on_every_path(self) -> None:
+        self.spec = LIVE_SPEC + "\n\nAddendum: TC1 also covers the retry."
+        self._every_path_refuses("cannot tell which Lane 3 cases are live", "classes=")
+
+    def test_a_missing_eras_reader_refuses_on_every_path(self) -> None:
+        with patch.object(post, "_eras", None):
+            self._every_path_refuses("cannot tell which Lane 3 cases are live", "eras")
+
+    # Sticky-wicket PATCH 2 (F1115 survivor 2): --spec-comment must be this issue's spec.
+    def _via_real_spec_body(self, payload: dict) -> None:
+        real = _REAL_SPEC_BODY
+
+        def fetch(repo, comment, issue):
+            reply = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+            with patch.object(post, "run", return_value=reply):
+                return real(repo, comment, issue)
+        self._spec = fetch
+
+    def test_a_spec_comment_from_another_issue_refuses_on_every_path(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/2"})
+        self._every_path_refuses("--spec-comment 999 is not a comment on vitalharmony/harmonic-forge#1")
+
+    def test_a_spec_comment_from_another_repo_is_refused(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/hrse/issues/1"})
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP),
+                      "is not a comment on")
+
+    def test_a_spec_comment_without_the_spec_marker_refuses_on_every_path(self) -> None:
+        body = LIVE_SPEC.replace("## Lane 3 Test Spec — F1", "## Notes").replace("kind=spec", "kind=discussion")
+        self._via_real_spec_body({"body": body, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/1"})
+        self._every_path_refuses("--spec-comment 999 carries no Lane 3 spec marker")
+
+    def test_this_issues_spec_comment_is_accepted(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/1"})
+        self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    # Sticky-wicket PATCH 3 (F1115 survivor 3): only a Tier P spec canonicalizes P<n>.
+    def test_a_non_tier_p_sweep_with_a_leading_p1_sub_bullet_attributes_calls_correctly(self) -> None:
+        sweep = LIVE_SWEEP.replace("  External calls: llm:anthropic; paid-api:tavily\n",
+                                   "  External calls: llm:anthropic\n").replace(
+            "- TC2: ready, offline fixtures\n",
+            "- TC2: ready, offline fixtures\n  - P1 of the runbook: replay the cached fixture\n"
+            "  External calls: paid-api:serp\n")
+        self.assertEqual(post.sweep_case_external_calls(sweep),
+                         {"1": [frozenset({"llm:anthropic"})], "2": [frozenset({"paid-api:serp"})]})
+        self._run(_ae("llm:anthropic"), sweep)
+        self.assertEqual(len(self.posted), 2)
+
+    # Kill check 5: no prose path on either field line.
+    def test_prose_on_the_ae_field_line_is_refused(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        for value in ("llm:anthropic; paid-api:tavily, but not message calls",
+                      "llm:anthropic; paid-api:tavily (offline otherwise)",
+                      "LLM calls and the paid API",
+                      "none besides llm:anthropic; paid-api:tavily",
+                      "llm:anthropic, paid-api:tavily",
+                      "`llm:anthropic`; `paid-api:tavily`",
+                      ""):
+            with self.subTest(value=value):
+                self.posted.clear()
+                # the grammar refusal itself, not a set mismatch downstream of it
+                self._refused(lambda: self._standalone("ae", _ae(value)), "entries must be")
+
+    def test_prose_on_a_sweep_field_line_is_refused(self) -> None:
+        for line in ("  External calls: none (offline fixtures)",
+                     "  External calls: Gemini generate",
+                     "  External calls: none besides llm:anthropic",
+                     "  External calls: llm:anthropic; paid-api:tavily; excluding message:x calls"):
+            with self.subTest(line=line):
+                sweep = LIVE_SWEEP.replace("  External calls: llm:anthropic; paid-api:tavily", line)
+                self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), sweep),
+                              "External calls")
+
+    def test_an_inline_field_on_the_case_line_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace("live UI run.\n  External calls:", "live UI run. External calls:")
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), sweep),
+                      "must be a line of its own")
+
+    def test_the_prose_authorized_line_is_never_read(self) -> None:
+        ae = _ae("llm:anthropic; paid-api:tavily").replace(
+            "the spec in", "no LLM calls and no paid API; the spec in")
+        self._run(ae, LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+
+class ExternalCallsGrammar(unittest.TestCase):
+    """harmonic-forge#1115 AC9: the one parser both sides use."""
+
+    def test_tokens_are_trimmed_lowercased_and_deduplicated(self) -> None:
+        self.assertEqual(post.parse_external_calls(" - **External calls:** LLM:Anthropic ;llm:anthropic"),
+                         frozenset({"llm:anthropic"}))
+        self.assertEqual(post.parse_external_calls("External calls: NONE"), frozenset())
+
+    def test_anything_outside_the_vocabulary_is_refused(self) -> None:
+        for line in ("External calls: llm", "External calls: llm:", "External calls: api:x",
+                     "External calls: llm:anthropic;", "External calls: llm:open_ai",
+                     "External calls: no", "External calls: none; llm:anthropic"):
+            with self.subTest(line=line), self.assertRaises(SystemExit):
+                post.parse_external_calls(line)
+
+    def test_the_prose_parsers_are_gone(self) -> None:
+        for name in ("_NEGATION", "_authorizes", "_external_calls", "_AE_AUTHORIZED_LINE"):
+            self.assertFalse(hasattr(post, name), name)
 
 
 class ProdRunFooterTests(MainIntegrationTests):

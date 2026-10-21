@@ -465,6 +465,30 @@ class FooterCaseIdsTests(unittest.TestCase):
                     self._validate(self._sweep(ids), spec)
                 self._validate(self._sweep(ids + ["10"]), spec)
 
+    def test_live_case_without_external_calls_is_refused(self):
+        """harmonic-forge#1115 AC9: a `live` case carries one structured
+        `External calls:` line; an `ac` case needs none."""
+        spec = ("## Lane 3 Test Spec — O40\n\n### Cases\n| TC1 | live | x | y | z |\n"
+                "| TC2 | ac | x | y | z |\n\n"
+                "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=1:live,2:ac -->")
+        with self.assertRaises(SystemExit) as caught:
+            self._validate(self._sweep(["1", "2"]), spec)
+        self.assertIn("TC1 carry no `External calls:` line", str(caught.exception))
+        for named in ("none", "llm:gemini; message:gmail-draft"):
+            with self.subTest(named=named):
+                sweep = self._sweep(["1", "2"]).replace(
+                    "- TC1: ready — offline fixtures",
+                    f"- TC1: ready — offline fixtures\n  External calls: {named}")
+                self._validate(sweep, spec)
+        self.assertEqual(L.sweep_external_calls(self._sweep(["1"]).replace(
+            "offline fixtures", "offline fixtures\n  External calls: llm:gemini; message:gmail-draft"), {"1"}),
+            frozenset({"llm:gemini", "message:gmail-draft"}))
+        # an empty value names nothing and is refused
+        empty = self._sweep(["1", "2"]).replace("- TC1: ready — offline fixtures",
+                                                 "- TC1: ready — offline fixtures\n  External calls:")
+        with self.assertRaises(SystemExit):
+            self._validate(empty, spec)
+
     def test_a_repeated_case_line_is_refused(self):
         ids = ["1", "2", "3"]
         with self.assertRaises(SystemExit) as caught:
@@ -508,6 +532,8 @@ SPEC_TIER_P = (
     "| P3 | ac | Dry run again | the P1 command | 0 re-anchor |\n\n"
     "### Preconditions for Lane 1's sweep\n1. CI green.\n2. backup verified before P2.\n"
     "3. grant minted.\n4. runner installed.\n"
+    # F1115 PATCH 1: a spec's `classes=` footer is how its live cases are known.
+    "\n<!-- l1-post v1; kind=spec; classes=P1:ac,P2:ac,P3:ac -->\n"
 )
 HEAD_P = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n"
 
@@ -561,7 +587,7 @@ class TierPCaseIdTests(unittest.TestCase):
         self.assertFalse(self._ok(sweep, spec))
 
     def test_an_incidental_test_case_heading_keeps_tier_p_detection(self):
-        spec = SPEC_TIER_P + "\n### Test case prerequisites\n1. backup\n2. grant\n"
+        spec = SPEC_TIER_P.replace("\n<!--", "\n### Test case prerequisites\n1. backup\n2. grant\n\n<!--")
         self.assertEqual(L._tier_p_ids(spec), {"1", "2", "3"})
         self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready\n2. ready\n", spec))
 

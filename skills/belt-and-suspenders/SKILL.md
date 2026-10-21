@@ -18,7 +18,7 @@ Every Monitor event and every loop tick ends in exactly one of two ways.
    | Lane | owes | Next step |
    |---|---|---|
    | l3 | `spec` | `python3 ~/harmonic-forge/tools/gh/fetch_lane1_context.py --repo <r> --issue <n>`, then derive and post the `## Lane 3 Test Spec` with the repo's `lane-comment --kind spec`, then stop for review. |
-   | l3 | `gate` | The repo's `lane3-begin --issue <n>`, then the `check_lane3_ready` readiness check, then only the AE's **Authorized:** cases. |
+   | l3 | `gate` | The repo's `lane3-begin --issue <n>`, then the `check_lane3_ready` readiness check, then only the AE's **Authorized:** cases, making only its `External calls authorized:` calls. |
    | l3 | `sweep-missing` | Post `L3B` naming the missing sweep (R-0208: AE and sweep are one action). |
    | l2 | `implement` | Re-read the full issue thread, then implement from the handoff on its feature branch. |
    | l2 | `plan` | Re-read the full issue thread, then post the plan with `l2_post.py --kind plan` (`L2S`) and stop. |

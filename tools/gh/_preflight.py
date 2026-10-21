@@ -5,7 +5,9 @@ Lane 1 kept learning each tool's requirements from a refusal, and a written
 note ("run it yourself minus the operator-only flag") did not bind. So each
 guarded tool records a receipt when its preflight form runs (`--help`, or for
 `preclose_check.py --force` the same command without `--force`) and refuses its
-real run in a session that has no receipt for it.
+real run in a session that has no receipt for it. `l1_post.py`'s preflight form
+is a clean `--dry-run` of the same post, keyed by `digest_key` to that post's
+arguments (harmonic-forge#1115); `--help` no longer counts for it.
 
 The session is `CLAUDE_CODE_SESSION_ID`, the key `handoff_owed.session_id()`
 already reads. An empty value (a non-Claude caller, CI) is not enforced: an
@@ -39,6 +41,12 @@ def _path(key: str, sid: str) -> Path:
     session_dir = hashlib.sha256(sid.encode()).hexdigest()[:32]
     name = hashlib.sha256(key.encode()).hexdigest()[:32]
     return receipt_dir() / session_dir / f"{name}.json"
+
+
+def digest_key(key: str, digest: str) -> str:
+    """harmonic-forge#1115: a receipt key bound to one specific run (an argument
+    digest), so a preflight admits only the run it actually checked."""
+    return f"{key}:{digest}"
 
 
 def record(key: str) -> None:

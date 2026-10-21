@@ -202,5 +202,26 @@ class WiredIntoMain(unittest.TestCase):
         self.assertEqual(self._main("false"), ["handoff"])
 
 
+
+# harmonic-forge#1115: these tests drive l1_post, not the dry-run preflight
+# gate (test_l1_post_dry_run.py owns that). With no session id the gate does
+# not apply, so the outcome cannot depend on the caller's
+# CLAUDE_CODE_SESSION_ID (set in any Claude session and in kill_check runs).
+# Child processes inherit the stripped environment.
+import os as _os  # noqa: E402
+from unittest import mock as _session_mock  # noqa: E402
+
+_NO_SESSION_PATCH = _session_mock.patch.dict(_os.environ)
+
+
+def setUpModule():  # noqa: N802
+    _NO_SESSION_PATCH.start()
+    _os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+
+
+def tearDownModule():  # noqa: N802
+    _NO_SESSION_PATCH.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

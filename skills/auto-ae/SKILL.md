@@ -28,7 +28,9 @@ command, another lane, a non-interactive session) changes nothing.
 For an issue under a live `BATCH` lease whose Lane 3 spec is Tier R or Tier W
 throughout, Lane 1 approves the spec and posts the AE and sweep itself, in the
 same turn (belt rule 9, `spec-review`). The AE's **Authorized:** line cites
-"auto-AE (R-0378)" and the spec comment. `l1_post` refuses it unless every
+"auto-AE (R-0378)" and the spec comment, and its required
+`External calls authorized:` line equals the sweep's live-case
+`External calls:` union (harmonic-forge#1115). `l1_post` refuses it unless every
 precondition holds. **Never Tier P:** a spec whose ceiling is P keeps the
 operator's AE. An auto-AE never carries forward to a new SHA.
 

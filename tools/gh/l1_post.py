@@ -391,12 +391,37 @@ def _collect(steps: list) -> list:
     return results
 
 
-def _spec_body(repo: str, spec_comment) -> str:
-    """The referenced Lane 3 spec's body, or `fail()`."""
-    spec = run("gh", "api", f"repos/{repo}/issues/comments/{spec_comment}", "--jq", ".body")
+def _once(fetch):
+    """`fetch()` on first call, its result after: one spec fetch per post."""
+    cache: list = []
+    return lambda: cache[0] if cache else (cache.append(fetch()) or cache[0])
+
+
+def _spec_body(repo: str, spec_comment, issue: int) -> str:
+    """The referenced Lane 3 spec's body, or `fail()`. The comment must be on
+    this repo's `issue` and carry the Lane 3 spec marker (a `kind=spec`
+    footer or a `Lane 3 Test Spec` heading): a `--spec-comment` naming any
+    other comment would let its footer decide which cases are live
+    (harmonic-forge#1115 sticky-wicket PATCH 2)."""
+    spec = run("gh", "api", f"repos/{repo}/issues/comments/{spec_comment}",
+               "--jq", "{body: .body, issue_url: .issue_url}")
     if spec.returncode:
         fail("cannot fetch referenced Lane 3 spec")
-    return spec.stdout
+    try:
+        data = json.loads(spec.stdout)
+        body, issue_url = data.get("body") or "", data.get("issue_url") or ""
+    except (ValueError, AttributeError):
+        fail(f"cannot read referenced Lane 3 spec comment {spec_comment}")
+    want = f"/repos/{repo}/issues/{issue}".lower()
+    if not issue_url.lower().rstrip("/").endswith(want):
+        fail(f"--spec-comment {spec_comment} is not a comment on {repo}#{issue} "
+             f"(it belongs to {issue_url or 'an unknown issue'}) -- name this issue's Lane 3 spec "
+             "(harmonic-forge#1115)")
+    import _auto_ae  # noqa: PLC0415
+    if not _auto_ae._is_spec({"body": body}):
+        fail(f"--spec-comment {spec_comment} carries no Lane 3 spec marker (a `kind=spec` footer "
+             "or a `Lane 3 Test Spec` heading) -- name this issue's Lane 3 spec (harmonic-forge#1115)")
+    return body
 
 
 def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
@@ -940,7 +965,7 @@ def validate_ae(body: str, repo: str, issue: int) -> None:
 SWEEP_HEADING = re.compile(r"(?im)^#{1,4}\s*Gate-readiness sweep\b")
 
 
-def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
+def _validate_sweep_against_footer(body: str, expected: set[str], live: set[str] = frozenset()) -> None:
     """harmonic-forge#1000: a spec whose footer names its cases is checked against
     those ids, one line-anchored TC entry each. Same refusals as the body path:
     a fabricated outcome, no write tier, a missing or extra entry, an empty one."""
@@ -976,6 +1001,200 @@ def _validate_sweep_against_footer(body: str, expected: set[str]) -> None:
     if claimed:
         fail(f"sweep states a test outcome (`pass`/`fail`) for TC{', TC'.join(claimed)}, but a "
              "gate-readiness sweep is posted BEFORE the gate runs. Describe readiness instead.")
+    # harmonic-forge#1115 AC9 (reforged): a live case carries exactly one
+    # structured `External calls:` line; malformed lines refuse inside the parse.
+    per_case = sweep_case_external_calls(body)
+    want_live = _canonical_live_ids(live)
+    repeated_calls = sorted((n for n, sets in per_case.items() if len(sets) > 1), key=_case_sort_key)
+    if repeated_calls:
+        fail(f"sweep case(s) TC{', TC'.join(repeated_calls)} carry more than one `External calls:` "
+             "line -- exactly one per case (harmonic-forge#1115)")
+    unnamed = sorted((n for n in named if n in want_live and not per_case.get(n)), key=_case_sort_key)
+    if unnamed:
+        fail(f"sweep live case(s) TC{', TC'.join(unnamed)} carry no `External calls:` line -- "
+             "add one line `External calls: none` or `External calls: <c1>; <c2>` with tokens "
+             "`llm:<provider>`, `paid-api:<name>`, `message:<channel>` (harmonic-forge#1115)")
+
+
+# harmonic-forge#1115 AC9 (reforged, sticky-wicket 2): external calls are a
+# structured field in a closed grammar, never read from prose. One parser
+# serves the sweep's per-case `External calls:` line and the AE's
+# `External calls authorized:` field; the two sets must be equal.
+EXTERNAL_CALL_TOKEN = re.compile(r"(?:llm|paid-api|message):[a-z0-9-]+")
+SWEEP_CALLS_LABEL = "External calls"
+AE_CALLS_LABEL = "External calls authorized"
+
+
+def _field_label(label: str) -> str:
+    return r"[ \t]+".join(map(re.escape, label.split()))
+
+
+def parse_external_calls(line: str, label: str = SWEEP_CALLS_LABEL) -> frozenset[str]:
+    """The calls one field line names: `<label>: none` or `<label>: <c1>; <c2>`,
+    each entry a closed-vocabulary token, trimmed and lowercased. The line
+    holds the field and nothing else (an optional list marker and bold on
+    the label aside); any other text refuses."""
+    match = re.fullmatch(
+        rf"[ \t]*(?:[-*][ \t]+)?\**[ \t]*{_field_label(label)}[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(.*?)[ \t]*",
+        line, re.I)
+    if not match:
+        fail(f"`{label}:` must be a line of its own, `{label}: none` or `{label}: <c1>; <c2>`, "
+             f"with nothing else on it; got {line.strip()!r} (harmonic-forge#1115)")
+    value = match.group(1).lower()
+    if value == "none":
+        return frozenset()
+    entries = [entry.strip() for entry in value.split(";")]
+    bad = [entry for entry in entries if not EXTERNAL_CALL_TOKEN.fullmatch(entry)]
+    if bad:
+        fail(f"`{label}:` entries must be `none` or `;`-separated tokens `llm:<provider>`, "
+             f"`paid-api:<name>`, `message:<channel>` ([a-z0-9-]+); refused: "
+             f"{', '.join(repr(entry) for entry in bad)} (harmonic-forge#1115)")
+    return frozenset(entries)
+
+
+def _field_sets(text: str, label: str) -> list[frozenset[str]]:
+    """Every `<label>:` occurrence in `text`, each parsed from its whole line."""
+    lines = text.splitlines()
+    pattern = re.compile(rf"{_field_label(label)}[ \t]*\**[ \t]*:", re.I)
+    return [parse_external_calls(line, label) for line in lines if pattern.search(line)]
+
+
+def sweep_case_external_calls(sweep_body: str, tier_p: bool = False) -> dict[str, list[frozenset[str]]]:
+    """{case id: the `External calls:` sets in that case's block}, a block
+    running from its `TC<n>` entry to the next one. Only when the spec is
+    Tier P (`spec_is_tier_p`, the detection `validate_sweep` uses) are the
+    sweep's `P<n>` entries read as the TC entries they canonicalize to; in
+    any other sweep a line-leading `P<n>` is ordinary text (harmonic-forge#1115
+    sticky-wicket PATCH 3)."""
+    body = sweep_body or ""
+    if tier_p:
+        body, _ = _canonicalize_tier_p(body, sweep=True)
+    section, _ = _case_section(body)
+    starts = list(SWEEP_TC_ENTRY_SUFFIXED.finditer(section))
+    found: dict[str, list[frozenset[str]]] = {}
+    for index, entry in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(section)
+        found.setdefault(entry.group(1).lower(), []).extend(
+            _field_sets(section[entry.start():end], SWEEP_CALLS_LABEL))
+    return found
+
+
+def spec_live_ids(spec_body: str) -> set[str]:
+    """The spec's live case ids, canonicalized onto sweep TC numbers. Refuses
+    when they cannot be known (`footer_live_case_ids`)."""
+    return _canonical_live_ids(footer_live_case_ids(spec_body))
+
+
+def spec_is_tier_p(spec_body: str) -> bool:
+    """The Tier P detection `validate_sweep` routes on."""
+    return bool(_tier_p_ids(spec_body))
+
+
+def sweep_external_calls(sweep_body: str, live_ids: set[str], tier_p: bool = False) -> frozenset[str]:
+    """The union of the LIVE cases' `External calls:` sets (AC9's comparison).
+    `live_ids` are canonical (`spec_live_ids`); a non-live case's line is
+    never part of the union (harmonic-forge#1115 reforge pass 1)."""
+    return frozenset().union(*(s for case, sets in sweep_case_external_calls(sweep_body, tier_p).items()
+                               if _canonical_case_id(case) in live_ids for s in sets))
+
+
+def ae_external_calls(ae_body: str) -> frozenset[str]:
+    """The AE's one required `External calls authorized:` set. The prose
+    **Authorized:** line is for humans and is never read for calls."""
+    sets = _field_sets(ae_body, AE_CALLS_LABEL)
+    if len(sets) != 1:
+        fail(f"AE needs exactly one `{AE_CALLS_LABEL}: none | <c1>; <c2>` line "
+             f"(found {len(sets)}) -- tokens `llm:<provider>`, `paid-api:<name>`, "
+             "`message:<channel>` (harmonic-forge#1115)")
+    return sets[0]
+
+
+def validate_external_calls_match(authorized: frozenset[str], swept: frozenset[str]) -> None:
+    """Exact set equality, reported in both directions."""
+    if authorized == swept:
+        return
+    missing, extra = sorted(swept - authorized), sorted(authorized - swept)
+    fail("AE `External calls authorized:` must equal the sweep's live-case `External calls:` "
+         f"union exactly -- not authorized: {', '.join(missing) or 'none'}; authorized but not "
+         f"swept: {', '.join(extra) or 'none'} (harmonic-forge#1115)")
+
+
+def validate_ae_external_calls(ae_body: str, swept: frozenset[str] | None) -> None:
+    """harmonic-forge#1115 AC9, the AE side: the field is required; when a
+    sweep is on the SHA its union must equal the field's set."""
+    authorized = ae_external_calls(ae_body)
+    if swept is not None:
+        validate_external_calls_match(authorized, swept)
+
+
+def _newest_on_sha(repo: str, issue: int, sha: str, kind: str) -> str | None:
+    """The body of the newest `kind=` comment on `sha`, or None."""
+    import check_lane3_ready  # noqa: PLC0415
+    comments = check_lane3_ready.fetch_comments(repo, issue)
+    found = [c for c in comments if (m := check_lane3_ready.FOOTER_KIND.search(c.get("body", "")))
+             and m.group(1).lower() == kind
+             and check_lane3_ready.same_sha(check_lane3_ready.footer_sha(c), sha)]
+    return max(found, key=lambda c: c["id"]).get("body", "") if found else None
+
+
+def _latest_sweep_calls(repo: str, issue: int, sha: str, spec_comment: int | None) -> frozenset[str] | None:
+    """The newest sweep's live-case call union on `sha`, for a standalone AE;
+    None when no sweep is on that SHA. With a sweep but no `--spec-comment`
+    the live ids are unknown, so it refuses rather than guessing."""
+    body = _newest_on_sha(repo, issue, sha, "sweep")
+    if body is None:
+        return None
+    if spec_comment is None:
+        fail(f"a sweep is posted on {sha[:12]}, so this AE's `{AE_CALLS_LABEL}:` field is compared "
+             "with its live cases' calls -- pass --spec-comment <id> naming the Lane 3 spec whose "
+             "`classes=` footer says which cases are live (harmonic-forge#1115)")
+    spec = _spec_body(repo, spec_comment, issue)
+    return sweep_external_calls(body, spec_live_ids(spec), spec_is_tier_p(spec))
+
+
+def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str,
+                                     live_ids: set[str], tier_p: bool = False) -> None:
+    """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
+    the sweep is checked against the newest AE on its own SHA, and refused
+    when there is none."""
+    swept = sweep_external_calls(sweep_body, live_ids, tier_p)
+    ae_body = _newest_on_sha(repo, issue, sha, "ae")
+    if ae_body is None:
+        fail(f"no AE is posted on {sha[:12]} -- the AE goes first and its `{AE_CALLS_LABEL}:` "
+             "field must equal this sweep's external calls (R-0208, harmonic-forge#1115)")
+    validate_external_calls_match(ae_external_calls(ae_body), swept)
+
+
+def _canonical_case_id(case: str) -> str:
+    """`P2`, `TC2` and `2` are one case: the footer and Tier P branches
+    compare live ids against the sweep's canonical TC numbers."""
+    return re.sub(r"(?i)^(?:tc|p)[- ]?", "", case.strip()).lower()
+
+
+def _canonical_live_ids(live) -> set[str]:
+    return {_canonical_case_id(case) for case in live}
+
+
+def footer_live_case_ids(spec_body: str) -> set[str]:
+    """The case ids a spec's `classes=` footer marks `live`, as written
+    (`1`, `P2`); `_canonical_live_ids` maps them onto sweep TC numbers.
+
+    The one live-id resolver (harmonic-forge#1115 sticky-wicket PATCH 1):
+    an empty set only ever means "the footer marks no case live". When the
+    live ids are unknown -- no `eras` reader, or no `classes=` case map on
+    the last non-blank line (missing, misplaced, `absent` or empty) -- it
+    refuses through `fail()` rather than read as "no live cases"."""
+    if _eras is None:
+        fail("cannot tell which Lane 3 cases are live: the telemetry `eras` module that reads a "
+             "spec's `classes=` footer is not importable (harmonic-forge#1115)")
+    lines = [line.strip() for line in (spec_body or "").splitlines() if line.strip()]
+    footer = lines[-1] if lines and lines[-1].startswith("<!--") else ""
+    classes = _eras.parse_case_map(footer, "classes")
+    if not classes:
+        fail("cannot tell which Lane 3 cases are live: the referenced spec's last non-blank line "
+             "is not a footer carrying a `classes=` case map (e.g. `classes=1:live,2:ac`) -- "
+             "post the spec with its footer and pass that comment (harmonic-forge#1115)")
+    return {case for case, cls in classes.items() if cls == "live"}
 
 
 #: Only a LEADING outcome word, bold stripped: readiness text may say a check
@@ -1011,11 +1230,11 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     tier_p_ids = _tier_p_ids(spec_body)
     if tier_p_ids:
         body, _ = _canonicalize_tier_p(body, sweep=True)
-        _validate_sweep_against_footer(body, tier_p_ids)
+        _validate_sweep_against_footer(body, tier_p_ids, footer_live_case_ids(spec_body))
         return
     footer_ids = footer_case_ids(spec_body)
     if footer_ids:
-        _validate_sweep_against_footer(body, footer_ids)
+        _validate_sweep_against_footer(body, footer_ids, footer_live_case_ids(spec_body))
         return
     expected = case_ids(spec_body)
     actual = case_ids(body)
@@ -2306,18 +2525,10 @@ def refresh_main() -> str:
     return resolved.stdout.strip()
 
 
-def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], dict]:
-    """Returns (check names, (local_check_started_at, local_check_finished_at),
-    check) -- the second element brackets the `mise run check` call below in
-    UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
-
-    harmonic-forge#892: a failed `mise run check` no longer fails here. It
-    returns at once with `check = {"result": "fail", "output": ...}` so the
-    caller can record the attempt (with a CI snapshot taken after the check)
-    before refusing with the same message as before. The dirty-worktree check
-    is skipped on that path, as the old `fail()` never reached it either, so a
-    failed check that also wrote files keeps its own output. A passing check
-    returns `{"result": "pass"}`. Every other refusal in here is unchanged."""
+def cheap_static_checks(sha: str, branch: str) -> None:
+    """The seconds-long half of `static_checks` (branch SHA, current-main
+    ancestry, Render-Pending). `--dry-run` runs it; only `mise run check` is
+    skipped there (harmonic-forge#1115 pass 1)."""
     branch_sha = resolve_sha(branch)
     if branch_sha != sha:
         fail(f"branch {branch!r} no longer resolves to the attested SHA")
@@ -2349,6 +2560,21 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
         fail(f"cannot check {sha[:12]} for {gate_ci.RENDER_PENDING}: {exc}")
     if pending:
         fail(gate_ci.render_pending_refusal(sha, pending))
+
+
+def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], dict]:
+    """Returns (check names, (local_check_started_at, local_check_finished_at),
+    check) -- the second element brackets the `mise run check` call below in
+    UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
+
+    harmonic-forge#892: a failed `mise run check` no longer fails here. It
+    returns at once with `check = {"result": "fail", "output": ...}` so the
+    caller can record the attempt (with a CI snapshot taken after the check)
+    before refusing with the same message as before. The dirty-worktree check
+    is skipped on that path, as the old `fail()` never reached it either, so a
+    failed check that also wrote files keeps its own output. A passing check
+    returns `{"result": "pass"}`. Every other refusal in here is unchanged."""
+    cheap_static_checks(sha, branch)
     repo_root_result = run("git", "rev-parse", "--show-toplevel")
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
@@ -2810,6 +3036,75 @@ def write_receipt(record: dict) -> None:
     temp.replace(target)
 
 
+def _body_digest(path: Path | None) -> str | None:
+    """sha256 of a body file's bytes, never its path (harmonic-forge#1115)."""
+    if path is None:
+        return None
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None  # the body read itself refuses later, on both paths
+
+
+def _post_digest(args: argparse.Namespace, repo: str, sha: str) -> str:
+    """harmonic-forge#1115: the identity of one post -- resolved repo and SHA,
+    body contents and every flag that changes a check. File paths and argv
+    order are deliberately absent, so a run via a wrapper (absolute paths,
+    another cwd) and a direct run of the same post produce the same digest."""
+    fields = {
+        "repo": repo, "issue": args.issue, "kind": args.kind, "sha": sha, "branch": args.branch,
+        "file": _body_digest(args.file), "ae_file": _body_digest(args.ae_file),
+        "sweep_file": _body_digest(args.sweep_file), "spec_comment": args.spec_comment,
+        "prod_run": args.prod_run, "from_sha": args.from_sha, "pass_comment": args.pass_comment,
+        "ack_overlap": args.ack_overlap, "ack_no_pr_required": args.ack_no_pr_required,
+        "milestone_ack": args.milestone_ack, "plan_first": args.plan_first,
+        "mutates_live": args.mutates_live, "cross_repo": args.cross_repo,
+    }
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+
+def _dry_run_command() -> str:
+    """The exact --dry-run command for the entry point actually used: the
+    wrapper names itself in L1_POST_ENTRY (HRSE2's `mise run l1-post`)."""
+    import shlex  # noqa: PLC0415
+    entry = os.environ.get("L1_POST_ENTRY") or f"python3 {Path(__file__).resolve()}"
+    argv = [a for a in sys.argv[1:] if a != "--dry-run"]
+    return f"{entry} {shlex.join([*argv, '--dry-run'])}"
+
+
+def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
+                    ack_overlap: str | None, ack_no_pr_required: str | None,
+                    grant_on_main: bool) -> list:
+    """harmonic-forge#1115: `_post_kind`'s refusals as side-effect-free steps
+    for `--dry-run`. Posts nothing, opens no PR, emits no attempt; the only
+    local write is `refresh_main`'s fetch, which the real post makes too.
+    `_post_kind` itself is unchanged."""
+    def world() -> None:
+        refresh_main()  # world checks always read a fresh origin/main
+        world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
+
+    steps = [world]
+    if kind == "ready-for-l3":
+        steps.append(lambda: _refuse_if_ci_red(repo, issue, sha, None))
+    if kind in ("ready-for-l3", "ae") and not (kind == "ae" and grant_on_main):
+        def pr() -> None:
+            try:
+                require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
+                                open_missing=False, issue=issue, sha=sha)
+            except SystemExit as exc:
+                if kind == "ready-for-l3" and str(exc).startswith("[l1-post] no open PR exists for"):
+                    print(f"[l1-post] dry run: would open PR for {branch} against main")
+                    return
+                raise
+        steps.append(pr)
+    return steps
+
+
+def _dry_run_clean(receipt_key: str, kind: str, repo: str, issue: int, sha: str) -> None:
+    print(f"[l1-post] dry run clean: {kind} {repo}#{issue} @ {sha[:12]}")
+    _preflight.record(receipt_key)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate and atomically post a Lane 1 claim")
     parser.add_argument("--repo")
@@ -2834,7 +3129,9 @@ def main() -> None:
     parser.add_argument("--file", type=Path, help="Body file for every --kind except ae-and-sweep")
     parser.add_argument("--ae-file", type=Path, help="AE body file, --kind ae-and-sweep only")
     parser.add_argument("--sweep-file", type=Path, help="Sweep body file, --kind ae-and-sweep only")
-    parser.add_argument("--spec-comment", type=int)
+    parser.add_argument("--spec-comment", type=int,
+                        help="The Lane 3 spec comment id: required for sweep / ae-and-sweep; for a "
+                             "standalone ae, required once a sweep is on the SHA (harmonic-forge#1115)")
     # harmonic-forge#1036: the PASS a rebase of the gated change carries forward.
     parser.add_argument("--from-sha", default=None,
                         help="--kind carry-forward only: the SHA the Lane 3 PASS gated")
@@ -2884,18 +3181,15 @@ def main() -> None:
              "gate_production_run.py runs only an action an AE at the checked-out "
              "SHA declares this way, once. --kind ae / ae-and-sweep only.",
     )
-    # harmonic-forge#1076: --help is this tool's preflight form; a posting run
-    # needs it first in this session. Recorded only when argparse exits 0, which
-    # it does only after printing help; a parse error exits 2 and records nothing.
-    try:
-        args = parser.parse_args()
-    except SystemExit as exc:
-        if exc.code == 0:
-            _preflight.record("l1_post")
-        raise
-    refusal = _preflight.require("l1_post", f"python3 {Path(__file__).resolve()} --help")
-    if refusal:
-        fail(refusal)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Run every refusal for this exact post, post nothing; a clean run admits "
+             "the matching real post in this session (harmonic-forge#1115).",
+    )
+    # harmonic-forge#1115: --help is no longer this tool's preflight form (it
+    # checked nothing about the post). The gate is a clean --dry-run of the same
+    # post, enforced below once the repo and SHA are resolved.
+    args = parser.parse_args()
     validate_carry_forward_args(args)
     prod_run = None
     if args.prod_run is not None:
@@ -2909,8 +3203,8 @@ def main() -> None:
         fail("--ack-no-pr-required requires a non-empty reason")
     if args.kind in ("sweep", "ae-and-sweep") and not args.spec_comment:
         fail("--spec-comment is required for sweep / ae-and-sweep")
-    if args.kind not in ("sweep", "ae-and-sweep") and args.spec_comment:
-        fail("--spec-comment is valid only for sweep / ae-and-sweep")
+    if args.kind not in ("sweep", "ae", "ae-and-sweep") and args.spec_comment:
+        fail("--spec-comment is valid only for sweep / ae / ae-and-sweep")
     if args.ack_overlap is not None and not args.ack_overlap.strip():
         fail("--ack-overlap requires a non-empty reason")
     if args.milestone_ack is not None:
@@ -2940,6 +3234,13 @@ def main() -> None:
     sha = resolve_sha(args.sha)
     if prod_run and "script" in prod_run:
         _refuse_script_contract(prod_run["script"], sha)
+    receipt_key = _preflight.digest_key("l1_post", _post_digest(args, repo, sha))
+    if not args.dry_run:
+        # harmonic-forge#1115: the real post needs a clean dry run of this exact
+        # post in this session. The dry run itself is never gated.
+        refusal = _preflight.require(receipt_key, _dry_run_command())
+        if refusal:
+            fail(refusal)
 
     if args.kind == "ae-and-sweep":
         # harmonic-forge#381: AE and the gate-readiness sweep as one atomic
@@ -2950,14 +3251,16 @@ def main() -> None:
         # a validation failure alone.
         ae_body = regular_body(args.ae_file)
         sweep_body = regular_body(args.sweep_file)
-        reject_reserved_marker(ae_body)
-        reject_reserved_marker(sweep_body)
+        spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
         # harmonic-forge#1017: every fast-stage validator runs and refuses once.
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
         # landed leaves the bare AE this branch exists to prevent.
         _collect([
+            # Collected, so a reserved marker never hides the other refusals (F1115 AC1).
+            lambda: reject_reserved_marker(ae_body),
+            lambda: reject_reserved_marker(sweep_body),
             lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha),  # harmonic-forge#997
             lambda: validate_ae(ae_body, repo, args.issue),
             lambda: validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required),
@@ -2965,8 +3268,20 @@ def main() -> None:
                                      bool(prod_run), args.ack_no_pr_required),
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
-            lambda: validate_sweep(sweep_body, _spec_body(repo, args.spec_comment), repo, args.issue),
+            lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
+            lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
+                ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()),
+                                              spec_is_tier_p(spec_once()))),
+            *(_publish_checks(repo, args.issue, "ae", sha, args.branch, ack_overlap=args.ack_overlap,
+                              ack_no_pr_required=args.ack_no_pr_required,
+                              grant_on_main=grant_on_main(ae_body, sha))
+              if args.dry_run else []),
         ])
+        if args.dry_run:
+            # The sweep half's publish checks (world checks) are the AE half's,
+            # same repo/issue/SHA/branch/ack, so they are not run twice.
+            _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
+            return
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
                               ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
@@ -3019,10 +3334,10 @@ def main() -> None:
         return
 
     body = regular_body(args.file)
-    reject_reserved_marker(body)
     # harmonic-forge#1017: the same validators in the same order, every one run,
-    # one refusal naming all of them.
-    steps = []
+    # one refusal naming all of them. The reserved-marker check is collected
+    # too, so it never hides the others (harmonic-forge#1115 AC1).
+    steps = [lambda: reject_reserved_marker(body)]
     if args.kind == "handoff":
         steps += [
             lambda: validate_handoff(body, args.mutates_live or args.cross_repo),
@@ -3043,15 +3358,38 @@ def main() -> None:
         steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha))
     steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
-        steps.append(lambda: validate_sweep(body, _spec_body(repo, args.spec_comment), repo, args.issue))
+        spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
+        steps.append(lambda: validate_sweep(body, spec_once(), repo, args.issue))
+        # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
+        steps.append(lambda: validate_sweep_against_posted_ae(
+            repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),
             lambda: validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required),
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
+            # harmonic-forge#1115 AC9: the field is required; equals the newest sweep on this SHA.
+            lambda: validate_ae_external_calls(
+                body, _latest_sweep_calls(repo, args.issue, sha, args.spec_comment)),
         ]
+    if args.dry_run:
+        if args.kind == "carry-forward":
+            steps.append(lambda: refuse_carry_forward(_carry_forward.validate(
+                repo, args.issue, args.pass_comment, args.from_sha, sha, args.branch)))
+        steps += _publish_checks(
+            repo, args.issue, args.kind, sha, args.branch, ack_overlap=args.ack_overlap,
+            ack_no_pr_required=args.ack_no_pr_required,
+            grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)))
+        if args.kind == "ready-for-l3":
+            # Only `mise run check` is skipped; its cheap prefix still runs.
+            steps.append(lambda: cheap_static_checks(sha, args.branch))
     _collect(steps)
+    if args.dry_run:
+        if args.kind == "ready-for-l3":
+            print("[l1-post] dry run: mise run check skipped; the real post runs it")
+        _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
+        return
     if args.kind == "carry-forward":
         # harmonic-forge#1036: every live check, all named, before anything posts.
         refuse_carry_forward(_carry_forward.validate(

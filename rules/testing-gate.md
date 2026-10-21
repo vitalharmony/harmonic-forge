@@ -108,6 +108,7 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
 
      ### Per-case readiness
      1. TC1 — ready: dry-run mode live-verifiable, no writes.
+        External calls: none
      ```
 
      Readiness/blockers/next, **not** verdict/finding/next: a sweep is a
@@ -126,12 +127,25 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
 
      **Authorized:** the spec in issuecomment-5548514543, against
      `feat/164-thing` @ `d5339ca`.
+     **External calls authorized:** none
      **Next:** Lane 3 executes the approved cases and reports.
      ```
 
      An AE grants permission; it reports no finding, and it is not asked
      for one. Forcing it into a verdict/finding template produces a heading
      that lies.
+
+     **External calls are structured fields, never prose
+     (harmonic-forge#1115).** Every case the spec's `classes=` footer marks
+     `live` carries one sweep line of its own, `External calls: none` or
+     `External calls: <c1>; <c2>`; the AE carries one
+     `External calls authorized:` line in the same grammar. Each entry is
+     `llm:<provider>`, `paid-api:<name>` or `message:<channel>`
+     (`[a-z0-9-]+`, e.g. `llm:anthropic; paid-api:tavily`), and any other
+     text on either line is refused. `l1_post.py` requires the AE's set to
+     equal the union of the sweep's live-case sets on the same SHA, checked
+     at AE time and at sweep time. The **Authorized:** line is for humans;
+     no tool reads it for calls.
 <!-- /R-0336 -->
 <!-- R-0366 -->
    - **A partial AE carries the other cases forward.** When an AE
@@ -163,6 +177,7 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
         unchanged since.
      2. TC2 — ready to run: `mise run gate-disposable-graph load`, then
         `mise run gate-restart --tier w`. ...
+        External calls: none
      3. TC3 — carried forward, not re-run: evidence already in the
         original PASS (issuecomment-5875014148). Code at `9cb2f62f`
         unchanged since.
