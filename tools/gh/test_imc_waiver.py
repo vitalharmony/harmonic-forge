@@ -686,6 +686,30 @@ class RetireTests(unittest.TestCase):
         for live in ("F2.json", "F3.json", "F3.waiver.json", "F4.json"):
             self.assertTrue((self.state / live).exists(), live)
 
+    def _race(self, during) -> list:
+        old = self.now - timedelta(hours=imc_waiver.TTL_HOURS + 1)
+        (self.state / "F1.json").write_text(json.dumps({"granted_at": imc_waiver._iso(old)}))
+        with patch.object(imc_waiver, "_before_archive_move", side_effect=during):
+            return imc_waiver.archive_expired_hook_records(self.now, imc_dir=self.state)
+
+    def test_archive_restores_a_record_reissued_before_the_move(self) -> None:
+        fresh = json.dumps({"granted_at": imc_waiver._iso(self.now)})
+        moved = self._race(lambda path, dest: path.write_text(fresh))
+        self.assertEqual(moved, [])
+        self.assertEqual((self.state / "F1.json").read_text(), fresh)
+        self.assertEqual(list((self.state / "archive").glob("*.json")), [])
+        self.assertFalse((self.state / "F1.end.lock").exists())
+
+    def test_archive_restores_a_record_whose_receipt_appears_before_the_move(self) -> None:
+        def receipt(path, dest):
+            (self.state / "F1.waiver.json").write_text(json.dumps({"status": "pending"}))
+        moved = self._race(receipt)
+        self.assertEqual(moved, [])
+        self.assertTrue((self.state / "F1.json").exists())
+        self.assertTrue((self.state / "F1.waiver.json").exists())
+        self.assertEqual(list((self.state / "archive").glob("*.json")), [])
+        self.assertFalse((self.state / "F1.end.lock").exists())
+
     def test_all_closed_reads_named_issues_only(self) -> None:
         self.files("F900")
         self.files("F901")
