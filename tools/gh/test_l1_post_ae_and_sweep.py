@@ -36,12 +36,19 @@ import unittest.mock as _ci_mock  # noqa: E402
 _CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
 
 
+# harmonic-forge#1115 AC9: a standalone AE reads the latest sweep's external
+# calls from the thread; never a real `gh api` call from a test.
+_SWEEP_CALLS_PATCH = _ci_mock.patch.object(post, "_latest_sweep_calls", return_value=[])
+
+
 def setUpModule():  # noqa: N802
     _CI_PATCH.start()
+    _SWEEP_CALLS_PATCH.start()
 
 
 def tearDownModule():  # noqa: N802
     _CI_PATCH.stop()
+    _SWEEP_CALLS_PATCH.stop()
 
 # harmonic-forge#472: every artifact in the ratified table now leads with
 # its own summary block, so these fixtures carry one. They are the shape a
@@ -376,6 +383,69 @@ class LeadOnBothHalves(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             self._run(stripped, SWEEP_BODY)
         self.assertIn("harmonic-forge#472", str(ctx.exception))
+        self.assertEqual(self.posted, [])
+
+
+
+LIVE_SPEC = ("## Lane 3 Test Spec — F1\n\n### Cases\n| TC1 | live | x | y | z |\n"
+             "| TC2 | ac | x | y | z |\n\n"
+             "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=1:live,2:ac -->")
+LIVE_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases executable.\n"
+              "**Blockers:** none.\n**Next:** Lane 3 executes.\n\nWrite tier: W\n\n"
+              "### Per-case readiness\n"
+              "- TC1: ready, live UI run. External calls: Gemini generate, Voyage embed\n"
+              "- TC2: ready, offline fixtures\n")
+
+
+class ExternalCallsCrossCheck(LeadOnBothHalves):
+    """harmonic-forge#1115 AC9: the AE authorizes every external call the
+    sweep's live cases name; H2452's AE did not, and Lane 3 stopped."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # As MainIntegrationTests: the fake repo has no registered identity or checkout.
+        for name, kw in (("apply_project_identity", {}),
+                         ("project_for_path", {"return_value": mock.Mock(repo="vitalharmony/harmonic-forge")})):
+            patcher = mock.patch.object(post, name, **kw)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _run(self, ae_body: str, sweep_body: str):
+        with patch.object(post, "_spec_body", return_value=LIVE_SPEC):
+            super()._run(ae_body, sweep_body)
+
+    def test_ae_missing_a_swept_external_call_is_refused(self) -> None:
+        ae = AE_BODY.replace("against `feat/x`", "with Gemini generate, against `feat/x`")
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(ae, LIVE_SWEEP)
+        self.assertIn("Voyage embed", str(ctx.exception))
+        self.assertNotIn("Gemini generate --", str(ctx.exception))
+        self.assertEqual(self.posted, [], "nothing may post when the AE omits a swept call")
+
+    def test_ae_naming_every_swept_external_call_posts(self) -> None:
+        ae = AE_BODY.replace("against `feat/x`",
+                             "with External calls Gemini generate and Voyage embed, against `feat/x`")
+        self._run(ae, LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_a_standalone_ae_is_checked_against_the_latest_sweep_on_its_sha(self) -> None:
+        comments = [
+            {"id": 1, "body": LIVE_SWEEP.replace("Voyage embed", "Old call")
+             + f"\n<!-- l1-post v1; kind=sweep; sha={'b' * 40} -->"},
+            {"id": 2, "body": LIVE_SWEEP + f"\n<!-- l1-post v1; kind=sweep; sha={FAKE_SHA} -->"},
+        ]
+        _SWEEP_CALLS_PATCH.stop()
+        self.addCleanup(_SWEEP_CALLS_PATCH.start)
+        import check_lane3_ready
+        with patch.object(check_lane3_ready, "fetch_comments", return_value=comments):
+            self.assertEqual(post._latest_sweep_calls("o/r", 1, FAKE_SHA), ["Gemini generate", "Voyage embed"])
+            self.assertEqual(post._latest_sweep_calls("o/r", 1, "c" * 40), [])
+
+    def test_a_live_case_with_no_external_calls_line_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace(" External calls: Gemini generate, Voyage embed", "")
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(AE_BODY, sweep)
+        self.assertIn("TC1 carry no `External calls:` line", str(ctx.exception))
         self.assertEqual(self.posted, [])
 
 

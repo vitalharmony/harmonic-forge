@@ -44,6 +44,7 @@ class Harness(unittest.TestCase):
         self.open_pr = mock.Mock(return_value=7)
         self.static = mock.Mock(return_value=([], ("t0", "t1"), {"result": "pass"}))
         self.grant = False
+        self.spec = None  # a spec body: run the real validate_sweep against it
 
     def body(self, text: str, name: str = "body.md") -> Path:
         path = self.dir / name
@@ -79,8 +80,9 @@ class Harness(unittest.TestCase):
             mock.patch.object(L, "validate_ae"),
             mock.patch.object(L, "validate_grant_ae"),
             mock.patch.object(L, "validate_auto_ae"),
-            mock.patch.object(L, "validate_sweep"),
-            mock.patch.object(L, "_spec_body", return_value=""),
+            *([mock.patch.object(L, "validate_sweep"), mock.patch.object(L, "_spec_body", return_value="")]
+              if self.spec is None else [mock.patch.object(L, "_spec_body", return_value=self.spec)]),
+            mock.patch.object(L, "_latest_sweep_calls", return_value=[]),
             mock.patch.object(L, "grant_on_main", side_effect=lambda *a: self.grant),
             mock.patch.object(L, "refresh_main", side_effect=lambda: self.order.append("fetch") or "f" * 40),
             mock.patch.object(L, "world_checks", side_effect=self._world),
@@ -237,6 +239,26 @@ class DryRunTests(Harness):
                                    "--spec-comment", "5", "--dry-run")
         self.assertIn(OVERLAP, code)
         self.posted.assert_not_called()
+
+    def test_dry_run_lists_external_call_refusals_with_the_rest(self):
+        """AC9: both External-calls refusals arrive in the one numbered list."""
+        self.overlap = True
+        self.spec = ("## Lane 3 Test Spec — F1115\n\n### Cases\n| TC1 | live | x | y | z |\n"
+                     "| TC2 | live | x | y | z |\n\n"
+                     "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=1:live,2:live -->")
+        sweep = ("## Gate-readiness sweep — F1115\n\n**Readiness:** ready\n**Blockers:** none\n"
+                 "**Next:** Lane 3 to run\n\nWrite tier: W\n\n### Per-case readiness\n"
+                 "- TC1: ready. External calls: Gemini generate\n- TC2: ready, live UI\n")
+        code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "ae-and-sweep", "--sha", SHA_A,
+                                   "--branch", "fix/1115-x", "--ae-file", self.body(AE, "ae.md"),
+                                   "--sweep-file", self.body(sweep, "sweep.md"),
+                                   "--spec-comment", "5", "--dry-run")
+        self.assertIn("3 problems", code)
+        self.assertIn("TC2 carry no `External calls:` line", code)
+        self.assertIn("external call(s): Gemini generate", code)
+        self.assertIn(OVERLAP, code)
+        self.posted.assert_not_called()
+        self.assertEqual(self.receipts(), [])
 
     def test_real_post_still_runs_world_checks_after_clean_dry_run(self):
         """The dry run gates in front of the real checks; it replaces none."""
