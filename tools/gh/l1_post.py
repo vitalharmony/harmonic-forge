@@ -2412,18 +2412,10 @@ def refresh_main() -> str:
     return resolved.stdout.strip()
 
 
-def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], dict]:
-    """Returns (check names, (local_check_started_at, local_check_finished_at),
-    check) -- the second element brackets the `mise run check` call below in
-    UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
-
-    harmonic-forge#892: a failed `mise run check` no longer fails here. It
-    returns at once with `check = {"result": "fail", "output": ...}` so the
-    caller can record the attempt (with a CI snapshot taken after the check)
-    before refusing with the same message as before. The dirty-worktree check
-    is skipped on that path, as the old `fail()` never reached it either, so a
-    failed check that also wrote files keeps its own output. A passing check
-    returns `{"result": "pass"}`. Every other refusal in here is unchanged."""
+def cheap_static_checks(sha: str, branch: str) -> None:
+    """The seconds-long half of `static_checks` (branch SHA, current-main
+    ancestry, Render-Pending). `--dry-run` runs it; only `mise run check` is
+    skipped there (harmonic-forge#1115 pass 1)."""
     branch_sha = resolve_sha(branch)
     if branch_sha != sha:
         fail(f"branch {branch!r} no longer resolves to the attested SHA")
@@ -2455,6 +2447,21 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
         fail(f"cannot check {sha[:12]} for {gate_ci.RENDER_PENDING}: {exc}")
     if pending:
         fail(gate_ci.render_pending_refusal(sha, pending))
+
+
+def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], dict]:
+    """Returns (check names, (local_check_started_at, local_check_finished_at),
+    check) -- the second element brackets the `mise run check` call below in
+    UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
+
+    harmonic-forge#892: a failed `mise run check` no longer fails here. It
+    returns at once with `check = {"result": "fail", "output": ...}` so the
+    caller can record the attempt (with a CI snapshot taken after the check)
+    before refusing with the same message as before. The dirty-worktree check
+    is skipped on that path, as the old `fail()` never reached it either, so a
+    failed check that also wrote files keeps its own output. A passing check
+    returns `{"result": "pass"}`. Every other refusal in here is unchanged."""
+    cheap_static_checks(sha, branch)
     repo_root_result = run("git", "rev-parse", "--show-toplevel")
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
@@ -3252,6 +3259,9 @@ def main() -> None:
             repo, args.issue, args.kind, sha, args.branch, ack_overlap=args.ack_overlap,
             ack_no_pr_required=args.ack_no_pr_required,
             grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)))
+        if args.kind == "ready-for-l3":
+            # Only `mise run check` is skipped; its cheap prefix still runs.
+            steps.append(lambda: cheap_static_checks(sha, args.branch))
     _collect(steps)
     if args.dry_run:
         if args.kind == "ready-for-l3":

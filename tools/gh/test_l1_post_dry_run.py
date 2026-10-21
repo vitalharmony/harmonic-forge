@@ -44,6 +44,7 @@ class Harness(unittest.TestCase):
         self.open_pr = mock.Mock(return_value=7)
         self.static = mock.Mock(return_value=([], ("t0", "t1"), {"result": "pass"}))
         self.grant = False
+        self.cheap = True  # stub cheap_static_checks; False runs the real one
         self.spec = None  # a spec body: run the real validate_sweep against it
 
     def body(self, text: str, name: str = "body.md") -> Path:
@@ -90,6 +91,7 @@ class Harness(unittest.TestCase):
             mock.patch.object(L, "require_open_pr", side_effect=self._require_pr),
             mock.patch.object(L, "_open_pr", self.open_pr),
             mock.patch.object(L, "static_checks", self.static),
+            *([mock.patch.object(L, "cheap_static_checks")] if self.cheap else []),
             mock.patch.object(L, "record_queue_candidate"),
             mock.patch.object(L, "_emit_attempt"),
             mock.patch.object(L, "write_receipt"),
@@ -209,6 +211,18 @@ class DryRunTests(Harness):
         self.assertIn("mise run check skipped", out)
         self.open_pr.assert_not_called()
         self.static.assert_not_called()
+
+    def test_dry_run_ready_for_l3_runs_the_cheap_static_checks(self):
+        """Pass 1 survivor 7: only `mise run check` is skipped. A branch that
+        no longer resolves to the attested SHA is reported by the dry run, as
+        the real post would refuse it."""
+        self.cheap = False
+        with mock.patch.object(L, "resolve_sha", side_effect=lambda value, *a, **k:
+                               SHA_B if value == "fix/1115-x" else value):
+            code, _, _ = self.run_main(*self.r4l3("--dry-run"))
+        self.assertIn("no longer resolves to the attested SHA", code or "")
+        self.static.assert_not_called()
+        self.assertEqual(self.receipts(), [])
 
     def _ae(self, *extra):
         return ("--repo", REPO, "--issue", ISSUE, "--kind", "ae", "--sha", SHA_A,

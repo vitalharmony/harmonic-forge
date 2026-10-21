@@ -53,7 +53,7 @@ class TheFetchIsAdjacentToTheCheck(unittest.TestCase):
     def test_static_checks_refreshes_main_before_testing_ancestry(self) -> None:
         """The ordering IS the fix. A fetch earlier in the function, or in
         `main()`, would reopen the window while still looking correct."""
-        body = ast.unparse(_fn("static_checks"))
+        body = ast.unparse(_fn("cheap_static_checks"))
         refresh_at = _at(body, "refresh_main()", "static_checks no longer refreshes main")
         ancestry_at = _at(body, "is-ancestor", "static_checks no longer tests ancestry")
         self.assertLess(
@@ -61,11 +61,17 @@ class TheFetchIsAdjacentToTheCheck(unittest.TestCase):
             "refresh_main() must run BEFORE the ancestry test, not after",
         )
 
+    def test_static_checks_runs_the_cheap_checks_first(self) -> None:
+        """harmonic-forge#1115 pass 1: the cheap checks moved into
+        `cheap_static_checks`, which `static_checks` still runs before anything else."""
+        first = _fn("static_checks").body[1]
+        self.assertIn("cheap_static_checks(sha, branch)", ast.unparse(first))
+
     def test_the_ancestry_test_uses_the_freshly_fetched_sha(self) -> None:
         """Not the local `origin/main` ref. Fetching and then comparing
         against the stale ref anyway is the subtlest way to ship this fix
         without fixing anything."""
-        body = ast.unparse(_fn("static_checks"))
+        body = ast.unparse(_fn("cheap_static_checks"))
         self.assertIn("main_sha", body)
         self.assertNotIn("'origin/main', sha", body.replace('"', "'"))
 
@@ -157,7 +163,7 @@ class TheExistingChecksSurvive(unittest.TestCase):
     """TC2 — this tightens timing; it must not loosen anything."""
 
     def test_the_branch_sha_match_is_still_first(self) -> None:
-        body = ast.unparse(_fn("static_checks"))
+        body = ast.unparse(_fn("cheap_static_checks"))
         self.assertLess(
             _at(body, "no longer resolves to the attested SHA", "the SHA-match check is gone"),
             _at(body, "refresh_main()", "static_checks no longer refreshes main"),
