@@ -77,5 +77,23 @@ class Anchored(unittest.TestCase):
                 preclose_driver.acceptance_criteria("vitalharmony/harmonic-forge", 1, {})
 
 
+class FenceMatching(unittest.TestCase):
+    """CommonMark: a fence closes only on the same character, at least as long."""
+
+    REAL = "## Acceptance\n\n1. Real.\n"
+
+    def test_mismatched_character_does_not_close(self):
+        body = "```\n~~~\n## Acceptance\n\n1. Fake.\n```\n" + self.REAL
+        self.assertEqual(acceptance.items(acceptance.section(body)), ["Real."])
+
+    def test_shorter_close_does_not_close(self):
+        body = "````\n```\n## Acceptance\n\n1. Fake.\n````\n" + self.REAL
+        self.assertEqual(acceptance.items(acceptance.section(body)), ["Real."])
+
+    def test_longer_close_closes(self):
+        body = "~~~\ncode\n~~~~~\n" + self.REAL
+        self.assertEqual(acceptance.items(acceptance.section(body)), ["Real."])
+
+
 if __name__ == "__main__":
     unittest.main()
