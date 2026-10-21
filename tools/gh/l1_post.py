@@ -998,7 +998,9 @@ def _external_calls(text: str) -> list[str] | None:
     if not match:
         return None
     value = match.group(1).replace("*", "").replace("`", "").strip().rstrip(".;")
-    if value.lower() == "none":
+    # `none` then prose (`none (offline fixtures)`, `none. No network`) names
+    # no calls; `nonesuch API` is still a call.
+    if re.match(r"none(?!\w)", value, re.I):
         return []
     calls = [call.strip() for call in value.split(",") if call.strip()]
     return calls or None

@@ -459,6 +459,43 @@ class ExternalCallsCrossCheck(LeadOnBothHalves):
         self.assertEqual(self.posted, [])
 
 
+class ExternalCallsParsing(unittest.TestCase):
+    """harmonic-forge#1115 pass 1: how an `External calls:` value and an
+    AE's Authorized line are read."""
+
+    def test_none_followed_by_prose_names_no_calls(self) -> None:
+        # Survivor 1: trailing prose after `none` is not a call list.
+        for line in ("External calls: none (offline fixtures)",
+                     "External calls: none. Offline fixtures, no network",
+                     "External calls: none - offline"):
+            with self.subTest(line=line):
+                self.assertEqual(post._external_calls(line), [])
+
+    def test_a_call_named_none_something_is_still_a_call(self) -> None:
+        self.assertEqual(post._external_calls("External calls: nonesuch API"), ["nonesuch API"])
+
+    def test_a_negated_call_is_not_authorized(self) -> None:
+        # Survivor 5: a line that denies the call does not authorize it.
+        ae = "**Authorized:** the approved spec; no LLM calls, no paid API"
+        with self.assertRaises(SystemExit) as ctx:
+            post.validate_ae_external_calls(ae, ["LLM", "paid API"])
+        self.assertIn("LLM", str(ctx.exception))
+
+    def test_a_call_inside_another_word_is_not_authorized(self) -> None:
+        with self.assertRaises(SystemExit):
+            post.validate_ae_external_calls("**Authorized:** the SLLMX fixtures", ["LLM"])
+
+    def test_a_named_call_is_authorized(self) -> None:
+        post.validate_ae_external_calls(
+            "**Authorized:** TC1 with one LLM call and the paid API, against `x`", ["LLM", "paid API"])
+
+    def test_a_label_other_than_authorized_does_not_count(self) -> None:
+        # Survivor 8: `Authorized-by:` is not the Authorized field.
+        ae = "**Authorized:** the spec.\nAuthorized-by: Gemini generate"
+        with self.assertRaises(SystemExit):
+            post.validate_ae_external_calls(ae, ["Gemini generate"])
+
+
 class ProdRunFooterTests(MainIntegrationTests):
     """harmonic-forge#878 (R-0377): `--prod-run` stamps the one production
     action an AE authorizes into its reserved footer -- the AE half only."""
